@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   computeWarnings,
-  highestSeverity,
   semverLess,
 } from "@/app/providers/warnings";
 import type { MyProvider, MyProvidersResponse } from "@/app/providers/types";
@@ -37,7 +36,6 @@ function baseProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     pending_requests: 0,
     max_concurrency: 8,
     reputation: {
-      score: 0.85,
       total_jobs: 0,
       successful_jobs: 0,
       failed_jobs: 0,
@@ -235,11 +233,10 @@ describe("computeWarnings", () => {
     expect(warnings.find((w) => w.id === "backend_idle_shutdown")?.severity).toBe("degrading");
   });
 
-  it("flags low success rate (degrading)", () => {
+  it("reports low success rate as informational job counts", () => {
     const warnings = computeWarnings(
       baseProvider({
         reputation: {
-          score: 0.3,
           total_jobs: 20,
           successful_jobs: 10,
           failed_jobs: 10,
@@ -251,14 +248,16 @@ describe("computeWarnings", () => {
       }),
       ctx
     );
-    expect(warnings.find((w) => w.id === "low_success_rate")?.severity).toBe("degrading");
+    expect(warnings.find((w) => w.id === "low_success_rate")).toMatchObject({
+      severity: "info",
+      detail: "10 of 20 jobs succeeded; 10 failed. Check provider logs for failure details.",
+    });
   });
 
   it("does NOT flag low success rate when sample size is small", () => {
     const warnings = computeWarnings(
       baseProvider({
         reputation: {
-          score: 0.3,
           total_jobs: 3,
           successful_jobs: 1,
           failed_jobs: 2,
@@ -275,7 +274,7 @@ describe("computeWarnings", () => {
 
   it("flags no payout configured (info)", () => {
     const warnings = computeWarnings(
-      baseProvider({ account_id: "", wallet_address: undefined }),
+      baseProvider({ account_id: "" }),
       ctx
     );
     expect(warnings.find((w) => w.id === "no_payout")?.severity).toBe("info");
@@ -317,27 +316,5 @@ describe("computeWarnings", () => {
     );
     expect(warnings.find((w) => w.id === "trust_self_signed")).toBeUndefined();
     expect(warnings.find((w) => w.id === "offline")).toBeDefined();
-  });
-});
-
-describe("highestSeverity", () => {
-  it("returns blocking when present", () => {
-    expect(
-      highestSeverity([
-        { id: "a", severity: "info", title: "", detail: "" },
-        { id: "b", severity: "blocking", title: "", detail: "" },
-      ])
-    ).toBe("blocking");
-  });
-  it("returns degrading when no blocking", () => {
-    expect(
-      highestSeverity([
-        { id: "a", severity: "info", title: "", detail: "" },
-        { id: "b", severity: "degrading", title: "", detail: "" },
-      ])
-    ).toBe("degrading");
-  });
-  it("returns null on empty", () => {
-    expect(highestSeverity([])).toBeNull();
   });
 });

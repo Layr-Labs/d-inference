@@ -3,8 +3,7 @@
 // operator sees comes with a copyable command, a link, or clear guidance.
 //
 // INVARIANT: every warning id produced by computeWarnings() must have an entry
-// here. __tests__/provider-dashboard-fixes.test.ts enforces this so the
-// guarantee can't silently regress when a new warning is added.
+// here. Feature tests exercise the warning and its matching action together.
 
 export type FixKind = "command" | "link" | "guidance";
 
@@ -61,9 +60,9 @@ const FIX_TABLE: Record<string, FixAction> = {
   },
   trust_self_signed: {
     kind: "link",
-    label: "Complete hardware attestation",
+    label: "Check serving verification",
     href: "/providers/setup",
-    note: "The network requires MDM enrollment + Apple Device Attestation.",
+    note: "macOS 27 uses App Attest without MDM. Check darkbloom status; older macOS uses legacy enrollment during the transition.",
   },
   trust_none: {
     kind: "command",
@@ -76,6 +75,12 @@ const FIX_TABLE: Record<string, FixAction> = {
     label: "Add an approved model",
     href: "/models",
     note: "Download a catalog model, then run `darkbloom restart`.",
+  },
+  model_load_memory: {
+    kind: "command",
+    label: "Check model load memory",
+    command: "darkbloom doctor",
+    note: "Free the cold-load shortfall shown for this Mac, rerun doctor, then retry a request for this model.",
   },
 
   // ── Degrading ──────────────────────────────────────────────────────────
@@ -113,10 +118,15 @@ const FIX_TABLE: Record<string, FixAction> = {
     kind: "link",
     label: "Inspect failed jobs",
     href: "/providers/earnings",
-    note: "Then check the provider logs to recover routing priority.",
+    note: "Check the provider logs for failure details.",
   },
 
   // ── Info ───────────────────────────────────────────────────────────────
+  macos_upgrade: {
+    kind: "guidance",
+    label: "Upgrade macOS on this Mac",
+    note: "Open System Settings → General → Software Update. After upgrading, restart Darkbloom and check darkbloom status. Keep the MDM profile until App Attest migration is approved.",
+  },
   no_payout: {
     kind: "command",
     label: "Link to your account",

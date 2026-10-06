@@ -23,7 +23,7 @@ extension EngineV2Factory {
         if model is MLXVLM.Gemma4 {
             return try directServingModel(model: model, isVLM: true)
         }
-        if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp {
+        if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp || model is MLXVLM.PrismHadamardQwen35 {
             return try directServingModel(model: model, isVLM: true)
         }
         guard model is MLXVLM.Qwen35 else {

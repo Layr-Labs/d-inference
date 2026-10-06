@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	attestationwire "github.com/eigeninference/d-inference/coordinator/internal/attestation/wire"
 )
 
 // Apple MDA OID constants — device-attest OID set (100.8.13.*).
@@ -186,17 +188,17 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 		switch {
 		// Device identity OIDs (100.8.9.*)
 		case ext.Id.Equal(OIDDeviceSerialNumber):
-			result.DeviceSerial = parseStringOID(ext.Value)
+			result.DeviceSerial = attestationwire.ParseStringOID(ext.Value)
 		case ext.Id.Equal(OIDDeviceUDID):
-			result.DeviceUDID = parseStringOID(ext.Value)
+			result.DeviceUDID = attestationwire.ParseStringOID(ext.Value)
 
 		// Device version OIDs (100.8.10.*)
 		case ext.Id.Equal(OIDOSVersion):
-			result.OSVersion = parseStringOID(ext.Value)
+			result.OSVersion = attestationwire.ParseStringOID(ext.Value)
 		case ext.Id.Equal(OIDSepOSVersion):
-			result.SepOSVersion = parseStringOID(ext.Value)
+			result.SepOSVersion = attestationwire.ParseStringOID(ext.Value)
 		case ext.Id.Equal(OIDLLBVersion):
-			result.LLBVersion = parseStringOID(ext.Value)
+			result.LLBVersion = attestationwire.ParseStringOID(ext.Value)
 
 		// Freshness (100.8.11.*)
 		case ext.Id.Equal(OIDFreshnessCode):
@@ -209,122 +211,13 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 
 		// Device-attest OIDs (100.8.13.*) — may also be present
 		case ext.Id.Equal(OIDSIPStatus):
-			result.SIPEnabled = parseBoolOID(ext.Value)
+			result.SIPEnabled = attestationwire.ParseBoolOID(ext.Value)
 		case ext.Id.Equal(OIDSecureBootStatus):
-			result.SecureBootEnabled = parseBoolOID(ext.Value)
+			result.SecureBootEnabled = attestationwire.ParseBoolOID(ext.Value)
 		case ext.Id.Equal(OIDKextStatus):
-			result.ThirdPartyKexts = parseBoolOID(ext.Value)
+			result.ThirdPartyKexts = attestationwire.ParseBoolOID(ext.Value)
 		}
 	}
 
 	return result, nil
-}
-
-// VerifyMDACertChain verifies a PEM-encoded MDA certificate chain.
-// Kept for backward compatibility with the 100.8.13.* OID set.
-func VerifyMDACertChain(certChainPEM []byte, appleRootCA *x509.Certificate) (*MDAResult, error) {
-	certs, err := parsePEMCertificates(certChainPEM)
-	if err != nil {
-		return nil, fmt.Errorf("mda: failed to parse certificate chain: %w", err)
-	}
-
-	if len(certs) == 0 {
-		return nil, errors.New("mda: empty certificate chain")
-	}
-
-	leaf := certs[0]
-	intermediatesCerts := certs[1:]
-
-	result := &MDAResult{}
-
-	// When a root CA is provided, verify the certificate chain.
-	// When nil, skip chain verification and just parse OIDs.
-	if appleRootCA != nil {
-		roots := x509.NewCertPool()
-		roots.AddCert(appleRootCA)
-
-		intPool := x509.NewCertPool()
-		for _, ic := range intermediatesCerts {
-			intPool.AddCert(ic)
-		}
-
-		opts := x509.VerifyOptions{
-			Roots:         roots,
-			Intermediates: intPool,
-		}
-
-		if _, err := leaf.Verify(opts); err != nil {
-			result.Error = fmt.Sprintf("certificate chain verification failed: %v", err)
-			return result, nil
-		}
-	}
-
-	result.Valid = true
-	result.DeviceSerial = leaf.Subject.SerialNumber
-
-	for _, ext := range leaf.Extensions {
-		switch {
-		case ext.Id.Equal(OIDSIPStatus):
-			result.SIPEnabled = parseBoolOID(ext.Value)
-		case ext.Id.Equal(OIDSecureBootStatus):
-			result.SecureBootEnabled = parseBoolOID(ext.Value)
-		case ext.Id.Equal(OIDKextStatus):
-			result.ThirdPartyKexts = parseBoolOID(ext.Value)
-		case ext.Id.Equal(OIDDeviceSerialNumber):
-			result.DeviceSerial = parseStringOID(ext.Value)
-		case ext.Id.Equal(OIDDeviceUDID):
-			result.DeviceUDID = parseStringOID(ext.Value)
-		}
-	}
-
-	return result, nil
-}
-
-// GetAppleEnterpriseAttestationRootCA returns the embedded Apple Root CA.
-func GetAppleEnterpriseAttestationRootCA() *x509.Certificate {
-	return appleEnterpriseAttestationRootCA
-}
-
-// parsePEMCertificates parses a PEM-encoded certificate chain.
-func parsePEMCertificates(pemData []byte) ([]*x509.Certificate, error) {
-	var certs []*x509.Certificate
-	rest := pemData
-	for {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		if block.Type != "CERTIFICATE" {
-			continue
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse certificate: %w", err)
-		}
-		certs = append(certs, cert)
-	}
-	return certs, nil
-}
-
-// parseBoolOID attempts to parse an ASN.1-encoded boolean from an extension value.
-func parseBoolOID(data []byte) bool {
-	var val bool
-	if _, err := asn1.Unmarshal(data, &val); err != nil {
-		if len(data) > 0 {
-			return data[len(data)-1] != 0
-		}
-		return false
-	}
-	return val
-}
-
-// parseStringOID attempts to parse an ASN.1-encoded UTF8String from an extension value.
-func parseStringOID(data []byte) string {
-	var val string
-	if _, err := asn1.Unmarshal(data, &val); err != nil {
-		// Fallback: try raw bytes as string.
-		return string(data)
-	}
-	return val
 }

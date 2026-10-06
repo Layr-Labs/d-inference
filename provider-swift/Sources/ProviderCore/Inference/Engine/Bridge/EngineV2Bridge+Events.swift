@@ -16,9 +16,12 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        nativeRetirement: CBv2RequestRetirement? = nil
     ) {
         let bridge = self
+        let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
+        retirementReceipt?.retainUntilRetirement()
         usageSignal?.beginTerminalObservation()
         let task = Task {
             await bridge.pump(
@@ -29,17 +32,25 @@ extension EngineV2Bridge {
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 readyReceiptRegistered: readyReceiptRegistered,
-                profile: profile
+                profile: profile,
+                nativeRetirement: nativeRetirement
             )
-            await bridge.clearPumpTask(id: id)
+            retirementReceipt?.endAfterRetirement()
+            await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
         }
         pumpTasks[id] = task
+        if nativeShutdownClosed { nativeShutdownTasks.append(task) }
     }
 
     /// Remove a completed pump's task handle (called from the pump task after
     /// `pump` returns, on every exit path).
-    func clearPumpTask(id: String) {
+    func clearPumpTask(id: String, releaseNativeIdentity: Bool = false) {
         pumpTasks.removeValue(forKey: id)
+        if releaseNativeIdentity {
+            pendingSubmissionIDs.remove(id)
+            pendingCancellationIDs.remove(id)
+            pendingProfiles.removeValue(forKey: id)
+        }
     }
 
     private func pump(
@@ -52,7 +63,8 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        nativeRetirement: CBv2RequestRetirement? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -74,6 +86,9 @@ extension EngineV2Bridge {
         eventLoop: for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
+                #if DEBUG
+                _testNativeTextObserver?(id, text)
+                #endif
                 if profile != nil, !tokens.isEmpty {
                     lastDeltaAt = .now
                 }
@@ -114,6 +129,10 @@ extension EngineV2Bridge {
                     continuation.yield(.chunk(text))
                 }
             case .finished(let reason, let usage):
+                // Only hold the pre-submit identity after active work ends:
+                // marking it pending during decode would divert ordinary cancel
+                // into the pre-admission cancellation path instead of the engine.
+                if nativeRetirement != nil { pendingSubmissionIDs.insert(id) }
                 #if DEBUG
                 if let gate = _testBeforeNativeTerminal {
                     _testBeforeNativeTerminal = nil
@@ -152,12 +171,21 @@ extension EngineV2Bridge {
         // Closing without a terminal is a teardown error, including task
         // cancellation while waiting for the engine's next event.
         if !sawTerminal {
+            if nativeRetirement != nil { pendingSubmissionIDs.insert(id) }
             continuation.yield(.error("request stream closed by engine teardown"))
             if !sawFirstToken {
                 wedgeMonitor.recordTerminalWithoutFirstToken()
             }
             dropRequest(id: id)
         }
+        if let nativeRetirement {
+            // Return the terminal to the client without claiming device cleanup.
+            // This uncancellable retirement wait retains KV, staged imports and
+            // receipt IDs until actual engine-queue release, even on a wedge.
+            continuation.finish()
+            await nativeRetirement.wait()
+        }
+        releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.
         // Staging completion is an idempotent backstop for lookup misses.
         if holdsSharedReservation {
@@ -189,9 +217,11 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
+        let final = recordFinish(
+            id: id, usage: usage,
+            lastDeltaAt: lastDeltaAt, finishReason: reason)
         switch reason {
         case .stop, .length:
-            let final = recordFinish(id: id, usage: usage, success: true, lastDeltaAt: lastDeltaAt, finishReason: reason)
             // Preserve the v2 engine's truncation signal: `.length` must
             // reach the client as finish_reason "length", not be flattened
             // to "stop" (max_tokens truncation was invisible on v2).
@@ -202,9 +232,6 @@ extension EngineV2Bridge {
                 finishReason: reason == .length ? "length" : "stop"
             ))
         case .cancelled:
-            let final = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
-                finishReason: reason)
             // A cancel that did real work emits its usage BEFORE the error
             // so a listener can still bill delivered tokens (legacy abort
             // framing).
@@ -223,9 +250,6 @@ extension EngineV2Bridge {
             // non-natural finish, then carry BOTH the machine-readable cause
             // AND that usage through — instead of flattening the deadline into
             // a generic string with zero usage (the incident behavior).
-            let final = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
-                finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if let wireCause = Self.wireTerminalCause(cbCause) {
                 continuation.yield(.terminal(
@@ -240,9 +264,6 @@ extension EngineV2Bridge {
                 continuation.yield(.error(message))
             }
         case .error(let message):
-            _ = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
-                finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix) {
                 // Engine-side TERMINAL capacity exhaustion (the paged pool
@@ -285,7 +306,7 @@ extension EngineV2Bridge {
 
     /// Media-through-v2 engagement (v0.7.5; media-kind tagged since
     /// v0.7.5): INFO per engine-accepted image/video request. PRIVACY:
-    /// allowlisted operational fields only — the request's media/prompt
+    /// fixed operational keys only — the request's media/prompt
     /// content never rides telemetry; `multimodal` is a bare boolean tag
     /// and `media_kind` is one of image/video/mixed.
     func emitVisionSubmitTelemetry(requestId: String, mediaKind: EngineV2MediaKind?) {
@@ -295,8 +316,6 @@ extension EngineV2Bridge {
             kind: .engineHealth,
             message: "engine_v2: media request served via ContinuousBatchingV2"
         )
-        // Filter-at-source, matching the other engine_health builders —
-        // every key is allowlisted already; the filter enforces it stays so.
         var fields: [String: AnyCodableValue] = [
             "component": .string("engine"),
             "operation": .string("engine_v2_vision"),
@@ -307,13 +326,13 @@ extension EngineV2Bridge {
         if let mediaKind {
             fields["media_kind"] = .string(mediaKind.rawValue)
         }
-        event.fields = TelemetryFieldFilter.filter(fields)
+        event.fields = fields
         event.requestId = requestId
         emit(event)
     }
 
-    /// PRIVACY: engine-error telemetry carries only allowlisted operational
-    /// fields — never the error message (defense in depth against any
+    /// PRIVACY: engine-error telemetry carries only fixed operational
+    /// keys — never the error message (defense in depth against any
     /// engine string that could embed request-adjacent detail).
     func emitInferenceErrorTelemetry(requestId: String) {
         var event = TelemetryEvent(

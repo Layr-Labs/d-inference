@@ -18,10 +18,19 @@ struct ChatTemplateFixContext: Sendable {
 }
 
 enum ChatTemplateFixes {
+    /// Share the native turn/tool input format without broadening Gemma's
+    /// separate autoregressive grammar eligibility predicate.
+    private static func usesGemmaInputFormat(_ context: ChatTemplateFixContext) -> Bool {
+        context.modelType == "diffusion_gemma" || Gemma4TemplateFix.applies(to: context)
+    }
+
     static func normalizeMessages(
         _ messages: [[String: any Sendable]],
         context: ChatTemplateFixContext
     ) throws -> [[String: any Sendable]] {
+        if MiMoV26TemplateFix.applies(to: context) {
+            return try MiMoV26TemplateFix.normalizeMessages(messages)
+        }
         let sanitized = sanitizeJinjaMessages(messages)
         var normalized = Qwen35TemplateFix.applies(to: context)
             ? Qwen35TemplateFix.normalizeMessages(sanitized)
@@ -32,7 +41,7 @@ enum ChatTemplateFixes {
         }
         try validateGenericToolHistory(normalized)
 
-        if Gemma4TemplateFix.applies(to: context) {
+        if usesGemmaInputFormat(context) {
             return try Gemma4TemplateFix.normalizeMessages(normalized)
         }
         return normalized
@@ -53,14 +62,29 @@ enum ChatTemplateFixes {
         _ tools: [[String: any Sendable]]?,
         context: ChatTemplateFixContext
     ) -> [[String: any Sendable]]? {
-        guard let sanitized = sanitizeTools(tools) else { return nil }
+        let metadataScoped = normalizeToolMetadata(tools, context: context)
+        if MiMoV26TemplateFix.applies(to: context) {
+            return MiMoV26TemplateFix.normalizeTools(metadataScoped)
+        }
+        guard let sanitized = sanitizeTools(metadataScoped) else { return nil }
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
             return GPTOSSHarmonyTemplateFix.normalizeTools(sanitized)
         }
-        if Gemma4TemplateFix.applies(to: context) {
+        if usesGemmaInputFormat(context) {
             return Gemma4TemplateFix.normalizeTools(sanitized)
         }
         return sanitized
+    }
+
+    /// Native media producers preserve their own message/schema representation,
+    /// but must apply the same model-scoped SDK metadata policy as text requests.
+    static func normalizeToolMetadata(
+        _ tools: [[String: any Sendable]]?,
+        context: ChatTemplateFixContext
+    ) -> [[String: any Sendable]]? {
+        NemotronTemplateFilters.applies(modelType: context.modelType)
+            ? tools
+            : tools?.map(droppingNemotronOnlyMetadata)
     }
 
     /// Sanitize a chat-template `tools` array (or `nil`), dropping null /
@@ -71,6 +95,18 @@ enum ChatTemplateFixes {
     ) -> [[String: any Sendable]]? {
         guard let tools else { return nil }
         return tools.map(sanitizeJinjaObject)
+    }
+
+    private static func droppingNemotronOnlyMetadata(
+        _ tool: [String: any Sendable]
+    ) -> [String: any Sendable] {
+        var tool = tool
+        guard var function = tool["function"] as? [String: any Sendable] else {
+            return tool
+        }
+        function.removeValue(forKey: "strict")
+        tool["function"] = function
+        return tool
     }
 
     static func extraEOSTokenIds(
@@ -88,7 +124,7 @@ enum ChatTemplateFixes {
         return ids
     }
 
-    private static func validateGenericToolHistory(
+    static func validateGenericToolHistory(
         _ messages: [[String: any Sendable]]
     ) throws {
         var toolResultsAllowed = false

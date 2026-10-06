@@ -1,12 +1,42 @@
 # Models reference
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-10-03
 
-Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
+Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/catalog/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
 ## `GET /v1/models`
 
-Handler `handleListModels` (`coordinator/api/models_endpoints.go`). Requires a bearer credential (`requireAuth`).
+MiMo image/video requests also require temporary preparation memory beyond the
+loaded weights and text KV budget. A request that cannot reserve that memory
+can fail over or return 429 while text remains serviceable. The provider's
+media-memory refusal does not disable its text capacity; see
+[routing admission](../architecture/routing.md#gray-box-capacity-signals).
+
+The [native MiMo V2.6 candidate](../architecture/inference.md#native-mimo-v26-candidate)
+adds exact `mimo_v2` ordinary dispatch, not a catalog entry or public alias.
+Normal provider/standalone loading installs bounded visual policies and an
+authenticated audio policy when the required sidecar is present. Invalid
+sidecars refuse; they are not silently treated as absent. Read the actual
+per-model capabilities and format refusals. The 0.9.13 candidate adds ordinary
+PCM WAV sample rates/widths and stereo input to that audio path; see the
+[encoded-audio contract](../architecture/inference.md#native-mimo-v26-candidate). Speech output, real native paging,
+media-prefix reuse and complete API/numerical/lifecycle qualification are not
+granted by the model name or by a successful benchmark.
+
+The native DiffusionGemma wrapper reports its supported vision configuration
+through provider discovery and validates multimodal template inputs. Its
+[native block adapter](../architecture/native-block-inference.md) accepts images
+and timestamped video frames; runtime capability does not publish a registry
+model or change catalog modalities. Complete release qualification remains separate.
+
+The Bonsai 2 support draft admits the explicit `prism_hadamard_qwen35` artifact
+through `EngineV2SupportedModels` without adding a public catalog listing. Its
+published configuration and tensors include vision but no MTP. Native context
+is derived from configuration; measured hardware coverage and coordinator
+routing limits are separate. See `libs/mlx-swift-lm/docs/bonsai2.md` for scope;
+API/media qualification remains a release gate, not a consequence of a model tag.
+
+Handler `HandleListModels` (`coordinator/api/catalog/models_endpoints.go`). Requires a bearer credential (`RequireAuth`).
 
 ```bash
 curl -s https://api.darkbloom.dev/v1/models -H "Authorization: Bearer $DARKBLOOM_API_KEY"
@@ -26,26 +56,26 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 - Every **active public alias** that has a desired build in the catalog, under the alias id. The concrete builds an alias points at (desired, previous, retired) are hidden.
 - Every **catalog build not covered by an alias**, under its build id.
 - `?include_builds=1` adds the hidden builds (operations/debugging).
-- OpenRouter-only aliases are excluded; they appear only in `GET /v1/models/openrouter` (`handleListModelsOpenRouter`, `coordinator/api/openrouter_endpoint.go`).
-- With `X-Darkbloom-Route: self`, or on a key created with `self_route_only`, the list is instead the account's own machines' models, filtered by the key's `allowed_models` (`selfRouteModelEntries`, `filterEntriesByKeyAllowList`). See [`../provider/self-route.md`](../provider/self-route.md).
+- OpenRouter-only aliases are excluded; they appear only in `GET /v1/models/openrouter` (`HandleListModelsOpenRouter`, `coordinator/api/catalog/openrouter_endpoint.go`).
+- With `X-Darkbloom-Route: self`, or on a key created with `self_route_only`, the list is instead the account's own machines' models, filtered by the key's `allowed_models` (`SelfRouteModelEntries`, `filterEntriesByKeyAllowList`). See [`../provider/self-route.md`](../provider/self-route.md).
 
 ### `ModelEntry` fields
 
 | Field | Type | Meaning | Source |
 |---|---|---|---|
-| `id` | string | The name to send as `model`: an alias id, or a build id for un-aliased builds | `aliasModelEntries` (`coordinator/api/models_endpoints.go`), `modelEntryForConcrete` (`coordinator/api/concrete_model_entries.go`) |
+| `id` | string | The name to send as `model`: an alias id, or a build id for un-aliased builds | `aliasModelEntries` (`coordinator/api/catalog/models_endpoints.go`), `modelEntryForConcrete` (`coordinator/api/catalog/concrete_model_entries.go`) |
 | `object` | string | Always `"model"` | |
-| `created` | int | Registry entry creation time (Unix seconds); 0 when no registry record | `openRouterModelFieldsFor` (`coordinator/api/openrouter_models.go`) |
+| `created` | int | Registry entry creation time (Unix seconds); 0 when no registry record | `openRouterModelFieldsFor` (`coordinator/api/catalog/openrouter_models.go`) |
 | `owned_by` | string | Always `"eigeninference"` | |
 | `name` | string | Display name | alias display name, else catalog display name |
 | `hugging_face_id` | string | Upstream weights identifier, when known | `huggingFaceIDForModel` |
 | `description` | string | From the registry entry | |
-| `input_modalities` | string[] | `["text"]` plus `"image"`, `"audio"`, `"video"` when the build's capabilities include them; embedding models report `["text"]` → `["embedding"]` | `deriveModalities` (`coordinator/api/openrouter_models.go`) |
+| `input_modalities` | string[] | `["text"]` plus `"image"`, `"audio"`, `"video"` when the build's capabilities include them; embedding models report `["text"]` → `["embedding"]` | `deriveModalities` (`coordinator/api/catalog/openrouter_models.go`) |
 | `output_modalities` | string[] | `["text"]` (or `["embedding"]`) | `deriveModalities` |
 | `quantization` | string | Quantization of a concrete build; empty on alias entries because an alias spans quants | `mapQuantizationToOpenRouter` |
 | `context_length` | int | Maximum prompt+completion context of the primary build | registry `MaxContextLength` |
-| `max_output_length` | int | Maximum completion length; `max_tokens` above it is clamped at request time (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) | registry `MaxOutputLength` |
-| `pricing` | object | `prompt`, `completion`, `image`, `request`, `input_cache_read` — USD per unit as decimal strings, from the platform price table | `buildModelPricing`, `resolvePlatformPricing`; see [`../reference/pricing-model.md`](../reference/pricing-model.md) |
+| `max_output_length` | int | Maximum completion length; `max_tokens` above it is clamped at request time (`ensureMaxTokensBound`, `coordinator/api/inference/consumer.go`) | registry `MaxOutputLength` |
+| `pricing` | object | `prompt`, `completion`, `image`, `request`, `input_cache_read` — USD per unit as decimal strings, from the platform price table. `input_cache_read` is the per-token rate for prompt tokens a provider serves from its prefix cache (returned as `usage.prompt_tokens_details.cached_tokens`); it is the rate settlement bills, derived as half the prompt rate when the model sets none | `buildModelPricing`, `resolvePlatformPricing`; see [`../reference/pricing-model.md`](../reference/pricing-model.md) |
 | `supported_sampling_parameters` | string[] | `temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `repetition_penalty`, `stop`, `seed`, `max_tokens` | `defaultSamplingParameters` |
 | `supported_features` | string[] | Feature vocabulary derived from registry capabilities: `tools`, `json_mode`, `structured_outputs`, `logprobs`, `web_search`, `reasoning`; omitted when none | `supportedFeaturesFromCapabilities` |
 | `deprecation_date` | string | Optional, from registry metadata | `deprecationDateFromMetadata` |
@@ -66,15 +96,15 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 | `warm_providers` | Providers with the model loaded |
 | `can_accept` | Whether at least one provider can accept a request now; alias entries aggregate across the alias's routable builds |
 
-`routable_providers`, `warm_providers` and `can_accept` come from the live registry snapshot (`registry.ModelCapacitySnapshot`), so they change between calls; `GET /v1/models/capacity` (`handleModelsCapacity`, `coordinator/api/capacity.go`) exposes the same numbers unauthenticated with a 2 s cache.
+`routable_providers`, `warm_providers` and `can_accept` come from the live registry snapshot (`registry.ModelCapacitySnapshot`), so they change between calls; `GET /v1/models/capacity` (`HandleModelsCapacity`, `coordinator/api/catalog/capacity.go`) exposes the same numbers unauthenticated with a 2 s cache.
 
 ## `GET /v1/models/{id}`
 
-Handler `handleGetModel`. Returns one `ModelEntry` for a listed id, a hidden build id, or an alias; 404 `model_not_found` with `param: "model"` otherwise. Self-route requests retrieve from the owned-model view so list and retrieve always agree.
+Handler `HandleGetModel`. Returns one `ModelEntry` for a listed id, a hidden build id, or an alias; 404 `model_not_found` with `param: "model"` otherwise. Self-route requests retrieve from the owned-model view so list and retrieve always agree.
 
 ## How `model` is resolved on inference
 
-`resolveRequestedModel` (`coordinator/api/consumer.go`) calls `registry.ResolveModelConstrainedWithTraits` with the request's constraints (self-route policy, media/tool traits):
+`resolveRequestedModel` (`coordinator/api/inference/consumer.go`) calls `registry.ResolveModelConstrainedWithTraits` with the request's constraints (self-route policy, media/tool traits):
 
 1. **Alias.** The alias is mapped to its desired build; if every desired-build provider is saturated or too slow and the previous build can serve, the request goes to the previous build instead (`maybeFallbackAlias`). The forwarded body carries the build id; every response, stream chunk and usage record echoes the alias you sent (`publicModel`).
 2. **Alias with no routable build** → 503 `model_unavailable`, message `model "<id>" has no available build right now`, `param: "model"`, **no** `Retry-After`.
@@ -83,26 +113,40 @@ Handler `handleGetModel`. Returns one `ModelEntry` for a listed id, a hidden bui
 
 ### `model_not_allowed`
 
-A key created with `allowed_models` can only use those ids. Any other `model` fails in the prelude with 403 `model_not_allowed` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) before resolution, so the allow-list should name the same ids `GET /v1/models` returns.
+A key created with `allowed_models` can only use those ids. Any other `model` fails in the prelude with 403 `model_not_allowed` (`keyModelAllowed`, `coordinator/api/inference/key_policy.go`) before resolution, so the allow-list should name the same ids `GET /v1/models` returns.
 
 ## Capability flags as the API exposes them
 
 | Capability | Where to read it | What the API enforces |
 |---|---|---|
-| Vision | `"image"` in `input_modalities` | Image parts on a model without it → 400; a vision model with no vision-capable provider online → 503 `model_unavailable` (`visionToolsFailFast`, `coordinator/api/inference_preprocess.go`) |
-| Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`NormalizeToolSchemas`, `coordinator/api/toolschema.go`; `validateToolConstraintPolicy`, `coordinator/api/tool_constraints.go`); uncompilable schemas → 422; only providers at or above the `tools` version floor (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`) are eligible, and an inference-enforced `tool_choice` (`required` / named) cannot be combined with image content (400) |
+| Vision | `"image"` in `input_modalities` | Image parts on a model without it → 400; a vision model with no vision-capable provider online → 503 `model_unavailable` (`visionToolsFailFast`, `coordinator/api/inference/inference_preprocess.go`) |
+| Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`NormalizeToolSchemas`, `coordinator/api/inference/request/toolschema.go`; `ValidateToolConstraintPolicy`, `coordinator/api/inference/request/tool_constraints.go`); uncompilable schemas → 422; a provider whose build reports `template_render_ok=false` is not eligible (`providerEligibleForTraitsLocked`, `coordinator/registry/request_traits.go`). Forced media tools and media-bearing tool results require an explicit per-model capability; see the [API contract](../reference/api-contracts.md) |
 | JSON / structured output | `"json_mode"`, `"structured_outputs"` in `supported_features` | `response_format` is forwarded to the provider without coordinator validation; whether it is honoured depends on the build's capabilities |
-| Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`applyResolvedModelReasoningPolicy`, `coordinator/api/reasoning_request_policy.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
-| Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`runInferenceAdmission`, `coordinator/api/inference_admission.go`) |
+| Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`ApplyResolvedModelReasoningPolicy`, `coordinator/api/inference/request/reasoning_request_policy.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
+| Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`Admission.Run`, `coordinator/api/inference/inference_admission.go`) |
 | Availability | `metadata.can_accept`, `routable_providers`, `warm_providers` | Zero routable providers at dispatch → 503 `model_unavailable` |
 
 Prefix reuse is a runtime provider capability scoped to the exact model artifact,
 prompt contract and request isolation scope. A family name or model-list entry
 alone does not guarantee a cache hit. Complete SSD checkpoints support eligible
 loaded Qwen and selected Nemotron Lightning recurrent targets (including typed
-embedded MTP history), and paged GPT-OSS/Gemma historical attention;
+embedded MTP history), native MiMo text checkpoints (including its native
+assistant state), and paged GPT-OSS/Gemma historical attention;
 the [cache capability reference](../reference/ssd-kv-cache.md#per-family-reuse-capability)
 records backend and identity gates. This does not change API feature flags.
+
+## MiMo text prefix-cache default
+
+Provider 0.9.14 enables encrypted SSD prefix reuse for the
+[exact supported MiMo identities](../architecture/prefix-cache.md#mimo-complete-state).
+A repeated eligible text prefix can produce nonzero
+`usage.prompt_tokens_details.cached_tokens`; it is not guaranteed to hit.
+Image, audio and video requests still run through the existing native media
+path and remain uncached. Providers can disable MiMo reuse with
+`DARKBLOOM_MIMO_COMPLETE_PREFIX=0`, or all prefix reuse with
+`DARKBLOOM_PREFIX_CACHE=0`; see the
+[operator controls](../reference/configuration.md#native-mimo-v26-candidate).
+The default does not change the API request shape, model availability or price.
 
 ## GPT-OSS 20B prefix-cache default
 
@@ -114,7 +158,7 @@ a model or enable coordinator cache routing.
 | Behavior | Default and limits | Source |
 |---|---|---|
 | Prefix reuse | Requires the loaded historical-attention capability, segmented paged storage, verified model/runtime identity and the same request isolation scope. A miss or refused checkpoint computes the prompt normally | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+CompletePrefixCache.swift` (`prepareCompletePrefixCache`); [cache capability](../reference/ssd-kv-cache.md#per-family-reuse-capability) |
-| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
+| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/inference/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
 | Usage | Successful reuse contributes to `usage.prompt_tokens_details.cached_tokens`; a family name or previous request alone does not guarantee a hit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCache.swift`; [cache usage](../architecture/prefix-cache.md) |
 
 ## Gemma 4 26B QAT runtime defaults
@@ -128,7 +172,7 @@ these defaults.
 |---|---|---|
 | Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
 | Multi-token prediction (MTP) | `mtp_mode = "auto"` resolves the catalog-declared assistant; adaptive decoding chooses ordinary decode or one draft token. Missing, invalid or memory-ineligible assistants retain target-only serving; explicit `off` and the process kill switch win | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); [MTP policy and controls](../architecture/inference.md#multi-token-prediction) |
-| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
+| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Models/ModelIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
 
 ## Native Flash-Next candidate
 
@@ -155,3 +199,15 @@ certify full native-context operation on the minimum-RAM device.
 - Aliases, builds and the registry lifecycle: [`../architecture/model-registry.md`](../architecture/model-registry.md)
 - Prices: [`../reference/pricing-model.md`](../reference/pricing-model.md)
 - Making your first call: [`quickstart.md`](quickstart.md)
+
+### DiffusionGemma exact tool arguments
+
+DiffusionGemma tool calls are checked for function name, schema and cardinality
+by `ToolChoiceEnforcementPolicy` and `ToolConstraintValidation`. Those checks do
+not establish that free-form string arguments faithfully copy a user's text.
+The live `record_text` fixture currently fails when asked to copy literal native
+channel markers, with thinking both enabled and disabled; the direct native
+output already contains the changed value before parsing. Consumers requiring
+byte-exact arguments must validate that requirement before executing a tool.
+This is an unresolved model-quality limitation, not a repaired parser case.
+See [native block inference](../architecture/native-block-inference.md).

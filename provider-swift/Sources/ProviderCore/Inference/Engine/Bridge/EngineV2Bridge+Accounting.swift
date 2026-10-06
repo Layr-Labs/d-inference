@@ -39,31 +39,22 @@ extension EngineV2Bridge {
     func recordFinish(
         id: String,
         usage: CBv2Usage,
-        success: Bool,
         lastDeltaAt: SuspendingClock.Instant? = nil,
         finishReason: CBv2FinishReason? = nil
     ) -> (prompt: Int, completion: Int, tps: Double) {
+        if let receipt = active[id]?.prefillReceipt {
+            consumePrefillReceipt(id: id, receipt: receipt)
+        }
         idMap.removeValue(forKey: id)
         let now = ContinuousClock.Instant.now
         guard var state = active.removeValue(forKey: id) else {
             return (max(0, usage.promptTokens), max(0, usage.completionTokens), 0)
         }
+        defer { state.prefillReceipt?.end() }
         state.completionTokens = max(state.completionTokens, usage.completionTokens)
         let prompt = max(state.promptTokens, usage.promptTokens)
         let completion = state.completionTokens
 
-        // Profiler: cumulative cold-prefill tokens for the heartbeat (the
-        // cached count is only known from terminal usage, so attribution
-        // lands at finish, not first token) and the per-request finish
-        // fields — ONE lock.
-        let cachedTokens = max(
-            0,
-            usage.prefixCacheHitTokens,
-            usage.prefixCacheMatchedTokens,
-            usage.prefixCachePrefillTokensSaved)
-        let (nextPrefillTotal, prefillOverflow) = prefillTokensTotal
-            .addingReportingOverflow(Int64(max(0, prompt - cachedTokens)))
-        prefillTokensTotal = prefillOverflow ? .max : nextPrefillTotal
         if let profile = state.profile {
             let stepsNow = Int64(capacitySnapshot().stepsExecuted)
             let lastDeltaOffset = lastDeltaAt.map { profile.offsetUs(of: $0) }
@@ -96,42 +87,27 @@ extension EngineV2Bridge {
         }
 
         let tps: Double
-        if let firstTokenAt = state.firstTokenAt, completion > 1 {
+        if usesNativeBlockTiming {
+            tps = EngineV2NativeBlockTiming.generationRate(
+                completionTokens: completion, timing: usage.timing) ?? 0
+        } else if let firstTokenAt = state.firstTokenAt, completion > 1 {
             let seconds = WedgeMonitor.seconds(now - firstTokenAt)
             tps = seconds > 0 ? Double(completion - 1) / seconds : 0
         } else {
             let seconds = WedgeMonitor.seconds(now - state.submittedAt)
             tps = seconds > 0 ? Double(completion) / seconds : 0
         }
-        // Only tokens emitted strictly after the first engine emission are a
-        // decode observation. MTP can deliver several accepted tokens in that
-        // first burst; charging all but one over a near-zero interval would
-        // catastrophically inflate the conservative decode rate.
-        if success, let firstTokenAt = state.firstTokenAt,
-            completion > state.firstEmissionTokens
-        {
-            let decodeSeconds = WedgeMonitor.seconds(now - firstTokenAt)
-            let decodeTokens = completion - state.firstEmissionTokens
-            let decodeTps =
-                decodeSeconds > 0 ? Double(decodeTokens) / decodeSeconds : 0
-            if decodeTps > 0 {
-                updateDecodeTpsEwma(decodeTps)
-            }
-        }
-        if success {
-            recordPrefillSample(
-                promptTokens: prompt,
-                usage: usage,
-                submittedAt: state.submittedAt,
-                firstTokenAt: state.firstTokenAt,
-                isolatedAtSubmit: state.isolatedPrefillSampleEligible)
-        }
+        let deliveredSeconds = state.firstTokenAt.map { WedgeMonitor.seconds(now - $0) } ?? 0
+        let deliveredTokens = max(0, completion - state.firstEmissionTokens)
+        let deliveredTps = deliveredSeconds > 0 ? Double(deliveredTokens) / deliveredSeconds : 0
+        recordPerformanceFinish(id: id, state: state, usage: usage, completion: completion,
+            deliveredTps: deliveredTps, now: now)
         return (prompt, completion, tps)
     }
 
     // MARK: - Prefill sampling (observed_prefill_tps)
 
-    /// Minimum submit→first-token window (seconds) for a prefill sample to
+    /// Minimum engine prompt-computation window (seconds) for a sample to
     /// count. A near-zero window (scripted engines, degenerate prompts)
     /// divides into an absurd rate; 1 ms is far below any real cold
     /// prefill.
@@ -145,10 +121,9 @@ extension EngineV2Bridge {
     static let maxPlausiblePrefillTps = 20_000.0
 
     /// Classify one prefill sample against the plausibility bounds.
-    /// The window starts at the atomic engine-queue
-    /// admission instant, not before that queue await; admission delay is
-    /// therefore never smuggled into isolated prefill throughput. Isolation
-    /// is revoked if another row arrives before this row's first token.
+    /// The window starts at the engine's first prefill launch and ends at
+    /// confirmed prompt computation. A shared interval tracker identifies
+    /// both same-model and other-model contention independently of delivery.
     static func classifyPrefillSample(
         prefilledTokens: Int, prefillSeconds: Double
     ) -> Double? {
@@ -157,41 +132,6 @@ extension EngineV2Bridge {
         let tps = Double(prefilledTokens) / prefillSeconds
         guard tps.isFinite, tps <= maxPlausiblePrefillTps else { return nil }
         return tps
-    }
-
-    /// Feed the prefill EWMA (α = 0.3, mirroring the decode EWMA) from a
-    /// successful request's timing only when terminal engine usage proves the
-    /// request performed a cold prefill. Cache hits have a different latency
-    /// distribution and must never calibrate the coordinator's cold TTFT model.
-    private func recordPrefillSample(
-        promptTokens: Int,
-        usage: CBv2Usage,
-        submittedAt: ContinuousClock.Instant,
-        firstTokenAt: ContinuousClock.Instant?,
-        isolatedAtSubmit: Bool
-    ) {
-        guard Self.isColdPrefillSample(usage: usage) else { return }
-        guard let firstTokenAt else { return }
-        let prefillSeconds = WedgeMonitor.seconds(firstTokenAt - submittedAt)
-        guard
-            let tps = Self.classifyPrefillSample(
-                prefilledTokens: promptTokens, prefillSeconds: prefillSeconds)
-        else { return }
-        let alpha = 0.3
-        if prefillEwmaInitialized {
-            observedPrefillTpsEwma = alpha * tps + (1 - alpha) * observedPrefillTpsEwma
-        } else {
-            observedPrefillTpsEwma = tps
-            prefillEwmaInitialized = true
-        }
-        guard isolatedAtSubmit else { return }
-        if isolatedPrefillEwmaInitialized {
-            isolatedPrefillTpsEwma =
-                alpha * tps + (1 - alpha) * isolatedPrefillTpsEwma
-        } else {
-            isolatedPrefillTpsEwma = tps
-            isolatedPrefillEwmaInitialized = true
-        }
     }
 
     static func isColdPrefillSample(usage: CBv2Usage) -> Bool {
@@ -205,12 +145,18 @@ extension EngineV2Bridge {
 
     /// Stream torn down without a terminal event — drop local state.
     func dropRequest(id: String) {
-        active.removeValue(forKey: id)
+        if let receipt = active[id]?.prefillReceipt {
+            consumePrefillReceipt(id: id, receipt: receipt)
+            receipt.end()
+        }
+        if let state = active.removeValue(forKey: id) {
+            recordGenerationWork(completion: state.completionTokens, requestID: id)
+        }
         idMap.removeValue(forKey: id)
     }
 
     /// Smooth successful decode observations for the routing heartbeat.
-    private func updateDecodeTpsEwma(_ tps: Double) {
+    func updateDecodeTpsEwma(_ tps: Double) {
         guard tps.isFinite, tps > 0 else { return }
         let alpha = 0.3
         if ewmaInitialized {

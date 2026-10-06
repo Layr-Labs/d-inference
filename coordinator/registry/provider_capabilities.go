@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -71,14 +72,15 @@ func equalRuntimeCapabilities(left, right []string) bool {
 //   - signed claims exactly match the outer Register report;
 //   - the same metallib digest passed the existing approved runtime manifest.
 //
-// Apple hardware trust and APNs code identity are promotion prerequisites, not
-// merely exact-model routing gates. Legacy attestations have no signed claim
-// fields; they stay trusted for unrelated models but receive no capabilities.
+// Promotion requires either Apple hardware trust plus APNs code identity, or a
+// current qualified App Attest lease that binds this SE verification key.
+// Legacy attestations without signed claim fields remain trusted for unrelated
+// models but receive no capabilities.
 func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error {
 	r.mu.RLock()
 	provider := r.providers[providerID]
-	r.mu.RUnlock()
 	if provider == nil {
+		r.mu.RUnlock()
 		return fmt.Errorf("provider not found")
 	}
 
@@ -96,24 +98,58 @@ func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error
 			changed = len(provider.RuntimeCapabilities) > 0
 			provider.runtimeCapabilitiesReconciled = true
 		}
+		if changed {
+			provider.warmWork.Reset()
+		}
 		provider.lastReconciledRuntimeCapabilities = append(
 			[]string(nil), provider.RuntimeCapabilities...)
 		provider.mu.Unlock()
+		r.mu.RUnlock()
 		if changed {
 			r.notifyRuntimeCapabilitiesPromoted(providerID)
 		}
 	}()
 	provider.RuntimeCapabilities = nil
+	provider.runtimeCapabilitiesFromAppAttest = false
 
+	signed, requiresApprovedMetallib, requiresFreshCodeProof, err := attestedRuntimeCapabilitiesLocked(provider)
+	if err != nil {
+		return err
+	}
+
+	// Validation above always runs so a mismatch is rejected immediately, but
+	// no reported capability becomes effective until the whole connection trust
+	// chain is live. This protects generic catalog capability requirements too,
+	// not only the embedded exact-Qwen rule.
+	appAttest := r.providerHasAppAttestAuthorizationLocked(provider, time.Now())
+	legacy := provider.Attested && provider.TrustLevel == TrustHardware &&
+		provider.CodeAttested && (!requiresFreshCodeProof || provider.FreshCodeAttested)
+	if provider.Status == StatusOffline || provider.Status == StatusUntrusted ||
+		provider.appAttestSecurityDenied || (!appAttest && !legacy) ||
+		!provider.RuntimeVerified ||
+		!provider.RuntimeManifestChecked ||
+		(requiresApprovedMetallib && !provider.MetallibVerified) {
+		return nil
+	}
+
+	provider.RuntimeCapabilities = append([]string(nil), signed...)
+	provider.runtimeCapabilitiesFromAppAttest = appAttest && !legacy
+	return nil
+}
+
+// attestedRuntimeCapabilitiesLocked validates registration claims before either
+// authorization path can promote capabilities. It performs no mutation or I/O;
+// the App Attest grant uses the same check before exposing a new lease.
+func attestedRuntimeCapabilitiesLocked(provider *Provider) ([]string, bool, bool, error) {
 	result := provider.AttestationResult
 	if result == nil || !result.Valid {
-		return nil
+		return nil, false, false, nil
 	}
 	hasSignedClaims := result.ChipFamily != "" ||
 		len(result.RuntimeCapabilities) > 0 ||
 		result.MetallibHash != ""
 	if !hasSignedClaims {
-		return nil
+		return nil, false, false, nil
 	}
 
 	signed := normalizeRuntimeCapabilities(
@@ -121,16 +157,16 @@ func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error
 		protocol.Hardware{ChipFamily: result.ChipFamily},
 	)
 	if !equalRuntimeCapabilities(signed, result.RuntimeCapabilities) {
-		return fmt.Errorf("attested runtime capabilities are not canonical")
+		return nil, false, false, fmt.Errorf("attested runtime capabilities are not canonical")
 	}
 	if !equalRuntimeCapabilities(signed, provider.ReportedRuntimeCapabilities) {
-		return fmt.Errorf("attested runtime capabilities do not match registration")
+		return nil, false, false, fmt.Errorf("attested runtime capabilities do not match registration")
 	}
 	if !strings.EqualFold(
 		strings.TrimSpace(result.ChipFamily),
 		strings.TrimSpace(provider.Hardware.ChipFamily),
 	) {
-		return fmt.Errorf("attested chip family does not match registration")
+		return nil, false, false, fmt.Errorf("attested chip family does not match registration")
 	}
 	if result.MetallibHash != "" {
 		reportedMetallib := provider.TemplateHashes["mlx_metallib"]
@@ -138,7 +174,7 @@ func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error
 			strings.TrimSpace(result.MetallibHash),
 			strings.TrimSpace(reportedMetallib),
 		) {
-			return fmt.Errorf("attested metallib does not match registration")
+			return nil, false, false, fmt.Errorf("attested metallib does not match registration")
 		}
 	}
 
@@ -148,35 +184,19 @@ func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error
 		switch capability {
 		case ProviderCapabilityAppleM5:
 			if !strings.EqualFold(strings.TrimSpace(result.ChipFamily), "M5") {
-				return fmt.Errorf("apple_m5 requires attested M5 chip family")
+				return nil, false, false, fmt.Errorf("apple_m5 requires attested M5 chip family")
 			}
 			requiresFreshCodeProof = true
 		case ProviderCapabilityMLXNAX:
 			if result.MetallibHash == "" {
-				return fmt.Errorf("mlx_nax requires an attested metallib")
+				return nil, false, false, fmt.Errorf("mlx_nax requires an attested metallib")
 			}
 			requiresApprovedMetallib = true
 			requiresFreshCodeProof = true
 		}
 	}
 
-	// Validation above always runs so a mismatch is rejected immediately, but
-	// no reported capability becomes effective until the whole connection trust
-	// chain is live. This protects generic catalog capability requirements too,
-	// not only the embedded exact-Qwen rule.
-	if provider.Status == StatusOffline || provider.Status == StatusUntrusted ||
-		!provider.Attested ||
-		provider.TrustLevel != TrustHardware ||
-		!provider.CodeAttested ||
-		!provider.RuntimeVerified ||
-		!provider.RuntimeManifestChecked ||
-		(requiresApprovedMetallib && !provider.MetallibVerified) ||
-		(requiresFreshCodeProof && !provider.FreshCodeAttested) {
-		return nil
-	}
-
-	provider.RuntimeCapabilities = append([]string(nil), signed...)
-	return nil
+	return signed, requiresApprovedMetallib, requiresFreshCodeProof, nil
 }
 
 func knownProviderCapability(capability string) bool {
@@ -241,10 +261,16 @@ func effectiveRequiredProviderCapabilities(modelID string, configured []string) 
 // before prefetch/desired commands, where the target build may not be on disk
 // yet. Caller holds r.mu and p.mu.
 func (r *Registry) providerMeetsModelRequirementsLocked(p *Provider, modelID string) bool {
+	capabilities := p.RuntimeCapabilities
+	if p.runtimeCapabilitiesFromAppAttest && !r.providerHasAppAttestAuthorizationLocked(p, time.Now()) {
+		capabilities = nil
+	}
 	if modelID == Qwen38NAXModelID {
 		// The protected build is never exposed while Apple hardware trust, APNs
 		// code identity, signed capability binding, or runtime approval is pending.
-		if !p.Attested || p.TrustLevel != TrustHardware || !p.CodeAttested ||
+		appAttest := r.providerHasAppAttestAuthorizationLocked(p, time.Now())
+		legacy := p.Attested && p.TrustLevel == TrustHardware && p.CodeAttested
+		if (!appAttest && !legacy) || p.appAttestSecurityDenied ||
 			p.AttestationResult == nil || !p.AttestationResult.Valid ||
 			!p.RuntimeVerified || !p.RuntimeManifestChecked {
 			return false
@@ -252,11 +278,11 @@ func (r *Registry) providerMeetsModelRequirementsLocked(p *Provider, modelID str
 	}
 	if entry, ok := r.modelCatalog[modelID]; ok {
 		return capabilitySetContainsAll(
-			p.RuntimeCapabilities, entry.RequiredProviderCapabilities)
+			capabilities, entry.RequiredProviderCapabilities)
 	}
 	if modelID == Qwen38NAXModelID {
 		return capabilitySetContainsAll(
-			p.RuntimeCapabilities, qwen38NAXRequiredProviderCapabilities)
+			capabilities, qwen38NAXRequiredProviderCapabilities)
 	}
 	return true
 }
@@ -265,6 +291,18 @@ func (r *Registry) providerMeetsModelRequirementsLocked(p *Provider, modelID str
 // capability gate. Unlike serving eligibility it does not require an existing
 // advertisement, so it is suitable for prefetch/desired targets.
 func (r *Registry) providerCanAcquireCatalogModelLocked(p *Provider, modelID string) bool {
+	return (&ProviderEligibility{registry: r}).canAcquireLocked(p, modelID)
+}
+
+func (e *ProviderEligibility) canAcquireLocked(p *Provider, modelID string) bool {
+	if !providerOrdinaryModelAllowedLocked(p, modelID) {
+		return false
+	}
+	return e.canAcquireArtifactLocked(p, modelID)
+}
+
+func (e *ProviderEligibility) canAcquireArtifactLocked(p *Provider, modelID string) bool {
+	r := e.registry
 	if r.modelCatalog != nil {
 		if _, ok := r.modelCatalog[modelID]; !ok {
 			return false
@@ -274,7 +312,12 @@ func (r *Registry) providerCanAcquireCatalogModelLocked(p *Provider, modelID str
 }
 
 func (r *Registry) providerModelAllowedByCatalogLocked(p *Provider, model protocol.ModelInfo) bool {
-	return r.modelAllowedByCatalogLocked(model) &&
+	return (&ProviderEligibility{registry: r}).modelAllowedLocked(p, model)
+}
+
+func (e *ProviderEligibility) modelAllowedLocked(p *Provider, model protocol.ModelInfo) bool {
+	r := e.registry
+	return providerOrdinaryModelAllowedLocked(p, model.ID) && r.modelAllowedByCatalogLocked(model) &&
 		r.providerMeetsModelRequirementsLocked(p, model.ID)
 }
 

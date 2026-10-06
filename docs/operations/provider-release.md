@@ -1,25 +1,196 @@
 # Release a provider version
 
-> Last updated: 2026-09-17 · commit `b86445a0a`
+> Last updated: 2026-10-05
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
 environment, and let [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml)
-build, sign, notarize, hash, upload, and register the bundle. The coordinator
-verifies every registered artifact by re-downloading it, so a release either
-lands fully or not at all.
+build, sign, notarize, retain, stage and register the bundle. The coordinator
+re-downloads artifacts and requires independent App Attest qualification before
+activating a production release. Staging/publication failures retry the retained
+artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.6**; its source changes since `v0.9.3` are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
-the source for the provider bundle. Publication and coordinator deployment remain
-separate operations; the bump alone does not change the registered release
-returned by `GET /v1/releases/latest`.
+The macOS signing and older-OS smoke jobs install the checksum-pinned GitHub CLI
+with `scripts/install-macos-github-cli.sh` before downloading retained artifacts.
+A `gh: command not found` error in an older run is runner setup failure before
+artifact verification, not a failed model test or notarization rejection. A
+retry of that old workflow still uses its original source. For an unchanged
+candidate with successful build and SDK qualification, merge the tooling fix
+and use the retained unsigned recovery path below.
+
+The **0.9.17** candidate separates normal model selection from Autopilot's
+verified cached inventory using protocol 3. Version preparation does not publish
+the release; tag only the reviewed merged commit and qualify the retained signed
+artifact before production registration. Validate a one-model selection with
+additional cached models: waiting/shadow enrollment must not load those models,
+change preload or memory policy, or expose them as serving models in My Macs.
+Check explicit overrides, scheduled windows, and selected-model successor updates.
+An older coordinator keeps ordinary selected-model serving while protocol 3 waits;
+a compatible coordinator restores full separate-inventory shadow planning.
+A live lease alone must not load anything: an explicit placement command owns
+its target publication and memory-reserve transition. See the
+[Autopilot rollout gates](model-autopilot.md).
+
+Released **0.9.16** repairs enrolled-daemon status, graceful lifecycle
+control and watchdog health observation. Its schema-1 state files write detailed
+Autopilot data under `autopilot_state`, leaving the old optional `autopilot` key
+absent so a still-running 0.9.15 watchdog can read the candidate heartbeat. New
+readers accept both layouts. Qualify the upgrade with consent already recorded:
+confirm status, graceful restart and promotion after the full stabilization
+window, including when the watchdog process predates the update. A newer release
+can recover machines that quarantined 0.9.15 without overriding quarantine.
+Also verify a busy model update produces a prompt retry message during inventory
+verification and preserves the running daemon and recorded selection.
+
+The **0.9.15** release added automatic idle native MiMo
+calibration through the actual serving engine; see
+[calibration behavior](../architecture/first-content-routing.md#automatic-mimo-calibration).
+On the exact signed artifact, verify short/4k phase observations reach capacity
+heartbeats, customer requests on any model preempt calibration until real
+retirement, original deadlines remain anchored, and probe work is excluded from
+served-request/token counters. Compare utilization and capacity/deadline
+refusals under real traffic without expanding memory or concurrency limits.
+
+It retains native MiMo text-prefix SSD caching enabled by default since the
+0.9.14 candidate; the exact model identities and rollback controls are in
+[prefix-cache policy](../architecture/prefix-cache.md#mimo-complete-state).
+Qualify the exact signed build with an ordinary launchd configuration: record a
+cold text request, a useful repeated-prefix donation and an authenticated SSD
+restore, including target/assistant output correctness and memory headroom.
+Verify image, audio and video requests still complete through the joint native
+path without reporting media-prefix reuse. Set `DARKBLOOM_MIMO_COMPLETE_PREFIX=0`
+and rerun the replacement `darkbloom start` flow, preserving the selected models
+and existing start options, then repeat with `DARKBLOOM_PREFIX_CACHE=0`.
+Replacement start drains the old process, rewrites its plist from the current
+shell environment and starts the provider; `darkbloom restart` reuses the saved
+plist and does not apply newly exported variables. Verify each replacement
+provider serves cold, then unset both overrides and repeat replacement start
+to restore the model default. RAM
+retention and experimental paging/rectangular verification stay off for this
+qualification. The source change does not qualify those runtime results.
+
+The MiMo memory/media fixes carried forward from 0.9.13 are collected in
+[`CHANGELOG.md`](../../CHANGELOG.md). Qualify the signed build
+on a 256 GiB host both with MiMo alone and with another model resident:
+confirm a positive usable token budget, successful inference, bounded memory
+pressure, and correct concurrency reduction or load refusal when grants shrink.
+Include base64 PNG, EXIF JPEG, silent H.264 MP4 and combined image/video
+requests through the authenticated API. Include the standard PCM8/22050 Hz audio
+case and the OpenRouter MP4 with stereo AAC audio; verify native audio
+tokenization, generation and reservation cleanup. Check both on/off
+`chat_template_kwargs.thinking` aliases and tool-return reasoning history.
+Deploy the matching coordinator prompt normalizer before enabling the new
+request shapes across the provider fleet.
+Compare 30- and 300-source-frame clips
+with the same sampled frame count; record actual peak process memory and usable
+KV headroom, and confirm terminal reservation cleanup. Local tiny-weight
+inference and decoder tests cover the path but do not qualify the full artifact.
+The source change does not itself establish those live-serving results.
+Cache rollout steps are in [`cache-routing-rollout.md`](cache-routing-rollout.md).
+The 0.9.10 rollout order below applies unchanged: the new inference-request
+field is optional in both directions. The version bump prepares the source for
+the provider bundle. Publication and coordinator deployment remain separate
+operations; the bump alone does not change the registered release returned by
+`GET /v1/releases/latest`.
+
+For cache-recovery qualification, exercise foreground downloads and background
+prefetch with a dangling model-directory symlink: the original link is retained
+as a hidden sibling, and verified weights publish into the selected cache.
+Confirm valid external-directory links still receive downloads. See
+[model download behavior](../provider/cli-reference.md#darkbloom-models-download-id).
+
+Keep `ProviderCore.version` in
+`provider-swift/Sources/ProviderCore/ProviderCore.swift` as the concise release
+identity. Record release history in `CHANGELOG.md`;
+`scripts/check-release-version.sh` checks parity with the coordinator display
+fallback before packaging.
+The release Metal cache namespace also binds the prepared downloadable compiler's
+binary SHA, so an exact outer-cache hit cannot prevent publishing a library built
+with a newly installed Metal component.
+
+Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
+
+### 0.9.10 rollout order
+
+1. Merge the version bump, then verify Release Integrity, Provider Tests,
+   Provider SDK Tests, Provider Prompt Parity,
+   Coordinator Tests, E2E Integration Tests, and both SDK 27 release-preparation
+   lanes on the final source. Build-cache success and a source version bump are
+   neither signed-bundle qualification nor publication.
+2. Verify the updated console is live **before** the coordinator swap. The new
+   owner UI accepts either coordinator response, but old browser bundles call
+   `score.toFixed()` and cannot consume the new response without a reload.
+   The new public model-demand view reports unavailable against the old
+   coordinator; after the swap it can have partial or no publishable history.
+   Do not infer zero demand from an empty panel.
+3. Prepare the human-approved coordinator swap using
+   [the coordinator runbook](coordinator-deploy.md). Pin the current image digest
+   and new `master` commit, check database locks, and account for startup creation
+   of `app_attest_key_rotations`, `model_demand_requests`,
+   `model_demand_hourly`, `model_demand_collection`, and the hourly rollup
+   trigger. Coordinator-driven dead-key rotation defaults to a 100% account
+   cohort; an approved staged rollout can set
+   `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT=10` **before** the swap and
+   raise it only after observing rotation and fresh-key verification. No env or
+   production mutation is performed by this release PR.
+4. Deploy the coordinator before 0.9.10 providers use the new
+   `models_replace` / `models_replace_ready` / `models_replace_resumed` contract.
+   The swap disconnects the in-process provider registry. Confirm the exact
+   `/health.build_commit`, continuing 0.9.9 release registration, 0.9.9
+   provider reconnection and completed encrypted requests; separately compare
+   authorization for the previously serving cohort, App Attest and legacy
+   verification, APNs push replies, rotation outcomes, queueing, and 5xx.
+   Preserve existing build approvals and rollback image. The additive demand
+   tables remain after a coordinator rollback; collection starts only with
+   qualifying new observations and public history is delayed and suppressed.
+5. Tag the reviewed merged source as `v0.9.10`. Let the release workflow build,
+   sign, notarize and stage immutable bytes. This may overlap coordinator
+   preparation, but hold production publication until the upgraded coordinator
+   and exact-artifact qualification are ready.
+6. Qualify that signed bundle on macOS 27 and a supported older macOS. Exercise
+   App Attest authorization and failure diagnostics, dead-key and enrollment
+   recovery, APNs proof refresh after a release reconnect, live model switching
+   with its same-session routing receipt, and explicit model-cache selection
+   without moving existing stores. Verify encrypted inference, local serving,
+   streaming and non-streaming drain, restart, scheduled windows, and terminal
+   accounting on the exact signed artifact. Use an isolated qualification
+   coordinator before production registration: registration advances the fleet
+   updater, not a canary-only channel. Record the evidence using the
+   [build qualification runbook](app-attest-build-qualification.md); the prod
+   tag workflow does not run the older-macOS validation-only job.
+7. Approve the exact 0.9.10 build and **Publish qualified signed release**.
+   Registration, R2 latest aliases and GitHub publication must all complete
+   using the retained signed bytes. Keep earlier build approvals active during
+   adoption. Verify `/v1/releases/latest`, install/update metadata, actual
+   completed requests by version, authorization cohorts, switch receipts,
+   App Attest freshness, disconnects, and earnings. Console publication and
+   provider publication are separate operations.
+
+The drain implementation lives in `provider-swift/Sources/darkbloom/ServiceDrain.swift`
+(`ServiceDrain`) and `coordinator/internal/provider/session/provider_completion_barrier.go`
+(`providerCompletionBarrier`). See [CLI lifecycle behavior](../provider/cli-reference.md)
+for normal timeout and explicit-force semantics.
 
 ### Flash resource recovery rollout
 
 The 0.9.6 candidate fixes the native Qwen Metal resource lookup inside the signed app. Keep resources in `Contents/Resources`; do not repair an installed signed bundle by copying files into its root. Require `qwen4-metal-resources-runtime-smoke: ok` from the staged and final extracted app. After publication, verify a real Flash model load, a completed request, and a positive live token budget separately.
 
 Deploy the coordinator containing the native SSD-offload capacity accounting and the `qwen3.8-flash-next` provider floor of 0.9.6 as a separately approved operation. An older coordinator can understate cold capacity; fixing app resources alone does not deploy that accounting. Preserve the advertised 262144-token context and the physical memory guards.
+
+### MDM-optional onboarding candidate
+
+The installer and `darkbloom enroll` select App Attest setup on macOS 27+ without
+requesting an MDM profile. On older macOS the installer defers eligible legacy
+reenrollment to account login and the signed `darkbloom enroll` check, while
+showing the upgrade/upcoming deactivation notice. Verify with
+`scripts/test-install-onboarding.py` that no installer branch posts an anonymous
+profile request or opens profile setup, and existing management stays untouched.
+Installer success is not serving authorization; new providers require macOS 27+
+and current qualified App Attest. Follow the
+[MDM-optional rollout runbook](mdm-optional-rollout.md) to coordinate the embedded
+installer, signed provider, setup page and serving cohort. A disabled or
+unqualified coordinator leaves new macOS 27+ providers pending; the notice does
+not activate serving or retire legacy verification.
 
 ### App Attest recovery rollout
 
@@ -46,8 +217,8 @@ A coordinator binary upgrade is not required solely to register 0.9.2. The
 0.9.1 coordinator already validates and stores the release, refreshes active
 binary/metallib trust, preserves other active releases and serves the new
 version through `GET /v1/releases/latest`. `LatestProviderVersion` is a display
-fallback, not an exact-version admission pin (`coordinator/api/release_handlers.go`,
-`handleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
+fallback, not an exact-version admission pin (`coordinator/api/releases/release_handlers.go`,
+`HandleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
 `SyncRuntimeManifest`).
 
 The 0.9.2 assistant transition uses existing slot state `reloading`, capacity
@@ -78,7 +249,7 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
 1. After merging release inputs, let **SDK 27 release preparation** complete on
    `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
    `master`. It runs optimized compilation and SDK qualification on separate
-   `xcode-27-xlarge` runners, with no signing secrets or publication steps. This seeds
+   `blacksmith-12vcpu-macos-27` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
    Pipeline shutdown changes run these lanes on their PR as well; the
@@ -120,6 +291,38 @@ Implementation: `.github/actions/provider-release-build/action.yml`,
 `scripts/provider-signing-validation.py` (`stage`, `unpack`). See the
 [build cache contract](../developer/build.md#sdk-27-release-builds-and-caches) and
 [SDK qualification checks](../developer/test.md#sdk-27-release-qualification).
+
+## Resume signing from a retained unsigned build
+
+Use this when build and SDK qualification succeeded but signing failed because
+of workflow tooling or runner setup. Keep the release tag on the original
+candidate. After the corrected workflow is merged into current `master`, run:
+
+```bash
+gh workflow run release-swift.yml --ref master \
+  -f environment=prod -f resume_run_id=36750197236 -f resume_run_attempt=1
+```
+
+The example identifies the failed 0.9.13 candidate at `ee46e5f34`. Substitute the
+explicit source run and successful build attempt for another recovery.
+`scripts/provider-release-resume.py` validates repository, workflow, push/tag
+origin, current signed tag, source signature/version, both successful jobs, and
+one unexpired immutable unsigned artifact. It refuses a source run that already
+retained a signed publication artifact. The resolver and download step both
+check identity; download verifies the GitHub artifact ZIP digest before the
+existing archive, file inventory, source/version and entitlement checks.
+
+The recovery skips compilation and SDK qualification and resumes at the normal
+protected signing job. Code signing, notarization, final signed-bundle smoke,
+independent App Attest qualification, R2 staging and publication remain required.
+`release-provenance.json` distinguishes original build source/run from the
+current signing workflow source/run. The tag is rechecked before registration.
+The unsigned artifact expires after three days; missing/expired bytes require a
+new build. Changed candidate source also requires a new build and reviewed tag.
+
+For a failure after a signed artifact was retained, retry only the failed
+staging/publication jobs from that signing run. That existing retry path
+preserves signed bytes and does not need unsigned recovery or re-signing.
 
 ## Environment-free signing validation
 
@@ -215,8 +418,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.6"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.6"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.15"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.15"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -224,12 +427,10 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.6`) and an optional reported string from a
-built binary (`darkbloom 0.9.6` or `0.9.6`); the workflow calls it in all
+(`check-release-version.sh v0.9.15`) and an optional reported string from a
+built binary (`darkbloom 0.9.15` or `0.9.15`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
-push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
-for a routine release; it is the floor for desired-model fan-out, not the
-current version.
+push.
 
 ### 2. Write the changelog entry
 
@@ -246,6 +447,7 @@ message** (step 4), so write the tag message from this entry.
 ### 3. Merge to `master` and wait for CI
 
 Open a PR with the bump + changelog; "Release Integrity", "Provider Tests",
+"Provider SDK Tests", "Provider Prompt Parity",
 "Coordinator Tests", and "E2E Integration Tests" must be green. The release
 workflow re-runs `scripts/verify-prompt-parity.sh` itself, so a prompt-contract
 change that is not fixture-synced will fail the release, not just CI.
@@ -254,24 +456,24 @@ change that is not fixture-synced will fail the release, not just CI.
 
 ```bash
 git checkout master && git pull --ff-only
-git tag -a v0.9.6 -m "v0.9.6 — <one-line theme>
+git tag -a v0.9.10 -m "v0.9.10 — <one-line theme>
 
 <body: the changelog bullets for this release>"
-git push origin v0.9.6
+git push origin v0.9.10
 ```
 
-Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
+Accepted tag pattern (`on.push.tags`): `v*.*.*`.
 Tags containing `-dev.` are rejected by `resolve-env` ("`-dev` tags are
 unsupported by the exact-version release contract"); use step 5 for dev.
-The version is derived from the tag (`v` stripped, `-swift*` suffix stripped)
-and must equal the source constants. `scripts/resolve-provider-release.sh` checks
+The version is the tag with `v` stripped and must equal the source constants,
+so a retired `vX.Y.Z-swift` alias fails resolution. `scripts/resolve-provider-release.sh` checks
 this before writing job outputs or requesting environment approval.
 
 ### 5. Dev release (manual dispatch)
 
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev
-# optional: -f version_override=0.9.6
+# optional: -f version_override=0.9.10
 ```
 
 Without a tag the version is read from `ProviderCore.swift` (or
@@ -299,11 +501,15 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tools
-27.0 / Swift 6.4 preinstalled. The ordinary Blacksmith runner was observed on
-macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
-PR CI environment. The selector refuses an older SDK/compiler instead of
-installing software or falling back.
+The release build, SDK qualification, signing and signing-validation jobs use
+Blacksmith's pinned `blacksmith-12vcpu-macos-27` image (currently public beta)
+with Xcode 27. The selector resolves the image's default Xcode after checkout,
+requires SDK 27.0 / Apple Swift 6.4, and scopes native SwiftPM through the existing
+wrapper. Python 3.12.10 and checksum-verified Rust/CMake bootstraps are explicit;
+the older-OS validation job pins `blacksmith-12vcpu-macos-26` so it cannot drift
+to macOS 27. Blacksmith hosts the protected signing jobs and receives their
+existing signing credentials after environment approval. Publication remains a
+separate protected Linux job. See the [runner and cache contract](../developer/build.md#sdk-27-release-builds-and-caches).
 The workflow obtains Xcode's matching Metal compiler through
 `xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
 checks availability before computing the source-matched metallib cache key.
@@ -316,70 +522,115 @@ The CodeDirectory digest is also printed in production release notes and supplie
 the measurement side of an explicitly qualified App Attest binary/code-hash pair.
 Recording it does not authorize the build. In validation-only mode, a second
 job downloads that exact artifact to the older macOS runner, verifies its
-source/archive hashes and notarization, and requires all three runtime smoke
+source/archive hashes and notarization, and requires all four runtime smoke
 markers. It asserts that the host is below macOS 27 so the compatibility lane
 cannot silently become another current-OS run. Retention is 14 days. Verify those hashes
 before an isolated model or persistent-cache restart test, and retain the artifact
 with that test's evidence. A successful artifact build does not establish restart
 durability or authorize rollout.
 
-### 6. Approve the environment deployment
+### 6. Approve signing, qualify the exact artifact, then publish
 
-In the Actions run, approve the pending `prod` (or `dev`) deployment. The
-`release` job then runs on `macos` with these steps, in order (step names as
-shown in the run):
+After `build-provider` and `qualify-sdk` both succeed, approve the pending
+`prod` (or `dev`) deployment for **Sign, notarize and retain exact artifact**
+(`build-and-release`, `blacksmith-12vcpu-macos-27`). Compilation and SDK tests have already run
+in the parallel jobs; the signing job consumes their source-bound artifact.
+The relevant signing steps run in this order:
 
 | # | Step | What it does |
 |---|---|---|
-| 1 | Checkout (with submodules) | `fetch-depth: 0` so `gh release --generate-notes` has history |
-| 2 | Validate release version integrity | `scripts/check-release-version.sh "$VERSION"` |
-| 3 | Import Developer ID certificate | temp keychain from `APPLE_CERTIFICATE_P12` |
-| 4 | Install awscli (R2) · Restore SwiftPM cache · Discard metallibs restored by the generic SwiftPM cache | tooling and cache hygiene — a cached metallib is never trusted |
-| 5 | Verify production prompt parity | `scripts/verify-prompt-parity.sh` |
-| 6 | Build source-matched mlx.metallib through root helper | `scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"` with `MLX_METALLIB_DEPLOYMENT_TARGET=26.2`; cached by MLX source SHA + helper SHA |
-| 7 | Build provider-swift (release) | `swift build -c release --product darkbloom`, `darkbloom-enclave`, `darkbloom-fan-helper`; the built binary's `--version` is checked with `check-release-version.sh "$VERSION" "$REPORTED"` |
-| 8 | Embed provisioning profile | decodes `PROVISIONING_PROFILE_BASE64`; fails unless the profile grants `aps-environment=production` and has no `get-task-allow` |
-| 9 | Stage and sign bundle | stages `Darkbloom.app` (CLI, enclave, fan helper, `mlx.metallib`, every SwiftPM resource bundle via `scripts/stage-swiftpm-resource-bundles.sh`) plus a flat `bin/` layout; `codesign --options runtime --timestamp` on the metallib first, then each binary, then the bundle; `codesign --verify --deep --strict`; tars to `darkbloom-bundle-macos-arm64.tar.gz` |
-| 10 | Notarize bundle | `xcrun notarytool submit --wait --timeout 15m`; on failure prints `notarytool log`; then `xcrun stapler staple` + `stapler validate`, re-verifies codesign, **rebuilds the tar**, and asserts the file list contains `./bin/darkbloom`, `./bin/darkbloom-enclave`, `./bin/mlx.metallib`, every resource bundle and `pagedattention.metal`. A smoke extract runs the CLI and re-checks the version |
-| 11 | Hashes | computed **after** signing, notarizing, stapling and the tar rebuild: `BINARY_HASH = sha256(bin/darkbloom)` from the extracted tar, `BUNDLE_HASH = sha256(tar.gz)`, `METALLIB_HASH = sha256(flat mlx.metallib)` |
-| 12 | Upload bundle to R2 | `s3://$R2_BUCKET/releases/v$VERSION/darkbloom-bundle-macos-arm64.tar.gz`, plus `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and the legacy `releases/latest/eigeninference-bundle-macos-arm64.tar.gz` |
-| 13 | Register release with coordinator | `POST $COORDINATOR_URL/v1/releases` (below) |
-| 14 | Create GitHub Release | prod + tag only: `gh release create <tag> <tar.gz> --notes-file … --generate-notes`; notes list the three file hashes plus the full CodeDirectory SHA-256, signer, "Notarized: yes", `Min macOS: 14.0`, and the `curl -fsSL <coordinator>/install.sh \| bash` install line |
-| 15 | Cleanup keychain | always |
+| 1 | Checkout · Validate release version integrity · Select SDK 27 signing toolchain · Ensure matching Metal compiler is available | Verify the source version and exact SDK before signing |
+| 2 | Fetch and verify this run's unsigned build | Download the build job's same-run artifact and validate source SHA, version and SDK |
+| 3 | Import Developer ID certificate · Embed provisioning profile | Prepare the temporary keychain and validate profile-authorized entitlements |
+| 4 | Stage and sign bundle | Build and sign the app with hardened runtime, preserve SwiftPM resources, and copy its `darkbloom`, `darkbloom-enclave` and `mlx.metallib` to regular files under `bin/`. Release hashes are computed from those copies: the coordinator's artifact check reads `bin/darkbloom`, and `install.sh` and self-update verify `bin/darkbloom` and `bin/mlx.metallib` before installing the app. They also keep older updaters working. Current installers never install them as a flat layout |
+| 5 | Notarize bundle | Notarize, staple, rebuild and extract the final archive, run runtime smoke, then calculate final binary/bundle/metallib and full CodeDirectory SHA-256 values |
+| 6 | Prepare signed release qualification evidence | `scripts/provider-release-publication.py prepare` retains the registration payload, annotated-tag changelog and independent operator qualification template |
+| 7 | Retain exact signed publication artifact | Retain the final bundle and metadata in `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days |
+| 8 | Cleanup keychain | Always remove the temporary signing keychain |
 
-The registration payload (`coordinator/api/release_handlers.go`,
-`registerReleaseRequest`; unknown fields are rejected):
+After signing succeeds, the independent **Stage retained signed artifact in R2**
+job (`stage-release`, Linux) resolves its R2 credentials, downloads the exact
+`needs.build-and-release.outputs.publication_artifact` from the same run,
+verifies its identity/digest, and uploads only the immutable bundle-digest
+path. It does not compile, sign, notarize, register a release, or update latest
+aliases. The signing job has no R2 upload credentials or AWS CLI step.
+A transient R2/artifact-download failure belongs to this downstream job:
+**Re-run failed jobs** reuses the retained bytes and original metadata even
+when the workflow attempt number changes. Publication explicitly depends on
+successful staging.
+
+After R2 staging succeeds, review/test these final signed bytes for production, fill in the template's
+actual qualification evidence, and submit it through the admin approval route
+as described in [build qualification](app-attest-build-qualification.md#steps).
+Use a verified Privy admin session from `scripts/admin.sh login` or the admin
+key; the publication key and admin-owned inference/provider credentials cannot
+approve builds. A 200 approval response confirms durable/local readiness but
+does not publish the artifact.
+
+Approve the environment-protected **Publish qualified signed release** job
+(`publish-release`, Linux). Its steps are separate from signing:
+
+| # | Step / helper phase | What it does |
+|---|---|---|
+| 1 | Checkout · Resolve env-specific secrets | Load the source-matching publication helper and scoped release/R2 credentials |
+| 2 | Download this run's exact signed publication artifact · Install publication tools | Retrieve the retained signed bytes without compiling or notarizing again |
+| 3 | Register release with coordinator and publish aliases: registration | Revalidate source/run/version/origin/bundle digest, then `POST /v1/releases`; the coordinator verifies the artifact and atomically checks the exact independent approval |
+| 4 | Readiness | Wait boundedly for `/v1/releases/latest` to report the committed qualified build, or a newer release; do not treat an older cached response as completed publication |
+| 5 | R2 aliases | Only for the current latest build, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and its legacy `eigeninference-bundle` alias |
+| 6 | GitHub publication | Prod/tag only: create or resume a draft, upload a missing bundle (repair only an incomplete `starter` placeholder), verify the downloaded asset's exact hash, then publish. An already published exact asset is verified without replacement |
+
+If qualification is absent, the publication job stops with 409 before advancing
+the registered/latest release or aliases. Approve the retained artifact and
+**Re-run failed jobs**. Never rerun successful signing to retry publication:
+a new signature changes the artifact identity. A partial GitHub failure also
+resumes from its existing draft/asset state. Completed mismatched assets and
+incomplete already-published releases require operator investigation; retries
+never overwrite them. Code: `scripts/provider_release_github.py`
+(`publish_github_release`). GitHub documents the incomplete `starter` state in its
+[release-asset API reference](https://docs.github.com/en/rest/releases/assets).
+
+The retained production registration payload (`registerReleaseRequest` in
+`coordinator/api/releases/release_handlers.go`; unknown fields are rejected) contains:
 
 ```json
 {
-  "version": "0.9.6",
+  "version": "0.9.10",
   "platform": "macos-arm64",
   "backend": "mlx-swift",
-  "binary_hash": "<sha256 of bin/darkbloom>",
-  "bundle_hash": "<sha256 of the tar.gz>",
-  "metallib_hash": "<sha256 of mlx.metallib>",
-  "url": "<R2_PUBLIC_URL>/releases/v0.9.6/darkbloom-bundle-macos-arm64.tar.gz",
-  "changelog": "<tag subject + body, or 'Release v0.9.6'>"
+  "binary_hash": "<final binary SHA-256>",
+  "bundle_hash": "<final archive SHA-256>",
+  "metallib_hash": "<final metallib SHA-256>",
+  "code_directory_hash": "<full CodeDirectory SHA-256>",
+  "source_commit": "<40-character source commit>",
+  "ci_run_id": "<original build workflow run ID>",
+  "require_app_attest_qualification": true,
+  "url": "<R2_PUBLIC_URL>/releases/v0.9.10/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz",
+  "changelog": "<tag annotation, or Release v0.9.10 when no tag notes exist>"
 }
 ```
 
-`handleRegisterRelease` requires `Authorization: Bearer <RELEASE_KEY>`,
-validates semver/platform/hex, requires `metallib_hash` when `backend` is
-`mlx-swift`, requires `url` to equal exactly
-`<EIGENINFERENCE_R2_CDN_URL>/releases/v<version>/darkbloom-bundle-macos-arm64.tar.gz`
-(`trustedReleaseArtifactURL`), then **downloads the bundle** (2 GiB cap,
-2-minute timeout), checks `bundle_hash`, extracts `bin/darkbloom` and checks
-`binary_hash` (`verifyReleaseArtifact`). Only then does it `SetRelease`,
-resync the binary-hash policy (`SyncBinaryHashes`, `SyncRuntimeManifest`), and
-invalidate the cached `/api/version` and `/v1/releases/latest` responses.
-Response: `{"status":"release_registered","release":{…}}`.
+Use the downloaded payload instead of reconstructing signed-artifact hashes
+by hand. `HandleRegisterRelease` authenticates the scoped release key,
+validates semver/platform/digests and the exact configured R2 origin/path,
+then downloads and verifies the final archive and provider binary (2 GiB cap,
+two-minute timeout). New publication uses the bundle-digest path; the original
+version-only path remains accepted for compatibility/importing existing builds.
+`persistReleaseForPublication` refreshes qualification and calls
+`SetQualifiedRelease`, which checks approval under the revocation row lock
+before writing the active release. Missing, mismatched or revoked approval is
+409; unreadable policy is 503. Production workflow requests always require
+qualification; enabled production App Attest serving also enforces it on the
+server even when a caller omits the flag.
 
-Registration is safe against the live fleet: the rebuilt runtime manifest is
-the union of every active release's hashes, so providers still on the previous
-version keep passing their challenges through the self-update window
-([auto-update cadence](../provider/cli-reference.md#runtime-constants)). Their
-hashes leave the manifest only when that release is deactivated
-([Rollback](#rollback)); the mechanism is in
+After the commit, `SyncBinaryHashes` and `SyncRuntimeManifest` converge the live
+policy and invalidate release/version HTTP caches. Response:
+`{"status":"release_registered","release":{…}}`. Cached `/api/version` and
+`/v1/releases/latest` responses also check current qualification and catalog
+readiness while production App Attest serving is enabled.
+
+Runtime policy retains the union of every active release's hashes, preserving
+older qualified releases during adoption. Hashes leave that catalog on release
+deactivation ([Rollback](#rollback)); see
 [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
 
 ## Verification
@@ -392,8 +643,8 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 ```
 
 - `GET /v1/releases/latest` returns the **highest active semver** for the
-  platform (`GetLatestRelease` in `coordinator/store/postgres.go`, ordered by
-  `releaseVersionGreater` in `coordinator/store/release_version.go`), not the
+  platform (`GetLatestRelease` in `coordinator/store/postgres/`, ordered by
+  `releaseVersionGreater` in `coordinator/store/`), not the
   most recently registered row.
 - Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
   `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle
@@ -424,10 +675,10 @@ it** so the previous active version becomes "latest" again.
    ```bash
    curl -fsS -X DELETE "$COORD/v1/admin/releases" \
      -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
-     -d '{"version":"0.9.6","platform":"macos-arm64"}'
+     -d '{"version":"0.9.10","platform":"macos-arm64"}'
    ```
 
-   `handleAdminDeleteRelease` answers `409 release_in_use` while connected
+   `HandleAdminDeleteRelease` answers `409 release_in_use` while connected
    providers still run that `binary_hash` (in-use protection is active when
    binary-hash enforcement is on **or** a release inventory has ever been
    published). Add `"force":true` only when the release must be pulled
@@ -437,17 +688,28 @@ it** so the previous active version becomes "latest" again.
    `/api/version` follows within its 1-minute cache TTL.
 3. Repoint the convenience objects in R2, which the workflow overwrote:
 
+   Confirm the prior qualified release returned by `GET /v1/releases/latest`
+   after deactivation, then copy its exact version and `bundle_hash` into the
+   variables below. For the planned 0.9.10 rollout, the expected prior version
+   is 0.9.9; stop if the live record differs. Do not use an old version-only
+   object path or assume the previous hash.
+
    ```bash
-   aws s3 cp "s3://$R2_BUCKET/releases/v0.8.16/darkbloom-bundle-macos-arm64.tar.gz" \
+   : "${PREVIOUS_VERSION:?verified active release version}"
+   : "${PREVIOUS_BUNDLE_SHA256:?verified bundle_hash of that release}"
+   [[ "$PREVIOUS_VERSION" == "0.9.9" ]] || { echo "unexpected prior release" >&2; exit 2; }
+   [[ "$PREVIOUS_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 2
+   PREVIOUS_OBJECT="s3://$R2_BUCKET/releases/v${PREVIOUS_VERSION}/artifacts/${PREVIOUS_BUNDLE_SHA256}/darkbloom-bundle-macos-arm64.tar.gz"
+   aws s3 cp "$PREVIOUS_OBJECT" \
      "s3://$R2_BUCKET/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT"
-   aws s3 cp "s3://$R2_BUCKET/releases/v0.8.16/darkbloom-bundle-macos-arm64.tar.gz" \
+   aws s3 cp "$PREVIOUS_OBJECT" \
      "s3://$R2_BUCKET/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT"
    ```
 
    (`install.sh` uses the versioned URL from `/v1/releases/latest`; the
    `latest/` objects are for legacy clients.)
 4. Mark the GitHub Release as a pre-release or delete it
-   (`gh release delete v0.9.6`), and record the outcome in `CHANGELOG.md` as
+   (`gh release delete v0.9.10`), and record the outcome in `CHANGELOG.md` as
    `## Release candidate vX.Y.Z (not shipped; …)`.
 5. Do **not** re-register the same version with a different artifact. Fix
    forward with a new patch version.

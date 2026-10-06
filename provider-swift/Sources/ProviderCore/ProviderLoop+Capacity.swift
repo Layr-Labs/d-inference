@@ -19,6 +19,8 @@ extension ProviderLoop {
 
     internal func startCapacityRefreshMonitor() {
         capacityRefreshTask?.cancel()
+        startServiceAllowanceRefreshMonitor()
+        startPerformanceRefreshMonitor()
         let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
         let pollIntervalNs = UInt64(max(1, heartbeatInterval / 2)) * 1_000_000_000
         let me = self
@@ -52,6 +54,11 @@ extension ProviderLoop {
 
     /// One capacity-monitor tick, isolated on the loop actor.
     internal func capacityRefreshTick() async {
+        refreshAutopilotSettings()
+        if autopilotControl != nil && !autopilotControlIsValid && autopilotCommand == nil {
+            clearAutopilotControl()
+        }
+        await retryPendingNativeMiMoRetirements()
         // Proactive trim of the MLX reclaimable buffer pool (DAR-338). Freed
         // KV/activation buffers otherwise sit in MLX's cache up to the cache
         // limit and are never returned to the OS — under sustained serving the
@@ -61,9 +68,11 @@ extension ProviderLoop {
         // removed it with its host; this tick is that watchdog's documented
         // successor. Non-blocking: only signals the off-actor reclaimer
         // (rate-limited, threshold-gated); the GPU sync never runs here.
-        kvBudget.proactiveReclaimSweep()
+        if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
+        await cleanupAutopilotSupersededModels()
+        await refreshMimoCalibration()
         writeDaemonState()
     }
 
@@ -80,6 +89,7 @@ extension ProviderLoop {
         // may publish one epoch behind rather than wait until the next tick.
         // Staging and model-drain changes invalidate the old snapshot; their mutation
         // paths explicitly publish a replacement.
+        let autopilotGenerationAtEntry = autopilotGeneration
         let reserveEpochAtEntry = activationReserveEpoch
         let stagingGenerationAtEntry = mtpStagingReservations.generation
         let drainGenerationAtEntry = mtpAdmissionDrains.generation
@@ -103,6 +113,10 @@ extension ProviderLoop {
             for (_, slot) in modelSlots {
                 let (sum, overflow) = totalResidentWeightBytes
                     .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
+                totalResidentWeightBytes = overflow ? .max : sum
+            }
+            for (modelID, sizing) in nativeMiMoRetiringSizing where modelSlots[modelID] == nil {
+                let (sum, overflow) = totalResidentWeightBytes.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
                 totalResidentWeightBytes = overflow ? .max : sum
             }
             // Physical memory MUST come from the same source the re-slice
@@ -146,12 +160,13 @@ extension ProviderLoop {
         let mlxCacheBytes = processMemory.cacheBytes
         let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
         let mlxUsed = usedOverflow ? UInt64.max : sumUsed
-        let reclaimableMlx: UInt64 = hasInflightWork || mtpStagingReservations.hasRetainedTargets ? 0 : mlxUsed
+        let reclaimableMlx: UInt64 = hasInflightWork || mtpStagingReservations.hasRetainedTargets
+            || !nativeMiMoAllowsReclamation() ? 0 : mlxUsed
         let loadReserve = kvBudget.loadReserveBytes
         // The same sample contains usage and only unmaterialized commitments;
         // loaded native backing is already included in active/cache above.
         let unmaterializedCommitments = processMemory.unmaterializedCommittedBytes
-        let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
+        let freeForLoadGb = nativeMiMoAllowsReclamation() ? ModelLoadAdmission.maxLoadableWeightGb(
             totalBytes: totalMem,
             systemAvailableBytes: processMemory.systemAvailableBytes,
             mlxUsedBytes: reclaimableMlx,
@@ -161,7 +176,21 @@ extension ProviderLoop {
             // gate this box actually applies (ensureModelLoaded), or the
             // coordinator's cold-load routing desyncs from it.
             headroomGb: loadHeadroomGb,
+            outstandingReservationBytes: unmaterializedCommitments) : 0
+        let loadUsableGb = ModelLoadAdmission.freeForLoadGb(
+            totalBytes: totalMem,
+            systemAvailableBytes: processMemory.systemAvailableBytes,
+            gpuActiveBytes: mlxActiveBytes,
+            gpuCacheBytes: mlxCacheBytes,
+            reserveBytes: loadReserve,
             outstandingReservationBytes: unmaterializedCommitments)
+        // Same coherent process sample and reserve as load admission, without
+        // credit for any resident model. This is weight-only headroom.
+        let freeForLoadNoEvictGb = max(0, ModelLoadAdmission.freeForLoadGb(
+            totalBytes: totalMem, systemAvailableBytes: processMemory.systemAvailableBytes,
+            gpuActiveBytes: mlxActiveBytes, gpuCacheBytes: mlxCacheBytes,
+            reserveBytes: loadReserve, outstandingReservationBytes: unmaterializedCommitments)
+            - loadHeadroomGb)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
             cacheLimitBytes: UInt64(max(
@@ -178,10 +207,14 @@ extension ProviderLoop {
         // enforces. Recompute over the current state instead of publishing
         // them; bounded so a push storm cannot starve the publish.
         // A newer staging/drain refresh owns the replacement snapshot. Never let
-        // the bounded reserve retry publish obsolete staging or admission capacity.
-        if (mtpStagingReservations.generation != stagingGenerationAtEntry
+        // the bounded reserve retry publish obsolete staging, admission or
+        // command-terminal state. An old refresh must not pair pre-command
+        // engine slots with a new terminal command acknowledgement.
+        if (autopilotGeneration != autopilotGenerationAtEntry
+            || mtpStagingReservations.generation != stagingGenerationAtEntry
             || mtpAdmissionDrains.generation != drainGenerationAtEntry) && attempt >= 2 { return }
-        guard (activationReserveEpoch == reserveEpochAtEntry
+        guard (autopilotGeneration == autopilotGenerationAtEntry
+            && activationReserveEpoch == reserveEpochAtEntry
             && mtpStagingReservations.generation == stagingGenerationAtEntry
             && mtpAdmissionDrains.generation == drainGenerationAtEntry) || attempt >= 2 else {
             logger.info(
@@ -207,20 +240,51 @@ extension ProviderLoop {
 
         // Existing coordinators reject reloading per model; an unknown new
         // state would remain routable. Keep other slots and provider status live.
-        for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
+        for index in allSlots.indices where autopilotCommand != nil || mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
         }
-        state.backendCapacity = BackendCapacity(
+        let nativeMiMoFaultRetained = nativeMiMoRegistry.hasRetainedFault
+            || MiMoV26NativeLoadRegistry.shared.hasRetainedFault
+        let nativeColdAdmissionBlocked = !nativeMiMoAllowsReclamation()
+        for index in allSlots.indices {
+            if nativeMiMoFaultRetained && hasNativeMiMoOwner(allSlots[index].model) {
+                allSlots[index].state = "crashed"
+            } else if nativeMiMoPendingRetirements[allSlots[index].model] != nil
+                || nativeMiMoRetiring.contains(allSlots[index].model) {
+                allSlots[index].state = "reloading"
+            }
+        }
+        // Work totals and exact reservation IDs must describe one ledger
+        // epoch. Independent per-slot actor snapshots can otherwise pair old
+        // work with a new owner having the same service fraction.
+        let serviceSnapshot = kvBudget.serviceBudget.capacitySnapshot(slots: allSlots)
+        for index in allSlots.indices {
+            allSlots[index].deadlineWork = serviceSnapshot.deadlineWorkByModel[allSlots[index].model]
+        }
+        let capacity = BackendCapacity(
             slots: allSlots,
+            wholeMacServiceUsed: serviceSnapshot.usedFraction,
+            wholeMacServiceRetirementProtocol: 1,
+            wholeMacServiceReservations: serviceSnapshot.reservations,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
-            freeForLoadGb: freeForLoadGb,
+            // Existing resident peers stay serviceable, but the coordinator
+            // must not see cold-load credit that local admission will refuse.
+            freeForLoadGb: nativeColdAdmissionBlocked ? 0 : freeForLoadGb,
+            loadUsableGb: nativeColdAdmissionBlocked ? 0 : loadUsableGb,
+            loadHeadroomGb: loadHeadroomGb,
+            loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                || !startupPreloadPendingModels.isEmpty
+                || mtpStagingReservations.hasRetainedTargets,
             mlxCacheReclaimer: reclaimerTelemetry,
             telemetry: capacityTelemetry,
             prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry(SSDWholeRootMaintainer.shared.statsSnapshot())
         )
+        autopilotFreeNoEvictGb = nativeColdAdmissionBlocked ? 0 : freeForLoadNoEvictGb
+        publishModelAutopilotSnapshot()
+        state.setModelAutopilotCapacity(capacity, snapshot: state.modelAutopilot)
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot
             -> (String, EngineV2Bridge)? in

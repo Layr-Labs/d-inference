@@ -2,6 +2,8 @@ package registry
 
 import (
 	"time"
+
+	kvbudget "github.com/eigeninference/d-inference/coordinator/internal/registry/kvbudget"
 )
 
 // ModelCapacity describes the live capacity for a single model.
@@ -43,8 +45,8 @@ type providerCapSnap struct {
 	// left after charging ALL models' coordinator-pending tokens — the same
 	// pool the admission gate (pooledBudgetAdmits) enforces, so this public
 	// capacity feed cannot advertise per-slot headroom dispatch would reject.
-	// Reconstruction counts legacy shared headroom once and v0.7.5+ private
-	// grants additively. -1 means no pooled budget report.
+	// Reconstruction sums the slots' private grants. -1 means no pooled
+	// budget report.
 	pooledBudgetRemaining int64
 }
 
@@ -54,9 +56,14 @@ type providerCapSnap struct {
 // ModelCapacitySnapshot and FleetCapacitySnapshot so both count the same set of
 // providers.
 func (r *Registry) publiclyRoutableLocked(p *Provider, now time.Time) bool {
+	return (&ProviderEligibility{registry: r}).publicLocked(p, now)
+}
+
+func (e *ProviderEligibility) publicLocked(p *Provider, now time.Time) bool {
 	// The public routing gate is exactly the liveness/trust/privacy core with no
 	// owner relaxation — private-only machines never serve the public fleet.
-	return r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now)
+	ok, _ := e.livenessLocked(p, e.registry.MinTrustLevel, false, now)
+	return ok
 }
 
 // ModelCapacitySnapshot returns a capacity snapshot for every model served
@@ -108,7 +115,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			// path enforces, so the public capacity feed doesn't advertise a capped
 			// box (e.g. Gemma at 2) as routable up to the flat fallback (24) and lure
 			// upstream routers into sending requests this coordinator immediately 429s.
-			hasHeadroom := r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, m.ID)
+			hasHeadroom := !providerAutopilotRoutingBlockedLocked(p, m.ID) && r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, m.ID)
 			// Count only pending requests for this specific model, not the
 			// total across all models. Using the total inflates
 			// activeRequests for multi-model providers.
@@ -126,12 +133,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			// conservative coordinator default and the box's max resident rate
 			// (the same cold-rate resolver the gate uses), so this feed stays
 			// equivalent to the gate on the cold path too. Inert for legacy boxes.
-			pooledRemaining := pooledRemainingTokens(
+			pooledRemaining := kvbudget.RemainingTokens(
 				poolSnap.pooledTokenBudget,
 				poolSnap.pendingMaxTokensAllModels,
 				poolSnap.pendingMaxBytesAllModels,
 				poolSnap.pendingBytesKnown,
-				poolSnap.pooledTokenBudget.kvRateFor(m.ID),
+				poolSnap.pooledTokenBudget.RateFor(m.ID),
 			)
 
 			snap := providerCapSnap{
@@ -167,7 +174,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 					snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 					snap.queuedTokenBudget = slot.QueuedTokenBudget
-					snap.tokenBudgetKnownZero = knownZeroTokenBudget(slot.ActiveTokenBudgetMax, slot.KVBytesPerToken)
+					snap.tokenBudgetKnownZero = kvbudget.KnownZero(slot.ActiveTokenBudgetMax, slot.KVBytesPerToken)
 					snap.backlogTokens = float64(slot.MaxTokensPotential)
 					break
 				}

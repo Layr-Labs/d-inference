@@ -9,6 +9,7 @@ private final class PausedMaintenanceStore: SSDEvictableStore, @unchecked Sendab
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)
     init(root: URL) { evictionRoot = root }
+    var ownsEvictionRoot: Bool { true }
     var diskBytesOnDisk: Int { 0 }
     func oldestEntryAccess() -> Int64? { nil }
     func evictOldestEntry() -> Int { 0 }

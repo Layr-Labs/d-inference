@@ -77,6 +77,8 @@ struct ProviderRuntimeCapabilityTests {
         #expect(ProviderRuntimeCapabilityDetector.detect(
             chipFamily: .m4, naxAvailable: { true }, liveMetallibHash: { "abc" }) == [.mlxNAX])
         #expect(ProviderRuntimeCapabilityDetector.detect(
+            chipFamily: .m6, naxAvailable: { true }, liveMetallibHash: { "abc" }) == [.mlxNAX])
+        #expect(ProviderRuntimeCapabilityDetector.detect(
             chipFamily: .unknown, naxAvailable: { false }, liveMetallibHash: { nil }).isEmpty)
         for family in [ChipFamily.m1, .m2, .m3, .m4] {
             let capabilities = ProviderRuntimeCapabilityDetector.detect(
@@ -108,7 +110,7 @@ struct ProviderRuntimeCapabilityTests {
             }
         )
         #expect(success.events == ["bind", "nax-diagnostic"])
-        #expect(capabilities == qwen38Caps)
+        #expect(capabilities == qwen38Caps.union([.modelRevisions]))
 
         let failedBinding = RuntimeDetectionRecorder()
         let failedCapabilities = ProviderRuntimeCapabilityDetector.detectLive(
@@ -124,7 +126,7 @@ struct ProviderRuntimeCapabilityTests {
             }
         )
         #expect(failedBinding.events == ["bind"])
-        #expect(failedCapabilities == [.appleM5])
+        #expect(failedCapabilities == [.appleM5, .modelRevisions])
     }
 
     @Test("exact embedded rule survives an old catalog while lookalikes stay compatible")
@@ -196,7 +198,7 @@ struct ProviderRuntimeCapabilityTests {
                 coordinatorURL: "ws://127.0.0.1:0", hardware: runtimeHardware(.m5),
                 models: [runtimeModel()], config: providerConfig,
                 runtimeCapabilities: [.appleM5]),
-            purgeLegacyFiles: false, attestationSigner: nil)
+            attestationSigner: nil)
         #expect(await deniedLoop.isModelAdvertised(qwen38ID) == false)
 
         let allowedLoop = try ProviderLoop(
@@ -204,7 +206,7 @@ struct ProviderRuntimeCapabilityTests {
                 coordinatorURL: "ws://127.0.0.1:0", hardware: runtimeHardware(.m5),
                 models: [runtimeModel()], config: providerConfig,
                 runtimeCapabilities: qwen38Caps),
-            purgeLegacyFiles: false, attestationSigner: nil)
+            attestationSigner: nil)
         #expect(await allowedLoop.isModelAdvertised(qwen38ID))
 
         let deniedStandalone = StandaloneServer(
@@ -229,7 +231,6 @@ struct ProviderRuntimeCapabilityTests {
                 coordinatorURL: "ws://127.0.0.1:0", hardware: runtimeHardware(.m5),
                 models: [runtimeModel()], config: config,
                 runtimeCapabilities: [.appleM5]),
-            purgeLegacyFiles: false,
             attestationSigner: nil,
             beforeModelLoad: { _ in loadWork.record() })
         do {

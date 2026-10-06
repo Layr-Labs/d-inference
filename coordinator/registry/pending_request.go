@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheattempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -21,6 +22,9 @@ type ProviderChunk struct {
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
 	RequestID string
+	// NonStreamingResponseBudget is installed before dispatch and accounts decrypted
+	// chunks before any queue or response accumulator retains them. Nil means streaming.
+	NonStreamingResponseBudget *ResponseBudget
 	// Attempt is the zero-based dispatch attempt number that produced this
 	// pending request. It lets outcome telemetry correlate the final result
 	// with the routing decision record for the same attempt.
@@ -34,6 +38,11 @@ type PendingRequest struct {
 	// ceilings from this timestamp; zero preserves legacy relative behavior.
 	FirstContentDeadline time.Time
 	ProviderID           string
+	// Immutable privacy-safe verdict captured at the final writer authorization boundary.
+	DispatchVerification Verification
+	// Captured atomically with this provider's pending debit. A later lease
+	// cannot transfer already-queued work onto a changed endpoint or identity.
+	providerAuthorizationBinding providerRequestAuthorizationBinding
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
 	Model string
@@ -42,6 +51,10 @@ type PendingRequest struct {
 	// Model. Responses echo PublicModel so consumers never see the quant/build.
 	PublicModel string
 	ConsumerKey string
+	// Durable logical-request grant reservation, shared by retries and queued attempts.
+	ModelTokenReservationID string
+	PromotionModelID        string
+	PromotionFreeTokens     int64
 	// KeyID is the public ID of the API key that originated the request, used
 	// for per-key usage and spend attribution. Empty for account-scoped/legacy
 	// callers (Privy JWT, admin, provider tokens, unlinked keys without an ID).
@@ -101,6 +114,33 @@ type PendingRequest struct {
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
+	// Calibrated conservative prompt-work estimate; a trusted CachePlan
+	// supplies exact counts instead. Physical commitment estimates are separate.
+	FirstContentPromptTokens int
+	// Immutable request-local count evidence, rebound to each selected model.
+	// It never extends the first-content deadline or replaces billed usage.
+	PromptWork *protocol.PromptWork
+	// Request-local retry/hedge policy; no wire protocol change.
+	RequireFreshFeasible      bool
+	RequireFreshFeasibleAfter time.Time
+	// Advisory horizon for deadline-exempt hedges or fresh-evidence retries;
+	// never a timer and unused by ordinary deadline-exempt selection.
+	FirstContentPlanningHorizon time.Duration
+	Hedge                       bool
+	// Reservation metadata is owned by the provider pending set and read only
+	// under provider.mu. Removing the pending owner retires prompt reservations;
+	// a dispatched service charge survives in the provider retirement shadow
+	// until explicit producer proof confirms that its leases have retired.
+	reservedPrefillTokens      float64
+	reservedPrefillRestoreMs   float64
+	reservedPrefillKnown       bool
+	reservedAt                 time.Time
+	reservedServiceCharge      float64
+	serviceRetirementTracked   bool
+	serviceHandoffAuthorized   bool
+	serviceHandoffAborted      bool
+	serviceReservationReleased bool
+	serviceReservationID       atomic.Pointer[serviceReservationIdentity]
 	// RequiresVision is true when the request carries image/video input. Such a
 	// request must only be routed to a provider advertising a vision-capable
 	// (VLM) build for the resolved model; otherwise the provider would silently
@@ -131,11 +171,9 @@ type PendingRequest struct {
 	MinDecodeTPS float64
 	// CachePlan contains exact sidecar block boundaries and opaque build scope.
 	// It is never logged or persisted.
-	CachePlan              CachePlan
-	cacheAttempt           atomic.Pointer[cacheAttemptOwner]
-	cacheAttemptMu         sync.Mutex
-	cachePreparationTicket uint64
-	cachePreparationClosed bool
+	CachePlan        CachePlan
+	cachePreparation cacheattempt.Preparation
+	cacheAttemptMu   sync.Mutex
 	// LegacyCacheBustKey is injected only into the encrypted provider-bound
 	// request body for protocol-0 providers. It is never reflected to the caller.
 	LegacyCacheBustKey string
@@ -395,15 +433,15 @@ func (pr *PendingRequest) FirstContentIngressArrivedByDeadline() bool {
 // OnTimeEmptyCompletionIngress returns the ingress time of an on-time clean
 // completion that had no preceding content-bearing chunk.
 func (pr *PendingRequest) OnTimeEmptyCompletionIngress() (time.Time, bool) {
-	if pr == nil || pr.FirstContentDeadline.IsZero() {
+	if pr == nil {
 		return time.Time{}, false
 	}
 	pr.firstContentIngressMu.Lock()
 	defer pr.firstContentIngressMu.Unlock()
 	receivedAt := pr.completionIngressAt
-	ok := pr.firstContentIngressAt.IsZero() &&
-		!receivedAt.IsZero() &&
-		!receivedAt.After(pr.FirstContentDeadline)
+	ok := !receivedAt.IsZero() &&
+		(pr.firstContentIngressAt.IsZero() || pr.firstContentIngressAt.After(receivedAt)) &&
+		(pr.FirstContentDeadline.IsZero() || !receivedAt.After(pr.FirstContentDeadline))
 	return receivedAt, ok
 }
 
@@ -428,16 +466,18 @@ func (pr *PendingRequest) ContentIngressAtOrBefore(cutoff time.Time) bool {
 
 // EnableSpeculativeEmptyCompletionArbitration prevents an empty completion
 // from settling until the dispatch owner decides which speculative racer won.
-func (pr *PendingRequest) EnableSpeculativeEmptyCompletionArbitration() {
+func (pr *PendingRequest) EnableSpeculativeEmptyCompletionArbitration() <-chan struct{} {
 	if pr == nil {
-		return
+		return nil
 	}
 	pr.emptyCompletionMu.Lock()
 	if !pr.emptyCompletionEnabled {
 		pr.emptyCompletionEnabled = true
 		pr.emptyCompletionDecision = make(chan struct{})
 	}
+	decision := pr.emptyCompletionDecision
 	pr.emptyCompletionMu.Unlock()
+	return decision
 }
 
 // ResolveSpeculativeEmptyCompletion releases a waiting completion as the

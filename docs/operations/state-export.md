@@ -1,6 +1,6 @@
 # State export
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-10-03
 
 How to pull the coordinator's sealed on-disk state — the MicroMDM enrollment
 database and everything else on the persistent disk that is not in Postgres —
@@ -22,7 +22,7 @@ holds state that the database does not:
 | Path | What it is | Must it move? |
 |---|---|---|
 | `/data/micromdm/micromdm.db`, `push.crt`, `push.key`, `.push_imported` | The MicroMDM BoltDB — the enrolled-device records the hardware-trust check reads — plus the APNs push certificate and its import sentinel | **Yes.** Without it every provider drops to `self_signed` trust until it re-enrolls. |
-| `/data/coordinator/trust-reuse-hard-untrust.v1.jsonl` | The hard-untrust revocation journal (`coordinator/api/trust_reuse_journal.go`) | Yes, or revocations issued on the old host are forgotten. |
+| `/data/coordinator/trust-reuse-hard-untrust.v1.jsonl` | The hard-untrust revocation journal (`coordinator/internal/provider/journal/trust_reuse_journal.go`) | Yes, or revocations issued on the old host are forgotten. |
 | `/data/prompt-contracts/` | Downloaded prompt-contract artifacts (`DefaultArtifactRoot` in `coordinator/promptcontract/artifact_cache.go`) | No — re-provisioned from the CDN; it only makes the archive larger. |
 | `/data/step-ca/` | Legacy ACME `device-attest-01` CA keys; the leg was removed on 2026-07-03 | No. Destroy rather than carry forward. |
 
@@ -32,7 +32,7 @@ environment file, the `MNEMONIC` (byte-identical) and the shared database
 
 ## How the endpoint works
 
-Code: `coordinator/api/admin_state_export.go` (`handleAdminStateExport`,
+Code: `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`,
 `resolveStateExportRoot`), `coordinator/stateexport/archive.go`
 (`Archiver.Stage`, `Archiver.Write`), `coordinator/stateexport/snapshot.go`
 (`BoltSnapshotter`), `coordinator/stateexport/encrypt.go` (`EncryptWriter`).
@@ -53,8 +53,7 @@ Code: `coordinator/api/admin_state_export.go` (`handleAdminStateExport`,
    retried into a fresh `0700` staging directory; symlinks and `*.log` files
    are skipped. The stage fails — as a pre-stream 500 — when the walk would
    capture zero files, or when a `micromdm/` directory exists but no BoltDB
-   inside it was snapshotted. A `step-ca/db` Badger directory is copied
-   file-by-file with a warning.
+   inside it was snapshotted.
 5. **Write.** The whole tree under the root is zipped with relative paths and
    modes preserved, `*.db` entries replaced by their validated snapshots, and
    the stream is age-encrypted to the recipient. The response is
@@ -107,8 +106,8 @@ curl -fSL https://api.darkbloom.dev/v1/admin/state-export \
   -o darkbloom-state.zip.age
 ```
 
-If MicroMDM is being written to (enrollments in flight) quiesce it first; the
-BoltDB snapshot is consistent on its own, but a `step-ca/db` directory is not.
+The MicroMDM BoltDB snapshot is consistent on its own, even with enrollments in
+flight.
 
 ### 3. Decrypt and verify (offline)
 

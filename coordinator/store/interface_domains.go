@@ -1,13 +1,7 @@
 package store
 
-// Domain sub-interfaces composed into Store (see interface.go).
-//
-// Store was a ~150-method god-interface that forced parallel memory.go /
-// postgres.go implementations and gave callers no way to depend on a narrow
-// slice of the persistence surface. It is split here into cohesive,
-// single-domain sub-interfaces; Store embeds all of them, so the full method
-// set — and both implementations — are unchanged. The split is purely
-// organizational: every method keeps its exact signature and semantics.
+// Domain sub-interfaces are composed into Store (see interface.go), allowing
+// callers to depend on a narrow persistence contract without choosing a backend.
 
 import (
 	"context"
@@ -15,25 +9,14 @@ import (
 	"time"
 )
 
-// APIKeyStore covers consumer API-key lifecycle: the legacy single-key helpers,
-// multi-key management (one account → many named, limited keys), and key counts.
+// APIKeyStore covers consumer API-key lifecycle: the single-key helpers and
+// multi-key management (one account → many named, limited keys).
 type APIKeyStore interface {
-	// CreateKey generates a new API key, persists it, and returns it.
-	CreateKey() (string, error)
-
 	// CreateKeyForAccount generates a new API key linked to a specific account.
 	CreateKeyForAccount(accountID string) (string, error)
 
-	// ValidateKey returns true if the given key exists and is active.
-	ValidateKey(key string) bool
-
 	// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
 	GetKeyAccount(key string) string
-
-	// ValidateKeyFull returns the active status and owner account ID for an
-	// API key in a single query, avoiding the 2-query overhead of
-	// ValidateKey + GetKeyAccount on every authenticated request.
-	ValidateKeyFull(key string) (active bool, ownerAccountID string, err error)
 
 	// RevokeKey deactivates a key. Returns true if the key existed.
 	RevokeKey(key string) bool
@@ -81,42 +64,21 @@ type APIKeyStore interface {
 	// since the given UTC time. Zero `since` returns lifetime spend. Used to
 	// enforce per-key spend caps before the ledger reservation.
 	KeySpendSince(keyID string, since time.Time) int64
-
-	// KeyCount returns the number of active API keys.
-	KeyCount() int
 }
 
 // UsageStore records inference usage events and settled payments and serves the
 // usage/stats aggregations (totals, time series, geo, leaderboards).
 type UsageStore interface {
-	// RecordUsage logs an inference usage event.
-	RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int)
-
-	// RecordUsageWithCost logs an inference usage event including request ID and cost.
-	RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64)
-
-	// RecordUsageWithCostAndLocation logs an inference usage event with an
-	// approximate request-origin location. Raw IP addresses are not stored.
-	RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
-
-	// RecordUsageFull logs an inference usage event with full attribution
-	// including the originating API key ID (for per-key usage and spend
-	// tracking). keyID may be empty for legacy/account-scoped attribution.
-	RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
-
-	// RecordUsageFullWithPublicModel logs the concrete billing/statistics model
-	// plus the optional consumer-facing model name returned by usage history.
-	RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
-
-	// RecordPayment records a settled payment between consumer and provider.
-	RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error
+	// RecordUsage logs one settled inference usage event: the concrete billing
+	// model plus the optional consumer-facing PublicModel, the token breakdown
+	// (prompt, cached, completion), the settled cost, the originating API key
+	// (KeyID may be empty for account-scoped attribution) and the approximate
+	// request-origin location (raw IP addresses are not stored). The store
+	// assigns the timestamp.
+	RecordUsage(rec UsageRecord)
 
 	// UsageRecords returns all usage records.
 	UsageRecords() []UsageRecord
-
-	// UsageRecordsSince returns usage records created at or after the given time.
-	// Zero since returns all records.
-	UsageRecordsSince(since time.Time) []UsageRecord
 
 	// UsageCountSince returns the number of usage records created at or after
 	// the given time. Zero since returns all records. Uses SQL COUNT(*) to
@@ -157,8 +119,10 @@ type UsageStore interface {
 	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
-	// over the given time window. Zero `since` means all-time.
-	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
+	// over the given time window. Zero `since` means all-time. A query that
+	// cannot run (most often the store timeout) is returned as an error, never
+	// as an empty board, so callers can refuse to publish or cache it.
+	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) ([]LeaderboardRow, error)
 
 	// NetworkTotals returns aggregated metrics across the network for the
 	// given window. Zero `since` means all-time. It returns an error (never a
@@ -214,14 +178,12 @@ type TelemetryStore interface {
 	// a no-op. Best-effort; failures must not block inference.
 	RecordRequestProfiles(records []*RequestProfileRecord) error
 
-	// RequestProfilesSince returns request profiles created at or after the
-	// given time, newest-first, capped at maxTelemetryReadRows. Zero since
-	// returns the newest rows across all time.
-	RequestProfilesSince(since time.Time) []RequestProfileRecord
-
-	// RequestProfilesSinceFiltered is RequestProfilesSince with the admin
-	// browse/export predicates applied BEFORE the read cap, so a matching row
-	// older than the newest maxTelemetryReadRows rows is still returned.
+	// RequestProfilesSinceFiltered returns request profiles created at or
+	// after the given time, newest-first, capped at maxTelemetryReadRows. Zero
+	// since returns the newest rows across all time. The admin browse/export
+	// predicates apply BEFORE the read cap, so a matching row older than the
+	// newest maxTelemetryReadRows rows is still returned; a zero filter
+	// matches every row.
 	RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord
 
 	// RecordFleetSnapshots bulk-writes one sampler tick (one row per provider
@@ -272,12 +234,6 @@ type LedgerStore interface {
 	// same refund twice.
 	CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (applied bool, err error)
 
-	// DebitWithdrawable subtracts micro-USD from both the total balance and
-	// the withdrawable balance atomically. Returns error if withdrawable
-	// balance is insufficient. Use for Stripe Connect withdrawals so the
-	// debit is symmetric with CreditWithdrawable refunds.
-	DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
-
 	// LedgerHistory returns ledger entries for an account, newest first.
 	LedgerHistory(accountID string) []LedgerEntry
 
@@ -293,6 +249,9 @@ type LedgerStore interface {
 // BillingStore covers referrals, billing (deposit) sessions, custom per-account
 // model pricing, and Stripe Connect withdrawals.
 type BillingStore interface {
+	// FinalizeConsumerCharge atomically settles a job and its 5% consumer referral reward.
+	FinalizeConsumerCharge(ConsumerChargeSettlement) (ConsumerChargeResult, error)
+
 	// --- Referral System ---
 
 	// CreateReferrer registers an account as a referrer with the given code.
@@ -324,19 +283,16 @@ type BillingStore interface {
 	// CompleteBillingSession marks a session as completed and sets the completion time.
 	CompleteBillingSession(sessionID string) error
 
-	// IsExternalIDProcessed returns true if a billing session with this external ID
-	// has already been completed. Used to prevent double-crediting the same on-chain tx.
-	IsExternalIDProcessed(externalID string) bool
-
 	// --- Custom Pricing ---
 
-	// SetModelPrice sets a custom price override for a model on an account.
-	// Input and output prices are in micro-USD per 1M tokens.
-	SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error
+	// SetModelPrice upserts the price override keyed by price.AccountID and
+	// price.Model. All prices are micro-USD per 1M tokens; a nil CacheReadPrice
+	// is stored as unset (billing derives it from the input price).
+	SetModelPrice(price ModelPrice) error
 
-	// GetModelPrice returns the custom price for a model on an account.
-	// Returns (0, 0, false) if no custom price is set.
-	GetModelPrice(accountID, model string) (inputPrice, outputPrice int64, ok bool)
+	// GetModelPrice returns the custom price for a model on an account, or
+	// ok=false when none is set.
+	GetModelPrice(accountID, model string) (price ModelPrice, ok bool)
 
 	// ListModelPrices returns all custom price overrides for an account.
 	ListModelPrices(accountID string) []ModelPrice
@@ -345,10 +301,6 @@ type BillingStore interface {
 	DeleteModelPrice(accountID, model string) error
 
 	// --- Stripe Withdrawals (bank/card payouts via Stripe Connect) ---
-
-	// CreateStripeWithdrawal stores a new withdrawal record. The caller is
-	// responsible for debiting the ledger atomically before calling this.
-	CreateStripeWithdrawal(withdrawal *StripeWithdrawal) error
 
 	// CreateStripeWithdrawalWithDebit atomically debits both the balance and
 	// withdrawable columns (recording a ledger entry with the given type and
@@ -423,14 +375,13 @@ type ModelRegistryStore interface {
 
 	UpsertModelRegistryEntry(entry *ModelRegistryEntry) error
 	SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error
+	SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error
 	PromoteModelVersion(modelID, version string) error
+	RetireModelVersion(modelID, version string) error
 	SetModelStatus(modelID, status string) error
-	ListActiveModelRegistry() []ModelRegistryRecord
 	ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error)
 	GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error)
 	GetModelManifest(modelID string) (*ModelManifest, error)
-	UpsertPublishingAPIKey(key *PublishingAPIKey) error
-	FindPublishingAPIKeys() []PublishingAPIKey
 	FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error)
 	MarkPublishingAPIKeyUsed(id string) error
 
@@ -529,6 +480,8 @@ type DeviceAuthStore interface {
 	CreateProviderToken(token *ProviderToken) error
 
 	// GetProviderToken validates a provider token and returns it.
+	// Missing or revoked tokens match ErrProviderTokenInvalid via errors.Is;
+	// other errors indicate a storage failure, not an invalid credential.
 	GetProviderToken(token string) (*ProviderToken, error)
 
 	// RevokeProviderToken deactivates a provider token.
@@ -552,9 +505,6 @@ type InviteStore interface {
 	// RedeemInviteCode atomically increments used_count and records the redemption.
 	// Returns error if code is inactive, expired, fully used, or already redeemed by this account.
 	RedeemInviteCode(code string, accountID string) error
-
-	// HasRedeemedInviteCode checks if an account has already redeemed a specific code.
-	HasRedeemedInviteCode(code, accountID string) bool
 }
 
 // ProviderEarningsStore tracks per-node provider earnings and payouts plus the
@@ -565,15 +515,8 @@ type ProviderEarningsStore interface {
 	// RecordProviderEarning stores an earning record for a specific provider node.
 	RecordProviderEarning(earning *ProviderEarning) error
 
-	// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-	GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error)
-
 	// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
-
-	// GetProviderEarningsSummary returns lifetime aggregates for a provider node
-	// across ALL accounts that have ever owned the key.
-	GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error)
 
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
@@ -584,22 +527,9 @@ type ProviderEarningsStore interface {
 	// included), matching the dashboard header's historical semantics.
 	AccountEarningsWindows(accountID string, now time.Time) (AccountEarningsWindows, error)
 
-	// RecordProviderPayout stores a payout record for a provider wallet.
-	RecordProviderPayout(payout *ProviderPayout) error
-
-	// ListProviderPayouts returns all provider payout records in creation order.
-	ListProviderPayouts() ([]ProviderPayout, error)
-
-	// SettleProviderPayout marks a provider payout as settled.
-	SettleProviderPayout(id int64) error
-
 	// CreditProviderAccount atomically credits a linked provider account and
 	// records the corresponding per-node earning.
 	CreditProviderAccount(earning *ProviderEarning) error
-
-	// CreditProviderWallet atomically credits an unlinked provider wallet and
-	// records the corresponding payout history row.
-	CreditProviderWallet(payout *ProviderPayout) error
 
 	// --- Base Rewards (provider earnings floor) ---
 
@@ -607,13 +537,6 @@ type ProviderEarningsStore interface {
 	// node in [since, until): amount>0, model != 'base_reward'. Self-route already
 	// produces no earning row, so it needs no extra filter.
 	SumProviderEarningsByKey(ctx context.Context, providerKey string, since, until time.Time) (int64, error)
-
-	// SettleProviderFloorDraw atomically (1) inserts the idempotent draw row
-	// (ON CONFLICT (provider_key, epoch_id) DO NOTHING) and (2) credits the
-	// account's balance + withdrawable with a LedgerFloorDraw entry — but ONLY
-	// when the row was newly inserted. Returns credited=false on a duplicate
-	// epoch. A zero-amount draw still inserts the audit row but credits nothing.
-	SettleProviderFloorDraw(ctx context.Context, draw *ProviderFloorDraw) (credited bool, err error)
 
 	// SumFloorDrawsForEpoch returns Σ amount_micro_usd already settled for an
 	// epoch (pool-cap accounting + admin status).
@@ -631,8 +554,8 @@ type ProviderEarningsStore interface {
 
 	// WithEpochSettlementLock runs fn while holding a cross-instance lock keyed
 	// on epochID, so two coordinators cannot settle the same epoch concurrently
-	// and overshoot the floor pool cap. The memory store runs fn directly; the
-	// postgres store uses a session-level advisory lock.
+	// and overshoot the floor pool cap. Memory uses a per-store, per-epoch lock;
+	// PostgreSQL uses a session-level advisory lock shared across processes.
 	WithEpochSettlementLock(ctx context.Context, epochID string, fn func() error) error
 }
 
@@ -652,9 +575,6 @@ type ProviderStore interface {
 	// GetProviderRecord returns a provider record by ID.
 	GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error)
 
-	// GetProviderBySerial returns a provider record by serial number.
-	GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error)
-
 	// GetProviderForRestore returns the newest historical record for a verified
 	// serial, falling back to the verified SE key only when no serial record exists.
 	// excludeIDs removes all live/in-progress sessions from the candidate set. No match returns (nil, nil); failures return errors.
@@ -663,28 +583,13 @@ type ProviderStore interface {
 	// GetMDAChainBySerial returns the newest NON-EMPTY Apple MDA cert chain stored
 	// for a serial, or (nil, nil) if none. A reconnecting provider gets a new row
 	// (keyed by a fresh provider id) that may be persisted with an empty chain
-	// before the chain is reattached; GetProviderBySerial would return that newer
-	// empty row and shadow a still-valid chain from a prior connection. This query
+	// before the chain is reattached; a newest-row-by-serial lookup would return
+	// that newer empty row and shadow a still-valid chain from a prior connection. This query
 	// looks past empty rows so MDA reuse survives that race.
 	GetMDAChainBySerial(ctx context.Context, serial string) (json.RawMessage, error)
 
-	// ListProviderRecords returns all stored provider records.
-	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
-
 	// ListProvidersByAccount returns stored provider records linked to an account.
 	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
-
-	// UpdateProviderLastSeen updates the last_seen timestamp for a provider.
-	UpdateProviderLastSeen(ctx context.Context, id string) error
-
-	// UpdateProviderTrust persists trust level and attestation state changes.
-	UpdateProviderTrust(ctx context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error
-
-	// UpdateProviderChallenge persists challenge verification state.
-	UpdateProviderChallenge(ctx context.Context, id string, lastVerified time.Time, failedCount int) error
-
-	// UpdateProviderRuntime persists runtime integrity verification state.
-	UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error
 
 	// DeleteProvidersBySerial removes every persisted provider record sharing the
 	// given stable identity (serial, or a session id when serial is empty),

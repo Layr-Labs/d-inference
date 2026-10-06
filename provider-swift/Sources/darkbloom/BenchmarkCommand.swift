@@ -103,7 +103,8 @@ struct Benchmark: AsyncParsableCommand {
         measured engine (decode[].resolvedKVBackend, \
         samples[].resolvedKVBackend) and de-duplicated in each report's \
         kvBackend block. Candidate rollout is not yet validated; see \
-        docs/design/qwen-first-paged-ssd-rollout.md.
+        docs/design/qwen-first-paged-ssd-rollout.md. Ordinary native \
+        DiffusionGemma benchmarks also honor this backend selection.
         """)
     var kvBackend = "auto"
 
@@ -123,7 +124,10 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Arrival benchmark: prompt tokens per request.")
     var arrivalPromptTokens = 512
 
-    @Option(name: .long, help: "Arrival benchmark: four comma-separated per-row prompt lengths, e.g. 8192,512,512,512.")
+    @Option(name: .long, help: "Arrival benchmark: concurrent rows (1...16); requested width is not proof of measured forward width.")
+    var arrivalWidth = 4
+
+    @Option(name: .long, help: "Arrival benchmark: one comma-separated prompt length per row, e.g. 8192,512,512,512 at width 4.")
     var arrivalPromptLengths: String?
 
     @Option(name: .long, help: "Arrival benchmark: generated tokens per request.")
@@ -178,8 +182,8 @@ struct Benchmark: AsyncParsableCommand {
         }
 
         let snapshot = try loadRuntimeSnapshot(
-            configPath: configOptions.config,
-            migrateOnDisk: false)
+            configPath: configOptions.config)
+        ModelScanner.configureCacheDirectory(snapshot.configuredModelCacheDirectory)
 
         // The low-level Gemma controls are process-start latches, so
         // `provider.toml` must be projected BEFORE the first MLX device
@@ -239,6 +243,11 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        if let error = nativeBlockModeError(modelType: selectedModel.modelType) {
+            printError(error)
+            throw ExitCode(2)
+        }
+
         if let teacherForcedInput {
             let result = try await TeacherForcedBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath,
@@ -295,7 +304,9 @@ struct Benchmark: AsyncParsableCommand {
             prompt: prompt,
             iterations: iterations,
             maxTokens: maxTokens,
-            hardware: hardware
+            hardware: hardware,
+            kvBackend: kvBackend,
+            configuredMemoryReserveGB: snapshot.config.provider.memoryReserveGB
         )
 
         report.printTable()
@@ -314,6 +325,12 @@ struct Benchmark: AsyncParsableCommand {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
         }
         return nil
+    }
+
+    func nativeBlockModeError(modelType: String?) -> String? {
+        guard modelType == "diffusion_gemma",
+            sweep || schedulerPrefill || arrivalInvariance || parity || teacherForcedInput != nil else { return nil }
+        return "Native block diffusion uses the ordinary benchmark command; AR sweep, teacher-forcing, arrival and parity modes are unsupported for this architecture."
     }
 
     func teacherForcedOptionError() -> String? {

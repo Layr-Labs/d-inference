@@ -185,6 +185,61 @@ struct EngineV2PrefixCacheUsageTests {
         #expect(fallback.fields?["reason"]?.description == "stage_capacity")
     }
 
+    @Test("prefix telemetry samples independent hits and shared cold/native fallbacks")
+    func prefixTelemetrySampling() async throws {
+        let capture = PrefixTelemetryCapture()
+        let bridge = EngineV2Bridge(
+            engine: PrefixScriptedEngine(events: []),
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefixStubTokenizer()),
+            eosTokenIds: [],
+            emitTelemetry: { capture.append($0) })
+        let quietOutcomes: [CBv2PrefixCacheOutcome] = [.disabled, .skippedPolicy, .miss]
+        for index in 1...128 {
+            // Quiet outcomes must not consume either sampling counter.
+            for outcome in quietOutcomes {
+                await bridge.emitPrefixReuseTelemetry(
+                    requestId: "quiet-\(index)",
+                    usage: CBv2Usage(promptTokens: 0, completionTokens: 0,
+                                     prefixCacheOutcome: outcome))
+            }
+            await bridge.emitPrefixReuseTelemetry(
+                requestId: "hit-\(index)",
+                usage: CBv2Usage(
+                    promptTokens: 0, completionTokens: 0,
+                    prefixCacheOutcome: .hit, prefixCacheMatchedTokens: -1,
+                    prefixCachePrefillTokensSaved: -2, prefixCacheReplayTokens: -3,
+                    prefixCacheBoundarySplits: -4))
+            if index.isMultiple(of: 2) {
+                await bridge.emitPrefixReuseTelemetry(
+                    requestId: "native-\(index)",
+                    usage: CBv2Usage(promptTokens: 0, completionTokens: 0,
+                                     prefixCacheOutcome: .skippedCapacity))
+            } else {
+                await bridge.emitPrefixCacheColdFallback(
+                    requestId: "stage-\(index)", reason: "stage_capacity", capacityRefusal: true)
+            }
+        }
+        let events = capture.snapshot
+        #expect(events.map(\.requestId) == [
+            "hit-1", "stage-1", "hit-64", "native-64", "hit-128", "native-128",
+        ])
+        let hit = try #require(events.first)
+        #expect(hit.severity == .info)
+        for key in ["prefix_matched_tokens", "prefix_saved_tokens", "prefix_replay_tokens",
+                    "prefix_boundary_splits"] {
+            #expect(hit.fields?[key]?.description == "0")
+        }
+        let fallback = try #require(events.last)
+        #expect(fallback.severity == .warn)
+        #expect(fallback.fields?["reason"]?.description == "skipped_capacity")
+        #expect(fallback.fields?["backend"]?.description == "engine_v2")
+        #expect(fallback.fields?["kv_backend"]?.description == "contiguous")
+        #expect(fallback.fields?["prefix_capacity_refusal"]?.description == "true")
+        #expect(fallback.fields?["prefix_cold_fallback"]?.description == "true")
+        await bridge.shutdown()
+    }
+
     @Test("injectCachedTokens: splices prompt_tokens_details into a usage frame")
     func injectCachedTokens() throws {
         let usageFrame = """

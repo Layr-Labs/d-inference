@@ -1,11 +1,51 @@
+import Foundation
 import MLX
 import MLXLMCommon
+import ProviderCoreFoundation
 import Testing
 
 @testable import ProviderCore
 
 @Suite("Complete checkpoint identity")
 struct PrefixCacheCheckpointIdentityTests {
+    @Test("Normalization v8 and renderer v4 separate prior memory and disk cache identities")
+    func normalizationVersionFence() throws {
+        struct Vector: Decodable {
+            let artifacts: [ManifestFile]
+            let expected_prompt_contract_id: String
+            let legacy_v6_prompt_contract_id: String
+            let legacy_v7_prompt_contract_id: String
+        }
+        struct Corpus: Decodable { let vectors: [Vector] }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf:
+            root.appendingPathComponent("fixtures/prompt-contract/v1/contract_vectors.json")))
+        #expect(!corpus.vectors.isEmpty)
+        for vector in corpus.vectors {
+            let current = try PromptContractIdentity.compute(files: vector.artifacts)
+            #expect(current == vector.expected_prompt_contract_id)
+            for old in [vector.legacy_v6_prompt_contract_id, vector.legacy_v7_prompt_contract_id] {
+                #expect(current != old)
+                let oldIdentity = try #require(identity(prompt: old))
+                let newIdentity = try #require(identity(prompt: current))
+                #expect(oldIdentity.modelAggregateHash == newIdentity.modelAggregateHash)
+                #expect(oldIdentity.buildID == newIdentity.buildID)
+                #expect(oldIdentity.numericsFingerprint == newIdentity.numericsFingerprint)
+                #expect(oldIdentity != newIdentity)
+                let layout = CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                #expect(SSDHybridCheckpointStoreFactory.namespace(modelId: "same-model", identity: oldIdentity, backendLayout: layout)
+                    != SSDHybridCheckpointStoreFactory.namespace(modelId: "same-model", identity: newIdentity, backendLayout: layout))
+                let tokens = Array(0..<257)
+                let oldHasher = CBv2BlockHasher(promptContractID: old, scopeID: "same-scope")
+                let newHasher = CBv2BlockHasher(promptContractID: current, scopeID: "same-scope")
+                #expect(oldHasher.maxLookupBlocks(tokenCount: tokens.count) == 1)
+                #expect(oldHasher.chainHashes(tokens: tokens, maxBlocks: 1)
+                    != newHasher.chainHashes(tokens: tokens, maxBlocks: 1))
+            }
+        }
+    }
+
     private func identity(
         model: String? = String(repeating: "a", count: 64),
         prompt: String? = String(repeating: "b", count: 64),
@@ -16,13 +56,14 @@ struct PrefixCacheCheckpointIdentityTests {
         codec: String? = "qwen-test-v1",
         environment: [String: String] = [:],
         process: [String: String] = [:],
-        storage: CompleteCheckpointStorageIdentity? = nil
+        storage: CompleteCheckpointStorageIdentity? = nil,
+        native: [String: String] = [:]
     ) -> CBv2CompleteCheckpointIdentity? {
         PrefixCachePolicy.completeCheckpointIdentity(
             modelAggregateHash: model, promptContractID: prompt,
             binaryHash: binary, loadedMetallibHash: metallib, osVersion: os,
             mtpConfig: mtp, assistantCodecID: codec,
-            environment: environment, processEnvironment: process, storage: storage)
+            environment: environment, processEnvironment: process, storage: storage, additionalNumerics: native)
     }
 
     @Test("Missing or malformed verified identities fail cold")
@@ -68,6 +109,7 @@ struct PrefixCacheCheckpointIdentityTests {
         "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY",
         "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK",
         "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS",
+        "DARKBLOOM_DIFFUSION_KERNEL_PROFILE",
         "DARKBLOOM_QWEN_MTP_MAX_DRAFT",
         "DARKBLOOM_QWEN4_BF16_HIDDEN",
         "DARKBLOOM_QWEN4_PLE_SSD_OFFLOAD",
@@ -129,6 +171,17 @@ struct PrefixCacheCheckpointIdentityTests {
         #expect(identity(environment: ["MLX_TEST_A": "bc"]) != identity(environment: ["MLX_TEST_Ab": "c"]))
         #expect(identity(environment: ["LOG_LEVEL": "debug", "UNRELATED_SECRET": "never-hashed"]) == identity())
         #expect(identity(process: ["HOME": "/different/home"]) == identity())
+    }
+
+    @Test("Native layout and prefill geometry bind independent fingerprint fields")
+    func nativeContract() throws {
+        let fields = ["layout": CBv2CompleteCheckpointManifest.diffusionBlockLayout, "prefillChunkSize": "512"]
+        let base = try #require(identity(native: fields))
+        #expect(base != identity())
+        #expect(base == identity(native: Dictionary(uniqueKeysWithValues: fields.sorted { $0.key > $1.key })))
+        #expect(base != identity(native: ["layout": fields["layout"]!, "prefillChunkSize": "256"]))
+        #expect(base != identity(native: ["layout": "different", "prefillChunkSize": "512"]))
+        #expect(identity(native: ["os": "native"]) != identity(os: "native"), "Additional keys cannot overwrite common fields")
     }
 
     @Test("actual backend, precision and page geometry separate disk namespaces")

@@ -2,6 +2,10 @@
 # Resolve workflow inputs before environment approval or access to signing keys.
 set -euo pipefail
 
+if [ -n "${RELEASE_RESUME_RUN_ID:-}" ]; then
+  exec python3 scripts/provider-release-resume.py resolve
+fi
+
 release_environment=${RELEASE_ENVIRONMENT:-prod}
 validation_only=${RELEASE_VALIDATION_ONLY:-false}
 case "$release_environment" in
@@ -33,8 +37,7 @@ elif [ "$GITHUB_REF_TYPE" != tag ]; then
   release_version=$(awk -F'"' '/public static let version =/ { print $2 }' \
     provider-swift/Sources/ProviderCore/ProviderCore.swift)
 else
-  release_ref=${GITHUB_REF_NAME#v}
-  release_version=${release_ref%-swift*}
+  release_version=${GITHUB_REF_NAME#v}
 fi
 # Validate before writing workflow outputs, including manual version overrides.
 ./scripts/check-release-version.sh "$release_version"

@@ -27,8 +27,6 @@ export interface MachineDetail {
   mda_verified: boolean;
   runtime_verified: boolean;
   se_public_key: string;
-  python_hash: string;
-  runtime_hash: string;
   last_challenge_verified: string | null;
   failed_challenges: number;
   registered_at: string;
@@ -43,8 +41,7 @@ export interface MachineDetail {
 // coordinator-private serial is used only inside SQL and never selected.
 // hardware/models are returned as parsed JSONB objects/arrays by pg.
 //
-// NEVER select credential hashes here. python_hash / runtime_hash are runtime
-// integrity digests (safe public attestation metadata), not credentials.
+// NEVER select credential hashes here.
 export async function getMachineByProviderID(providerId: string): Promise<MachineDetail | null> {
   const rows = await query<
     Omit<MachineDetail, "failed_challenges"> & { failed_challenges: number | string }
@@ -67,8 +64,6 @@ export async function getMachineByProviderID(providerId: string): Promise<Machin
             p.mda_verified,
             p.runtime_verified,
             p.se_public_key,
-            p.python_hash,
-            p.runtime_hash,
             p.last_challenge_verified,
             p.failed_challenges,
             p.registered_at,

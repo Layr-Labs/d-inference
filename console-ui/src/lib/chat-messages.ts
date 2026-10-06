@@ -8,10 +8,10 @@ import { buildApiContent } from "./image-upload";
  * content parts (text-only turns stay plain strings). Shared by the send and
  * retry paths so the transformation lives in one place.
  *
- * The coordinator caps plaintext inference bodies at 64 MiB. One UI turn may
- * carry four 10 MB images (~53 MiB after base64), so resending multiple image
- * turns from live chat history would breach that cap. Older images remain in
- * the visible chat state, but only the newest image turn is sent upstream.
+ * Only the newest image turn is sent upstream; older images remain visible
+ * in chat state. Even one image turn can exceed the coordinator's 16 MiB body
+ * cap after base64 and optional sealing. streamChat checks the complete
+ * serialized request and sealed envelope before sending.
  *
  * NOTE: `m.images` is undefined for turns restored from persistence (images are
  * stripped from localStorage to protect the quota — see store.ts `partialize`),
@@ -38,12 +38,5 @@ export function toApiMessages(
 function findNewestImageMessageIndex(
   messages: Pick<Message, "images">[]
 ): number {
-  let index = messages.length;
-  for (const message of [...messages].reverse()) {
-    index -= 1;
-    if (message.images && message.images.length > 0) {
-      return index;
-    }
-  }
-  return -1;
+  return messages.findLastIndex((message) => Boolean(message.images?.length));
 }

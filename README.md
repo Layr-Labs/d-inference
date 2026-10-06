@@ -6,14 +6,14 @@ Darkbloom turns idle Macs into a private, OpenAI-compatible inference cloud.
 
 Today, AI compute reaches you through a stack of markups — chipmaker to hyperscaler to API vendor. Meanwhile, over 100 million Apple Silicon Macs sit mostly idle, each with up to 512 GB of unified memory and up to 819 GB/s of bandwidth — enough to run frontier-scale models at interactive speeds. Darkbloom connects that idle capacity directly to demand, and pays the people who own the machines.
 
-The hard part is privacy. The person running a provider node has root and physical custody of the machine doing your inference — yet they must **not** be able to read your prompts or the model's responses. Darkbloom closes every software path to that plaintext:
+The person running a provider node has root and physical custody of the machine doing your inference. Darkbloom is designed to keep prompts and responses inside the hardened provider process, using these controls:
 
-- **No observation surface.** Inference runs **in-process** via MLX — no subprocess, no local server, no IPC to tap.
-- **Locked-down process.** Debuggers are denied at the kernel level (`PT_DENY_ATTACH`); memory-reading APIs are blocked by Hardened Runtime. These protections are immutable for the process lifetime, because removing them requires disabling SIP, which requires a reboot that kills the process.
-- **End-to-end encryption.** The coordinator re-seals every request with NaCl Box (X25519 + XSalsa20-Poly1305) to the provider's attested key, so on the provider machine only the hardened process — never its owner — can decrypt it.
-- **Hardware attestation.** A four-layer chain — Secure Enclave signatures, MDM cross-checks, Apple Managed Device Attestation, and APNs code-identity — proves each node's security posture and that it runs a genuine, unmodified binary.
+- **In-process inference.** The network provider runs MLX inside its hardened process, without a separate inference server or subprocess.
+- **Runtime hardening.** `PT_DENY_ATTACH`, Hardened Runtime and coordinator-verified SIP restrict debugging, memory access and code injection.
+- **Hop-by-hop encryption.** The coordinator opens the request for routing and billing, then seals it with NaCl Box (X25519 + XSalsa20-Poly1305) to the provider's attested key. The provider process decrypts it to run the model.
+- **Provider authorization.** Complete legacy verification combines Secure Enclave signatures, MDM/MDA evidence and APNs code identity. When independently enabled and qualified, eligible macOS 27+ providers can instead use App Attest authorization without MDM. The two paths retain separate evidence; see [provider authorization](docs/reference/provider-authorization.md).
 
-What remains is the same residual threat model Apple accepts for Private Cloud Compute: physically de-soldering and probing memory chips. Everything short of that is engineered out.
+These controls depend on the security of the operating system, hardware and attested software. See [privacy expectations](docs/consumer/privacy-expectations.md) for what each party can observe and what metadata is retained.
 
 The API is OpenAI- and Anthropic-compatible, so most clients work by changing one base URL.
 
@@ -42,7 +42,7 @@ The API is OpenAI- and Anthropic-compatible, so most clients work by changing on
 flowchart LR
     U["<b>Consumer</b><br/>OpenAI / Anthropic SDK · curl · Web UI"]
     subgraph coord["Coordinator · Go · GCP Confidential VM (AMD SEV)"]
-        CO["Auth · Routing · Billing<br/>Attestation · E2E relay"]
+        CO["Auth · Routing · Billing<br/>Attestation · Encrypted transport"]
     end
     subgraph prov["Provider · Swift CLI · hardened macOS process"]
         P["mlx-swift-lm (in-process)"] --> G["Apple Silicon GPU (Metal)"]
@@ -58,7 +58,7 @@ A consumer calls the coordinator over a standard HTTPS, OpenAI-compatible API. T
 
 ## Privacy & security
 
-Darkbloom is engineered so that **the operator of the Mac running your inference cannot read your prompt or the response.** The only plaintext exposure anywhere is transient — inside the coordinator's hardware-encrypted Confidential-VM memory — and it is never logged or retained.
+Plaintext exists in the coordinator's Confidential-VM memory while it handles the request and inside the provider process while it runs inference. The coordinator writes no prompt or completion content to logs or storage. Provider hardening and attestation constrain which process can decrypt and use that content.
 
 ### Encryption, hop by hop
 
@@ -83,7 +83,7 @@ sequenceDiagram
 | Coordinator → Provider | **Mandatory** per-request NaCl Box to the provider's attested X25519 key, with a fresh ephemeral key per request |
 | Provider → Coordinator | Response chunks encrypted back to the coordinator's ephemeral key |
 
-> **Precise claim:** Darkbloom is not "the coordinator never sees plaintext." The accurate statement is that plaintext is exposed *only* inside the coordinator's hardware-encrypted CVM memory, is never logged or retained, and is immediately re-encrypted for the selected provider. The provider is the final decryption endpoint, and it is bound to an attested Secure Enclave identity. See [`docs/architecture/security/encryption.md`](docs/architecture/security/encryption.md) and [`docs/consumer/privacy-expectations.md`](docs/consumer/privacy-expectations.md).
+The [encryption reference](docs/architecture/security/encryption.md) defines the keys, endpoint visibility and retained metadata for each hop. Sender sealing terminates at the coordinator; it does not hide the request from the coordinator or the provider process.
 
 ### Provider hardening
 
@@ -107,7 +107,7 @@ flowchart TB
     CHAL -.-> HW
 ```
 
-Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go:3371-3379`](coordinator/api/dispatch.go#L3371-L3379) and [`response_metadata.go:209-276`](coordinator/api/response_metadata.go#L209-L276).
+Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go`](coordinator/api/inference/dispatch.go) (`commitFirstContent`) and [`response_metadata.go`](coordinator/api/inference/response/response_metadata.go) (`WriteCommittedProviderHeaders`).
 
 | Level | Verification |
 |-------|--------------|
@@ -229,6 +229,7 @@ Zero prerequisites and no `sudo`. The installer fetches the latest signed releas
 
 ```bash
 darkbloom start              # background launchd service (interactive model picker + memory policy)
+darkbloom start --schedule   # optional availability wizard before background startup
 darkbloom start --foreground # run attached to the terminal
 darkbloom idle keep-loaded   # keep models loaded while idle (instant responses); default frees after 60 min
 darkbloom login              # link your account (RFC 8628 device-code flow)
@@ -238,11 +239,18 @@ darkbloom doctor             # local diagnostics + coordinator's trust view
 
 [`docs/provider/quickstart.md`](docs/provider/quickstart.md) walks through the full flow.
 
+Ordinary `start` does not prompt for a schedule. Use `darkbloom schedule` to edit
+saved availability without starting or stopping the service,
+`darkbloom schedule --show` to inspect it, or `darkbloom schedule --disable` to turn scheduling off
+without deleting saved windows. See the [schedule CLI reference](docs/provider/cli-reference.md#darkbloom-schedule)
+for presets, loading choices, custom configuration paths and restart requirements.
+
 ### CLI reference
 
 | Command | Purpose |
 |---------|---------|
 | `start` | Start serving (launchd daemon, `--foreground`, or `--local`) |
+| `schedule` | Edit, show or disable saved weekly provider availability |
 | `stop` / `restart` | Stop (`--uninstall` removes the agent) / restart in place |
 | `status` | Hardware, config, schedule, and live daemon/trust state |
 | `doctor` / `verify` | Diagnostics (`verify` = strict, non-zero on any warning) |
@@ -300,7 +308,7 @@ section. To roll back either optimization, set its key to `false` and run
 
 Running a node also makes your **own** inference free.
 
-- **Self-route** — *"use my own machine, for free."* Add `X-Darkbloom-Route: self` to any request to route **only** to a provider your account owns: free, end-to-end encrypted, with no fallback to the paid fleet (you get an explicit error if your machine can't serve). `X-Darkbloom-Route: prefer` routes to your machine first but falls back to the paid fleet so you're never stuck. An API key can also be pinned to owned-only with `self_route_only`. See [`docs/provider/self-route.md`](docs/provider/self-route.md).
+- **Self-route** — *"use my own machine, for free."* Add `X-Darkbloom-Route: self` to any request to route **only** to a provider your account owns, through the same encrypted coordinator hops, with no fallback to the paid fleet (you get an explicit error if your machine can't serve). `X-Darkbloom-Route: prefer` routes to your machine first but falls back to the paid fleet so you're never stuck. An API key can also be pinned to owned-only with `self_route_only`. See [`docs/provider/self-route.md`](docs/provider/self-route.md).
 
 - **Direct mode** — when the client can reach your Mac (same machine / LAN / tailnet), `darkbloom start --local` serves an OpenAI-compatible endpoint locally and **skips the coordinator entirely**: lowest latency, offline-capable, bytes never leave your network. See [`docs/provider/direct-mode.md`](docs/provider/direct-mode.md).
 
@@ -309,31 +317,38 @@ Running a node also makes your **own** inference free.
 | Path | Language | Role |
 |------|----------|------|
 | `coordinator/` | Go | Control plane: OpenAI/Anthropic API, routing, attestation, billing, model registry |
+| `coordinator/internal/` | Go | Focused production components behind application and domain-owner contracts |
+| `coordinator/tests/` | Go | Separate mirrored test tree, HTTP/WS contract suites and isolated backend fixtures |
 | `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
 | `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
-| `landing/` | Static HTML | Marketing landing page |
+| `landing/` | Next.js 16 / React 19 | [Darkbloom marketing site](landing/README.md), imported from eigen-homepages |
 | `e2e/` | Go | System-level end-to-end & load test harness |
 | `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers, docs lint (`docs-check.sh`, `docs-stamp.sh`) |
 | `libs/` | Git submodules | Pinned forks of `mlx`, `mlx-swift`, `mlx-swift-lm` compiled into the provider |
 | `docs/` | Markdown | How-tos, runbooks, reference, architecture, design records, dated reports — map in [`docs/README.md`](docs/README.md), rules in [`docs/AGENTS.md`](docs/AGENTS.md) |
 
 The coordinator and provider share WebSocket message types that must stay in sync (`coordinator/protocol/` ↔ `provider-swift/Sources/ProviderCore/Protocol/`).
+Coordinator assembly and package boundaries are mapped in
+[`docs/architecture/components/coordinator.md`](docs/architecture/components/coordinator.md);
+test selectors, fixture ownership and production coverage are in
+[`docs/developer/test.md`](docs/developer/test.md).
 
 ## Development
 
 ```bash
+# Run these commands from the repository root.
 # Coordinator (Go)
-cd coordinator && go test ./...
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator   # container build
+go test ./coordinator/...
+make coordinator-build-linux                  # → coordinator/coordinator-linux
 
 # Provider (Swift) — depends on libs/mlx-swift and libs/mlx-swift-lm submodules
-cd provider-swift && swift test
-cd provider-swift && swift build -c release      # → .build/release/darkbloom
+(cd provider-swift && swift test)
+(cd provider-swift && swift build -c release)    # → provider-swift/.build/release/darkbloom
 
 # Console UI (Next.js 16)
-cd console-ui && npm install && npm run dev
-cd console-ui && npm run build && npm test       # production build + vitest
+(cd console-ui && npm ci && npm run dev)
+(cd console-ui && npm run build && npm test)     # production build + vitest
 ```
 
 Build, test, and release details: [`docs/developer/build.md`](docs/developer/build.md), [`docs/developer/test.md`](docs/developer/test.md), [`docs/operations/provider-release.md`](docs/operations/provider-release.md).

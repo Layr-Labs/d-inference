@@ -2,7 +2,7 @@
 ///
 /// v0.7.5 ONE-ENGINE: every model slot serves through a v2 bridge — there
 /// is no selection gate and no legacy fallback. At model-load time
-/// `ensureModelLoaded` calls `resliceAndBuildEngineV2Slot`, which:
+/// `ensureModelLoaded` calls `resliceAndBuildEngineV2Bundle`, which:
 ///
 ///   1. snapshots every existing slot's CURRENT engine KV grant,
 ///   2. computes fair-share grants for existing + newcomer against the
@@ -39,22 +39,31 @@ import os
 /// production access is ProviderLoop-actor confined.
 final class EngineV2NewcomerBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var _container: MLXLMCommon.ModelContainer?
+    private var _container: ProviderModelContainer?
 
     init(_ container: MLXLMCommon.ModelContainer) {
-        self._container = container
+        self._container = .autoregressive(container)
+    }
+
+    init(_ container: ProviderModelContainer) { self._container = container }
+
+    var modelContainer: ProviderModelContainer? { lock.withLock { _container } }
+
+    func borrowModel() throws -> ProviderModelContainer {
+        guard let value = modelContainer else { throw InferenceError.noModelLoaded }
+        return value
     }
 
     /// The container, or nil after `release()`.
     var container: MLXLMCommon.ModelContainer? {
-        lock.withLock { _container }
+        lock.withLock { _container?.autoregressive }
     }
 
     /// Transient access for a single call. NEVER bind the result to a
     /// long-lived local — that would keep the weights alive past
     /// `release()` and defeat the unwind ordering.
     func borrow() throws -> MLXLMCommon.ModelContainer {
-        guard let container = (lock.withLock { _container }) else {
+        guard let container = (lock.withLock { _container?.autoregressive }) else {
             // Only reachable through a wiring bug (use-after-release);
             // maps to 500 via the existing InferenceError handling.
             throw InferenceError.noModelLoaded
@@ -63,7 +72,7 @@ final class EngineV2NewcomerBox: @unchecked Sendable {
     }
 
     /// Drop the strong reference to the container. The weights become
-    /// reclaimable; pair with `MLX.Memory.clearCache()` so the pool
+    /// reclaimable; pair with `clearCacheAfterConfirmedNativeOwnership()` so the pool
     /// returns their buffers before anything re-reads live residency.
     func release() {
         lock.withLock { _container = nil }
@@ -72,7 +81,7 @@ final class EngineV2NewcomerBox: @unchecked Sendable {
     /// Failed-load/unwind only. A live installed engine must drain before
     /// calling this; successful ownership transfer uses ordinary deinit.
     func releaseAfterExternalResources() async {
-        await ModelContainerLoading.releaseExternalResources(in: container)
+        await modelContainer?.releaseExternalResources()
         release()
     }
 }
@@ -163,6 +172,7 @@ extension ProviderLoop {
     private struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
+        let minimumGrantBytes: Int
         let bridge: EngineV2Bridge
     }
 
@@ -174,12 +184,17 @@ extension ProviderLoop {
     /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
     private func fleetKVBudgetBytes(
         extraWeightBytes: Int,
-        activationReserveBytes: UInt64? = nil
+        activationReserveBytes: UInt64? = nil,
+        excludingModelIDs: Set<String> = []
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
-        for (_, slot) in modelSlots {
+        for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
+            totalWeights = overflow ? .max : sum
+        }
+        for (modelID, sizing) in nativeMiMoRetiringSizing where modelSlots[modelID] == nil {
+            let (sum, overflow) = totalWeights.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
         }
         let physical = engineV2SlotHooks?.physicalMemoryBytes
@@ -205,15 +220,20 @@ extension ProviderLoop {
     /// (as the load path does across its own preflight-through-install),
     /// so the slot set cannot move between this check and the re-slice
     /// that follows a passed preflight.
-    internal func reserveRaiseKeepsSurvivorsServiceable(reserveBytes: UInt64) async -> Bool {
-        let survivors = await existingSlotGrants(excludingModelId: "")
+    internal func reserveRaiseKeepsSurvivorsServiceable(
+        reserveBytes: UInt64, excludingModelIDs: Set<String> = []
+    ) async -> Bool {
+        let survivors = await existingSlotGrants(excludingModelId: "", excludingModelIDs: excludingModelIDs)
         guard !survivors.isEmpty else { return true }
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
             fleetKVBudgetBytes: fleetKVBudgetBytes(
-                extraWeightBytes: 0, activationReserveBytes: reserveBytes))
-        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
+                extraWeightBytes: 0, activationReserveBytes: reserveBytes,
+                excludingModelIDs: excludingModelIDs))
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(
+            targets, minimumGrantBytes: Dictionary(uniqueKeysWithValues:
+                survivors.map { ($0.slot.modelId, $0.minimumGrantBytes) }))
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)
@@ -224,10 +244,13 @@ extension ProviderLoop {
     /// load. Paged physical claims are tracked separately by
     /// `slotKVBytesClaim()` for fleet accounting and never shrink when this
     /// logical target is re-sliced.
-    private func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
+    private func existingSlotGrants(
+        excludingModelId: String, excludingModelIDs: Set<String> = []
+    ) async -> [ExistingSlotGrant] {
         var existing: [ExistingSlotGrant] = []
         for (slotModelId, slot) in modelSlots
-        where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId) {
+        where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId)
+            && !excludingModelIDs.contains(slotModelId) {
             let currentGrant = await slot.engineV2.resliceAdmissionBytesClaim()
             existing.append(
                 ExistingSlotGrant(
@@ -236,6 +259,7 @@ extension ProviderLoop {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
+                    minimumGrantBytes: await slot.engineV2.minimumServiceableNativeGrantBytes(),
                     bridge: slot.engineV2))
         }
         return existing
@@ -288,6 +312,7 @@ extension ProviderLoop {
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let build = try await resliceAndBuildEngineV2Bundle(
@@ -301,6 +326,7 @@ extension ProviderLoop {
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
                 status: .disabled(.configDisabled, configured: false)),
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash)
         return build.bundle.bridge
     }
@@ -317,16 +343,21 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         targetSizing: SlotSizingSnapshot,
         specDecPreparation: SpecDecPreparation,
-        cacheEligibleWeightHash: String? = nil
+        modelArtifactSHA256: String? = nil,
+        cacheEligibleWeightHash: String? = nil,
+        registerInRuntime: Bool = true
     ) async throws -> EngineV2SlotBuild {
-        var prepared: EngineV2PreparedModel
+        let nativeLoad = Self.nativeMiMoLoad(in: try newcomerBox.borrowModel())
+        try requireNativeMiMoProcessWorkAllowed()
+        if nativeLoad != nil, engineV2SlotHooks != nil { throw MiMoV26ServingLoadError.nativeOwnerMismatch }
+        var prepared: EngineV2ServingPreparation
         do {
             let slotLogger = logger
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: engineV2SlotHooks?.assistantLoader
                     ?? ProductionProviderMTPAssistantLoader(),
@@ -334,8 +365,9 @@ extension ProviderLoop {
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         } catch {
+            if nativeLoad != nil { throw error } // real TX owns native unwind
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             throw error
         }
         // Prepare-stage fail-open (artifact revalidation, assistant load, or
@@ -361,13 +393,15 @@ extension ProviderLoop {
             existing: existing.map(\.slot),
             newcomer: newcomer,
             fleetKVBudgetBytes: fleetBudget)
+        let minimumGrants = Dictionary(uniqueKeysWithValues:
+            existing.map { ($0.slot.modelId, $0.minimumGrantBytes) })
 
         // Serviceability floor (fail loud): a slice that would leave ANY
         // slot below the minimum serveable grant is refused outright —
         // thrashing every co-resident model below serviceability serves
         // no one. ERROR telemetry + 503 (the coordinator reroutes).
         if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:]), prepared.assistant != nil
+            targets, minimumGrantBytes: minimumGrants), prepared.assistant != nil
         {
             logger.warning(
                 "mtp: model=\(modelId) fallback reason="
@@ -379,7 +413,7 @@ extension ProviderLoop {
             if let pendingLoad = pendingLoadLeases[modelId] {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
             }
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
@@ -387,13 +421,13 @@ extension ProviderLoop {
                 fleetKVBudgetBytes: fleetBudget)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:])
+            targets, minimumGrantBytes: minimumGrants)
         else {
             let floorGb = String(
                 format: "%.1f",
                 Double(EngineV2KVSizing.minimumServiceableGrantBytes) / (1024 * 1024 * 1024))
-            let message = "loading '\(modelId)' would re-slice some model's KV grant below "
-                + "the \(floorGb) GB serviceability floor "
+            let message = "loading '\(modelId)' would leave a model without its fixed request "
+                + "workspace, admission watermark and \(floorGb) GB minimum KV allowance "
                 + "(fleet KV budget \(fleetBudget) B across \(existing.count + 1) slots) — refused"
             EngineV2Factory.emitRefusalTelemetry(
                 modelId: modelId,
@@ -403,9 +437,10 @@ extension ProviderLoop {
             // Pre-shrink refusal: no grants were mutated, but drop the
             // newcomer's weights promptly so live residency reflects the
             // refusal before the caller's error handling runs.
+            if nativeLoad != nil { throw InferenceError.modelLoadFailed(message) }
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             throw InferenceError.modelLoadFailed(message)
         }
 
@@ -434,18 +469,22 @@ extension ProviderLoop {
                 modelType: modelType,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
-                cacheEligibleWeightHash: cacheEligibleWeightHash)
+                modelArtifactSHA256: modelArtifactSHA256,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
+                registerInRuntime: registerInRuntime)
         } catch {
+            if nativeLoad != nil { throw error } // no release, Void proof, or speculative restore
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             for entry in existing {
+                guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
             }
             throw error
@@ -456,6 +495,7 @@ extension ProviderLoop {
         // previous state left a slot under-granted).
         for entry in existing {
             if let target = targets[entry.slot.modelId], target > entry.previousGrant {
+                guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
@@ -472,11 +512,16 @@ extension ProviderLoop {
         bundle: ProviderEngineBundle,
         newcomer: EngineV2NewcomerBox
     ) async {
+        if let container = newcomer.modelContainer, Self.nativeMiMoLoad(in: container) != nil {
+            // Native callers must leave the setup operation/task and use the
+            // actual transaction path; generic unwind is not native authority.
+            return
+        }
         await engineV2Runtime.unregister(modelId: modelId)
         await bundle.bridge.shutdown()
         bundle.releaseAssistant()
         await newcomer.releaseAfterExternalResources()
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
         await resliceGrowSurvivorsLocked()
     }
 
@@ -508,7 +553,9 @@ extension ProviderLoop {
     /// invariant holds throughout. Used directly by `ensureModelLoaded`'s
     /// post-bridge-guard failure path, which already holds the gate.
     internal func resliceGrowSurvivorsLocked() async {
+        guard nativeMiMoAllowsReclamation() else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
+        guard nativeMiMoAllowsReclamation() else { return }
         guard !survivors.isEmpty else { return }
         let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
         let targets = EngineV2KVSizing.resliceGrants(
@@ -522,6 +569,7 @@ extension ProviderLoop {
         }
         for entry in survivors {
             if let target = targets[entry.slot.modelId], target > entry.previousGrant {
+                guard nativeMiMoAllowsReclamation() else { break }
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
@@ -542,33 +590,6 @@ extension ProviderLoop {
     /// On success the bridge is registered with `engineV2Runtime` BEFORE the
     /// caller installs the slot, so a request routed the instant the slot
     /// appears already has working capacity/cancel fan-out.
-    internal func makeEngineV2BridgeForSlot(
-        modelId: String,
-        modelType: String?,
-        isVLM: Bool = false,
-        modelDirectory: URL? = nil,
-        container: ModelContainer,
-        tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int,
-        cacheEligibleWeightHash: String? = nil
-    ) async throws -> EngineV2Bridge {
-        try await makeEngineV2BundleForSlot(
-            modelId: modelId,
-            modelType: modelType,
-            isVLM: isVLM,
-            modelDirectory: modelDirectory,
-            container: container,
-            tokenizer: tokenizer,
-            sizing: sizing,
-            kvBytesCapacity: kvBytesCapacity,
-            specDecPreparation: SpecDecPreparation(
-                artifact: nil,
-                status: .disabled(.configDisabled, configured: false)),
-            preparedModel: nil
-        ).bridge
-    }
-
     internal func makeEngineV2BundleForSlot(
         modelId: String,
         modelType: String?,
@@ -580,10 +601,39 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
+        modelArtifactSHA256: String? = nil,
+        cacheEligibleWeightHash: String? = nil,
+        registerInRuntime: Bool = true
+    ) async throws -> ProviderEngineBundle {
+        try await makeEngineV2BundleForSlot(
+            modelId: modelId, modelType: modelType, isVLM: isVLM, modelDirectory: modelDirectory,
+            container: .autoregressive(container), tokenizer: tokenizer, sizing: sizing,
+            kvBytesCapacity: kvBytesCapacity, specDecPreparation: specDecPreparation,
+            preparedModel: preparedModel.map(EngineV2ServingPreparation.autoregressive),
+            modelArtifactSHA256: modelArtifactSHA256,
+            cacheEligibleWeightHash: cacheEligibleWeightHash, registerInRuntime: registerInRuntime)
+    }
+
+    internal func makeEngineV2BundleForSlot(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool = false,
+        modelDirectory: URL? = nil,
+        container: ProviderModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        kvBytesCapacity: Int,
+        specDecPreparation: SpecDecPreparation,
+        preparedModel: EngineV2ServingPreparation?,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil,
         registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
+        try requireNativeMiMoProcessWorkAllowed()
+        if Self.nativeMiMoLoad(in: container) != nil, engineV2SlotHooks != nil {
+            throw MiMoV26ServingLoadError.nativeOwnerMismatch
+        }
 
         // Assembly is shared with the standalone server via
         // `EngineV2SlotFactory` (one construction path, no drift) —
@@ -640,6 +690,8 @@ extension ProviderLoop {
                 sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
+                automaticallySelectConcurrency: !loopConfig.config.backend.engineV2MaxConcurrentIsExplicit
+                    && loopConfig.config.backend.engineV2MaxConcurrentByModel[modelId] == nil,
                 kvBudget: kvBudget,
                 // The serving-set resolved reserve, so the paged capacity
                 // decision inside the factory measures headroom against the
@@ -649,8 +701,9 @@ extension ProviderLoop {
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:
                     loopConfig.config.backend.prefillDeadlineMode,
-                // SSD-tier metadata binding: the verified hash for the bytes
-                // this slot loaded (nil/blank disables reusable SSD caching).
+                // The loaded artifact's profile identity is independent of
+                // SSD reuse eligibility (nil/blank cache hash disables SSD).
+                modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,

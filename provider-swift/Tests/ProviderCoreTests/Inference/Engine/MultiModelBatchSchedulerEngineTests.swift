@@ -22,13 +22,21 @@ func multiModelEngineReportsRegistry() async throws {
 
 @Test("availableModels returns sorted ids")
 func multiModelEngineReturnsSortedIDs() async throws {
-    // Verify the empty path; the sort property is documented and tested
-    // via end-to-end live tests where real engine slots are present.
-    let engine = MultiModelBatchSchedulerEngine(
-        registryProvider: { @Sendable in [:] }
-    )
-    let models = try await engine.availableModels()
-    #expect(models.map(\.id) == [])
+    let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+        tokenizer: TokenizerHandle(MultiModelDeadlineTokenizer()))
+    let registryEngine = MultiModelBatchSchedulerEngine(
+        registryProvider: { ["zeta": entry, "alpha": entry, "middle": entry] })
+    let advertisedEngine = MultiModelBatchSchedulerEngine(
+        acquire: { throw MultiModelBatchSchedulerEngineError.modelNotLoaded($0) },
+        tokenizerProvider: { _ in
+            throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+        },
+        availableModels: { ["zeta", "alpha", "middle"] })
+
+    for engine in [registryEngine, advertisedEngine] {
+        let models = try await engine.availableModels()
+        #expect(models.map(\.id) == ["alpha", "middle", "zeta"])
+    }
 }
 
 @Test("streamChatCompletion calls ensureLoaded before lookup")
@@ -395,17 +403,18 @@ func fromSchedulerMessageMapsKVHeadroom() {
     #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 503)
 }
 
-@Test("fromSchedulerMessage maps capacity-timeout to .tokenBudgetExhausted (503)")
-func fromSchedulerMessageMapsCapacityTimeout() {
+@Test("fromSchedulerMessage keeps the duplicate-request-id guard off the capacity path")
+func fromSchedulerMessageMapsDuplicateRequestID() {
     let err = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
-        "request timed out waiting for capacity"
+        "token_budget_exhausted: duplicate request ID"
     )
-    if case .tokenBudgetExhausted = err {
+    if case .requestRejected = err {
         // OK
     } else {
-        Issue.record("expected .tokenBudgetExhausted, got \(err)")
+        Issue.record("expected .requestRejected, got \(err)")
     }
-    #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 503)
+    let failure = ProviderLoop.sanitizedInferenceFailure(from: err, phase: .streamStart)
+    #expect(failure.errorReason == .clientError)
 }
 
 @Test("fromSchedulerMessage falls through to .generationFailed for unknown messages (500)")

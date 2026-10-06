@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-30
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -20,7 +20,7 @@ Requests never leave the machine and are never billed.
 
 1. Pick a mode. The two flags are mutually exclusive; `darkbloom start`
    rejects the combination with exit 1
-   (`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.run`).
+   (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `Start.run`).
 
    | Mode | Command | Coordinator | Models come from | Earns |
    |---|---|---|---|---|
@@ -36,10 +36,16 @@ Requests never leave the machine and are never billed.
    ```
 
    `--port` defaults to `8000`, `--bind` to `127.0.0.1`. Before serving,
-   `Start.runLocalServe` (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`)
+   `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
-   serve.` if none remain), waits for the socket to bind (`waitUntilBound`,
+   serve.` if none remain), and preloads the selected models before listening
+   when `[backend] startup_preload` is enabled (the default). The explicit
+   `preload_models` list takes precedence; slot and memory limits can skip a
+   model, which still loads on request. Standalone preload does not run the
+   coordinator-serving one-token startup self-test, so the first local request
+   may still compile Metal kernels. Ctrl-C during preload cancels startup
+   without opening the listener. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running
@@ -132,6 +138,16 @@ matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
 `max_tokens` defaults to the scheduler's default when a request omits it.
+
+For Chat/Completions streaming, inspect every SSE event for `error`, even after
+HTTP 200. A late generation failure ends with a sanitized error chunk and
+`finish_reason: "error"`, without a success `[DONE]`; the HTTP transfer closes
+normally. Pre-header errors retain their HTTP status, and client cancellation
+still cancels generation. Responses uses `response.failed` for late failures.
+The provider chat-upload interceptor selects the SDK service's HTTP framing
+policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompletionFrames`).
+A failed required tool call is still a failure; no argument repair or fabricated
+call is performed.
 
 ## Verify
 

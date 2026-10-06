@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-15 · commit `0f7b1e611`
+> Last updated: 2026-10-04
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,16 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Registry scan optimization](2026-10-04-registry-scan-optimization.md) — combined reservation storage, compact evidence and pending-work measurements on an isolated Mac mini, with correctness and production-latency limits.
+
+- [Hybrid provider trust review](2026-09-27-hybrid-provider-trust-review.md) — September 27 snapshot of legacy MDM/APNs and App Attest authorization boundaries, threats, evidence and deployment limits.
+- [First-content performance and M5 capacity investigation](2026-09-28-first-content-performance.md) — production latency, deadline-refusal amplification and prefill measurement bounds; separates observations from unqualified concurrency targets.
+- [Qwen chunk-partition parity and chunk-agnostic recurrent capture](2026-09-27-qwen-chunk-partition-parity.md) — dense Qwen3.5-9B checkpoint state is bit-identical across chunk partitions and the MoE varies cold already, so recurrent capture now takes every 256-token-aligned range end; live results for the company-leaves case.
+- [Prefix cache hit rate: production analysis and levers](2026-09-26-prefix-cache-hit-rate-analysis.md) — 1.4–5.2% per-model hit rates with cache routing on at 100%; per-file epoch rotation, write churn, checkpoint geometry, credit-vs-load selection and the 40 QPS plan cap ranked as levers.
+- [App Attest post-swap authorization failures](2026-09-22-app-attest-postswap-grants.md) — signed assertion framing, archive-gap recovery, and the distinction between prospective policy and an active grant.
+- [App Attest recovery and snapshot investigation](2026-09-22-app-attest-recovery.md) — authenticated macOS framing, failed enrollment recovery, false-zero UI reproduction and distinct unresolved native assertion failures.
+
+- [Bonsai 2 lossless performance and API stability](2026-09-18-bonsai2-lossless-performance.md) — matched M3 Ultra/M5 Max prefill, decode and memory measurements, exactness/lifecycle evidence and preserved quality/release limits.
 - [Qwen 3.8 Next native API and cache qualification](2026-09-15-qwen38-native-api-qualification.md) — synchronized native tool prompts, response/accounting fixes, final local API/cache regressions and preserved multirow/quality limits.
 - [Qwen 3.8 Next performance and stability update](2026-09-15-qwen38-performance-stability.md) — qualified opt-in speed/cache work and native tool framing, with distinct checkpoint results and open quality/release gates.
 - [Security reports](security/README.md) — focused security reviews, including the macOS 27 App Attest enforcement gaps that remain after enforcement is enabled.
@@ -18,6 +28,7 @@ freshness stamp carries its own date, not the current one.
 - [App Attest release-build disconnect investigation](2026-09-14-app-attest-release-disconnects.md) — reproduced 0.9.3 callback timer crash, retained evidence, containment and fixed-build validation.
 - [Physical macOS 27 App Attest validation](2026-09-14-app-attest-macos27-validation.md) — real Apple attestations/assertions, user-session launch behavior, full provider negotiation, and verifier/serializer corrections.
 - [App Attest specification and draft review](2026-09-14-app-attest-spec-review.md) — Apple example compatibility, parser correction, credential/receipt gaps, and the proposed path to APNs/MDM retirement.
+- [Autopilot capacity and 429 evidence](2026-09-11-autopilot-capacity-evidence.md) — 48-hour logical rejection and retry measurements, cached hardware availability, conditional service quality and conservative opt-in loading/unloading requirements.
 - [GPT-OSS 20B default SSD prefix-cache qualification](2026-09-11-gptoss-default-prefix-cache.md) — authenticated reconstruction, mixed suffixes and B1/B2/B4 task checks pass; 86–91% median warm-hit TTFT reductions, with standalone transport and ephemeral-key limits retained.
 - [0.9.2 provider-only rollout review](2026-09-10-provider-092-rollout-review.md) — verified 0.9.1 coordinator compatibility, shared inference interactions and remaining fleet-release gates.
 - [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.

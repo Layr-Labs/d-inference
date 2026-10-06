@@ -28,7 +28,7 @@ The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md)
 | `coordinator/promptsidecar/` | Rust | Prompt-contract sidecar, built as a static musl binary into the coordinator image |
 | `provider-swift/` | Swift | Hardened CLI daemon on Apple Silicon Macs (`darkbloom` + `darkbloom-enclave`) |
 | `console-ui/`, `admin-ui/` | Next.js 16 / React 19 | Consumer web app (chat, billing, models) and the operator console |
-| `landing/` | static HTML | Marketing site |
+| `landing/` | Next.js 16 / React 19 | Marketing site; `make landing` installs, lints, builds and tests |
 | `e2e/` | Go | End-to-end suite that drives a real coordinator and provider |
 | `deploy/`, `scripts/` | Cloud Build, shell | GCP deployment and operator tooling |
 | `libs/` | git submodules | `mlx-swift`, `mlx-swift-lm`, `mlx` |
@@ -39,7 +39,7 @@ The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md)
 ### Prerequisites
 
 - macOS on Apple Silicon for anything under `provider-swift/`; the coordinator, sidecar, e2e suite, and UIs build on macOS or Linux.
-- Toolchains are pinned in [`mise.toml`](mise.toml) and installed with `mise install`: Go `1.25.0`, Rust `1.88.0`, Node `22`, Swift `6.3`, Python `3.12`, plus `jq`, `gh`, `awscli`, `gcloud`. Xcode Command Line Tools and `cmake` are needed for the provider's metallib.
+- Toolchains are pinned in [`mise.toml`](mise.toml) and installed with `mise install`: Go `1.25.7`, Rust `1.88.0`, Node `22`, Swift `6.3`, Python `3.12`, plus `jq`, `gh`, `awscli`, `gcloud`. Xcode Command Line Tools and `cmake` are needed for the provider's metallib.
 - A working `git` config with `user.name` and `user.email`.
 
 ### First-time clone
@@ -56,7 +56,7 @@ git config core.hooksPath .githooks   # enables pre-commit + pre-push checks
 `make help` lists every target. The ones you will use most:
 
 ```bash
-make coordinator-test        # cd coordinator && go test ./...
+make coordinator-test        # runner guards + mirrored Go suites with isolated API shards
 make prompt-sidecar          # cargo fmt --check, clippy -D warnings, test, release build
 make provider-test           # swift build + swift test with a source-matched mlx.metallib (Apple Silicon)
 make ui-lint ui-test         # eslint + vitest for console-ui
@@ -87,6 +87,14 @@ Every non-trivial change ships with tests. How to run each suite is in [`docs/de
 - **Test the real HTTP path.** Use `httptest.NewServer` for new endpoints.
 - **Frontend features need frontend tests.** Vitest for components; for UI that can't be unit-tested, exercise it in a browser before declaring done.
 - **Every bug fix gets a regression test** that fails without the fix.
+- **Keep coordinator tests separate.** Every coordinator `_test.go` belongs in
+  `coordinator/tests/`, mirrored by production owner. Public HTTP/WS contracts
+  use `tests/api/<domain>/contracts/`; shared fixtures use `tests/internal/`.
+  Extract genuine production-consumed components or retain injected collaborators
+  when testing private invariants across packages; do not export maps/locks,
+  add test-only production facades, copy implementations or use overlays.
+  `go test ./coordinator/...` discovers all suites; a focused production package
+  selector does not substitute for its mirrored test selector.
 
 ## Code style
 
@@ -122,9 +130,43 @@ The PR template will prompt you about this.
 
 ## Release cadence
 
-Releases are cut by maintainers, not contributors. Don't bump versions or create tags in your PR — the release workflow handles that. If your change should land in a specific upcoming release, set the milestone on the PR.
+Releases are cut by maintainers, not contributors. Don't bump versions or create tags in an ordinary PR. Maintainers prepare the version constants and changelog, then tag the reviewed source for the release workflow. If your change should land in a specific upcoming release, set the milestone on the PR.
 
 The release runbook is [`docs/operations/provider-release.md`](docs/operations/provider-release.md); production coordinator deploys are [`docs/operations/coordinator-deploy.md`](docs/operations/coordinator-deploy.md).
+
+### Changelog entries with less merge contention
+
+User-visible changes need an entry in the root [`CHANGELOG.md`](CHANGELOG.md).
+Keep the entry in the same PR as the change; it does not replace the canonical
+documentation required by [`docs/AGENTS.md`](docs/AGENTS.md).
+
+1. Read the target branch's current changelog before editing. For an ordinary
+   PR, add a small, self-contained section near the top using the existing
+   `## Unreleased — <topic>` style. Describe observable changes and important
+   limitations, not a commit-by-commit implementation log.
+2. Keep review updates inside your topic's section. Do not keep moving it back
+   to the top as other PRs land, rename a shared `Unreleased` heading for your
+   feature, or reorder, rewrap or clean up unrelated entries. Extend an existing
+   topic only when your change actually belongs to it.
+3. Leave version assignment, release dates and consolidation to an explicitly
+   requested release-preparation change. A current version constant or an
+   unshipped release-candidate heading is not a reason to add an ordinary PR
+   to that release. Do not change shipped history or claim publication from a
+   source merge or version bump.
+4. When updating your branch, resolve changelog conflicts by preserving the
+   target branch's entries and your topic's intended changes. Do not take the
+   whole file from either side. If release preparation has moved your topic,
+   check the new release boundary rather than duplicating it or putting new
+   work into an already shipped section.
+5. Review the final changelog diff against the current target branch, not just
+   the last commit: unrelated entries must remain intact and your change must
+   appear once. Run `git diff --check` and the documentation checks before
+   requesting review.
+
+Small topic-local edits reduce contention and make resolution easier; they do
+not eliminate conflicts when parallel PRs insert at the same location. Keep
+the existing single-file changelog rather than introducing per-PR fragments
+or a new release-generation process for an ordinary contribution.
 
 ## Code of conduct
 

@@ -38,8 +38,9 @@ private actor RaceGateCatalog: SpecDecCatalogLooking {
 /// Minimal fake HF-cache snapshot so `ModelScanner.resolveLocalPath` resolves
 /// the id before the load path reaches the preparation await under test.
 private func makeRaceFakeHFSnapshot(modelId: String) throws -> URL {
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    let cacheDir = ModelScanner.defaultCacheDirectory()
+        ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
     let modelDir = cacheDir.appendingPathComponent(
         "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
     let snapshot = modelDir
@@ -273,11 +274,9 @@ func mtpFloorLoop(
                 backend: .init(
                     idleTimeoutMins: 0,
                     maxModelSlots: 3,
-                    mtp: mtpMode == nil ? mtpDrafterPath != nil : nil,
-                    mtpMode: mtpMode ?? .auto,
+                    mtpMode: mtpMode ?? (mtpDrafterPath != nil ? .on : .off),
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
-        purgeLegacyFiles: false,
         attestationSigner: nil,
         kvBudgetForTesting: budget)
 }
@@ -518,7 +517,7 @@ struct MTPResliceFallbackTests {
         defer { try? FileManager.default.removeItem(at: fakeDir) }
 
         let server = StandaloneServer(
-            config: .init(maxCachedModels: 3, mtp: true),
+            config: .init(maxCachedModels: 3, mtpMode: .on),
             models: [ModelInfo(
                 id: fakeId, modelType: "gemma4", parameters: nil,
                 quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)],

@@ -67,7 +67,7 @@ struct SSDHybridMediaIdentityTests {
         }
         let result = await store.stage(requestID: .init(630), request: request,
             reserveReadScratch: fixture.reserveReadScratch) { manifest in
-            try codec.plan(manifest: manifest, request: request, minimumChunkSize: 256, maximumChunkSize: 256)
+            try codec.plan(manifest: manifest, request: request)
         }
         #expect(result.staged)
         let staged = try #require(store.takeStaged(requestID: .init(630), tokens: fixture.tokens,

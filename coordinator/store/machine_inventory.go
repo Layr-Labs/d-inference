@@ -32,6 +32,7 @@ type MachineObservation struct {
 	SEKey                string    `json:"-"` // authenticated legacy key; not proof of physical uniqueness
 	VerifiedSerial       string    `json:"-"` // only fresh, SE-bound Apple MDA evidence
 	VerifiedAppAttestKey string    `json:"-"` // set only after a fresh endpoint-bound assertion commits
+	RegisteredAt         time.Time `json:"registered_at,omitzero"`
 	At                   time.Time `json:"observed_at"`
 	Disconnected         bool      `json:"disconnected"`
 	DisconnectReason     string    `json:"disconnect_reason,omitempty"`
@@ -48,21 +49,13 @@ type MachineObservation struct {
 	LegacyMDA            bool      `json:"legacy_mda"`
 }
 
-const inventoryStaleDisconnectReason = "inventory_stale"
+type MachineAlias struct{ Kind, Scope, Digest string }
 
-// A delayed capture cannot overwrite newer liveness or reopen a confirmed
-// disconnect. A fresh capture may revive a closure inferred from stale data.
-func inventoryObservationSuperseded(lastSeen time.Time, disconnected bool, reason string, next MachineObservation) bool {
-	return next.At.Before(lastSeen) || disconnected && (reason != inventoryStaleDisconnectReason || !next.At.After(lastSeen))
-}
-
-type machineAlias struct{ Kind, Scope, Digest string }
-
-func (o MachineObservation) aliases() []machineAlias {
-	var aliases []machineAlias
+func (o MachineObservation) Aliases() []MachineAlias {
+	var aliases []MachineAlias
 	add := func(kind, scope, value string) {
 		h := sha256.Sum256([]byte(kind + "\x00" + value))
-		aliases = append(aliases, machineAlias{kind, scope, hex.EncodeToString(h[:])})
+		aliases = append(aliases, MachineAlias{kind, scope, hex.EncodeToString(h[:])})
 	}
 	// A serial claim never enters this list. Anonymous observations remain
 	// provisional; they cannot acquire another account's aliases.
@@ -80,8 +73,8 @@ func (o MachineObservation) aliases() []machineAlias {
 	return aliases
 }
 
-func (o MachineObservation) assurance() string {
-	if len(o.aliases()) == 0 {
+func (o MachineObservation) Assurance() string {
+	if len(o.Aliases()) == 0 {
 		return "provisional"
 	}
 	if o.AccountID != "" && o.SEKey != "" && o.VerifiedSerial != "" {
@@ -97,15 +90,4 @@ type AppAttestEvent struct {
 	Stage     string          `json:"stage"`
 	Outcome   string          `json:"outcome"`
 	Fields    json.RawMessage `json:"fields"`
-}
-
-func strongerAssurance(a, b string) string {
-	if a == "" {
-		return b
-	}
-	rank := map[string]int{"provisional": 0, "key_bound": 1, "hardware_verified": 2}
-	if rank[b] > rank[a] {
-		return b
-	}
-	return a
 }

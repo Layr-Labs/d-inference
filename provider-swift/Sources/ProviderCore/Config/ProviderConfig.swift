@@ -1,13 +1,9 @@
 /// Provider configuration management.
 ///
-/// Configuration is stored in TOML format at `~/.config/darkbloom/provider.toml`.
-/// For backward compatibility with existing installations, the loader also
-/// reads from `~/.config/eigeninference/provider.toml` and the legacy
-/// `~/Library/Application Support/{darkbloom,eigeninference}/provider.toml`
-/// paths. New installs always write to the canonical `~/.config/darkbloom/`
-/// path. The config includes:
+/// Configuration is stored in TOML format at `~/.config/darkbloom/provider.toml`
+/// (or an explicit `--config` path). The config includes:
 ///   - Provider identity (name, memory reserve)
-///   - Backend settings (port, model, continuous batching, idle timeout)
+///   - Backend settings (port, model, concurrency, idle timeout, MTP)
 ///   - Coordinator connection settings (URL, heartbeat interval)
 ///   - Scheduling windows
 ///   - Config-backed Gemma optimization controls
@@ -69,27 +65,26 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` enables embedded Qwen 3.5-family and Nemotron Lightning heads, plus the separately published
+/// `auto` enables embedded Qwen-family, Nemotron Lightning and native MiMo heads, plus the separately published
 /// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
 ///
 /// The declaration alone never activates anything: full artifact inspection
-/// and the process-wide kill switch remain enforced by
-/// `SpecDecArtifactFunnel`, so a declared-but-invalid head falls back to
-/// target-only with a recorded reason.
+/// and the process-wide kill switch remain enforced by the generic funnel
+/// or strict native MiMo loader. Metadata intent alone never proves activation.
 public enum MTPMode: String, Sendable, Equatable, Codable {
     case auto
     case on
     case off
 
     /// `model_type` values whose embedded heads self-activate under `auto`.
-    /// Kept in sync with `SpecDecArtifactFunnel.isInlineTarget` — the
-    /// funnel stays the single authority on which models it will *resolve*;
-    /// this set only decides which ones `auto` is willing to *ask about*.
+    /// The generic funnel and native MiMo loader remain the authorities on
+    /// genuine artifact eligibility. This set only selects automatic intent;
+    /// it cannot create an assistant or bypass native head/owner validation.
     static let automaticEmbeddedModelTypes: Set<String> = [
-        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h",
+        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2",
     ]
 
     private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
@@ -121,7 +116,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     }
 
     /// Startup warms metadata only for eligible external assistants. Embedded
-    /// Qwen and Nemotron heads resolve from their checkpoint and need no catalog request.
+    /// Qwen, Nemotron and native MiMo heads resolve from their checkpoint and need no catalog request.
     func requiresCatalogPrewarm(forModelType modelType: String?, modelID: String) -> Bool {
         switch self {
         case .off:
@@ -139,6 +134,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
 public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
     public var model: String?
+    /// Explicitly selected HuggingFace hub directory; unset preserves the legacy home cache.
+    public var modelCacheDirectory: String?
     /// Which models to advertise to the network. If empty, all downloaded models
     /// are advertised. If set, only these models are offered.
     public var enabledModels: [String]
@@ -149,25 +146,27 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// coordinator-driven preloads so advertised model count cannot become a
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
+    /// Explicit network residency control; advertising all cached models is not consent.
+    public var modelAutopilot: ModelAutopilotSettings
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
-    /// ``defaultEngineV2MaxConcurrent`` — 4 as of v0.8.1, reverting v0.8.0's
-    /// raise to 8. The two knobs ARE coupled, contrary to what v0.8.0
-    /// believed: the raise was justified by paged's batch curve, and v0.8.1
-    /// reverts the paged default, so it goes back with it. See
-    /// ``ConcurrencyDefaultMigration/v081ConcurrencyRevert`` for the measured
-    /// curve and why the knee is at 4.
+    /// ``defaultEngineV2MaxConcurrent`` — 4, the knee of the measured
+    /// contiguous batch curve: aggregate throughput is flat from B=4 to B=8
+    /// and collapses below it (B=3 is -7.5%, B=2 is -41%), while per-request
+    /// decode is aggregate/B (`docs/reports/2026-07-25-paged-gate-results.md`).
     ///
-    /// Still clamped to [1, 8] at use, and the UPPER bound deliberately stays
-    /// 8: the engine's KV byte-ledger admission binds long before count does,
-    /// caps past 8 recreate the batch-collapse regime the one-engine release
-    /// exists to kill, and 8 remains the right operating point for a box that
-    /// asks for paged by name — where B=8 still pays 1.27x over B=4. The
-    /// coordinator sees the effective value in heartbeat `max_concurrency`.
-    public var engineV2MaxConcurrent: UInt64
+    /// Missing configuration selects the exact reviewed model/runtime/hardware
+    /// profile when one exists; unknown profiles retain default 4 and ceiling 8.
+    /// Explicit values remain upper bounds. Widths up to 16 require a reviewed
+    /// profile after backend resolution, physical fit and shared-Mac admission.
+    /// Heartbeats report the final effective cap, never the requested ceiling.
+    public var engineV2MaxConcurrent: UInt64 {
+        didSet { engineV2MaxConcurrentIsExplicit = true }
+    }
+    public private(set) var engineV2MaxConcurrentIsExplicit: Bool
     /// Optional per-model override map
     /// (`engine_v2_max_concurrent_by_model` under `[backend]`, TOML table
-    /// of model id → cap). Same [1, 8] clamp. Missing ids use
+    /// of model id → cap). The same qualification bounds apply. Missing ids use
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
@@ -196,17 +195,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
-    /// Startup model preload (default true). On boot the provider loads the
-    /// `preload_models` set (or, when that is empty, the models it was serving
-    /// before the last restart — see `LoadedModelsStore`) BEFORE registering
-    /// with the coordinator, so a release restart never advertises models it
-    /// hasn't warmed. `startup_preload = false` restores the old
-    /// register-immediately behavior.
+    /// Startup model preload (default true) for coordinator and standalone
+    /// serving. An explicit `preload_models` list takes precedence; otherwise
+    /// previously loaded models go first, then the selected models. The
+    /// coordinator path preloads before registration, bounded by the timeout
+    /// below. The standalone path preloads before its HTTP listener starts.
+    /// `startup_preload = false` disables the startup load in either mode.
     public var startupPreload: Bool
-    /// Models to preload at startup, in this order. Empty (default) means
-    /// "the models that were loaded before the last restart" (persisted set,
-    /// loaded biggest-first). Ids not in the advertised model set are skipped
-    /// with a warning. Set `preload_models = ["..."]` under `[backend]`.
+    /// Models to preload at startup, in this order. Empty (default) uses the
+    /// selected serving set, prioritizing previously loaded models on the
+    /// coordinator path. Ids outside the selected set are skipped with a
+    /// warning. Set `preload_models = ["..."]` under `[backend]`.
     public var preloadModels: [String]
     /// Upper bound (seconds) the provider defers coordinator registration while
     /// the startup preload runs. If the preload finishes sooner, it registers
@@ -215,14 +214,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// the remaining loads finish in the background. Default 120s covers a
     /// ~26 GB weight load + engine warmup with margin.
     public var startupPreloadTimeoutSecs: UInt64
-    /// After each startup preload, run a 1-token greedy decode through the real
-    /// serving path through the model's EngineV2 bridge so
+    /// Coordinator-connected startup only: after each preload, run a 1-token
+    /// greedy decode through the model's EngineV2 bridge so
     /// Metal JIT, compiled buckets, and the chat-template render are warm
     /// before the first routed request. Default true. Failure is fail-open
     /// (WARN telemetry, model stays advertised) unless
-    /// `startup_selftest_fail_closed = true`.
+    /// `startup_selftest_fail_closed = true`. Standalone `--local` preloads
+    /// weights and the engine but does not run a synthetic decode; its first
+    /// request may still pay Metal JIT or compiled-bucket warmup.
     public var startupSelftest: Bool
-    /// When true, a model whose startup self-test decode fails is unloaded and
+    /// Coordinator-connected startup only: when true, a model whose startup
+    /// self-test decode fails is unloaded and
     /// dropped from the advertised set for this run (fail-closed). Default
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
@@ -232,19 +234,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
     /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
     /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
-    /// The legacy `mtp = true|false` key is accepted only when `mtp_mode` is
-    /// absent. Serialization emits only `mtp_mode`.
+    /// Native `mimo_v2` also requests its inspected embedded heads automatically.
+    /// The retired boolean `mtp` key is ignored (and warned about, see
+    /// ``retiredKeysPresent``); only `mtp_mode` is read or written.
     ///
     /// Artifact resolution/load remains fail-open to target-only decode, and
     /// `DARKBLOOM_CBV2_MTP=0` remains the final process-wide kill switch.
     public var mtpMode: MTPMode
-    /// Source-compatible view of the former boolean setting. Reading is true
-    /// only for an explicit `.on`; assigning performs an explicit on/off
-    /// override rather than materializing the automatic model decision.
-    public var mtp: Bool {
-        get { mtpMode == .on }
-        set { mtpMode = newValue ? .on : .off }
-    }
     /// Explicit provider-side atomic first-token deadline policy. Nil means the
     /// key was absent, so runtime resolution inherits the legacy environment
     /// control and otherwise securely enforces. Optional encoding preserves
@@ -257,14 +253,14 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var mtpDrafterPath: String?
     /// RETIRED `[backend]` keys found in the decoded provider.toml
     /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
-    /// `legacy_compiled_decode`, `kv_quant`). The keys parse cleanly — an
+    /// `legacy_compiled_decode`, `kv_quant`, `mtp`). The keys parse cleanly — an
     /// old config must never brick a provider — but their values are
     /// IGNORED; startup emits one WARN per entry so operators notice the
     /// knob no longer exists. Not encoded back out.
     public internal(set) var retiredKeysPresent: [String] = []
 
-    /// The v0.8.1 box-wide concurrency cap, and the single source for BOTH
-    /// the memberwise default and the ``init(from:)`` fallback.
+    /// The box-wide concurrency cap, and the single source for BOTH the
+    /// memberwise default and the ``init(from:)`` fallback.
     ///
     /// They are one constant because they drifted apart exactly once and it
     /// was expensive: the memberwise default moved 4 -> 8 while the decode
@@ -272,20 +268,19 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// — which is every provider in the fleet — silently kept B=4 while
     /// the release believed it had moved to 8.
     ///
-    /// Moving this constant reaches FRESH INSTALLS ONLY. `TOMLEncoder` emits
+    /// Moving this constant reaches FRESH INSTALLS ONLY: `TOMLEncoder` emits
     /// every non-optional key, so existing configs carry a literal that does
-    /// not track the binary; the fleet moves via
-    /// ``ConcurrencyDefaultMigration``, and a test pins that the newest step
-    /// lands here so the two cannot separate.
+    /// not track the binary. Moving the fleet needs a config migration.
     public static let defaultEngineV2MaxConcurrent: UInt64 = 4
 
     public init(
         port: UInt16 = 8100,
         model: String? = nil,
+        modelCacheDirectory: String? = nil,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
-        engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
+        engineV2MaxConcurrent: UInt64? = nil,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
@@ -294,17 +289,19 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         startupPreloadTimeoutSecs: UInt64 = 120,
         startupSelftest: Bool = true,
         startupSelftestFailClosed: Bool = false,
-        mtp: Bool? = nil,
         mtpMode: MTPMode = .auto,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtpDrafterPath: String? = nil
+        mtpDrafterPath: String? = nil,
+        modelAutopilot: ModelAutopilotSettings = .init()
     ) {
         self.port = port
         self.model = model
+        self.modelCacheDirectory = modelCacheDirectory
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
-        self.engineV2MaxConcurrent = engineV2MaxConcurrent
+        self.engineV2MaxConcurrent = engineV2MaxConcurrent ?? Self.defaultEngineV2MaxConcurrent
+        self.engineV2MaxConcurrentIsExplicit = engineV2MaxConcurrent != nil
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
@@ -313,17 +310,20 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
         self.startupSelftest = startupSelftest
         self.startupSelftestFailClosed = startupSelftestFailClosed
-        self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
+        self.mtpMode = mtpMode
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.modelAutopilot = modelAutopilot
     }
 
     enum CodingKeys: String, CodingKey {
         case port
         case model
+        case modelCacheDirectory = "model_cache_directory"
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
+        case modelAutopilot = "model_autopilot"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
@@ -333,7 +333,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
         case startupSelftest = "startup_selftest"
         case startupSelftestFailClosed = "startup_selftest_fail_closed"
-        case legacyMTP = "mtp"
         case mtpMode = "mtp_mode"
         case prefillDeadlineMode = "prefill_deadline_mode"
         case mtpDrafterPath = "mtp_drafter_path"
@@ -342,22 +341,27 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// RETIRED `[backend]` keys: parsed for presence only, values ignored.
     /// See `retiredKeysPresent`. v0.7.5 (one engine) retired the four
     /// selection knobs; v0.8.0 retired `kv_quant` along with the KV
-    /// quantization feature itself.
+    /// quantization feature itself; v0.9.10 retired the pre-tri-state boolean
+    /// `mtp` (superseded by `mtp_mode`, which v0.8.14+ already wrote).
     private enum RetiredCodingKeys: String, CodingKey, CaseIterable {
         case continuousBatching = "continuous_batching"
         case adaptivePrefill = "adaptive_prefill"
         case engineV2 = "engine_v2"
         case legacyCompiledDecode = "legacy_compiled_decode"
         case kvQuant = "kv_quant"
+        case mtp
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 8100
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.modelCacheDirectory = try container.decodeIfPresent(String.self, forKey: .modelCacheDirectory)
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
+        self.modelAutopilot = try container.decodeIfPresent(ModelAutopilotSettings.self, forKey: .modelAutopilot) ?? .init()
+        self.engineV2MaxConcurrentIsExplicit = container.contains(.engineV2MaxConcurrent)
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
             ?? Self.defaultEngineV2MaxConcurrent
@@ -376,13 +380,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
-        if container.contains(.mtpMode) {
-            self.mtpMode = try container.decode(MTPMode.self, forKey: .mtpMode)
-        } else if let legacyMTP = try container.decodeIfPresent(Bool.self, forKey: .legacyMTP) {
-            self.mtpMode = legacyMTP ? .on : .off
-        } else {
-            self.mtpMode = .auto
-        }
+        self.mtpMode = try container.decodeIfPresent(MTPMode.self, forKey: .mtpMode) ?? .auto
         self.prefillDeadlineMode =
             try container.decodeIfPresent(
                 PrefillDeadlineMode.self,
@@ -400,10 +398,14 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(port, forKey: .port)
         try container.encodeIfPresent(model, forKey: .model)
+        try container.encodeIfPresent(modelCacheDirectory, forKey: .modelCacheDirectory)
         try container.encode(enabledModels, forKey: .enabledModels)
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
-        try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
+        try container.encode(modelAutopilot, forKey: .modelAutopilot)
+        if engineV2MaxConcurrentIsExplicit {
+            try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
+        }
         try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
         try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
         try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
@@ -452,48 +454,19 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
-    /// Schema version of the `provider.toml` this config came from
-    /// (`config_version`, top level, written by the startup stamp in
-    /// `migrateConfigIfNeeded`).
-    ///
-    /// Its job is to date generated values so a schema migration can tell them
-    /// apart from an operator's current explicit choices. That evidence is
-    /// spent once; after the file carries the new stamp, its values mean what
-    /// they say forever.
-    ///
-    /// Decoding always reports ``currentConfigVersion`` — the field describes
-    /// the schema this process speaks. Cap migrations that require an operator
-    /// warning are reported through ``appliedMigrations`` instead.
-    public var configVersion: Int
-    /// Ids of migrations this decode must surface in a startup warning (see
-    /// `RetiredKnobWarnings`). Derived, never encoded — the same contract as
-    /// ``BackendSettings/retiredKeysPresent``.
-    public internal(set) var appliedMigrations: [String] = []
-
-    /// Current `provider.toml` schema version.
-    ///
-    ///   * absent = pre-v0.8.0
-    ///   * 1 = v0.8.0, which raised the concurrency default 4 -> 8
-    ///   * 2 = v0.8.1, which reverted it to 4 with contiguous KV
-    ///   * 3 = tri-state MTP; generated legacy false migrates to automatic
-    ///
-    /// Bump only with a versioned migration that consumes the previous value.
-    public static let currentConfigVersion = MTPModeDefaultMigration.targetConfigVersion
 
     public init(
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
-        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
-        configVersion: Int = ProviderConfig.currentConfigVersion
+        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings()
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
-        self.configVersion = configVersion
     }
 
     enum CodingKeys: String, CodingKey {
@@ -502,64 +475,17 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case coordinator
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
-        case configVersion = "config_version"
-    }
-
-    /// Parent-level probe for fields whose migration depends on the top-level
-    /// config stamp. `BackendSettings` cannot see `config_version` while it is
-    /// decoding its nested table.
-    private struct BackendMTPMigrationProbe: Decodable {
-        let legacyMTP: Bool?
-        let mtpMode: MTPMode?
-
-        enum CodingKeys: String, CodingKey {
-            case legacyMTP = "mtp"
-            case mtpMode = "mtp_mode"
-        }
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
-        let mtpProbe = try container.decodeIfPresent(
-            BackendMTPMigrationProbe.self, forKey: .backend)
-        var backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
+        self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
         self.gemmaOptimizations = try container.decodeIfPresent(
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
-
-        // Generated-value migrations selected by the stamp the file carries.
-        // MTP false from a pre-tri-state schema becomes automatic unless the
-        // authoritative `mtp_mode` key is present. Legacy true remains on.
-        //
-        // Deliberately narrow: a step fires only on the exact cap the release
-        // generated, so an operator who picked any other value in range is
-        // never rewritten. The unavoidable casualty is a deliberate
-        // cap that happens to equal the one being migrated away from — see
-        // `ConcurrencyDefaultMigration.v081ConcurrencyRevert`, which is honest
-        // about the fact that v0.8.1's 8 -> 4 step cannot tell a generated 8
-        // from a chosen one. Explicit paged is the exception: its backend
-        // selection is distinguishable and its measured optimum remains B=8,
-        // so the migration preserves it. Any migrated cap runs once, is
-        // announced by `RetiredKnobWarnings`, and sticks when re-set.
-        //
-        // The predicate is shared with the on-disk rewrite so this in-memory
-        // change and the durable text surgery cannot disagree.
-        let onDiskVersion = try container.decodeIfPresent(Int.self, forKey: .configVersion)
-        backend.mtpMode = MTPModeDefaultMigration.resolvedMode(
-            onDiskVersion: onDiskVersion,
-            explicitMode: mtpProbe?.mtpMode,
-            legacyValue: mtpProbe?.legacyMTP)
-        let migrated = ConcurrencyDefaultMigration.resolvedCap(
-            onDiskVersion: onDiskVersion,
-            cap: backend.engineV2MaxConcurrent,
-            kvBackend: backend.engineV2KVBackend)
-        backend.engineV2MaxConcurrent = migrated.cap
-        self.appliedMigrations = migrated.applied.map(\.id)
-        self.backend = backend
-        self.configVersion = Self.currentConfigVersion
     }
 
     /// Generate a default config based on detected hardware.
@@ -617,44 +543,18 @@ public enum ConfigError: Error, CustomStringConvertible {
 
 public enum ConfigManager: Sendable {
 
-    /// Default config file path. Resolution order, first hit wins:
-    ///
-    /// 1. `~/.config/darkbloom/provider.toml`  (canonical, new installs)
-    /// 2. `~/Library/Application Support/darkbloom/provider.toml`
-    /// 3. `~/.config/eigeninference/provider.toml`  (legacy install path)
-    /// 4. `~/Library/Application Support/eigeninference/provider.toml`
-    ///
-    /// If none of those files exist yet, we return path #1 so first-time
-    /// `save()` writes to the canonical location.
+    /// Default config file path: `~/.config/darkbloom/provider.toml`.
     public static func defaultConfigPath() throws -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first
+        defaultConfigPath(home: FileManager.default.homeDirectoryForCurrentUser)
+    }
 
-        let xdgNew = home
+    /// The same path for another account's home, such as the invoking user
+    /// of `sudo darkbloom report`.
+    public static func defaultConfigPath(home: URL) -> URL {
+        home
             .appendingPathComponent(".config")
             .appendingPathComponent("darkbloom")
             .appendingPathComponent("provider.toml")
-        let xdgLegacy = home
-            .appendingPathComponent(".config")
-            .appendingPathComponent("eigeninference")
-            .appendingPathComponent("provider.toml")
-
-        let appNew = appSupport?
-            .appendingPathComponent("darkbloom")
-            .appendingPathComponent("provider.toml")
-        let appLegacy = appSupport?
-            .appendingPathComponent("eigeninference")
-            .appendingPathComponent("provider.toml")
-
-        let candidates = [xdgNew, appNew, xdgLegacy, appLegacy].compactMap { $0 }
-        for candidate in candidates {
-            if FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-        }
-        return xdgNew
     }
 
     /// Load config from a file path.

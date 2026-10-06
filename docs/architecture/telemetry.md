@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-10-03
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -9,10 +9,20 @@ process that emits telemetry *events*. The field-by-field catalogue is in
 [`../reference/telemetry-inventory.md`](../reference/telemetry-inventory.md)
 and the event contract in [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md).
 
+The coordinator's HTTP-layer observation state belongs to
+`coordinator/api/observation/` (`Owner`), not the transport server. Provider and
+inference owners report through that shared instance. Route, profile and compact
+request-outcome sinks remain separate bounded queues with their existing
+ordering, sampling, drop and shutdown policies. The extraction adds no ingestion
+endpoint and no prompt-bearing fields.
+
 Per-attempt prediction/refusal evidence travels on existing terminal profiles
 to PostgreSQL, separately from telemetry events. Its
 [field reference](../reference/prediction-decision-telemetry.md) describes the
-closed values, timing boundaries and rollout.
+closed values, timing boundaries and rollout. Optional `unbounded_reason`
+separates engine projection failure families without changing admission.
+The coordinator stores only recognized closed values or `other`, while
+older reasonless records remain absent.
 
 ## Context
 
@@ -20,9 +30,9 @@ Providers run on machines the project does not own, next to prompts the
 project must never see. The first telemetry design gave every client (Swift
 provider, console, app) a free-form event API posted to
 `POST /v1/telemetry/events`, sanitized and stored by the coordinator.
-That path is retired: the route answers `telemetry_ingest_disabled` without reading the body ([api-contracts](../reference/api-contracts.md#telemetry-1)), the Swift
-`TelemetryClient` and console `telemetry.ts` are no-op facades, and the
-`telemetry_events` table is gone. What replaced it is narrower and structural:
+That path is retired: the coordinator no longer registers the route (a stale
+client gets a plain 404), the Swift `TelemetryClient` and console
+`telemetry.ts` are no-op facades, and the `telemetry_events` table is gone. What replaced it is narrower and structural:
 
 - the **heartbeat** already carries every operational fact the coordinator
   needs (status, slot capacity, engine health, GPU memory, allocator counters),
@@ -34,9 +44,11 @@ That path is retired: the route answers `telemetry_ingest_disabled` without read
   `request_profiles`) and the profiler's `profile` object hold request-level
   timing without any request content.
 
-The event shape and allowlist survive because they still bound the coordinator
-emitter and both client-side filters, and because reviving ingestion would have
-to start from them.
+The event shape survives because it still bounds the coordinator emitter, and
+because reviving ingestion would have to start from it. There is no server-side
+field allowlist any more: with nothing ingesting client events, it filtered
+nothing. The privacy guarantee rests on there being no client ingestion path at
+all and on the emitter's call sites passing fixed operational keys.
 
 ## Mechanism
 
@@ -58,13 +70,30 @@ The baseline cadence is the provider's `heartbeat_interval_secs` ([CLI reference
 
 Metrics are emitted only from the accepted registry snapshot, never from the
 raw frame: values have been clamped (`maxDecodeTPS = 500`, `maxPrefillTPS =
-5000`, `maxReportedMaxConcurrency = 24`, …) and slot model IDs constrained to
+20000`, `maxReportedMaxConcurrency = 24`, …) and slot model IDs constrained to
 the connection's coordinator-known inventory. Every 60 s the fleet sampler
 (`StartProfilerLoops`) turns the same snapshots into `fleet_snapshots` rows
 through the real routing gates; every 15 s `StartDDGaugeLoop` pushes the
 platform gauges (`providers.online`, `utilization.*`, `capacity.*`,
 `request_queue.depth`). How the scheduler reads the capacity fields:
 [`scheduling.md`](scheduling.md); the gate vocabulary: [`routing.md`](routing.md).
+
+Optional per-engine performance observations carry an epoch, sample count and
+age independently of heartbeat cadence. Prompt measurements are published before
+terminal accounting, and engine decode capacity stays separate from delivered
+streaming/end-to-end rates. See the exact [capacity protocol](../reference/protocol-messages.md#slotsperformance_measurements)
+and `coordinator/internal/registry/capacityvalue/performance_measurements.go`
+(`ClampPerformanceMeasurements`, `ValidPerformanceObservation`). These fields belong to
+in-memory routing observations and are excluded from persisted numeric-only
+provider telemetry; they add no client telemetry-ingestion endpoint.
+The first-content design includes coarse numeric workload buckets for
+routing: these reveal bounded workload-size metadata to the coordinator, which
+already processes the request, but contain no prompt text, completion text,
+token IDs, media or cache keys. The protocol accepts only six fixed numeric
+bucket ceilings and closed phase/cache/contention values, with at most 32
+engine-local aggregate buckets. Warm-pool planning retains numeric work means
+in memory; process logs and event emitters omit the measured prompt/output
+means and work rates.
 
 `recordMLXCacheTelemetry` emits allocator snapshots as histograms with a
 DogStatsD-only client, or as latest-value gauges through HTTPS when
@@ -73,16 +102,16 @@ DogStatsD-only client, or as latest-value gauges through HTTPS when
 claiming fleet percentiles. It emits
 cumulative reclaimer counters as nonnegative deltas from the previous accepted
 heartbeat. The first observation has no counter baseline; a reset contributes
-no negative delta (`coordinator/api/provider_mlx_cache_telemetry.go`).
-`applyProviderHeartbeat` (`coordinator/api/provider_heartbeat.go`) emits only
+no negative delta (`coordinator/internal/provider/heartbeat/provider_mlx_cache_telemetry.go`).
+`applyProviderHeartbeat` (`coordinator/internal/provider/heartbeat/provider_heartbeat.go`) emits only
 when `Registry.Heartbeat` accepts the snapshot; stale sequence-stamped frames
 still prove liveness but emit no repeated allocator or wedge samples. Tags
-never include a provider session id. `sanitizeChipFamilyTag` uses the fixed
+never include a provider session id. `SanitizeChipFamilyTag` uses the fixed
 M1–M5 family/tier vocabulary plus `unknown`/`other`; client-cancellation metrics
-use the same helper (`coordinator/api/chip_family_tags.go`).
+use the same helper (`coordinator/api/observation/provider_labels.go`).
 `sanitizeVersionTag` maps strict semver to `0.6.x`, `0.7.x`, `0.8.x`, `0.9.x`,
 `other_release`, or `prerelease`; missing values are `unknown`, invalid values
-are `other` (`coordinator/api/unknown_frame_metrics.go`). Arbitrary patch
+are `other` (`coordinator/api/inference/lifecycle_metrics.go`). Arbitrary patch
 numbers and prerelease counters cannot create new series. Exact versions
 remain in provider metadata.
 
@@ -108,10 +137,19 @@ capture time; capacity refresh attaches it as `slots[].prefix_cache` with an
 updated age. Whole-root maintenance contributes three process counters through
 `ProviderLoop+Capacity.swift`, including removals from unloaded models. The
 [wire reference](../reference/protocol-messages.md#slotsprefix_cache) defines the
-fields; no free-form client event transport is used.
+fields; no free-form client event transport is used. One counter originates in
+the engine rather than the store: when a packed prefill cohort disarms a
+recurrent donor's checkpoint capture, `EngineLoopV2` reports it once per
+request through `CBv2CompletePrefixCache.recordRecurrentCaptureDisarmed(packedAt:)`,
+`SSDHybridCheckpointStore` counts it in its stats, and the snapshot carries it
+as `recurrent_capture_disarmed_packed_total` (complete-checkpoint stores only).
 
 `applyProviderHeartbeat` feeds only registry-accepted snapshots to
-`recordPrefixCacheTelemetry` (`coordinator/api/provider_prefix_cache_telemetry.go`).
+`recordPrefixCacheTelemetry` (`coordinator/internal/provider/heartbeat/provider_prefix_cache_telemetry.go`),
+which emits the store-lifetime counters as positive deltas
+(`provider.prefix_cache.recurrent_capture_disarmed_packed` among them; a
+provider that omits the optional field contributes no delta and seeds a
+baseline when the field first appears).
 The existing live slot snapshot is the entire counter baseline: a new cache
 generation seeds it, removal or missing telemetry clears it, and disconnect
 ends the provider lifetime. Repeated sample sequences cannot contribute another
@@ -136,8 +174,10 @@ of physical disk errors.
 
 The complete-checkpoint writer also distinguishes novel-share exhaustion
 (`write_priority_limited`) from total-budget exhaustion (`write_rate_limited`)
-through `SSDWriteRateLimiter.decision`. Both settle the same typed heartbeat
-counter; neither creates a new event field. The [protocol reference](../reference/protocol-messages.md)
+through `SSDWriteRateLimiter.decision`. Ahead of both, the demand gate settles
+`skipped_novel` for a checkpoint with no coordinator-observed or local repeat
+demand, spending no bytes or budget (`SSDCheckpointDemand.admitsWrite`). All
+three settle the same typed heartbeat counter; none creates a new event field. The [protocol reference](../reference/protocol-messages.md)
 owns the closed outcome vocabulary, and the [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)
 defines the write policy.
 
@@ -174,7 +214,7 @@ history grows across reloads. A separate coordinator timestamp advances only
 with accepted capacity replacements; rejected capacity frames can prove
 liveness without erasing elapsed sample age.
 
-`recordPagedStorageTelemetry` (`coordinator/api/provider_paged_storage_telemetry.go`)
+`recordPagedStorageTelemetry` (`coordinator/internal/provider/heartbeat/provider_paged_storage_telemetry.go`)
 publishes bounded chip/version-tagged observations after registry acceptance.
 Actual segment ownership includes allocator padding. The optional padding
 gauge identifies bytes that cannot hold KV pages; usable slack excludes them.
@@ -201,7 +241,7 @@ without adding overlapping ownership gauges together.
 Heartbeat stamping ages this immutable observation without advancing its producer
 sequence (`CoordinatorClientState.stampAndPublishHeartbeatCapacity`). Registry
 reconciliation preserves age across repeated captures even with zero loaded slots.
-`recordProcessMemoryTelemetry` (`coordinator/api/provider_process_memory_telemetry.go`)
+`recordProcessMemoryTelemetry` (`coordinator/internal/provider/heartbeat/provider_process_memory_telemetry.go`)
 emits fresh observations with bounded chip/version tags; stale observations emit
 age and freshness only. No owner IDs, model names, request contents, or generation
 values become metric labels. The object remains diagnostic: process admission
@@ -211,9 +251,9 @@ evidence and service cost.
 ### Datadog transport
 
 `datadog.Client` (`coordinator/datadog/datadog.go`) is constructed in
-`coordinator/cmd/coordinator/main.go` only when `DD_API_KEY` or `DD_AGENT_HOST`
+`coordinator/app/observability.go` only when `DD_API_KEY` or `DD_AGENT_HOST`
 is set; otherwise `s.dd` is nil and every `ddIncr`/`ddGauge`/`ddHistogram`
-(`coordinator/api/server.go`) is a no-op. Configuration is environment only —
+(`coordinator/api/observation/owner.go`) is a no-op. Configuration is environment only —
 `DD_API_KEY`, `DD_AGENT_HOST`, `DD_DOGSTATSD_URL`, `DD_SITE`, `DD_ENV`, `DD_SERVICE`,
 `DD_HOSTNAME` — with defaults under [configuration](../reference/configuration.md#telemetry-datadog-and-profiling).
 `DD_API_KEY` enables the HTTPS paths (series, logs, events); `DD_AGENT_HOST` alone still
@@ -240,7 +280,7 @@ coordinator`, defaults `kind` to `custom` and `severity` to `info`, then writes
 to three sinks in order: `slog` (`telemetry: <message>` with every field as an
 attribute), the in-process counter `telemetry_events_total{source, severity,
 kind}` (`GET /v1/admin/metrics`), and the Datadog Logs API. The call sites
-(`s.emit`, `s.emitRequest`, `s.emitPanic`) are enumerated in the
+(`s.emit`, `s.EmitRequest`, `s.EmitPanic`) are enumerated in the
 [inventory](../reference/telemetry-inventory.md#coordinator-emitted-events).
 
 Logging is JSON to stdout (`slog.NewJSONHandler`). When Datadog is configured
@@ -252,8 +292,8 @@ appear; request correlation uses `request_id` (`X-Request-ID`) instead.
 
 ### Request-level sinks
 
-Two bounded, non-blocking sinks (`telemetrySink`, `coordinator/api/telemetry_sink.go`;
-`profileSink`, `coordinator/api/profiler_sink.go`) carry `inference_routes`
+Two bounded, non-blocking sinks (`telemetrySink`, `coordinator/internal/observation/routes/telemetry_sink.go`;
+`profileSink`, `coordinator/internal/observation/profile/profiler_sink.go`) carry `inference_routes`
 outcome writes and `request_profiles` rows off the request path. Each has a
 4096-slot channel and a single worker; a full channel drops the write and
 counts it (`telemetry.sink_dropped{sink:profile}`, or the route sink's atomic
@@ -267,35 +307,34 @@ and the `inference.timing.*` histograms are built from the same
 
 ## Invariants
 
-1. **No prompt or completion text on any telemetry path.** The field allowlist
-   (`telemetryFieldAllowlist`, `coordinator/api/telemetry_handlers.go`) admits
-   only bounded enums, counters, byte counts and durations; media, prompt,
-   token and cache-key content are excluded by construction and the comments
-   at each group say so. `sanitizeProviderInferenceError`
-   (`coordinator/api/inference_error_sanitize.go`) never reads the provider's
+1. **No prompt or completion text on any telemetry path.** The coordinator
+   accepts no client telemetry, and each emitter call site passes only bounded
+   enums, counters, byte counts and durations; media, prompt, token and
+   cache-key content are excluded by construction. `sanitizeProviderInferenceError`
+   (`coordinator/internal/inference/failure/inference_error_sanitize.go`) never reads the provider's
    `error` string. The `profile` object is length-checked opaque bytes on the
    read loop and decoded only on the sink worker. Swift free-form log strings
    are `privacy: .private`.
-2. **Three mirrors, one set.** The Go allowlist, Swift
-   `TelemetryFieldFilter.allowed` and TS `TELEMETRY_ALLOWED_FIELDS` are parsed
-   from source and compared by `TestTelemetryAllowlistThreeWayParity`
-   (`coordinator/api/telemetry_allowlist_parity_test.go`); the enums and JSON
-   encoding by `coordinator/protocol/telemetry_symmetry_test.go` and
-   `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift`. The
-   five shipped gaps are enumerated in `telemetryKnownMirrorGaps` and a stale
-   entry fails the build.
+2. **Three mirrors, one shape.** The event enums and JSON encoding are pinned by
+   `coordinator/tests/protocol/telemetry_symmetry_test.go` and
+   `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift`.
 3. **Telemetry never changes control flow.** Nil emitter, nil Datadog client,
    full sink and unreachable intake are all silent no-ops or counted drops.
    Engine-health, `kv_backend` and `telemetry` heartbeat fields are
    measurement only; the scheduler does not gate on them.
+   After request handoff, dispatch reads KV-backend attribution from its
+   selected provider, including the captured backup on failover, rather than
+   looking it up under the registry lock. `noteServingSlotFor`
+   (`coordinator/api/inference/kv_backend_metrics.go`) keeps this bookkeeping from
+   delaying first content behind a registry writer.
 4. **Tags come from the accepted snapshot and closed folds.** `SlotStateFold`,
    `ThermalStateFold`, `ProviderVersionFold` (`coordinator/registry/gate_reason.go`)
    and `KVBackendFallbackTag` (`coordinator/registry/kv_backend.go`) bound
    every provider-supplied string before it becomes a tag; `provider_id`
    appears only on the per-provider memory gauges.
-5. **Client ingestion is off, and stays off without reading a byte.**
-   `handleTelemetryIngest` answers `telemetry_ingest_disabled` before touching the body
-   (`TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`).
+5. **There is no client ingestion route.** `POST /v1/telemetry/events` is not
+   registered; the mux answers 404 without reading the body
+   (`TestTelemetryE2E_NoClientIngestionRoute`, `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go`).
 
 ## Failure modes
 
@@ -309,7 +348,7 @@ and the `inference.timing.*` histograms are built from the same
 | Heartbeat prefix-cache telemetry fails validation | dropped for that frame | `routing.cache_telemetry_rejected{source:heartbeat}` |
 | Provider older than the profiler slice | `slots[].telemetry` absent; wedge metrics silent for all-zero slots; `fleet_snapshots` telemetry columns zero | `provider_version` column |
 | Abrupt disconnect at high memory pressure | classified OOM (`≥ 0.90`, or `≥ 0.80` with in-flight work) | `provider.oom_suspected`, `ws.disconnects`, `provider_sessions.disconnect_reason` |
-| Allowlist edited in one mirror only | CI fails | `TestTelemetryAllowlistThreeWayParity` |
+| Event enum or encoding edited in one mirror only | CI fails | `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` (`coordinator/tests/protocol/telemetry_symmetry_test.go`) |
 | Expecting trace correlation | `dd.trace_id` never present (no spans) | use `request_id` |
 
 Cache receipt diagnostics use `exact_cache.receipt` (Datadog) and
@@ -327,30 +366,46 @@ usage, accepted proofs and cache-selected terminals without altering the public
 aggregate cache response. Model IDs must be present in the active catalog;
 other IDs use `unknown`. Timing sums and sample counts work over HTTPS as well
 as DogStatsD. See the [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
-for populations, labels and reset semantics (`coordinator/api/cache_model_telemetry.go`).
+for populations, labels and reset semantics (`coordinator/api/observation/cache_model_telemetry.go`).
 
 ## Code map
 
 | Concern | Path |
 |---|---|
-| Heartbeat ingest and metric emission | `coordinator/api/provider.go` (`providerReadLoop`), `coordinator/api/provider_wedge_telemetry.go`, `coordinator/api/provider_mlx_cache_telemetry.go` |
+| Heartbeat ingest and metric emission | `coordinator/api/provider/session.go` (`providerReadLoop`), `coordinator/internal/provider/heartbeat/provider_wedge_telemetry.go`, `coordinator/internal/provider/heartbeat/provider_mlx_cache_telemetry.go` |
 | Clamping and canonical snapshot | `coordinator/registry/heartbeat.go` (`Registry.Heartbeat`, `clampBackendCapacity`), `coordinator/registry/heartbeat.go` |
 | Persistence throttle | `coordinator/registry/persistence.go` |
 | Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |
-| Wiring and env | `coordinator/cmd/coordinator/main.go` |
-| Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
-| In-process metrics registry | `coordinator/api/metrics.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
-| Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
-| Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
+| Wiring and env | `coordinator/app/observability.go` |
+| Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers in `coordinator/api/observation/events.go`, gauge loop in `coordinator/api/observation/fleet_gauge_loop.go` |
+| In-process metrics registry | `coordinator/api/observation/metrics.go`; `HandleAdminMetrics` in `coordinator/api/operations/metrics.go` |
+| Event shape | `coordinator/protocol/telemetry.go` |
+| Sinks | `coordinator/internal/observation/routes/telemetry_sink.go`, `coordinator/internal/observation/profile/profiler_sink.go`, `coordinator/api/observation/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
+| Tests | `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`), `coordinator/tests/protocol/telemetry_symmetry_test.go`, `coordinator/tests/datadog/datadog_test.go`, `coordinator/tests/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 
 - [`../reference/telemetry-inventory.md`](../reference/telemetry-inventory.md) — every datum, metric name, tag, cadence and retention
-- [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md) — event fields, enums, allowlist, symmetry tests
+- [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md) — event fields, enums, symmetry tests
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — heartbeat wire shape
 - [`system-profiler.md`](system-profiler.md) — per-attempt `profile`, `request_profiles`, `fleet_snapshots`
 - [`request-outcome-observability.md`](request-outcome-observability.md) — outcome taxonomy behind the request metrics
 - [`scheduling.md`](scheduling.md), [`routing.md`](routing.md) — what the heartbeat fields decide
+
+## Autopilot observations
+
+`coordinator/api/inference/autopilot_demand.go` (`BeginAutopilotDemand`, `FinishAutopilotDemand`)
+tracks one validated public logical request across attempts. Bounded model/shape
+buckets exclude account and intrinsically invalid failures while preserving
+capacity-related supply refusals. No prompt or consumer identity enters them.
+`coordinator/store/autopilot.go` (`AutopilotRecord`) defines durable command phase
+records. Shadow `proposed` records remain hypothetical and deduplicate unchanged
+decisions ([ledger semantics](storage.md#autopilot-operation-ledger)); they are
+not a per-tick time series. Controller summaries and
+tick logs report `observe_only` and distinguish `proposed` from `issued`
+(`coordinator/registry/autopilot_controller.go`, `modelAutopilotController.tick`).
+Live records capture intended/actual residents and transition timing; use the
+request-outcome ledger to evaluate completion and first-content effects. See
+[Autopilot](model-autopilot.md).

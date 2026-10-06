@@ -1,0 +1,84 @@
+/* One footer geometry for every route. Desktop values are the visible
+   homepage/Figma composition, without relying on a taller clipped footer. */
+@media (min-width: 801px) {
+  .footer-reveal {
+    --footer-height: 320px;
+    --footer-reveal-depth: 320px;
+  }
+
+  .footer {
+    min-height: 320px;
+  }
+
+  .footer-column,
+  .back-to-top {
+    top: 64px;
+  }
+
+  .footer-column:nth-of-type(2) {
+    left: calc(50% + 27px);
+  }
+
+  .footer-column:nth-of-type(3) {
+    left: calc(66.67% - 9px);
+  }
+
+  .footer-column:nth-of-type(4) {
+    left: calc(75% + 68px);
+  }
+
+  .footer-logo {
+    top: 78px;
+    width: 185.88px;
+  }
+
+  .footer-disclaimer {
+    top: 144px;
+  }
+
+  .footer-brand p {
+    top: 250px;
+  }
+
+  .back-to-top {
+    left: calc(95.83% - 74.5px);
+    right: auto;
+  }
+}
+
+@media (max-width: 800px) {
+  .footer-reveal {
+    --footer-height: 560px;
+    --footer-reveal-depth: 560px;
+  }
+
+  .footer {
+    min-height: 560px;
+  }
+
+  .footer-brand p {
+    top: 496px;
+  }
+
+  .back-to-top {
+    left: 55%;
+    right: auto;
+  }
+
+  .footer-reveal--with-disclaimer {
+    --footer-height: 620px;
+    --footer-reveal-depth: 620px;
+  }
+
+  .footer--with-disclaimer {
+    min-height: 620px;
+  }
+
+  .footer--with-disclaimer .footer-disclaimer {
+    top: 436px;
+  }
+
+  .footer--with-disclaimer .footer-brand p {
+    top: 560px;
+  }
+}

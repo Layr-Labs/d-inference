@@ -1,11 +1,15 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-10-04
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
+For large outputs, use streaming or reduce the requested output. A non-streaming response that exceeds the [provider-output limits](../reference/api-contracts.md#limits-and-validation) fails with 502 `provider_error` and does not return partial output.
+
 ## Prerequisites
 
+- For `/v1/responses`, put a system prompt in the string `instructions` field. The coordinator places it before `input` and includes it in admission estimates; see the [Responses contract](../reference/api-contracts.md#responses-api).
+- Forced media tools and image/video tool results require a model/provider with native media-tool support. Preserve the actual returned tool-call IDs when sending results; an ordinary vision capability alone is insufficient. See the [tool and vision rules](../reference/api-contracts.md).
 - An email address. Email is the only console login method (`loginMethods: ["email"]`, `console-ui/src/components/app-providers/PrivyRealProvider.tsx`); there is no wallet or social login. The Privy account it creates is what your API keys, balance and usage attach to.
 - Credit on the account. A chat completion reserves its worst-case cost before dispatch and is refused with a 402 when the balance cannot cover it; deposit first with [`billing.md`](billing.md).
 - `curl` and `jq` for the shell steps; Python with the `openai` or `anthropic` package for the SDK steps.
@@ -18,7 +22,7 @@ Open `https://console.darkbloom.dev` and sign in with your email address.
 
 ### 2. Create an API key
 
-Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `handleCreateAPIKey`, `coordinator/api/apikey_handlers.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
+Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `HandleCreateAPIKey`, `coordinator/api/access/keys/handlers.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
 
 Export it for the commands below:
 
@@ -33,7 +37,7 @@ curl -s https://api.darkbloom.dev/v1/models \
   -H "Authorization: Bearer $DARKBLOOM_API_KEY" | jq '.data[] | {id, context_length, input_modalities, supported_features}'
 ```
 
-A 200 with a `data` array confirms the key works (`handleListModels`, `coordinator/api/models_endpoints.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
+A 200 with a `data` array confirms the key works (`HandleListModels`, `coordinator/api/catalog/models_endpoints.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
 
 Pick one id and export it:
 
@@ -54,9 +58,9 @@ curl -s https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`writeCommittedProviderHeaders`, `coordinator/api/response_metadata.go`).
+The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`WriteCommittedProviderHeaders`, `coordinator/api/inference/response/response_metadata.go`).
 
-Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/api/dispatch.go`).
+Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/api/inference/dispatch.go`).
 
 ### 5. Stream the response
 
@@ -71,7 +75,7 @@ curl -N https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-You receive `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. There are no keepalive comments; silence means no token has been produced yet (`handleStreamingResponseWithFirstChunkAndError`, `coordinator/api/consumer_stream.go`).
+You receive `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. There are no keepalive comments; silence means no token has been produced yet (`handleStreamingResponseWithFirstChunkAndError`, `coordinator/internal/inference/relay/consumer_stream.go`).
 
 ### 6. Use the OpenAI SDK
 
@@ -92,7 +96,7 @@ print(resp.choices[0].message.content)
 
 ### 7. Use the Anthropic SDK
 
-The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`extractBearerToken`, `coordinator/api/server.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
+The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`ExtractBearerToken`, `coordinator/api/access/auth.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
 
 ```python
 import anthropic
@@ -106,24 +110,62 @@ msg = client.messages.create(
 print(msg.content[0].text)
 ```
 
-Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/api/consumer.go`) and are translated to the same pipeline as chat completions.
+Requests land on `POST /v1/messages` (`HandleAnthropicMessages`, `coordinator/api/inference/consumer.go`) and are translated to the same pipeline as chat completions.
+
+## Handling overload
+
+If inference returns HTTP 429, wait for `Retry-After` before retrying, or choose
+another available model. Internal attempts spend the original first-content
+budget; they do not restart it. See the [error and retry contract](../reference/api-contracts.md#first-content-routing-and-retry-behavior).
 
 ## Verify
+
+For a vision-capable model, Responses requests may use ordered inline
+`input_image` parts or canonical `video_url` parts, including in tool outputs.
+Use `data:` URIs; remote media and uploaded file IDs are not supported on this
+endpoint. See the [Responses request contract](../reference/api-contracts.md#responses-api)
+for supported forms and the distinct cache-planning boundary.
 
 - Step 3 returned 200 with a non-empty `data` array.
 - The step 4 response is a `chat.completion` object whose `model` echoes the alias you sent, whose `usage` is populated, and which carries an `X-Provider-Id` header.
 - `GET /v1/payments/usage` with the same bearer lists the request and its `cost_micro_usd` ([`billing.md`](billing.md#3-read-your-balance-and-usage)).
 
-To display network activity, read `GET /v1/stats`, `GET /v1/network/totals`,
-or `GET /v1/network/series`. If one returns 503 `service_unavailable`, keep
-your last displayed value and retry later; do not replace it with zero.
-Successful empty windows are valid data. The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
+To display network activity and provider rankings, read `GET /v1/stats`,
+`GET /v1/network/totals`, `GET /v1/network/series`, or `GET /v1/leaderboard`.
+If one returns 503 `service_unavailable`, keep your last displayed value and
+retry later; do not replace it with zero or an empty ranking. For leaderboard
+failures, wait for `Retry-After` before retrying: the coordinator coalesces
+duplicate fills and briefly pauses failed queries. Successful empty windows
+are valid data.
+
+The Stats page also shows **Model demand & fulfillment**. Select 24 hours,
+7 days or 30 days, sort by published request volume or capacity rejections, and
+expand a model to inspect outcomes. Use the demand-history controls to select
+a model and chart published requests, capacity rejections, timeouts, service
+errors or completion rate. Hover, tap or use arrow keys for exact published
+counts; expand the interval table or download its CSV for analysis. Hatched
+intervals contain no publishable hours, not measured zeros, and CSV exports leave
+their counts blank. Larger display intervals can include only some of their hours.
+`GET /v1/network/model-demand?window=24h` exposes the
+same aggregates. Only UTC hours meeting the per-model request and consumer
+privacy floors contribute to summaries or charts; these are not complete window
+totals. Counts cover recorded public requests reaching routing admission;
+private routes, account-limit failures and invalid requests are excluded.
+Internal retries do not add requests, but client retries do. The page labels
+partial history and best-effort recording. An empty result does not establish
+zero demand. Data is delayed by at least one hour. A 429 count overlaps outcomes
+and is not itself a capacity rejection count.
+The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
 defines refresh intervals, maximum cached staleness, and window aliases.
 
 ## Troubleshooting
 
+Direct accounts do not have the upstream first-content SLA. Allow enough time for model loading and prefill in your client timeout. Queue, inference-stall and cancellation limits still apply. Accounts explicitly selected by the operator, such as OpenRouter, retain their configured first-content budget and model exceptions. See [timeouts](../reference/api-contracts.md) and [SLA configuration](../reference/configuration.md#routing-admission-and-ttft).
+
 | Response | Cause | Fix |
 |---|---|---|
+| Console: "This message is too large to send" | The complete chat request, including history and optional encryption, exceeds the [transport budget](../reference/api-contracts.md#limits-and-validation); valid individual uploads can exceed it together | Send fewer or smaller images, shorten the conversation, or start a new chat. The refused message and images remain in the current chat; retry checks the request again |
+| 400 `invalid_request_error` naming an output-token field | A negative or malformed `max_tokens`, `max_completion_tokens` or `max_output_tokens` | Use a positive integer bound or omit it for the coordinator default; null and zero retain default-bound behavior ([request contract](../reference/api-contracts.md#inference-4)) |
 | 401 `authentication_error` | `Authorization: Bearer` header missing, or the key is unknown, disabled, expired or revoked | Re-export the key; create or rotate one in the console ([`authentication.md`](authentication.md)) |
 | 402 | Balance or key budget cannot cover the worst-case reservation ([payment-required taxonomy](../architecture/billing.md#payment-required-responses)) | Deposit, or lower `max_tokens` ([`billing.md`](billing.md)) |
 | 403 `model_not_allowed` | The key was created with an `allowed_models` list that excludes this model | Pick an id from the list, or `PATCH` the key ([`authentication.md`](authentication.md)) |
@@ -139,3 +181,10 @@ defines refresh intervals, maximum cached staleness, and window aliases.
 - Verifying which machine answered and checking its signature: [`verification.md`](verification.md).
 - What the coordinator does with your prompt: [`privacy-expectations.md`](privacy-expectations.md).
 - Error codes and `Retry-After` behaviour: [`../reference/api-contracts.md`](../reference/api-contracts.md).
+
+Prompt length includes the model's rendered template, tools and conversation
+history. The service can count this work before dispatch and reconcile it at the
+provider without changing your completion limit or billing usage. A retry uses
+the original remaining first-content budget. Capacity refusals retain the
+existing `429` and `Retry-After` behavior; see the
+[API contract](../reference/api-contracts.md).

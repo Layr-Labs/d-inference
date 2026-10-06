@@ -1,6 +1,10 @@
 package registry
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/dedicatedpolicy"
+)
 
 // Dedicated-model routing isolates a model family (e.g. Gemma 4) to providers
 // that run ONLY that family. A "dedicated" provider is one whose entire
@@ -42,6 +46,7 @@ func (r *Registry) SetDedicatedModels(patterns []string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.pruneWarmPoolWorkBaselinesLocked()
 	if len(normalized) == 0 {
 		r.dedicatedModels = nil
 		return
@@ -53,16 +58,7 @@ func (r *Registry) SetDedicatedModels(patterns []string) {
 // resolved build id contains, or "", false when the model is not a dedicated
 // model (or the feature is disabled). Caller holds r.mu.
 func (r *Registry) dedicatedPatternForLocked(model string) (string, bool) {
-	if len(r.dedicatedModels) == 0 {
-		return "", false
-	}
-	m := strings.ToLower(model)
-	for _, p := range r.dedicatedModels {
-		if strings.Contains(m, p) {
-			return p, true
-		}
-	}
-	return "", false
+	return dedicatedpolicy.PatternFor(r.dedicatedModels, model)
 }
 
 // providerDedicatedToPatternLocked reports whether EVERY catalog-allowed model
@@ -72,17 +68,16 @@ func (r *Registry) dedicatedPatternForLocked(model string) (string, bool) {
 // unknown) are ignored so they cannot spuriously disqualify a dedicated box.
 // Caller holds r.mu AND p.mu (mirrors providerServesCatalogModelLocked).
 func (r *Registry) providerDedicatedToPatternLocked(p *Provider, pattern string) bool {
-	advertised := 0
-	for _, m := range p.Models {
-		if !r.providerModelAllowedByCatalogLocked(p, m) {
-			continue
+	return dedicatedpolicy.Dedicated(pattern, func(yield func(string) bool) {
+		for _, m := range p.Models {
+			if !r.providerModelAllowedByCatalogLocked(p, m) {
+				continue
+			}
+			if !yield(m.ID) {
+				return
+			}
 		}
-		advertised++
-		if !strings.Contains(strings.ToLower(m.ID), pattern) {
-			return false
-		}
-	}
-	return advertised > 0
+	})
 }
 
 // providerExcludedByDedicatedRuleLocked reports whether the dedicated-box rule

@@ -1,6 +1,6 @@
 # Gemma QAT same-state verifier diagnosis and serial-target release policy
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 **Default `mtp_mode = "auto"` already runs Gemma without MTP while enabling embedded Qwen MTP. The correction protects Gemma only when MTP is explicitly enabled; it does not add overhead to default-auto Gemma serving.**
 

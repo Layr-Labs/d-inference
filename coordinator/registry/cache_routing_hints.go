@@ -3,50 +3,45 @@ package registry
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachetracker"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-type cacheRoutingMatch struct {
-	Holder         cacheHolder
-	Tier           string
-	EvidenceWeight float64
-	queriedAt      time.Time
+type cacheRoutingMatch = cachetracker.Match[*Provider]
+
+type CacheHintQuerier interface {
+	Query(model string, plan CachePlan, routeKey []byte, mode string, now time.Time) (map[string]CacheRoutingHint, CacheOpportunity)
 }
 
-// cacheRoutingHints queries content first, then validates only its possible
-// holders. Cold fleet members never incur a second capability/lock walk.
-// Tracker and provider locks are never nested: receipts take provider locks
-// before the tracker, while the scheduler takes the registry lock before them.
-func (r *Registry) cacheRoutingHints(
-	model string, plan CachePlan, tracker *cacheRoutingTracker,
-	routeKey []byte, mode string, now time.Time,
-) map[string]cacheRoutingHint {
-	hints, _ := r.cacheRoutingHintsWithObservation(model, plan, tracker, routeKey, mode, now)
-	return hints
+// CacheHintQuery binds one generation's content query to the registry's live
+// provider directory. Provider snapshots are still resolved for each query.
+type CacheHintQuery struct {
+	registry *Registry
+	tracker  *cacheRoutingTracker
 }
 
-func (r *Registry) cacheRoutingHintsWithObservation(
-	model string, plan CachePlan, tracker *cacheRoutingTracker,
-	routeKey []byte, mode string, now time.Time,
-) (map[string]cacheRoutingHint, CacheOpportunity) {
+// Query checks content first, then validates only possible holders. Provider
+// and tracker locks are never nested; receipts take the provider lock first.
+func (query CacheHintQuery) Query(model string, plan CachePlan, routeKey []byte, mode string, now time.Time) (map[string]CacheRoutingHint, CacheOpportunity) {
+	r, tracker := query.registry, query.tracker
 	observation := CacheOpportunity{}
-	if tracker == nil || plan.generation != tracker.generation || tracker.generation.revoked.Load() || mode != CacheRoutingOn || !plan.present() {
+	if tracker == nil || !plan.Authenticates(tracker.generation) || !tracker.generation.Active() || mode != CacheRoutingOn || !plan.Present() {
 		return nil, observation
 	}
 	observation.Evaluated = true
 	observation.RepeatedPrefixTokens = plan.RepeatedPrefixTokens
-	matches := tracker.matchingHolders(plan, routeKey, mode, now)
+	matches := query.MatchBoundaries(plan, routeKey, mode, now)
 	if len(matches) == 0 {
 		return nil, observation
 	}
-	capabilities := make(map[string]cacheRoutingCapability)
+	capabilities := make(map[string]CacheRoutingCapability)
 	r.mu.RLock()
 	for _, match := range matches {
 		holder := match.Holder
 		if _, seen := capabilities[holder.ProviderID]; seen {
 			continue
 		}
-		capabilities[holder.ProviderID] = cacheRoutingCapability{Provider: r.providers[holder.ProviderID]}
+		capabilities[holder.ProviderID] = CacheRoutingCapability{Provider: r.providers[holder.ProviderID]}
 	}
 	r.mu.RUnlock()
 	for providerID, candidate := range capabilities {
@@ -56,7 +51,7 @@ func (r *Registry) cacheRoutingHintsWithObservation(
 			if provider.PrefixCacheProtocol >= 2 {
 				candidate.Capability = provider.PrefixCacheV2Models[model]
 				candidate.MemoryCapability = provider.PrefixCacheMemoryModels[model]
-				candidate.CapabilityRevision = provider.prefixCacheRevision
+				candidate.CapabilityRevision = provider.prefixCacheRevision.Capture()
 			}
 			provider.mu.Unlock()
 		}
@@ -67,28 +62,27 @@ func (r *Registry) cacheRoutingHintsWithObservation(
 	// routing. Later changes are fenced again by the revision at selection and
 	// reservation; the rejected-capability check must not be skipped here.
 	for providerID, candidate := range capabilities {
-		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability) {
+		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability, now) {
 			candidate.Capability.Enabled = false
 		}
-		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability) {
+		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability, now) {
 			candidate.MemoryCapability.Enabled = false
 		}
 		capabilities[providerID] = candidate
 	}
-	hints := cacheHintsForMatches(plan, matches, capabilities)
+	hints := CacheHintsForMatches(plan, matches, capabilities)
 	observation.ValidHolders = len(hints)
 	return hints, observation
 }
 
-// matchingHolders computes one keyed digest per request boundary, regardless
-// of fleet size. Each tier bucket contains at most maxHolders machines, even
-// when every machine has a different epoch. No provider lock or eligibility
-// check runs while holding the tracker lock.
-func (t *cacheRoutingTracker) matchingHolders(
-	plan CachePlan, routeKey []byte, mode string, now time.Time,
-) []cacheRoutingMatch {
-	if t == nil || mode != CacheRoutingOn || !plan.present() || len(routeKey) == 0 ||
-		plan.generation != t.generation || t.generation.revoked.Load() {
+// MatchBoundaries resolves content evidence before the query inspects provider
+// capabilities. Key derivation remains outside the generation's receipt lock.
+// Each boundary computes one digest regardless of fleet size; no provider lock
+// or eligibility check runs while holding the tracker lock.
+func (query CacheHintQuery) MatchBoundaries(plan CachePlan, routeKey []byte, mode string, now time.Time) []cachetracker.Match[*Provider] {
+	t := query.tracker
+	if t == nil || mode != CacheRoutingOn || !plan.Present() || len(routeKey) == 0 ||
+		!plan.Authenticates(t.generation) || !t.generation.Active() {
 		return nil
 	}
 	keys := make([]string, len(plan.Boundaries))
@@ -97,35 +91,15 @@ func (t *cacheRoutingTracker) matchingHolders(
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.generation.revoked.Load() {
-		return nil
-	}
-	t.sweepIfDueLocked(now)
-	out := make([]cacheRoutingMatch, 0)
-	for i := len(plan.Boundaries) - 1; i >= 0; i-- {
-		anchor := plan.Boundaries[i]
-		for _, tier := range [...]string{"ssd", "memory"} {
-			key := cacheTierKey(keys[i], tier)
-			for providerID := range t.holders[key] {
-				holder, live := t.activeHolderLocked(key, providerID, now)
-				if !live || holder.ModelAggregateHash != plan.ModelAggregateHash ||
-					holder.PromptContractID != plan.PromptContractID || holder.Anchor != anchor ||
-					anchor.TokenCount <= holder.RequiredRecomputeTokens {
-					continue
-				}
-				out = append(out, cacheRoutingMatch{Holder: holder, Tier: tier, EvidenceWeight: cacheEvidenceWeight(holder, now), queriedAt: now})
-			}
-		}
-	}
-	return out
+	return t.core.MatchBoundaries(plan, keys, now)
 }
 
-// cacheHintsForMatches retains the longest verified endpoint the provider's
+// CacheHintsForMatches retains the longest verified endpoint the provider's
 // current selector can execute. Complete checkpoints take priority over the
 // resident bank; other dual-tier advertisements have no negotiated selector and
 // receive no credit. There is no wire control for choosing a shorter endpoint.
-func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
-	capabilities map[string]cacheRoutingCapability,
+func CacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
+	capabilities map[string]CacheRoutingCapability,
 ) map[string]cacheRoutingHint {
 	out := make(map[string]cacheRoutingHint)
 	for _, match := range matches {
@@ -148,7 +122,7 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 			}
 			capability = candidate.MemoryCapability
 		}
-		if !capabilityMatchesPlan(capability, plan) ||
+		if !CapabilityMatchesPlan(capability, plan) ||
 			holder.ModelID != capability.ModelID || holder.CacheEpoch != capability.CacheEpoch ||
 			holder.Provider != candidate.Provider {
 			continue
@@ -156,17 +130,18 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 		// Capability publication can precede tracker cleanup. Even an expired
 		// sample binds its holder's fallback to the old contract until a new
 		// validated Ready or lookup establishes current evidence.
-		if measured := holder.stageMeasurement; measured != nil && measured.capability != capability {
+		if measured := holder.Measurement; measured != nil && !measured.Matches(capability) {
 			continue
 		}
-		stageMs := holder.stageCostAt(match.queriedAt)
+		stageMs := match.StageCost()
 		if stageMs <= 0 && match.Tier != "memory" {
 			continue
 		}
 		// Matches arrive deepest first. Do not substitute a cheaper short record:
 		// the provider does not accept a coordinator-selected endpoint today.
 		out[holder.ProviderID] = cacheRoutingHint{
-			generation:         plan.generation,
+			generation:         plan.Provenance(),
+			ExpiresAt:          holder.ExpiresAt,
 			PrefillTokensSaved: holder.Anchor.TokenCount - holder.RequiredRecomputeTokens,
 			CachedTokens:       holder.Anchor.TokenCount,
 			StageMs:            stageMs,
@@ -180,17 +155,17 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 	return out
 }
 
-// currentForProviderLocked fences configuration, capability changes and quarantine after the
+// CurrentForProviderLocked fences configuration, capability changes and quarantine after the
 // unlocked holder query. Both scan and reservation hold provider.mu here.
-func (hint cacheRoutingHint) currentForProviderLocked(provider *Provider, model string) bool {
+func (hint CacheRoutingHint) CurrentForProviderLocked(provider *Provider, model string) bool {
 	if provider == nil || hint.Provider != provider ||
-		hint.generation == nil || hint.generation.revoked.Load() {
+		hint.generation == nil || !hint.generation.Active() {
 		return false
 	}
 	capability, ok := provider.prefixCacheCapabilityLocked(model, hint.Tier)
 	return ok &&
 		provider.PrefixCacheProtocol >= 2 &&
-		provider.prefixCacheRevision == hint.CapabilityRevision &&
+		provider.prefixCacheRevision.Accepts(hint.CapabilityRevision) &&
 		capability == hint.Capability &&
 		capability.Enabled &&
 		capability.Ready

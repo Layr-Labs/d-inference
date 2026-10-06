@@ -28,6 +28,32 @@ public actor EngineV2Bridge {
     /// Shutdown drains and releases the engine before the slot owner purges
     /// MLX cache or grows the surviving models' memory grants.
     var ownedEngine: (any CBv2Engine)?
+    struct NativeShutdownIdentity: Equatable {
+        let engineID: UUID
+        let contractID: UUID
+    }
+    // Native-only closing state. Unknown completion retains the real engine
+    // and consumers; a missing engine is never used as a fake drain receipt.
+    var nativeShutdownClosed = false
+    var nativeShutdownInProgress = false
+    // Forecast invalidation follows real native teardown, including retained
+    // faults/pending host consumers; it is never a memory-release receipt.
+    var nativeShutdownActivity: WholeMacUnboundedActivity?
+    var nativeShutdownIdentity: NativeShutdownIdentity?
+    var nativeShutdownResult: CBv2NativeShutdownOutcome?
+    // The validated SDK proof can arrive before host consumers finish. Keep
+    // it separate from the stronger final bridge result; never upgrade a fault.
+    var nativeSDKQuiescentReceipt: CBv2NativeShutdownReceipt?
+    var nativeShutdownTasks: [Task<Void, Never>] = []
+    var nativeTransferredRetirementTasks: [UUID: Task<Void, Never>] = [:]
+    // The registry/transaction owns the bridge, never the reverse. Keep an
+    // immutable identity marker even if the weak owner disappears, so missing
+    // managed ownership cannot silently select legacy admission.
+    weak var nativeTransaction: MiMoV26NativeLoadTransaction?
+    var nativeTransactionID: UUID?
+    var tracksNativeShutdown: Bool {
+        (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
+    }
     var engine: any CBv2Engine {
         guard let ownedEngine else {
             preconditionFailure("EngineV2Bridge engine accessed after shutdown")
@@ -47,12 +73,13 @@ public actor EngineV2Bridge {
                 stepsExecuted: wedgeMonitor.lastStepsSample)
     }
     public let modelId: String
-    /// Which KV backend the engine was built with. Keys the bridge's
-    /// shared-gate accounting (paged pools are construction-committed —
-    /// no per-request `GlobalKVCacheBudget` reserve), the heartbeat
-    /// capacity clamp, and the provider's re-slice policy (paged slots
-    /// rebuild instead of resizing; `updateBytesCapacity` is a no-op on
-    /// a physically preallocated pool).
+    /// Native block engines report generation from completed prefill, including
+    /// their first block; ordinary AR/MTP timing remains unchanged.
+    let usesNativeBlockTiming: Bool
+    /// Actual serving backend. Contiguous requests reserve worst-case bytes
+    /// through the shared budget; paged engines own native process-ledger
+    /// charges. Segmented paged storage follows runtime grant changes; only
+    /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
     /// Observed pool geometry from backend preparation, never a default guess.
     public let pagedPageSize: Int?
@@ -71,8 +98,20 @@ public actor EngineV2Bridge {
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
     /// construction so B=1 and batched behavior stay identical.
     let stopTokenIds: Set<Int>
+    /// Artifact sampling defaults resolved once at construction
+    /// (`EngineV2SamplingDefaults.resolve`); `.legacy` for every family
+    /// that has not been admitted.
+    let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
     let maxConcurrentRequests: Int
+    nonisolated let performanceProfile: ServingPerformanceProfile?
+    nonisolated let deadlineProfile: DeadlinePerformanceProfile?
+    var deadlinePostureMonitoring: DeadlinePostureLease?
+    public nonisolated let deadlineRuntimeConfiguration: DeadlineRuntimeConfiguration?
+    nonisolated let promptWorkIdentity: PromptWorkIdentity?
+    let unqualifiedMaxConcurrentRequests: Int
+    nonisolated let serviceBudget: WholeMacServiceBudget?
+    let serviceOwnerPrefix = UUID().uuidString
     /// Operational control for atomic first-token deadline admission.
     /// Parsed once per bridge so runtime behavior cannot change mid-request.
     let prefillDeadlineMode: PrefillDeadlineMode
@@ -160,10 +199,6 @@ public actor EngineV2Bridge {
     struct ActiveRequestState {
         let promptTokens: Int
         let maxTokens: Int
-        /// True only when no other bridge row (prefill or decode) and no other
-        /// provider/engine submission existed at this request's exact
-        /// engine-submit boundary.
-        var isolatedPrefillSampleEligible: Bool
         var completionTokens: Int = 0
         var submittedAt: ContinuousClock.Instant
         var firstTokenAt: ContinuousClock.Instant?
@@ -171,6 +206,7 @@ public actor EngineV2Bridge {
         /// Profiler accumulator (coordinator requests only). Written at
         /// first token, cancel, and finish — never per token.
         var profile: RequestProfileBuilder? = nil
+        var prefillReceipt: EnginePrefillReceipt? = nil
     }
 
     var active: [String: ActiveRequestState] = [:]
@@ -179,8 +215,8 @@ public actor EngineV2Bridge {
     /// `telemetry.queued_prefill_tokens`; per-request
     /// `queued_prefill_tokens_at_admit` reports the OTHER requests' share.
     var queuedPrefillTokens = 0
-    /// Profiler: cumulative Σ(prompt − cached) over finished requests
-    /// (heartbeat `telemetry.prefill_tokens_total`; attributed at finish).
+    /// Actual completed-prompt work, attributed at engine prompt completion.
+    /// Later cancellation does not erase work already performed.
     var prefillTokensTotal: Int64 = 0
     /// IDs that have passed bridge validation but have not yet completed
     /// engine admission. Atomic deadline submission suspends this actor; this
@@ -252,11 +288,19 @@ public actor EngineV2Bridge {
 
     /// Heartbeat health is sampled from the engine's monotonic step counter.
     var wedgeMonitor = WedgeMonitor()
+    var measurementActivity = EngineMeasurementActivity()
+    var performanceUpdates: EnginePerformanceUpdates?
+    var performanceMeasurements = EnginePerformanceMeasurements()
+    var prefillEvidenceRecovery = PrefillEvidenceRecovery()
+    var mimoCalibration = MimoCalibrationState()
+    var prefillRequestsTotal: Int64 = 0
+    var generatedTokensTotal: Int64 = 0
+    var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
-    /// Cold-prefill throughput from successful requests with no adopted KV.
-    /// Uses engine admission → first token, with plausibility bounds applied
-    /// by recordPrefillSample. Cache-hit latency never trains this estimate.
+    /// Cold-prefill throughput from completed prompt computation, independent
+    /// of answer success. Engine timings exclude queueing and output delivery;
+    /// cache-reuse samples remain in their separate workload buckets.
     var observedPrefillTpsEwma: Double = 0
     var prefillEwmaInitialized = false
     /// Queue- and decode-excluded cold-prefill service-rate EWMA used ONLY by
@@ -266,11 +310,10 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
-    /// Observed EWMAs are point estimates, not hard lower bounds. Deadline
-    /// projection halves each available phase rate, providing a fixed 2x
-    /// service-time envelope without letting one pathological minimum poison
-    /// the bridge forever.
-    static let deadlineProjectionRateHaircut = 0.5
+    var nativeMediaPrefillRates = NativeMediaPrefillRates()
+    var nativeMediaBootstrapRequestID: String?
+    var nativeMediaLearnedRequestIDs: Set<String> = []
+    var nextNativeMediaBootstrapAt: ContinuousClock.Instant?
     /// Cold-start model load time (ms) for this slot, recorded by
     /// `ProviderLoop.ensureModelLoaded` once the load completes (the
     /// bridge exists before the load finishes, so this arrives post-init).
@@ -301,8 +344,14 @@ public actor EngineV2Bridge {
         tokenizer: TokenizerHandle,
         eosTokenIds: Set<Int>,
         extraEOSTokens: [String] = [],
+        samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
+        performanceProfile: ServingPerformanceProfile? = nil,
+        deadlineProfile: DeadlinePerformanceProfile? = nil,
+        deadlineRuntimeConfiguration: DeadlineRuntimeConfiguration? = nil,
+        promptWorkIdentity: PromptWorkIdentity? = nil,
+        unqualifiedMaxConcurrentRequests: Int? = nil,
         prefillDeadlineMode: PrefillDeadlineMode = PrefillDeadlineMode.resolve(),
         prefillDeadlineProjectionEnabled: Bool = true,
         partialPrefillCap: Int? = nil,
@@ -324,6 +373,7 @@ public actor EngineV2Bridge {
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
+        self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
@@ -331,6 +381,8 @@ public actor EngineV2Bridge {
         self.advertisedContextTokens =
             Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
+            ?? performanceProfile?.contextTokensMax
+            ?? deadlineProfile?.configuredContextTokens
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
@@ -339,8 +391,16 @@ public actor EngineV2Bridge {
             extraEOSTokens: extraEOSTokens,
             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
         )
+        self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
+        self.performanceProfile = performanceProfile
+        self.deadlineProfile = deadlineProfile
+        self.deadlineRuntimeConfiguration = deadlineRuntimeConfiguration ?? deadlineProfile?.runtimeConfiguration
+        self.promptWorkIdentity = promptWorkIdentity
+        self.unqualifiedMaxConcurrentRequests = min(maxConcurrentRequests,
+            max(1, unqualifiedMaxConcurrentRequests ?? min(maxConcurrentRequests, 8)))
+        self.serviceBudget = kvBudget?.serviceBudget
         self.prefillDeadlineMode = prefillDeadlineMode
         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
         self.partialPrefillCap = partialPrefillCap
@@ -357,6 +417,10 @@ public actor EngineV2Bridge {
             let accepted = (engine as? EngineV2)?.completePrefixCache,
             accepted === candidate
         {
+            completeStore = candidate
+        } else if let candidate = ssdHybridCheckpointStore,
+            let accepted = (engine as? CBv2NativeBlockEngine)?.completeNativePrefixCache,
+            accepted === candidate {
             completeStore = candidate
         } else {
             ssdHybridCheckpointStore?.close()
@@ -420,6 +484,8 @@ public actor EngineV2Bridge {
     /// Profiler identities still retained for pending submissions (leak check).
     func _testPendingProfileCount() -> Int { pendingProfiles.count }
     #if DEBUG
+    // Test-installed only; never emitted to logging/telemetry or built in release.
+    var _testNativeTextObserver: (@Sendable (String, String) -> Void)?
     var _testBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
     var _testOnCancelledSettlementWait: (@Sendable () -> Void)?
 

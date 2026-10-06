@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-10-04
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -25,7 +25,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | [components/coordinator.md](components/coordinator.md) | Go control plane: process layout, HTTP and WebSocket servers, store, background jobs |
 | [components/provider.md](components/provider.md) | Swift `darkbloom` provider: connection loop, engine bridge, hardened runtime, service management, auto-update |
 | [components/consumer.md](components/consumer.md) | The coordinator's OpenAI/Anthropic-compatible request pipeline, stage by stage: parsing, admission, routing, sealing, streaming, settlement |
-| [components/console-ui.md](components/console-ui.md) | Next.js console: pages, `/api/*` relay handlers, Privy and console-key credential paths, SSE chat, optional browser-side sealing; the static `landing/` site |
+| [components/console-ui.md](components/console-ui.md) | Next.js console: pages, `/api/*` relay handlers, Privy and console-key credential paths, SSE chat, optional browser-side sealing; the Next.js `landing/` site |
 | [components/admin-ui.md](components/admin-ui.md) | Internal read-only operator dashboard: HTTP Basic gate, single `pg.Pool` on the read replica, SELECT-only server components |
 | [components/mlx-swift.md](components/mlx-swift.md) | The three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what each provides, what `MLXLMServer` is used for, and the source-matched `mlx.metallib` |
 
@@ -34,6 +34,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | Page | Concern |
 |---|---|
 | [security/encryption.md](security/encryption.md) | The privacy model: NaCl Box on each hop, what the coordinator decrypts and does not retain, key lifetimes. The only page that states it |
+| [security/provider-trust.md](security/provider-trust.md) | Independent legacy MDM/APNs and App Attest authorization, common gates and residual trust limits |
 | [security/attestation.md](security/attestation.md) | Trust levels and the exact condition for each: Secure Enclave signature, MDM cross-check, MDA, APNs code identity |
 | [security/enrollment.md](security/enrollment.md) | Device enrollment: MDM profile generation and signing, SCEP, webhook |
 | [security/identity-binding.md](security/identity-binding.md) | How APNs, X25519, SE P-256, and MDA identities bind to one provider |
@@ -42,7 +43,9 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 
 | Page | Concern |
 |---|---|
+| [first-content-routing.md](first-content-routing.md) | Expected and conservative delivery forecasts, measurement freshness, 100-ms selection and atomic retry policy |
 | [routing.md](routing.md) | How a request becomes a provider choice: eligibility gates, cost model, selection, hedged dispatch, servability, breakers |
+| [model-autopilot.md](model-autopilot.md) | Opt-in cached model placement, useful shared-GPU capacity, explicit eviction ownership and recovery |
 | [scheduling.md](scheduling.md) | Per-model queue, slot states, token-budget admission, concurrency caps, model swaps, warm pool, heartbeat and eviction |
 | [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed exact prefix-cache routing: proof, holders, cost discount, kill switch |
 | [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | The Rust `promptsidecar`: token-boundary planning for cache routing, artifact identity, failure isolation |
@@ -52,17 +55,20 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | Page | Concern |
 |---|---|
 | [inference.md](inference.md) | CBv2 request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families and quantization |
+| [native-block-inference.md](native-block-inference.md) | Native diffusion block execution, commit boundaries, memory-estimator reuse and honest first-block timing; separate from model advertisement |
 | [prefix-cache.md](prefix-cache.md) | KV layouts (contiguous default, paged), block hashing, prefix-reuse plan per family, RAM staging and the encrypted SSD tier; why a default box builds no SSD cache |
 | [hardware-support.md](hardware-support.md) | Memory model: unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates |
+| [model-revisions.md](model-revisions.md) | Immutable weight revisions, automatic provider convergence, draining and rollback |
 | [model-registry.md](model-registry.md) | Model manifests, aliases, publishing to R2, registration, provider downloads |
 
 ## Data, money, and observability
 
 | Page | Concern |
 |---|---|
-| [storage.md](storage.md) | Coordinator persistence: Postgres tables and migrations, memory store, retention jobs |
+| [storage.md](storage.md) | Coordinator persistence: Postgres tables, memory store, retention jobs |
+| [schema-lifecycle.md](schema-lifecycle.md) | How the Postgres schema changes: goose versions, migration kinds, locks and timeouts, the checked-in schema, failure modes |
 | [billing.md](billing.md) | Pricing, reservations, ledger, Stripe deposits and Connect payouts, referrals, base rewards |
-| [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, ingestion allowlist, Datadog |
+| [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, retired client ingestion, Datadog |
 | [request-outcome-observability.md](request-outcome-observability.md) | Closed outcome taxonomy across client, provider, and billing dimensions |
 | [system-profiler.md](system-profiler.md) | Per-attempt request profiles and fleet snapshots: schema, clocks, validation |
 

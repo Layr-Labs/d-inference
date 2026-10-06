@@ -42,10 +42,22 @@ extension ProviderLoop {
             startedAt: startedAtEpoch,
             attestationPublicKey: signer?.publicKeyBase64,
             trust: lastTrustStatus,
+            coordinatorURL: loopConfig.coordinatorURL,
             currentModel: state.currentModel,
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
+            startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
+            requestWorkPending: DaemonWorkPosture.hasPendingRequest(
+                inflight: hasInflightWork, capacity: cap),
+            loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                || !startupPreloadPendingModels.isEmpty
+                || mtpStagingReservations.hasRetainedTargets
+                || cap?.slots.contains { $0.state == "reloading" } == true,
+            lifecycle: lifecycleStatus,
+            modelSwitch: modelSwitchStatus,
+            configPath: loopConfig.configPath?.path,
+            runtimeCapabilities: loopConfig.runtimeCapabilities.map(\.rawValue).sorted(),
             stats: DaemonState.Stats(
                 requestsServed: stats.requestsServed,
                 tokensGenerated: stats.tokensGenerated,
@@ -55,7 +67,14 @@ extension ProviderLoop {
                 DaemonState.Capacity(
                     totalMemoryGb: $0.totalMemoryGb,
                     gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
-                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
+                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb,
+                    loadUsableGb: $0.loadUsableGb,
+                    loadHeadroomGb: $0.loadHeadroomGb,
+                    freeForLoadGb: $0.freeForLoadGb,
+                    loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                        || !startupPreloadPendingModels.isEmpty
+                        || mtpStagingReservations.hasRetainedTargets
+                        || $0.slots.contains { $0.state == "reloading" })
             },
             lastModelLoadError: lastModelLoadError,
             // Joined at WRITE time, not at sample time: a refused explicit
@@ -72,7 +91,11 @@ extension ProviderLoop {
                 // default: 0 (unload disabled) never expires by age, a
                 // longer-than-default timeout keeps evidence just as long.
                 failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
-                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins))
+                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins)),
+            appAttest: appAttestLocalStatus,
+            autopilot: state.modelAutopilot,
+            autopilotPhase: autopilotPhase,
+            autopilotOperation: autopilotOperationView
         )
     }
 
@@ -108,14 +131,28 @@ extension ProviderLoop {
         writeDaemonState()
     }
 
-    internal func handleTrustStatus(trustLevel: String, status: String, reason: String) {
-        logger.info("Trust status update: level=\(trustLevel) status=\(status)")
+    internal func clearConnectionAuthorization() {
+        // A credential may survive reconnect; a serving lease never does.
+        // Clear even the legacy diagnostic so a fresh snapshot cannot make a
+        // previous connection's readiness look current.
+        lastTrustStatus = nil
+        writeDaemonState()
+    }
+
+    internal func handleTrustStatus(trustLevel: String, status: String, reason: String,
+                                    authorization: ProviderAuthorizationStatus? = nil) {
+        let previous = lastTrustStatus
+        if previous?.trustLevel != trustLevel || previous?.status != status || previous?.reason != reason
+            || !ProviderAuthorizationStatus.sameDiagnosticDecision(previous?.authorization, authorization) {
+            logger.info("Trust status update: level=\(trustLevel) status=\(status) path=\(authorization?.path ?? "legacy")")
+        }
 
         // Cache + persist so `darkbloom status`/`doctor` can show the operator
         // the coordinator's reason (otherwise it is only in the logs).
         lastTrustStatus = DaemonState.Trust(
             trustLevel: trustLevel, status: status, reason: reason,
-            receivedAt: Date().timeIntervalSince1970)
+            receivedAt: Date().timeIntervalSince1970,
+            authorization: authorization)
         writeDaemonState()
     }
 

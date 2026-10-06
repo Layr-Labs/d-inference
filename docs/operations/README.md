@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-10-05
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -11,15 +11,22 @@ shapes under [`../reference/README.md`](../reference/README.md).
 
 | Runbook | Scope |
 |---|---|
+| [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |
+| [app-attest-build-qualification.md](app-attest-build-qualification.md) | Approve exact signed builds, retry publication without rebuilding, and revoke durable qualifications |
+| [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
+| [`schema-migration.md`](schema-migration.md) | Back up, check for long queries, apply and verify goose migrations; the first goose cut-over; rollback rules |
 | [`coordinator-startup-measurement.md`](coordinator-startup-measurement.md) | Measure post-stop candidate readiness, per-model routable capacity and optional disposable-test inference separately |
 | [`global-payouts.md`](global-payouts.md) | Enable international bank payouts, verify bank arrival and reconcile uncertain transfers |
+| [`provider-emails.md`](provider-emails.md) | Preview provider-owner update audiences, sync Resend segments, test and review unsent campaign drafts |
 | [`provider-release.md`](provider-release.md) | Ship a provider CLI release: version bump, tag, signed and notarized bundle to R2, registration with the coordinator, rollback by deactivation |
 | [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
 | [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |
+| [`model-autopilot.md`](model-autopilot.md) | Observe and activate a small consenting cohort; verify paired capacity, donor protection and rollback |
 | [`routing-v2-rollout.md`](routing-v2-rollout.md) | Kill switches and flag flips for the shipped routing-v2 behaviours (TTFT gate, queue-before-shed, cold dispatch, warm pool, budget clamp, anomaly detector) |
 | [`cache-routing-rollout.md`](cache-routing-rollout.md) | Turn exact prefix-cache routing on in production, widen the activation percent and plan-QPS bounds one at a time, verify with `GET /v1/cache/status`, roll back to `off` |
 | [`profiler-queries.md`](profiler-queries.md) | Read-only SQL recipes against the profiler tables (`request_profiles`, `fleet_snapshots`) for latency, fleet and outcome questions |
+| [`model-revisions.md`](model-revisions.md) | Publish replacement weights under the same model ID and roll back |
 | [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |
 | [`coordinator-perf-tier1-rollout.md`](coordinator-perf-tier1-rollout.md) | Roll out the 2026-09 coordinator performance Tier 1 branch: `GOGC` gate, Tier 0 env knobs, before/after checks |
@@ -42,3 +49,5 @@ Provider CLI releases register a release with the production coordinator and
 follow both rules: [`provider-release.md`](provider-release.md).
 
 - [App Attest recovery rollout](app-attest-rollout.md) — fixed-provider cohorts, receipt recovery, qualification and gates for later MDM retirement.
+
+- [Stripe account migration](stripe-migration.md) — activate self-service Global Payouts, retain old settlement and move Checkout.

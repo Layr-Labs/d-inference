@@ -6,32 +6,33 @@ import Security
 public actor AppleAppAttestService: AppAttestService {
     private let callbacks: any AppAttestCallbacks
     private let operationTimeout: Double
-    private let operations = AppleOperationGate()
+    private let operations: AppleOperationGate
 
     public init() {
         callbacks = SystemAppAttestCallbacks()
         operationTimeout = 25
+        operations = AppleOperationGate()
     }
 
-    init(callbacks: any AppAttestCallbacks, operationTimeout: Double) {
+    init(callbacks: any AppAttestCallbacks, operationTimeout: Double, now: @escaping @Sendable () -> Date = Date.init) {
         self.callbacks = callbacks
         self.operationTimeout = operationTimeout
+        operations = AppleOperationGate(now: now)
+    }
+
+    public func operationHeldSince() -> Date? {
+        operations.heldSince
     }
 
     public func checkAvailability(environment: String) throws {
-        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else { throw ShadowFailure.unsupported }
-        guard Bundle.main.bundleURL.pathExtension == "app" else { throw ShadowFailure.notConfigured }
-        var code: SecCode?
-        var staticCode: SecStaticCode?
-        var info: CFDictionary?
-        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
-              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
-              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-              let values = info as? [String: Any],
-              let entitlements = values[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
-        else { throw ShadowFailure.notConfigured }
-        try AppAttestEntitlementPolicy.validate(entitlements, expectedEnvironment: environment)
-        guard DCAppAttestService.shared.isSupported else { throw ShadowFailure.unsupported }
+        try AppAttestAvailabilityChecks.requireOS(ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
+        try AppAttestAvailabilityChecks.requireAppBundle(Bundle.main.bundleURL.pathExtension)
+        let values = try AppAttestAvailabilityChecks.requireSigningInfo(AppAttestSigningInfo.current())
+        // A successful signing-info query without an entitlement dictionary
+        // means the required opt-in is absent, not that the query failed.
+        let entitlements = values[kSecCodeInfoEntitlementsDict as String] as? [String: Any] ?? [:]
+        try AppAttestEntitlementPolicy.validateAvailability(entitlements, expectedEnvironment: environment)
+        try AppAttestAvailabilityChecks.requireSupported(DCAppAttestService.shared.isSupported)
     }
 
     public func generateKey() async throws -> String {

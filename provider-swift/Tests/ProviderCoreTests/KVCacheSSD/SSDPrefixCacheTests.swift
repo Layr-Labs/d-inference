@@ -338,18 +338,28 @@ struct SSDBlockStoreTests {
         try body.write(to: url)
         #expect(throws: (any Error).self) { _ = try SSDBlockStore.read(from: url, kekKey: kek) }
 
-        // Flip one metadata byte (plaintext JSON region — it is the AAD, so
-        // the DEK unwrap and every chunk must fail even though the JSON
-        // still parses). Locate a metadata byte: header prefix is 24 bytes
-        // + wrapped DEK; the metadata JSON contains the schema string.
+        // Change a valid metadata field so header parsing succeeds and only
+        // the AAD binding can reject the file during DEK unwrap.
         var meta = original
-        if let range = meta.range(of: Data("darkbloom.kv.v3".utf8)) {
-            meta[range.lowerBound] ^= 0x01
-            try meta.write(to: url)
-            #expect(throws: (any Error).self) { _ = try SSDBlockStore.read(from: url, kekKey: kek) }
-        } else {
-            Issue.record("metadata marker not found in encoded file")
-        }
+        let field = try #require(meta.range(of: Data(#""weightHash":"w-hash""#.utf8)))
+        meta.replaceSubrange(field, with: Data(#""weightHash":"x-hash""#.utf8))
+        try meta.write(to: url)
+        #expect(try SSDBlockStore.readMetadataOnly(from: url).weightHash == "x-hash")
+        do {
+            _ = try SSDBlockStore.read(from: url, kekKey: kek)
+            Issue.record("authenticated read accepted modified metadata")
+        } catch SSDBlockStoreError.authenticationFailed(_) { }
+
+        // Preserve the separate schema-validation rejection; it happens
+        // before authentication and must not stand in for the AAD check.
+        var schema = original
+        let marker = try #require(schema.range(of: Data("darkbloom.kv.v3".utf8)))
+        schema[marker.lowerBound] ^= 0x01
+        try schema.write(to: url)
+        do {
+            _ = try SSDBlockStore.read(from: url, kekKey: kek)
+            Issue.record("read accepted an unsupported metadata schema")
+        } catch SSDBlockStoreError.malformedHeader(_) { }
     }
 
     @Test("layout epoch: layer-kind changes produce a different epoch (fail-closed binding)")
@@ -706,23 +716,35 @@ struct SSDPrefixCacheModeTests {
                 == 50 * gib)
     }
 
-    @Test("SSD knobs: TTL is capped at 15 minutes; write cap parses; stage gates parse")
+    @Test("SSD knobs: TTL is capped at 30 minutes; write cap parses; stage gates parse")
     func ssdKnobs() {
-        #expect(SSDPrefixCachePolicy.ttlSeconds(environment: [:]) == 900)
+        #expect(SSDPrefixCachePolicy.defaultTTLSeconds == 1_800)
+        // Default equals maximum: the env can shorten the TTL, never extend it.
+        #expect(SSDPrefixCachePolicy.maxTTLSeconds == SSDPrefixCachePolicy.defaultTTLSeconds)
+        #expect(SSDPrefixCachePolicy.ttlSeconds(environment: [:]) == 1_800)
         #expect(
             SSDPrefixCachePolicy.ttlSeconds(
                 environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "300"]) == 300)
-        // The env can only SHORTEN the TTL (15-minute maximum) — raising or
-        // disabling attempts fall back to the default.
         #expect(
             SSDPrefixCachePolicy.ttlSeconds(
-                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "86400"]) == 900)
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "900"]) == 900)
         #expect(
             SSDPrefixCachePolicy.ttlSeconds(
-                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "0"]) == 900)
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "1800"]) == 1_800)
+        // Raising past the maximum or disabling the TTL both fall back to
+        // the default.
+        #expect(
+            SSDPrefixCachePolicy.ttlSeconds(
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "1801"]) == 1_800)
+        #expect(
+            SSDPrefixCachePolicy.ttlSeconds(
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "86400"]) == 1_800)
+        #expect(
+            SSDPrefixCachePolicy.ttlSeconds(
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "0"]) == 1_800)
         #expect(
             SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: [:])
-                == 150 * 1_000_000_000)
+                == 750 * 1_000_000_000)
         #expect(
             SSDPrefixCachePolicy.maxWriteBytesPerDay(
                 environment: ["DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY": "0"]) == 0)
@@ -806,6 +828,7 @@ struct SSDPrefixCacheLifecycleTests {
         let tokens = Array(0 ..< tokenCount)
         donateFixture(cache, tokens: tokens)
         #expect(await waitForIndexCount(cache, atLeast: 8), "write-behind never landed")
+        await cache.waitForWritesForTesting()
         #expect(cache.index.count == 8)
         let files = dbk3Files(under: dir)
         #expect(files.count == 8)
@@ -825,7 +848,7 @@ struct SSDPrefixCacheLifecycleTests {
         // Re-donating the identical prefix writes nothing new.
         let written = cache.stats().blocksWritten
         donateFixture(cache, tokens: tokens)
-        try? await Task.sleep(for: .milliseconds(300))
+        await cache.waitForWritesForTesting()
         #expect(cache.stats().blocksWritten == written)
         #expect(dbk3Files(under: dir).count == 8)
 
@@ -1102,45 +1125,8 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(!(await cache.stage(requestID: "r-old", promptTokens: old + [1], cacheScope: "")).staged)
     }
 
-    @Test("active capacity eviction persists a new epoch before unlink")
-    func activeEvictionRotatesEpoch() async throws {
-        let dir = tempDir("active-epoch-eviction")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let layoutEpoch = SSDBlockStore.layoutEpoch(
-            blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds)
-        let binding = SSDCacheEpochStore.Binding(
-            modelId: "test-model",
-            modelAggregateHash: "test-weight-hash",
-            promptContractId: "test-prompt-contract",
-            blockHashVersion: CBv2BlockHasher.version,
-            blockSize: fixtureBlockSize,
-            layoutEpoch: layoutEpoch,
-            keyFingerprint: String(repeating: "e", count: 64))
-        let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
-        let originalEpoch = try #require(epochStore.current)
-        let cache = makeCache(
-            dir: dir,
-            kek: SymmetricKey(size: .bits256),
-            clock: ClockBox(10_000),
-            epochStore: epochStore)
-        defer { cache.close() }
-
-        donateFixture(cache, tokens: Array(0 ..< tokenCount), seed: 1)
-        #expect(await waitForIndexCount(cache, atLeast: 1))
-        #expect(cache.evictOldestEntry() > 0)
-        let rotatedEpoch = try #require(epochStore.current)
-        #expect(rotatedEpoch != originalEpoch)
-        #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == rotatedEpoch)
-    }
-
-    // `holdDestructiveEpochForTesting` exists only under `#if DEBUG` in SSDPrefixCache.swift,
-    // so this test must be gated the same way or `swift test -c release` fails to compile.
-    #if DEBUG
-    @Test("capability publication waits for destructive mutation completion")
-    func destructiveMutationBracketsCapabilityPublication() async throws {
-        let dir = tempDir("epoch-publication-bracket")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let binding = SSDCacheEpochStore.Binding(
+    private func fixtureBinding() -> SSDCacheEpochStore.Binding {
+        SSDCacheEpochStore.Binding(
             modelId: "test-model",
             modelAggregateHash: "test-weight-hash",
             promptContractId: "test-prompt-contract",
@@ -1149,53 +1135,336 @@ struct SSDPrefixCacheLifecycleTests {
             layoutEpoch: SSDBlockStore.layoutEpoch(
                 blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds),
             keyFingerprint: String(repeating: "e", count: 64))
+    }
+
+    private func waitForCapability(_ cache: SSDPrefixCache) async throws -> PrefixCacheV2Capability {
+        for _ in 0 ..< 200 {
+            if let advertised = cache.prefixCacheV2Capability() { return advertised }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return try #require(cache.prefixCacheV2Capability())
+    }
+
+    @Test("active capacity eviction keeps the epoch and the surviving prefix reusable")
+    func activeEvictionKeepsEpoch() async throws {
+        let dir = tempDir("active-epoch-eviction")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let binding = fixtureBinding()
         let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let originalEpoch = try #require(epochStore.current)
+        let clock = ClockBox(10_000)
+        let budget = SSDDiskBudget()
         let cache = makeCache(
             dir: dir,
             kek: SymmetricKey(size: .bits256),
-            clock: ClockBox(10_000),
+            clock: clock,
+            diskBudget: budget,
             epochStore: epochStore)
         defer { cache.close() }
-
         cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
-        var advertised: PrefixCacheV2Capability?
-        for _ in 0 ..< 100 {
-            advertised = cache.prefixCacheV2Capability()
-            if advertised != nil { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let original = try #require(advertised)
-        let (entered, enteredContinuation) = AsyncStream.makeStream(
-            of: Void.self, bufferingPolicy: .bufferingNewest(1))
-        let release = DispatchSemaphore(value: 0)
-        let mutation = Task.detached {
-            cache.holdDestructiveEpochForTesting {
-                enteredContinuation.yield(())
-                release.wait()
-            }
-        }
-        var enteredIterator = entered.makeAsyncIterator()
-        _ = await enteredIterator.next()
+        let original = try await waitForCapability(cache)
+        #expect(original.cacheEpoch == originalEpoch)
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: originalEpoch) == 1)
 
-        let mutationAdvertisement = cache.prefixCacheAdvertisement(
-            base: PrefixCacheModelStatus(
-                modelId: "test-model",
-                backend: .contiguous,
-                replayStrategy: .direct,
-                state: .pending,
-                reason: .scanPending))
-        #expect(mutationAdvertisement.capability == nil)
-        #expect(mutationAdvertisement.status.state == .pending)
-        #expect(mutationAdvertisement.status.reason == .scanPending)
-        #expect(
-            cache.takeNextPrefixCacheV2Sequence(expectedEpoch: original.cacheEpoch) == nil)
+        let old = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: old, seed: 1.0)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        let perBlockBytes = cache.index.totalBytes / 8
+        clock.advance(60)
+        let fresh = Array(9000 ..< (9000 + tokenCount))
+        donateFixture(cache, tokens: fresh, seed: 2.0)
+        #expect(await waitForIndexCount(cache, atLeast: 16))
 
-        release.signal()
-        #expect(await mutation.value)
-        let current = try #require(cache.prefixCacheV2Capability())
-        #expect(current.cacheEpoch != original.cacheEpoch)
+        // Box-wide enforcement evicts the whole older prefix one victim at a
+        // time. Each victim used to mint a fresh epoch; none may now.
+        budget.enforce(budgetBytes: perBlockBytes * 8)
+        #expect(cache.index.totalBytes <= perBlockBytes * 8)
+        #expect(cache.stats().evictions >= 8)
+        #expect(epochStore.current == originalEpoch)
+        #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == originalEpoch)
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: originalEpoch) == 2)
+        // The evicted prefix misses; the surviving prefix still stages under
+        // the same epoch the coordinator recorded it with.
+        #expect(!(await cache.stage(requestID: "r-old", promptTokens: old + [1], cacheScope: "")).staged)
+        #expect((await cache.stage(requestID: "r-new", promptTokens: fresh + [1], cacheScope: "")).staged)
+        cache.completeStaging(requestID: "r-new")
     }
-    #endif
+
+    @Test("TTL sweep and corrupt-block removal keep the epoch and the capability published")
+    func sweepAndCorruptDropKeepEpoch() async throws {
+        let dir = tempDir("epoch-sweep-corrupt")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let binding = fixtureBinding()
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let originalEpoch = try #require(epochStore.current)
+        let clock = ClockBox(10_000)
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: clock,
+            ttlSeconds: 900,
+            epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        let original = try await waitForCapability(cache)
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: originalEpoch) == 1)
+
+        let old = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: old, seed: 1.0)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        clock.advance(60)
+        let fresh = Array(9000 ..< (9000 + tokenCount))
+        donateFixture(cache, tokens: fresh, seed: 2.0)
+        #expect(await waitForIndexCount(cache, atLeast: 16))
+
+        // Exactly the older prefix crosses the sliding TTL.
+        clock.advance(840)
+        cache.sweepExpiredEntries()
+        #expect(cache.stats().ttlExpired == 8)
+        #expect(cache.index.count == 8)
+        #expect(epochStore.current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability() == original)
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: originalEpoch) == 2)
+        #expect(!(await cache.stage(requestID: "r-old", promptTokens: old + [1], cacheScope: "")).staged)
+
+        // Corrupt one surviving block: the reader drops that file and falls
+        // back cold or short, still without touching the epoch.
+        let survivor = try #require(dbk3Files(under: dir).first)
+        var bytes = try Data(contentsOf: survivor)
+        bytes[bytes.count - 10] ^= 0xFF
+        try bytes.write(to: survivor)
+        _ = await cache.stage(requestID: "r-fresh", promptTokens: fresh + [1], cacheScope: "")
+        cache.completeStaging(requestID: "r-fresh")
+        #expect(cache.stats().corruptDropped == 1)
+        #expect(cache.index.count == 7)
+        #expect(!FileManager.default.fileExists(atPath: survivor.path))
+        #expect(epochStore.current == originalEpoch)
+        #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability() == original)
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: originalEpoch) == 3)
+    }
+
+    @Test("a binding change still wipes the root, rotates, and disowns the superseded cache")
+    func bindingChangeStillRotates() async throws {
+        let dir = tempDir("epoch-binding-change")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let binding = fixtureBinding()
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let originalEpoch = try #require(epochStore.current)
+        let clock = ClockBox(10_000)
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: clock,
+            epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        _ = try await waitForCapability(cache)
+        donateFixture(cache, tokens: Array(0 ..< tokenCount), seed: 1.0)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+
+        let rebound = SSDCacheEpochStore.Binding(
+            modelId: binding.modelId,
+            modelAggregateHash: binding.modelAggregateHash,
+            promptContractId: "rebound-prompt-contract",
+            blockHashVersion: binding.blockHashVersion,
+            blockSize: binding.blockSize,
+            layoutEpoch: binding.layoutEpoch,
+            keyFingerprint: binding.keyFingerprint)
+        let successor = try SSDCacheEpochStore(root: dir, binding: rebound)
+        let rotated = try #require(successor.current)
+        #expect(rotated != originalEpoch)
+        #expect(dbk3Files(under: dir).isEmpty)
+        // The superseded cache stops advertising and refuses per-file
+        // removals, so it can never unlink the successor's files.
+        #expect(epochStore.current == nil)
+        #expect(cache.prefixCacheV2Capability() == nil)
+        #expect(cache.evictOldestEntry() == 0)
+        #expect(cache.index.count == 8, "a disowned cache must not mutate the root")
+        // Index-only reconciliation still runs, so the disowned cache stops
+        // reporting bytes the successor's wipe already removed.
+        #expect(cache.diskBytesOnDisk > 0)
+        cache.reconcileExternalRemovals()
+        #expect(cache.index.count == 0)
+        #expect(cache.diskBytesOnDisk == 0)
+    }
+
+    private func blockFile(dir: URL, kek: SymmetricKey, tokens: [Int], block: Int) -> URL {
+        let chain = CBv2BlockHasher(
+            blockSize: fixtureBlockSize, promptContractID: "test-prompt-contract"
+        ).chainHashes(tokens: tokens)
+        return SSDBlockStore.fileURL(
+            root: dir,
+            tag16Hex: SSDLookupKeys.hex(
+                SSDLookupKeys(kek: kek).tag16(chainHash: chain[block], cacheSalt: "")))
+    }
+
+    @Test("a block unlinked behind the index shortens the run as absence, not corruption")
+    func unlinkedBlockShortensWithoutCorruption() async throws {
+        let dir = tempDir("absent-mid-run")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
+        let epoch = try #require(epochStore.current)
+        let cache = makeCache(dir: dir, kek: kek, clock: ClockBox(10_000), epochStore: epochStore)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: tokens)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+
+        try FileManager.default.removeItem(
+            at: blockFile(dir: dir, kek: kek, tokens: tokens, block: 4))
+        #expect(cache.index.count == 8)
+        let staged = await cache.stage(
+            requestID: "r-short", promptTokens: tokens + [1], cacheScope: "")
+        #expect(staged.disposition == .staged(
+            matchedTokens: 4 * fixtureBlockSize,
+            expectedPrefillTokensSaved: 4 * fixtureBlockSize,
+            shortenedByCorruption: false))
+        cache.completeStaging(requestID: "r-short")
+        #expect(cache.stats().corruptDropped == 0)
+        #expect(cache.index.count == 7)
+        #expect(epochStore.current == epoch)
+    }
+
+    @Test("a leading block unlinked behind the index is an absent miss, not corruption")
+    func unlinkedLeadingBlockIsAbsentMiss() async throws {
+        let dir = tempDir("absent-leading")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
+        let epoch = try #require(epochStore.current)
+        let cache = makeCache(dir: dir, kek: kek, clock: ClockBox(10_000), epochStore: epochStore)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: tokens)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+
+        try FileManager.default.removeItem(
+            at: blockFile(dir: dir, kek: kek, tokens: tokens, block: 0))
+        let missed = await cache.stage(
+            requestID: "r-absent", promptTokens: tokens + [1], cacheScope: "")
+        #expect(missed.disposition == .missAbsent)
+        #expect(cache.stats().corruptDropped == 0)
+        #expect(cache.index.count == 7)
+        #expect(epochStore.current == epoch)
+        #expect(dbk3Files(under: dir).count == 7, "no surviving block was deleted")
+    }
+
+    @Test("concurrent readers and eviction never report corruption or rotate the epoch")
+    func concurrentReadersAndEviction() async throws {
+        let dir = tempDir("reader-vs-eviction")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
+        let epoch = try #require(epochStore.current)
+        let clock = ClockBox(10_000)
+        let cache = makeCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: clock, epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        let capability = try await waitForCapability(cache)
+        let prompts = [Array(0 ..< tokenCount), Array(9000 ..< (9000 + tokenCount))]
+
+        for round in 0 ..< 6 {
+            for (offset, tokens) in prompts.enumerated() {
+                donateFixture(cache, tokens: tokens, seed: Float(offset + 1))
+                #expect(await waitForIndexCount(cache, atLeast: 8 * (offset + 1)))
+                clock.advance(1)
+            }
+            await cache.waitForWritesForTesting()
+            let seen = await withTaskGroup(of: [SSDPrefixCacheStageDisposition].self) { group in
+                for reader in 0 ..< 3 {
+                    group.addTask {
+                        var dispositions: [SSDPrefixCacheStageDisposition] = []
+                        for attempt in 0 ..< 4 {
+                            let id = "r-\(round)-\(reader)-\(attempt)"
+                            let result = await cache.stage(
+                                requestID: id,
+                                promptTokens: prompts[(reader + attempt) % 2] + [1],
+                                cacheScope: "")
+                            dispositions.append(result.disposition)
+                            cache.completeStaging(requestID: id)
+                        }
+                        return dispositions
+                    }
+                }
+                group.addTask {
+                    var passes = 0
+                    while cache.index.count > 0, passes < 1_000 {
+                        _ = cache.evictOldestEntry()
+                        passes += 1
+                        await Task.yield()
+                    }
+                    return []
+                }
+                var all: [SSDPrefixCacheStageDisposition] = []
+                for await dispositions in group { all += dispositions }
+                return all
+            }
+            #expect(seen.count == 12)
+            #expect(!seen.contains(.missCorrupt))
+            #expect(cache.index.count == 0)
+            #expect(dbk3Files(under: dir).isEmpty)
+        }
+        #expect(cache.stats().corruptDropped == 0)
+        #expect(cache.stats().evictions == 6 * 16)
+        #expect(epochStore.current == epoch)
+        #expect(cache.prefixCacheV2Capability() == capability)
+    }
+
+    @Test("a crash between unlink and index update reconciles from disk on restart without a new epoch")
+    func crashMidRemovalReconcilesOnRestart() async throws {
+        let dir = tempDir("crash-mid-removal")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let binding = fixtureBinding()
+        let clock = ClockBox(10_000)
+        let firstEpochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let epoch = try #require(firstEpochStore.current)
+        let first = makeCache(dir: dir, kek: kek, clock: clock, epochStore: firstEpochStore)
+        first.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        _ = try await waitForCapability(first)
+        #expect(first.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch) == 1)
+        let old = Array(0 ..< tokenCount)
+        let fresh = Array(9000 ..< (9000 + tokenCount))
+        donateFixture(first, tokens: old, seed: 1.0)
+        #expect(await waitForIndexCount(first, atLeast: 8))
+        donateFixture(first, tokens: fresh, seed: 2.0)
+        #expect(await waitForIndexCount(first, atLeast: 16))
+        await first.waitForWritesForTesting()
+
+        // Simulate the crash mid-sweep: the older prefix's files are gone,
+        // the RAM index never learned, and the process dies.
+        for block in 0 ..< 8 {
+            try FileManager.default.removeItem(
+                at: blockFile(dir: dir, kek: kek, tokens: old, block: block))
+        }
+        #expect(first.index.count == 16)
+        await first.closeAndWait()
+
+        let restartedEpochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        #expect(restartedEpochStore.current == epoch)
+        let restarted = makeCache(dir: dir, kek: kek, clock: clock, epochStore: restartedEpochStore)
+        defer { restarted.close() }
+        restarted.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        let capability = try await waitForCapability(restarted)
+        #expect(capability.cacheEpoch == epoch)
+        #expect(restarted.index.count == 8)
+        #expect(restarted.index.totalBytes == dbk3Files(under: dir).reduce(0) {
+            $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        })
+        #expect(restarted.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch) == 2)
+        #expect((await restarted.stage(
+            requestID: "r-fresh", promptTokens: fresh + [1], cacheScope: "")).staged)
+        restarted.completeStaging(requestID: "r-fresh")
+        let missed = await restarted.stage(
+            requestID: "r-old", promptTokens: old + [1], cacheScope: "")
+        #expect(missed.disposition == .missAbsent)
+        #expect(restarted.stats().corruptDropped == 0)
+    }
 
     @Test("reconciliation drops a symlink-replaced indexed file without following it")
     func reconciliationDropsSymlinkReplacement() throws {
@@ -1436,7 +1705,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         // Re-donation of the same terminal prefix is durable but must not
         // emit a duplicate/non-increasing receipt.
         correlatedDonate(cache, requestID: requestID, tokenCount: 72)
-        try? await Task.sleep(for: .milliseconds(200))
+        await cache.waitForWritesForTesting()
         #expect(box.snapshot.count == 2)
     }
 
@@ -1458,7 +1727,7 @@ struct SSDPrefixCacheReadyReceiptTests {
             if closeBeforeDonate { cache.close() }
             correlatedDonate(cache, requestID: id, tokenCount: 64)
             mutate?(dir)
-            try? await Task.sleep(for: .milliseconds(500))
+            await cache.waitForWritesForTesting()
             cache.close()
             return box.snapshot
         }
@@ -1474,7 +1743,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         let tooShortBox = ReadyReceiptBox()
         tooShort.registerReadyReceipt(requestID: CBv2RequestID(50), callback: tooShortBox.append)
         correlatedDonate(tooShort, requestID: CBv2RequestID(50), tokenCount: 64)
-        try? await Task.sleep(for: .milliseconds(200))
+        await tooShort.waitForWritesForTesting()
         #expect(tooShortBox.snapshot.isEmpty)
         tooShort.close()
 
@@ -1515,7 +1784,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         let corruptBox = ReadyReceiptBox()
         corrupt.registerReadyReceipt(requestID: CBv2RequestID(52), callback: corruptBox.append)
         correlatedDonate(corrupt, requestID: CBv2RequestID(52), tokenCount: 64)
-        try? await Task.sleep(for: .milliseconds(500))
+        await corrupt.waitForWritesForTesting()
         #expect(corruptBox.snapshot.isEmpty)
         corrupt.close()
     }
@@ -1531,6 +1800,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
+        let returned = DispatchSemaphore(value: 0)
         let cache = makeCache(
             dir: dir,
             kek: SymmetricKey(size: .bits256),
@@ -1538,19 +1808,23 @@ struct SSDPrefixCacheReadyReceiptTests {
             minEffectiveTokens: fixtureBlockSize,
             maintainWholeRoot: {
                 entered.signal()
-                _ = release.wait(timeout: .now() + 5)
+                release.wait()
             })
-        defer { cache.close(); release.signal() }
+        defer { release.signal(); cache.close() }
         let id = CBv2RequestID(61)
         cache.registerReadyReceipt(requestID: id, callback: { _ in })
-        let returned = Task {
+        let donation = Task {
             correlatedDonate(cache, requestID: id, tokenCount: 64)
-            return true
+            returned.signal()
         }
-        #expect(await returned.value)
         let enteredResult = await waitForSemaphore(entered, timeout: .now() + 5)
         #expect(enteredResult == .success)
+        // Maintenance stays blocked until after this assertion. An inline
+        // donation cannot pass by waiting for the maintenance hook to time out.
+        #expect(await waitForSemaphore(returned, timeout: .now() + 5) == .success)
         release.signal()
+        await donation.value
+        await cache.waitForWritesForTesting()
     }
 }
 
@@ -1886,6 +2160,12 @@ private final class SSDDeadlineRejectEngine: CBv2Engine, @unchecked Sendable {
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
         lock.withLock { _continuations.append(continuation) }
+        var usage = CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 0)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1_000_000
+        timing.promptComputedNanos = 1_001_000_000
+        usage.timing = timing
+        request.onPrefillCompleted?(usage)
         return stream
     }
 
@@ -1894,7 +2174,7 @@ private final class SSDDeadlineRejectEngine: CBv2Engine, @unchecked Sendable {
         firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
     ) async throws -> CBv2FirstTokenDeadlineResult {
         lock.withLock { _deadlineSubmissions += 1 }
-        return .deadlineUnreachable(projectedWork: .unbounded)
+        return .deadlineUnreachable(projectedWork: .unbounded())
     }
 
     func cancel(_ id: CBv2RequestID) {}
@@ -2417,9 +2697,9 @@ struct SSDPrefixCacheReservationTests {
     }
 }
 
-// MARK: - Own-root isolation (legacy upgrade sweeper safety)
+// MARK: - Own-root isolation (kv3 is a sibling of the retired kv root)
 
-@Suite("SSD prefix cache: own root survives the legacy kv sweep")
+@Suite("SSD prefix cache: own root outside the retired kv tree")
 struct SSDRootIsolationTests {
 
     @Test("cacheDirectory lives under darkbloom/kv3, never under the legacy darkbloom/kv root")
@@ -2428,61 +2708,12 @@ struct SSDRootIsolationTests {
         let path = dir.path
         #expect(path.contains("/darkbloom/kv3/"),
             "SSD tier must use its own root: \(path)")
-        // The critical invariant: NOT inside the legacy root the upgrade
-        // sweeper sheds (kv3 is a SIBLING of kv, not a subtree).
+        // The critical invariant: NOT inside the retired pre-v0.7.5 root
+        // (kv3 is a SIBLING of kv, not a subtree).
         #expect(!path.contains("/darkbloom/kv/"),
             "SSD tier must never live under the legacy kv root: \(path)")
         // Stable modelKey derivation (12-hex prefix of SHA256(modelId)).
         #expect(dir.lastPathComponent.count == 12)
-    }
-
-    @Test("the REAL legacy sweeper (LegacyKVCacheSweeper.sweep) leaves SSD entries intact and adoptable")
-    func legacySweepSurvival() async throws {
-        // Layout mirroring production: <caches>/darkbloom/kv (legacy) and
-        // <caches>/darkbloom/kv3/<modelKey> (SSD) as SIBLINGS.
-        let caches = tempDir("sweep-survival")
-        defer { try? FileManager.default.removeItem(at: caches) }
-        let legacyRoot = caches.appendingPathComponent("darkbloom/kv", isDirectory: true)
-        let ssdDir = caches.appendingPathComponent(
-            "darkbloom/kv3/aaaa11112222", isDirectory: true)
-        let fm = FileManager.default
-        try fm.createDirectory(
-            at: legacyRoot.appendingPathComponent("aaaa11112222"),
-            withIntermediateDirectories: true)
-        try Data([1]).write(
-            to: legacyRoot.appendingPathComponent("aaaa11112222/old.darkbloom-kv"))
-        try fm.createDirectory(at: ssdDir, withIntermediateDirectories: true)
-
-        let kek = SymmetricKey(size: .bits256)
-        let clock = ClockBox(10_000)
-        let writer = makeCache(dir: ssdDir, kek: kek, clock: clock)
-        let tokens = Array(0 ..< 64)
-        writer.donate(
-            tokens: tokens,
-            snapshots: fixtureSnapshots(tokenCount: 64),
-            layerKinds: fixtureLayerKinds,
-            cacheSalt: nil)
-        #expect(await waitForIndexCount(writer, atLeast: 8))
-        writer.close()
-
-        // THE LEGACY SWEEP — the REAL production sweeper (the exact code
-        // `ProviderLoop.run()` / the standalone server invoke at startup),
-        // pointed at this layout's kv/ root: it sheds the retired tier's
-        // ciphertext wholesale. kv3/ (a SIBLING, not a subtree) must be
-        // untouched.
-        let sweptBytes = LegacyKVCacheSweeper.sweep(kvRoot: legacyRoot)
-        #expect(sweptBytes > 0, "the sweeper must have removed the legacy tier's bytes")
-        #expect(!fm.fileExists(atPath: legacyRoot.path), "the legacy kv/ root must be gone")
-
-        #expect(dbk3Files(under: ssdDir).count == 8, "SSD entries must survive the legacy sweep")
-        // And they remain fully adoptable: fresh cache, scan, stage.
-        let reader = makeCache(dir: ssdDir, kek: kek, clock: clock)
-        defer { reader.close() }
-        reader.scanOnDisk()
-        #expect(reader.index.count == 8)
-        #expect((await reader.stage(
-            requestID: "r-survive", promptTokens: tokens + [1], cacheScope: "")).staged)
-        reader.completeStaging(requestID: "r-survive")
     }
 }
 
@@ -2600,8 +2831,8 @@ struct SSDWholeRootMaintenanceTests {
         #expect(result.bytesAfter <= freshBytes)
     }
 
-    @Test("whole-root eviction durably rotates the model epoch before unlink")
-    func evictionRotatesEpoch() throws {
+    @Test("whole-root eviction of an unloaded model keeps its epoch and sequence")
+    func unloadedEvictionKeepsEpoch() throws {
         let root = tempDir("whole-root-epoch")
         defer { try? FileManager.default.removeItem(at: root) }
         let modelKey = "333333333333"
@@ -2620,8 +2851,11 @@ struct SSDWholeRootMaintenanceTests {
             blockSize: 256,
             layoutEpoch: "layout",
             keyFingerprint: String(repeating: "c", count: 64))
+        // The epoch record exists but no store is registered for the root:
+        // this is the unloaded-model path of the maintainer.
         let active = try SSDCacheEpochStore(root: modelRoot, binding: binding)
         let original = try #require(active.current)
+        #expect(active.takeNextSequence(expectedEpoch: original) == 1)
 
         let result = SSDWholeRootMaintainer.shared.maintain(
             root: root,
@@ -2630,14 +2864,32 @@ struct SSDWholeRootMaintenanceTests {
             budgetBytes: 0)
         #expect(result.budgetEvicted == 1)
         #expect(!FileManager.default.fileExists(atPath: block.path))
-        #expect(active.current == nil, "the previously advertised epoch must be disabled")
-
+        // No capability was advertised for an unloaded model, so the
+        // coordinator holds nothing a rotation could invalidate; the record
+        // and its sequence counter are left alone for the next load.
+        #expect(active.current == original)
         let reopened = try SSDCacheEpochStore(root: modelRoot, binding: binding)
-        let rotated = try #require(reopened.current)
-        #expect(rotated != original)
+        #expect(reopened.current == original)
+        #expect(reopened.takeNextSequence(expectedEpoch: original) == 2)
     }
 
-    @Test("whole-root eviction keeps an active cache on the rotated epoch")
+    @Test("whole-root eviction of an unloaded root without an epoch record still removes orphans")
+    func unloadedEvictionWithoutRecord() throws {
+        let root = tempDir("whole-root-no-record")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let block = try writeOwnedFile(
+            root: root,
+            modelKey: "555555555555",
+            tagHex: "5500112233445566778899aabbccddee",
+            modifiedAt: 1_000,
+            payloadBytes: 256)
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 10_000, nowSeconds: 2_000, budgetBytes: 0)
+        #expect(result.budgetEvicted == 1)
+        #expect(!FileManager.default.fileExists(atPath: block.path))
+    }
+
+    @Test("whole-root eviction keeps an active cache advertising the same epoch")
     func activeWholeRootEvictionKeepsCapabilityReady() async throws {
         let root = tempDir("whole-root-active-epoch")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2685,11 +2937,65 @@ struct SSDWholeRootMaintenanceTests {
             nowSeconds: 10_000,
             budgetBytes: 0)
         #expect(result.budgetEvicted > 0)
-        SSDDiskBudget.shared.reconcileAll()
-
-        let rotated = try #require(cache.prefixCacheV2Capability())
-        #expect(rotated.cacheEpoch != original.cacheEpoch)
+        // The active store reconciled its index inside the removal barrier;
+        // no separate reconcile pass is needed and the epoch is unchanged.
         #expect(cache.index.count == 0)
+        let after = try #require(cache.prefixCacheV2Capability())
+        #expect(after.cacheEpoch == original.cacheEpoch)
+        SSDDiskBudget.shared.reconcileAll()
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == original.cacheEpoch)
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: original.cacheEpoch) == 1)
+    }
+
+    @Test("a disowned, unclosed cache cannot stop whole-root TTL expiry under its root")
+    func disownedCacheDoesNotBlockExpiry() async throws {
+        let root = tempDir("whole-root-disowned")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modelKey = "666666666666"
+        let modelRoot = root.appendingPathComponent(modelKey, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: modelRoot, withIntermediateDirectories: true)
+        func binding(_ fingerprint: String) -> SSDCacheEpochStore.Binding {
+            SSDCacheEpochStore.Binding(
+                modelId: "test-model",
+                modelAggregateHash: "test-weight-hash",
+                promptContractId: "test-prompt-contract",
+                blockHashVersion: CBv2BlockHasher.version,
+                blockSize: fixtureBlockSize,
+                layoutEpoch: SSDBlockStore.layoutEpoch(
+                    blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds),
+                keyFingerprint: fingerprint)
+        }
+        // The maintainer finds active stores through the shared budget.
+        let cache = makeCache(
+            dir: modelRoot,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            diskBudget: .shared,
+            epochStore: try SSDCacheEpochStore(
+                root: modelRoot, binding: binding(String(repeating: "d", count: 64))))
+        defer { cache.close() }
+        #expect(cache.ownsEvictionRoot)
+
+        let successor = try SSDCacheEpochStore(
+            root: modelRoot, binding: binding(String(repeating: "f", count: 64)))
+        let epoch = try #require(successor.current)
+        #expect(!cache.ownsEvictionRoot)
+
+        let expired = try writeOwnedFile(
+            root: root,
+            modelKey: modelKey,
+            tagHex: "6600112233445566778899aabbccddee",
+            modifiedAt: 1_000)
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root,
+            ttlSeconds: 900,
+            nowSeconds: 2_000,
+            budgetBytes: Int.max)
+        #expect(result.ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: expired.path))
+        // Expiry is a per-file removal: the successor's epoch is untouched.
+        #expect(successor.current == epoch)
     }
 
     @Test("young temp bytes consume global budget without making the active temp evictable")
@@ -2914,9 +3220,9 @@ struct SSDWholeRootMaintenanceTests {
 @Suite("SSD prefix cache: per-donation gate", .serialized)
 struct SSDPrefixCacheDonationGateTests {
 
-    /// Poll briefly and assert NOTHING was written (negative settling).
+    /// Wait for accepted writes to settle before asserting nothing was written.
     private func expectNoWrites(_ cache: SSDPrefixCache, dir: URL) async {
-        try? await Task.sleep(for: .milliseconds(300))
+        await cache.waitForWritesForTesting()
         #expect(cache.stats().blocksWritten == 0)
         #expect(cache.index.count == 0)
         #expect(dbk3Files(under: dir).isEmpty)
@@ -3017,7 +3323,7 @@ struct SSDPrefixCacheDonationGateTests {
             layerKinds: fixtureLayerKinds,
             cacheSalt: nil)
         #expect(await waitForIndexCount(writer, atLeast: 3))
-        try? await Task.sleep(for: .milliseconds(200))
+        await writer.waitForWritesForTesting()
         #expect(writer.index.count == 3)
         #expect(dbk3Files(under: dir).count == 3)
         writer.close()

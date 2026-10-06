@@ -27,6 +27,20 @@ import ProviderCore
     #expect(out.contains("[PASS] usage reporting"))
     // A passing check with nil fix emits no fix line for it.
     #expect(!out.contains("↳ fix: \n"))
+    #expect(out.contains("READINESS: 1 blocking failure(s), 1 warning(s)"))
+    #expect(out.contains("First action: log in at the console"))
+}
+
+@Test func doctorColorsOnlyInteractiveTerminals() {
+    let diagnosis = [Diagnostic(section: .traffic, name: "model memory", level: .fail,
+                                message: "10.4 GB short", fix: "free memory")]
+    let plain = DiagnosticReportRenderer.render(diagnosis)
+    let colored = DiagnosticReportRenderer.render(diagnosis, color: true)
+    #expect(!plain.contains("\u{001B}["))
+    #expect(colored.contains("\u{001B}[1;31m[FAIL]\u{001B}[0m"))
+    #expect(DoctorTerminalStyle.enabled(isTTY: true, environment: ["TERM": "xterm"]))
+    #expect(!DoctorTerminalStyle.enabled(isTTY: false, environment: ["TERM": "xterm"]))
+    #expect(!DoctorTerminalStyle.enabled(isTTY: true, environment: ["NO_COLOR": "", "TERM": "xterm"]))
 }
 
 @Test func rendererFailureVerdictRespectsStrict() {
@@ -36,4 +50,11 @@ import ProviderCore
 
     let withFail = [Diagnostic(section: .trust, name: "t", level: .fail, message: "m")]
     #expect(DiagnosticReportRenderer.hasFailure(withFail, strict: false) == true)
+}
+
+@Test func informationalDiagnosticsDoNotFailStrictDoctor() {
+    let diagnostics = [Diagnostic(section: .attestationReadiness, name: "apns pushes", level: .info,
+                                  message: "delivery is indeterminate")]
+    #expect(DiagnosticReportRenderer.render(diagnostics).contains("[INFO] apns pushes"))
+    #expect(!DiagnosticReportRenderer.hasFailure(diagnostics, strict: true))
 }

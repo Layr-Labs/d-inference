@@ -1,6 +1,6 @@
 # Prefix cache deep-dive: how it works, why cached routing is dark, and how to turn it on
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Proposed** — 2026-08-31 — `EIGENINFERENCE_CACHE_ROUTING_MODE` still falls back to `CacheRoutingOff` (`coordinator/registry/config.go`) and no Part 7 canary is on record in `CHANGELOG.md`; current state: [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md#configuration-and-rollback).
 

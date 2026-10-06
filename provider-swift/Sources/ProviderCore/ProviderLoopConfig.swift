@@ -8,7 +8,11 @@ public struct ProviderLoopConfig: Sendable {
     public let coordinatorURL: String
     public let hardware: HardwareInfo
     public let models: [ModelInfo]
+    /// Verified cached candidates, separate from ordinary serving permission.
+    public let autopilotInventory: [ModelInfo]
     public let config: ProviderConfig
+    /// The running CLI's resolved config; nil for embedded/test instances.
+    public let configPath: URL?
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let runtimeCapabilities: Set<ProviderRuntimeCapability>
@@ -33,12 +37,16 @@ public struct ProviderLoopConfig: Sendable {
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         modelHashes: [String: String] = [:],
         modelHashFingerprints: [String: String] = [:],
-        localEndpoint: LocalInferenceHTTPConfig? = nil
+        localEndpoint: LocalInferenceHTTPConfig? = nil,
+        configPath: URL? = nil,
+        autopilotInventory: [ModelInfo] = []
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
         self.models = models
+        self.autopilotInventory = autopilotInventory
         self.config = config
+        self.configPath = configPath
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.runtimeCapabilities = runtimeCapabilities

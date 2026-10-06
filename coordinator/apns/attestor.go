@@ -104,7 +104,7 @@ type APNsPushAttestor struct {
 	backoffMu    sync.Mutex
 	backoffUntil map[string]time.Time // per device token (honor Retry-After / 429)
 
-	now func() time.Time // injectable clock (tests)
+	now func() time.Time
 }
 
 // Config configures an APNsPushAttestor.
@@ -120,6 +120,8 @@ type Config struct {
 	HTTPClient *http.Client
 	// HostOverride replaces the APNs host for both environments (tests only).
 	HostOverride string
+	// Now supplies the clock for token expiry and delivery backoff. Nil uses time.Now.
+	Now func() time.Time `json:"-"`
 }
 
 // NewAPNsPushAttestor parses the .p8 and returns a ready attestor.
@@ -142,6 +144,10 @@ func NewAPNsPushAttestor(cfg Config) (*APNsPushAttestor, error) {
 			Transport: &http.Transport{ForceAttemptHTTP2: true},
 		}
 	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &APNsPushAttestor{
 		teamID:       cfg.TeamID,
 		keyID:        cfg.KeyID,
@@ -151,7 +157,7 @@ func NewAPNsPushAttestor(cfg Config) (*APNsPushAttestor, error) {
 		client:       client,
 		hostOverride: cfg.HostOverride,
 		backoffUntil: make(map[string]time.Time),
-		now:          time.Now,
+		now:          now,
 	}, nil
 }
 
@@ -176,21 +182,28 @@ func parseP8(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 
 // SendCodeChallenge builds E_K(nonceB64) for the provider's key and pushes it.
 func (a *APNsPushAttestor) SendCodeChallenge(ctx context.Context, deviceToken, environment, providerPubKeyB64, nonceB64 string) error {
+	_, err := a.SendCodeChallengeResult(ctx, deviceToken, environment, providerPubKeyB64, nonceB64)
+	return err
+}
+
+// SendCodeChallengeResult is SendCodeChallenge plus a token-free description
+// of what APNs did with the push. The error is identical to SendCodeChallenge.
+func (a *APNsPushAttestor) SendCodeChallengeResult(ctx context.Context, deviceToken, environment, providerPubKeyB64, nonceB64 string) (PushResult, error) {
 	if deviceToken == "" {
-		return fmt.Errorf("apns: empty device token")
+		return PushResult{}, fmt.Errorf("apns: empty device token")
 	}
 	if blocked, until := a.inBackoff(deviceToken); blocked {
-		return fmt.Errorf("apns: device %s in backoff until %s", short(deviceToken), until.Format(time.RFC3339))
+		return PushResult{LocalBackoff: true}, fmt.Errorf("apns: device %s in backoff until %s", short(deviceToken), until.Format(time.RFC3339))
 	}
 
 	payload, err := BuildCodeChallengePayload(nonceB64, providerPubKeyB64, a.mode)
 	if err != nil {
-		return fmt.Errorf("apns: build challenge payload: %w", err)
+		return PushResult{}, fmt.Errorf("apns: build challenge payload: %w", err)
 	}
 
 	jwt, err := a.jwt()
 	if err != nil {
-		return fmt.Errorf("apns: mint jwt: %w", err)
+		return PushResult{}, fmt.Errorf("apns: mint jwt: %w", err)
 	}
 
 	host := prodHost
@@ -204,7 +217,7 @@ func (a *APNsPushAttestor) SendCodeChallenge(ctx context.Context, deviceToken, e
 	url := host + "/3/device/" + deviceToken
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("apns: build request: %w", err)
+		return PushResult{}, fmt.Errorf("apns: build request: %w", err)
 	}
 	req.Header.Set("authorization", "bearer "+jwt)
 	req.Header.Set("apns-topic", a.topic)
@@ -215,19 +228,23 @@ func (a *APNsPushAttestor) SendCodeChallenge(ctx context.Context, deviceToken, e
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("apns: send: %w", err)
+		return PushResult{Transport: true}, fmt.Errorf("apns: send: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	result := PushResult{StatusCode: resp.StatusCode, APNsIDPresent: resp.Header.Get("apns-id") != ""}
+	if resp.StatusCode != http.StatusOK {
+		result.Reason = ParseReason(body)
+	}
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		return nil
+		return result, nil
 	case resp.StatusCode == http.StatusTooManyRequests:
 		a.setBackoff(deviceToken, resp.Header.Get("Retry-After"))
-		return fmt.Errorf("apns: 429 too many requests for device %s: %s", short(deviceToken), string(body))
+		return result, fmt.Errorf("apns: 429 too many requests for device %s: %s", short(deviceToken), string(body))
 	default:
-		return fmt.Errorf("apns: status %d: %s", resp.StatusCode, string(body))
+		return result, fmt.Errorf("apns: status %d: %s", resp.StatusCode, string(body))
 	}
 }
 

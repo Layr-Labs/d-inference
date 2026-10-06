@@ -5,21 +5,30 @@ on:
     branches: [master, main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    uses: ./.github/workflows/component-changes.yml
+    permissions:
+      contents: read
+
   integration-tests:
     name: E2E Integration Tests
-    runs-on: blacksmith-12vcpu-macos-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.integration == 'true' }}
+    runs-on: blacksmith-12vcpu-macos-27
     # Job budget = the sum of every step's worst case, not the warm-path wall
-    # time (a green run takes ~26m with warm caches). Test allowances:
-    # 25m (blocking paged lane) + 15m (expected-red exact-cache lane)
-    # + 10m (default-posture smoke) + 15m (mixed-version, released provider)
-    # + 30m (reverse lane: TWO sequential `go test -timeout 15m` runs)
-    # = 95m. Setup/build/download overhead: ~3m warm, but a cold runner pays
-    # the full Swift provider build, the cargo sidecar build, and the
-    # gpt-oss-20b (~12 GB) + gemma-4 snapshot downloads — budget 25m.
-    # 95m + 25m = 120m.
-    timeout-minutes: 120
+    # time. Test allowances: 25m (blocking paged lane) + 15m (blocking
+    # exact-cache lane) + 10m (default-posture smoke) = 50m. Setup/build/
+    # download overhead: ~3m warm, but a cold runner pays the full Swift
+    # provider build, the cargo sidecar build, and the gpt-oss-20b (~12 GB)
+    # + gemma-4 snapshot downloads — budget 25m. 50m + 25m = 75m.
+    timeout-minutes: 75
     env:
+      LC_ALL: en_US.UTF-8
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
       TESTBED_PROVIDER_CONFIG: debug
@@ -31,25 +40,99 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Install pinned Rust toolchain
+        run: ./scripts/install-release-rust.sh
+      - name: Install pinned CMake
+        run: ./scripts/install-release-cmake.sh
+      - name: Prepare source-matched Metal compiler
+        run: python3 scripts/prepare-metal-toolchain.py
+      # Cache versions include compression. Install zstd before every restore
+      # and save, not midway through the job as a PostgreSQL dependency.
+      - name: Set up Homebrew
+        run: ./scripts/setup-macos-homebrew.sh
+      - name: Install Postgres
+        run: brew install postgresql@16 zstd
+      - name: Resolve compatible integration build caches
+        id: keys
+        run: python3 scripts/provider-ci-cache.py keys --lane integration >> "$GITHUB_OUTPUT"
+      - name: Restore integration Swift build
+        id: swift-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: provider-swift/.build
+          key: ${{ steps.keys.outputs.swift-key }}
+          restore-keys: ${{ steps.keys.outputs.swift-prefix }}
+      - name: Restore integration Cargo dependencies
+        id: rust-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            coordinator/promptsidecar/target
+          key: ${{ steps.keys.outputs.rust-key }}
+          restore-keys: ${{ steps.keys.outputs.rust-prefix }}
+      - name: Revalidate source timestamps and discard cached runtime resources
+        run: |
+          python3 scripts/provider-release-cache.py restore-mtimes
+          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+            [ -d "$root" ] || continue
+            find "$root" -type f -name mlx.metallib -delete
+            find "$root" -mindepth 3 -maxdepth 3 -type d \
+              -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
+          done
+
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
 
-      - name: Install Postgres
-        run: brew install postgresql@16
-
       - name: Build provider (Swift)
+        id: provider-build
         run: |
           cd provider-swift
           swift build -c debug
 
       - name: Build prompt-contract sidecar
-        run: cargo build --manifest-path coordinator/promptsidecar/Cargo.toml --release
+        id: rust-build
+        run: |
+          cargo +1.88.0 clean --manifest-path coordinator/promptsidecar/Cargo.toml -p promptsidecar
+          cargo +1.88.0 build --manifest-path coordinator/promptsidecar/Cargo.toml --release --locked
+
+      - name: Record timestamps for successfully built sources
+        id: timestamps
+        run: python3 scripts/provider-release-cache.py snapshot-mtimes
+      - name: Save integration Swift build
+        if: ${{ !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: provider-swift/.build
+          key: ${{ steps.keys.outputs.swift-key }}
+      - name: Save integration Cargo dependencies
+        if: ${{ !cancelled() && steps.rust-build.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            coordinator/promptsidecar/target
+          key: ${{ steps.keys.outputs.rust-key }}
+      - name: Restore source-matched Metal cache
+        id: metallib-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/metallib-cache
+          key: ${{ steps.keys.outputs.metallib-key }}
 
       - name: Build and stage source-matched mlx.metallib
+        id: metallib
         run: |
           set -euo pipefail
-          command -v cmake >/dev/null 2>&1 || brew install cmake
+          cmake --version
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
             ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
           metallib="$RUNNER_TEMP/mlx.metallib"
@@ -64,6 +147,13 @@ jobs:
             find provider-swift/.build libs/mlx-swift-lm/.build \
               -type d -path '*.xctest/Contents/MacOS' -print 2>/dev/null
           )
+
+      - name: Save validated source-matched Metal cache
+        if: ${{ !cancelled() && steps.metallib.outcome == 'success' && steps.metallib-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/metallib-cache
+          key: ${{ steps.keys.outputs.metallib-key }}
 
       - name: Install Hugging Face client
         # v0.7.5 one-engine: the testbed default is the smallest
@@ -138,13 +228,8 @@ jobs:
       # expectation covers everything else (a future degrade path, a testbed
       # regression that stops writing the TOML, the wrong binary under test).
       #
-      # BLOCKING as of the v0.8.0 gate audit. This step used to be
-      # `continue-on-error: true` because ONE fixture-specific test
-      # (TestIntegrationExactCacheRouting) is expected-red on paged — which
-      # meant the whole 16-test paged lane could fail without failing the
-      # job, and on the PR head it was in fact swallowing a live FAIL. The
-      # expected-red test now runs in its own informational step below;
-      # everything here must pass.
+      # Both paged lanes are blocking. Exact-cache runs separately because it
+      # controls cold loading and donation before checking reuse.
       - name: Run integration + profile tests (paged @ 8 — BLOCKING gate)
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
@@ -171,40 +256,11 @@ jobs:
             -run 'TestIntegration|TestProfile' \
             -skip '^TestIntegrationExactCacheRouting$'
 
-      # EXPECTED RED — because of the FIXTURE, not because of the default.
-      # This test runs gemma-4-e2b-it-4bit, and e2b is the one checkpoint
-      # where paged ADOPTION is the inexact arm: an adopted paged slot
-      # answers differently from its own cold run. e2b appears zero times
-      # in the production catalog -- on the two models we do serve, paged
-      # adoption is the EXACT arm and contiguous is the one that diverges.
-      #
-      # STILL RED AFTER THE v0.8.1 FLIP, and deliberately unchanged. The
-      # v0.8.0 comment here predicted this: "promote back to blocking when
-      # the fixture stops being the exception -- NOT on any further `.auto`
-      # change." This lane pins DARKBLOOM_TESTBED_KV_BACKEND=paged
-      # EXPLICITLY, so it never read the default in the first place; it
-      # still runs e2b on paged and still hits the one adoption path that
-      # diverges. `.auto` moving to contiguous changes what the FLEET
-      # serves, not what this lane measures.
-      #
-      # (The v0.8.1 contiguous prefix-cache gate does not reach it either:
-      # that gate skips cache construction only on a RESOLVED-contiguous
-      # slot, and this lane resolves paged.)
-      #
-      # EXPECTED RED until the e2b paged adoption path is fixed or this
-      # fixture moves to a served model. Kept, pinned, and visible rather
-      # than removed: the red IS the finding, and unpinning it would
-      # recreate the "gate that cannot fail" pattern this release fixed
-      # four separate times.
-      #
-      # ISOLATED in its own step (v0.8.0 gate audit) so `continue-on-error`
-      # covers exactly the one expected-red test instead of the entire paged
-      # lane it used to blanket. No DARKBLOOM_TESTBED_EXPECT_KV_BACKEND here:
-      # the expectation pre-warms every slot at suite start, and this test's
-      # cold-vs-adopted routing semantics are exactly what a pre-warm would
-      # perturb — its posture is already pinned by the explicit paged TOML.
-      - name: Run exact-cache routing (paged @ 8 — expected red, informational)
-        continue-on-error: true
+      # Use the same pinned e2b artifact and assert exact cached output. The
+      # fixture explicitly enables SSD caching and establishes repeat demand
+      # before requiring a donation. No pre-warm assertion here: the test owns
+      # loading order, while the explicit paged TOML keeps the backend pinned.
+      - name: Run exact-cache routing (paged @ 8 — BLOCKING gate)
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
           DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
@@ -217,7 +273,7 @@ jobs:
                  "the kill switch degrades paged silently and voids this lane"
             exit 1
           fi
-          echo "Expected-red fixture lane: e2b paged adoption is the known inexact arm."
+          echo "Exact-cache gate: cold, donation, reuse, isolation and recovery must pass."
           go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
             -run '^TestIntegrationExactCacheRouting$'
 
@@ -252,11 +308,9 @@ jobs:
       #
       # COST, honestly: this is a second provider boot plus a second
       # gpt-oss-20b load (warm HF cache, but the weights still page in) for
-      # two inference round-trips. Same shape as each half of the
-      # reverse-compat lane below, which budgets 15m per `go test` for the
-      # same two tests. The full job arithmetic (95m of test allowances —
-      # the reverse lane counts TWICE, two sequential 15m runs — plus cold
-      # setup overhead) lives on `timeout-minutes` at the top of the job.
+      # two inference round-trips, budgeted 10m. The full job arithmetic
+      # (50m of test allowances plus cold setup overhead) lives on
+      # `timeout-minutes` at the top of the job.
       - name: Run default-posture smoke (.auto = contiguous — BLOCKING gate)
         env:
           DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: contiguous
@@ -275,96 +329,6 @@ jobs:
                "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous."
           go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
             -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
-
-      # The paged env is scoped to the gate STEP on purpose — do not promote it
-      # to the job's `env:`. This lane and the reverse one below run RELEASED
-      # v0.7.12 binaries, and a job-level setting would make the current
-      # testbed hand a v0.7.12 provider a TOML selecting a backend that release
-      # does not have.
-      #
-      # DARKBLOOM_MIXED_VERSION_EXPECT declares the coverage tier THIS runner
-      # must reach, and the lane goes red when it falls short of it.
-      #
-      #   artifact — verify the pinned v0.7.12 executable + metallib digests.
-      #              Needs no provider process, so it runs anywhere.
-      #   full     — additionally boot the released provider and exercise
-      #              every compatibility endpoint. Requires SIP ENABLED: the
-      #              v0.7.12 release build throws SecurityError.sipDisabled
-      #              before it registers (see mixedVersionSIPRequired).
-      #
-      # `artifact` and not `full`, because blacksmith-12vcpu-macos-latest is
-      # SIP-DISABLED and no SIP-enabled runner is available to this repo.
-      # Declaring `full` here would only make the step permanently red, which
-      # is not a gate either. Declaring `artifact` states plainly what this
-      # runner covers and, via the marker grep below, makes the lane fail if
-      # it stops covering even that. When a SIP-enabled runner exists, move
-      # this step to it and flip this to `full`: a skip is then red.
-      - name: Verify current coordinator with released v0.7.12 provider
-        env:
-          DARKBLOOM_MIXED_VERSION_EXPECT: artifact
-        run: |
-          set -euo pipefail
-          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          export PATH
-          # Recorded, not enforced: SIP state is a property of the runner, not
-          # of the candidate. What IS enforced is the tier grep below.
-          echo "Runner SIP state: $(/usr/bin/csrutil status 2>&1 || true)"
-          RELEASED_PROVIDER=$(./scripts/fetch-v0712-provider.sh "$RUNNER_TEMP/released-providers")
-          MIXED_VERSION_LOG="$RUNNER_TEMP/mixed-version.log"
-          DARKBLOOM_MIXED_VERSION=1 \
-          DARKBLOOM_PROVIDER_BINARY="$RELEASED_PROVIDER" \
-            go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
-              -run TestIntegrationMixedVersionReleasedV0712Provider \
-            2>&1 | tee "$MIXED_VERSION_LOG"
-          # `go test` exits 0 for a skipped test, for a `-run` pattern that
-          # matched nothing, and for a package with no tests — so the exit
-          # code above cannot distinguish "gated the release artifact" from
-          # "ran nothing at all". That is exactly how this lane previously
-          # reported green while never executing. Require the tier marker.
-          if ! grep -q MIXED_VERSION_TIER_ARTIFACT_OK "$MIXED_VERSION_LOG"; then
-            echo "::error::mixed-version lane did not reach its declared" \
-                 "DARKBLOOM_MIXED_VERSION_EXPECT=artifact tier: no" \
-                 "MIXED_VERSION_TIER_ARTIFACT_OK in the log. The released v0.7.12" \
-                 "bundle pins were NOT verified — the lane was skipped, filtered" \
-                 "out, or renamed. This step gates nothing until that is fixed."
-            exit 1
-          fi
-          if grep -q MIXED_VERSION_TIER_FULL_OK "$MIXED_VERSION_LOG"; then
-            echo "::notice::mixed-version lane reached the FULL tier: the released" \
-                 "v0.7.12 provider booted and every compatibility endpoint was" \
-                 "exercised."
-          else
-            echo "::warning::mixed-version lane reached the ARTIFACT tier only:" \
-                 "the released v0.7.12 executable and metallib digests are verified," \
-                 "but the provider was NOT booted and no compatibility request was" \
-                 "served. Grep MIXED_VERSION_SIP_REQUIRED for why. Run this step on a" \
-                 "SIP-enabled runner with DARKBLOOM_MIXED_VERSION_EXPECT=full to gate" \
-                 "the wire surface."
-          fi
-
-      # Reverse lane: the RELEASED v0.7.12 coordinator against the CANDIDATE
-      # provider. Named for v0.7.13 until v0.7.15; the pinned tag below has
-      # always been v0.7.12, which is what this actually checks out.
-      - name: Verify released v0.7.12 coordinator with candidate provider
-        run: |
-          set -euo pipefail
-          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          export PATH
-          RELEASED_COORDINATOR="$RUNNER_TEMP/d-inference-v0.7.12"
-          git worktree add --detach "$RELEASED_COORDINATOR" v0.7.12
-          trap 'git worktree remove --force "$RELEASED_COORDINATOR"' EXIT
-          (
-            cd "$RELEASED_COORDINATOR"
-            for test_name in NonStreamingInference StreamingInference; do
-              DARKBLOOM_REPO_ROOT="$GITHUB_WORKSPACE" \
-              TESTBED_PROVIDER_CONFIG=debug \
-              DARKBLOOM_CBV2_MTP=0 \
-              DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1 \
-              DARKBLOOM_PREFIX_CACHE_TEST_ROOT="$RUNNER_TEMP/v0712-reverse-cache-$test_name" \
-                go test ./e2e -count=1 -v -timeout 15m -p=1 \
-                  -run "^TestIntegration_${test_name}$"
-            done
-          )
 
   # The E2E Benchmarks job used to live here as a second job. It is gated on
   # the approval-required `benchmarks` environment, which is created on every

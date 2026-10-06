@@ -145,9 +145,17 @@ struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
 internal final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var cancelled = false
 
-    init(_ continuation: CheckedContinuation<Bool, Never>) {
+    func install(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            continuation.resume(returning: false)
+            return
+        }
         self.continuation = continuation
+        lock.unlock()
     }
 
     func resume(returning value: Bool) {
@@ -156,6 +164,15 @@ internal final class OneShotBoolContinuation: @unchecked Sendable {
         self.continuation = nil
         lock.unlock()
         continuation?.resume(returning: value)
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: false)
     }
 }
 
@@ -182,7 +199,20 @@ public actor ProviderLoop {
     internal var appAttestShadowClient: AppAttestShadowClient?
     internal var appAttestShadowTask: Task<Void, Never>?
     internal var appAttestShadowGeneration: UInt64 = 0
+    /// Last local App Attest observation, published in the daemon state file.
+    internal var appAttestLocalStatus: AppAttestLocalStatus?
+    /// Watches a stalled DeviceCheck operation until a restart is safe.
+    internal var appAttestStallMonitorTask: Task<Void, Never>?
+    /// Last logged reason for deferring the stall restart (log on change only).
+    internal var appAttestStallLastSkip: AppAttestStallRestartPolicy.SkipReason?
+    /// After a stall-restart attempt drained but could not restart, the next
+    /// attempt waits until this instant (monotonic; this process only, since a
+    /// new process has no stalled call).
+    internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
+    internal var ordinaryServingModelIDs: Set<String>
+    internal var autopilotSuccessorNeedsInventoryRefresh = false
+    internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
@@ -190,6 +220,30 @@ public actor ProviderLoop {
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
+    /// One lifecycle belongs to this real loop owner, not to each load. The
+    /// process registry retains native resources independently on failed drain.
+    internal let nativeMiMoRegistry: MiMoV26NativeLoadRegistry
+    internal var nativeMiMoLifecycle: MiMoV26NativeLifecycle?
+    internal var nativeMiMoLifecycleClosed = false
+    internal var nativeMiMoLoads: [String: MiMoV26ServingLoad] = [:]
+    internal var nativeMiMoCandidates: [String: ModelSlot] = [:]
+    internal var nativeMiMoRetiringSizing: [String: SlotSizingSnapshot] = [:]
+    internal var nativeMiMoResliceOwners: Set<UUID> = []
+    internal var nativeMiMoRetiring: Set<String> = []
+    internal var nativeMiMoPendingRetirements: [String: NativeMiMoRetirementProgress] = [:]
+    internal var nativeMiMoRetirementTasks: [String: Task<Void, Never>] = [:]
+    internal var nativeMiMoRetirementReady: Set<String> = []
+    internal var nativeMiMoHostConsumers: [String: [UUID: Task<Void, Never>]] = [:]
+    internal var nativeMiMoHostConsumerWatchers: [UUID: Task<Void, Never>] = [:]
+    internal var nativeMiMoJoinedServingOwners: Set<UUID> = []
+    internal var nativeMiMoJoinedBridgeProgress: [UUID: [Int]] = [:]
+    internal var nativeMiMoShutdownIdentities: [UUID: NativeMiMoShutdownIdentity] = [:]
+    internal var nativeMiMoConsumerLeases: [String: [UUID: NativeLocalConsumerLease]] = [:]
+    internal var nativeMiMoJoinedLeaseRevisions: [UUID: [UUID: UInt64]] = [:]
+    internal var nativeMiMoClosedConsumerLeaseIDs: Set<UUID> = []
+    /// Refusal/hold-only fixture boundary; never supplies a successful native
+    /// result, memory estimate, retirement receipt, or replacement model.
+    internal var nativeMiMoBoundaryForTesting: (@Sendable (String) async throws -> Void)?
     var processMemoryTelemetrySampler = ProcessMemoryTelemetrySampler()
     /// Phase 3: global disk accountant (process-wide, shared across models).
     internal let powerAssertion: InferencePowerAssertion
@@ -208,7 +262,7 @@ public actor ProviderLoop {
 
     /// Test seam (`ProviderLoop+Testing`): overrides the environment, the
     /// container EOS snapshot, and the production CBv2 engine builder used
-    /// by `makeEngineV2BridgeForSlot`. nil in production.
+    /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
 
     /// Operator-configured hard cap on concurrent model slots
@@ -234,6 +288,13 @@ public actor ProviderLoop {
         return max(1, min(configuredMaxModelSlots, live))
     }
 
+    /// Counterfactual slot limit for planning; observing more cached models
+    /// never changes the ordinary runtime's effective `maxModelSlots`.
+    internal var autopilotPlanningMaxModelSlots: Int {
+        min(configuredMaxModelSlots, max(maxModelSlots,
+            Set(autopilotInventoryModels.keys).union(advertisedModels.keys).count))
+    }
+
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
     internal var requestToModel: [String: String] = [:]
@@ -242,6 +303,33 @@ public actor ProviderLoop {
     /// (unified mode), used to keep eviction and the idle monitor from pulling a
     /// model out from under a local stream. See `LocalReservationCounter`.
     internal var localReservations = LocalReservationCounter()
+
+    // Residency operations outlive WebSocket reconnects; never clear uncertain
+    // ownership on a transport timeout. Fresh heartbeats reconcile completion.
+    internal var autopilotTimingHistory = ModelAutopilotHistory()
+    internal var autopilotTimingLoaded = false
+    internal var autopilotLastElapsedMs: Int64 = 0
+    internal var autopilotLastReleaseMs: Int64 = 0
+    internal var autopilotLastLoadMs: Int64 = 0
+    internal var autopilotSettingsOverride: ModelAutopilotSettings?
+    internal var autopilotControl: ModelAutopilotControl?
+    internal var autopilotCommand: ModelAutopilotCommand?
+    internal var autopilotTask: Task<Void, Never>?
+    internal var autopilotMutationStarted = false
+    internal var autopilotGeneration: UInt64 = 0
+    internal var autopilotHistory: [String: (ModelAutopilotCommand, ModelAutopilotStatus.State, String?)] = [:]
+    internal var autopilotHistoryOrder: [String] = []
+    internal var autopilotLastCommandId: String?
+    internal var autopilotLastCommandStatus: ModelAutopilotStatus.State?
+    internal var autopilotResidentSince: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotLeaseUntil: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotFreeNoEvictGb: Double?
+    internal var autopilotDeferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
+    internal var autopilotDeferredDrops: Set<String> = []
+    /// Explicit desired-build retirements, never inferred from missing catalog
+    /// entries. Release cleanup is distinct from network placement authority.
+    internal var autopilotSupersededModels: Set<String> = []
+
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
     internal var localServerTask: Task<Void, Never>?
@@ -280,6 +368,11 @@ public actor ProviderLoop {
     /// retirements coalesces into one re-registration, fired once
     /// box-wide in-flight work has drained.
     internal var pendingRetirementReconnect: Task<Void, Never>?
+    internal var plannedReconnectTaskGeneration: UInt64 = 0
+    internal var plannedReconnectRevision: UInt64 = 0
+    internal var issuedReconnectRevision: UInt64 = 0
+    internal var connectionGeneration: UInt64 = 0
+    internal var disconnectBarrierPending = false
 
     /// Admission barrier across the post-retirement reconnect: raised on
     /// the actor immediately before the socket is closed, cleared when the
@@ -314,9 +407,36 @@ public actor ProviderLoop {
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
+    internal var servingDrain = ProviderDrain()
+    internal var lifecycleStatus = ProviderDrainStatus()
+    internal var lastLifecycleTelemetry: ProviderDrainStatus?
+    internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    internal var lifecycleDrainRequestID: String?
+    internal var lifecycleCommandReceived = false
+    internal var lifecycleMonitorTask: Task<Void, Never>?
+    internal var modelSwitchTask: Task<ProviderModelSwitchStatus, Never>?
+    internal var modelSwitchStatus = ProviderModelSwitchStatus()
+    /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
+    internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
+    internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+    /// Invalidates prefetch work begun before an operator replaced the set.
+    internal var modelSelectionRevision: UInt64 = 0
+    internal var modelAdvertisementsInFlight = 0
+    /// Distinguishes an explicit switch back to the already-saved IDs from
+    /// unchanged TOML while a manual foreground override was serving.
+    public internal(set) var hasPersistedModelSwitch = false
+    internal var acceptedLifecycleRequests: Set<String> = []
+    internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
     internal var mtpUpgradeMonitorTask: Task<Void, Never>?
+    internal var modelRevisionMonitorTask: Task<Void, Never>?
+    internal var modelRevisionAttempt: (entry: CoordinatorMessage.DesiredModelEntry, task: Task<Void, Never>)?
+    internal var desiredModelRevisions: [String: CoordinatorMessage.DesiredModelEntry] = [:]
+    internal var revisionUpdatesInProgress = Set<String>()
+    internal var modelRevisionActivationID: String?
+    internal var failedModelRevisionRestores: [String: UUID] = [:]
+    internal var prefetchPublicationCounts: [String: Int] = [:]
     internal var mtpUpgradeTransitions: Set<String> = []
     internal var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
@@ -346,11 +466,10 @@ public actor ProviderLoop {
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
 
-    /// Latest `desired_models` push received while update-draining. Normally
-    /// the restart makes it moot (registration gets fresh desired state), but
-    /// if the restart is aborted (commit/restart failure) the deferred state
-    /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
-    /// serving from a desired set the coordinator has since changed.
+    /// Latest desired_models push received while admission is closed. A switch
+    /// clears obsolete state before committing, then replays the fresh snapshot
+    /// after reopening; an aborted update likewise replays its deferred state.
+    /// Reconnecting providers receive a new snapshot during registration.
     internal var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
 
     /// Models remain tracked while their scheduler is tearing down so
@@ -379,6 +498,8 @@ public actor ProviderLoop {
     /// inside `engineV2RecoveryCooldown` unloads the slot instead of
     /// thrashing rebuilds).
     internal var engineV2LastRecoveryAt: [String: ContinuousClock.Instant] = [:]
+    /// Unlike network request pins, maintenance ownership survives disconnect.
+    internal var engineV2RecoveryInProgress: Set<String> = []
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
@@ -480,12 +601,23 @@ public actor ProviderLoop {
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
 
     /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
-    /// the boot-time preload of the configured/previously-served model set is
+    /// the boot-time preload of the selected model set is
     /// still running — it may outlive the registration gate when the
     /// `startup_preload_timeout_secs` deadline passes (loads continue in the
     /// background). Cancelled and awaited on shutdown alongside the
     /// coordinator-driven preloads.
     internal var startupPreloadTask: Task<Void, Never>?
+    /// Wakes the registration gate when lifecycle draining starts, even if
+    /// the preload driver is inside a slow model load.
+    internal var startupPreloadGateWaiter: OneShotBoolContinuation?
+    /// Coalesces pre-registration teardown requested by the serve task and a
+    /// concurrent signal handler. Detached from a cancelled schedule task.
+    internal var preRegistrationCleanupTask: Task<Bool, Never>?
+    /// Set once the coordinator event reader owns the normal shutdown path.
+    internal var coordinatorEventLoopStarted = false
+    /// Suffix of the startup plan not yet completed by the driver. Exposed in
+    /// the daemon state so status can distinguish warmup from request loading.
+    internal var startupPreloadPendingModels: [String] = []
 
     /// Test seam: overrides the loaded-models persistence file
     /// (default: `LoadedModelsStore.path()`).
@@ -498,6 +630,17 @@ public actor ProviderLoop {
     /// other's temp files (swift-testing runs suites in parallel;
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
+
+    /// Test seam: false keeps `run()` away from state this Mac shares with a
+    /// real provider: the OOM marker and scan watermark in `~/.darkbloom`,
+    /// the whole SSD prefix-cache root, and the process-wide APNs bridge
+    /// (its startup token wait is 10 seconds). Always true in production.
+    internal var serveUsesHostServices = true
+
+    /// APNs code-identity push receipt/reply history beside the state file.
+    internal var apnsPushHistory: APNsPushHistoryStore {
+        APNsPushHistoryStore(directory: (daemonStateFileOverride ?? DaemonStateFile.path()).deletingLastPathComponent())
+    }
 
     /// Gate on the loaded-models persistence writes. `run()` flips it on at
     /// startup; it stays FALSE for `ProviderLoop` instances that never serve
@@ -568,13 +711,19 @@ public actor ProviderLoop {
 
     /// Background task that periodically checks idle state and unloads
     /// the model when the timeout has elapsed. nil when disabled
-    /// (`idleTimeoutMins == 0`) or before `run()` starts it.
+    /// (`idleTimeoutMins == 0` or model autopilot) or before `run()` starts it.
     internal var idleMonitorTask: Task<Void, Never>?
 
     /// Periodically refreshes provider-reported backend capacity so heartbeats
     /// reflect active/queued requests and adaptive batch-cap changes while
     /// long-running generations are still in flight.
     internal var capacityRefreshTask: Task<Void, Never>?
+    /// Rebuild capacity on shared service acquisition/retirement, independently
+    /// of slot counters and the periodic capacity monitor.
+    internal var serviceAllowanceRefreshTask: Task<Void, Never>?
+    /// Rebuild after once-only prompt/terminal measurements, independent of
+    /// output tokens and the periodic monitor. The heartbeat throttle bounds sends.
+    internal var performanceRefreshTask: Task<Void, Never>?
 
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
@@ -597,21 +746,26 @@ public actor ProviderLoop {
     public init(config: ProviderLoopConfig) throws {
         try self.init(
             config: config,
-            purgeLegacyFiles: true,
             attestationSigner: Self.createAttestationSigner()
         )
     }
 
     init(
         config: ProviderLoopConfig,
-        purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         // Scripted slot fixtures must not inherit the test host's RAM.
-        kvBudgetForTesting: GlobalKVCacheBudget? = nil
+        kvBudgetForTesting: GlobalKVCacheBudget? = nil,
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
     ) throws {
         self.loopConfig = config
+        self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
+            $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
+                && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)
+        }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.nativeMiMoRegistry = nativeMiMoRegistryForTesting ?? .shared
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
@@ -642,9 +796,6 @@ public actor ProviderLoop {
         }
         self.advertisedModels = advertised
         self.modelHashes = config.modelHashes
-        if purgeLegacyFiles {
-            NodeKeyPair.purgeLegacyFiles()
-        }
         self.keyPair = NodeKeyPair.generate()
         self.signer = attestationSigner
         self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
@@ -672,10 +823,6 @@ public actor ProviderLoop {
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
-        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
-        // so this cleanup cannot delete current cache data.
-        LegacyKVCacheSweeper.sweep()
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
@@ -724,7 +871,7 @@ public actor ProviderLoop {
     static func inferReasoningParser(for modelType: String?) -> ReasoningParserFormat {
         guard let type = modelType?.lowercased() else { return .qwen3 }
         if type == "gpt_oss" { return .harmony }
-        if type.hasPrefix("gemma") { return .gemma4 }
+        if type.hasPrefix("gemma") || type == "diffusion_gemma" { return .gemma4 }
         if type.hasPrefix("qwen") { return .qwen3 }
         if type.hasPrefix("deepseek") { return .deepseekR1 }
         // Safe default: qwen3's <think> parser handles the most common format.
@@ -740,13 +887,16 @@ public actor ProviderLoop {
         var engineV2: EngineV2Bridge { engineBundle.bridge }
         /// Retained for VLM vision preprocessing and liveness rebuilds; the
         /// wrapper owns the exact text tower retained by the engine.
-        let container: MLXLMCommon.ModelContainer
+        let modelContainer: ProviderModelContainer
+        var container: MLXLMCommon.ModelContainer? { modelContainer.autoregressive }
         let tokenizer: TokenizerHandle
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
         let sizing: SlotSizingSnapshot
-        /// Hash verified for the exact bytes bracketed around this slot's load.
-        /// Reused only when rebuilding the engine over the retained container.
+        /// Load-bound profile identity, retained across engine rebuilds.
+        /// Reviewed candidates verify matching reads around the container load.
+        let modelArtifactSHA256: String?
+        /// Separate cache eligibility; nil never removes the artifact identity.
         let cacheEligibleWeightHash: String?
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
@@ -779,15 +929,34 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
+            cacheEligibleWeightHash: String? = nil,
+            isVLM: Bool,
+            modelType: String?,
+            lastInferenceAt: ContinuousClock.Instant
+        ) {
+            self.init(engineBundle: engineBundle, modelContainer: .autoregressive(container),
+                tokenizer: tokenizer, sizing: sizing, modelArtifactSHA256: modelArtifactSHA256,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
+                isVLM: isVLM, modelType: modelType, lastInferenceAt: lastInferenceAt)
+        }
+
+        init(
+            engineBundle: ProviderEngineBundle,
+            modelContainer: ProviderModelContainer,
+            tokenizer: TokenizerHandle,
+            sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
         ) {
             self.engineBundle = engineBundle
-            self.container = container
+            self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.sizing = sizing
+            self.modelArtifactSHA256 = modelArtifactSHA256
             self.cacheEligibleWeightHash = cacheEligibleWeightHash
             self.isVLM = isVLM
             self.modelType = modelType
@@ -800,6 +969,7 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
@@ -817,6 +987,7 @@ public actor ProviderLoop {
                 container: container,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM,
                 modelType: modelType,
@@ -834,18 +1005,17 @@ public actor ProviderLoop {
         }
     }
 
-    /// Effective concurrent-request cap for a v2 engine slot: the
-    /// per-model override when configured, else the box-wide
-    /// `engine_v2_max_concurrent`, clamped to [1, 8] (the CBv2 product
-    /// ceiling — see `BackendSettings.engineV2MaxConcurrent`).
+    /// Requested cap, carried to final artifact/backend profile resolution.
+    /// Unknown profiles retain the existing 8 ceiling; reviewed profiles can
+    /// qualify up to 16. The preparation owns the effective advertised value.
     internal func engineV2MaxConcurrent(forModel modelId: String) -> Int {
         let backend = loopConfig.config.backend
         let raw = backend.engineV2MaxConcurrentByModel[modelId]
             ?? backend.engineV2MaxConcurrent
-        return Self.clampEngineV2Concurrency(raw)
+        return ServingPerformanceProfiles.requestedConcurrency(raw)
     }
 
-    /// Pure clamp for the configured concurrency (unit-testable).
+    /// Legacy unknown-profile clamp retained for compatibility tests.
     internal static func clampEngineV2Concurrency(_ raw: UInt64) -> Int {
         Int(min(max(raw, 1), 8))
     }

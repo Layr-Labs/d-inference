@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { modelBrand } from "./model-brand";
 
 const NEMOTRON_LIGHTNING_ID = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4";
+const BONSAI_2_ID = "ternary-bonsai-2-27b";
 
 describe("modelBrand", () => {
   it("uses the standalone OpenAI icon for GPT-OSS aliases", () => {
@@ -48,6 +49,15 @@ describe("modelBrand", () => {
     });
   });
 
+  it("uses the Bonsai mark for the live PrismML model", () => {
+    expect(modelBrand(BONSAI_2_ID, "Bonsai 2")).toMatchObject({
+      maker: "prismml",
+      makerLabel: "PrismML",
+      logoSrc: "/brand/bonsai.svg",
+      logoAlt: "Bonsai by PrismML",
+    });
+  });
+
   it("falls back safely for unknown model families", () => {
     expect(modelBrand("custom-model")).toMatchObject({ maker: "unknown", makerLabel: "Model" });
   });
@@ -65,6 +75,7 @@ describe("modelBrand", () => {
     ["qwen3.5-35b-a3b", "Qwen3.5", "qwen"],
     ["qwen3-vl-30b-a3b-instruct", "Qwen3-VL", "qwen"],
     [NEMOTRON_LIGHTNING_ID, "Nemotron 3.5 Lightning", "nvidia"],
+    [BONSAI_2_ID, "Bonsai 2", "prismml"],
   ];
 
   it.each(CATALOG)("brands %s (family %s) as %s", (id, family, maker) => {

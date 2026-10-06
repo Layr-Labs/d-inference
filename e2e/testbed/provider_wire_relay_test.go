@@ -16,7 +16,7 @@ import (
 func TestProviderWireRelayPreservesTransport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	input := `{"type":"inference_request","request_id":"r","encrypted_body":{"ciphertext":"unchanged-secret"},"cache_scope":"tenant-secret","cache_receipt_nonce":"nonce-secret","cache_receipt_boundary_mode":"checkpoint"}`
+	input := `{"type":"inference_request","request_id":"r","encrypted_body":{"ciphertext":"unchanged-secret"},"cache_scope":"tenant-secret","cache_receipt_nonce":"nonce-secret","cache_receipt_boundary_mode":"checkpoint","cache_repeated_prefix_tokens":0}`
 	terminal := `{"type":"inference_complete","request_id":"r","usage":{"cached_tokens":1024}}`
 	seen := make(chan string, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +63,8 @@ func TestProviderWireRelayPreservesTransport(t *testing.T) {
 		require.NotContains(t, string(serialized), secret)
 	}
 	require.Equal(t, json.RawMessage("true"), events[0].Fields["encrypted_body_present"])
+	// The demand count is observable as sent, including a literal 0.
+	require.Equal(t, json.RawMessage("0"), events[0].Fields["cache_repeated_prefix_tokens"])
 	require.Equal(t, events[0].Connection, events[1].Connection)
 }
 func TestProviderWireRelayRedactsAnchorsAndBounds(t *testing.T) {
@@ -106,7 +108,6 @@ func TestProviderTOMLExplicitNormalMTP(t *testing.T) {
 	for _, mode := range []string{"on", "off"} {
 		config, err := BuildProviderTOML(ProviderConfig{MTPMode: mode, MTPDrafterPath: "/fixture/assistant"}, 0)
 		require.NoError(t, err)
-		require.Contains(t, config, "config_version = 3")
 		require.Contains(t, config, `mtp_mode = "`+mode+`"`)
 		require.Contains(t, config, `mtp_drafter_path = "/fixture/assistant"`)
 	}

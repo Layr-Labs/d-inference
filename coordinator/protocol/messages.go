@@ -21,6 +21,8 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/wire"
 )
 
 // NOTE: json.RawMessage is used for the Attestation field to preserve
@@ -29,13 +31,16 @@ import (
 // Message type constants.
 const (
 	// Provider → Coordinator.
-	TypeRegister               = "register"
-	TypeHeartbeat              = "heartbeat"
-	TypeInferenceAccepted      = "inference_accepted"
-	TypeInferenceResponseChunk = "inference_response_chunk"
-	TypeInferenceComplete      = "inference_complete"
-	TypeInferenceError         = "inference_error"
-	TypeAttestationResponse    = "attestation_response"
+	TypeRegister                   = "register"
+	TypeHeartbeat                  = "heartbeat"
+	TypeProviderDrain              = "provider_drain"
+	TypeProviderDrainAck           = "provider_drain_ack"
+	TypeInferenceAccepted          = "inference_accepted"
+	TypeServiceReservationReleased = "service_reservation_released"
+	TypeInferenceResponseChunk     = wire.TypeInferenceResponseChunk
+	TypeInferenceComplete          = "inference_complete"
+	TypeInferenceError             = "inference_error"
+	TypeAttestationResponse        = "attestation_response"
 	// TypeCodeAttestationResponse is the provider's reply to the APNs-delivered
 	// code-identity challenge (E_K(nonce) push). Distinct from the liveness
 	// attestation_response: this is the WebSocket return leg of the push round-trip.
@@ -43,6 +48,10 @@ const (
 	TypeLoadModelStatus         = "load_model_status"
 	TypePrefetchModelStatus     = "prefetch_model_status"
 	TypeModelsUpdate            = "models_update"
+	TypeModelsReplace           = "models_replace"
+	TypeModelsReplaceAck        = "models_replace_ack"
+	TypeModelsReplaceReady      = "models_replace_ready"
+	TypeModelsReplaceResumed    = "models_replace_resumed"
 	TypePrefixCacheLookup       = "prefix_cache_lookup"
 	TypePrefixCacheReady        = "prefix_cache_ready"
 	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
@@ -143,9 +152,10 @@ type Hardware struct {
 
 // ModelInfo describes a model available on a provider.
 type ModelInfo struct {
-	// Only providers declaring validated SSD-offloaded weight payload use the
-	// padded resident estimate for cold routing. Ordinary models retain the
-	// catalog/measured-weight policy of their current engine release.
+	// Full native LOAD estimate in GiB. Eligible Qwen4 declares a supplement
+	// over SSD-reduced resident bytes; canonical MiMo declares root + installed
+	// sidecar LOAD minus all SizeBytes, with no SSD discount. Size/supplement
+	// fields are bytes. Missing or invalid declarations retain legacy routing.
 	EstimatedMemoryGB        float64 `json:"estimated_memory_gb,omitempty"`
 	SSDOffloadedWeightBytes  int64   `json:"ssd_offloaded_weight_bytes,omitempty"`
 	NativeLoadTransientBytes int64   `json:"native_load_transient_bytes,omitempty"`
@@ -161,13 +171,16 @@ type ModelInfo struct {
 	// consumer sees are governed separately by the catalog capabilities, so this
 	// advertisement does not by itself light up vision in the API.
 	IsVision bool `json:"is_vision,omitempty"`
-	// TemplateRenderOK is set by 0.6.5+ providers after rendering the model's
+	// NativeMediaTools covers forced media tool choice and media-bearing tool
+	// results. Missing/false must never be inferred from a parser or model name.
+	NativeMediaTools bool `json:"native_media_tools,omitempty"`
+	// TemplateRenderOK is set by the provider after rendering the model's
 	// chat template against canonical fixtures (tool schemas with nullable or
 	// missing types, multimodal content parts). false means the template render
 	// CRASHES on those shapes (e.g. Gemma's "upper filter requires string" on
 	// OpenAI tool schemas) and the provider must be excluded from tool-bearing
-	// requests for this model. nil means a pre-0.6.5 provider with no opinion
-	// (allowed, subject to capability version floors). Pointer + omitempty so
+	// requests for this model. nil means the provider found no chat template
+	// to render (no opinion; allowed). Pointer + omitempty so
 	// explicit false SURVIVES the wire — false is the exclusion signal, while
 	// nil is omitted entirely.
 	TemplateRenderOK *bool `json:"template_render_ok,omitempty"`
@@ -224,9 +237,11 @@ type PrefixCacheDonationOutcomeCount struct {
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
 	AppAttestProtocol           int                                `json:"app_attest_protocol,omitempty"`
+	ModelAutopilot              *ModelAutopilotState               `json:"model_autopilot,omitempty"`
 	Type                        string                             `json:"type"`
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
+	AutopilotInventory          []ModelInfo                        `json:"autopilot_inventory,omitempty"`
 	Backend                     string                             `json:"backend"`
 	RuntimeCapabilities         []string                           `json:"runtime_capabilities,omitempty"`      // connection-scoped hardware/runtime capabilities
 	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
@@ -252,38 +267,30 @@ type RegisterMessage struct {
 	APNsEnvironment string `json:"apns_environment,omitempty"`  // "production" | "development" (selects the APNs host)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
-	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash (incl. mlx_metallib)
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.
-//
-// Note: legacy providers (< v0.6.31) also send a `hypervisor_active` key here.
-// The concept is retired (Darkbloom never uses hypervisors — it was a
-// hardcoded-false stub) and is intentionally not modeled; encoding/json drops
-// unknown fields, so old providers remain wire-compatible.
 type PrivacyCapabilities struct {
-	TextBackendInprocess    bool `json:"text_backend_inprocess"`
-	TextProxyDisabled       bool `json:"text_proxy_disabled"`
-	PythonRuntimeLocked     bool `json:"python_runtime_locked"`
-	DangerousModulesBlocked bool `json:"dangerous_modules_blocked"`
-	SIPEnabled              bool `json:"sip_enabled"`
-	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
-	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
-	EnvScrubbed             bool `json:"env_scrubbed"`
+	TextBackendInprocess bool `json:"text_backend_inprocess"`
+	TextProxyDisabled    bool `json:"text_proxy_disabled"`
+	SIPEnabled           bool `json:"sip_enabled"`
+	AntiDebugEnabled     bool `json:"anti_debug_enabled"`
+	CoreDumpsDisabled    bool `json:"core_dumps_disabled"`
+	EnvScrubbed          bool `json:"env_scrubbed"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
 type HeartbeatMessage struct {
-	Type            string           `json:"type"`
-	Status          string           `json:"status"`
-	ActiveModel     *string          `json:"active_model"`
-	Stats           HeartbeatStats   `json:"stats"`
-	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
-	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
-	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+	ModelAutopilot  *ModelAutopilotState `json:"model_autopilot,omitempty"`
+	Type            string               `json:"type"`
+	Status          string               `json:"status"`
+	ActiveModel     *string              `json:"active_model"`
+	Stats           HeartbeatStats       `json:"stats"`
+	WarmModels      []string             `json:"warm_models,omitempty"`      // models currently loaded in memory
+	SystemMetrics   SystemMetrics        `json:"system_metrics"`             // live resource utilization
+	BackendCapacity *BackendCapacity     `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
 	// Pointer preserves the distinction between an old provider that omitted
 	// v2 capabilities and a v2 provider authoritatively clearing its live set.
 	PrefixCacheProtocol     int                        `json:"prefix_cache_protocol,omitempty"`
@@ -320,16 +327,22 @@ type HeartbeatMessage struct {
 // BackendSlotCapacity describes the capacity state of a single backend slot
 // (one MLX-Swift in-process model serving one model).
 type BackendSlotCapacity struct {
-	Model              string `json:"model"`                     // model ID for this slot
-	State              string `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
-	NumRunning         int    `json:"num_running"`               // requests actively generating
-	NumWaiting         int    `json:"num_waiting"`               // requests queued in backend scheduler
-	MaxConcurrency     int    `json:"max_concurrency,omitempty"` // provider-reported concurrent request cap for this slot
-	ActiveTokens       int64  `json:"active_tokens"`             // sum of (prompt_tokens + completion_tokens) across running requests
-	MaxTokensPotential int64  `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
+	PromptWorkIdentity *PromptWorkIdentity                  `json:"prompt_work_identity,omitempty"`
+	PerformanceProfile *ServingPerformanceProfileReference  `json:"performance_profile,omitempty"`
+	DeadlineProfile    *DeadlinePerformanceProfileReference `json:"deadline_profile,omitempty"`
+	DeadlineWork       *DeadlineWork                        `json:"deadline_work,omitempty"`
+	// Transient routing observations; not part of persisted numeric SlotTelemetry.
+	PerformanceMeasurements *PerformanceMeasurements `json:"performance_measurements,omitempty"`
+	Model                   string                   `json:"model"`                     // model ID for this slot
+	State                   string                   `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
+	NumRunning              int                      `json:"num_running"`               // requests actively generating
+	NumWaiting              int                      `json:"num_waiting"`               // requests queued in backend scheduler
+	MaxConcurrency          int                      `json:"max_concurrency,omitempty"` // provider-reported concurrent request cap for this slot
+	ActiveTokens            int64                    `json:"active_tokens"`             // sum of (prompt_tokens + completion_tokens) across running requests
+	MaxTokensPotential      int64                    `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
 
 	ObservedDecodeTPS     float64 `json:"observed_decode_tps,omitempty"`      // EWMA of measured per-request decode TPS
-	ObservedPrefillTPS    float64 `json:"observed_prefill_tps,omitempty"`     // EWMA of measured per-request prefill TPS (admission→first token); omitted when unmeasured
+	ObservedPrefillTPS    float64 `json:"observed_prefill_tps,omitempty"`     // EWMA of cold prefill TPS; new providers use engine prompt timings and explicit measurement metadata
 	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used,omitempty"` // tokens reserved by active requests (prompt + max_output)
 	ActiveTokenBudgetMax  int64   `json:"active_token_budget_max,omitempty"`  // maximum token budget for this slot
 	QueuedTokenBudget     int64   `json:"queued_token_budget,omitempty"`      // tokens reserved by queued requests
@@ -441,11 +454,17 @@ type MLXCacheReclaimerTelemetry struct {
 // on a provider. Reported in heartbeats so the coordinator can make informed
 // routing decisions based on actual GPU utilization rather than hardcoded limits.
 type BackendCapacity struct {
-	Slots             []BackendSlotCapacity `json:"slots"`                // per-model slot capacity
-	GPUMemoryActiveGB float64               `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
-	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
-	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
-	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
+	WholeMacServiceUsed *float64 `json:"whole_mac_service_used,omitempty"`
+	// Version 1 sends explicit attempt release proof after pipeline and engine retirement.
+	WholeMacServiceRetirementProtocol int `json:"whole_mac_service_retirement_protocol,omitempty"`
+	// Ephemeral coordinator reservation IDs represented in WholeMacServiceUsed.
+	// Local and legacy request charges contribute only to the aggregate total.
+	WholeMacServiceReservations []WholeMacServiceReservation `json:"whole_mac_service_reservations,omitempty"`
+	Slots                       []BackendSlotCapacity        `json:"slots"`                // per-model slot capacity
+	GPUMemoryActiveGB           float64                      `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
+	GPUMemoryPeakGB             float64                      `json:"gpu_memory_peak_gb"`   // Metal peak memory
+	GPUMemoryCacheGB            float64                      `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
+	TotalMemoryGB               float64                      `json:"total_memory_gb"`      // total system/GPU memory
 	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
 	// reserve, and activation+min-KV load headroom, clamped to real OS-available
@@ -454,6 +473,15 @@ type BackendCapacity struct {
 	// re-derives free memory). A pointer so a legacy provider that doesn't report
 	// it is nil (→ coordinator falls back to the total-memory heuristic).
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
+	// LoadUsableGB is the live no-eviction load gate before activation and
+	// minimum-KV headroom. LoadHeadroomGB is that headroom for the current
+	// serving set. Both are owner diagnostics, not routing inputs. A cold model
+	// needs estimated_memory_gb + load_headroom_gb of load_usable_gb.
+	LoadUsableGB   *float64 `json:"load_usable_gb,omitempty"`
+	LoadHeadroomGB *float64 `json:"load_headroom_gb,omitempty"`
+	// LoadTransitionActive marks an in-flight model load or load-gate update.
+	// Its pending reservation makes an owner's memory verdict temporary.
+	LoadTransitionActive *bool `json:"load_transition_active,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`
 	// CapacitySeq is a per-connection monotonically increasing sequence number
@@ -514,12 +542,7 @@ type InferenceAcceptedMessage struct {
 // InferenceResponseChunkMessage carries a single SSE chunk from the provider.
 // When E2E encryption is active, Data is empty and EncryptedData contains
 // the encrypted chunk.
-type InferenceResponseChunkMessage struct {
-	Type          string            `json:"type"`
-	RequestID     string            `json:"request_id"`
-	Data          string            `json:"data,omitempty"`
-	EncryptedData *EncryptedPayload `json:"encrypted_data,omitempty"`
-}
+type InferenceResponseChunkMessage = wire.InferenceResponseChunkMessage
 
 // UsageInfo carries token usage information.
 type UsageInfo struct {
@@ -705,7 +728,9 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
-// InferenceRequestBody is the body sent inside an InferenceRequest.
+// InferenceRequestBody is the minimal OpenAI-shaped view of a decrypted
+// request body (InferenceRequestMessage.EncryptedBody). It is not a wire
+// field of its own; tests decode the plaintext into it.
 type InferenceRequestBody struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
@@ -718,26 +743,46 @@ type InferenceRequestBody struct {
 	Endpoint string `json:"endpoint,omitempty"`
 }
 
-// InferenceRequestMessage tells a provider to run inference.
-// When E2E encryption is enabled, Body is empty and EncryptedBody contains
-// the NaCl Box encrypted request. Only the provider's hardened process can
-// decrypt it using its X25519 private key.
+// InferenceRequestMessage tells a provider to run inference. EncryptedBody
+// carries the NaCl Box encrypted request; only the provider's hardened process
+// can decrypt it using its X25519 private key. There is no plaintext body.
+// ServiceReservationReleasedMessage proves this attempt can no longer acquire
+// service work and all of its service leases have retired. It is independent
+// of inference terminal/billing and is scoped to the current connection.
+type ServiceReservationReleasedMessage struct {
+	Type                 string `json:"type"`
+	ServiceReservationID string `json:"service_reservation_id"`
+}
+
 type InferenceRequestMessage struct {
-	Type      string               `json:"type"`
-	RequestID string               `json:"request_id"`
-	Body      InferenceRequestBody `json:"body,omitempty"`
-	// E2E encrypted request body (set when provider has a public key)
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	// Fresh opaque ID for this committed service reservation, distinct from
+	// request_id across retries. Providers echo it only while holding its lease.
+	ServiceReservationID string `json:"service_reservation_id,omitempty"`
+	// E2E encrypted request body.
 	EncryptedBody *EncryptedPayload `json:"encrypted_body,omitempty"`
 	// FirstContentBudgetMS is the positive time remaining for this dispatch
 	// attempt to produce its first content-bearing chunk. Zero preserves the
 	// legacy wire shape by omitting the field.
-	FirstContentBudgetMS int64  `json:"first_content_budget_ms,omitempty"`
-	CacheReceiptNonce    string `json:"cache_receipt_nonce,omitempty"`
-	CacheScope           string `json:"cache_scope,omitempty"`
-	PrefixCacheProtocol  int    `json:"prefix_cache_protocol,omitempty"`
+	FirstContentBudgetMS int64       `json:"first_content_budget_ms,omitempty"`
+	PromptWork           *PromptWork `json:"prompt_work,omitempty"`
+	CacheReceiptNonce    string      `json:"cache_receipt_nonce,omitempty"`
+	CacheScope           string      `json:"cache_scope,omitempty"`
+	PrefixCacheProtocol  int         `json:"prefix_cache_protocol,omitempty"`
 	// Echoed only for a negotiated checkpoint receipt attempt. An older
 	// coordinator omits this, so new providers suppress checkpoint receipts.
 	CacheReceiptBoundaryMode string `json:"cache_receipt_boundary_mode,omitempty"`
+	// CacheRepeatedPrefixTokens is the coordinator's observed fleet-wide repeat
+	// demand for this prompt: the deepest boundary another plan shared within
+	// the routing TTL among those a plan observes, which are the multiples of
+	// 1,024 tokens and its final boundary, 0 when none did. It is an integer count
+	// only, never a key, hash, boundary or prompt-derived identifier. It is set
+	// only with a granted cache scope, so a pointer keeps three states on the
+	// wire: absent (older coordinator or no scope, provider keeps writing every
+	// checkpoint), 0 (novel fleet-wide) and n > 0 (repeated). The provider
+	// gates complete-checkpoint donations on it (`skipped_novel`).
+	CacheRepeatedPrefixTokens *int `json:"cache_repeated_prefix_tokens,omitempty"`
 	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
 	// metadata carried inside the encrypted body. Version 1 means the
 	// coordinator rejected client-forged reserved keys before normalization.
@@ -745,10 +790,7 @@ type InferenceRequestMessage struct {
 }
 
 // EncryptedPayload carries a NaCl Box encrypted message.
-type EncryptedPayload struct {
-	EphemeralPublicKey string `json:"ephemeral_public_key"` // sender's ephemeral X25519 public key (base64)
-	Ciphertext         string `json:"ciphertext"`           // nonce || encrypted data (base64)
-}
+type EncryptedPayload = wire.EncryptedPayload
 
 // CancelMessage tells a provider to cancel an in-flight request.
 type CancelMessage struct {
@@ -801,9 +843,11 @@ type PrefetchModelMessage struct {
 // pointer (no weights). PreviousBuild (if set) stays acceptable to serve during
 // a staggered rollout so a not-yet-swapped provider keeps serving.
 type DesiredModelEntry struct {
-	ModelName     string `json:"model_name"`               // clean/public alias, e.g. "gemma-4-26b"
-	DesiredBuild  string `json:"desired_build"`            // concrete build id to converge to
-	PreviousBuild string `json:"previous_build,omitempty"` // still-acceptable build mid-rollout
+	Revision        string `json:"revision,omitempty"`
+	AggregateSHA256 string `json:"aggregate_sha256,omitempty"`
+	ModelName       string `json:"model_name"`               // clean/public alias, e.g. "gemma-4-26b"
+	DesiredBuild    string `json:"desired_build"`            // concrete build id to converge to
+	PreviousBuild   string `json:"previous_build,omitempty"` // still-acceptable build mid-rollout
 }
 
 // DesiredModelsMessage is the coordinator's declarative statement of the desired
@@ -834,6 +878,46 @@ type ModelsUpdateMessage struct {
 	Models                 []ModelInfo `json:"models"`
 	ToolConstraintProtocol int         `json:"tool_constraint_protocol,omitempty"`
 	ToolConstraintModels   []string    `json:"tool_constraint_models,omitempty"`
+}
+
+// ModelsReplaceMessage validates or atomically replaces the full inventory after
+// a settled drain on this exact connection. Unlike models_update it is never additive.
+type ModelsReplaceMessage struct {
+	Type                   string      `json:"type"`
+	RequestID              string      `json:"request_id"`
+	DrainRequestID         string      `json:"drain_request_id"`
+	ValidateOnly           bool        `json:"validate_only,omitempty"`
+	Models                 []ModelInfo `json:"models"`
+	ToolConstraintProtocol int         `json:"tool_constraint_protocol,omitempty"`
+	ToolConstraintModels   []string    `json:"tool_constraint_models,omitempty"`
+}
+
+type ModelsReplaceAckMessage struct {
+	Type           string `json:"type"`
+	RequestID      string `json:"request_id"`
+	DrainRequestID string `json:"drain_request_id"`
+	ValidateOnly   bool   `json:"validate_only"`
+	Accepted       bool   `json:"accepted"`
+	Error          string `json:"error,omitempty"`
+}
+
+// ModelsReplaceReadyMessage confirms that the provider reopened local admission
+// after receiving the committing acknowledgement. It belongs to that exact
+// replacement and drain on the current WebSocket session.
+type ModelsReplaceReadyMessage struct {
+	Type           string `json:"type"`
+	RequestID      string `json:"request_id"`
+	DrainRequestID string `json:"drain_request_id"`
+	CapacitySeq    uint64 `json:"capacity_seq"`
+}
+
+// ModelsReplaceResumedMessage confirms that the coordinator applied the named
+// capacity and reopened routing on this exact provider connection.
+type ModelsReplaceResumedMessage struct {
+	Type           string `json:"type"`
+	RequestID      string `json:"request_id"`
+	DrainRequestID string `json:"drain_request_id"`
+	CapacitySeq    uint64 `json:"capacity_seq"`
 }
 
 // PrefetchModelStatusMessage is the provider's progress/terminal reply to a
@@ -873,22 +957,16 @@ type CodeAttestationResumeChallenge struct {
 // trivially forgeable if used in isolation.
 //
 // StatusSignature (added in v0.3.11) covers a canonical JSON of nonce +
-// timestamp + all status fields, sealing them against tampering. New
-// providers send both signatures; old providers send only Signature, in
-// which case the status fields are treated as advisory (not a basis for
-// trust upgrades).
+// timestamp + all status fields, sealing them against tampering. Providers
+// send both signatures. For a provider with an attested key, a response
+// without StatusSignature fails the challenge (verifyChallengeResponse in
+// api/provider.go).
 type AttestationResponseMessage struct {
-	Type            string `json:"type"`
-	Nonce           string `json:"nonce"`                      // echoed back from the challenge
-	Signature       string `json:"signature"`                  // base64-encoded signature of nonce+timestamp
-	StatusSignature string `json:"status_signature,omitempty"` // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
-	PublicKey       string `json:"public_key"`                 // base64-encoded public key
-	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
-	// sign hypervisor_active into the canonical status (see
-	// attestation.BuildStatusCanonical), so this field must keep decoding for
-	// their StatusSignature to verify. The concept is retired — new providers
-	// omit it. Remove once the fleet floor passes v0.6.31.
-	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`
+	Type              string `json:"type"`
+	Nonce             string `json:"nonce"`                         // echoed back from the challenge
+	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
+	StatusSignature   string `json:"status_signature,omitempty"`    // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
+	PublicKey         string `json:"public_key"`                    // base64-encoded public key
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = disabled, false = enabled)
 	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
 	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
@@ -896,9 +974,7 @@ type AttestationResponseMessage struct {
 	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
-	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
-	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash (incl. mlx_metallib)
 	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }
 
@@ -946,10 +1022,11 @@ type RuntimeMismatch struct {
 // TrustStatusMessage is sent by the coordinator to inform a provider of its
 // current trust level for local operator diagnostics.
 type TrustStatusMessage struct {
-	Type       string `json:"type"`
-	TrustLevel string `json:"trust_level"` // "none", "self_signed", "hardware"
-	Status     string `json:"status"`      // "online", "untrusted", etc.
-	Reason     string `json:"reason,omitempty"`
+	Type          string                        `json:"type"`
+	TrustLevel    string                        `json:"trust_level"` // "none", "self_signed", "hardware"
+	Status        string                        `json:"status"`      // "online", "untrusted", etc.
+	Reason        string                        `json:"reason,omitempty"`
+	Authorization *ProviderServingAuthorization `json:"authorization,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -978,7 +1055,7 @@ func DecodeProviderMessage(data []byte, pm *ProviderMessage) error {
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
 //
-// Fast path: scanTopLevelString reads "type" with a cheap byte walk so each
+// Fast path: wire.ScanTopLevelString reads "type" with a cheap byte walk so each
 // frame is json.Unmarshal'ed exactly once. Previously every frame — including
 // one per streamed token chunk — was parsed twice (envelope pass just to read
 // "type", then the concrete struct). If the scanner is unsure (escapes,
@@ -986,16 +1063,16 @@ func DecodeProviderMessage(data []byte, pm *ProviderMessage) error {
 // envelope decode, preserving the original error behavior.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	// Fast path for the per-token chunk frame: a hand-written single-pass
-	// decoder (chunk_scan.go) that never calls encoding/json. It bails on any
+	// decoder (wire.ScanChunkFrame) that never calls encoding/json. It bails on any
 	// shape it is not certain about, in which case the frame takes the
 	// generic path below exactly as before.
-	if msg, ok := scanChunkFrame(data); ok {
+	if msg, ok := wire.ScanChunkFrame(data); ok {
 		pm.Type = TypeInferenceResponseChunk
 		pm.Payload = msg
 		return nil
 	}
 
-	msgType, ok := scanTopLevelString(data, "type")
+	msgType, ok := wire.ScanTopLevelString(data, "type")
 	if !ok {
 		var envelope struct {
 			Type string `json:"type"`
@@ -1025,6 +1102,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		}
 		pm.Payload = &msg
 
+	case TypeProviderDrain:
+		var msg ProviderDrainMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return err
+		}
+		pm.Payload = &msg
 	case TypeHeartbeat:
 		var msg HeartbeatMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
@@ -1032,6 +1115,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		}
 		pm.Payload = &msg
 
+	case TypeServiceReservationReleased:
+		var msg ServiceReservationReleasedMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return err
+		}
+		pm.Payload = &msg
 	case TypeInferenceAccepted:
 		var msg InferenceAcceptedMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
@@ -1080,6 +1169,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("protocol: failed to unmarshal load_model_status: %w", err)
 		}
 		pm.Payload = &msg
+	case TypeModelAutopilotStatus:
+		var msg ModelAutopilotStatusMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal model_autopilot_status: %w", err)
+		}
+		pm.Payload = &msg
 
 	case TypePrefetchModelStatus:
 		var msg PrefetchModelStatusMessage
@@ -1092,6 +1187,20 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg ModelsUpdateMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal models_update: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeModelsReplace:
+		var msg ModelsReplaceMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal models_replace: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeModelsReplaceReady:
+		var msg ModelsReplaceReadyMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal models_replace_ready: %w", err)
 		}
 		pm.Payload = &msg
 

@@ -86,8 +86,6 @@ public struct StatusCanonicalInput: Sendable, Equatable {
     public var secureBootEnabled: Bool?
     public var binaryHash: String?
     public var activeModelHash: String?
-    public var pythonHash: String?
-    public var runtimeHash: String?
     public var templateHashes: [String: String]
     public var modelHashes: [String: String]
 
@@ -99,8 +97,6 @@ public struct StatusCanonicalInput: Sendable, Equatable {
         secureBootEnabled: Bool? = nil,
         binaryHash: String? = nil,
         activeModelHash: String? = nil,
-        pythonHash: String? = nil,
-        runtimeHash: String? = nil,
         templateHashes: [String: String] = [:],
         modelHashes: [String: String] = [:]
     ) {
@@ -111,8 +107,6 @@ public struct StatusCanonicalInput: Sendable, Equatable {
         self.secureBootEnabled = secureBootEnabled
         self.binaryHash = binaryHash
         self.activeModelHash = activeModelHash
-        self.pythonHash = pythonHash
-        self.runtimeHash = runtimeHash
         self.templateHashes = templateHashes
         self.modelHashes = modelHashes
     }
@@ -126,8 +120,6 @@ private struct StatusCanonicalPayload: Encodable {
     let secureBootEnabled: Bool?
     let binaryHash: String?
     let activeModelHash: String?
-    let pythonHash: String?
-    let runtimeHash: String?
     let templateHashes: [String: String]?
     let modelHashes: [String: String]?
 
@@ -139,8 +131,6 @@ private struct StatusCanonicalPayload: Encodable {
         case secureBootEnabled = "secure_boot_enabled"
         case binaryHash = "binary_hash"
         case activeModelHash = "active_model_hash"
-        case pythonHash = "python_hash"
-        case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case modelHashes = "model_hashes"
     }
@@ -156,8 +146,6 @@ public enum StatusCanonical {
             secureBootEnabled: input.secureBootEnabled,
             binaryHash: nonEmpty(input.binaryHash),
             activeModelHash: nonEmpty(input.activeModelHash),
-            pythonHash: nonEmpty(input.pythonHash),
-            runtimeHash: nonEmpty(input.runtimeHash),
             templateHashes: input.templateHashes.isEmpty ? nil : input.templateHashes,
             modelHashes: input.modelHashes.isEmpty ? nil : input.modelHashes
         )
@@ -353,8 +341,6 @@ extension AttestationBuilder {
             secureBootEnabled: secureBootEnabled,
             binaryHash: binaryHash,
             activeModelHash: activeModelHash,
-            pythonHash: runtimeHashes?.pythonHash,
-            runtimeHash: runtimeHashes?.runtimeHash,
             templateHashes: runtimeHashes?.templateHashes ?? [:],
             modelHashes: modelHashes
         ))
@@ -370,8 +356,6 @@ extension AttestationBuilder {
             secureBootEnabled: secureBootEnabled,
             binaryHash: binaryHash,
             activeModelHash: activeModelHash,
-            pythonHash: runtimeHashes?.pythonHash,
-            runtimeHash: runtimeHashes?.runtimeHash,
             templateHashes: runtimeHashes?.templateHashes ?? [:],
             modelHashes: modelHashes
         )
@@ -395,19 +379,9 @@ private func detectHardwareModel() -> String {
 /// Parses the "Chip:" line from SPHardwareDataType output. Returns "Unknown"
 /// if the chip name cannot be determined.
 private func detectChipName() -> String {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return "Unknown" }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/system_profiler", ["SPHardwareDataType"]).stdout
+    else { return "Unknown" }
 
     for line in output.components(separatedBy: "\n") {
         if line.contains("Chip:") {
@@ -436,36 +410,16 @@ private func detectSerialNumber() -> String? {
 }
 
 private func detectSerialNumberFromIOReg() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-    process.arguments = ["-c", "IOPlatformExpertDevice", "-d", "2"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/ioreg", ["-c", "IOPlatformExpertDevice", "-d", "2"]).stdout
+    else { return nil }
     return parseSerialNumberFromIOReg(output)
 }
 
 private func detectSerialNumberFromSystemProfiler() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/system_profiler", ["SPHardwareDataType"]).stdout
+    else { return nil }
 
     return parseSerialNumberFromSystemProfiler(output)
 }

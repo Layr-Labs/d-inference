@@ -57,7 +57,9 @@ extension EngineV2Bridge {
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
-        tokenConstraint: (any CBv2TokenConstraint)? = nil
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        donationDemand: SSDCheckpointDonationDemand? = nil,
+        promptWork: PromptWork? = nil
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -73,7 +75,8 @@ extension EngineV2Bridge {
                 hybridPrefixIdentity: hybridPrefixIdentity,
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
-                firstContentDeadline: nil)
+                donationDemand: donationDemand,
+                firstContentDeadline: nil, promptWork: promptWork)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
@@ -110,8 +113,14 @@ extension EngineV2Bridge {
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        /// Coordinator repeat-demand hint for the complete-checkpoint write
+        /// gate; nil keeps the legacy write-every-checkpoint behaviour.
+        donationDemand: SSDCheckpointDonationDemand? = nil,
         firstContentDeadline: FirstContentDeadline?,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil,
+        promptWork: PromptWork? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -120,6 +129,12 @@ extension EngineV2Bridge {
         // hardening risk). See `normalizedRequestId`.
         let id = Self.normalizedRequestId(requestId)
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+        guard canSubmitWithNativeOwner() else {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.yield(.error("request queue full: engine is shutting down"))
+            continuation.finish()
+            return stream
+        }
 
         // Duplicate request-id guard (legacy: the planner's
         // `duplicateRequestID` rejection). Without it a second submit under
@@ -134,7 +149,38 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        // Foreground work on any model preempts the shared idle calibration.
+        // The original deadline keeps running while native retirement completes.
+        let foreground = mimoCalibration.requests[id] == nil
+            ? await serviceBudget?.idleCalibration.beginForeground() : nil
+        defer { foreground?.finish() }
+        // Waiting for a probe is an actor suspension: revalidate request and
+        // engine ownership before creating any service/KV reservations.
+        guard canSubmitWithNativeOwner(), active[id] == nil, !pendingSubmissionIDs.contains(id) else {
+            continuation.yield(.error("token_budget_exhausted: request ownership changed during calibration retirement"))
+            continuation.finish()
+            return stream
+        }
+        try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
+        guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
+            serviceReservation: serviceReservation, promptTokens: promptTokens.count,
+            maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
+            qualifiedTextWork: multimodal == nil && mediaKind == nil,
+            recoverPrefillEvidence: canRecoverPrefillEvidence(
+                promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
+                deadline: firstContentDeadline,
+                isMultimodal: multimodal != nil || mediaKind != nil)) else {
+            usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+            continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
+            continuation.finish()
+            return stream
+        }
+        defer {
+            if active[id] == nil && !retirementTransfer.isClaimed {
+                releaseServiceAllowance(requestID: id)
+            }
+        }
         pendingSubmissionIDs.insert(id)
         if let profile { pendingProfiles[id] = profile }
         // Profiler: this prompt is "queued for prefill" for exactly the span
@@ -176,7 +222,11 @@ extension EngineV2Bridge {
             cacheScope: cacheScope,
             cacheEnabled: cacheEnabled,
             multimodal: multimodal,
-            tokenConstraint: tokenConstraint
+            tokenConstraint: tokenConstraint,
+            samplingDefaults: samplingDefaults,
+            // The same coordinator hint that gates the write also tells the
+            // engine which fork boundary is worth staging.
+            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
@@ -214,6 +264,19 @@ extension EngineV2Bridge {
         // the durable tier. A shorter memory hit must not hide a longer SSD
         // prefix. Both probes are advisory; staging authenticates disk bytes
         // and the engine revalidates page generations before adoption.
+        let nativeRequestBytes: Int?
+        do {
+            nativeRequestBytes = try (ownedEngine as? CBv2NativeBlockEngine)?.estimatedRequestBytes(cbv2Request)
+            cbv2Request.nativeReservationBytes = nativeRequestBytes
+        } catch CBv2NativeBlockError.unsupportedRequest {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.requestRejected("Unsupported native block request controls or capacity")
+        } catch {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.generationFailed("Native block engine configuration is invalid")
+        }
         let residentPrefixCandidate: CBv2ResidentPrefixCandidate? =
             cacheEnabled && multimodal == nil
             ? ownedEngine?.residentPrefixCandidate(for: cbv2Request) : nil
@@ -225,9 +288,13 @@ extension EngineV2Bridge {
         // identify this concrete submission across both resident and SSD tiers.
         let prefixCacheReceiptID: CBv2RequestID?
         var readyReceiptRegistered = false
-        let mediaHybridCacheEligible = Qwen4SupportPolicy.isOwnedModelID(modelId)
+        let qwen4MediaCacheEligible = Qwen4SupportPolicy.isOwnedModelID(modelId)
             && multimodal != nil && hybridPrefixIdentity != nil
             && cbv2Request.positionState != nil && ssdHybridCheckpointStore != nil
+        let nativeMediaCacheEligible = ownedEngine is CBv2NativeBlockEngine
+            && multimodal != nil && hybridPrefixIdentity != nil
+            && cbv2Request.positionState == nil && ssdHybridCheckpointStore != nil
+        let mediaHybridCacheEligible = qwen4MediaCacheEligible || nativeMediaCacheEligible
         if cacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
             ssdPrefixCache != nil || ssdHybridCheckpointStore != nil || residentPrefixCacheEvidence != nil
         {
@@ -237,10 +304,21 @@ extension EngineV2Bridge {
                 ssd.registerReadyReceipt(requestID: receiptID, callback: callback)
                 readyReceiptRegistered = true
             }
-            if let store = ssdHybridCheckpointStore, let callback = usageSignal?.onCacheReady {
+            // Native media keys address exact encoder boundaries, not the
+            // coordinator's fixed-block hash contract. Do not advertise a
+            // fabricated aligned holder; actual engine reuse still reports usage.
+            if !nativeMediaCacheEligible, let store = ssdHybridCheckpointStore,
+                let callback = usageSignal?.onCacheReady {
                 store.registerReadyReceipt(requestID: receiptID, promptTokens: promptTokens,
                                            cacheScope: checkpointScope, callback: callback)
                 readyReceiptRegistered = true
+            }
+            // The donate contract has no slot for coordinator metadata, so the
+            // demand hint rides the receipt ID. It survives an abandoned stage
+            // (the same receipt retries cold) and clears at terminal or when the
+            // request ends in error below.
+            if let donationDemand, let store = ssdHybridCheckpointStore {
+                store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
                 let proof = evidence.promptProof(tokens: promptTokens, scope: cacheScope)
@@ -265,7 +343,8 @@ extension EngineV2Bridge {
         // SSD blocks off the engine queue so synchronous lookup can adopt them.
         // The engine balances successful staging via
         // endAdoption; rejection and terminal paths provide an idempotent
-        // backstop. Vision requests never stage.
+        // backstop. Media stages only with a trusted feature identity and a
+        // model-native planner; the AR media and native block layouts stay distinct.
         var ssdStaged = false
         var ssdReuseAttempted = false
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
@@ -283,6 +362,21 @@ extension EngineV2Bridge {
             let stageResult = await store.stage(requestID: prefixCacheReceiptID, request: importRequest,
                 reserveReadScratch: { try liveEngine.reserveCompleteCheckpointReadScratch() }) {
                 try liveEngine.planCompleteCheckpointImport(manifest: $0, request: importRequest)
+            }
+            profile?.markDuration(.ssdStage, start: stageStart)
+            ssdStaged = stageResult.staged
+            ssdReuseAttempted = stageResult.staged
+            usageSignal?.record(stageResult: stageResult)
+            if case .skippedCapacity = stageResult.disposition {
+                emitPrefixCacheColdFallback(requestId: id, reason: "stage_capacity", capacityRefusal: true)
+            }
+        } else if let store = ssdHybridCheckpointStore, let prefixCacheReceiptID,
+            let nativeEngine = ownedEngine as? CBv2NativeBlockEngine {
+            let stageStart = SuspendingClock.now
+            let importRequest = cbv2Request
+            let stageResult = await store.stageNativeBlock(requestID: prefixCacheReceiptID, request: importRequest,
+                reserveReadScratch: { try nativeEngine.reserveNativeCheckpointReadScratch() }) {
+                try nativeEngine.planNativeCheckpointImport(manifest: $0, request: importRequest)
             }
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
@@ -329,11 +423,36 @@ extension EngineV2Bridge {
         // those bytes twice. Until then its grant is logical, as for idle
         // contiguous slots; every reservation rechecks live headroom.
         var sharedKVReserved = false
+        // Only the genuine native MiMo TX's SAME engine, bridge and global
+        // budget can replace this R claim. A generic owner's marker is not
+        // enough, and all other contiguous paths retain their existing claim.
+        let completePrefixOwnsRequestCharge: Bool
+        if let actual = ownedEngine as? EngineV2, let kvBudget,
+           let transaction = nativeTransaction, nativeTransactionID == transaction.id {
+            completePrefixOwnsRequestCharge = transaction.ownsNativeCompletePrefixRequestCharge(
+                engine: actual, bridge: self, budget: kvBudget)
+        } else { completePrefixOwnsRequestCharge = false }
+        let nativePagedOwnsRequestCharge: Bool
+        if let actual = ownedEngine as? EngineV2, let kvBudget,
+           let transaction = nativeTransaction, nativeTransactionID == transaction.id {
+            nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(
+                engine: actual, bridge: self, budget: kvBudget)
+        } else { nativePagedOwnsRequestCharge = false }
+        if kvBackendKind == .paged, nativeTransactionID != nil, !nativePagedOwnsRequestCharge {
+            await releasePreSubmitResources(requestID: id, sharedKVReserved: false,
+                prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered, usageSignal: usageSignal, failure: .policy)
+            continuation.yield(.error("native_paged_process_owner_mismatch"))
+            continuation.finish()
+            return stream // no native submission or foreign-budget coverage inference
+        }
         if kvBackendKind == .contiguous, let kvBudget,
-            (kvBytesPerToken > 0 || fixedRequestBytes > 0), cbv2Request.maxTokens > 0
+            !completePrefixOwnsRequestCharge,
+            (ownedEngine as? CBv2NativeBlockEngine)?.usesProcessMemoryOwner != true,
+            (kvBytesPerToken > 0 || fixedRequestBytes > 0 || nativeRequestBytes != nil), cbv2Request.maxTokens > 0
         {
             sharedKVReserved = await reserveSharedRequestBytes(
-                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens,
+                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens, nativeBytes: nativeRequestBytes,
                 profile: profile)
             try await checkFirstContentDeadline(
                 firstContentDeadline,
@@ -357,7 +476,7 @@ extension EngineV2Bridge {
                     readyReceiptRegistered: readyReceiptRegistered,
                     usageSignal: usageSignal)
                 sharedKVReserved = await reserveSharedRequestBytes(
-                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens,
+                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens, nativeBytes: nativeRequestBytes,
                 profile: profile)
                 try await checkFirstContentDeadline(
                     firstContentDeadline,
@@ -388,6 +507,9 @@ extension EngineV2Bridge {
                     if readyReceiptRegistered {
                         discardPrefixReadyReceipt(requestID: prefixCacheReceiptID)
                     }
+                    // The request ends here, so its demand hint is no longer
+                    // needed (abandoning staging alone keeps it for a cold retry).
+                    ssdHybridCheckpointStore?.discardDonationDemand(requestID: prefixCacheReceiptID)
                 }
                 usageSignal?.finalizeLookup(
                     failure: .capacity,
@@ -411,18 +533,45 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             usageSignal: usageSignal)
 
-        // Snapshot queue isolation at the exact engine-submit boundary. The
-        // current provider request is already in `pendingSubmissionIDs`; every
-        // other active or pending row disqualifies this sample.
-        disqualifyOverlappedPrefillSamples()
-        let isolatedPrefillSampleEligible =
-            isIsolatedPrefillSubmitBoundary(currentProviderRequestID: id)
-
         // Reserve the deterministic or monotonic ID before any admission
         // suspension. EngineV2Bridge+Identity defines collision handling.
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
+        // Own staging/reclamation can invalidate guards during preparation.
+        // Bind the measurement interval only after every such suspension,
+        // while the original exclusive lease still owns the whole Mac.
+        if prefillEvidenceRecovery.owner == id {
+            prefillEvidenceRecovery.bindEvidenceGuard(
+                serviceBudget?.exclusiveEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id), ownerID: id)
+        }
+        let calibrationGuard: CBv2FirstContentEvidenceGuard?
+        if mimoCalibration.requests[id]?.width == 1 {
+            if let captured = serviceBudget?.calibrationEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id) {
+                calibrationGuard = captured
+            } else {
+                let invalid = CBv2FirstContentEvidenceGuard()
+                invalid.invalidate()
+                calibrationGuard = invalid
+            }
+        } else { calibrationGuard = nil }
+        let nativeCausalMedia = nativeMediaMeasurementEligible(multimodal)
+        let nativeMediaEvidence = nativeCausalMedia ? captureNativeMediaRateEvidence(requestID: id) : nil
+        let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
+            deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
+            isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : calibrationGuard,
+            nativeCausalMedia: nativeCausalMedia,
+            nativeRateEvidence: nativeMediaEvidence)
+        cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
+            prefillReceipt.complete(usage)
+            Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
+        }
+        // Accepted requests transfer interval ownership to active state or its
+        // retirement owner. Rejected submissions release in this defer; a
+        // transferred receipt ignores it until actual engine retirement.
+        defer {
+            if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
+        }
         let engineRequest = cbv2Request
         pendingEngineIDs.insert(cbv2Id)
         idMap[id] = cbv2Id
@@ -437,9 +586,27 @@ extension EngineV2Bridge {
 
         // Hoisted so the profiler can name the deadline mode; pure function of
         // bridge state, no suspension between here and the submit below.
-        let deadlineAdmission = firstTokenDeadlineAdmission(
-            deadline: firstContentDeadline,
-            isMultimodal: multimodal != nil)
+        let deadlineAdmission: CBv2FirstTokenDeadlineAdmission?
+        do {
+            deadlineAdmission = try firstTokenDeadlineAdmission(
+                deadline: firstContentDeadline, multimodal: multimodal,
+                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork,
+                nativeMediaEvidence: nativeMediaEvidence)
+        } catch {
+            // The capability check is after shared-KV/prefix preparation.
+            // Preserve the existing cold-refusal unwind before returning.
+            await releasePreSubmitResources(
+                requestID: id,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: .policy)
+            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(for: error)))
+            continuation.finish()
+            return stream
+        }
         if let profile {
             // Profiler engine-submit snapshot: ONE lock for the stamp and the
             // whole occupancy posture at the submit boundary.
@@ -470,11 +637,12 @@ extension EngineV2Bridge {
         }
 
         let events: AsyncStream<CBv2Event>
+        var nativeRetirement: CBv2RequestRetirement?
         // Ordinary submission registers synchronously; atomic submission
         // replaces this with the engine-queue commit instant returned by the
         // admission transaction.
         var engineAdmittedAt = ContinuousClock.now
-        guard let engine = ownedEngine else {
+        guard canSubmitWithNativeOwner(), let engine = ownedEngine else {
             await releasePreSubmitResources(
                 requestID: id,
                 sharedKVReserved: sharedKVReserved,
@@ -504,6 +672,7 @@ extension EngineV2Bridge {
                     firstTokenDeadline: admission)
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
+                    prefillEvidenceRecovery.admit(id)
                     profile?.observeDeadlineDecision(
                         .accepted, work: projectedWork, deadline: firstContentDeadline)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
@@ -520,6 +689,7 @@ extension EngineV2Bridge {
                             engineID: cbv2Id,
                             stream: stream,
                             retirement: retirement,
+                            prefillReceipt: prefillReceipt,
                             sharedKVReserved: sharedKVReserved,
                             prefixCacheReceiptID: prefixCacheReceiptID,
                             ssdStaged: ssdStaged,
@@ -544,6 +714,7 @@ extension EngineV2Bridge {
                             engineID: cbv2Id,
                             stream: stream,
                             retirement: retirement,
+                            prefillReceipt: prefillReceipt,
                             sharedKVReserved: sharedKVReserved,
                             prefixCacheReceiptID: prefixCacheReceiptID,
                             ssdStaged: ssdStaged,
@@ -553,6 +724,10 @@ extension EngineV2Bridge {
                         throw error
                     }
                     events = stream
+                    // Atomic admission transfers a generation-bound retirement
+                    // handle even for non-native engines. The pump must retain
+                    // shared service/KV ownership after an early terminal.
+                    nativeRetirement = retirement
                     engineAdmittedAt = admittedAt
                     if let profile {
                         // The engine's commit instant is on the deadline
@@ -594,8 +769,43 @@ extension EngineV2Bridge {
                 // Projection fails open when mode is off, no isolated rate has
                 // been measured, or media makes token projection incomplete.
                 // Absolute expiry does not: it was checked immediately above.
-                events = try engine.submit(engineRequest)
+                if prefillEvidenceRecovery.owner == id {
+                    let submitted = try submitPrefillEvidenceRecovery(
+                        engineRequest, requestID: id, deadline: firstContentDeadline)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
+                } else if let native = engine as? CBv2NativeBlockEngine {
+                    let submitted = try native.submitWithRetirement(engineRequest)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
+                } else if let native = engine as? EngineV2,
+                    native.nativeShutdownExecutionContractID != nil {
+                    let submitted = try native.submitWithNativeRetirement(engineRequest)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
+                } else {
+                    events = try engine.submit(engineRequest)
+                }
                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
+                if prefillEvidenceRecovery.owner == id {
+                    do {
+                        try Task.checkCancellation()
+                        if pendingCancellationIDs.contains(id) { throw CancellationError() }
+                        try firstContentDeadline?.check()
+                    } catch {
+                        let continuation: DeadlineContinuation = error is CancellationError ? .cancelled : .expired
+                        profile?.stopDeadlineContinuation(continuation)
+                        engine.cancel(cbv2Id)
+                        transferPreSubmitRetirement(
+                            retirementTransfer, requestID: id, engineID: cbv2Id,
+                            stream: events, retirement: nativeRetirement ?? .acknowledged,
+                            prefillReceipt: prefillReceipt, sharedKVReserved: sharedKVReserved,
+                            prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
+                            readyReceiptRegistered: readyReceiptRegistered,
+                            usageSignal: usageSignal, failure: Self.prefixCacheFailureClass(for: error))
+                        throw error
+                    }
+                }
                 if let profile {
                     // Evaluated AFTER the submit returned: the deadline may
                     // have expired meanwhile, hence the zero clamp.
@@ -609,6 +819,7 @@ extension EngineV2Bridge {
                 }
             }
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
+            prefillEvidenceRecovery.admit(id)
             // This exception proves acceptance but carries no projected work.
             profile?.observeDeadlineDecision(
                 .accepted, deadline: firstContentDeadline, continuation: .cancelled)
@@ -621,6 +832,7 @@ extension EngineV2Bridge {
                 engineID: cbv2Id,
                 stream: cancellation.stream,
                 retirement: cancellation.retirement,
+                prefillReceipt: prefillReceipt,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,
@@ -659,18 +871,15 @@ extension EngineV2Bridge {
         active[id] = ActiveRequestState(
             promptTokens: promptTokens.count,
             maxTokens: cbv2Request.maxTokens,
-            isolatedPrefillSampleEligible:
-                isolatedPrefillSampleEligible
-                && pendingSubmissionIDs.allSatisfy({ $0 == id })
-                && pendingEngineIDs.allSatisfy({ $0 == cbv2Id })
-                && active.isEmpty,
             submittedAt: engineAdmittedAt,
-            profile: profile
+            profile: profile,
+            prefillReceipt: prefillReceipt
         )
+        consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 
-        // Emit one allowlisted engagement event for an accepted media request.
+        // Emit one engagement event for an accepted media request.
         if multimodal != nil {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }
@@ -687,7 +896,8 @@ extension EngineV2Bridge {
             usageSignal: usageSignal,
             prefixCacheReceiptID: prefixCacheReceiptID,
             readyReceiptRegistered: readyReceiptRegistered,
-            profile: profile
+            profile: profile,
+            nativeRetirement: nativeRetirement
         )
 
         let bridge = self

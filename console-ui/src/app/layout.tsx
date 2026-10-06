@@ -1,3 +1,4 @@
+import { ModelTokenPromotionsProvider } from "@/components/app-providers/ModelTokenPromotionsProvider";
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
@@ -8,11 +9,12 @@ import { PrivyClientProvider } from "@/components/app-providers/PrivyClientProvi
 import { VerificationModeProvider } from "@/components/app-providers/verification-mode";
 import { TelemetryInitializer } from "@/components/TelemetryInitializer";
 import { DatadogRUM } from "@/components/DatadogRUM";
+import { ReferralAttributionProvider } from "@/components/referrals/ReferralAttributionProvider";
 
 export const metadata: Metadata = {
   title: "Darkbloom — Private AI on Verified Macs",
   description:
-    "Private AI inference through hardware-attested Apple Silicon providers. Your prompts stay encrypted, your data stays yours.",
+    "Private AI inference through hardware-attested Apple Silicon providers. Encrypted connections. Verified providers.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },
@@ -30,7 +32,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         {/* Preload the Louize hero weight — it renders the LCP heading on the
-            chat empty state and the /login hero, so fetching it eagerly cuts
+            chat empty state and the page headings, so fetching it eagerly cuts
             LCP text delay and font-swap CLS (perf F12). */}
         <link
           rel="preload"
@@ -47,9 +49,13 @@ export default function RootLayout({
         <DatadogRUM />
         <ThemeProvider>
           <PrivyClientProvider>
-            <VerificationModeProvider>
-              <AppShell>{children}</AppShell>
-            </VerificationModeProvider>
+            <ModelTokenPromotionsProvider>
+              <ReferralAttributionProvider>
+                <VerificationModeProvider>
+                  <AppShell>{children}</AppShell>
+                </VerificationModeProvider>
+              </ReferralAttributionProvider>
+            </ModelTokenPromotionsProvider>
           </PrivyClientProvider>
         </ThemeProvider>
       </body>

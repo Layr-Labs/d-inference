@@ -25,9 +25,8 @@ extension ProviderLoop {
     private static let autoUpdateInterval: Duration = .seconds(1800)
 
     /// How long to wait for in-flight requests to drain after installing a new
-    /// binary before force-cancelling them and restarting. Generous enough for
-    /// normal generations to finish; bounded so one stuck request can't block
-    /// updates forever.
+    /// binary before deferring the update. Accepted requests are never
+    /// force-cancelled by the background updater.
     private static let updateDrainTimeout: Duration = .seconds(120)
 
     /// Start the background auto-update monitor. Checks the coordinator for a
@@ -77,8 +76,18 @@ extension ProviderLoop {
     /// drain → commit → restart. All side effects below are actor-isolated so
     /// the phase transitions, staged-bundle handoff, and drain bookkeeping
     /// stay race-free.
-    private func performAutoUpdateCheck(coordinatorURL: String) async {
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+    ///
+    /// The three trailing parameters are test seams. Production passes none
+    /// of them: the updater then targets the running install, the launch
+    /// baseline comes from launchd, and the restart is the real launchd one.
+    @discardableResult
+    internal func performAutoUpdateCheck(
+        coordinatorURL: String,
+        updater injectedUpdater: SelfUpdater? = nil,
+        launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { LaunchAgent.launchSnapshot() },
+        restart: @escaping @Sendable () throws -> Void = { try ProcessLifecycle.restartAfterUpdate() }
+    ) async -> AutoUpdateController.Outcome {
+        let updater = injectedUpdater ?? SelfUpdater(coordinatorBaseURL: coordinatorURL)
         let me = self
         let logger = self.logger
         let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds
@@ -110,17 +119,13 @@ extension ProviderLoop {
                 try? await taskSleep( delay)
             },
             beginDraining: { await me.beginUpdateDraining() },
-            waitForDrain: { timeout in await me.waitForInflightDrain(timeout: timeout) },
-            // Drain-timeout fallback. Cancels coordinator-routed work; any
-            // residual LOCAL stream is intentionally left for the immediately
-            // following restart to tear down (local reservations are released by
-            // the engine, which we no longer wait on past the timeout).
-            forceCancelInflight: { await me.cancelAllInflight() },
+            waitForDrain: { timeout in await me.waitForSafeDisconnect(timeout: timeout, reason: "auto-update") },
             commitInstall: { await me.commitStagedUpdateBundle(updater: updater) },
             prepareInstalledRestart: {
-                await me.prepareInstalledCandidateRestart(updater: updater)
+                await me.prepareInstalledCandidateRestart(
+                    updater: updater, baseline: launchSnapshot)
             },
-            restart: { try ProcessLifecycle.restartAfterUpdate() },
+            restart: restart,
             restartDidFail: {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "background-restart-failure")
@@ -133,6 +138,8 @@ extension ProviderLoop {
         switch outcome {
         case .alreadyRunning:
             logger.info("Auto-update: cycle already in progress; skipping this tick")
+        case .drainTimedOut:
+            logger.warning("Auto-update deferred: drain deadline reached; no requests cancelled and no restart issued")
         case .cancelled:
             logger.info("Auto-update: cycle cancelled during the pre-install wait; nothing installed")
         case .upToDate:
@@ -150,6 +157,7 @@ extension ProviderLoop {
         case .restartFailed(let reason):
             logger.warning("Auto-update: restart failed: \(reason)")
         }
+        return outcome
     }
 
     // MARK: - Auto-Update Phase Transitions
@@ -157,9 +165,9 @@ extension ProviderLoop {
     /// Atomically claim the update cycle. Returns `false` if a cycle is already
     /// underway (re-entrancy guard for overlapping monitor ticks). On `true`,
     /// enter the `.installing` phase — still serving while the new bundle
-    /// downloads and stages.
-    private func claimUpdateStart(updater: SelfUpdater) -> Bool {
-        guard updatePhase == .idle, !isShuttingDown else { return false }
+    /// downloads and stages. The App Attest stall restart claims the same lease.
+    internal func claimUpdateStart(updater: SelfUpdater) -> Bool {
+        guard updatePhase == .idle, modelSwitchTask == nil, !servingDrain.refusing, !isShuttingDown else { return false }
         do {
             let session = try updater.beginUpdateSession(
                 operation: "background-auto-update",
@@ -187,7 +195,9 @@ extension ProviderLoop {
     internal func resumeServingAfterUpdate() async {
         updatePhase = .idle
         // Quote path mirror (routing v2): quotes may admit again.
-        state.refusingNewWork = isReconnectingAfterRetirement || isShuttingDown
+        resumeAfterUpdateDrain()
+        localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
+        state.refusingNewWork = servingDrain.refusing || isReconnectingAfterRetirement || isShuttingDown || autopilotCommand != nil
         // Announce the un-drain NOW: the coordinator ages its drain mark on a
         // TTL, so a prompt `serving`/`idle` heartbeat ends the routing
         // blackout instead of leaving it to the next 5 s baseline tick.
@@ -202,6 +212,9 @@ extension ProviderLoop {
         updateSession?.release()
         updateSession = nil
 
+        // A lifecycle-owned drain cannot replay model work after a cancelled update.
+        guard !servingDrain.refusing else { return }
+        lifecycleStatus = .init()
         if let entries = deferredDesiredModels {
             deferredDesiredModels = nil
             if let send = outboundSend {
@@ -216,6 +229,7 @@ extension ProviderLoop {
     /// hot-swap.
     internal func beginUpdateDraining() {
         updatePhase = .draining
+        beginServingDrain(owner: .update)
         // Quote path mirror (routing v2): while draining, capacity quotes
         // refuse with `slot_state` exactly like the live admission gate.
         state.refusingNewWork = true
@@ -258,8 +272,8 @@ extension ProviderLoop {
     }
 
     /// Swap the staged bundle into the live layout. Runs strictly after the
-    /// drain: admission is closed and in-flight work has finished (or been
-    /// force-cancelled), so no request can observe the swap window.
+    /// drain: admission is closed and accepted work plus terminal delivery
+    /// have finished, so no request can observe the swap window.
     private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
         guard let staged = stagedUpdateBundle else {
             return .failed("no staged update bundle to install")
@@ -277,8 +291,11 @@ extension ProviderLoop {
         }
     }
 
-    private func prepareInstalledCandidateRestart(
-        updater: SelfUpdater
+    /// Arms an installed-but-not-running candidate (no-op without one) and
+    /// releases the lease before any launchd restart, update or App Attest stall.
+    internal func prepareInstalledCandidateRestart(
+        updater: SelfUpdater,
+        baseline: @Sendable () -> ProviderLaunchSnapshot? = { LaunchAgent.launchSnapshot() }
     ) -> AutoUpdateController.StepOutcome {
         guard let session = updateSession else {
             return .failed("cross-process update lease was lost before candidate restart")
@@ -286,7 +303,7 @@ extension ProviderLoop {
         do {
             try updater.prepareCandidateLaunch(
                 session: session,
-                baseline: LaunchAgent.launchSnapshot()
+                baseline: baseline()
             )
             session.release()
             updateSession = nil

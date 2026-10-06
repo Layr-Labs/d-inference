@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# EigenInference Admin CLI
+# Darkbloom Admin CLI
 #
 # Authenticate with Privy and manage releases, models, and pricing.
 #
@@ -18,6 +18,11 @@ COORDINATOR_URL="${EIGENINFERENCE_COORDINATOR_URL:-https://api.darkbloom.dev}"
 TOKEN_FILE="$HOME/.darkbloom/admin_token"
 
 # ─── Auth helpers ───────────────────────────────────────────
+
+# Encode user-entered values once instead of interpolating them into JSON syntax.
+json_body() {
+    python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' "$@"
+}
 
 get_token() {
     # Check for admin key (dev/pre-prod).
@@ -48,25 +53,25 @@ authed_curl() {
 # ─── Commands ───────────────────────────────────────────────
 
 cmd_login() {
-    echo "EigenInference Admin Login"
+    echo "Darkbloom Admin Login"
     echo ""
-    read -p "Email: " EMAIL
+    read -r -p "Email: " EMAIL
 
     echo "Sending OTP to $EMAIL..."
     INIT_RESP=$(curl -fsSL -X POST "$COORDINATOR_URL/v1/admin/auth/init" \
         -H "Content-Type: application/json" \
-        -d "{\"email\": \"$EMAIL\"}" 2>&1) || {
+        -d "$(json_body email "$EMAIL")" 2>&1) || {
         echo "Failed to send OTP: $INIT_RESP"
         exit 1
     }
 
     echo "Check your email for the verification code."
-    read -p "OTP Code: " CODE
+    read -r -p "OTP Code: " CODE
 
     echo "Verifying..."
     VERIFY_RESP=$(curl -fsSL -X POST "$COORDINATOR_URL/v1/admin/auth/verify" \
         -H "Content-Type: application/json" \
-        -d "{\"email\": \"$EMAIL\", \"code\": \"$CODE\"}")
+        -d "$(json_body email "$EMAIL" code "$CODE")")
 
     TOKEN=$(echo "$VERIFY_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
     if [ -z "$TOKEN" ]; then
@@ -95,7 +100,7 @@ cmd_releases_deactivate() {
     local platform="${2:-macos-arm64}"
     authed_curl -X DELETE "$COORDINATOR_URL/v1/admin/releases" \
         -H "Content-Type: application/json" \
-        -d "{\"version\": \"$version\", \"platform\": \"$platform\"}"
+        -d "$(json_body version "$version" platform "$platform")"
     echo ""
     echo "Release $version ($platform) deactivated."
 }

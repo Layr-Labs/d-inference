@@ -1,18 +1,19 @@
 # Provider quickstart
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-10-01
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
-log in, pick models, start — then enrol for the `hardware` trust level that
-public traffic requires.
+log in, pick models, start, then confirm serving authorization. macOS 27 or later
+uses App Attest without new Darkbloom MDM enrollment. Darkbloom MDM will be
+deactivated soon; upgrade to macOS 27 to avoid the legacy enrollment step.
 
 ## Prerequisites
 
 - A Mac that meets [hardware requirements](./hardware-requirements.md#minimum-requirements).
   `darkbloom start` refuses machines below the RAM floor or without a
-  Metal GPU (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`,
-  `Start.runPreflightChecks`; `provider-swift/Sources/darkbloom/StartCommand.swift`,
+  Metal GPU (`provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`,
+  `Start.runPreflightChecks`; `provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
   `Start.prepareServeRuntime`).
 - Outbound HTTPS (443) to `api.darkbloom.dev`; the provider is an outbound-only
   WebSocket client to `wss://api.darkbloom.dev/ws/provider`
@@ -44,18 +45,23 @@ listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 
 ### 3. Download a model
 
-`darkbloom start` (`provider-swift/Sources/darkbloom/StartCommand.swift`) runs
+Ordinary non-enrolled `darkbloom start` (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`) runs
 preflight checks (SIP, debugger, GPU, memory), offers to link your account if
 you are not logged in, shows an interactive model picker, asks whether models
 should stay loaded while idle (`Always ready`) or be unloaded after 60 minutes
 without requests and reloaded on demand (`Free when idle`, the default; or a
 custom window), then installs and starts a `launchd` user agent.
+Every idle-memory choice starts loading selected models before the daemon
+registers with the coordinator, subject to the startup timeout, model-slot
+limit and available memory ([startup preload details](./cli-reference.md#darkbloom-start)).
 
 `darkbloom models download` (`provider-swift/Sources/darkbloom/ModelsCommand.swift`)
 resolves the catalog entry and fetches from `https://models.darkbloom.ai`
 (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`,
 `defaultR2CDNURL`). `darkbloom start` also offers an interactive catalog picker
-when nothing is downloaded yet, so this step can be skipped.
+when nothing is downloaded yet, so this step can be skipped for ordinary serving.
+Autopilot enrollment never downloads models: download desired network models
+separately before enrolling.
 
 ### 4. Link your account
 
@@ -77,11 +83,11 @@ to your account. `darkbloom start` offers this step inline if you skip it.
 darkbloom start
 ```
 
-`Start` (`provider-swift/Sources/darkbloom/StartCommand.swift`,
-`provider-swift/Sources/darkbloom/StartCommand+Daemon.swift`) prints the
+`Start` (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`,
+`provider-swift/Sources/darkbloom/Start/StartCommand+Daemon.swift`) prints the
 Terms-of-Service notice (starting is acceptance), runs preflight, offers inline
-login, shows the model picker unless `--model <id>` (repeatable) or `--all` is
-given, then writes `~/Library/LaunchAgents/io.darkbloom.provider.plist`
+login, uses the ordinary model picker unless explicit selection or Autopilot
+enrollment bypasses it, then writes `~/Library/LaunchAgents/io.darkbloom.provider.plist`
 (`RunAtLoad = true`, `KeepAlive = false`;
 `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) and starts it.
 With `provider.auto_restart = true` (the default) it also arms the crash-recovery
@@ -89,18 +95,37 @@ watchdog `io.darkbloom.watchdog`
 (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). The service
 starts again at every login.
 
-### 6. Enrol for public traffic
+The experimental Autopilot interest prompt defaults to No. Yes records consent
+for the default shadow rollout, **not active residency control**. It skips the
+picker and discovers/verifies all eligible already-downloaded active network
+models, excluding arbitrary local/off-catalog, retired, ineligible or unverified
+builds. No downloads occur; if none qualify, enrollment fails before replacing
+the daemon. Saved model, preload, idle and other preferences are preserved, and
+ordinary startup/serving continues. Check `darkbloom autopilot status` for the
+recorded inventory and `shadow` (not activated) phase. Live rollout later chooses
+among cached models for utilization, not guaranteed earnings. Refresh the static
+inventory explicitly with `darkbloom autopilot models` after separately downloading
+new models. See [Autopilot CLI](./cli-reference.md#darkbloom-autopilot).
+
+### 6. Confirm verification
+
+On **macOS 27 or later**, the installer and `darkbloom enroll` skip MDM profile
+download and System Settings. Run `darkbloom status` and `darkbloom doctor` to
+check App Attest approval. Serving requires a qualified signed provider and an
+enabled coordinator; pending or unavailable approval does not trigger MDM
+fallback. See [serving authorization](../reference/provider-authorization.md).
+
+On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy setup:
 
 ```bash
 darkbloom enroll
 ```
 
-A freshly started provider is `self_signed`; the coordinator sends public
-requests only to `hardware`-level machines, which requires MDM enrolment of
-this Mac. What the command does, how long the upgrade takes and how to read the
-result are in [Reaching and keeping `hardware` trust](./attestation.md#steps).
-Until then only your own [self-route](./self-route.md) requests reach the
-machine.
+Approve the Darkbloom profile in System Settings and follow the
+[legacy verification steps](./attestation.md#steps). Darkbloom MDM will be
+deactivated soon. Keep any employer management profile. Existing Darkbloom
+profiles should remain installed until `darkbloom unenroll` approves App Attest
+migration; choosing full exit instead stops the provider.
 
 ## Verify
 
@@ -117,9 +142,10 @@ and the stale threshold are in
 snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
 
-The provider is earning once `doctor` shows the trust level the coordinator
-requires for routing; see [attestation](./attestation.md) for the levels and how
-to reach `hardware` trust.
+The provider becomes eligible for public traffic after the coordinator grants
+current App Attest authorization or complete legacy verification. Check recorded
+earnings in the dashboard; connection or setup completion alone does not prove
+that the provider is serving or earning. See [attestation](./attestation.md).
 
 ## Configuration
 
@@ -157,7 +183,7 @@ private_only = false         # true = serve only your own self-route traffic
 - Provider TOML is authoritative for both controls. Changes take effect at
   process restart; after setting either key to `false`, run `darkbloom restart`
   to activate the rollback. The start path projects config before Metal access
-  (`provider-swift/Sources/darkbloom/StartCommand.swift:84-91` and
+  (`provider-swift/Sources/darkbloom/Start/StartCommand.swift:84-91` and
   `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`), while
   `darkbloom beta` durably locks, reloads, and saves the selected value before
   printing the restart boundary
@@ -170,25 +196,15 @@ private_only = false         # true = serve only your own self-route traffic
   interactively; change it later with `darkbloom idle keep-loaded` /
   `darkbloom idle unload-after <minutes>`.
 - `backend.max_model_slots` — maximum resident models at once (default 3).
-- `config_version` — schema version of this file, written automatically on
-  first start after upgrading. It only dates the file, so the provider can
-  tell a value the previous release GENERATED from one you chose. Leave it
-  alone; deleting it re-runs the one-time upgrade migrations below.
 - `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
-  engine slot (default **4** as of v0.8.1, clamped to `[1, 8]`). v0.8.0 raised
-  it to 8 because PagedAttention made the batch curve keep climbing (paged
-  gains 1.27x from B=4 to B=8, contiguous only 1.069x); v0.8.1 reverts the
-  paged default, so the raise goes back with it. 4 is the knee of the measured
-  contiguous curve — aggregate throughput is flat from B=4 to B=8 and collapses
-  below it, while per-request decode is aggregate/B and so improves as the
-  batch shrinks, which is what a time-to-first-token deadline is scored on.
-  A `provider.toml` written by v0.8.0 carries an explicit `= 8` that release
-  generated; because that is **indistinguishable from a deliberate 8**, first
-  start after upgrading changes it to 4 once, logs a warning saying so, and
-  bumps `config_version` to 2. If you want 8, set it again afterwards — from
-  then on it is honoured. The `[1, 8]` upper bound is unchanged, so 8 stays
-  available both box-wide and per-model, which is what a box running
-  `engine_v2_kv_backend = "paged"` wants.
+  engine slot (default **4**, clamped to `[1, 8]`). 4 is the knee of the
+  measured contiguous curve — aggregate throughput is flat from B=4 to B=8 and
+  collapses below it, while per-request decode is aggregate/B and so improves
+  as the batch shrinks, which is what a time-to-first-token deadline is scored
+  on. An explicit value is always honoured; 8 stays available both box-wide
+  and per-model, which is what a box running `engine_v2_kv_backend = "paged"`
+  wants. A leftover top-level `config_version` line from an older release is
+  ignored.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` remains the default. The candidate selects paged only for the
   [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts); every

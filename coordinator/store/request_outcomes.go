@@ -2,17 +2,18 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 )
 
 const RequestOutcomeSchemaVersion = 1
+
 const MaxRequestOutcomeAttempts = 128
 
 // RequestOutcomeRecord is an unsampled, prompt-free observation of one incoming
 // HTTP request. ReceivedAt defines cohort membership; revisions enrich the same
 // request with late provider evidence. No field establishes upstream receipt.
 type RequestOutcomeRecord struct {
+	PublicDemand            *PublicDemandScope      `json:"public_demand,omitempty"`
 	CoordRequestID          string                  `json:"coord_request_id"`
 	SchemaVersion           int                     `json:"schema_version"`
 	Revision                int64                   `json:"revision"`
@@ -71,27 +72,4 @@ type RequestOutcomeStore interface {
 	// RequestOutcomes returns a bounded received-at cohort [since, until).
 	// A full limit does not mean the cohort is complete; narrow the window.
 	RequestOutcomes(context.Context, time.Time, time.Time, int) ([]RequestOutcomeRecord, error)
-}
-
-func validateRequestOutcome(r RequestOutcomeRecord) error {
-	if r.CoordRequestID == "" || len(r.CoordRequestID) > 64 || r.SchemaVersion != RequestOutcomeSchemaVersion || r.Revision < 1 || r.ReceivedAt.IsZero() || r.UpdatedAt.IsZero() {
-		return errors.New("store: invalid request outcome identity/version")
-	}
-	switch r.ResponseTerminal {
-	case "", "unknown", "completed", "incomplete", "error":
-	default:
-		return errors.New("store: invalid response terminal")
-	}
-	if len(r.Termination) > 64 || len(r.ResponseProgress) > 64 || len(r.ProviderOutcome) > 64 {
-		return errors.New("store: oversized request outcome classification")
-	}
-	if len(r.Attempts) > MaxRequestOutcomeAttempts || len(r.Model) > 256 || len(r.Endpoint) > 64 || len(r.RawReason) > 96 || len(r.RawStage) > 64 || len(r.NormalizedCode) > 128 {
-		return errors.New("store: oversized request outcome")
-	}
-	for _, a := range r.Attempts {
-		if a.RequestID == "" || len(a.RequestID) > 64 || len(a.BackupOf) > 64 || len(a.RawReason) > 96 || len(a.TerminalCause) > 96 || len(a.ProviderOutcome) > 64 || len(a.FinalStatus) > 64 || len(a.NormalizedCode) > 128 {
-			return errors.New("store: invalid request attempt outcome")
-		}
-	}
-	return nil
 }

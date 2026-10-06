@@ -1,0 +1,215 @@
+package inference_test
+
+import (
+	"errors"
+	"log/slog"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/billing"
+	cacheusage "github.com/eigeninference/d-inference/coordinator/internal/inference/cacheusage"
+	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/memory"
+)
+
+type countingStore struct {
+	store.Store
+
+	mu       sync.Mutex
+	debits   int
+	debitErr error
+	delay    time.Duration
+}
+
+func (s *countingStore) Debit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
+	s.mu.Lock()
+	s.debits++
+	err := s.debitErr
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.Store.Debit(accountID, amountMicroUSD, entryType, reference)
+}
+
+func (s *countingStore) DebitCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.debits
+}
+
+func newReservationTestServer(t *testing.T, cfg TestServerConfig, debitErr error) (*reservationFixture, *countingStore) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mem := memory.NewMemory(store.Config{AdminKey: "test-key"})
+	st := &countingStore{Store: mem, debitErr: debitErr}
+	srv := newComposedServer(registry.New(logger), st, cfg, logger)
+	srv.bindBilling(billing.NewService(st, payments.NewLedger(st), logger, billing.Config{MockMode: true}))
+	return srv, st
+}
+
+func createServiceUser(t *testing.T, st store.Store, accountID string) {
+	t.Helper()
+	if err := st.CreateUser(&store.User{AccountID: accountID, PrivyUserID: "did:privy:" + accountID, Role: store.RoleService}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServiceReservationDisabledUsesLedgerDebit(t *testing.T) {
+	srv, st := newReservationTestServer(t, TestServerConfig{}, nil)
+	createServiceUser(t, st, "svc-disabled")
+	if err := st.Credit("svc-disabled", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceMode, err := srv.reservations.ReserveInitial("svc-disabled", "model", 100_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serviceMode {
+		t.Fatal("service reservations should be disabled by default")
+	}
+	if got := st.DebitCount(); got != 1 {
+		t.Fatalf("Debit calls = %d, want 1", got)
+	}
+}
+
+func TestServiceReservationConcurrentAvoidsDebitHotRow(t *testing.T) {
+	srv, st := newReservationTestServer(t, TestServerConfig{ServiceReservations: true}, errors.New("hot row unavailable"))
+	createServiceUser(t, st, "svc-hotrow")
+	if err := st.Credit("svc-hotrow", 10_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			serviceMode, err := srv.reservations.ReserveInitial("svc-hotrow", "model", 100_000)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !serviceMode {
+				errs <- errors.New("expected service reservation mode")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := st.DebitCount(); got != 0 {
+		t.Fatalf("Debit calls = %d, want 0", got)
+	}
+}
+
+func TestNormalConsumerStillUsesSynchronousDebit(t *testing.T) {
+	srv, st := newReservationTestServer(t, TestServerConfig{ServiceReservations: true}, store.ErrInsufficientBalance)
+	if err := st.Credit("consumer", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceMode, err := srv.reservations.ReserveInitial("consumer", "model", 100_000)
+	if !errors.Is(err, store.ErrInsufficientBalance) {
+		t.Fatalf("err = %v, want ErrInsufficientBalance", err)
+	}
+	if serviceMode {
+		t.Fatal("normal consumer used service reservation mode")
+	}
+	if got := st.DebitCount(); got != 1 {
+		t.Fatalf("Debit calls = %d, want 1", got)
+	}
+}
+
+func TestServiceReservationRefundReleasesHoldWithoutCredit(t *testing.T) {
+	srv, st := newReservationTestServer(t, TestServerConfig{ServiceReservations: true}, nil)
+	createServiceUser(t, st, "svc-refund")
+	if err := st.Credit("svc-refund", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	serviceMode, err := srv.reservations.ReserveInitial("svc-refund", "model", 250_000)
+	if err != nil || !serviceMode {
+		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
+	}
+
+	pr := &registry.PendingRequest{RequestID: "svc-refund", Model: "model", ConsumerKey: "svc-refund", ReservedMicroUSD: 250_000, ServiceReservation: true}
+	if !srv.reservations.Refund(pr, "test") {
+		t.Fatal("refundReservedBalance returned false")
+	}
+	if got := st.GetBalance("svc-refund"); got != 1_000_000 {
+		t.Fatalf("balance = %d, want unchanged 1000000", got)
+	}
+	if srv.reservations.Refund(pr, "test-again") {
+		t.Fatal("second refund should be finalized/no-op")
+	}
+}
+
+func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
+	srv, st := newReservationTestServer(t, TestServerConfig{ServiceReservations: true}, nil)
+	createServiceUser(t, st, "svc-complete")
+	if err := st.Credit("svc-complete", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: "svc-model", InputPrice: 1_000_000, OutputPrice: 2_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	serviceMode, err := srv.reservations.ReserveInitial("svc-complete", "svc-model", 500_000)
+	if err != nil || !serviceMode {
+		t.Fatalf("reserve serviceMode=%v err=%v", serviceMode, err)
+	}
+
+	provider := srv.registry.Register("svc-provider", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: "svc-model", ModelType: "chat", Quantization: "4bit"}}})
+	pr := &registry.PendingRequest{
+		RequestID:          "svc-complete",
+		Model:              "svc-model",
+		ConsumerKey:        "svc-complete",
+		ReservedMicroUSD:   500_000,
+		ServiceReservation: true,
+		ChunkCh:            make(chan registry.ProviderChunk, 1),
+		CompleteCh:         make(chan protocol.UsageInfo, 1),
+		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+
+	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20}
+	expected := payments.Rates{Input: 1_000_000, Output: 2_000_000}.Cost(cacheusage.Billable(usage))
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage})
+
+	// The atomic settlement owns the debit now; inspect its financial effect
+	// instead of the old standalone Debit call count.
+	var charges int
+	for _, entry := range st.LedgerHistory("svc-complete") {
+		if entry.Type == store.LedgerCharge {
+			charges++
+			if entry.AmountMicroUSD != -expected || entry.Reference != pr.RequestID {
+				t.Fatalf("unexpected settlement charge: %+v", entry)
+			}
+		}
+	}
+	if charges != 1 {
+		t.Fatalf("charge entries = %d, want 1", charges)
+	}
+	if got := st.GetBalance("svc-complete"); got != 1_000_000-expected {
+		t.Fatalf("balance = %d, want %d", got, 1_000_000-expected)
+	}
+	// A new hold can consume the entire remaining balance only if the
+	// completed request released its original in-memory reservation.
+	if service, err := srv.reservations.ReserveInitial("svc-complete", "svc-model", 1_000_000-expected); err != nil || !service {
+		t.Fatalf("service reservation was not released: service=%v err=%v", service, err)
+	}
+}

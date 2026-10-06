@@ -1,8 +1,8 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-11 · commit `5e41029dd`
+> Last updated: 2026-10-03
 
-`request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
+`request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
 ## Context
 
@@ -12,7 +12,7 @@ The ledger is asynchronous and best effort. Unsampled means every covered reques
 
 ## Mechanism
 
-`coordinator/api/request_outcome.go` (`observeRequestOutcome`) wraps the root recovery middleware for the four covered inference POST paths, before drain, authentication, rate limiting, sealed transport and the endpoint handler. It mints an independent UUID regardless of profiler configuration; logging reuses that accounting identity. This canonical ID joins the ledger and detailed profiles. The existing `X-Request-ID` header and access-log ID retain their behavior: a supplied client ID is echoed, otherwise the coordinator generates the existing short ID. Neither supplies ledger identity.
+`coordinator/api/observation/request_outcome.go` (`ObserveRequestOutcome`) wraps the root recovery middleware for the four covered inference POST paths, before drain, authentication, rate limiting, sealed transport and the endpoint handler. It mints an independent UUID regardless of profiler configuration; logging reuses that accounting identity. This canonical ID joins the ledger and detailed profiles. The existing `X-Request-ID` header and access-log ID retain their behavior: a supplied client ID is echoed, otherwise the coordinator generates the existing short ID. Neither supplies ledger identity.
 
 ```mermaid
 flowchart LR
@@ -38,7 +38,7 @@ The request sink has 4,096 queued snapshots, one worker, batches of up to 128, a
 
 | Contract | Definition and code |
 |---|---|
-| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. The root observer filters the four exact POST paths in `coordinator/api/server.go` (`Handler`). |
+| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. `coordinator/api/server_handler.go` (`Handler`) binds the root observer; `coordinator/api/observation/request_outcome.go` (`InferenceOutcomeEndpoint`, `ObserveRequestOutcome`) filters exact POST paths and matched route patterns. |
 | Early exits | Drain, auth, account/key rate limits, sealed-envelope/decryption, validation, model resolution, balance, preflight, queue and dispatch exits are included. Streaming mode remains unknown before valid JSON parsing. `parseInferencePrelude` records the handler's parsed true/false mode before model lookup, including catalog rejections. Existing explicit rejection stages/reasons are copied; uncovered reason details remain `ext_unknown` with the last known pipeline stage. |
 | Exclusions | OPTIONS, other methods, unmatched paths, and connections that never enter these HTTP routes. A recovered panic records `handler_panic` and the actual final HTTP status after recovery writes. A panic after headers preserves the committed status and response format. Raw recovery JSON written into an already committed SSE stream is not counted as a valid streaming terminal. An unrecovered abort records `handler_aborted`; no replacement status is invented. |
 | Request identity | `coord_request_id`, a coordinator-minted UUID. Repeated client `X-Request-ID` values do not merge requests. Empty identities are rejected by both stores. Count HTTP requests, never `n` or attempt rows. |
@@ -72,7 +72,7 @@ Finalization tracking retains only attempt identities; each published revision r
 
 ## Versioned normalization
 
-`normalizedAttemptOutcome` and `normalizedRequestOutcome` in `coordinator/api/request_outcome.go` are analytics-only mappings. Raw existing codes remain unchanged in routes, profiles and rejection records.
+`NormalizedAttempt` and `NormalizedRequest` in `coordinator/internal/observation/outcomes/request_outcome_policy.go` are analytics-only mappings. Raw existing codes remain unchanged in routes, profiles and rejection records.
 
 | Observation | Version 1 normalized code |
 |---|---|
@@ -96,20 +96,110 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 5. Process counters count observed receipts and persistence snapshots, not durable unique rows. Snapshot failures, queued work and restarts prevent traffic-wide denominator claims. Multi-process/historical coverage needs independent reconciliation; this API does not pretend otherwise.
 6. Rollback leaves the additive table readable but stops new observations. Do not mix older traffic with newly covered receipts as if their coverage were equal. Retention is receipt-based, including late revisions.
 
+## Public model demand
+
+`coordinator/api/inference/model_demand_observation.go` (`markPublicModelDemand`) marks new
+requests at `Admission.Run`, after account gates and body preparation.
+The marker stores the requested public model and a hashed consumer identity;
+it excludes exclusive self-route, owner-preferred and machine-restricted
+traffic. Historical records have no marker and are never backfilled by
+inference. Early model-shedding rejections and other exits before admission
+are outside this cohort. Admin-key traffic is excluded. Unlabelled authenticated load tests are included.
+
+`PublicDemandOutcome` (`coordinator/internal/observation/outcomes/public_demand.go`) assigns one closed outcome per observation. Completed
+requests use the ledger's completion contract; explicit capacity reasons,
+including `queue_full`, provider-budget refusal at preflight (`prompt_too_long`),
+dispatch-time `unservable_token_budget`, and a model that cannot fit any
+advertising provider (`model_too_large`, HTTP 503), map to
+`capacity_rejected`. The last case is a persistent supply shortfall, not a
+retryable busy-provider 429. `dispatch_exhausted` maps to `capacity_rejected`
+only when the terminal capacity probe produced HTTP 429 and the ledger records
+`CoordinatorExhausted`; the same raw reason with a provider fault does not.
+Predictive TTFT refusals map to `latency_rejected`. First-content/queue
+timeouts, including expiry of the absolute first-content clock while queued
+(`queue_deadline`), map to `timed_out`. Failed/interrupted responses, client
+departures and unknown observations remain separate. Validation,
+balance and model-resolution failures are excluded, as is a preflight
+`context_exceeded` refusal: the prompt cannot fit the model's context window.
+Unknown 429 reasons stay unknown. HTTP 429 is counted separately and overlaps
+outcomes.
+
+`coordinator/store/postgres/request_outcomes.go` (`RecordRequestOutcomes`)
+projects the winning revision into `model_demand_requests` in the same
+transaction. Its trigger `model_demand_rollup` (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`)
+applies old/new deltas to `model_demand_hourly`; duplicate snapshots, late
+terminals and stale writes cannot create additional requests. Sticky evidence
+conflicts become unknown. The compact projection keeps revisions for 31 days,
+even when the detailed ledger expires, and prevents an old replay from
+regressing a terminal. Hourly counters avoid scanning a month of individual
+requests for every public read. Collection epoch metadata survives restarts.
+
+`PruneModelDemand` in `coordinator/store/postgres/model_demand.go` removes expired
+compact projections and whole expired aggregate hours in separate bounded
+transactions. Each delete is limited by the requested batch size (the shared
+`defaultTelemetryPruneBatch` applies when non-positive), with a two-second lock
+timeout. An error or cancellation stops the sweep without rolling back earlier
+committed batches. The partially expired cutoff hour remains intact.
+
+Both backends compare replays against the retained compact observation, not
+only the detailed ledger. Conflicting outcomes or HTTP statuses at the same
+revision, and receipt/model/consumer identity changes at any revision, set a
+sticky conflict and publish `unknown`. The original receipt cohort and scope
+remain fixed; later revisions cannot erase the conflict. This remains true
+after diagnostic-ledger expiry (`projectModelDemandSQL` and
+`projectModelDemandLocked`).
+
+`coordinator/store/postgres/model_demand_series.go` (`readModelDemandSeries`)
+applies the privacy floor to each UTC clock hour for each model before any
+public aggregation. An hour contributes only when its non-excluded observations
+include at least `ModelDemandMinRequests` requests from
+`ModelDemandMinConsumers` distinct consumer accounts. Models with no qualifying
+hours are omitted.
+
+`ModelDemandBucketSize` selects hourly, six-hourly or daily display intervals for
+the 24-hour, 7-day and 30-day windows. Every interval and model summary sums only
+the same qualifying hourly cohorts. A wider interval may include only some of
+its constituent hours; it never makes a suppressed hour publishable. Summary
+counts equal the fieldwise sum of non-null interval counts, including `http_429`.
+No independent full-window totals or hidden residuals are returned, so combining
+summaries and differently sized intervals does not restore suppressed hours.
+Intervals with no qualifying hours have `counts: null`, never measured zeros.
+The chart, exact interval table and CSV export all use these published counts.
+
+`coordinator/store/postgres/model_demand.go` (`ModelDemand`) reads aggregates in
+a repeatable-read, read-only transaction with an 8-second statement timeout
+and 1-second lock timeout. `coordinator/api/` (`HandleModelDemand`)
+coalesces reads per range and caches successful responses for up to five
+minutes. Failures return 503 rather than an empty successful result.
+`ModelDemandMinRequests` and `ModelDemandMinConsumers` suppress sparse cohorts;
+fixed hourly boundaries with at least one hour of delay reduce fine-grained
+activity exposure. No raw identities, suppressed counts or per-request timing
+are public. These thresholds do not establish differential privacy.
+
+The public UI labels counts and percentages as published hourly observations,
+not complete window totals or a network-wide success rate. It shows partial
+history when collection began inside the window and never interprets absent
+records as zero demand or successes. Projection and rollup writes share the
+best-effort sink's loss risk; missing observations are not estimated. Coverage
+is `published_hourly_cohorts`, even when no current-process drops are visible.
+Token demand remains omitted until measured and estimated counts can be
+reconciled. See [the API contract](../reference/api-contracts.md#model-demand-response).
+
 ## Code map
 
 | Concern | Source |
 |---|---|
-| Observation, lifecycle and mapping | `coordinator/api/request_outcome.go` |
-| Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
-| Bounded persistence and health | `coordinator/api/request_outcome_sink.go`, `coordinator/api/request_outcome_admin.go` |
-| Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres_request_outcomes.go`, `coordinator/store/memory_request_outcomes.go` |
-| Live isolated endpoint regressions | `coordinator/api/request_outcome_integration_test.go`, `coordinator/api/request_outcome_test.go`, `coordinator/api/deadline_unreachable_integration_test.go` |
-| Memory/Postgres parity and retention | `coordinator/store/request_outcomes_test.go` |
+| Observation, lifecycle and mapping | `coordinator/api/observation/request_outcome.go` |
+| Content and write evidence | `coordinator/api/observation/request_outcome_egress.go`, `coordinator/api/inference/sender_encryption.go` |
+| Bounded persistence and health | `coordinator/internal/observation/outcomes/request_outcome_sink.go`, `coordinator/api/observation/request_outcome_admin.go` |
+| Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |
+| Live isolated endpoint regressions | `coordinator/tests/api/inference/contracts/request_outcome_integration_test.go` (`TestRequestOutcomesAllEndpointsWithoutProfiler`), `coordinator/tests/api/inference/contracts/deadline_unreachable_integration_test.go` (`TestProductionConfigStreamingDeadlineExhaustionRetainsHTTP429`) |
+| Private inference outcome regressions | `coordinator/tests/api/observation/request_outcome_test.go` (`TestRequestOutcomeQueueAndMissingTerminal`), `coordinator/tests/api/inference/request_outcome_integration_test.go` (`TestRequestOutcomesProviderErrorAfterContentAllEndpoints`), `coordinator/tests/api/inference/deadline_unreachable_integration_test.go` (`TestGenericDeadlineExhaustionReturnsSingle429`) |
+| Memory/Postgres parity and retention | `coordinator/tests/store/contracts/request_outcomes_test.go` (`TestRequestOutcomeTerminalStoreContract`, `TestRequestOutcomeRetention`) |
 
 ## Related
 
 - [Existing attempt outcomes and protected counters](request-outcome-observability.md)
 - [Heavy system profiler](system-profiler.md)
 - [Storage and migrations](storage.md)
-- [Tracking issue #845](https://github.com/Layr-Labs/d-inference/issues/845): aggregation/dashboard work remains separate and incomplete.
+- [Tracking issue #845](https://github.com/Layr-Labs/d-inference/issues/845): broader traffic-wide coverage reconciliation remains separate from the recorded-request dashboard.

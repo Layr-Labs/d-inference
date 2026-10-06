@@ -1,10 +1,8 @@
-/// Privacy-disabled compatibility facade for the retired telemetry disk queue.
+/// Purger for the retired telemetry disk queue.
 ///
 /// Older provider builds wrote free-form events to
-/// `~/.darkbloom/telemetry-queue.jsonl`. New builds retain the source API only
-/// so crash/watchdog call sites cannot revive the sink during a mixed-version
-/// rollout. Every push is dropped, every drain is empty, and purge removes only
-/// the two exact legacy queue artifacts.
+/// `~/.darkbloom/telemetry-queue.jsonl`. This type only removes the two exact
+/// legacy queue artifacts; nothing writes the queue any more.
 
 import Foundation
 
@@ -22,17 +20,6 @@ public final class TelemetryOverflowQueue: @unchecked Sendable {
                 .appendingPathComponent(".darkbloom")
                 .appendingPathComponent("telemetry-queue.jsonl")
         }
-    }
-
-    /// Deliberately drops every event before encoding or I/O.
-    public func push(_ event: TelemetryEvent) {
-        _ = event
-    }
-
-    /// The retired queue can never produce an event.
-    public func drain(limit: Int) -> [TelemetryEvent] {
-        _ = limit
-        return []
     }
 
     /// Removes data persisted by an older build without creating a directory,

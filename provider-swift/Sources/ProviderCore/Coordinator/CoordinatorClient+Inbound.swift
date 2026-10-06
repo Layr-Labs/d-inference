@@ -15,6 +15,20 @@ extension CoordinatorClient {
         sendTextFrame(json, on: connection, identifier: identifier)
     }
 
+    private func rejectInvalidInferenceRequest(requestId: String, profile: RequestProfileBuilder,
+        serviceReservationID: String?) {
+        let response = encodeInferenceError(
+            requestId: requestId,
+            failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+            profile: profile.wireObject())
+        sendOnCurrentConnection(response, identifier: "inference_error")
+        // This frame never enters the provider request pipeline, so no later
+        // bridge submission can acquire service for its attempt.
+        if let id = ServiceReservationLifetime.normalizedID(serviceReservationID) {
+            outboundRouter.yield(.serviceReservationReleased(serviceReservationID: id))
+        }
+    }
+
     internal func handleIncomingFrame(
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
@@ -29,6 +43,12 @@ extension CoordinatorClient {
         }
 
         switch parsed {
+        case .modelsReplaceAck(let ack):
+            completeModelReplacement(ack)
+        case .modelsReplaceResumed(let ack):
+            completeModelReplacementReadiness(ack)
+        case .drainAck(let id):
+            if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):
             let requestId = request.requestId
             // The receive callback anchored this before executor scheduling,
@@ -49,12 +69,8 @@ extension CoordinatorClient {
 
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile.wireObject()
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile,
+                    serviceReservationID: request.serviceReservationID)
                 return
             }
 
@@ -64,23 +80,15 @@ extension CoordinatorClient {
             // ephemeral pubkey (32 bytes).
             guard let cipherBytes = Data(base64Encoded: encrypted.ciphertext) else {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile.wireObject()
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile,
+                    serviceReservationID: request.serviceReservationID)
                 return
             }
             let senderKeyBytes = Data(base64Encoded: encrypted.ephemeralPublicKey)
             if senderKeyBytes == nil || senderKeyBytes?.count != 32 {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile.wireObject()
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile,
+                    serviceReservationID: request.serviceReservationID)
                 return
             }
 
@@ -92,10 +100,13 @@ extension CoordinatorClient {
                 cacheScope: request.cacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
                 cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
+                cacheRepeatedPrefixTokens: request.cacheRepeatedPrefixTokens,
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,
-                profile: profile
+                profile: profile,
+                serviceReservationID: request.serviceReservationID,
+                promptWork: request.promptWork
             ))
 
         case .cancel(let cancel):
@@ -162,6 +173,11 @@ extension CoordinatorClient {
                 eventContinuation?.yield(.runtimeOutdated(mismatches: status.mismatches))
             }
 
+        case .modelAutopilotControl(let control):
+            eventContinuation?.yield(.modelAutopilotControl(control))
+        case .modelAutopilot(let command):
+            eventContinuation?.yield(.modelAutopilot(command))
+
         case .loadModel(let load):
             logger.info("Received coordinator-driven preload for: \(load.modelId)")
             eventContinuation?.yield(.loadModel(modelId: load.modelId))
@@ -180,11 +196,13 @@ extension CoordinatorClient {
             eventContinuation?.yield(.desiredModels(entries: dm.models))
 
         case .trustStatus(let ts):
-            logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")
+            // ProviderLoop logs decision changes; periodic lease renewals
+            // still reach the state file without duplicate log messages.
             eventContinuation?.yield(.trustStatus(
                 trustLevel: ts.trustLevel,
                 status: ts.status,
-                reason: ts.reason
+                reason: ts.reason,
+                authorization: ts.authorization
             ))
         }
     }

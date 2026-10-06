@@ -49,6 +49,9 @@ type ApplicationEvidence struct {
 // via persistProvider() after attestation verification completes.
 func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.mu.Lock()
+	if p.Attested != attested || p.TrustLevel != trust {
+		p.warmWork.Reset()
+	}
 	p.Attested = attested
 	p.TrustLevel = trust
 	if !attested || trust != TrustHardware {
@@ -167,6 +170,13 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 		}
 		return false
 	}
+	// A scheduled enforcement deadline can remove eligibility between two
+	// heartbeats without any policy setter running. The first valid proof after
+	// that gap must not replay its work; a continuously eligible renewal keeps
+	// the baseline. Validation above leaves failed grants unchanged.
+	if r != nil && !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, time.Now()) {
+		p.warmWork.Reset()
+	}
 	p.applicationEvidenceGeneration++
 	evidence.EvidenceGeneration = p.applicationEvidenceGeneration
 	p.ApplicationEvidence = evidence
@@ -188,6 +198,9 @@ func (p *Provider) ApplicationEvidenceSnapshot() (ApplicationEvidence, bool) {
 
 func (p *Provider) ClearApplicationEvidence() {
 	p.mu.Lock()
+	if p.ApplicationEvidence.EvidenceGeneration != 0 || len(p.RuntimeCapabilities) != 0 {
+		p.warmWork.Reset()
+	}
 	p.ApplicationEvidence = ApplicationEvidence{}
 	p.RuntimeCapabilities = nil
 	p.mu.Unlock()
@@ -341,6 +354,9 @@ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 // first complete a live encrypted process-key possession challenge.
 func (p *Provider) SetCodeAttested(v bool) {
 	p.mu.Lock()
+	if !v && (p.CodeAttested || p.FreshCodeAttested || len(p.RuntimeCapabilities) != 0) {
+		p.warmWork.Reset()
+	}
 	p.CodeAttested = v
 	if !v {
 		p.FreshCodeAttested = false

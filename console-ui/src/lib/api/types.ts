@@ -61,6 +61,9 @@ export interface UsageEntry {
   request_id: string;
   model: string;
   prompt_tokens: number;
+  // Subset of prompt_tokens served from the provider's prefix cache and billed
+  // at the cache-read rate. Omitted by the coordinator when zero.
+  cached_tokens?: number;
   completion_tokens: number;
   cost_micro_usd: number;
   timestamp: string;
@@ -69,7 +72,7 @@ export interface UsageEntry {
 /**
  * A content part in the OpenAI/OpenRouter multimodal format. Either a text
  * part or an image part. The image `url` is a base64 `data:` URI — our
- * provider is end-to-end-encrypted and rejects remote http(s)/file URLs
+ * provider receives a sealed request and rejects remote http(s)/file URLs
  * (the image must ride inside the encrypted prompt). Mirrors the provider's
  * `OpenAIContentPart`.
  */
@@ -86,8 +89,10 @@ export interface ChatMessage {
 }
 
 export interface TrustMetadata {
+  verification?: import("../verification").Verification;
+  encrypted?: boolean;
   attested: boolean;
-  trustLevel: "none" | "hardware";
+  trustLevel: "none" | "hardware" | "self_signed";
   secureEnclave: boolean;
   mdaVerified: boolean;
   providerChip: string;
@@ -114,10 +119,15 @@ export interface StreamCallbacks {
 
 export interface PriceEntry {
   model: string;
+  // Micro-USD per 1M tokens. cache_read_price is the effective rate for prompt
+  // tokens served from a provider's prefix cache (OpenRouter input_cache_read);
+  // optional so older coordinators without it still parse.
   input_price: number;
   output_price: number;
+  cache_read_price?: number;
   input_usd: string;
   output_usd: string;
+  cache_read_usd?: string;
 }
 
 export interface PricingResponse {
@@ -146,6 +156,7 @@ export interface RecipientAmountLimits {
 }
 
 export interface StripeStatus {
+  migration_required?: boolean;
   recipient_limits?: RecipientAmountLimits;
   account_id?: string;
   payout_rail?: "connect" | "global";

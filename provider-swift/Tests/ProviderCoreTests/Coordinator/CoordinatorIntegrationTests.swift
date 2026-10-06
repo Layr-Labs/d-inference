@@ -12,6 +12,7 @@
 ///
 /// They run locally with `swift test --filter CoordinatorIntegrationTests`.
 
+import CryptoKit
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -92,8 +93,9 @@ struct CoordinatorIntegrationTests {
 
     // MARK: 2. End-to-end encryption + cancellation
 
-    @Test("inference_request decrypts, response chunks encrypt, cancel triggers status 499")
-    func inferenceRequestE2EEncryptionAndCancellation() async throws {
+    @Test("inference_request decrypts, preserves reservation, and cancels with status 499",
+        arguments: [Optional("6e1f61d1-e22c-4d24-a3a7-d347772a48cb"), nil])
+    func inferenceRequestE2EEncryptionAndCancellation(serviceReservationID: String?) async throws {
         let mock = MockCoordinator()
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
@@ -130,7 +132,8 @@ struct CoordinatorIntegrationTests {
             chatRequestJSON: chatJSON,
             firstContentBudgetMs: 60_000,
             cacheReceiptNonce: "nonce-int-1",
-            cacheScope: "authenticated-account-route"
+            cacheScope: "authenticated-account-route",
+            serviceReservationID: serviceReservationID
         )
 
         // Run a tiny "fake provider loop":
@@ -147,15 +150,27 @@ struct CoordinatorIntegrationTests {
         let chunksToSend = cannedChunks
 
         let testTask: Task<Void, Never> = Task { [stateBox] in
+            let budget = WholeMacServiceBudget()
+            var reservationLifetime: ServiceReservationLifetime?
+            defer {
+                reservationLifetime?.finishPipeline()
+                budget.release(ownerID: requestId)
+            }
             for await event in events {
                 switch event {
                 case .inferenceRequest(
-                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _,
-                    let firstContentDeadline, _, _
+                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
+                    let firstContentDeadline, _, _, let reservationID, _
                 ):
                     #expect(rid == requestId)
                     #expect(nonce == "nonce-int-1")
                     #expect(scope == "authenticated-account-route")
+                    #expect(reservationID == serviceReservationID)
+                    reservationLifetime = ServiceReservationLifetime(id: reservationID) { id in
+                        send.send(.serviceReservationReleased(serviceReservationID: id))
+                    }
+                    #expect(budget.acquire(ownerID: rid, concurrency: 24,
+                        serviceReservationID: reservationID, serviceReservation: reservationLifetime))
                     guard let firstContentDeadline else {
                         Issue.record("missing first-content deadline")
                         continue
@@ -218,6 +233,7 @@ struct CoordinatorIntegrationTests {
         let preSnap = try #require(preCancel)
         #expect(preSnap.inferenceAccepted.first?.requestId == requestId)
         #expect(preSnap.inferenceChunks.count >= cannedChunks.count)
+        #expect(preSnap.serviceReservationReleases.isEmpty)
 
         // The chunks were encrypted to the consumer's ephemeral key (the one
         // the mock generated and the provider extracted on decrypt). We can't
@@ -235,13 +251,15 @@ struct CoordinatorIntegrationTests {
 
         try await mock.pushCancel(requestId: requestId)
 
+        let expectedReleases = serviceReservationID.map { [$0] } ?? []
         let post = try await mock.waitForSnapshot(timeout: .seconds(5)) {
-            !$0.inferenceErrors.isEmpty
+            !$0.inferenceErrors.isEmpty && $0.serviceReservationReleases == expectedReleases
         }
         let postSnap = try #require(post)
         let err = try #require(postSnap.inferenceErrors.first)
         #expect(err.statusCode == 499)
         #expect(err.requestId == requestId)
+        #expect(postSnap.serviceReservationReleases == expectedReleases)
         _ = await testTask.value
         #expect(stateBox.isCanceled())
     }
@@ -440,50 +458,44 @@ struct CoordinatorIntegrationTests {
 
     // MARK: 4. EnrollmentService round-trip
 
-    @Test("EnrollmentService either fetches the mocked profile or short-circuits as already-enrolled")
+    @Test("EnrollmentService authenticates and fetches the profile through HTTP")
     func enrollmentRoundTripAgainstMockCoordinator() async throws {
         let mockBytes = Data("MOCK_PROFILE_<integration>".utf8)
         let mock = MockCoordinator(mobileConfig: mockBytes)
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        let service = EnrollmentService()
-        let result: EnrollmentResult
-        do {
-            result = try await service.enroll(
-                coordinatorURL: baseURL.absoluteString,
-                openSystemSettings: false
-            )
-        } catch EnrollmentError.managedByOtherMDM {
-            // Host machine is managed by a corporate MDM (e.g. Kandji on dev
-            // workstations): macOS allows one MDM per device, so enroll now
-            // correctly refuses before touching the network. The mock's wire
-            // shape is still covered by the alreadyEnrolled branch on other
-            // hosts; nothing more to verify here.
+        let signer = EnrollmentIntegrationSigner(key: P256.Signing.PrivateKey())
+        let token = "integration-linked-account"
+        let service = EnrollmentService(
+            checkEnrollment: { _ in .notEnrolled },
+            loadToken: { token }, loadSigner: { signer })
+        let result = try await service.enroll(
+            coordinatorURL: baseURL.absoluteString,
+            openSystemSettings: false,
+            macOSMajorVersion: 26
+        )
+
+        guard case .mdm(let profilePath, let alreadyEnrolled) = result else {
+            Issue.record("Legacy setup unexpectedly selected App Attest")
             return
         }
-
-        if result.alreadyEnrolled {
-            // Production short-circuits when an MDM profile is already
-            // installed (true on most darkbloom dev workstations and CI
-            // runners with the profile pre-loaded). The function never hit
-            // our mock, so verify the mock's `/v1/enroll` independently to
-            // ensure the wire shape matches what the production path would
-            // consume on a fresh machine.
-            let endpoint = baseURL.appendingPathComponent("v1/enroll")
-            var post = URLRequest(url: endpoint)
-            post.httpMethod = "POST"
-            post.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            post.httpBody = Data("{}".utf8)
-            let (data, _) = try await URLSession.shared.data(for: post)
-            #expect(data == mockBytes)
-        } else {
-            // Fresh machine: profile written to disk should match the mock.
-            let written = try Data(contentsOf: result.profilePath)
-            #expect(written == mockBytes)
-            #expect(result.profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
-            try? FileManager.default.removeItem(at: result.profilePath)
-        }
+        defer { try? FileManager.default.removeItem(at: profilePath) }
+        #expect(!alreadyEnrolled)
+        #expect(try Data(contentsOf: profilePath) == mockBytes)
+        #expect(profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
+        let snapshot = mock.snapshot()
+        #expect(snapshot.enrollmentAuthorizations == ["Bearer \(token)"])
+        try #require(snapshot.enrollmentPosts.count == 1)
+        let proof = try #require(JSONSerialization.jsonObject(with: snapshot.enrollmentPosts[0]) as? [String: Any])
+        #expect(proof["se_public_key"] as? String == signer.publicKeyBase64)
+        let timestamp = try #require(proof["timestamp"] as? Int64)
+        let signature = try #require(proof["signature"] as? String)
+        let signatureData = try #require(Data(base64Encoded: signature))
+        let tokenHash = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+        let transcript = Data("darkbloom-mdm-enroll-v1\n\(tokenHash)\n\(signer.publicKeyBase64)\n\(timestamp)".utf8)
+        #expect(signer.key.publicKey.isValidSignature(
+            try P256.Signing.ECDSASignature(derRepresentation: signatureData), for: transcript))
     }
 
     // MARK: 5. ModelCatalogClient
@@ -545,7 +557,7 @@ struct CoordinatorIntegrationTests {
 
         await TelemetryClient.shared.shutdown()
         try await Task.sleep(for: .milliseconds(100))
-        #expect(mock.snapshot().telemetryBatches.isEmpty)
+        #expect(mock.snapshot().telemetryPosts.isEmpty)
     }
 
     // MARK: 7. UpdateBanner -- silent on same version
@@ -591,10 +603,16 @@ struct CoordinatorIntegrationTests {
     }
 }
 
+private struct EnrollmentIntegrationSigner: AttestationSigner {
+    let key: P256.Signing.PrivateKey
+    var publicKeyBase64: String { key.publicKey.rawRepresentation.base64EncodedString() }
+    func sign(_ data: Data) throws -> Data { try key.signature(for: data).derRepresentation }
+}
+
 // MARK: - Helpers
 
 /// Build a CoordinatorClient configured for tests against a mock URL. Uses a
-/// fixed hardware/model profile and skips registering wallet, attestation, etc.
+/// fixed hardware/model profile and skips registering attestation, etc.
 private func makeClient(
     url: String,
     publicKey: String,
@@ -610,8 +628,6 @@ private func makeClient(
         privacyCapabilities: PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: true,
             antiDebugEnabled: false,
             coreDumpsDisabled: false,

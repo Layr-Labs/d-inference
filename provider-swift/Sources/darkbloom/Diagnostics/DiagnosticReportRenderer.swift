@@ -5,15 +5,39 @@ import ProviderCore
 /// printed by `darkbloom doctor`. Pure string production so it can be
 /// snapshot-tested.
 enum DiagnosticReportRenderer {
-    static func render(_ diagnostics: [Diagnostic]) -> String {
+    static func render(
+        _ diagnostics: [Diagnostic], color: Bool = false,
+        additionalLevels: [DiagnosticLevel] = []
+    ) -> String {
         var out: [String] = []
+        let levels = diagnostics.map(\.level) + additionalLevels
+        let failures = levels.filter { $0 == .fail }.count
+        let warnings = levels.filter { $0 == .warn }.count
+        let summary: String
+        let summaryLevel: DiagnosticLevel
+        if failures > 0 {
+            summary = "READINESS: \(failures) blocking failure(s), \(warnings) warning(s)"
+            summaryLevel = .fail
+        } else if warnings > 0 {
+            summary = "READINESS: \(warnings) warning(s)"
+            summaryLevel = .warn
+        } else {
+            summary = "READINESS: no failures or warnings"
+            summaryLevel = .pass
+        }
+        out.append(DoctorTerminalStyle.verdict(summary, level: summaryLevel, color: color))
+        if let action = diagnostics.first(where: { $0.level == .fail && $0.fix != nil })?.fix {
+            out.append("  First action: \(action)")
+        } else if failures > 0 {
+            out.append("  First action: review the failing detailed check below.")
+        }
         for section in DiagnosticSection.allCases {
             let items = diagnostics.filter { $0.section == section }
             guard !items.isEmpty else { continue }
             out.append("")
-            out.append(section.title)
+            out.append(DoctorTerminalStyle.heading(section.title, color: color))
             for d in items {
-                out.append("  \(d.level.marker) \(d.name) — \(d.message)")
+                out.append("  \(DoctorTerminalStyle.marker(d.level, color: color)) \(d.name) — \(d.message)")
                 if let fix = d.fix, !fix.isEmpty {
                     out.append("         ↳ fix: \(fix)")
                 }
@@ -24,8 +48,6 @@ enum DiagnosticReportRenderer {
 
     /// Overall verdict: any fail → fail; with `strict`, any warn also → fail.
     static func hasFailure(_ diagnostics: [Diagnostic], strict: Bool) -> Bool {
-        if diagnostics.contains(where: { $0.level == .fail }) { return true }
-        if strict && diagnostics.contains(where: { $0.level == .warn }) { return true }
-        return false
+        diagnostics.contains { $0.level.isFailure(strict: strict) }
     }
 }

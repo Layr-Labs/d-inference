@@ -12,6 +12,586 @@
 - Keep the known longer fixed-L4/B8 MTP parity failure and separate reasoning/tool
   compatibility gaps visible; these ports do not establish full release readiness.
 
+## Unreleased — coordinator schema migrations
+
+- Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.
+- Fail startup without recording the baseline when a required schema statement fails, so a later startup retries missing columns. Preserve current consumer-settlement, legacy MDM cohort, small-model interest and Stripe refund-index schema changes as subsequent versions.
+- Check in the schema as `coordinator/store/postgres/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
+
+## Unreleased — Stripe refund clock skew
+
+- Refund a rejected Stripe withdrawal when the coordinator clock is ahead of the PostgreSQL clock. Before, the refund check missed the withdrawal debit, refused the refund, and the recovery loop and `payout-audit --apply-refund` retried without success. The check still credits each withdrawal at most once and still refuses a ledger that does not show the exact debit.
+
+## Unreleased - nightly Linear workflow
+
+- Package one-time Codex setup and a nightly playbook that reconciles work from Codex, Claude Code, and Pi with each teammate's Linear. Reuse existing issues and route unclassified deliverables to Others.
+- Fetch shared skills from the configured repo branch on every trigger while keeping personal settings and recovery state local. Include offline updater tests; teammate installation and live automation remain separate rollout steps.
+
+## Unreleased — stale cache allowlist entries
+
+- Report cache-routing allowlist entries that a model revision has left behind. Publishing new weights or a new template under the same model ID changes the artifact tuple, so the model silently lost cache routing and its cache hits fell to zero until an operator appended the new tuple. `GET /v1/cache/status` now counts such models as `artifact_allowlist.stale_models`, with matching Prometheus and Datadog gauges, and the coordinator log names each live tuple once. Routing behaviour and the allowlist's exact-match rule are unchanged.
+
+## Unreleased - Mac CI cost controls
+
+- Cancel superseded pull-request CI and integration runs without cancelling default-branch pushes. Bound provider unit-test stalls with the existing diagnostic watchdog, and reuse compatible integration build caches while retaining every test gate and parallel job.
+
+## Unreleased - provider test coverage
+
+- Report Swift product, CLI and benchmark coverage separately in CI, merging isolated test-process profiles without replacing test failures with coverage results.
+- Expand provider and standalone lifecycle, tiny-model loading, CLI/service/fan, SSD-cache and benchmark harness regressions with temporary state and scripted host boundaries. Keep real tiny-model execution distinct from full-checkpoint quality and performance qualification.
+
+## Unreleased - provider email campaigns
+
+- Add the `provider-emails` operator command to preview provider software/macOS update audiences, sync owner groups to Resend, render and test notices, and create unsent broadcasts for review. Preserve unsubscribe preferences and remove owners from managed groups when their reported machines meet the target.
+- Serialize campaign reply-to addresses in the Resend broadcast API's array form while keeping the campaign configuration's single-address input.
+
+## Unreleased - Autopilot inventory reporting
+
+- Add an admin-only connected Autopilot inventory report with exact per-model last-reported approval counts, deduplicated approval totals and a models-per-provider distribution. Distinguish unpaused, paused and stale connections without exposing provider identities or claiming fresh disk verification, residency or routing eligibility. The read does not depend on the operation ledger.
+
+## Unreleased - Open Sales Program
+
+- Add an Open Sales Program page to register and share a code, apply a referrer, and track referred consumers and earned rewards. Preserve referral links through sign-in and invite redemption.
+- Reward referrers with 5% of their referred consumers' collected token spend as withdrawable earnings funded by Darkbloom. Consumer prices, provider earnings, and platform-fee credits remain unchanged.
+- Settle consumer charges and referral credits atomically per request, excluding free or uncollected usage and preventing duplicate rewards. Keep attribution immutable and prospective; retire the old platform-fee-share setting.
+- Include only the paid portion of token-promotion requests in referral earnings, atomically with promotion settlement.
+- Exclude execution on the consumer's own machines, explicit self-routing, and selected-machine routing from referral rewards and eligible-spend totals, including paid owner-preferred fallbacks. The same exclusions apply to the paid portion of promotion requests. Request billing, provider payouts, and promotion grant use are unchanged.
+- Require Privy sessions for referral mutations and retry uncertain settlement without releasing reserved service funds or repeating live-request accounting. Reconcile pending settlements during graceful shutdown.
+
+## Unreleased — routing scan cost
+
+- Compact retained routing evidence, reuse bounded private reservation storage, borrow forecast inputs, project alternate-selection values once, and aggregate pending work once per provider snapshot. Public scan and quote lifetimes, selection policy, admission, retirement and billing behavior are preserved.
+
+- Reduce the per-request provider scan cost after the coordinator reorganization. Autopilot eligibility reads the clock only for a provider holding a matching control grant, candidate ranking reads the projected pool in place, and candidate storage fills one allocation size class. Routing outcomes are unchanged.
+
+## Unreleased — canceled PostgreSQL debits
+
+- Keep a PostgreSQL debit uncommitted until its statement succeeds, preventing a timed-out row-lock wait from later becoming a charge. Lost commit acknowledgements remain uncertain and must not be blindly retried.
+
+## Unreleased — shared-host memory admission
+
+- Add opt-in `DARKBLOOM_MEMORY_AVAILABILITY=free-only` to exclude inactive pages from shared-host admission and KV headroom. Sampling failures fail closed in this mode. Preserve the default reclaimable-page policy and document what the memory reserve measures.
+
+## Unreleased - verification concurrency
+
+- Keep a reconnected provider's verification job eligible after its old worker releases the claim. A delayed challenge callback no longer restores the stale running snapshot and postpones verification until claim expiry.
+- Read one synchronized trust-level snapshot for registration metrics and telemetry while verification updates run concurrently.
+
+## Unreleased — provider service replacement
+
+- Wait for launchd to confirm removal of the previous provider service before installing or starting its replacement. Preserve stop/uninstall intent and report failed or timed-out removal without starting another service.
+- Treat bootstrap operation-in-progress errors as failures instead of reporting a successful start.
+
+## Unreleased — leaderboard availability
+
+- Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.
+- Share one top-200 ranking fill across caller limits and equivalent window aliases. Coalesce concurrent misses, pause failed fills for 10 seconds, and include the remaining retry delay in leaderboard 503 responses.
+
+## Unreleased — provider 0.9.17
+
+- Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
+- Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.
+- Preserve normal selected-model successor updates independently of Autopilot inventory, and show the serving selection in My Macs instead of observational candidates.
+
+## Unreleased - frozen legacy MDM authorization
+
+- Freeze a durable authenticated account/SE-key/serial cohort of already successfully MDM-verified devices on the first upgraded coordinator startup after revocation replay. Restarts preserve even an empty cohort; new accounts/devices and new associations cannot expand it. Gate identity recovery, scheduling, live/late MDM results and cached trust reuse. No grace period has been chosen and no expiry is implemented.
+- Require a linked provider Bearer token and fresh signed SE-key proof for `/v1/enroll`; reenrollment is limited to the existing key under its frozen account. New identities require qualified App Attest, with no unsupported-OS fallback. Generic copied profiles can still enroll directly in MicroMDM; the restriction guarantees coordinator MDM authorization, not prevention of that direct enrollment.
+- Require App Attest for noncohort owner self/prefer routing as well as public serving. Validate enabled production App Attest serving with full rollout before the startup freeze; invalid configuration fails closed without freezing membership.
+- Require macOS 27 or later and current qualified App Attest authorization for base rewards for every provider, old or new, including machines with both MDM and App Attest evidence. The OS claim must belong to that same authorization; missing, malformed or older versions fail closed. Legacy MDM-only machines remain eligible for grandfathered serving but not base rewards. Existing economics guards and inference/work earnings remain unchanged, with no retroactive reward clawback.
+- Check authenticated frozen account/key eligibility in `darkbloom enroll` even when a legacy profile is already installed; a successful check preserves that profile without reinstallation. Clarify that new providers need macOS 27 or later and current qualified App Attest, not an OS-only grant; consumers have no macOS 27 requirement.
+- Update the enrollment HTTP integration fixture to verify a linked test token and canonical P-256 proof instead of expecting anonymous profile downloads.
+- Drain eligible account-scoped historical inventory in 100-row batches before the first cohort freeze, within the existing 30-second startup deadline; errors or cancellation leave no new freeze marker. Preserve existing evidence and alias rules, exclusion of insufficient history, and the inability of later aliases to widen a frozen cohort.
+- Keep the production cutover fail-closed while allowing explicit development and actual opted-in memory-store startup without freezing a cohort; deployment classification defaults to production and does not use telemetry tags.
+- Retry transient provider-token store failures instead of misclassifying credentials: WebSocket registration closes with retryable 1013 and enrollment returns 503. Invalid or revoked credentials remain unauthorized.
+- Stop anonymous installer profile requests; defer eligible legacy reenrollment until after installation through account login and the signed CLI eligibility check. Existing management is preserved, and new-provider macOS 27+/qualified App Attest guidance remains explicit.
+
+## Unreleased - native queued cancellation retirement
+
+- Fix a pre-existing SDK race exposed during prefill-deadline validation: concurrent cancellation could remove a queued native request without retiring it, leaving its reservation charged. Use one cancellation decision for retirement and queue removal; retain exactly-once completion and reservation release after retirement.
+
+## Unreleased — provider 0.9.16
+
+- Offer the Autopilot yes/no choice on every normal interactive start, using the saved choice as default and retaining the normal startup model and memory selector, including explicit `--model` selection.
+
+- Fix enrolled providers appearing stopped, rejecting graceful stop/restart, and accumulating false failed-start rollbacks because their Autopilot snapshot could not be decoded. Preserve heartbeat readability for a watchdog still running 0.9.15 during upgrade.
+- Name each model during cached-inventory verification and report a busy model immediately instead of silently waiting behind a background revision update. Saved enrollment and the running provider remain intact when ordinary startup verification fails.
+
+## Unreleased — status page placeholder
+
+- Add a standalone static status-page placeholder: "The status page will return in the future." Publishing it requires a separate hosting change; the existing Instatus content is preserved.
+
+## Unreleased - provider availability wizard
+
+- Add `darkbloom start --schedule` for optional interactive background setup and `darkbloom schedule` for editing saved settings without starting or stopping the provider. Support saved windows, overnight/weekend presets, custom add/edit/remove, inspection, disabling and custom config paths.
+- Offer preloading at window opening or on-demand loading using the existing startup-preload setting, preserving model selections and idle policy. Reject invalid enabled schedules before serving, merge overlapping/adjacent windows, honor local-calendar DST boundaries and keep full-week availability connected continuously.
+
+## Unreleased — budgeted advisory PR review
+
+- Give PR authors Sonnet feedback before selective Opus/Sol 6.1 depth, reuse unchanged analysis, and debounce follow-up pushes. Show clean results, coverage, cost and saved historical findings in the advisory comment.
+- Reserve shared spending before every provider request; cap normal/deep attempts, PR/day, repository/day and the ten-PR pilot. Preserve partial findings and unknown-cost reservations after failures. Paid scanning defaults to disabled; maintainers can preconfigure activation before merge after state-writer and funding verification.
+- Keep findings citable across large diff fragments and publish a compact history link when the full report exceeds comment capacity.
+
+- Add a manual activation preflight that verifies signed state writes and provider funding without paid model calls or changes to the spending ledger. Support a repository-scoped App writer with short-lived tokens; keep private funding details out of public preflight logs.
+## Unreleased — self-service bank payout migration
+
+- Add an explicit Global Payouts cutover for all supported bank destinations. Existing Connect users complete their own bank setup; history, earned balances and legacy account references are retained. US bank setup uses local transfers.
+- Separate legacy Connect credentials and connected-account webhook verification from Checkout. Current and legacy Checkout events settle atomically without duplicate deposits.
+- Recover verified rejected-transfer refunds atomically, require exact Stripe payout evidence during cutover, and check financial-account funding plus fees before new payout debits. Add a bounded audit tool and explicit, operator-verified historical refund repair.
+
+## Unreleased — Nemotron parser and artifact defaults
+
+- Absorb stray `</think>` markers in Nemotron Lightning content without changing other native-channel families or interpreting markers inside tool arguments.
+- Apply Nemotron's artifact-declared sampling defaults only to omitted request fields; explicit values still win. Admit the hybrid8 and rollback concrete build IDs without changing the catalog or activating either build.
+
+## Unreleased — Nemotron prompt fidelity
+
+- Preserve function-level `strict` for Nemotron tool prompts and align the pinned Nemotron template's scalar/JSON filters with Transformers. Other model families retain their existing rendering and tool normalization. This repairs prompt fidelity, not all reasoning-off tool-selection failures in Q4.
+- Keep numeric Nemotron values identical between provider rendering and exact-cache planning, including exponent formatting and the SDK's integral-number conversion. Apply non-Nemotron `strict` stripping to native media tool inputs as well as text; pinned metadata-only parity gates cover the reference and numeric edge cases in CI.
+- Advance prompt normalization to v8 and renderer identity to v4 across provider and coordinator, retaining normalization v7 policies. This invalidates prompt-contract/cache identities for all families; regenerate sidecar contracts and allowlists together before rollout. No model weights, sampling defaults, tool-choice policy, or inference kernels change.
+
+## Unreleased — MiMo SSD prefix-cache hits reuse the prefix
+
+- Fix: every native MiMo V2.6 SSD prefix-cache hit was discarded. The bridge stages a checkpoint under a placeholder engine request ID and mints the real ID just before submit, and the SDK's native import check compared engine IDs, so each staged checkpoint was refused (`unsupportedConsumer`) and the request prefilled its whole prompt again. The pinned mlx-swift-lm binds a stage to its submission receipt instead. On a 256 GiB M3 Ultra, a repeated 6K-token prompt now reaches its first token in 4.5 s instead of 13.1 s, and a 12K-token prompt in 4.6 s instead of 27.3 s, with byte-identical output (MTP off and auto).
+- Report `prompt_tokens_details.cached_tokens` from the standalone server only when the engine actually reused the prefix. A matched checkpoint whose adoption failed or was skipped previously still reported its matched tokens. Coordinator usage already came from the resolved lookup and is unchanged.
+
+## Unreleased - experimental model Autopilot
+
+- Add default-off experimental Autopilot enrollment at provider startup. Yes or `--autopilot` skips the picker, discovers/verifies all eligible already-downloaded active network models, and records shadow consent without activation or downloads. Exclude arbitrary local/off-catalog, retired, ineligible and unverified builds; empty inventory fails before restarting. Preserve all saved serving, preload, idle and other preferences.
+- Default coordinator Autopilot to observation only. It records hypothetical plans without residency reservations, fences or commands; explicit `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` enables a separately approved live rollout. Preserve the enable switch and runtime admin pause.
+- Add Autopilot status, pause/resume, pins and disable; session-bound live control, selected-model boundaries, request-shape planning, retained load timings and durable operation records. Active control preserves files, local work and donor capacity.
+- Keep approved cached inventory static across ordinary restarts. Explicit `--autopilot`, `autopilot enable` or `autopilot models` refreshes verified eligible cached models without picker/downloads; `--all` remains network-gated and enrollment with `--model` requires opt-out. A later live rollout chooses cached models to improve utilization, not guaranteed earnings.
+- Deduplicate unchanged shadow proposals as first-write decision records, not a per-tick time series; the current summary stays fresh even when an unchanged decision ages out of recent history. Distinct state/session/revision decisions remain retained; live command IDs are unchanged.
+- Reject coordinator unload victims outside the approved cached inventory while preserving guarded local superseded-model cleanup. Filter invalid UTF-8 ID bounds before verification, then validate the normalized verified inventory count before saving consent or draining; invalid inventory cannot stop the existing daemon or install a replacement.
+- Preserve an enrolled provider's pause during ordinary start, `enable` and inventory refresh; resumption requires explicit `resume`. Validate saved inventory all-or-nothing before persistence/drain, including transient verification failures; only explicit refresh may prune excluded builds.
+- Apply current full Autopilot settings at each new scheduled window. Disabling between windows restores ordinary saved model selection even if unchanged; other runtime inputs remain frozen.
+- Queue pending-operation uncertainty before removing a disconnected provider, persisting outside registry/provider locks. Connection loss never implies rollback or a confirmed terminal resident set.
+
+## Unreleased — console chat request budget
+
+- Refuse oversized chat requests locally with guidance to reduce images or conversation length. Check the full UTF-8 request and optional encrypted envelope before sending, retain the user's message and images, and apply the same check on retry. Existing per-file and image-count limits remain unchanged.
+
+## Unreleased — canceled queue waiters
+
+- Stop canceled waiters held by a scheduling pass from returning as queued demand and occupying slots needed by fresh requests. Drop completed entries during queue pop and stale cleanup while preserving live FIFO order, timeout notifications, and reservation cleanup.
+
+## Release candidate v0.9.15 — automatic MiMo calibration (not shipped)
+
+- Calibrate idle native MiMo engines after model loading and refresh stale phase evidence with uncached built-in prompts. Measure short and 4k text plus affordable batches within the existing concurrency cap; retain the production MTP and memory configuration.
+- Give customer requests priority across models: cancel calibration and wait for real native retirement before admission. Keep probe work out of served-request/token counters; publish actual phase measurements and optional peak-concurrency workload buckets through existing heartbeats.
+- Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.15`. Publication, signed-artifact qualification and coordinator rollout remain separate operations.
+
+## Unreleased — durable hardware interest
+
+- Save Earn-page notification interest against the authenticated account before showing confirmation. Both notification buttons preserve pending hardware through sign-in, expose cancellation and retry, and recover confirmed status from the server after reload.
+- Add per-account memory/Postgres upserts and a bounded admin-only export joined to current email. Hardware updates replace the account's previous selection; legacy anonymous browser markers no longer claim registration. No email delivery is added.
+
+## Unreleased — provider prefill evidence recovery
+
+- Let an idle native text provider renew expired isolated-prefill measurements through one short request under its original first-content deadline. Serialize the final idle check and native registration, then restore ordinary concurrency after prompt completion while retaining service and memory ownership until actual engine retirement. Back off failed or cache-only recovery; busy, loading, media and large requests retain predictive admission.
+- Reseed measured phase EWMAs after an evidence gap while preserving sample identity/counts. Unchanged heartbeats cannot manufacture current prefill evidence.
+
+## Unreleased — native media prefill observations
+
+- Retain native MiMo target-decoder prefill rates in dedicated numeric workload buckets, separated by computed suffix, context, reuse and overlap. Encoder preparation remains outside this timer. These observations support media calibration without mixing media into text rates or changing first-content deadlines.
+- Price prepared native media from fresh observations of the same engine and observed prompt range. Keep queued text at its own conservative rate. A single idle native request can gather missing evidence under the original deadline, retaining ownership through real retirement. Failed or ineligible attempts back off for two minutes; an eligible sample opens the next shape after retirement.
+- Pin the provider SDK to merged `mlx-swift-lm` main commit `e31a173` (#208) for native-media deadline evidence.
+- Keep deadline-rate evidence invalidated when native media fails during later retirement, even after successful preparation; preserve the qualified text policy's separate recovery requirements.
+
+## Unreleased — native media prompt accounting
+
+- Estimate concrete MiMo image/video/WAV prompt work from bounded media metadata and verified processor configuration. Reconcile fetched-media input quota and deadline token terms from the original request arrival; retain heuristic fallbacks and provider admission safeguards.
+
+## Release candidate v0.9.14 — MiMo SSD prefix caching by default (not shipped)
+
+- Enable encrypted text-only COMPLETE-prefix SSD checkpoints by default for exact `mimo-v2.6-flash-mopd` and `EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp` identities. Keep verified artifact/runtime identity, tenant isolation, native ownership, memory admission, SSD limits and cold fallback.
+- Preserve image, audio and video serving through the existing joint contiguous path; media requests remain uncached. RAM retention, native paging and rectangular verification remain separate opt-ins.
+- Forward `DARKBLOOM_MIMO_COMPLETE_PREFIX` to the launchd provider job. Unset or empty uses the model default; exact `1` enables this gate and any other nonempty value disables. Unlisted IDs also require affirmative `DARKBLOOM_PREFIX_CACHE`; `DARKBLOOM_PREFIX_CACHE=0` still disables all prefix caching. Apply shell overrides with replacement `darkbloom start` so its saved plist is refreshed.
+- Align `ProviderCore.version` and the coordinator latest-provider display fallback at `0.9.14`. Publication, full-artifact cache qualification and coordinator rollout remain separate steps.
+
+## Unreleased — MiMo media memory and text isolation
+
+- Complete native MiMo vision work one frame and transformer block at a time, reserving the largest live working set instead of every layer and video frame together. Preserve retained media/features, KV, codec and OS/activation safeguards.
+- Match vision scratch to the selected fused Metal kernel and complete audio encoder/RVQ stages before reusing their workspace. Reserve actual audio tiles rather than charging a maximum tile and every layer simultaneously.
+- Report media-preparation memory refusals as `media_memory_unavailable`. Keep bounded failover while leaving text-capacity clamps, health breakers and reputation unchanged. Genuine native completion faults retain their existing quarantine behavior.
+- Add exact OpenRouter JPEG/MP4/MOV fixture coverage and media-refusal-to-text-serving regressions.
+
+## Unreleased — bounded non-streaming responses
+
+- Bound coordinator retention of non-streaming provider output by aggregate bytes and frame count, including empty frames and the first chunk. Oversized attempts are cancelled and fail with 502 before successful settlement; streaming behavior is unchanged.
+
+## Release candidate v0.9.13 — MiMo memory admission (not shipped)
+
+- Accept bounded AAC audio in MP4/MOV and mono/stereo PCM8/16/24/32 and Float32 WAV input from 8–192 kHz for MiMo audio. Preserve sample rate and channels for the native resampler, reserve all decoded/resampled samples, and qualify the authenticated path with the genuine audio codec before release.
+- Accept OpenRouter's Boolean `chat_template_kwargs.thinking` alias in the provider and coordinator normalizer, preserving canonical control precedence and reasoning history.
+
+- Budget native MiMo grouped-prefill candidates across the configured concurrency, including fixed target rings, MTP workspace, the engine watermark and minimum useful KV space. Fall back to a smaller or ungrouped profile when the full reservation does not fit.
+- Reduce native MiMo concurrency after memory-grant shrinkage instead of reserving workspace for unavailable slots. Preserve retained engine reservations, enforce the same cap on provider submission, and refuse new loads or reserve raises that would strand an existing native engine below one serveable request.
+- Price native MiMo pixel preparation from actual request geometry rather than the machine-sized configured ceiling. Count video attention scores independently per temporal frame; preserve full lazy-graph, allocator, and native ownership safeguards.
+- Correct native MiMo image/video admission to charge all retained RGB plus the largest sequential decode workspace. Release temporary image/frame objects each iteration and convert video BGRA directly to RGB; video no longer reserves a decoded raster for every unsampled source frame. Preserve transport, pixel, native-workspace, KV and OS memory gates.
+- Align `ProviderCore.version` and the coordinator's latest-provider display fallback at `0.9.13`. The coordinator keeps enforcing reported token budgets and per-model concurrency; no admission bypass or production configuration change is included. Publication remains a separate operation.
+
+## Unreleased — native MiMo standing wired residency by default
+
+- Enable native MiMo standing wired residency by default. Without a standing residency set every command buffer must make the ~161 GiB weight payload resident again; on a 256 GiB M3 Ultra the driver kept unwiring it and single-stream decode measured ~0.4 tok/s (the request failed at 234 s), versus 37.8 tok/s with residency, identical requests and weights. The existing bounded ceiling still leaves max(16 GiB, 10%) of physical memory unwired and never grants load admission. `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0` (or `false`/`no`/`off`) restores the previous behavior and is now forwarded to the launchd provider job; the former opt-in value `1` remains valid.
+
+## Unreleased — exact rectangular MTP for native MiMo
+
+- Make exact rectangular verification the default MiMo MTP strategy. Rectangular verification scores all draft columns in one `[1, 1+k]` forward, but MLX's 2–7-row affine matmuls on M3-class GPUs use `qmv_wide`, whose reductions differ from one-row decode, so the bulk trunk was never output-identical. Scalar-dense rows (row-local router, serialized attention) with a new row-exact multi-row projection that keeps one-row `qmv_fast` arithmetic while streaming each weight once reproduce serial decode exactly. On a 256 GiB M3 Ultra, greedy MTP-on decode measured about 49 tok/s at short prompts and 46–48 tok/s at 4K prompts, against about 44.9 / 42.8 tok/s with MTP off and about 39 / 37.7 tok/s with serial MTP; 20K and 50K prompts decode at parity with MTP off. Greedy and reasoning outputs and audio responses were identical to MTP off. Media rows stay target-only, and a serving engine that cannot arm the scalar-dense scratch never drafts.
+- `DARKBLOOM_MIMO_RECTANGULAR_VERIFY=0` (or `false`/`no`/`off`) or `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE=0` selects serial-target scoring; `DARKBLOOM_MIMO_ROW_EXACT_PROJECTION=0` keeps exact verification with one matmul per row. All three are forwarded to the launchd provider job. The native paged profile stays serial-target.
+
+## Unreleased — native MiMo decode kernels and adaptive MTP
+
+- Enable the native MiMo short-forward decode kernels by default: fused residual/RMS norms, distinct-expert MXFP4 decode and the FP32 router GEMV. Each matches the stock operation it replaces for its supported one-request 1–7-row shapes and falls back everywhere else. They were exact-`1` opt-ins that no LaunchAgent forwarded. On a 256 GiB M3 Ultra with MTP off, single-stream decode rose from 41.5–42.0 to 45.2–45.6 tok/s (short prompts) and from 40.4–40.7 to 42.8–43.4 tok/s (4K prompts), with greedy output identical on 8 short and 5K/9K-token prompts. `DARKBLOOM_MIMO_FUSED_DECODE_NORMS`, `DARKBLOOM_MIMO_DECODE_EXPERTS` and `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` accept `0`/`false`/`no`/`off` as rollbacks and are forwarded to the launchd provider job.
+- Keep native MiMo's adaptive MTP from launching serial-target draft rounds. Serial scoring evaluates every draft column with one ordinary target forward, so those rounds cannot outpace target-only decode; one process that locked onto depth-3 serial rounds decoded greedy requests at 25–27 tok/s. MTP stays on and active with live assistant history; explicit rectangular verification keeps its adaptive depth.
+
+## Unreleased — first-content evidence exploration
+
+- Let an idle, loaded provider compete beside feasible peers after the 5-minute measurement-age threshold, using connection age when measurements are undated. This breaks the evidence-first exclusion of newly connected and long-idle providers without guaranteeing selection or measurement recovery. Hedge and fresh-feasible requests still require feasible evidence.
+- Treat outstanding service-retirement leases and reported service usage as busy even when slot counters are idle, and recheck exploration eligibility at atomic reservation. Older providers can still qualify using their existing slot telemetry.
+
+## Unreleased — CI and contributor workflow
+
+- Explicitly enable SSD caching for the exact-cache E2E development checkpoint and establish repeat demand before expecting a donation. The gate now requires exact cached output, account isolation and recovery to pass; CI no longer ignores its failure.
+- Set up Homebrew in the macOS integration and benchmark workflows with `scripts/setup-macos-homebrew.sh` instead of the `Homebrew/actions/setup-homebrew` action. The organization Actions policy does not allow that action, so both workflows stopped at startup. The script uses an installed `brew` or installs Homebrew from a pinned, checksum-verified installer.
+- Run provider unit, SDK and prompt-parity checks on independent workers with compatible build caches, retaining MiMo fixture preparation and isolated native gates.
+- Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.
+- Pin the production prompt fixture's EOF format during regeneration; parity still compares the complete corpus bytes and unchanged token/contract expectations.
+- Keep documentation freshness stamps date-only, preserving existing dates, immutable source links and historical evidence. Historical source validation reads committed provenance rather than requiring a hash in the stamp.
+- Document topic-local changelog updates and conflict resolution that preserves other PRs' entries, keeping release assignment separate from ordinary contributions.
+
+## Unreleased — cache routing state persistence
+
+- Preserve a write-behind copy of SSD cache holders and observed demand across coordinator restarts while routing reads stay in memory. Restore is bounded by TTL, index caps, clock-skew checks and the cache-key generation; holders bind only to matching live provider capabilities, retaining measured stage-cost deadlines. Disconnects park holders, and shutdown joins provider sockets and the periodic writer before the final bounded flush. No prompts, raw chain hashes or memory-tier holders are persisted.
+- Keep revisioned mutations pending until database acknowledgement. One serialized writer snapshots without draining; each successful chunk clears only matching revisions, and failures leave unwritten changes pending. The refactor adds no store schema, wire fields or configuration knobs.
+- Durably invalidate validated misses and shorter-hit boundaries even before a holder is restored. For overlapping sessions sharing a durable row, only strictly newer surviving evidence can retain it; otherwise delete the durable copy conservatively while older live holders remain usable until expiry or ordinary invalidation.
+- Replace an overflowing holder backlog in O(1), wake the writer and interrupt its batch for a durable reset. Retain a process-lifetime cutoff rejecting older or equal delayed receipts, restored rows and parked rows; reset demand-write deduplication too. A durable marker lets the next boot finish an interrupted reset, but crashes before that marker and concurrent coordinator writers remain limitations.
+- `EIGENINFERENCE_CACHE_ROUTING_PERSIST=false` disables persistence. `GET /v1/cache/status` exposes restore and write-behind health under `lifecycle.persistence`; see [counter semantics](docs/reference/api-contracts.md#exact-cache-status) and [restart precautions](docs/operations/cache-routing-rollout.md#persistence-during-restarts).
+
+## Unreleased — native MiMo V2.6 candidate (not qualified or deployed)
+
+- Preserve valid QuickTime PCM tracks in memory-backed audiovisual ingress by pinning the SDK's validated-container URL suffix correction. Input bytes, audio samples, memory ownership and decoder limits are unchanged.
+- Keep unrelated resident model slots available when a MiMo owner is retained after a fault. Preserve the MiMo quarantine and process-wide new-load/reclamation fences, and report no cold-load credit while those fences apply.
+- Add native `mimo_v2` target and embedded three-head MTP integration with strict source-bound loading, actual native/bridge/consumer ownership and typed retirement. Retain required-fence failures; logical memory settlement is not physical release.
+- Add exact native MiMo ordinary dispatch with owned visual/audio policies and bounded encoded ingress. Required sidecars retain separate authenticated ownership. API/media qualification, unsupported formats, speech output and coordinator capability parity remain explicit gates.
+- Prepare opt-in text-only COMPLETE-prefix store/loaded-owner integration and bounded performance/residency candidates, preserving native precision, checkpoint topology, fallback paths and memory safeguards. Paging, media-prefix reuse and composed cache/lifecycle qualification remain separate gates.
+- Admit exact native MiMo through its dedicated ordinary loader and request its inspected embedded MTP heads by default under `mtp_mode = "auto"`. Preserve explicit `off`, the process-wide kill switch, actual owner/budget/head validation and serial-target verification. Preliminary rectangular MTP measurements include a real greedy-output divergence; that mode remains unqualified and off by default. No catalog publication, deployment or model-limit change is enabled.
+- Enable eligible native-rounded MiMo NAX attention and admitted block grouping by default, with process-start rollback controls and memory-budgeted larger solo-text stripes. Preserve explicit overrides, unsupported-device fallback and other model families; candidate runtime qualification remains open.
+- Compose explicit serial-MTP paging with authenticated text-prefix restoration and native retirement; retain rectangular and paged-media refusals. These source additions still require full-artifact cache, state and lifecycle qualification.
+- Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
+- Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries. Explicit revision selections use the same canonical filesystem identity as legacy discovery.
+
+## Unreleased — deadline projection diagnostics
+
+- Report a closed reason for unbounded provider deadline projections in the existing per-attempt profile. Distinguish scheduler state, cache geometry, capacity guarantees, missing phase rates and invalid duration without changing admission or reconstructing causes for older records.
+- Reject SDK-recognized `input_audio` parts for unsupported or unknown architectures with HTTP 400 before model acquisition, prompt rendering or media decoding. Native MiMo dispatch uses provider-owned model metadata and still requires its actual loaded audio profile; generic text/vision paths do not gain audio support.
+
+## Unreleased — prompt accounting and first-content admission
+
+- Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Match count and cache evidence to the candidate provider's advertised template contract; keep unsupported counts explicitly uncertain.
+- Apply qualified prompt-count upper bounds to ordinary deadline forecasts even without a timing profile. These bounds can exceed the previous heuristic, so a tight-budget request previously considered feasible can now be classified as predicted late. Exact tokenizer counts take precedence when available.
+- Keep unmeasured prompt-rendering modes outside calibrated fallback estimates, and independently recheck deadline-profile confidence, qualified scheduler limits and cooled applicability in both runtimes before accepting catalog cells. Treat nonempty work reports without original prompt work as unknown.
+- Respect cache-planning sampling and throttle denials during count-only fallback, and let retries recover cache/count planning after temporary planning-capacity exhaustion. Ignore malformed advisory prompt-work metadata without dropping an otherwise valid inference request.
+- Remove the fixed 50% prefill and decode throughput reduction from coordinator feasibility and provider deadline admission. Use the resolved processing rates directly, preserving original deadline expiry, queued/cache work, count bounds, contention and memory gates. This avoids refusals caused solely by doubling predicted processing time; observed rates remain estimates and do not guarantee on-time delivery.
+- Add optional workload-bounded measured deadline calibration with exact MTP identity and ordinary rate fallback for stale, unmatched or incomplete evidence and unqualified runtime overrides. The timing catalog remains empty; removing the fixed rate reduction is active without it. Preserve measured idle/thermal/power prerequisites and posture-bound rate freshness without delaying requests. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
+- Add production-path qualification receipts with actual MTP and individual mixed-prefill step timings; profile promotion remains tied to reviewed hardware and held-out prediction evidence.
+
+## Unreleased — advisory threat-model review
+
+- Restore PR threat-model review through OpenRouter. Scan every changed file with complete before/after text and a cross-file pass against the full threat model. Findings update one advisory comment; incomplete coverage is explicit, clean first scans stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
+- Combine independent Opus 5.5 and GPT-6 Astra full scans through the same OpenRouter key. Attribute findings to their reviewers, preserve differing advice, and retain completed feedback if the other model fails.
+
+## Unreleased — SSD cache write budget
+
+- Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.
+
+## Unreleased — automatic model artifact revisions
+
+- Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.
+
+- Return retryable publication errors when alias refresh fails, and accept retained approved hashes during drained model replacement. Retired and unapproved hashes remain rejected.
+
+- Preserve model writer locks across cache removal and refuse removal during an active download or update. Revalidate replacement and rollback snapshots under the activation lease before draining. Keep a first verified download discoverable if the process exits immediately after publishing its snapshot.
+
+- Restore missing or damaged revision receipts only after re-verifying cached bytes, avoiding repeated activation of an already-selected revision. Preserve rollback through valid linked model cache directories.
+
+- Keep a revision's stored download source on `publish-revision` retries, including retries after a committed promotion returns 503. Explicit mirror edits through normal registration remain supported.
+
+- Let each revision declare a different pinned Hugging Face repo, commit and subdirectory through publishing flags or the API, with checksum-verified R2 fallback. Preserve retirement and original upload attribution across registration retries, report failed live refreshes or provider desired-state sends as retryable errors, and retain updates for eligible alias lineage builds.
+
+- Add automatic artifact revisions for existing model IDs: publish immutable R2 bytes and a manifest once, then supporting providers resume/verify downloads, drain accepted requests and activate with rollback. Retain approved older hashes during convergence; add explicit inactive-revision retirement. Share the idle-upgrade lifecycle with Gemma MTP.
+
+## Unreleased — provider measurements and placement
+
+- Publish prompt-completion observations through coalesced event heartbeats, with sample age/count, workload buckets and cross-model contention. Keep engine decode capacity, delivered streaming and end-to-end throughput separate.
+- Add exact reviewed serving profiles, per-engine mixed-prefill policy and a shared whole-Mac service allowance. Show explicit per-model concurrency overrides in status and doctor diagnostics. Unknown profiles retain existing limits; no M5 B8/B16 expansion is certified by this change.
+- Size warm pools using actual prompt/generation work and qualified batch curves, keep one model-load planner, retain load hysteresis and use fresh WebSocket RTT in first-content forecasts.
+- Extend arrival benchmarks through width 16 and add a qualification receipt evaluator that rejects missing performance, correctness, memory and lifecycle evidence.
+
+## Unreleased — coordinator first-content routing
+
+- Read serving-slot metric attribution from the already-selected provider after dispatch, avoiding a redundant registry lock that could delay first content. Keep backup and terminal-fault attribution rules intact.
+- Rank eligible providers by cache-adjusted first-content forecasts by default, prefer credible deadline-feasible choices, and spread near-equal choices by whole-machine service work within a 100-ms band. Preserve physical prompt/output reservations and explicit owner routing.
+- Preserve valid prefill observations through 20,000 tokens/s. Track accepted capacity and observed performance freshness separately; missing or stale evidence stays unknown.
+- Revalidate reservations and retained alternatives against the original request deadline. After two predictive refusals, require fresh feasible evidence; bound quote fanout to two and launch at most one feasible backup.
+
+## Unreleased — cached prompt pricing
+
+- Bill prompt tokens a provider serves from its prefix cache at a per-model `cache_read_price` instead of the input price, on the same `cached_tokens` count the consumer receives in `usage.prompt_tokens_details`; a malformed cache report bills at the full input price. Rows without an explicit rate derive half the input price; `cache_read_price` is accepted by `PUT /v1/admin/pricing`, `PUT /v1/pricing` and model registration (`0 ≤ cache_read_price ≤ input_price`).
+- Advertise the same rate to OpenRouter as `pricing.input_cache_read` in the provider feed, so a service-account debit equals the feed's per-token math (previously the feed declared `"0"` while cached tokens were billed at the full input price). No cache-write SKU: caching is provider-initiated.
+- Publish `cache_read_price` on `GET /v1/pricing`, persist `cached_tokens` on usage rows and `GET /v1/payments/usage`, and surface the rate in the console model catalog and the admin models table. Reservations are unchanged (worst case assumes no cache hit); settlement refunds the discount and emits `billing.cache_read_discount_micro_usd`. The `*_usd` strings returned by `PUT /v1/admin/pricing` and `PUT /v1/pricing` drop the trailing " per 1M tokens" to match `GET /v1/pricing`. Cost arithmetic saturates instead of wrapping on absurd provider-reported counts.
+- `/v1/completions` and `/v1/messages` report a validated cache hit in usage, streamed or not: `prompt_tokens_details.cached_tokens` for completions (streams: on the final chunk), and `cache_read_input_tokens` (excluded from `input_tokens`, as Anthropic counts it) for messages (streams: on `message_delta`). The console model catalog resolves an alias's prices from its embedded `/v1/models` pricing, so aliases show input, output and cached-input rates.
+- Requests settled against a model-token grant keep pricing every prompt token at the input rate (no cache-read discount on that path) and record `cached_tokens = 0`.
+- The coordinator refuses to start if `usage.cached_tokens` or `model_prices.cache_read_price` cannot be added at boot (for example a lock timeout behind a long query on `usage`), instead of booting with price lookups and usage inserts failing.
+- On deploy every existing price row — platform and provider custom — starts billing cache hits at half its own input price until an explicit `cache_read_price` is set; the feed's `input_cache_read` moves from `"0"` to that rate.
+
+## Unreleased — provider readiness diagnostics
+
+- Explain cold model-load memory failures in `darkbloom status`, a color-coded `darkbloom doctor` readiness summary, and the owner My Macs page. The provider reports live no-eviction usable memory and serving headroom separately from the eviction-aware routing capacity; older providers remain compatible and show unknown rather than a guessed verdict.
+
+## Release candidate v0.9.12 — model download cache recovery (not shipped; 2026-09-27)
+
+- Recover downloads and background prefetch when a model cache entry is a dangling symlink, including links to unavailable external drives. Preserve the original link under a hidden `.models--<id>.unavailable-link-<UUID>` sibling and download into a real directory in the selected cache. Valid directory links and regular files are preserved.
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.12. Publication remains a separate release operation.
+
+## Unreleased — coordinator legacy-compat cleanup
+
+- `EIGENINFERENCE_MIN_PROVIDER_VERSION` now also excludes providers that report no version from routing. The reference `deploy/environments/prod.env` now says 0.9.5 instead of 0.7.5, but that file changes nothing on the host: the live value in `/etc/d-inference/env` must be raised to at least 0.9.5 by a human, after a fleet-version census, before this coordinator is deployed (`docs/operations/coordinator-deploy.md`). Every registration attestation must carry a fresh timestamp, including from a provider that reports no version.
+- The one-shot `backfill_withdrawable_balance_v1`, `backfill_usage_totals_v1` and `backfill_earnings_summary_v1` migrations are retired. Production already ran them. The coordinator now refuses to start on a database whose `balances`, `usage` or `provider_earnings` rows never went through them (or whose `balances` lacks `withdrawable_micro_usd`), naming the missing marker; boot a coordinator built from v0.9.10, which still runs them, once to apply them. An empty database records the markers at first boot.
+- Remove the Python-era wire fields: `python_hash`/`runtime_hash` (registration, attestation response, signed status), `hypervisor_active`, and the `python_runtime_locked`/`dangerous_modules_blocked` privacy flags. Providers that still send them keep working. `POST /v1/releases` now rejects `python_hash`/`runtime_hash`; `/v1/runtime/manifest` and `/v1/me` no longer return them.
+- Drop compatibility paths for providers below the new floor: the pre-0.6.7 vision penalty strip and the `desired_models` version gate. The tool-call 503 no longer cites a provider version.
+- Security: remove the unauthenticated `GET /v1/provider/earnings?wallet=…` lookup, which returned any account's balance and ledger to anyone holding its ID (threat model T-031). It now returns 404; earnings stay available through the authenticated account endpoints.
+- Remove the retired `POST /v1/telemetry/events` route (it only ever answered 410); it now returns 404. The coordinator has no client telemetry ingestion and no server-side field allowlist.
+- Attestation challenges fail closed: for a provider with an attested key, a missing `status_signature` or an omitted `secure_boot_enabled` fails the challenge instead of being accepted as advisory.
+- An `inference_error` without `failure_code` is counted as drift and fails closed as `generation_failure`; status, reason and cause no longer reclassify it, and a bare 429 no longer means queue full.
+- App Attest serves protocol 3 only. Registrations announcing protocol 1 or 2 get no shadow frames and are counted as `rollout`/`provider_upgrade_required`; stored enrollments from before protocol 3 never resume.
+- `inference_request` no longer carries an empty plaintext `body` object.
+- Provider releases trigger only on `vX.Y.Z` tags; the `vX.Y.Z-swift[.N]` alias is gone.
+
+### Provider
+
+- `provider.toml`: the retired boolean `[backend] mtp` key is ignored with a startup warning. A bare `mtp = true` or `mtp = false` without `mtp_mode` is treated as the `mtp_mode` default, `auto`; to keep MTP off, set `mtp_mode = "off"`. `config_version` is ignored and no longer written, and loading a config never rewrites it (no stamp migration, no coordinator-URL rewrite, no copy from legacy locations). Only `~/.config/darkbloom/provider.toml` or `--config` is read.
+- Self-update and `install.sh` install only signed `Darkbloom.app` bundles: flat-only and pre-paged artifacts are refused, and the `eigeninference-enclave` alias is no longer created. `install.sh` no longer migrates `~/.dginf`/`~/.eigeninference`.
+- Model downloads fail closed for a catalog entry without a verified manifest (`r2_prefix` + `aggregate_sha256`).
+- Removed: `darkbloom-enclave wallet-address`; Rust-era credential, launchd-label and Secure Enclave v1 key fallbacks; the provider's App Attest shadow protocols 1 and 2 (protocol 3 only).
+- The bare `runtime-smoke` self-bootstrap for pre-0.8.10 updaters is gone: an updater from 0.7.8–0.8.9 may fail the packaged smoke check (it fails only on hosts where MLX touches Metal early) and then needs an `install.sh` reinstall. Those versions are below the 0.9.5 routing floor anyway.
+
+## Release candidate v0.9.11 — prefix cache hit rate (not shipped; 2026-09-27)
+
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.11. The new inference-request field is optional in both directions, so the coordinator and providers can be upgraded in either order; upgrade the coordinator first to keep the 0.9.10 rollout order.
+
+Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit rate per model. See the [analysis](docs/reports/2026-09-26-prefix-cache-hit-rate-analysis.md) and the [rollout procedure](docs/operations/cache-routing-rollout.md). Coordinator and provider changes are independent on the wire: an older provider ignores the new request field, and an older coordinator leaves providers on their previous donation behavior.
+
+### Provider
+
+- Keep the SSD cache epoch across budget eviction, TTL expiry and corrupt-file removal. Only a whole-root rebuild at load mints a new epoch, so the coordinator no longer forgets a provider's remaining checkpoints each time one file is removed.
+- Raise the SSD prefix-cache TTL from 15 to 30 minutes (default equals maximum; the environment override can only shorten it). Recorded as the SEC-035 re-acceptance in the threat model.
+- Write a complete checkpoint only on evidence of demand: the coordinator's `cache_repeated_prefix_tokens` at or above the 1,024-token floor, or a prior local sighting. Fleet-novel checkpoints report `skipped_novel` and touch neither disk nor the write budget. The first request for a prefix is served cold and not written, the second is written, the third can hit.
+- Capture GPT-OSS 20B and Gemma QAT checkpoints at every 1,024-token boundary regardless of prefill chunk size, including inside a solo stripe, and retain at most three per donor: the first boundary, the boundary at the observed shared-prefix length, and the deepest.
+- Report a file that disappeared under a reader as an absent miss rather than corruption; let expiry proceed when a root's only registered store has lost ownership.
+- Capture recurrent (Qwen, Nemotron, Bonsai) complete checkpoints at every 256-token-aligned prefill range end, whatever chunk produced it. The uniform-chunk rule disarmed capture when decode company left mid-prompt, so long Qwen prompts published only the boundaries before the first chunk change; measured on real weights, dense Qwen3.5-9B state is bit-identical across chunk partitions and the MoE varies cold already ([report](docs/reports/2026-09-27-qwen-chunk-partition-parity.md)). Files written under the old rule stay valid; adopters resume under ordinary chunking.
+- Retain the coordinator's fork target for recurrent donors too: first boundary, deepest boundary at or below `cache_repeated_prefix_tokens`, and the rolling latest, with a fixed 1,024-token adjacency drop for every layout.
+- Count recurrent donors whose capture a packed prefill cohort disarmed, once per request, in the heartbeat's `recurrent_capture_disarmed_packed_total` (DogStatsD `provider.prefix_cache.recurrent_capture_disarmed_packed`).
+- Enable SSD prefix caching and the paged KV backend by default for the exact catalog ID `Qwen3.5-9B`. Providers reported `config_disabled` for it and served it on contiguous KV under `auto`, so it could not join cache routing; the coordinator's `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` tuple for it is a separate operations change.
+
+### Coordinator
+
+- Prefer a proven cache holder inside the existing 3-second near-tie band instead of collapsing the band whenever a cache credit exists. New selection path `cache_credit` and opportunity reason `selected_near_tie`.
+- Bound the proof fence to 60 seconds, doubling per consecutive mismatch to a 10-minute maximum, and drop only the mismatched prompt's holders. Previously a mismatch fenced the capability until the provider's epoch changed and dropped every holder for the model.
+- Drop a provider's deeper holders when it proves a hit at a shorter boundary (`shorter_hit`).
+- Size the holder index (250,000) and observed-demand index (1,000,000) for a 30-minute window and expire holders from an expiry-ordered heap in bounded passes.
+- Forward observed repeat demand to providers as `cache_repeated_prefix_tokens`.
+
+### Prompt sidecar
+
+- Mirror five provider prompt transformations that caused proof mismatches: tool-call argument key order, integral doubles in arguments, extra keys in tool `function` objects, Harmony channel framing in assistant history, and `output_text` content parts. Prompt-contract IDs are unchanged. Decline to plan for decomposed Unicode object keys and for Harmony control tokens that share a grapheme with a neighbour.
+
+### Operations
+
+- Rollout procedure for sidecar capacity, plan QPS, holder TTL and the Nemotron Lightning and Bonsai 2 allowlist tuples. The sanitized production env reference now matches the live cache-routing values.
+
+## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
+
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.10. Upgrade the coordinator before publishing the separately qualified signed provider; the source bump does not advance the registered latest release.
+
+- Confirm live model-switch success only after a same-session coordinator receipt proves routing resumed with refreshed capacity. Report a missing receipt as unconfirmed. Serialize autoupdate config changes with model-selection writes so toggling updates cannot restore stale hosted models.
+- Restore model prefetching before the switch readiness receipt can trigger a refreshed desired-build snapshot. Keep scheduled serving within its original window when model validation and hashing take time.
+- Preload selected models on every provider start, regardless of idle-memory policy, including standalone `--local` mode. Coordinator starts remain bounded by the startup timeout; local mode finishes preloading before listening. Slot and memory limits still apply.
+
+- Add explicit model-cache selection through `darkbloom models location`, with interactive confirmation, read-only `--check`, one-time `--from-env` import, and `--reset` to the legacy default. No beta flag, automatic restart, or weight movement.
+- Preserve existing providers' cache locations until an operator explicitly saves a path. Ambient Hugging Face/XDG variables never redirect runtime discovery, downloads, hashing, or removal; imported paths stay pinned when the environment changes.
+- Preserve filesystem traversal through symlinks and diagnose empty selected caches without mistaking incomplete download folders for models. See the [location command](docs/provider/cli-reference.md#darkbloom-models-location).
+
+- Replace provider reputation ratings with total, successful, and failed job counts. Remove the composite score calculation and owner API field; historical job failures no longer imply reduced routing priority in the dashboard.
+- Add `darkbloom switch` to replace the running provider's hosted model selection after a graceful drain, without process restart, coordinator reconnect or re-attestation. Reuse the catalog picker, reject invalid selections as a whole, preserve accepted work on timeout, and persist confirmed selections for launchd restart, watchdog recovery and subsequent scheduled serving windows.
+- Live model switching preserves owner-only off-catalog inventory, handles an already-idle `--timeout 0` without skipping coordinator settlement, and lets shutdown preempt read-only weight verification. Switch requests are consumed once across schedule windows; replacement start saves configuration before draining or stopping the current provider.
+- Restore the exact prior model-selection config when replacement-start setup fails, without racing other config writers. Carry validation fingerprints with switched model hashes so unchanged cold models avoid redundant hashing; metadata changes and mandatory fresh integrity checks still rehash.
+- Keep model-switch routing fenced until the provider reopens local admission and confirms readiness after its commit acknowledgement. Settle queued writer reservations and coalesce overlapping drain barriers without dropping the latest waiter. Refresh desired alias builds after replacement. Live rollback preserves absent selection keys and concurrent settings; missing custom configs use their resolved startup settings rather than another config file.
+- Resume model-switch routing only after refreshed serving capacity arrives; retain removed-model queue cleanup through same-session retries. Scheduled windows resolve an empty saved model list as all eligible local models.
+
+### Public model demand
+
+- Add model demand and fulfillment to Stats, with 24-hour, 7-day and 30-day windows, shared-scale request bars, sorting, expandable outcome counts, per-model timeline charts, an exact interval table, and CSV export. Separate capacity rejections, predicted latency limits, actual timeouts, service errors, client departures and unknown outcomes; HTTP 429 is an overlapping diagnostic.
+- Scope new public routing-admission observations explicitly and persist revision-aware hourly aggregates for 31 days. Delay publication by at least one hour and suppress cohorts with fewer than 20 requests or 3 consumer accounts. Label recorded-request coverage and partial collection history; token demand and network-wide completeness claims remain unavailable.
+- Preserve compact outcome conflicts and original receipt/model/consumer identity after the detailed diagnostic ledger expires; contradictory replays remain unknown rather than rewriting historical fulfillment counts.
+- Count full request queues as capacity rejections and queued first-content deadline expiry as timeouts in public model-demand history, rather than reporting either as unknown.
+- Exclude suppressed hourly cohorts from model summaries and all history resolutions so subtraction cannot recover hidden counts. Label counts, percentages, tables and CSV as published observations rather than complete window demand.
+- Count provider token/KV/context-budget exhaustion (`unservable_token_budget`) as capacity rejection in public model-demand outcomes.
+- Count preflight structural token-budget refusals (`prompt_too_long`) as capacity rejections while preserving validation exclusions. Prune expired model-demand aggregates in bounded transactions, retaining the partial cutoff hour and completed batches when a later batch fails.
+- Exclude prompts beyond the model context window from public demand, and count models too large for the advertising fleet and capacity-confirmed dispatch exhaustion as supply rejections.
+
+### App Attest dead-key recovery and release-recovery fixes
+
+- Retain APNs receipt history through day-long push storms, and keep optional lifecycle diagnostic reads outside proof archival storage admission.
+
+- Preserve explicit update/stall restart provenance through later termination callbacks, and clarify the untrusted diagnostic boundary for consumers and the threat model.
+- Keep coarse lifecycle comparisons unknown when ambiguous, reserve report-upload space for diagnostics, finalize idle scheduled shutdown markers, count validated late APNs replies without reauthorization, and fail signing checks on environment mismatch.
+- Treat APNs delivery as indeterminate when no push was observed, require actual update-start evidence, and bound diagnostic log reads and parsing memory.
+- Keep doctor/report log collection bounded even when termination is ignored; show APNs history on legacy macOS, restrict rotation recovery to the correct account, and distinguish historical push snapshots from current ages.
+- Correct App Attest diagnostics for hung security probes, unknown boot security, late APNs tokens, failed WebSocket writes, terminating push loops, full-day key churn, and non-stalled busy replies.
+
+- Replace App Attest keys the Secure Enclave can no longer use. After two consecutive DeviceCheck code-0/2 (or uncoded) assertion failures since the key's last verified assertion, the coordinator asks for a fresh attestation instead of another assertion. Released 0.9.8 and 0.9.9 providers answer by retiring the dead key and enrolling a new one, which must pass the full attestation, receipt, build-qualification and assertion checks. Rotations are durable, limited to one per machine per hour and four per 24 hours (limits carry over when two machine records are merged), controlled by `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default 100), and never revoke or deny serving.
+- Serialize App Attest rotation admission with machine merges and resolve stale machine IDs before checking the shared budget, preventing overlapping old/new identities from bypassing rotation limits.
+- Back off fresh-key enrollment for 6 hours after a machine's third `invalidKey` attestation failure in 24 hours, instead of generating a new key every few minutes. Reconnects, coordinator restarts and releases do not cut the backoff short.
+- Keep retrying the APNs code-identity check on a live connection after the first three pushes go unanswered, at most once per hour through the existing per-device push budget, instead of waiting for a reconnect. Machines that missed the check after a release now recover without a restart.
+- Stage the durable Apple device-attestation chain for macOS 27 App Attest candidates too. It attaches only after hardware trust, when it re-verifies to Apple's root and binds this connection's Secure Enclave key; serial restore and serial dedupe stay skipped for candidates.
+- Provider: report `launch_session`, `boot_time` and `operation_stalled_seconds` on App Attest `ready` replies (outside the signed transcript). A DeviceCheck call that never answers is reported after 15 minutes and triggers one graceful self-restart when idle, at most every 6 hours, never while a stop or OS shutdown is draining the provider. An attempt that cannot restart does not close admission again on the next check: it waits 15 minutes after an unfinished drain, and 6 hours when its restart marker cannot be saved. `darkbloom doctor` adds an APP ATTEST section with the local key state, launch session and advice for unsupported Macs.
+
+### App Attest failure diagnostics
+
+- Provider: App Attest `ready` replies add closed, bounded diagnostics outside the signed transcript: process start time, whether the previous run shut down cleanly and why this one started, console-user presence, SIP and sealed-system-volume status, a signing and provisioning-profile check, local key history and APNs push receipt history. Failed attestations and assertions add the native error chain (closed domain buckets and signed 32-bit codes, such as CryptoTokenKit −3 over AKS −536362989). None of it affects authorization; the coordinator drops invalid values without rejecting the message.
+- `darkbloom doctor` adds App Attest checks with targeted advice. Local key/history refreshes after every proof, and displayed ages advance between exchanges. Unknown signing or profile checks remain indeterminate instead of passing. Local `devicecheckd` observations are explicitly device-wide, not proof that Darkbloom's key failed.
+- `darkbloom report` appends the local App Attest snapshot, APNs push history and closed-pattern, device-wide `devicecheckd` matches, and still uploads when provider logs are empty or unreadable. From a standard account it explains that macOS lets only administrators read the system log. Under `sudo` it reads the invoking user's canonical or legacy credentials without migrating them, plus the user's state file and provider config; an explicit token-path override takes precedence.
+- Coordinator: record each APNs code-identity push's outcome (`code_attest.push{outcome}`) and whether the provider answered it (`code_attest.push_reply{result}`), including across reconnects, with no provider, device or token identifiers in metric tags.
+- Admin: `/app-attest/diagnostics` breaks the unexplained failure groups down by these fields, classifies dead keys by OS change, reboot or process restart, and summarises rotation outcomes and APNs push receipt.
+- Derive reboot/restart diagnostics from provider timestamps in the latest verified assertion context, never by comparing the Mac clock with the coordinator clock; unavailable baselines remain unknown. Rotation recovery follows canonical machine merges when locating replacement proofs.
+
+### Operations, CI, and community
+
+- Point development GCP defaults and documentation at `darkbloom-dev`; production deployment settings are unchanged.
+- Refresh the console's Slack community invite after the previous invite expired.
+- Report coordinator and prompt-sidecar coverage in CI job summaries without adding a coverage pass threshold.
+
+## v0.9.9 — App Attest recovery and snapshot accuracy (shipped; 2026-09-24)
+
+- Distinguish signed-app availability failures and synthetic Apple callback/proof errors with closed, privacy-bounded diagnostics. Keep the result and trust policy unchanged; native `NSError` codes remain separate.
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.9. Deploy coordinator and console fixes before publishing the separately qualified signed provider.
+- Retire failed or interrupted one-time App Attest enrollment keys instead of retrying them indefinitely. Preserve server-unavailable retries, cached enrollment proofs, accepted assertion credentials, account identity, and persisted generation limits.
+- Preserve the original attestation key and hash across server-unavailable retries, reconnects and protocol upgrades, as Apple requires. Later serving assertions remain fresh and bound to the current process endpoint.
+- Recover from expired cached-enrollment transactions on a live connection without accepting stale proofs or retrying identity/binding violations. Correct obsolete shadow-only rollout and rollback instructions.
+- Accept authenticated macOS CDhash attestation extensions when Apple omits the extension flag; retain complete certificate, nonce, Mac ACL, key, transcript and serving-policy verification.
+- Retain bounded Apple error domain/code diagnostics without error descriptions, user-info dictionaries or raw identity data.
+- Show public network verification counts and filters at their source snapshot instead of expiring cached App Attest rows into a false zero. Owner serving controls retain live expiry.
+- Exclude private-only providers from the unauthenticated attestation roster and its shared cache. Preserve owner access and document public legacy-key linkability and private audit-data destinations.
+- Accept fully signed, measured macOS App Attest assertions when Apple omits the extension flag, and recover serving authorization after a fresh, completely archived proof despite an earlier recorded frame refusal. Repair the startup inventory-backfill race only for current authenticated sessions while retaining genuine disconnects and revocations.
+- Distinguish an eligible Apple proof from a successfully granted serving lease in App Attest operations, with bounded failure reasons for identity, storage and runtime gates.
+- Recognize Apple's signed 20-byte SHA-256 CandidateCDHash only when it uniquely matches the same active, durably qualified signed artifact's full 32-byte CodeDirectory hash; all independent release, receipt, revocation and runtime checks still apply.
+- Retry only a completed Apple key-generation callback that returned an error with no usable key ID after a persisted one-minute cooldown, within the normal provider's generation budget. Timeout, cancellation, busy admission, and crash keep the one-hour marker; the budget also bounds possible internally created but inaccessible keys. Retry a definite assertion `serverUnavailable` once with the same key and challenge.
+- Recheck a first App Attest grant after one, five and ten minutes while Apple risk-receipt renewal is still unverified; a fresh assertion, verified risk metric and every existing serving check remain required. macOS 27 alone never grants authorization.
+- Reprobe a live connection's generic or server-unavailable Apple App Attest failure after one, five, then every ten minutes instead of leaving its accepted key idle for an hour. Storage failures retain their slower backoff; signed policy failures remain terminal.
+
+## v0.9.8 — graceful lifecycle and App Attest recovery (2026-09-22)
+
+- Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.8. Deploy coordinator drain-barrier support before publishing this provider; qualify the exact signed artifact independently before advancing the registered release.
+
+- Extend graceful draining to replacement starts, standalone/foreground handoffs, manual update activation, and planned APNs/model-inventory reconnects. Background update deadlines defer without force-cancelling work; failed pre-publication setup restores recovery, and restart recognizes explicit owner self-route authorization.
+
+- Drain accepted inference and local response writes before normal provider stop/restart, confirm terminal usage with the coordinator, preserve model selection, and report recoverable timeouts separately from explicit force.
+
+- Replace the static landing page with the Darkbloom Next.js site from eigen-homepages, preserving the old legal URLs with redirects.
+- Recognize the 2026 M6 and M5 Pro Mac minis and M5 Max Mac Studio for base-reward memory caps and complete the new desktops' earnings-calculator choices. Recognize M5 Ultra for serving bandwidth while withholding its disputed identifier from base rewards. Report M6 as its own chip family with conservative MTP and model-capability gates pending physical qualification.
+- Retry generic Apple App Attest API failures with the existing bounded backoff instead of leaving a live connection permanently pending. Failed exchanges remain unqualified; fresh proof and all serving-policy checks are still required.
+- Retry a first verified App Attest assertion early while Apple's risk receipt is pending. A successful receipt still requires a fresh assertion, machine identity, build qualification, and all serving-policy checks; missing risk evidence never grants serving.
+- Keep the interactive `darkbloom unenroll` administrator profile inventory in the foreground terminal group so `sudo` can hide password input and complete the read. Background jobs, denied authentication and noninteractive reads withhold removal guidance without changing profiles or authorization.
+- **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
+- Unify App Attest and legacy verification labels, dispatch-time chat proof summaries, live authorization expiry, and network method counts without changing legacy trust fields or exposing private Apple evidence. Keep owner lease fields and geography counts on the same live authorization snapshot, and label unsupported App Attest protocol versions accurately.
+- Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
+- **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.
+- Preserve Responses `instructions` as a leading system message in serving and prompt-cache preparation, and include them in admission/billing estimates. Retain inline media and tool history; reject invalid instruction types.
+- Route forced media tools and media-bearing tool results only to providers advertising the model's native capability; preserve aliases, queued/retried requests and legacy refusals. Native DiffusionGemma retains tool-result assets in actual call order without changing its sampler.
+- Reject malformed or negative top-level output-token budgets before coordinator defaulting and admission on all inference endpoints; preserve omitted, null, zero and valid positive budget behavior.
+- Preserve ordered inline image/video content and media-bearing tool results when lowering Responses requests for inference. Retain vision admission and inline-only Responses URL policy; media remains ineligible for the separate text-only prompt-cache planner.
+
+- Add an opt-in native DiffusionGemma sampler candidate preserving exact RNG constants, request-local key order and validated state commits, with original-path fallbacks and benchmark-only dispatch evidence.
+- Add an opt-in native DiffusionGemma soft-conditioning projection candidate using the existing affine matrix arithmetic and unchanged weights, with original training/transform/stream fallbacks and benchmark-only dispatch evidence.
+- Add opt-in DiffusionGemma benchmark route observations, separating first-iteration dispatch evidence from disarmed timing iterations without changing serving controls or generation.
+- Add native DiffusionGemma committed-block serving and image/video-frame discovery, including multimodal template validation. Keep text-only declarations disabled for media and preserve existing load and memory safeguards; catalog publication and release qualification remain separate.
+- Preserve DiffusionGemma's native tokenizer whitespace default without rewriting artifact metadata or changing other processors; explicit cleanup settings remain authoritative.
+- Fail unexpected nonempty DiffusionGemma reasoning before exposing it when thinking is disabled, while preserving empty native envelopes and never promoting tool examples from an unclosed thought.
+- Avoid restoring the sorted expert-output intermediate on eligible native DiffusionGemma inference paths. Preserve the existing weighted-reduction order, model weights and denoising controls; retain legacy training, shape, precision and stream paths plus an explicit rollback.
+
+- Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
+- Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
+
+## v0.9.7 — MDM-optional providers and account-scoped SLAs (shipped; 2026-09-20)
+
+- Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.7. Publication, coordinator deployment and App Attest serving/removal activation remain separate rollout steps.
+
+### Model verification I/O
+
+- Enable reusable-buffer reads and up to four independent file readers by default for model integrity verification, preserving complete SHA digests, failure handling and load-time checks. Explicit overrides retain the original reader and serial hashing for rollback.
+- Pin MLX Swift and MLX Swift LM to their merged Bonsai constant-reuse, carry-scheduling and HTTP-validation updates. Preserve the existing MLX core/C pins and native Qwen4 support.
+
+### Bonsai performance and API stability
+
+- Enable encrypted SSD prefix-cache eligibility by default for the three exact supported Bonsai 2 MLX identities. Preserve the global cache opt-out, fresh load hashes and runtime capability/identity gates; resident RAM retention stays opt-in. Signed persistent-restart qualification and coordinator artifact allowlisting remain separate rollout steps.
+
+- Complete late local Chat/Completions failures with a sanitized SSE error event instead of truncating the HTTP body. Preserve cancellation, pre-header errors and the direct SDK throwing contract; this does not change model generation or turn failed tool calls into successes.
+
+- Enable qualified earlier compact-carry submission and exact FP16-to-FP32 constant reuse by default on eligible Bonsai paths. Unset and exact `1` enable each path; explicit `0` restores its prior behavior and other explicit spellings remain disabled. Keep all shape/dtype/fault gates, generic cache rollback, published weights, native precision, architecture, context limits and absent-MTP capability unchanged.
+- Record matched M3 Ultra/M5 Max prefill, decode and memory measurements, including prefill tradeoffs and the real retained-constant cost. Dependency review, post-merge repinning and deployment remain separate actions; this performance draft is not a release.
+- Qualify early provider-local rejection of negative output-token limits through the SDK service, preserving explicit zero and valid requests. Coordinator validation and model numerics are unchanged.
+- Preserve the fixed SDK input-validation error through local chat interception, and explicitly admit the qualified Bonsai XML family to nested-reasoning routing for both text and media. Preserve opaque argument bytes and existing other-family policies; do not guess string unescaping.
+
+### Account-scoped first-content SLA
+
+- Apply the first-content SLA only to authenticated accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; configure the intended account privately in the deployment environment. Direct users and other service accounts have no first-content timeout, including no 600-second fallback; queue limits, client cancellation and post-content response timers remain.
+- Preserve configurable model timing for selected accounts, including Bonsai’s 9s + 5ms/token coordinator cutoff, and support explicit public-model policies before alias resolution.
+
+### MDM-optional provider authorization
+
+- Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.
+- Show current App Attest authorization on the owner dashboard without demanding legacy MDM verification; expire cached grants locally if polling fails and preserve independent legacy proof fields.
+
+- Retry first-proof App Attest readiness outages with a bounded early assertion retry (one minute, then five minutes, capped at the normal ten-minute cadence); recheck the complete proof, identity and serving policy after recovery.
+
+- Reflect App Attest revocation in untrusted status, availability and fleet counts without duplicate decrements or legacy-challenge recovery. Require a coordinator decision received within 10 seconds before offering MDM removal, even when the daemon keeps rewriting its state file.
+
+- Skip new MDM enrollment in the installer and CLI on macOS 27 or later; guide users through App Attest approval. Explain that upgrading avoids MDM and Darkbloom MDM will be deactivated soon. Keep existing profiles and coordinator authorization/removal gates intact; pending App Attest never falls back to automatic MDM enrollment.
+
+- Fence successful admin revocations even when the request deadline expires, and fence freshly verified revoked credentials before their first serving grant. Preserve bounded leases/refresh records through unknown readiness results without extending authorization.
+- Preserve legacy identity/MDA recovery for providers outside the authenticated rollout cohort and on older macOS. Restore a previously missing historical baseline after a later canonical merge without double-counting live work.
+- Count only authorized inference handoffs as provider dispatches; rejected frames clear provisional timing, and cancellation while waiting for authorization preserves the healthy connection.
+- Commit pending base-reward allocations atomically and reallocate after a late authorization/identity rejection, preserving prior finalized payments and pool/account caps. Resolve same-account endpoint continuity while session inventory catches up.
+
+- Consolidate App Attest session, archive, receipt, inventory and authorization workers under `coordinator/appattest/service`, with their unit tests. Keep only API wiring/authentication/release adapters; retain storage and scheduler locking with their owning packages.
+
+- Make plain `darkbloom unenroll` offer full exit or App Attest migration, with an explicit macOS 27+ requirement and fresh coordinator approval for migration. Cancel/EOF makes no changes; full exit stops the provider service before optional cleanup, and the cleanup prompt explicitly lists Secure Enclave signing keys.
+
+- Add independently enabled App Attest serving alongside complete legacy MDM/MDA and APNs verification. Require qualified signed code, current encrypted-endpoint assertions, durable evidence, valid receipts and fresh revocation state; preserve legacy trust flags.
+- Fence every new inference handoff on expiry, revocation, connection/endpoint replacement and policy changes, including queued requests and retries. Durable revocation refresh has a bounded lifetime; database failures cannot extend permission.
+- Preserve verified canonical machine history across reconnects and credential rotation, without allowing a claimed serial to evict another provider. Extend base rewards to qualified App Attest-only machines with canonical duplicate/epoch settlement protection and preserved historical balances.
+- Add coordinator-derived authorization diagnostics and `darkbloom unenroll --keep-serving`. Require fresh removal readiness, preserve local identity/account data and identify only Darkbloom's enrollment profile before guiding the user through System Settings; company management is retained.
+- Keep serving/removal disabled by default and retain explicit signed-artifact/security-transition qualification before activation. DeviceCheck's separate two-bit API is not required.
+
+## Unreleased — model token promotions
+
+- List Bonsai first in the chat model dropdown. Show its “Free” badge only after a confirmed claim for that exact model with available tokens; hide it while grant status is unknown, on lookup errors, or when the allowance is exhausted or fully reserved.
+
+- Enable thinking by default in frontend chat requests.
+
+- Configure one-time, model-specific token grants before registration. Eligible users explicitly claim non-expiring tokens shared across their account keys, with an atomic campaign cap and signup cutoff. Prepare the Bonsai draft for 250 claims through September 19 by accounts created through September 18 (Los Angeles time). Exhaustion falls back to paid credit, with clear console allowance/error states.
+- Reserve and settle free tokens, paid credit and provider earnings atomically; retain platform-priced provider payouts on sponsored traffic, protect same-account serving, and recover orphaned reservations.
+- Recover usage, key spend and fee accounting after promotion settlement retries; release holds after deterministic failures and reject zero-token payouts.
+- Bound sponsored provider earnings to exact token prices, carrying fractional micro-dollars atomically instead of funding a minimum payout for each tiny request.
+- Give Bonsai 2 a 10-second plus 5-ms-per-input-token upstream first-content SLA, retaining coordinator response headroom. Add exact-model overrides for both SLA terms.
+
+## Unreleased — Ternary Bonsai 2 onboarding draft
+
+- Compact Bonsai's retained recurrent convolution carry after prefill, preserving exact FP32 state bits without retaining whole chunk buffers. Other model families and single-token decode are unchanged.
+- Apply the existing serving allocator guard before throughput-sweep model loading; bound freed-buffer retention and report active/cache memory separately without changing model precision or KV limits.
+- Add the `prism_hadamard_qwen35` native CBv2 adapter for the unchanged Prism Bonsai 2 27B affine 2-bit pack, including its real vision tower and explicit absence of MTP heads. Preserve signed-Hadamard transforms, FP16 packing, paging safeguards and matching provider/coordinator prompt semantics. Register `hadamard.json` as an integrity-bound config asset. Qualification and catalog/release activation are separate; this draft does not deploy the model.
+
 ## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)
 
 - Wait for the SSD write-behind consumer task to finish when draining after shutdown, so the final payload is released before teardown completes. Preserve reusable drains while the pipeline is running; cover the shutdown handoff with 10,000 regression cycles and both SDK 27 CI lanes.

@@ -6,7 +6,7 @@
 //  3. Stripe webhook confirms payment and credits internal balance
 //
 // Payouts to providers use Stripe Connect Express (bank/card withdrawals).
-// A referral system allows accounts to earn a share of platform fees.
+// A referral system allows accounts to earn 5% of referred consumer token spend.
 package billing
 
 import (
@@ -40,16 +40,12 @@ type Service struct {
 
 // NewService creates a new billing service from the given configuration.
 func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cfg Config) *Service {
-	if cfg.ReferralSharePercent == 0 {
-		cfg.ReferralSharePercent = 20
-	}
-
 	svc := &Service{
 		store:    st,
 		ledger:   ledger,
 		logger:   logger,
 		config:   cfg,
-		referral: NewReferralService(st, logger, cfg.ReferralSharePercent),
+		referral: NewReferralService(st, logger),
 	}
 
 	if cfg.StripeGlobalPayoutsSecretKey != "" && cfg.StripeGlobalPayoutsFinancialAccount != "" {
@@ -61,27 +57,15 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 		svc.stripe = NewStripeProcessor(cfg.StripeSecretKey, cfg.StripeWebhookSecret,
 			cfg.StripeSuccessURL, cfg.StripeCancelURL, logger)
 		logger.Info("billing: Stripe processor enabled")
-
-		// Stripe Connect rides on the same secret key. We always create the
-		// client when Stripe is configured so callers can decide whether to
-		// surface the bank-payout option based on connect-specific config
-		// (return URL, etc.) being present.
-		svc.stripeConnect = NewStripeConnect(
-			cfg.StripeSecretKey,
-			cfg.StripeConnectWebhookSecret,
-			cfg.StripeConnectPlatformCountry,
-			cfg.MockMode,
-			logger,
-		)
-		logger.Info("billing: Stripe Connect (Express) enabled",
-			"platform_country", cfg.StripeConnectPlatformCountry,
-			"connect_webhook_configured", cfg.StripeConnectWebhookSecret != "",
-		)
-	} else if cfg.MockMode {
-		// In mock mode, surface a stub Connect client so dev console can
-		// exercise the full payout flow without real Stripe credentials.
-		svc.stripeConnect = NewStripeConnect("", "", cfg.StripeConnectPlatformCountry, true, logger)
-		logger.Info("billing: Stripe Connect mock-mode enabled")
+	}
+	// Connect remains bound to the old platform while Checkout moves independently.
+	connectKey := cfg.StripeConnectSecretKey
+	if connectKey == "" && !cfg.StripeGlobalPayoutsOnly {
+		connectKey = cfg.StripeSecretKey
+	}
+	if connectKey != "" || cfg.MockMode {
+		svc.stripeConnect = NewStripeConnect(connectKey, cfg.StripeConnectWebhookSecret,
+			cfg.StripeConnectPlatformCountry, cfg.MockMode, logger)
 	}
 
 	return svc
@@ -128,12 +112,6 @@ func (s *Service) SupportedMethods() []PaymentMethodInfo {
 	return methods
 }
 
-// IsExternalIDProcessed checks the database for whether a tx signature has
-// already been credited. Survives coordinator restarts.
-func (s *Service) IsExternalIDProcessed(externalID string) bool {
-	return s.store.IsExternalIDProcessed(externalID)
-}
-
 // CreditDeposit credits a consumer's balance after a verified deposit.
 func (s *Service) CreditDeposit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
 	return s.store.Credit(accountID, amountMicroUSD, entryType, reference)
@@ -156,4 +134,11 @@ func (s *Service) GlobalPayoutsWebhookSecret() string {
 // continues while the credentials remain configured, even when admissions stop.
 func (s *Service) GlobalPayoutsEnabled() bool {
 	return s.config.StripeGlobalPayoutsEnabled && s.globalPayouts != nil
+}
+
+// GlobalPayoutsOnly disables all new Connect onboarding and transfers, even while paused.
+func (s *Service) GlobalPayoutsOnly() bool           { return s.config.StripeGlobalPayoutsOnly }
+func (s *Service) StripeLegacyWebhookSecret() string { return s.config.StripeLegacyWebhookSecret }
+func (s *Service) StripeConnectAccountsWebhookSecret() string {
+	return s.config.StripeConnectAccountsWebhookSecret
 }

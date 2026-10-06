@@ -4,9 +4,22 @@ import ProviderCore
 
 struct Enroll: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Enroll this Mac in Darkbloom MDM (device-attestation profile).",
+        abstract: "Check enrollment eligibility: new providers require macOS 27+ App Attest.",
         discussion: """
-        Requests a per-device .mobileconfig profile from the coordinator,
+        New providers require macOS 27 or later and coordinator-qualified App Attest.
+        The OS version alone does not establish eligibility.
+        On macOS 27 or later, use App Attest without downloading an MDM profile.
+        Link your account, start the provider and check darkbloom status for
+        coordinator approval. Existing management profiles are kept in place.
+
+        Darkbloom MDM will be deactivated soon. Upgrade to macOS 27 or later
+        to avoid Darkbloom MDM enrollment.
+
+        Only grandfathered account/key pairs can temporarily serve using legacy MDM.
+        MDM-only providers receive no base rewards; these require current qualified App Attest authorization.
+        On older macOS, checks eligibility with the coordinator, even if a
+        Darkbloom profile is already installed. For an eligible machine without
+        that profile, requests a .mobileconfig profile from the coordinator,
         opens it (registering with System Settings), then opens the
         Profiles pane so you can click Install. The profile lets the
         coordinator verify that SIP/Secure Boot are on and that the
@@ -22,7 +35,7 @@ struct Enroll: AsyncParsableCommand {
     @Option(help: "Override coordinator URL (HTTPS).")
     var coordinator: String?
 
-    @Flag(help: "Don't open System Settings; just download the profile.")
+    @Flag(help: "Check eligibility and download a needed profile without opening System Settings.")
     var noOpen = false
 
     mutating func run() async throws {
@@ -33,6 +46,9 @@ struct Enroll: AsyncParsableCommand {
 
         print("Darkbloom Device Attestation Enrollment")
         print("Coordinator: \(httpBase)")
+        print()
+        print("  \(ProviderOnboardingPolicy.retirementNotice)")
+        print("  \(Self.eligibilityNotice)")
         print()
 
         let service = EnrollmentService()
@@ -47,18 +63,23 @@ struct Enroll: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        if result.alreadyEnrolled {
-            print("  ✓ Already enrolled — no action needed.")
-            print("  Verify with: darkbloom doctor")
+        guard case .mdm(let profilePath, let alreadyEnrolled) = result else {
+            print("  \(ProviderOnboardingPolicy.appAttestGuidance)")
             return
         }
 
-        print("  → Profile saved:  \(result.profilePath.path)")
+        if alreadyEnrolled {
+            print("  Legacy eligibility confirmed; already enrolled. No profile installation needed.")
+            print("  Verify current serving authorization with: darkbloom status")
+            return
+        }
+
+        print("  → Profile saved:  \(profilePath.path)")
         print()
 
         if noOpen {
             print("  Install the profile manually:")
-            print("    open \(result.profilePath.path)")
+            print("    open \(profilePath.path)")
             print()
         } else {
             print("  System Settings → Device Management is now open.")
@@ -74,4 +95,10 @@ struct Enroll: AsyncParsableCommand {
 
         print("After installing, verify with: darkbloom doctor")
     }
+
+    static let eligibilityNotice =
+        "New providers require macOS 27 or later and coordinator-qualified App Attest. "
+        + "Check App Attest qualification with `darkbloom status`; the OS version alone is not approval. "
+        + "Grandfathered MDM machines may serve temporarily, but MDM-only providers receive no base rewards. "
+        + "Base rewards require current qualified App Attest authorization."
 }

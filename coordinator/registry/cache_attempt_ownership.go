@@ -1,125 +1,101 @@
 package registry
 
 import (
-	"sync/atomic"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheattempt"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepeer"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheplan"
 )
 
 // A generation contains no prompt data or tracker maps. Plans may outlive a
 // configuration change without retaining the retired generation's evidence.
-type cacheRoutingGeneration struct{ revoked atomic.Bool }
+type cacheRoutingGeneration = cacheplan.Generation
 
-const (
-	cacheDispatchPrepared uint32 = iota
-	cacheDispatchAccepted
-	cacheDispatchCold
-)
+type cacheAttemptOwner = cacheattempt.Owner
 
-type cacheAttemptOwner struct {
-	tracker       *cacheRoutingTracker
-	generation    *cacheRoutingGeneration
-	nonce         string
-	scope         string
-	boundaryMode  string
-	revoked       atomic.Bool
-	dispatchState atomic.Uint32
+type cacheReceiptRetention struct{ tracker *cacheRoutingTracker }
+
+func (r cacheReceiptRetention) Forget(nonce string) { r.tracker.forgetAttempt(nonce) }
+func (r cacheReceiptRetention) Terminal(nonce string) {
+	r.tracker.markAttemptTerminal(nonce, r.tracker.now())
+}
+
+func newCacheAttemptOwner(tracker *cacheRoutingTracker, generation cacheattempt.Gate, nonce, scope, boundaryMode string, repeated int) *cacheAttemptOwner {
+	return cacheattempt.New(cacheattempt.Metadata{Nonce: nonce, Scope: scope, BoundaryMode: boundaryMode, RepeatedPrefixTokens: repeated}, generation, cacheReceiptRetention{tracker: tracker})
 }
 
 // CacheAttemptSnapshot captures immutable receipt metadata for a queued frame.
 // Validity and participation use atomics; a snapshot never consults a replacement
 // attempt or the PendingRequest's mutable dispatch fields.
-type CacheAttemptSnapshot struct{ owner *cacheAttemptOwner }
+type CacheAttemptSnapshot = cacheattempt.Snapshot
 
 func (pr *PendingRequest) CacheAttemptSnapshot() CacheAttemptSnapshot {
 	if pr == nil {
 		return CacheAttemptSnapshot{}
 	}
-	return CacheAttemptSnapshot{owner: pr.cacheAttempt.Load()}
-}
-
-// ApplyTo validates at writer dequeue, before JSON/socket IO. Revocation after
-// this check may not retract an accepted write; revocation before it sends an
-// ordinary uncached request. No registry or tracker lock is taken here.
-func (snapshot CacheAttemptSnapshot) ApplyTo(message *protocol.InferenceRequestMessage) {
-	message.CacheReceiptNonce, message.CacheScope = "", ""
-	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = 0, ""
-	owner := snapshot.owner
-	if owner == nil {
-		return
-	}
-	if owner.revoked.Load() || owner.generation.revoked.Load() {
-		owner.dispatchState.CompareAndSwap(cacheDispatchPrepared, cacheDispatchCold)
-		return
-	}
-	owner.dispatchState.Store(cacheDispatchAccepted)
-	message.CacheReceiptNonce, message.CacheScope = owner.nonce, owner.scope
-	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = 2, owner.boundaryMode
+	return pr.cachePreparation.Snapshot()
 }
 
 // beginCachePreparation also invalidates an earlier preparation ticket. Tracker
 // cleanup happens after the request lock is released.
-func (pr *PendingRequest) beginCachePreparation() (ticket uint64, open bool) {
+func (pr *PendingRequest) beginCachePreparation() (ticket cacheattempt.Ticket, open bool) {
 	pr.cacheAttemptMu.Lock()
-	owner := pr.cacheAttempt.Swap(nil)
-	if owner != nil {
-		owner.revoked.Store(true)
-	}
-	pr.cachePreparationTicket++
-	ticket, open = pr.cachePreparationTicket, !pr.cachePreparationClosed
+	ticket, open, retirement := pr.cachePreparation.Begin()
 	pr.LegacyCacheBustKey = ""
 	pr.cacheAttemptMu.Unlock()
-	if owner != nil {
-		owner.tracker.forgetAttempt(owner.nonce)
-	}
+	retirement.Complete()
 	return ticket, open
 }
 
-func (pr *PendingRequest) publishCacheAttempt(ticket uint64, owner *cacheAttemptOwner) bool {
+func (pr *PendingRequest) publishCacheAttempt(ticket cacheattempt.Ticket, owner *cacheAttemptOwner) bool {
 	pr.cacheAttemptMu.Lock()
 	defer pr.cacheAttemptMu.Unlock()
-	if pr.cachePreparationClosed || pr.cachePreparationTicket != ticket {
-		return false
-	}
-	pr.cacheAttempt.Store(owner)
-	return true
+	return pr.cachePreparation.Publish(ticket, owner)
 }
 
-// Publication is a second generation/connection check after nonce creation and
+// CachePublisher commits staged metadata only after revalidating its captured
+// generation and connection. A producer may delay publication, but must retain
+// this operation rather than reconstructing ownership from a mutable request.
+type CachePublisher interface{ Publish() bool }
+
+type CachePublication struct {
+	registry *Registry
+	request  *PendingRequest
+	provider *Provider
+	revision cachepeer.Token
+	ticket   cacheattempt.Ticket
+	owner    *cacheAttemptOwner
+	tracker  *cacheRoutingTracker
+}
+
+// Publish is a second generation/connection check after nonce creation and
 // tracker insertion. Retirement may have happened during either operation.
-func (r *Registry) publishCacheAttempt(
-	pr *PendingRequest, provider *Provider, revision, ticket uint64, owner *cacheAttemptOwner,
-) bool {
+func (publication CachePublication) Publish() bool {
+	r, pr, provider := publication.registry, publication.request, publication.provider
+	tracker, owner := publication.tracker, publication.owner
 	r.mu.RLock()
 	published := false
-	if r.cacheRoutingMode == CacheRoutingOn && r.cacheRouting == owner.tracker &&
+	if r.cacheRoutingMode == CacheRoutingOn && r.cacheRouting == tracker &&
 		r.providers[provider.ID] == provider {
 		provider.mu.Lock()
-		if provider.prefixCacheRevision == revision {
-			published = pr.publishCacheAttempt(ticket, owner)
+		if provider.prefixCacheRevision.Accepts(publication.revision) {
+			published = pr.publishCacheAttempt(publication.ticket, owner)
 		}
 		provider.mu.Unlock()
 	}
 	r.mu.RUnlock()
 	if !published {
-		owner.tracker.forgetAttempt(owner.nonce)
+		owner.ForgetReceipt()
 	}
 	return published
 }
 
-func (pr *PendingRequest) markCacheAttemptTerminal(now time.Time) {
+// The terminal timestamp comes from the owning tracker's clock so the
+// shortened attempt TTL agrees with receipt and sweep time.
+func (pr *PendingRequest) markCacheAttemptTerminal() {
 	pr.cacheAttemptMu.Lock()
-	pr.cachePreparationClosed = true
-	pr.cachePreparationTicket++
-	owner := pr.cacheAttempt.Load()
-	if owner != nil {
-		owner.revoked.Store(true)
-	}
+	retirement := pr.cachePreparation.Close()
 	pr.cacheAttemptMu.Unlock()
-	if owner != nil {
-		owner.tracker.markAttemptTerminal(owner.nonce, now)
-	}
+	retirement.Complete()
 }
 
 // Configure revokes under r.mu, then drains these maps under their own lock.
@@ -130,9 +106,8 @@ func (t *cacheRoutingTracker) clearRetired() {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.holders, t.attempts = nil, nil
-	t.holderOrder, t.attemptOrder = nil, nil
-	t.holderOrderByRef, t.attemptOrderByNonce = nil, nil
-	t.v2Sequences, t.rejectedV2 = nil, nil
-	t.holderCount = 0
+	t.core.ClearRetired()
+	if t.demand != nil {
+		t.demand.clear()
+	}
 }

@@ -29,7 +29,7 @@ private func makeGateLoop(models: [ModelInfo]) throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    return try ProviderLoop(config: config, attestationSigner: nil)
 }
 
 private func modelInfo(id: String, modelType: String?) -> ModelInfo {
@@ -44,6 +44,8 @@ struct EngineV2SupportedSetGateTests {
         "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
         "nvidia-nemotron-3.5-lightning",
         "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+        "nvidia-nemotron-3.5-lightning-hybrid8",
+        "nvidia-nemotron-3.5-lightning-4bit-r1",
     ])
     func lightningVariantGate(modelID: String) async throws {
         let lightning = modelInfo(id: modelID, modelType: "nemotron_h")

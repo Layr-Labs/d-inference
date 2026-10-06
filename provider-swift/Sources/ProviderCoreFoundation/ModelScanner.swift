@@ -1,12 +1,21 @@
 import Foundation
 import Logging
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 // MARK: - Model Scanner
 
 /// Scans the local HuggingFace cache for downloaded MLX models.
 ///
 /// The HuggingFace cache layout is:
-///   ~/.cache/huggingface/hub/models--{org}--{name}/snapshots/{hash}/
+///   {cache}/models--{org}--{name}/snapshots/{hash}/
+///
+/// where `{cache}` is the explicitly saved directory, or the unchanged
+/// `~/.cache/huggingface/hub` default. Ambient HuggingFace variables never
+/// select a serving cache; the location command can import them explicitly.
 ///
 /// A valid MLX model has config.json and at least one .safetensors weight file.
 ///
@@ -32,6 +41,7 @@ public struct ModelScanner: Sendable {
     /// `darkbloom-publish hash` manifest generation.
     public static let integrityFileNames: Set<String> = [
         "config.json",
+        "hadamard.json",
         "tokenizer.json",
         "tokenizer_config.json",
         "tokenizer.model",
@@ -52,42 +62,41 @@ public struct ModelScanner: Sendable {
     ]
 
     // MARK: - Public API
-
-    /// Returns the default HuggingFace cache directory.
-    public static func defaultCacheDirectory() -> URL? {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-    }
+    //
+    // Saved-location and legacy-default resolution lives in
+    // ModelScanner+CacheDirectory.swift.
 
     /// Resolve a model ID to its local snapshot path on disk.
     ///
     /// Checks the HuggingFace cache for a directory matching the model ID.
     /// Returns the snapshot path so the backend can load directly from disk.
+    public static func resolveLocalPath(modelID: String) -> URL? {
+        resolveLocalPath(
+            modelID: modelID,
+            environment: ProcessInfo.processInfo.environment,
+            configuredDirectory: configuredCacheDirectory)
+    }
+
     public static func resolveLocalPath(
-        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment
+        modelID: String,
+        environment: [String: String],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        configuredDirectory: String? = nil
     ) -> URL? {
         if modelID == ModelMediaPolicy.ownedQwen4ModelID, Qwen4LocalModelPath.isConfigured(environment: environment) {
             // Invalid explicit staging must not silently serve the old cache.
             return Qwen4LocalModelPath.directory(environment: environment)
         }
-        guard let cacheDir = defaultCacheDirectory() else { return nil }
+        let cacheDir = cacheDirectory(
+            homeDirectory: homeDirectory,
+            configuredDirectory: configuredDirectory)
         let fm = FileManager.default
 
         // Try exact match: models--{id with / replaced by --}
-        let dirName = "models--\(modelID.replacingOccurrences(of: "/", with: "--"))"
-        let modelDir = cacheDir.appendingPathComponent(dirName, isDirectory: true)
+        let modelDir = cacheDir.appendingPathComponent(
+            cacheDirectoryName(for: modelID), isDirectory: true)
         if fm.fileExists(atPath: modelDir.path) {
             let snapshotsDir = modelDir.appendingPathComponent("snapshots", isDirectory: true)
-            if let snapshot = findLatestSnapshot(in: snapshotsDir) {
-                return snapshot
-            }
-        }
-
-        // Try without org prefix (for models like "qwen3.5-27b-claude-opus-8bit")
-        let dirNamePlain = "models--\(modelID)"
-        let modelDirPlain = cacheDir.appendingPathComponent(dirNamePlain, isDirectory: true)
-        if fm.fileExists(atPath: modelDirPlain.path) {
-            let snapshotsDir = modelDirPlain.appendingPathComponent("snapshots", isDirectory: true)
             if let snapshot = findLatestSnapshot(in: snapshotsDir) {
                 return snapshot
             }
@@ -98,9 +107,36 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Snapshot Discovery
 
-    /// Find the latest snapshot directory by modification time.
+    /// Resolve an explicit refs/main selection, or the latest legacy snapshot
+    /// by modification time only when that selection is genuinely absent.
+    ///
+    /// The returned URL is symlink-resolved. `contentsOfDirectory(at:)`
+    /// canonicalises the paths it hands back (on macOS a `/var/...` input
+    /// yields `/private/var/...` entries), so without this the snapshot path
+    /// could come back in a different textual form than the cache directory it
+    /// was found under -- and callers that compare or key on those paths would
+    /// treat one directory as two.
     public static func findLatestSnapshot(in snapshotsDir: URL) -> URL? {
         let fm = FileManager.default
+        // A managed revision is selected explicitly. Modification times must
+        // never activate a staged download or undo a rollback.
+        let mainRef = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs/main")
+        switch readSnapshotReference(at: mainRef) {
+        case .invalid:
+            return nil
+        case .selected(let raw):
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
+                  !name.utf8.contains(0) else { return nil }
+            let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+            // Use the same POSIX canonicalization as legacy discovery so one
+            // selected directory cannot acquire two cache/ownership identities.
+            return resolved(selected)
+        case .absent:
+            break
+        }
         let entries: [URL]
         do {
             entries = try fm.contentsOfDirectory(
@@ -115,19 +151,64 @@ public struct ModelScanner: Sendable {
         var latest: (url: URL, date: Date)?
 
         for entry in entries {
+            // Foundation reports the type of a directory symlink itself.
+            // Validate its canonical target, but rank by the original entry's
+            // modification date so snapshot-selection ordering is unchanged.
+            let candidate = resolved(entry)
             guard let resourceValues = try? entry.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
-                  resourceValues.isDirectory == true else {
+                  let candidateValues = try? candidate.resourceValues(forKeys: [.isDirectoryKey]),
+                  candidateValues.isDirectory == true else {
                 continue
             }
 
             let modified = resourceValues.contentModificationDate ?? Date.distantPast
 
             if latest == nil || modified > latest!.date {
-                latest = (entry, modified)
+                latest = (candidate, modified)
             }
         }
 
-        return latest?.url
+        guard let latest else { return nil }
+        return resolved(latest.url)
+    }
+
+    private enum SnapshotReference {
+        case absent
+        case selected(String)
+        case invalid
+    }
+
+    /// A failed read is not absence. Keep valid reference symlinks, but do not
+    /// follow a broken refs directory into the legacy discovery fallback.
+    private static func readSnapshotReference(at url: URL) -> SnapshotReference {
+        var named = stat()
+        if lstat(url.path, &named) != 0 {
+            guard errno == ENOENT else { return .invalid }
+            let parent = url.deletingLastPathComponent()
+            var parentState = stat()
+            if lstat(parent.path, &parentState) == 0 {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else { return .invalid }
+            } else {
+                guard errno == ENOENT else { return .invalid }
+            }
+            return .absent
+        }
+        // Reuse the bounded, nonblocking metadata reader policy below. Resolve
+        // existing HF links, then refuse special objects and a raced leaf link.
+        let reference = url.resolvingSymlinksInPath()
+        let fd = open(reference.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return .invalid }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size >= 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577),
+              data.count == Int(state.st_size),
+              let text = String(data: data, encoding: .utf8) else { return .invalid }
+        return .selected(text)
     }
 
     // MARK: - MLX Detection
@@ -166,6 +247,27 @@ public struct ModelScanner: Sendable {
     }
 
     // MARK: - Weight File Collection
+
+    /// MiMo's strict native loader consumes one of these source-bound receipts.
+    /// Include it in both local attestation and the publisher/downloader file
+    /// list. Do not expand the global filename policy: unrelated existing model
+    /// aggregates must not change merely because they contain a conversion log.
+    private static func modelSpecificIntegrityFileNames(in root: URL) -> Set<String> {
+        // HF snapshot symlinks are supported, but never block opening a FIFO
+        // or read a special/oversized file during ordinary model discovery.
+        let url = root.appendingPathComponent("config.json").resolvingSymlinksInPath()
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return [] }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size > 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577), data.count == Int(state.st_size),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["model_type"] as? String == "mimo_v2" else { return [] }
+        return ["conversion_manifest.json", "artifact-provenance.json"]
+    }
 
     /// Whether a filename is an integrity-relevant file (weight or config/tokenizer/template).
     public static func isIntegrityFile(_ name: String) -> Bool {
@@ -208,7 +310,7 @@ public struct ModelScanner: Sendable {
            filename == "vocab.json" || filename == "merges.txt" {
             return "tokenizer"
         }
-        if filename == "config.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
+        if filename == "config.json" || filename == "hadamard.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
             return "config"
         }
         if filename == "chat_template.jinja" || filename == "chat_template.json" {
@@ -237,6 +339,7 @@ public struct ModelScanner: Sendable {
     /// calculation.
     public static func collectWeightFiles(in snapshotDir: URL) -> (sizeBytes: UInt64, paths: [URL]) {
         let fm = FileManager.default
+        let modelMetadata = modelSpecificIntegrityFileNames(in: snapshotDir)
         guard let enumerator = fm.enumerator(
             at: snapshotDir,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
@@ -250,7 +353,9 @@ public struct ModelScanner: Sendable {
 
         for case let entry as URL in enumerator {
             let name = entry.lastPathComponent
-            guard isIntegrityFile(name) else { continue }
+            let isRootModelMetadata = entry.deletingLastPathComponent().standardizedFileURL == snapshotDir.standardizedFileURL
+                && modelMetadata.contains(name)
+            guard isIntegrityFile(name) || isRootModelMetadata else { continue }
 
             let isWeight = isWeightFile(name)
 

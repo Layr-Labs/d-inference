@@ -70,7 +70,9 @@ func makeLocalInferenceApplication(
     tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
     availableModels: @escaping @Sendable () async -> [String],
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
-    onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+    responseTracker: LocalResponseTracker? = nil,
+    onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
+    modelTypeProvider: (@Sendable (String) async -> String?)? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -79,6 +81,9 @@ func makeLocalInferenceApplication(
     // shared model registry, response store, or metrics identity.
     let responseStore = InMemoryResponseStore()
     let metrics = ServerMetrics()
+    // One authenticated local application, not a request-controlled identity
+    // or a credential-derived value. Existing model cache scopes are unchanged.
+    let nativeCacheScope = "local-native-" + UUID().uuidString
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService = {
         controls in
         let engine = MultiModelBatchSchedulerEngine(
@@ -86,7 +91,9 @@ func makeLocalInferenceApplication(
             tokenizerProvider: tokenizerProvider,
             availableModels: availableModels,
             defaultMaxTokens: defaultMaxTokens,
-            templateControls: controls
+            templateControls: controls,
+            nativeLocalCacheScope: nativeCacheScope,
+            modelTypeProvider: modelTypeProvider
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)
@@ -112,7 +119,7 @@ func makeLocalInferenceApplication(
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
 
     return Application(
-        responder: LocalDisconnectResponder(inner: authedResponder),
+        responder: LocalDisconnectResponder(inner: authedResponder, responseTracker: responseTracker),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

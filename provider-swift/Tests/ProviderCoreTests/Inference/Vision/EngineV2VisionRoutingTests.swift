@@ -181,6 +181,31 @@ private final class VisionRequestCapture: @unchecked Sendable {
     }
 }
 
+/// Models a vision eval/readback that cannot return merely because its caller
+/// was cancelled. The test explicitly releases the held work afterward.
+private actor HeldVisionPreparation {
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var completion: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        entered = true
+        entryWaiter?.resume()
+        entryWaiter = nil
+        await withCheckedContinuation { completion = $0 }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { entryWaiter = $0 }
+    }
+
+    func release() {
+        completion?.resume()
+        completion = nil
+    }
+}
+
 // MARK: - Harness
 
 /// One synthetic prepared submission: prompt `[7, 7, P, P, P, 8]` with a
@@ -204,13 +229,17 @@ private func makePreparedSubmission(
 
 private func makeBridge(
     engine: VisionScriptedEngine, fixedRequestBytes: Int = 0,
-    kvBudget: GlobalKVCacheBudget? = nil, telemetry: VisionTelemetrySink? = nil
+    kvBudget: GlobalKVCacheBudget? = nil, telemetry: VisionTelemetrySink? = nil,
+    performanceProfile: ServingPerformanceProfile? = nil,
+    deadlineProfile: DeadlinePerformanceProfile? = nil
 ) -> EngineV2Bridge {
     EngineV2Bridge(
         engine: engine,
         modelId: "test/vlm-stub",
         tokenizer: TokenizerHandle(VisionStubTokenizer()),
         eosTokenIds: [2],
+        performanceProfile: performanceProfile,
+        deadlineProfile: deadlineProfile,
         kvBytesPerToken: 0,
         fixedRequestBytes: fixedRequestBytes,
         kvBudget: kvBudget,
@@ -811,6 +840,61 @@ struct Qwen35CBv2FixedRequestAccountingTests {
 @Suite("MultiModelBatchSchedulerEngine vision-v2 routing")
 struct EngineV2VisionRoutingTests {
 
+    @Test("vision preparation remains unqualified through cancellation or lease handoff", arguments: [false, true])
+    func unboundedVisionPreparationAndHandoff(cancelDuringPrepare: Bool) async throws {
+        let (gate, budget) = makeBudgetedVisionGate()
+        let engine = VisionScriptedEngine(script: .manual)
+        let fixtureProfile = ServingPerformanceProfile(
+            id: "vision-text-fixture", modelId: "test/vlm-stub", artifactSha256: String(repeating: "a", count: 64),
+            providerVersion: "test", runtimeRevision: ServingPerformanceProfiles.runtimeRevision,
+            kvBackend: "contiguous", chipName: "test", gpuCores: 1, memoryGb: 64,
+            contextTokensMax: 4096, maxConcurrency: 1, wholeMacConcurrency: 4,
+            mixedPrefillTokenCap: nil, qualificationReportSha256: String(repeating: "b", count: 64),
+            batchCurve: [.init(width: 1, decodeP10Tps: 40, aggregateDecodeTps: 40,
+                prefillTps: 800, firstContentP95Ms: 1000)])
+        var deadlineProfile = deadlineCalibrationProfileFixture()
+        deadlineProfile.modelId = fixtureProfile.modelId
+        let bridge = makeBridge(engine: engine, kvBudget: budget, performanceProfile: fixtureProfile,
+            deadlineProfile: deadlineProfile)
+        let service = budget.serviceBudget
+        #expect(service.acquire(ownerID: "text", concurrency: 4,
+            work: .init(modelID: "text", profileID: "text-profile", promptTokens: 128, maxOutputTokens: 32)))
+        defer { service.release(ownerID: "text") }
+        let captured = try #require(service.calibrationSnapshot(ownerID: "text", modelID: "text", profileID: "text-profile"))
+        let hold = HeldVisionPreparation()
+        let (prepared, _) = makePreparedSubmission()
+        let router = makeRoutingEngine(container: makeStubContainer(), bridge: bridge,
+            plumbing: .init(prepare: { _, _, _ in await hold.wait(); return prepared }, emitTelemetry: { _ in }),
+            visionGate: gate)
+        let preparation = Task { try await router.streamChatCompletion(request: imageRequest()) }
+        await hold.waitUntilEntered()
+        #expect(!captured.evidenceGuard.isValid)
+        #expect(service.usedFraction == 0.25) // Preparation is noncharging.
+        #expect(service.calibrationSnapshot(ownerID: "text", modelID: "text", profileID: "text-profile") == nil)
+        if cancelDuringPrepare { preparation.cancel() }
+        #expect(!service.deadlineWork(modelID: "text", epoch: "fixture").known)
+        await hold.release()
+        if cancelDuringPrepare {
+            do { _ = try await preparation.value; Issue.record("expected cancellation") }
+            catch is CancellationError {} catch { Issue.record("unexpected error: \(error)") }
+            #expect(engine.submitted.isEmpty)
+        } else {
+            let stream = try await preparation.value
+            // Preparation ended, but the reviewed text profile must not make
+            // this actual multimodal lease a calibrated competitor.
+            #expect(!service.deadlineWork(modelID: "test/vlm-stub", epoch: "fixture").known)
+            #expect(service.calibrationSnapshot(ownerID: "text", modelID: "text", profileID: "text-profile") == nil)
+            engine.manualContinuation?.yield(.finished(reason: .stop,
+                usage: .init(promptTokens: 6, completionTokens: 0)))
+            engine.manualContinuation?.finish()
+            _ = try await collectContent(stream)
+        }
+        await bridge.shutdown()
+        #expect(service.usedFraction == 0.25)
+        #expect(service.calibrationSnapshot(ownerID: "text", modelID: "text", profileID: "text-profile") != nil)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     @Test("thinking-disabled text, image, and video stream before engine completion",
           arguments: ["text", "image", "video"], [ReasoningParserFormat.qwen3, .deepseekR1, .none])
     func nonThinkingContentBeforeCompletion(kind: String, parser: ReasoningParserFormat) async throws {
@@ -1045,18 +1129,24 @@ struct EngineV2VisionRoutingTests {
         #expect(outstanding == 0)
     }
 
-    @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback")
-    func constructionFailureRefusesLoudly() async throws {
+    @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback",
+          arguments: [false, true])
+    func constructionFailureRefusesLoudly(typedVisionFailure: Bool) async throws {
         struct PrepFailure: Error {}
         // Real budget behind the slot's gate so the vision reservation is
         // NOT a no-op: the refusal path must release it (a leak would shrink
         // admission headroom one refused request at a time).
         let (gate, budget) = makeBudgetedVisionGate()
         let engine = VisionScriptedEngine(script: .stream([]))
-        let bridge = makeBridge(engine: engine)
+        let bridge = makeBridge(engine: engine, kvBudget: budget)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw PrepFailure() },
+            prepare: { _, _, _ in
+                #expect(!budget.serviceBudget.deadlineWork(modelID: "test/vlm-stub", epoch: "fixture").known)
+                #expect(budget.serviceBudget.usedFraction == 0)
+                if typedVisionFailure { throw EngineV2VisionPrefillError.towerFault(stage: "test") }
+                throw PrepFailure()
+            },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -1084,6 +1174,7 @@ struct EngineV2VisionRoutingTests {
         }
         #expect(engine.submitted.isEmpty, "the engine must never see a failed construction")
         #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(budget.serviceBudget.deadlineWork(modelID: "test/vlm-stub", epoch: "fixture").known)
 
         let refusals = telemetry.events.filter {
             $0.fields?["operation"]?.description == "engine_v2_vision_refusal"
@@ -1093,7 +1184,8 @@ struct EngineV2VisionRoutingTests {
         #expect(refusals.first?.fields?["multimodal"]?.description == "true")
         #expect(refusals.first?.fields?["media_kind"]?.description == "image")
         #expect(
-            refusals.first?.fields?["error_class"]?.description.contains("PrepFailure") == true)
+            refusals.first?.fields?["error_class"]?.description.contains(
+                typedVisionFailure ? "EngineV2VisionPrefillError" : "PrepFailure") == true)
         // No fallback WARN exists anymore.
         #expect(
             telemetry.events.allSatisfy {
@@ -1428,10 +1520,14 @@ struct EngineV2VisionRoutingTests {
         // cancel).
         let (gate, budget) = makeBudgetedVisionGate()
         let engine = VisionScriptedEngine(script: .stream([]))
-        let bridge = makeBridge(engine: engine)
+        let bridge = makeBridge(engine: engine, kvBudget: budget)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw CancellationError() },
+            prepare: { _, _, _ in
+                #expect(!budget.serviceBudget.deadlineWork(modelID: "test/vlm-stub", epoch: "fixture").known)
+                #expect(budget.serviceBudget.usedFraction == 0)
+                throw CancellationError()
+            },
             emitTelemetry: telemetry.callback()
         )
         let releaseCount = PrepareCallCounter()
@@ -1476,6 +1572,7 @@ struct EngineV2VisionRoutingTests {
         #expect(engine.submitted.isEmpty)
         #expect(releaseCount.count == 1)
         #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(budget.serviceBudget.deadlineWork(modelID: "test/vlm-stub", epoch: "fixture").known)
     }
 
     @Test("engine-side CBv2MultimodalError surfaces as .multimodalRejected → 400")

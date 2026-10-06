@@ -80,33 +80,6 @@ struct ModelCatalogTests {
         #expect(str.contains(#""min_ram_gb":8"#))
     }
 
-    @Test("cacheModelDirectory mirrors the HuggingFace cache layout")
-    func cacheModelDirectoryShape() {
-        let url = ModelDownloader.cacheModelDirectory(for: "mlx-community/Foo-Bar")
-        #expect(url.path.hasSuffix(".cache/huggingface/hub/models--mlx-community--Foo-Bar"))
-    }
-
-    @Test("parseShardNames returns sorted unique values from weight_map")
-    func parseShardNamesDedupAndSort() throws {
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("test-index-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: tmp) }
-
-        let json = #"""
-        {
-          "weight_map": {
-            "lm_head.weight": "model-00002.safetensors",
-            "embed.weight":   "model-00001.safetensors",
-            "block.0.q":      "model-00001.safetensors"
-          }
-        }
-        """#
-        try Data(json.utf8).write(to: tmp)
-
-        let names = try ModelDownloader.parseShardNames(indexPath: tmp)
-        #expect(names == ["model-00001.safetensors", "model-00002.safetensors"])
-    }
-
     @Test("manifest paths reject traversal and preserve nested files")
     func manifestPathValidation() throws {
         #expect(try ModelDownloader.validatedManifestRelativePath("config.json") == "config.json")
@@ -154,6 +127,30 @@ struct ModelCatalogTests {
         let decoded = try await client.fetchManifest(modelID: manifest.modelID)
         #expect(decoded == manifest)
         #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/manifest/org%2Fmodel%2Fwith%2Fslash")
+    }
+
+    @Test("catalog and manifest preserve HTTP errors before JSON validation",
+          arguments: [true, false])
+    func endpointHTTPErrorPrecedence(manifest: Bool) async {
+        CatalogBodyURLProtocol.payload = Data("not JSON".utf8)
+        CatalogBodyURLProtocol.includeContentLength = true
+        CatalogBodyURLProtocol.statusCode = 503
+        defer { CatalogBodyURLProtocol.statusCode = 200 }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let client = ModelCatalogClient(coordinatorURL: "https://coord.example.test", urlSession: session)
+        do {
+            if manifest { _ = try await client.fetchManifest(modelID: "org/model") }
+            else { _ = try await client.fetchCatalog() }
+            Issue.record("HTTP failure was accepted")
+        } catch ModelCatalogError.http(let status, let body) {
+            #expect(status == 503)
+            #expect(body == "not JSON")
+        } catch {
+            Issue.record("HTTP error changed category: \(error)")
+        }
     }
 
     @Test("catalog streaming accepts the exact response-byte boundary")
@@ -523,6 +520,34 @@ struct ModelCatalogTests {
         #expect(!snapshotEntries.contains { $0.hasPrefix(".local-staging-") })
     }
 
+    // The retired CDN path fetched config/tokenizer/weights by name with no
+    // SHA-256 check. Without a verified manifest the download must fail closed
+    // before any network or cache work.
+    @Test("download refuses a catalog entry without a verified manifest")
+    func downloadRefusesUnverifiedCatalogEntry() async throws {
+        let modelID = "test-unverified/\(UUID().uuidString)"
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+        // An unroutable CDN: any network attempt would fail differently.
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.invalid")
+
+        for (prefix, aggregate) in [(nil, "a" + String(repeating: "0", count: 63)), ("v2/x/v1", nil)] as [(String?, String?)] {
+            let model = CatalogModel(
+                id: modelID, s3Name: "unverified", displayName: "Unverified", sizeGb: 0.001,
+                r2Prefix: prefix, aggregateSHA256: aggregate)
+            do {
+                try await downloader.download(model: model)
+                Issue.record("an entry without r2_prefix + aggregate_sha256 must not download")
+            } catch let error as ModelCatalogError {
+                guard case .downloadFailed(let message) = error else {
+                    Issue.record("unexpected catalog error: \(error)")
+                    continue
+                }
+                #expect(message.contains("no verified manifest"))
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: modelDir.path))
+    }
 }
 
 // Mirror of the private wrapper used inside ModelCatalog.swift so we can
@@ -534,6 +559,7 @@ private struct CatalogResponseShim: Codable {
 private final class CatalogBodyURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var payload = Data()
     nonisolated(unsafe) static var includeContentLength = true
+    nonisolated(unsafe) static var statusCode = 200
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -544,7 +570,7 @@ private final class CatalogBodyURLProtocol: URLProtocol, @unchecked Sendable {
             headers = ["Content-Length": "\(Self.payload.count)"]
         }
         let response = HTTPURLResponse(
-            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            url: request.url!, statusCode: Self.statusCode, httpVersion: "HTTP/1.1",
             headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         let chunkSize = 16 * 1024

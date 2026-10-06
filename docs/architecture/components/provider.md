@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-30
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -17,8 +17,8 @@ CBv2 engine per resident model, and encrypts the response back. It is the
 decryption endpoint of the hop-by-hop model
 ([`../security/encryption.md`](../security/encryption.md)), so everything that
 touches plaintext — template rendering, tokenisation, the engine, the KV cache —
-lives inside this one hardened process. `ProviderCore.version = "0.8.16"`
-(`provider-swift/Sources/ProviderCore/ProviderCore.swift`).
+lives inside this one hardened process. The authoritative provider version is
+`ProviderCore.version` in `provider-swift/Sources/ProviderCore/ProviderCore.swift`.
 
 ## Mechanism
 
@@ -27,7 +27,7 @@ lives inside this one hardened process. `ProviderCore.version = "0.8.16"`
 | Product | Kind | Role |
 |---|---|---|
 | `darkbloom` | executable | CLI: `start`, `status`, `doctor`, `logs`, `benchmark`, `models`, `fan`, `watchdog`; long-running serve modes host an `NSApplication(.accessory)` run loop for APNs pushes (`provider-swift/Sources/darkbloom/main.swift`, `provider-swift/Sources/darkbloom/Darkbloom.swift`) |
-| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info`, `wallet-address` (`provider-swift/Sources/darkbloom-enclave-cli/`); the installer keeps an `eigeninference-enclave` symlink |
+| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
 | `darkbloom-fan-helper` | executable | Opt-in root LaunchDaemon for fan control; never installed by default (`provider-swift/Sources/DarkbloomFanHelper/`) |
 | `ProviderCore` | library | Everything below; shared by the CLI and helpers |
 | `ProviderCoreFoundation` | library | Pure-Foundation pieces also linked by publish tooling: `WeightHasher`, `PromptContractIdentity`, `TemplateRenderCheck`, `ModelScanner`, `Manifest` (`provider-swift/Sources/ProviderCoreFoundation/`) |
@@ -40,7 +40,7 @@ lives inside this one hardened process. `ProviderCore.version = "0.8.16"`
 | Coordinator client | WebSocket connection, reconnection backoff, protocol codec, registration | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` |
 | `ProviderLoop` (actor) | Event loop: inference requests and cancellations, `load_model` / `prefetch_model` / `desired_models`, heartbeats and capacity, attestation challenges, startup preload, idle timeout, auto-update | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` and its `ProviderLoop+*.swift` extensions |
 | Inference | `MultiModelBatchSchedulerEngine` → one `EngineV2Bridge` per model → CBv2; slot construction, memory model, deadlines, MTP, vision | `provider-swift/Sources/ProviderCore/Inference/` — [`../inference.md`](../inference.md), [`../hardware-support.md`](../hardware-support.md) |
-| KV cache tiers | Encrypted SSD prefix cache (`KVCacheSSD/`) plus the legacy sweeper and key-wrapping service (`KVCache/`); no RAM prefix tier in production | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/` — [`../prefix-cache.md`](../prefix-cache.md) |
+| KV cache tiers | Encrypted SSD attention snapshots and complete checkpoints (`KVCacheSSD/`); resident paged blocks and recurrent checkpoints require explicit memory opt-in. `KVCache/` retains the legacy cache API and the shared key-wrapping service | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/` — [`../prefix-cache.md`](../prefix-cache.md) |
 | Model discovery and download | Scan of the Hugging Face cache, quantization detection, padded memory estimate, catalog client, prefetch and hot-swap | `provider-swift/Sources/ProviderCore/Models/`, `provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift` |
 | Local / standalone serving | OpenAI-compatible HTTP on loopback or tailnet (`start --local`, `--local-endpoint`) using the upstream `MLXLMServer` router over the same engine | `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`, `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` |
 | Security and identity | Secure Enclave P-256 identity, attestation blob, APNs code-identity, anti-debug, environment scrub, SIP/boot checks | `provider-swift/Sources/ProviderCore/Security/`, `provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift` — [`../security/attestation.md`](../security/attestation.md) |
@@ -58,16 +58,18 @@ flowchart LR
     MM --> B2[EngineV2Bridge model B]
     B1 --> E[CBv2 EngineV2 → Metal]
     B2 --> E
-    B1 -. paged slots only .-> SSD[SSDPrefixCache kv3/]
+    B1 -. capability and identity gates .-> SSD[Encrypted SSD snapshots / complete checkpoints]
+    B1 -. explicit memory opt-in .-> RAM[Resident paged blocks / recurrent checkpoints]
     PL --> SE[Secure Enclave identity / attestation]
 ```
 
 ### Process boundaries
 
 - **In-process inference.** The MLX stack is linked into the `darkbloom`
-  binary; there is no Python interpreter and no inference subprocess. The only
-  child processes are the paged-kernel preflight (`PagedKernelPreflight`,
-  `runtime-smoke`) and the launchd-managed watchdog. The optional local HTTP
+  binary; there is no Python interpreter and no inference subprocess. Runtime verification can launch a child for paged-kernel preflight
+  (`PagedKernelPreflight`, `runtime-smoke`); platform checks and service
+  management also invoke system tools. The crash-recovery watchdog is
+  managed separately by launchd. The optional local HTTP
   endpoint serves from the same loaded models in the same process.
 - **Fan helper.** A separate root LaunchDaemon that accepts an activity lease
   only from the exact Darkbloom signing identity and can write only the SMC fan
@@ -97,7 +99,7 @@ flowchart LR
 
 | Symptom | Cause | Where |
 |---|---|---|
-| Daemon exits at start | Metal or RAM preflight failed ([`../hardware-support.md`](../hardware-support.md)) | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` |
+| Daemon exits at start | Metal or RAM preflight failed ([`../hardware-support.md`](../hardware-support.md)) | `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift` |
 | Provider offline after a crash | Watchdog agent stopped or persistently disabled | `Service/WatchdogAgent.swift` |
 | Env knob has no effect on the installed daemon | Not in `passthroughEnvKeys` | `Service/LaunchAgent.swift` |
 | Attestation trust downgraded | SIP off, boot-security warning, or stale APNs code-identity | `Security/BootSecurity.swift`, `Apns/APNsBridge.swift` — [`../../provider/attestation.md`](../../provider/attestation.md) |
@@ -111,6 +113,10 @@ flowchart LR
 | Core library | `provider-swift/Sources/ProviderCore/` |
 | Foundation-only library | `provider-swift/Sources/ProviderCoreFoundation/` |
 | Fan control | `provider-swift/Sources/DarkbloomFanCore/`, `provider-swift/Sources/DarkbloomFanProtocol/`, `provider-swift/Sources/DarkbloomFanService/`, `provider-swift/Sources/DarkbloomFanHelper/` |
+| Cache setup and outcomes | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+AttentionPrefixCache.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` |
+| Download publication and catalog bounds | `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Manifest.swift`, `provider-swift/Sources/ProviderCore/Models/ModelCatalogClient+Bounds.swift` |
+| Shared system command execution | `provider-swift/Sources/ProviderCore/Process/SecurityCommandRunner.swift`; doctor probes retain deadlines through `provider-swift/Sources/ProviderCore/Process/BoundedProcess.swift` |
+| CLI config mutations | `provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`) |
 | Tests | `provider-swift/Tests/` |
 
 ## Related

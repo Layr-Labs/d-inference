@@ -134,7 +134,6 @@ struct AutoUpdateJitterSequencingTests {
             waitBeforeInstall: { recorder.record("jitter") },
             beginDraining: { recorder.record("beginDraining") },
             waitForDrain: { _ in recorder.record("waitForDrain"); return true },
-            forceCancelInflight: { recorder.record("forceCancel") },
             commitInstall: { recorder.record("commit"); return .completed },
             restart: { recorder.record("restart") },
             log: { _ in }
@@ -208,7 +207,6 @@ struct AutoUpdateJitterSequencingTests {
             },
             beginDraining: { recorder.record("beginDraining") },
             waitForDrain: { _ in recorder.record("waitForDrain"); return true },
-            forceCancelInflight: { recorder.record("forceCancel") },
             commitInstall: { recorder.record("commit"); return .completed },
             restart: { recorder.record("restart") },
             log: { _ in }

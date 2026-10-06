@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-10-03
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -17,14 +17,14 @@ the packages described in
 `darkbloom start` requires Metal
 (`provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`,
 `requireMetal`) and a minimum amount of RAM
-(`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`,
+(`provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`,
 `hardware.memoryGb`). There is no hard runtime macOS-version check:
 `BootSecuritySnapshot.recommendedMacOSMajorVersion` only turns
 `darkbloom doctor` yellow below that major version
 (`provider-swift/Sources/ProviderCore/Security/BootSecurity.swift`). The three
 values are in [Constants](#constants). Chip
 identity is parsed from the brand string into `ChipFamily` ∈ {`M1`, `M2`,
-`M3`, `M4`, `M5`, `Unknown`} and `ChipTier` ∈ {`Base`, `Pro`, `Max`, `Ultra`,
+`M3`, `M4`, `M5`, `M6`, `Unknown`} and `ChipTier` ∈ {`Base`, `Pro`, `Max`, `Ultra`,
 `Unknown`} (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`,
 `parseChipIdentity`; `provider-swift/Sources/ProviderCore/Protocol/Enums.swift`).
 
@@ -39,7 +39,7 @@ byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 | Symbol | Value | Code |
 |---|---|---|
 | `recommendedMacOSMajorVersion` | `26` — `darkbloom doctor` warning threshold only, never a gate | `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` (`BootSecuritySnapshot`) |
-| RAM floor at start | `hardware.memoryGb < 8` refuses `darkbloom start` (8 GB) | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` |
+| RAM floor at start | `hardware.memoryGb < 8` refuses `darkbloom start` (8 GB) | `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift` |
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
@@ -88,9 +88,6 @@ liveKVHeadroomBytes(physical, mlxUsed, systemAvailable, activations, configReser
     effectiveCap = min(hardCapBytes, physical − configReserve)
     realFree     = min(effectiveCap − mlxUsed (clamped ≥ 0), systemAvailable)
     = realFree > activations ? realFree − activations : 0
-
-canAdmit(currentResident, candidate, minimumKV, activations, ramPrefix)
-    = currentResident + candidate + activations + ramPrefix + minimumKV ≤ hardCapBytes
 
 loadReserveBytes(configReserve) = max(configReserve, physical − hardCapBytes)
 
@@ -314,10 +311,10 @@ Implementation: `provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMem
 ### Coordinator mirror
 
 The coordinator predicts servability with its own copy of the cap fraction,
-activation floors and per-model table (`coordinator/registry/servability.go`:
-`servabilityActivationFloorGB`, `servabilityLegacyActivationFloorGB`,
-`servabilityActivationFloorMinVersion`, `servabilityPerModelFloorMinVersion`,
-`servabilityModelActivationFloorsGB`, `servabilityMeasuredResidentGiB`;
+activation floors and per-model table
+(`coordinator/internal/registry/memorypolicy/structural.go`:
+`servabilityActivationFloorGB`, `servabilityModelActivationFloorsGB`,
+`servabilityMeasuredResidentGiB`;
 `coordinator/registry/scheduler.go`, `coldLoadCatalogGBToMemGiB`). The doc
 comment on `defaultActivationReserveBytes` requires the provider and
 coordinator tables to move in the same commit. The coordinator's arithmetic and
@@ -370,7 +367,7 @@ its use in admission are described once, in
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
-| Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
+| Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Coordinator mirror | `coordinator/registry/servability.go`, `coordinator/registry/scheduler.go` |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
 

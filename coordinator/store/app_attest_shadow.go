@@ -1,8 +1,8 @@
 package store
 
 import (
-	"bytes"
 	"context"
+	"time"
 )
 
 // AppAttestShadowStore is observation-only storage, discovered through As so
@@ -24,19 +24,8 @@ type AppAttestShadowKey struct {
 	BundleVersion      string  `json:"bundle_version"`
 	ValidationCategory *uint32 `json:"validation_category,omitempty"`
 	Counter            uint32  `json:"counter"`
-}
-
-const appAttestShadowDDL = `CREATE TABLE IF NOT EXISTS app_attest_shadow_keys (
-	key_id TEXT PRIMARY KEY, owner TEXT NOT NULL, evidence JSONB NOT NULL,
-	counter BIGINT NOT NULL DEFAULT 0 CHECK (counter >= 0 AND counter <= 4294967295),
-	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`
-
-func cloneAppAttestKey(k AppAttestShadowKey) *AppAttestShadowKey {
-	k.PublicKey = bytes.Clone(k.PublicKey)
-	if k.ValidationCategory != nil {
-		v := *k.ValidationCategory
-		k.ValidationCategory = &v
-	}
-	return &k
+	// UpdatedAt is the row's insert time or its last accepted counter advance,
+	// i.e. the key's last verified assertion. It is never serialized into the
+	// evidence JSON and never authorizes anything.
+	UpdatedAt time.Time `json:"-"`
 }

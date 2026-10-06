@@ -24,7 +24,7 @@ class ReleasePipelineTests(unittest.TestCase):
         for name, lane in [('build-provider', 'release'), ('qualify-sdk', 'qualification')]:
             content = job(RELEASE, name)
             self.assertRegex(content, r'(?m)^    needs: resolve-env$')
-            self.assertIn('runs-on: xcode-27-xlarge', content)
+            self.assertIn('runs-on: blacksmith-12vcpu-macos-27', content)
             self.assertIn('lane: ' + lane, content)
             self.assertIn('contents: read', content)
             self.assertNotIn('secrets.', content)
@@ -39,12 +39,42 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('continue-on-error:', ACTION)
         self.assertIn('needs: [resolve-env, build-and-release]', job(RELEASE, 'validate-older-macos'))
 
+    def test_publication_is_separate_and_retryable_without_signing(self):
+        sign = job(RELEASE, 'build-and-release')
+        stage = job(RELEASE, 'stage-release')
+        publish = job(RELEASE, 'publish-release')
+        for content in [sign, stage]:
+            self.assertNotIn('/v1/releases', content)
+            self.assertNotIn('gh release create', content)
+            self.assertNotIn('releases/latest/', content)
+            self.assertNotIn('secrets.PROD_RELEASE_KEY', content)
+        self.assertNotIn('provider-release-publication.py stage', sign)
+        self.assertNotIn('secrets.PROD_R2_ACCESS_KEY_ID', sign)
+        self.assertNotIn('secrets.PROD_R2_SECRET_ACCESS_KEY', sign)
+        self.assertNotIn('aws s3', sign)
+        self.assertIn('publication_artifact: ${{ steps.publication_identity.outputs.artifact_name }}', sign)
+        self.assertIn('provider-release-publication.py stage', stage)
+        self.assertIn('provider-release-publication.py publish', publish)
+        self.assertIn('needs: [resolve-env, build-and-release]', stage)
+        self.assertIn('needs: [resolve-env, build-and-release, stage-release]', publish)
+        for content in [stage, publish]:
+            self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+            self.assertIn('needs.build-and-release.outputs.publication_artifact', content)
+            self.assertIn('gh run download "$GITHUB_RUN_ID"', content)
+            self.assertNotIn('GITHUB_RUN_ATTEMPT', content)
+            self.assertNotIn('notarytool', content)
+            self.assertNotIn('APPLE_', content)
+            self.assertNotIn('provider-release-build', content)
+            self.assertIn("needs.resolve-env.outputs.publish == 'true'", content)
+            self.assertNotRegex(content, r'(?m)^    if:.*always')
+        self.assertIn('cancel-in-progress: false', publish)
+
     def test_artifact_handoff_is_same_run_and_source_bound(self):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')
         self.assertIn('provider-signing-validation.py stage', build)
         self.assertIn('unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}', build)
         self.assertIn('gh run download "$GITHUB_RUN_ID"', sign)
-        self.assertIn('EXPECTED_SOURCE: ${{ github.sha }}', sign)
+        self.assertIn('EXPECTED_SOURCE: ${{ needs.resolve-env.outputs.source_sha }}', sign)
         self.assertIn('--source-sha "$EXPECTED_SOURCE" --version "$VERSION"', sign)
         self.assertLess(sign.index('provider-signing-validation.py unpack'),
                         sign.index('Import Developer ID certificate'))
@@ -82,7 +112,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)
-        self.assertIn('runs-on: xcode-27-xlarge', WARM)
+        self.assertIn('runs-on: blacksmith-12vcpu-macos-27', WARM)
         self.assertNotRegex(WARM, r'(?m)^  (pull_request_target|workflow_run):')
         for text in [WARM, ACTION]:
             for forbidden in ['secrets.', 'contents: write', 'gh release create', 'aws s3', 'notarytool']:
@@ -99,6 +129,16 @@ class ReleasePipelineTests(unittest.TestCase):
                          'BINARY_HASH=$(shasum -a 256',
                          'Register release with coordinator']:
             self.assertIn(expected, RELEASE)
+
+    def test_audio_native_inference_is_required_in_release_qualification(self):
+        fixture = ACTION.split('- name: Prepare selected MiMo audio fixture\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", fixture)
+        self.assertIn("prepare-mimo-audio-fixtures.py", fixture)
+        gate = ACTION.split('- name: Qualify authenticated native MiMo PCM8 audio inference\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn("if: inputs.lane == 'qualification'", gate)
+        self.assertIn("run-nested-suite.sh testNativeAudioRelease --no-parallel", gate)
+        self.assertNotIn("cache-hit", gate)
+        self.assertNotIn("continue-on-error:", gate)
 
     def test_qwen_resource_regression_runs_without_a_cache_hit_bypass(self):
         step = ACTION.split('- name: Test Qwen resources in a relocated app\n', 1)[1].split('\n    - name:', 1)[0]

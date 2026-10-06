@@ -94,7 +94,7 @@ var ModelDecodeClasses = map[string]ModelDecodeClass{
 // detector multiplies by the efficiency factor to get a sustained estimate. A
 // provider-reported memory_bandwidth_gbs, when present, takes precedence over
 // this table (resolved in the api sweep); this table is the fallback for
-// providers that omit it. M4 Ultra / the M5 line are approximate/extrapolated.
+// providers that omit it. Some older classes remain approximate/extrapolated.
 var ChipBandwidthGBps = map[string]float64{
 	"M1":       68,
 	"M1 Pro":   200,
@@ -116,6 +116,7 @@ var ChipBandwidthGBps = map[string]float64{
 	"M5 Pro":   300,
 	"M5 Max":   600,
 	"M5 Ultra": 1200,
+	"M6":       153,
 }
 
 // ExpectedDecodeTPS returns the bandwidth-bound single-stream decode throughput
@@ -181,13 +182,6 @@ func containsAny(s string, subs ...string) bool {
 		}
 	}
 	return false
-}
-
-// NormalizeChipClass builds a canonical chip-class string ("M3 Max", "M4 Pro",
-// "M2") from a provider-reported chip family and tier. Returns "" when no Apple
-// generation token can be found.
-func NormalizeChipClass(family, tier string) string {
-	return chipClassFromTokens(family + " " + tier)
 }
 
 // ResolveChipClass derives a canonical chip class from a provider's reported

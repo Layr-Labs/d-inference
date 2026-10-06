@@ -147,6 +147,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
             case let qwen as MLXVLM.Qwen4Exp:
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
+            case let prism as MLXVLM.PrismHadamardQwen35:
+                rate = fp16KVBytesPerToken(layerKinds: prism.cbv2LayerKinds)
             case is MLXVLM.Qwen35MoE:
                 return ModuleFacts(
                     bytes: bytes,
@@ -219,24 +221,6 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             perToken += 2 * kind.kvHeads * kind.headDim * 2
         }
         return perToken
-    }
-
-    /// Total fp16 KV bytes retained after `tokens` tokens of one sequence —
-    /// the EXACT `AdmissionV2.estimatedBytes` arithmetic (window plateaus
-    /// included), reproduced for sizing decisions that want the absolute
-    /// figure rather than the marginal rate.
-    public static func estimatedKVBytes(layerKinds: [CBv2LayerKind], tokens: Int) -> Int {
-        guard tokens > 0 else { return 0 }
-        var total = 0
-        for kind in layerKinds where kind.sharesKVWithLayer == nil {
-            let retained: Int
-            switch kind.attention {
-            case .full: retained = tokens
-            case .slidingWindow(let window): retained = min(tokens, window)
-            }
-            total += retained * 2 * kind.kvHeads * kind.headDim * 2
-        }
-        return total
     }
 
     static func qwenVLMTextKVRate(modelDirectory: URL) -> Int? {

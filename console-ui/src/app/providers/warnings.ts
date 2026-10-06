@@ -11,6 +11,9 @@
 
 import type { MyProvider, MyProvidersResponse } from "./types";
 import { formatIdleWindow } from "@/lib/format";
+import { hasCurrentAppAttestAuthorization } from "./authorization";
+import { needsMacOSUpgrade } from "./macos-upgrade";
+import { coldModelReadiness } from "./dashboard/load-readiness";
 
 export type WarningSeverity = "blocking" | "degrading" | "info";
 
@@ -55,9 +58,10 @@ export function computeWarnings(
   >
 ): Warning[] {
   const out: Warning[] = [];
+  const appAttest = hasCurrentAppAttestAuthorization(p);
 
   // Blocking: machine receives no requests.
-  if (p.status === "untrusted" || p.failed_challenges >= 3) {
+  if (p.status === "untrusted" || (!appAttest && p.failed_challenges >= 3)) {
     out.push({
       id: "untrusted",
       severity: "blocking",
@@ -115,6 +119,7 @@ export function computeWarnings(
   // Stale attestation challenge: the coordinator excludes providers whose
   // last challenge is older than `challenge_max_age_seconds` (typically 6 min).
   if (
+    !appAttest &&
     p.last_challenge_verified &&
     p.status !== "offline" &&
     p.status !== "untrusted" &&
@@ -131,11 +136,10 @@ export function computeWarnings(
     }
   }
 
-  // Trust below the routing threshold. In production the coordinator's
-  // MinTrustLevel is "hardware", so anything below that gets ZERO requests
-  // (not just a reduced multiplier). We surface it as blocking and tell the
-  // user how to upgrade.
+  // A current App Attest grant satisfies verification independently of the
+  // legacy hardware trust level; never ask an authorized Mac to enroll in MDM.
   if (
+    !appAttest &&
     p.trust_level !== "hardware" &&
     p.status !== "offline" &&
     p.status !== "untrusted" &&
@@ -145,9 +149,9 @@ export function computeWarnings(
       out.push({
         id: "trust_self_signed",
         severity: "blocking",
-        title: "Self-signed trust below routing threshold",
+        title: "Serving verification pending",
         detail:
-          "The network requires hardware-attested machines. Complete MDM enrollment + Apple Device Attestation to start receiving requests.",
+          "On macOS 27 or later, run darkbloom status to check App Attest approval. On older macOS, upgrade to macOS 27 to avoid MDM, or complete legacy enrollment during the transition. Darkbloom MDM will be deactivated soon.",
       });
     } else {
       out.push({
@@ -179,6 +183,7 @@ export function computeWarnings(
   }
 
   if (
+    !appAttest &&
     p.trust_level === "hardware" &&
     !p.mda_verified &&
     p.status !== "offline" &&
@@ -218,6 +223,29 @@ export function computeWarnings(
     });
   }
 
+  const coldModels = coldModelReadiness(p, ctx.heartbeat_timeout_seconds);
+  const blockedLoads = coldModels.filter(
+    (model) => !model.busyServing && model.shortfallGb > 0 && model.canLoadAfterEviction === false);
+  if (blockedLoads.length > 0) {
+    const first = blockedLoads[0];
+    const accepted = new Set(p.capacity_model_ids ?? []);
+    const blockedIDs = new Set(blockedLoads.map((model) => model.model));
+    const anyResident = (p.backend_capacity?.slots ?? []).some(
+      (slot) => slot.state === "idle" || slot.state === "running");
+    const allModelsBlocked = accepted.size > 0 && !anyResident &&
+      [...accepted].every((id) => blockedIDs.has(id));
+    out.push({
+      id: "model_load_memory",
+      severity: allModelsBlocked ? "blocking" : "degrading",
+      title: allModelsBlocked ? "No selected model fits live memory" : "Some cold models cannot load now",
+      detail: `${first.model} needs ${first.requiredGb.toFixed(1)} GB to load, but this Mac has `
+        + `${first.usableGb.toFixed(1)} GB usable without eviction. `
+        + `Even after idle eviction the cold load is ${first.coldLoadShortfallGb?.toFixed(1)} GB short. `
+        + `${blockedLoads.length > 1 ? `${blockedLoads.length - 1} more model(s) are blocked. ` : ""}`
+        + "The hardware RAM figure is not live free memory. Free memory, run `darkbloom doctor`, then retry a request for this model.",
+    });
+  }
+
   const idleSlots =
     p.backend_capacity?.slots?.filter((s) => s.state === "idle_shutdown") ?? [];
   if (idleSlots.length > 0) {
@@ -239,9 +267,9 @@ export function computeWarnings(
     if (successRate < 0.8 && p.reputation.total_jobs >= 10) {
       out.push({
         id: "low_success_rate",
-        severity: "degrading",
+        severity: "info",
         title: `Job success rate low (${(successRate * 100).toFixed(0)}%)`,
-        detail: `Reputation score: ${p.reputation.score.toFixed(2)}. Investigate failed jobs in the logs to recover routing priority.`,
+        detail: `${p.reputation.successful_jobs} of ${p.reputation.total_jobs} jobs succeeded; ${p.reputation.failed_jobs} failed. Check provider logs for failure details.`,
       });
     }
   }
@@ -267,9 +295,16 @@ export function computeWarnings(
   }
 
   // Info: configuration to fix.
+  if (needsMacOSUpgrade(p)) {
+    out.push({
+      id: "macos_upgrade",
+      severity: "info",
+      title: "Upgrade to macOS 27",
+      detail: `Last reported macOS ${p.os_version}. Darkbloom MDM will be deactivated soon. Upgrade to macOS 27 or later for App Attest. Existing legacy verification continues during the transition; keep the profile until migration is approved.`,
+    });
+  }
   if (
     !p.account_id &&
-    !p.wallet_address &&
     p.status !== "offline" &&
     p.status !== "never_seen"
   ) {
@@ -278,7 +313,7 @@ export function computeWarnings(
       severity: "info",
       title: "No payout method configured",
       detail:
-        "This machine has no account link and no wallet address. Earnings cannot be claimed. Run `darkbloom login` to link to your account.",
+        "This machine is not linked to an account. Earnings cannot be claimed. Run `darkbloom login` to link to your account.",
     });
   }
 
@@ -307,6 +342,7 @@ export function computeWarnings(
     p.status !== "offline" &&
     p.status !== "untrusted" &&
     p.status !== "never_seen" &&
+    !appAttest &&
     p.trust_level === "hardware" &&
     !p.last_challenge_verified
   ) {
@@ -320,11 +356,4 @@ export function computeWarnings(
   }
 
   return out;
-}
-
-export function highestSeverity(warnings: Warning[]): WarningSeverity | null {
-  if (warnings.some((w) => w.severity === "blocking")) return "blocking";
-  if (warnings.some((w) => w.severity === "degrading")) return "degrading";
-  if (warnings.some((w) => w.severity === "info")) return "info";
-  return null;
 }

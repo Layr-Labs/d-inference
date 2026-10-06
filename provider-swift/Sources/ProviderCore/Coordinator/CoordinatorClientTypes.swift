@@ -87,6 +87,8 @@ public enum PreContentDeadlineFailure: String, Error, LocalizedError, Sendable, 
 // MARK: - Event Types
 
 public enum CoordinatorEvent: Sendable {
+    /// Ordered behind earlier inference events so late arrivals are refused before the barrier completes.
+    case drainAck(String)
     case connected
     case disconnected
     /// `ciphertext` is the **decoded** NaCl-box ciphertext (nonce ‖ tag ‖ body),
@@ -105,12 +107,17 @@ public enum CoordinatorEvent: Sendable {
         cacheScope: String?,
         prefixCacheProtocol: Int?,
         cacheReceiptBoundaryMode: String? = nil,
+        /// Coordinator-observed fleet-wide repeat demand (token count); nil
+        /// from an older coordinator. See `InferenceRequest.cacheRepeatedPrefixTokens`.
+        cacheRepeatedPrefixTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
         receivedAt: ContinuousClock.Instant,
         /// Profiler accumulator anchored at frame receipt (created
         /// unconditionally, unlike the budget-derived deadline).
-        profile: RequestProfileBuilder
+        profile: RequestProfileBuilder,
+        serviceReservationID: String? = nil,
+        promptWork: PromptWork? = nil
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
@@ -121,6 +128,8 @@ public enum CoordinatorEvent: Sendable {
     /// (off-thread) and reply with a `loadModelStatus` outbound message
     /// when the load completes or fails.
     case loadModel(modelId: String)
+    case modelAutopilotControl(ModelAutopilotControl)
+    case modelAutopilot(ModelAutopilotCommand)
     /// Coordinator-driven background prefetch. Provider should download +
     /// verify the build on disk (off-thread, no GPU load) and reply with
     /// `prefetchModelStatus` outbound messages. `priority` orders concurrent
@@ -132,7 +141,8 @@ public enum CoordinatorEvent: Sendable {
     /// every change. Replaces the old push-driven migration ramp.
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
-    case trustStatus(trustLevel: String, status: String, reason: String)
+    case trustStatus(trustLevel: String, status: String, reason: String,
+                     authorization: ProviderAuthorizationStatus? = nil)
 }
 
 
@@ -142,10 +152,10 @@ public struct CoordinatorClientConfig: Sendable {
     public let url: String
     public let hardware: HardwareInfo
     public let models: [ModelInfo]
+    public let autopilotInventory: [ModelInfo]
     public let backendName: String
     public let heartbeatInterval: TimeInterval
     public let publicKey: String?
-    public let walletAddress: String?
     public let attestation: RawJSON?
     /// Called for every WebSocket registration, including reconnects. Production
     /// re-signs a fresh timestamp while preserving the same bound claims.
@@ -176,7 +186,6 @@ public struct CoordinatorClientConfig: Sendable {
         backendName: String,
         heartbeatInterval: TimeInterval = 30.0,
         publicKey: String? = nil,
-        walletAddress: String? = nil,
         attestation: RawJSON? = nil,
         registrationAttestation: (@Sendable () -> RawJSON?)? = nil,
         authToken: String? = nil,
@@ -187,15 +196,16 @@ public struct CoordinatorClientConfig: Sendable {
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
-        idleUnloadMins: UInt64? = nil
+        idleUnloadMins: UInt64? = nil,
+        autopilotInventory: [ModelInfo] = []
     ) {
         self.url = url
         self.hardware = hardware
         self.models = models
+        self.autopilotInventory = autopilotInventory
         self.backendName = backendName
         self.heartbeatInterval = heartbeatInterval
         self.publicKey = publicKey
-        self.walletAddress = walletAddress
         self.attestation = attestation
         self.registrationAttestation = registrationAttestation ?? { attestation }
         self.authToken = authToken
@@ -211,17 +221,11 @@ public struct CoordinatorClientConfig: Sendable {
 }
 
 public struct RuntimeHashes: Sendable {
-    public let pythonHash: String?
-    public let runtimeHash: String?
     public let templateHashes: [String: String]
 
     public init(
-        pythonHash: String? = nil,
-        runtimeHash: String? = nil,
         templateHashes: [String: String] = [:]
     ) {
-        self.pythonHash = pythonHash
-        self.runtimeHash = runtimeHash
         self.templateHashes = templateHashes
     }
 }
@@ -230,7 +234,9 @@ public struct RuntimeHashes: Sendable {
 // MARK: - Outbound message type (provider -> coordinator)
 
 public enum OutboundMessage: Sendable {
+    case drainBarrier(String)
     case inferenceAccepted(requestId: String)
+    case serviceReservationReleased(serviceReservationID: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
     /// `profile` rides the terminal as the live BUILDER, not the wire
     /// struct: `SendHandle.send` stamps the flush barrier and the send
@@ -251,9 +257,10 @@ public enum OutboundMessage: Sendable {
         profile: RequestProfileBuilder? = nil
     )
     case attestationResponse(AttestationResponsePayload)
-    case codeAttestationResponse(nonce: String, signature: String)
+    case codeAttestationResponse(nonce: String, signature: String, onWritten: (@Sendable () -> Void)? = nil)
     case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case modelAutopilotStatus(ModelAutopilotStatus)
     case prefetchModelStatus(
         modelId: String,
         status: ProviderMessage.PrefetchModelStatus.Status,
@@ -265,6 +272,8 @@ public enum OutboundMessage: Sendable {
     /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
     /// computed weight hash so the coordinator can cross-check before routing.
     case modelsUpdate(models: [ModelInfo])
+    case modelsReplace(requestId: String, drainID: String, models: [ModelInfo], validateOnly: Bool)
+    case modelsReplaceReady(requestId: String, drainID: String, capacitySeq: UInt64)
     case prefixCacheLookup(
         requestId: String,
         cacheReceiptNonce: String,
@@ -313,8 +322,6 @@ public struct AttestationResponsePayload: Sendable {
     public let secureBootEnabled: Bool?
     public let binaryHash: String?
     public let activeModelHash: String?
-    public let pythonHash: String?
-    public let runtimeHash: String?
     public let templateHashes: [String: String]
     public let modelHashes: [String: String]
 
@@ -328,8 +335,6 @@ public struct AttestationResponsePayload: Sendable {
         secureBootEnabled: Bool? = nil,
         binaryHash: String? = nil,
         activeModelHash: String? = nil,
-        pythonHash: String? = nil,
-        runtimeHash: String? = nil,
         templateHashes: [String: String] = [:],
         modelHashes: [String: String] = [:]
     ) {
@@ -342,8 +347,6 @@ public struct AttestationResponsePayload: Sendable {
         self.secureBootEnabled = secureBootEnabled
         self.binaryHash = binaryHash
         self.activeModelHash = activeModelHash
-        self.pythonHash = pythonHash
-        self.runtimeHash = runtimeHash
         self.templateHashes = templateHashes
         self.modelHashes = modelHashes
     }

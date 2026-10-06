@@ -1,0 +1,486 @@
+// Start serving modes: --local standalone, launchd-foreground (coordinator +
+// optional unified local endpoint), startup auto-update, and scheduled windows.
+import Foundation
+import ArgumentParser
+import ProviderCore
+#if canImport(Darwin)
+import Darwin
+#endif
+
+extension Start {
+    // MARK: - Standalone (--local)
+
+    internal func runLocalStandalone(
+        snapshot: RuntimeSnapshot,
+        config: ProviderConfig,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        bootSecuritySnapshot: BootSecuritySnapshot = .live()
+    ) async throws {
+        warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: false)
+
+        let selected = advertisedModels(
+            from: snapshot.models,
+            config: config,
+            modelOverrides: model,
+            includeDisabled: all,
+            runtimeCapabilities: runtimeCapabilities
+        )
+
+        // v0.7.5 ONE ENGINE, fail loud: the standalone server serves
+        // everything through ContinuousBatchingV2, so a model whose family
+        // has no CBv2 adapter cannot serve at all. Say so per model, and
+        // refuse to start when nothing serveable remains — a silent empty
+        // catalog would 404 every request with no explanation.
+        let (advertised, unsupported) = EngineV2SupportedModels.partition(selected)
+        for dropped in unsupported {
+            printError(
+                "Skipping \(dropped.id): model_type '\(dropped.modelType ?? "unknown")' has no "
+                    + "engine-v2 adapter (v0.7.5 serves everything through engine v2)")
+        }
+        guard !advertised.isEmpty else {
+            printError(
+                "No engine-v2-capable models available to serve. "
+                    + "Download a supported model (gpt-oss / gemma-4 families) and retry.")
+            throw ExitCode.failure
+        }
+
+        // Direct/local mode: mint (or reuse) a bearer token so the loopback
+        // server isn't open to every local process / hostile webpage. --no-auth
+        // opts out for trusted/airgapped use.
+        let token: String?
+        if noAuth {
+            token = nil
+        } else {
+            token = try LocalEndpoint.loadOrCreateToken()
+        }
+
+        let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+        print("darkbloom \(ProviderCore.version) (local / direct mode)")
+        print("Preparing local server on \(bind):\(port)")
+        print("Models: \(advertised.count)")
+        for m in advertised {
+            print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
+        }
+        print()
+        print("OpenAI-compatible endpoint:")
+        print("  base URL: \(baseURL)")
+        if let token {
+            print("  API key:  \(token)")
+            print()
+            print("  export OPENAI_BASE_URL=\(baseURL)")
+            print("  export OPENAI_API_KEY=\(token)")
+        } else {
+            print("  API key:  (auth disabled — --no-auth)")
+        }
+        print()
+        print("  Shareable any time with: darkbloom local")
+        print()
+
+        // Lock acquisition and exact legacy-artifact housekeeping are one
+        // ordered operation shared with coordinator-connected foreground mode.
+        try await ServiceDrain.prepareForegroundReplacement(options: drain)
+        try ProcessLifecycle.acquireMediaServingLock()
+        ProcessLifecycle.preventSystemSleep()
+        defer { ProcessLifecycle.releaseSingleInstanceLock() }
+
+        // NOTE: no LegacyCompiledDecodeGate here anymore — the standalone
+        // server constructs no legacy engine as of v0.7.5 (CBv2 compiled
+        // decode has its own path and needs no process-global latch).
+        let server = StandaloneServer(
+            config: StandaloneServerConfig(
+                port: port,
+                host: bind,
+                maxCachedModels: Int(clamping: config.backend.maxModelSlots),
+                authToken: token,
+                runtimeCapabilities: runtimeCapabilities,
+                engineV2MaxConcurrent: config.backend.engineV2MaxConcurrentIsExplicit
+                    ? config.backend.engineV2MaxConcurrent : nil,
+                engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
+                engineV2KVBackend: config.backend.engineV2KVBackend,
+                engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
+                prefillDeadlineMode: config.backend.prefillDeadlineMode,
+                mtpMode: config.backend.mtpMode,
+                mtpDrafterPath: config.backend.mtpDrafterPath,
+                coordinatorURL: config.coordinator.url
+            ),
+            models: advertised
+        )
+        guard await runLocalStartupPreload(server: server, config: config) else { return }
+        try await server.start()
+        await ProviderTermination.shared.install {
+            await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)
+        }
+        if await ProviderTermination.shared.terminationRequested {
+            await server.stop()
+            return
+        }
+
+        // Wait until the server CONFIRMS it bound the port before advertising it.
+        // start() launches Hummingbird in a child task and returns before the
+        // bind completes; we must not write a discovery record pointing at a dead
+        // (or, worse, a foreign) endpoint that `darkbloom local` / local-first
+        // clients would then trust. waitUntilBound reads the actor's own bind
+        // signal (Hummingbird onServerRunning), not an HTTP probe a process
+        // already holding the port could answer.
+        guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
+            await server.stop()
+            printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
+            throw ExitCode.failure
+        }
+        print("Listening on \(bind):\(port)")
+
+        await server.startLifecycleControl()
+
+        // Publish discovery metadata so a same-machine client (and
+        // `darkbloom local`) can find + authenticate to this server. Removed on
+        // exit; the token file persists so the token survives restarts.
+        let info = LocalEndpoint.Info(
+            host: bind,
+            port: port,
+            apiKey: token ?? "",
+            version: ProviderCore.version,
+            pid: ProcessInfo.processInfo.processIdentifier,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try? LocalEndpoint.writeInfo(info)
+        defer { LocalEndpoint.removeInfo() }
+
+        // The optional fan helper receives a renewable activity lease only
+        // after the server has successfully bound, and only for the lifetime
+        // of the actual Hummingbird service task. A stopped/crashed local
+        // server therefore releases fan control.
+        await withFanActivityLease(providerVersion: ProviderCore.version) {
+            await server.waitUntilStopped()
+        }
+    }
+
+
+    // MARK: - Foreground (invoked by launchd)
+
+    internal func runForeground(
+        snapshot: RuntimeSnapshot,
+        hardware: HardwareInfo,
+        config: ProviderConfig,
+        coordinatorURL: String,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        bootSecuritySnapshot: BootSecuritySnapshot = .live()
+    ) async throws {
+        warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
+
+        let launchManaged = ProcessIdentity.current().map { LaunchAgent.launchSnapshot()?.process == $0 } ?? false
+        let usePinnedSelection = Self.usesPinnedModelSelection(configPath: snapshot.configPath, launchManaged: launchManaged)
+        let selectedModels = advertisedModels(
+            from: snapshot.models,
+            config: config,
+            modelOverrides: usePinnedSelection ? [] : model,
+            includeDisabled: usePinnedSelection ? false : all,
+            runtimeCapabilities: runtimeCapabilities)
+
+        guard !selectedModels.isEmpty else {
+            printError("No models selected.")
+            throw ExitCode.failure
+        }
+
+        try await ServiceDrain.prepareForegroundReplacement(options: drain)
+        try ProcessLifecycle.acquireMediaServingLock()
+        ProcessLifecycle.preventSystemSleep()
+        defer { ProcessLifecycle.releaseSingleInstanceLock() }
+        // Only the lock holder is the serving process: record its start
+        // (previous_exit / start_reason) before any in-place update exec.
+        ProviderProcessRun.begin()
+
+        let selectedIDs = Set(selectedModels.map(\.id))
+        let inventory = config.backend.modelAutopilot.hasConsent
+            ? snapshot.models.filter {
+                config.backend.modelAutopilot.allows($0.id)
+                    && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
+            } : []
+        let combined = selectedModels + inventory.filter { !selectedIDs.contains($0.id) }
+        let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(to: combined)
+        let models = verified.filter { selectedIDs.contains($0.id) }
+        let autopilotInventory = verified.filter {
+            config.backend.modelAutopilot.allows($0.id) && $0.weightHash?.isEmpty == false
+        }
+        let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
+        let authToken = AuthTokenStore.load()
+        if let identity = ProcessIdentity.current() {
+            try? SelfUpdater(
+                coordinatorBaseURL: coordinatorURL
+            ).confirmRunningCandidateLaunch(
+                processStartedAt: Double(identity.startTimeMicros) / 1_000_000
+            )
+        }
+
+        if config.provider.autoUpdate {
+            try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
+        }
+
+        // Housekeeping has removed the legacy telemetry queue. Install the
+        // panic hook now; its only provider-owned output is a bounded local
+        // stderr marker.
+        PanicHook.install()
+
+        // Arm crash recovery for the running daemon however it was launched
+        // (manual start, login, or auto-update relaunch). Idempotent (skip when
+        // already loaded → no churn on restarts) + best-effort.
+        if config.provider.autoRestart, !WatchdogAgent.isLoaded() {
+            try? WatchdogAgent.installAndStart(
+                configPath: snapshot.configPath
+            )
+        }
+
+        // A crash-loop KV-backend guard binds only the binary version that
+        // tripped it, and a NEW version booting here is the fleet's
+        // fix-delivery event. The version check in the engine factory
+        // already keeps a mismatched record inert; deleting it too keeps
+        // `status`/`doctor` from describing a guard that can never bind
+        // again. A matching record is deliberately left alone — this
+        // binary tripped it, so `.auto` keeps resolving contiguous.
+        if let cleared = KVBackendGuardStore.clearIfStale(
+            runningVersion: ProviderCore.version)
+        {
+            print(
+                "Cleared stale crash-loop KV-backend guard from "
+                    + "v\(cleared.providerVersion) (this binary is "
+                    + "v\(ProviderCore.version)); backend selection resolves "
+                    + "normally again.")
+        }
+
+        // ----- Telemetry: configure now so reconnect/inference/panic events flow. -----
+        TelemetryClient.shared.configure(TelemetryClientConfig(
+            coordinatorURL: coordinatorURL,
+            source: .provider,
+            authToken: authToken,
+            version: ProviderCore.version
+        ))
+
+        var startupFields = bootSecurityTelemetryFields(bootSecuritySnapshot)
+        startupFields["backend"] = .string("mlx-swift")
+
+        TelemetryClient.shared.emit(
+            kind: .log,
+            severity: bootSecuritySnapshot.issues.isEmpty ? .info : .warn,
+            message: "provider starting",
+            fields: startupFields
+        )
+
+        let schedule: Schedule? = config.schedule.flatMap { Schedule.from(config: $0) }
+
+        print("darkbloom \(ProviderCore.version)")
+        print("Backend: mlx-swift")
+        print("Config: \(describeConfigPath(snapshot))")
+        print("Coordinator: \(coordinatorURL)")
+        if let schedule {
+            print("Schedule: \(schedule.describe())")
+        } else {
+            print("Schedule: always available")
+        }
+        print("Advertised models: \(models.count)")
+        for m in models {
+            print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
+        }
+
+        // Unified mode: build the local-endpoint config when --local-endpoint is
+        // set. Reuses the same persistent bearer token + bind/port options as
+        // --local; --no-auth opts out of the token (trusted/airgapped only).
+        var localEndpointConfig: LocalInferenceHTTPConfig?
+        if localEndpoint {
+            // FAIL CLOSED: if auth is requested (no --no-auth) but the token
+            // can't be created/read, abort rather than silently opening the
+            // endpoint unauthenticated — otherwise an unwritable ~/.darkbloom
+            // would expose it (especially under --bind 0.0.0.0). Mirrors --local.
+            let token: String?
+            if noAuth {
+                token = nil
+            } else {
+                do {
+                    token = try LocalEndpoint.loadOrCreateToken()
+                } catch {
+                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/.darkbloom permissions, or pass --no-auth for a trusted/airgapped setup.")
+                    throw ExitCode.failure
+                }
+            }
+            localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
+            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
+            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `darkbloom local`)" : "  (auth disabled)")")
+        }
+
+        let loopConfig = ProviderLoopConfig(
+            coordinatorURL: coordinatorURL,
+            hardware: hardware,
+            models: models,
+            config: config,
+            authToken: authToken,
+            runtimeHashes: runtimeHashes,
+            runtimeCapabilities: runtimeCapabilities,
+            modelHashes: modelHashes,
+            modelHashFingerprints: modelHashFingerprints,
+            localEndpoint: localEndpointConfig,
+            configPath: snapshot.configPath,
+            autopilotInventory: autopilotInventory
+        )
+
+        do {
+            if let schedule {
+                try await runScheduled(
+                    loopConfig: loopConfig, schedule: schedule,
+                    configFileExists: snapshot.configFileExists)
+            } else {
+                let loop = try ProviderLoop(config: loopConfig)
+                try await runProviderLoopWithFanLease(loop)
+            }
+        } catch {
+            TelemetryClient.shared.emit(
+                kind: .log,
+                severity: .error,
+                message: "provider loop terminated: \(error.localizedDescription)"
+            )
+            throw error
+        }
+
+        ProviderProcessRun.finish()
+        await TelemetryClient.shared.shutdown()
+    }
+
+    private func runStartupAutoUpdate(coordinatorURL: String) async throws {
+        if ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] != nil {
+            return
+        }
+        print("Checking for provider update...")
+        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        switch await updater.update() {
+        case .alreadyUpToDate:
+            return
+        case .updated(let from, let to):
+            print("Updated provider: v\(from) -> v\(to). Restarting into new binary...")
+            do {
+                try updater.prepareCandidateLaunch(
+                    operation: "startup-update-exec"
+                )
+                try ProcessLifecycle.execCurrentProcess()
+            } catch {
+                try? updater.cancelPendingCandidateAttempt(
+                    operation: "startup-exec-failure")
+                throw error
+            }
+        case .restartRequired(let from, let to):
+            print("Provider v\(to) is already installed (running v\(from)); restarting into it...")
+            do {
+                try updater.prepareCandidateLaunch(
+                    operation: "startup-candidate-exec"
+                )
+                try ProcessLifecycle.execCurrentProcess()
+            } catch {
+                try? updater.cancelPendingCandidateAttempt(
+                    operation: "startup-exec-failure")
+                throw error
+            }
+        case .quarantined(let version, let reason):
+            printError("auto-update skipped: v\(version) is quarantined after failed starts (\(reason))")
+        case .busy(let reason):
+            printError("auto-update skipped: another update/recovery operation is active (\(reason))")
+        case .cancelled(let reason):
+            printError("auto-update cancelled: \(reason)")
+        case .downloadFailed(let reason):
+            printError("auto-update skipped: \(reason)")
+        case .hashMismatch(let expected, let got):
+            printError("auto-update skipped: bundle hash mismatch (expected \(expected), got \(got))")
+        case .replaceFailed(let reason):
+            printError("auto-update skipped: \(reason)")
+        }
+    }
+
+    private enum ScheduledLoopResult {
+        case loopEnded
+        case windowClosed
+    }
+
+    private func runScheduled(
+        loopConfig: ProviderLoopConfig,
+        schedule: Schedule,
+        configFileExists: Bool
+    ) async throws {
+        var selection = ScheduledWindowSelection(startup: loopConfig, configFileExists: configFileExists)
+        while !Task.isCancelled {
+            await installIdleScheduleTerminationHandler()
+            if await ProviderTermination.shared.terminationRequested {
+                _ = await ProviderTermination.shared.request()
+                return
+            }
+            if !schedule.isActiveNow() {
+                let wait = schedule.durationUntilNextActive()
+                print("Outside availability schedule; next window opens in \(formatDuration(wait)).")
+                if try await waitOutsideSchedule(seconds: wait, coordinatorURL: loopConfig.coordinatorURL) { return }
+                continue
+            }
+
+            let windowStart = Date()
+            guard let timing = ScheduledWindowTiming(schedule: schedule, at: windowStart) else { continue }
+            let windowEnd = timing.end
+            let windowConfig = try selection.nextWindowConfiguration()
+            // Selection validation may hash several large models. Keep the
+            // original window end rather than starting a full timer afterward.
+            guard schedule.isActiveNow(), windowEnd.map({ $0.timeIntervalSinceNow > 0 }) ?? true else { continue }
+            let loop = try ProviderLoop(config: windowConfig)
+            guard schedule.isActiveNow(), windowEnd.map({ $0.timeIntervalSinceNow > 0 }) ?? true else { continue }
+            if let windowEnd {
+                print("Availability window active for \(formatDuration(windowEnd.timeIntervalSinceNow)).")
+            } else {
+                print("Availability windows cover the full week; serving continuously.")
+            }
+            try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
+                group.addTask {
+                    try await runProviderLoopWithFanLease(loop)
+                    return .loopEnded
+                }
+                if let windowEnd {
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: sleepNanoseconds(for: windowEnd.timeIntervalSinceNow))
+                        return .windowClosed
+                    }
+                }
+
+                guard let result = try await group.next() else { return }
+                group.cancelAll()
+
+                switch result {
+                case .loopEnded:
+                    return
+                case .windowClosed:
+                    print("Availability window closed; disconnecting until the next scheduled window.")
+                    return
+                }
+            }
+            if await loop.hasPersistedModelSwitch { selection.notePersistedSwitch() }
+        }
+    }
+
+    private func sleepNanoseconds(for interval: TimeInterval) -> UInt64 {
+        let seconds = max(0.0, min(interval, Double(UInt64.max) / 1_000_000_000))
+        return UInt64(seconds * 1_000_000_000)
+    }
+
+    private func runProviderLoopWithFanLease(_ loop: ProviderLoop) async throws {
+        await ProviderTermination.shared.install {
+            // CLI drains already disarmed recovery. A late old-process signal
+            // must not stop a watchdog newly armed by the replacement CLI.
+            let commandDriven = await loop.lifecycleIsCommandDriven()
+            if !commandDriven { try? WatchdogAgent.stop() }
+            // Preserve configured login startup for ordinary OS termination;
+            // only explicit CLI stop/restart disables it persistently.
+            let drained = await loop.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds)
+            // AppKit may terminate as soon as this returns true; record the
+            // clean exit here rather than only after `run()` unwinds.
+            if drained {
+                if await loop.lifecycleIsCommandDriven() { ProviderProcessRun.noteLifecycleCommand() }
+                ProviderProcessRun.finish()
+            }
+            return drained
+        }
+        try await withFanActivityLease(providerVersion: ProviderCore.version) {
+            try await loop.run()
+        }
+        if await loop.lifecycleIsCommandDriven() { ProviderProcessRun.noteLifecycleCommand() }
+    }
+
+}

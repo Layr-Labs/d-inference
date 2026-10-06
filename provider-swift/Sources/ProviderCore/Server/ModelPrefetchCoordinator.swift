@@ -294,22 +294,14 @@ public actor ModelPrefetchCoordinator {
             Task { await me.emitDownloading(modelId: modelId, bytesDone: done, bytesTotal: total) }
         }
 
-        let outcome: Result<Void, Error>
         do {
             try await prefetcher.prefetchToDisk(modelID: modelId, onByteProgress: onByteProgress)
-            outcome = .success(())
-        } catch {
-            outcome = .failure(error)
-        }
-
-        switch outcome {
-        case .success:
             if Task.isCancelled || isShuttingDown { return }
             // Build is on disk + aggregate-verified. Re-advertise, then report
             // terminal success.
             await onVerified(modelId)
             finish(modelId: modelId, taskId: taskId, status: .verified, bytesDone: 0, bytesTotal: 0, error: nil)
-        case .failure(let error):
+        } catch {
             // Cancelled (shutdown or explicit) — emit nothing terminal.
             if error is CancellationError { return }
             if isShuttingDown { return }
@@ -383,7 +375,7 @@ private final class OneShotResumer: @unchecked Sendable {
 
 // MARK: - Progress throttle
 
-/// Decides whether a `.downloading` update should be emitted, gating on BOTH a
+/// Decides whether a `.downloading` update should be emitted, gating on either a
 /// minimum wall-clock interval and a minimum progress step so we neither flood
 /// the WebSocket nor go silent on a long single-file download. Thread-safe so it
 /// can be called from the downloader's progress callback on any executor.

@@ -135,7 +135,14 @@ extension ModelScanner {
         let nativeLoad = Qwen4ExpLoadFootprint.estimate(
             snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes,
             offloadedBytes: mmapExcluded)
-        let estimatedMemoryGb = nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
+        // Canonical MiMo uses the strict root + ordinary installed-sidecar LOAD
+        // requests, not disk×1.2 or a measured steady-residency substitution.
+        // The helper reads metadata/headers only; actual native admission still
+        // revalidates and claims its real bound before allocation.
+        let mimoLoad = MiMoV26DiscoveryLoadFootprint.estimate(
+            snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes)
+        let estimatedMemoryGb = mimoLoad.map { Double($0.totalBytes) / 1_073_741_824 }
+            ?? nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
             ?? (Double(residentBytes) / 1_073_741_824) * memoryOverheadFactor
 
         // Advertise whether this build can serve image/video input so the
@@ -157,7 +164,7 @@ extension ModelScanner {
             ? Gemma4ToolConstraintContract.templateSHA256(at: snapshotDir)
             : nil
 
-        return ModelInfo(
+        var info = ModelInfo(
             id: modelName,
             modelType: modelType,
             parameters: parameters,
@@ -168,8 +175,12 @@ extension ModelScanner {
             templateRenderOK: templateRenderOK,
             toolConstraintTemplateHash: toolConstraintTemplateHash,
             ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,
-            nativeLoadTransientBytes: nativeLoad?.transientBytes
+            nativeLoadTransientBytes: mimoLoad?.transientBytes ?? nativeLoad?.transientBytes
         )
+        if ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info) {
+            info.nativeMediaTools = true
+        }
+        return info
     }
 
     /// Whether config.json and provider identity policy allow serving media.
@@ -203,21 +214,40 @@ extension ModelScanner {
             parameters = numParams
         }
 
-        // Estimate from architecture if no explicit count
         if parameters == nil {
-            if let hidden = (json["hidden_size"] as? UInt64) ?? (json["hidden_size"] as? Int).map({ UInt64($0) }),
-               let layers = (json["num_hidden_layers"] as? UInt64) ?? (json["num_hidden_layers"] as? Int).map({ UInt64($0) })
-            {
-                let vocab = (json["vocab_size"] as? UInt64)
-                    ?? (json["vocab_size"] as? Int).map({ UInt64($0) })
-                    ?? 32000
-                // Rough estimate: 12 * hidden^2 * layers + vocab * hidden
-                // The division then multiplication rounds to nearest million
-                parameters = 12 * hidden * hidden * layers / 1_000_000 * 1_000_000 + vocab * hidden
-            }
+            parameters = estimatedParameterCount(json)
         }
 
         return (modelType, parameters)
+    }
+
+    /// Malformed local metadata must not crash discovery. Preserve the existing
+    /// estimate and million-parameter rounding for representable dimensions.
+    private static func estimatedParameterCount(_ json: [String: Any]) -> UInt64? {
+        func dimension(_ key: String) -> UInt64? {
+            if let value = json[key] as? UInt64 { return value }
+            guard let value = json[key] as? Int, value >= 0 else { return nil }
+            return UInt64(value)
+        }
+        guard let hidden = dimension("hidden_size"),
+            let layers = dimension("num_hidden_layers")
+        else { return nil }
+        let vocab: UInt64
+        if json["vocab_size"] is Int || json["vocab_size"] is UInt64 {
+            guard let parsed = dimension("vocab_size") else { return nil }
+            vocab = parsed
+        } else {
+            vocab = 32_000
+        }
+        let (square, squareOverflow) = hidden.multipliedReportingOverflow(by: hidden)
+        let (layerWeights, layerOverflow) = square.multipliedReportingOverflow(by: layers)
+        let (allWeights, weightOverflow) = layerWeights.multipliedReportingOverflow(by: 12)
+        let (embedding, embeddingOverflow) = vocab.multipliedReportingOverflow(by: hidden)
+        let (total, totalOverflow) = (allWeights / 1_000_000 * 1_000_000)
+            .addingReportingOverflow(embedding)
+        guard !squareOverflow, !layerOverflow, !weightOverflow,
+            !embeddingOverflow, !totalOverflow else { return nil }
+        return total
     }
 
     // MARK: - Quantization Detection

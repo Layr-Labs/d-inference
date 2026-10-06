@@ -60,11 +60,13 @@ struct PagedKernelPreflightTests {
         let child = try makeChild(
             """
             #!/bin/bash
+            printf 'paged-preflight-start-marker\\n' >&2
             i=0
             while [ "$i" -lt 20000 ]; do
                 printf 'paged-kernel-compiler-diagnostic-0123456789\\n' >&2
                 i=$((i + 1))
             done
+            printf 'paged-preflight-final-diagnostic\\n' >&2
             exit 9
             """)
         defer { try? FileManager.default.removeItem(at: child.directory) }
@@ -87,6 +89,10 @@ struct PagedKernelPreflightTests {
             // all on a real compiler failure.
             let tail = try #require(tail, "the child's stderr must reach the caller")
             #expect(tail.contains("paged-kernel-compiler-diagnostic"))
+            #expect(tail.hasSuffix("paged-preflight-final-diagnostic"),
+                    "the final diagnostic must survive a full stderr buffer")
+            #expect(!tail.contains("paged-preflight-start-marker"),
+                    "the bounded result must retain the tail, not the head")
             #expect(tail.count <= 2048, "tail must stay bounded on a chatty child")
         } catch {
             Issue.record("unexpected preflight error: \(error)")

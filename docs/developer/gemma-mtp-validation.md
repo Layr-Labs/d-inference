@@ -1,6 +1,6 @@
 # Validate Gemma target and assistant behavior
 
-> Last updated: 2026-09-17 · commit `954f570d1`
+> Last updated: 2026-09-17
 
 Run the supervised Gemma MTP matrix with immutable local target and assistant
 snapshots. Keep numerical correctness, production stop behavior and performance

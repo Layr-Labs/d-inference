@@ -17,6 +17,8 @@ enum DoctorRunner {
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
+        let authorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
         // ---- Attestation key (read-only daemon state) ----
         let attestationIdentity = resolveDoctorAttestationIdentity(
@@ -27,18 +29,37 @@ enum DoctorRunner {
         out.append(Diagnostic(section: .attestationKey, name: "active se key",
                               level: se.level, message: se.message, fix: se.fix))
 
+        // ---- App Attest local state (from the daemon's last observation) ----
+        // Shown even when authorized: key state, launch session and a stalled
+        // Apple call explain a later lapse before the coordinator reports it.
+        let macOSMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        out.append(contentsOf: AppAttestLocalDiagnosis.evaluate(
+            daemonUp ? state?.appAttest : nil, daemonRunning: daemonUp,
+            macOSMajorVersion: macOSMajor, now: now, pushHistory: APNsPushHistoryStore().load()))
+        // Local-only devicecheckd evidence (needs an admin account to read).
+        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajor) {
+            out.append(DeviceCheckEvidence.doctorDiagnostic(DeviceCheckEvidence.collect()))
+        }
+
         // ---- APNs code-identity readiness (local) ----
         // Will this box be able to obtain an APNs token and attest its code
         // identity? Requires a logged-in console (Aqua) session; a missing
         // session, no auto-login, or idle auto-logout each break attestation.
         // Pure verdict logic lives in ProviderCore; here we only feed it the
         // live machine signals.
-        out.append(contentsOf: AttestationReadiness.evaluate(
-            AttestationReadiness.gather(),
-            sleepPrevented: systemSleepPrevented()))
+        if !appAttestAuthorized {
+            out.append(contentsOf: AttestationReadiness.evaluate(
+                AttestationReadiness.gather(),
+                sleepPrevented: systemSleepPrevented()))
+        }
 
         // ---- Coordinator trust (from the daemon's last trust_status) ----
-        if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
+        if let authorization {
+            out.append(Diagnostic(section: .trust, name: "serving authorization",
+                                  level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
+                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
+                                  fix: nil))
+        } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             let level = TrustReasonCatalog.level(trustLevel: trust.trustLevel, status: trust.status)
             out.append(Diagnostic(section: .trust, name: "trust level",
@@ -67,7 +88,7 @@ enum DoctorRunner {
         // the previously-silent stall that left operators thinking they passed
         // while earning nothing.
         let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
-        if !alreadyHardwareTrusted {
+        if !alreadyHardwareTrusted && !appAttestAuthorized {
             let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
             let liveStatus = stateFresh ? state?.trust?.status : nil
             let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
@@ -77,7 +98,13 @@ enum DoctorRunner {
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
+        out.append(Diagnostic(section: .traffic, name: "serving concurrency", level: .info,
+                              message: ServingPerformanceProfiles.summary(
+                                backend: snapshot.config.backend), fix: nil))
         if let hw = snapshot.hardware {
+            let loadSnapshotFresh = stateFresh && (state?.ageSeconds(now: now) ?? .infinity)
+                <= KVBackendPosture.staleAfterSeconds(
+                    heartbeatIntervalSecs: snapshot.config.coordinator.heartbeatIntervalSecs)
             // Mirror the provider's REAL load gate via ModelFitDiagnostic →
             // ModelLoadAdmission: clamp to live OS-available memory and subtract
             // the OS reserve + resident MLX memory, not raw total−reserve —
@@ -89,19 +116,23 @@ enum DoctorRunner {
             let gpuCacheGb = (stateFresh ? state?.capacity?.gpuMemoryCacheGb : nil) ?? 0
             let bytesPerGb = 1024.0 * 1024.0 * 1024.0
             let systemAvailableGb = SystemMemory.availableBytes().map { Double($0) / bytesPerGb }
-            let usableGb = ModelFitDiagnostic.usableInferenceGb(
+            let independentlySampledUsableGb = ModelFitDiagnostic.usableInferenceGb(
                 totalGb: Double(hw.memoryGb),
                 reserveGb: Double(snapshot.config.provider.memoryReserveGB),
                 systemAvailableGb: systemAvailableGb,
                 gpuActiveGb: gpuActiveGb,
                 gpuCacheGb: gpuCacheGb)
-
-            // Prefer the live loaded model ONLY when the daemon is up and fresh;
-            // otherwise diagnose the CONFIGURED model. A stale state file (daemon
-            // stopped/crashed, then provider.toml changed to a larger model)
-            // would otherwise check last session's model and miss the new misfit.
-            let liveModel = stateFresh ? state?.currentModel : nil
-            let targetID = liveModel ?? snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first
+            // A fresh daemon snapshot is the same no-eviction load gate that
+            // decided startup preload. Prefer it over a second-process sample
+            // so doctor, status and My Macs explain the same decision.
+            let liveLoadBudget = loadSnapshotFresh ? state?.capacity : nil
+            // Use the daemon's usable and headroom fields as one pair: a
+            // CLI-side reserve override can differ from the serving process.
+            let hasLiveLoadPair = liveLoadBudget?.loadUsableGb != nil
+                && liveLoadBudget?.loadHeadroomGb != nil
+            let usableGb = hasLiveLoadPair
+                ? (liveLoadBudget?.loadUsableGb ?? independentlySampledUsableGb)
+                : independentlySampledUsableGb
 
             // Use the UNFILTERED model list: ModelScanner.scanModels drops models
             // too large for this box, so a too-large CONFIGURED model would be
@@ -111,6 +142,9 @@ enum DoctorRunner {
             let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
+            let targets = DoctorModelSelection.diagnosticTargets(
+                state: state, stateFresh: stateFresh, localModels: alternatives,
+                fallback: snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first)
             // The daemon's load gate holds the max activation floor over its
             // WHOLE serving set — mirror the daemon's ADVERTISE basis, not
             // the raw scan: the daemon selects from the memory-filtered
@@ -151,9 +185,10 @@ enum DoctorRunner {
                     ? daemonBasis.map(\.id)
                     : daemonBasis.map(\.id).filter(enabled.contains)
             }
-            if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
+            for target in targets {
+                let targetID = target.id
                 out.append(ModelFitDiagnostic.diagnose(
-                    modelID: targetID, weightGb: target.estimatedMemoryGb,
+                    modelID: targetID, weightGb: target.weightGb,
                     usableGb: usableGb, alternatives: alternatives,
                     // A LIVE empty set is authoritative (the daemon retired
                     // everything) and must reach the verdict as [] — the
@@ -162,14 +197,16 @@ enum DoctorRunner {
                     // offline reconstruction treats empty as "unknown".
                     servingSetIDs: servingSetIsLive
                         ? servingSetIDs
-                        : (servingSetIDs.isEmpty ? nil : servingSetIDs)))
-            } else if !alternatives.isEmpty {
-                // No specific/known target; check the largest local model fits.
-                if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {
-                    out.append(ModelFitDiagnostic.diagnose(
-                        modelID: biggest.id, weightGb: biggest.weightGb,
-                        usableGb: usableGb, alternatives: alternatives))
-                }
+                        : (servingSetIDs.isEmpty ? nil : servingSetIDs),
+                    alreadyResident: loadSnapshotFresh && state.map {
+                        DoctorModelSelection.isResident(targetID, state: $0)
+                    } == true,
+                    evictionAwareWeightGb: hasLiveLoadPair ? liveLoadBudget?.freeForLoadGb : nil,
+                    loadHeadroomGb: hasLiveLoadPair ? liveLoadBudget?.loadHeadroomGb : nil,
+                    busyServing: loadSnapshotFresh &&
+                        (state?.inferenceActive == true || state?.requestWorkPending == true
+                            || state?.loadTransitionActive == true
+                            || state?.capacity?.loadTransitionActive == true)))
             }
         }
 
@@ -244,12 +281,19 @@ enum DoctorRunner {
     /// Best-effort read of whether the system is currently being kept awake,
     /// via `pmset -g assertions`. Informational only (the provider
     /// self-caffeinates while serving), so nil/UNKNOWN on any failure is fine.
-    private static func systemSleepPrevented() -> Bool? {
-        guard let data = try? BoundedProcess.runCapturingStandardOutput(
-            URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["-g", "assertions"],
-            timeout: 5
-        ) else { return nil }
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+    static func systemSleepPrevented(runner: SecurityCommandRunner? = nil) -> Bool? {
+        let text: String
+        if let runner {
+            guard let result = try? runner.run("/usr/bin/pmset", ["-g", "assertions"]),
+                  result.terminationStatus == 0 else { return nil }
+            text = result.stdout
+        } else {
+            guard let data = try? BoundedProcess.runCapturingStandardOutput(
+                URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["-g", "assertions"],
+                timeout: 5
+            ), let output = String(data: data, encoding: .utf8) else { return nil }
+            text = output
+        }
         // `PreventUserIdleSystemSleep` / `PreventSystemSleep` report 1 when an
         // assertion (e.g. caffeinate, an active inference) is holding the system
         // awake. Any "1" on those lines ⇒ sleep currently prevented.

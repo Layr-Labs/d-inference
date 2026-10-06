@@ -154,7 +154,9 @@ struct StartupPreloaderTests {
         let recorder = PreloadRecorder()
         // 8 GB free: the 30 GB model must be skipped WITHOUT evicting anything;
         // the smaller ones still load.
-        let preloader = StartupPreloader(deps: makeDeps(recorder: recorder, freeMemoryGb: 8))
+        var deps = makeDeps(recorder: recorder, freeMemoryGb: 8)
+        deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+        let preloader = StartupPreloader(deps: deps)
 
         let summary = await preloader.run(candidates: [
             candidate("big-26b", requiredGb: 30),
@@ -167,6 +169,23 @@ struct StartupPreloaderTests {
         #expect(summary.loaded == ["mid-8b", "small-1b"])
         let warns = recorder.logs.filter { $0.contains("WARN") && $0.contains("big-26b") }
         #expect(!warns.isEmpty)
+        #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
+    }
+
+    @Test("a skipped candidate does not consume the live slot limit")
+    func skippedCandidateAllowsLaterFit() async {
+        let recorder = PreloadRecorder()
+        var deps = makeDeps(recorder: recorder, freeMemoryGb: 8)
+        deps.canLoadMore = { recorder.loads.count < 1 }
+        let summary = await StartupPreloader(deps: deps).run(candidates: [
+            candidate("too-big", requiredGb: 30),
+            candidate("fits", requiredGb: 2),
+            candidate("past-cap", requiredGb: 2),
+        ])
+
+        #expect(summary.skippedInsufficientMemory == ["too-big"])
+        #expect(summary.loaded == ["fits"])
+        #expect(recorder.loads == ["fits"])
     }
 
     @Test("a failed load logs, is recorded, and does not stop later candidates")
@@ -185,6 +204,44 @@ struct StartupPreloaderTests {
         #expect(summary.failed == ["broken"])
         #expect(summary.loaded == ["healthy"])
         #expect(recorder.loads == ["broken", "healthy"])
+    }
+
+    @Test("authoritative no-eviction refusal emits the public memory warning")
+    func lateMemoryRefusalWarnsPublicly() async {
+        for message in [
+            "Insufficient memory (8.0 GB free, need 24.7 GB) to load without evicting resident models",
+            "Insufficient memory for 'raced' at final load admission",
+            "Insufficient memory for 'raced' at allocation: load headroom changed",
+            "Model 'raced' loaded but has insufficient KV headroom under the memory cap (0.1 GB free, need 1.0 GB to serve) — unloaded",
+            "Model 'raced' loaded but its engine build left insufficient KV headroom under the memory cap (0.1 GB free) — unloaded",
+            "loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused",
+            "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused — unloaded",
+            "loading 'raced' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget 123 B across 2 slots) — refused",
+            "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would leave a model without its fixed request workspace, admission watermark and 1.0 GB minimum KV allowance (fleet KV budget 123 B across 2 slots) — refused — unloaded",
+            "MiMo memory grant cannot fit one request workspace plus minimum KV",
+        ] {
+            let recorder = PreloadRecorder()
+            var deps = makeDeps(
+                recorder: recorder,
+                loadError: { id in id == "raced" ? InferenceError.modelLoadFailed(message) : nil })
+            deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+            let summary = await StartupPreloader(deps: deps).run(candidates: [candidate("raced")])
+            #expect(summary.failed == ["raced"])
+            #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
+        }
+    }
+
+    @Test("non-memory load failures do not emit the public memory warning")
+    func nonMemoryLoadFailureKeepsWarningClosed() async {
+        let recorder = PreloadRecorder()
+        var deps = makeDeps(
+            recorder: recorder,
+            loadError: { id in id == "broken" ? InferenceError.modelLoadFailed(
+                "Model 'broken' MTP fallback engine construction failed: invalid tokenizer — unloaded") : nil })
+        deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+        let summary = await StartupPreloader(deps: deps).run(candidates: [candidate("broken")])
+        #expect(summary.failed == ["broken"])
+        #expect(!recorder.logs.contains("public memory warning"))
     }
 
     @Test("self-test runs once per LOADED model, not for skipped/failed ones")
@@ -309,7 +366,7 @@ private func makePreloadLoop(
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    let loop = try ProviderLoop(config: config, attestationSigner: nil)
     if let loadedModelsFile {
         await loop.setLoadedModelsFileForTesting(loadedModelsFile)
     } else {
@@ -320,6 +377,10 @@ private func makePreloadLoop(
                 .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
                 .appendingPathComponent("\(UUID().uuidString).json"))
     }
+    await loop.setDaemonStateFileForTesting(
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
+            .appendingPathComponent("\(UUID().uuidString)-state.json"))
     // Deterministic admission for gate tests (the real probe reads live memory).
     await loop.setStartupPreloadFreeMemoryOverrideForTesting({ 1_000 })
     return loop
@@ -370,8 +431,59 @@ struct StartupPreloadPlanTests {
         #expect(plan.map(\.modelId) == ["big-26b", "small-1b"])
     }
 
-    @Test("plan is capped at max_model_slots")
-    func planCapsAtMaxModelSlots() async throws {
+    @Test("a fresh start preloads selected models under every idle policy", arguments: [UInt64(0), 45, 60])
+    func freshStartPreloadsSelection(idleMinutes: UInt64) async throws {
+        let recorder = PreloadRecorder()
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("a", memoryGb: 2),
+                preloadModelInfo("b", memoryGb: 2),
+            ],
+            backend: BackendSettings(idleTimeoutMins: idleMinutes, startupSelftest: false))
+        await loop.setStartupPreloadLoadOverrideForTesting { recorder.recordLoad($0) }
+
+        let outcome = await loop.runStartupPreloadGateForTesting()
+
+        #expect(outcome == .warm)
+        #expect(recorder.loads == ["a", "b"])
+    }
+
+    @Test("the default idle policy keeps previously loaded models first and fills unused slots")
+    func defaultPolicyExtendsPersistedSet() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
+            .appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        LoadedModelsStore.write(["b"], to: file)
+
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("a", memoryGb: 2),
+                preloadModelInfo("b", memoryGb: 2),
+                preloadModelInfo("c", memoryGb: 2),
+            ],
+            backend: BackendSettings(maxModelSlots: 2),
+            loadedModelsFile: file)
+
+        let plan = await loop.startupPreloadPlanForTesting()
+        #expect(plan.map(\.modelId) == ["b", "a", "c"])
+    }
+
+    @Test("an explicit preload list stays authoritative under the default idle policy")
+    func defaultPolicyHonorsExplicitPreloadList() async throws {
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("a", memoryGb: 2),
+                preloadModelInfo("b", memoryGb: 2),
+            ],
+            backend: BackendSettings(preloadModels: ["b"]))
+
+        let plan = await loop.startupPreloadPlanForTesting()
+        #expect(plan.map(\.modelId) == ["b"])
+    }
+
+    @Test("plan retains overflow candidates to backfill failed loads")
+    func planKeepsOverflowCandidates() async throws {
         let loop = try await makePreloadLoop(
             models: [
                 preloadModelInfo("a", memoryGb: 2),
@@ -383,13 +495,13 @@ struct StartupPreloadPlanTests {
 
         let plan = await loop.startupPreloadPlanForTesting()
 
-        #expect(plan.map(\.modelId) == ["a"])
+        #expect(plan.map(\.modelId) == ["a", "b"])
     }
 
-    @Test("no persisted set and no configured list means nothing to preload")
-    func emptyPlanWhenNoHistory() async throws {
+    @Test("no selected, persisted, or configured models means nothing to preload")
+    func emptyPlanWhenNoModels() async throws {
         let loop = try await makePreloadLoop(
-            models: [preloadModelInfo("a", memoryGb: 2)],
+            models: [],
             backend: BackendSettings())
 
         let plan = await loop.startupPreloadPlanForTesting()
@@ -402,6 +514,45 @@ struct StartupPreloadPlanTests {
 
 @Suite("ProviderLoop startup preload gate")
 struct StartupPreloadGateTests {
+
+    @Test("cancelling a scheduled serve leaves the preload gate before registration")
+    func gateCancellationStopsRegistration() async throws {
+        let releaseLoad = PreloadGate()
+        defer { releaseLoad.signal() }
+        let loop = try await makePreloadLoop(
+            models: [preloadModelInfo("a", memoryGb: 2)],
+            backend: BackendSettings(
+                preloadModels: ["a"], startupPreloadTimeoutSecs: 30,
+                startupSelftest: false))
+        await loop.setStartupPreloadLoadOverrideForTesting { _ in
+            await releaseLoad.wait()
+        }
+
+        let serve = Task { await loop.runStartupPreloadGateForTesting() }
+        var waited = 0
+        while !(await loop.startupPreloadTaskRunningForTesting()), waited < 100 {
+            try await Task.sleep(for: .milliseconds(10))
+            waited += 1
+        }
+        #expect(await loop.startupPreloadTaskRunningForTesting())
+        serve.cancel()
+
+        let outcome = await withTaskGroup(
+            of: ProviderLoop.StartupPreloadGateOutcome?.self
+        ) { group in
+            group.addTask { await serve.value }
+            group.addTask {
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { return nil }
+                releaseLoad.signal() // fail-safe: unwind a regressed gate
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        #expect(outcome == .cancelled)
+    }
 
     @Test("startup_preload = false disables the gate entirely")
     func gateDisabledByConfig() async throws {
@@ -449,6 +600,11 @@ struct StartupPreloadGateTests {
                 preloadModels: ["a"],
                 startupPreloadTimeoutSecs: 1,  // minimum configurable gate
                 startupSelftest: false))
+        let stateFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
+            .appendingPathComponent("\(UUID().uuidString)-state.json")
+        defer { try? FileManager.default.removeItem(at: stateFile) }
+        await loop.setDaemonStateFileForTesting(stateFile)
         // EVENT-DRIVEN, not timer-vs-timer. This used to race a 1s gate
         // against a 3s scripted load and assert the gate's wall-clock
         // elapsed stayed under 2.8s — which measured the machine's
@@ -504,6 +660,9 @@ struct StartupPreloadGateTests {
         // (still parked on releaseLoad) provably had not finished.
         #expect(outcome == .timedOut)
         #expect(recorder.loads.isEmpty)
+        #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == ["a"])
+        #expect(DaemonStateFile.read(from: stateFile)?.capacity == nil)
+        #expect(DaemonStateFile.read(from: stateFile)?.loadTransitionActive == true)
 
         // The driver keeps warming in the background after the gate released.
         releaseLoad.signal()
@@ -521,6 +680,8 @@ struct StartupPreloadGateTests {
             waited += 1
         }
         #expect(await loop.startupPreloadTaskRunningForTesting() == false)
+        #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == [])
+        #expect(DaemonStateFile.read(from: stateFile)?.loadTransitionActive == false)
     }
 
     @Test("fail-closed self-test failure retires the model from the advertised set")
@@ -657,8 +818,9 @@ private actor PreloadRaceGateCatalog: SpecDecCatalogLooking {
 /// it reaches the admission gates under test). Returns the `models--...`
 /// directory for cleanup.
 private func makeFakeHFSnapshot(modelId: String) throws -> URL {
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    let cacheDir = ModelScanner.defaultCacheDirectory()
+        ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
     let modelDir = cacheDir.appendingPathComponent(
         "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
     let snapshot = modelDir
@@ -681,6 +843,41 @@ struct StartupPreloadNoEvictTests {
         )
     }
 
+    @Test("termination wakes the startup gate and tears down earlier warm slots")
+    func preRegistrationDrainUnloadsCompletedPreloads() async throws {
+        let releaseLoad = PreloadGate()
+        defer { releaseLoad.signal() }
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("warm", memoryGb: 0.01),
+                preloadModelInfo("pending", memoryGb: 0.01),
+            ],
+            backend: BackendSettings(
+                maxModelSlots: 2, preloadModels: ["pending"],
+                startupPreloadTimeoutSecs: 30, startupSelftest: false))
+        await installStubSlot(loop, "warm")
+        await loop.setStartupPreloadLoadOverrideForTesting { _ in
+            await releaseLoad.wait()
+        }
+
+        let gate = Task { await loop.runStartupPreloadGateForTesting() }
+        var waited = 0
+        while !(await loop.startupPreloadTaskRunningForTesting()), waited < 100 {
+            try await Task.sleep(for: .milliseconds(10))
+            waited += 1
+        }
+        #expect(await loop.startupPreloadTaskRunningForTesting())
+        let stop = Task { await loop.drainAndShutdown(timeoutSeconds: 2) }
+
+        // The lifecycle drain wakes the gate before the parked load is
+        // released; the stop then awaits that load and unloads the warm slot.
+        #expect(await gate.value == .cancelled)
+        releaseLoad.signal()
+        #expect(await stop.value)
+        #expect(await loop.modelSlots.isEmpty)
+        #expect(await loop.state.warmModels.isEmpty)
+    }
+
     @Test("provider concurrent same-model load rechecks residency after MTP preparation")
     func providerPreparationRaceRechecksResidency() async throws {
         let fakeId = "darkbloom-tests/loop-race-\(UUID().uuidString.prefix(8))"
@@ -689,7 +886,7 @@ struct StartupPreloadNoEvictTests {
 
         let loop = try await makePreloadLoop(
             models: [preloadModelInfo(fakeId, memoryGb: 0.01)],
-            backend: BackendSettings(maxModelSlots: 3, mtp: true))
+            backend: BackendSettings(maxModelSlots: 3, mtpMode: .on))
         let gate = PreloadRaceGateCatalog()
         await loop.setSpecDecFunnelForTesting(SpecDecArtifactFunnel(
             resolver: SpecDecResolver(), catalog: gate))
@@ -819,7 +1016,8 @@ struct StartupPreloadPostRegistrationRetirementTests {
             stats: AtomicProviderStats(),
             state: ProviderState()
         )
-        let (_, _) = await client.start()
+        let (events, _) = await client.start()
+        for await event in events { if case .connected = event { break } }
         defer { Task { await client.shutdown() } }
 
         let first = try await mock.awaitFirstRegister(timeout: .seconds(10))
@@ -839,6 +1037,17 @@ struct StartupPreloadPostRegistrationRetirementTests {
                 startupSelftest: true,
                 startupSelftestFailClosed: true))
         await loop.setCoordinatorClientForTesting(client)
+        await loop.finishPlannedReconnect()
+        let reader = Task {
+            for await event in events {
+                switch event {
+                case .drainAck(let id): await client.completeDrainAcknowledgement(id)
+                case .connected: await loop.finishPlannedReconnect()
+                default: break
+                }
+            }
+        }
+        defer { reader.cancel() }
         await loop.setStartupPreloadLoadOverrideForTesting({ _ in })
         await loop.setStartupSelfTestOverrideForTesting({ id in
             if id == "flaky" { throw PreloadStubError.selfTestExploded }
@@ -851,9 +1060,57 @@ struct StartupPreloadPostRegistrationRetirementTests {
         // forced a reconnect whose fresh register no longer announces flaky.
         let snap = try await mock.waitForSnapshot(timeout: .seconds(10)) { $0.registers.count >= 2 }
         let registers = try #require(snap).registers
+        #expect(snap?.drainBarriers.count == 1)
         let second = try #require(registers.last)
         #expect(!second.models.map(\.id).contains("flaky"))
         #expect(second.models.map(\.id).contains("healthy"))
         #expect(await client.currentAdvertisedModels().map(\.id) == ["healthy"])
     }
+}
+
+@Test("selected MiMo full LOAD price closes only the causal 182.85–199.67 GiB preload gap")
+func mimoStartupUsesFullLoadNotSteadyResidencyAndStillRejectsOverBudget() async {
+    let info = MiMoDiscoveryFixture.selectedArithmeticInfo()
+    let headroom = 6.5
+    let oldRequired = ModelLoadAdmission.requiredToLoadGb(
+        weightsGb: MiMoDiscoveryFixture.oldLoadGiB, headroomGb: headroom)
+    let required = ModelLoadAdmission.requiredToLoadGb(weightsGb: info.estimatedMemoryGb, headroomGb: headroom)
+    #expect(abs(required - 182.85009114444256) < 0.000000001)
+    #expect(abs(oldRequired - 199.6718770172447) < 0.000000001)
+    for free in [179.0, 182.0, 183.0, 190.0, 199.0, 200.0] {
+        let oldRecord = PreloadRecorder(), actualRecord = PreloadRecorder()
+        let old = StartupPreloader(deps: .init(freeMemoryGb: { free },
+            load: { oldRecord.recordLoad($0) }))
+        let actual = StartupPreloader(deps: .init(freeMemoryGb: { free },
+            load: { actualRecord.recordLoad($0) }))
+        let oldResult = await old.run(candidates: [.init(modelId: info.id, requiredGb: oldRequired)])
+        let result = await actual.run(candidates: [.init(modelId: info.id, requiredGb: required)])
+        #expect(oldRecord.loads == (free >= oldRequired ? [info.id] : []))
+        #expect(actualRecord.loads == (free >= required ? [info.id] : []))
+        #expect(oldResult.skippedInsufficientMemory == (free < oldRequired ? [info.id] : []))
+        #expect(result.skippedInsufficientMemory == (free < required ? [info.id] : []))
+        #expect(result.failed.isEmpty)
+    }
+    // Same full LOAD quote, still a new live headroom decision; never preserve
+    // a stale lower floor or replace load-transient bytes with steady weights.
+    let record = PreloadRecorder()
+    let raised = StartupPreloader(deps: .init(freeMemoryGb: { 183 },
+        load: { record.recordLoad($0) },
+        currentRequiredGb: { _ in ModelLoadAdmission.requiredToLoadGb(weightsGb: info.estimatedMemoryGb, headroomGb: 8) }))
+    let result = await raised.run(candidates: [.init(modelId: info.id, requiredGb: required)])
+    #expect(result.skippedInsufficientMemory == [info.id])
+    #expect(record.loads.isEmpty)
+}
+
+@Test("ProviderLoop startup consumes the genuine strict scanner quote")
+func mimoProviderStartupPlanUsesScannerNativeLoad() async throws {
+    let root = try MiMoDiscoveryFixture.copyTiny()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let info = try MiMoDiscoveryFixture.scan(root)
+    let loop = try await makePreloadLoop(models: [info], backend: BackendSettings())
+    let plan = await loop.startupPreloadPlanForTesting()
+    #expect(plan.count == 1)
+    #expect(plan.first?.modelId == info.id)
+    #expect(plan.first?.requiredGb == ModelLoadAdmission.requiredToLoadGb(
+        weightsGb: info.estimatedMemoryGb, headroomGb: 6.5))
 }

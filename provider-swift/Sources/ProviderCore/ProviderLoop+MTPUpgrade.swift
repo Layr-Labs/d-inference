@@ -25,19 +25,19 @@ final class StagedProviderMTPUpgrade: @unchecked Sendable {
 
 extension ProviderLoop {
     var mtpStagingBytes: UInt64 {
-        mtpStagingReservations.extraBytes(residentTargets: Set(modelSlots.values.map { ObjectIdentifier($0.container) }))
+        mtpStagingReservations.extraBytes(residentTargets: Set(modelSlots.values.map { $0.modelContainer.identity }))
     }
 
     func isMTPUpgradeTargetRetained(_ modelID: String) -> Bool {
         guard let slot = modelSlots[modelID] else { return false }
-        return mtpStagingReservations.retains(ObjectIdentifier(slot.container))
+        return mtpStagingReservations.retains(slot.modelContainer.identity)
     }
 
     func startMTPUpgradeMonitor() {
         guard mtpUpgradeMonitorTask == nil else { return }
         mtpUpgradeMonitorTask = Task { [weak self] in
             var nextAttempt: [String: ContinuousClock.Instant] = [:]
-            var lastOutcome: [String: MTPIdleUpgrade.Outcome] = [:]
+            var lastOutcome: [String: ModelIdleUpgrade.Outcome] = [:]
             while !Task.isCancelled {
                 guard let self else { return }
                 let candidates = await self.pendingMTPUpgradeModels()
@@ -47,9 +47,9 @@ extension ProviderLoop {
                     if lastOutcome[modelID] == nil {
                         await self.logMTPUpgrade("checking/downloading verified assistant; target remains available", modelID: modelID)
                     }
-                    let outcome = await MTPIdleUpgrade.run(
+                    let outcome = await ModelIdleUpgrade.run(
                         prepare: { try await self.prepareMTPUpgrade(modelID) },
-                        waitBeforeDrain: { try await self.waitBeforeMTPUpgradeDrain(modelID) },
+                        waitBeforeDrain: { try await self.waitBeforeModelUpgradeDrain(modelID) },
                         beginDrain: { try await self.beginMTPUpgradeDrain($0) },
                         commitIfIdle: { try await self.commitMTPUpgradeIfIdle($0) },
                         discard: { await self.discardMTPUpgrade($0) },
@@ -74,14 +74,16 @@ extension ProviderLoop {
     }
 
     func pendingMTPUpgradeModels() -> [String] {
-        guard !isShuttingDown, !state.refusingNewWork,
+        guard autopilotCommand == nil, nativeMiMoAllowsReclamation(), !isShuttingDown, !state.refusingNewWork,
+            modelRevisionActivationID == nil,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
         return modelSlots.compactMap { modelID, slot in
-            guard modelID == "gemma-4-26b-qat-4bit", !slot.engineBundle.mtpStatus.active,
+            guard Self.nativeMiMoLoad(in: slot.modelContainer) == nil,
+                slot.container != nil, modelID == "gemma-4-26b-qat-4bit", !slot.engineBundle.mtpStatus.active,
                 loopConfig.config.backend.mtpMode.enablesMTP(
                     forModelType: slot.modelType, embeddedArtifactDeclared: false, modelID: modelID),
-                !modelsUnloading.contains(modelID), !isRefusedByRetirement(modelID)
+                !modelsUnloading.contains(modelID), !revisionUpdatesInProgress.contains(modelID), !isRefusedByRetirement(modelID)
             else { return nil }
             return modelID
         }.sorted()
@@ -90,7 +92,7 @@ extension ProviderLoop {
     func prepareMTPUpgrade(_ modelID: String, modelDirectory: URL? = nil) async throws -> StagedProviderMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
             let target = modelSlots[modelID].map({
-                (ObjectIdentifier($0.container), UInt64(max(0, $0.sizing.weightsBytes)))
+                ($0.modelContainer.identity, UInt64(max(0, $0.sizing.weightsBytes)))
             }) else { return nil }
         let retention = mtpStagingReservations.retainPreparingTarget(target.0, bytes: target.1)
         await updateAggregateCapacity()
@@ -108,7 +110,8 @@ extension ProviderLoop {
     private func prepareRetainedMTPUpgrade(_ modelID: String, modelDirectory: URL?,
                                           target: ObjectIdentifier) async throws -> StagedProviderMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
-            let original = modelSlots[modelID], ObjectIdentifier(original.container) == target,
+            let original = modelSlots[modelID], original.modelContainer.identity == target,
+            let originalContainer = original.container,
             let info = advertisedModels[modelID],
             let directory = modelDirectory ?? ModelScanner.resolveLocalPath(modelID: modelID)
         else { return nil }
@@ -121,6 +124,8 @@ extension ProviderLoop {
             pendingMTPUpgradeModels().contains(modelID)
         else { return nil }
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         defer { isLoadingAny = false; releaseLoadGateWaiters() }
         let grant = Int(clamping: EngineV2KVSizing.minimumServiceableGrantBytes)
         guard let lease = await kvBudget.claimPendingLoad(
@@ -128,10 +133,10 @@ extension ProviderLoop {
             weightBytes: artifact.residentBytes, minimumKVBytes: UInt64(grant))
         else {
             logger.warning("mtp: model=\(modelID) assistant staging deferred: insufficient memory; retaining target engine")
-            throw MTPIdleUpgrade.PreparationError.insufficientMemory
+            throw ModelIdleUpgrade.PreparationError.insufficientMemory
         }
         await acquireResliceGate()
-        mtpStagingReservations.reserve(lease, target: ObjectIdentifier(original.container),
+        mtpStagingReservations.reserve(lease, target: original.modelContainer.identity,
             targetBytes: UInt64(max(0, original.sizing.weightsBytes)),
             assistantBytes: artifact.residentBytes, kvBytes: UInt64(grant))
         await updateAggregateCapacity()
@@ -145,7 +150,7 @@ extension ProviderLoop {
             let logger = self.logger
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelID, isVLM: original.isVLM, modelDirectory: directory,
-                container: original.container, specDecPreparation: preparation,
+                container: originalContainer, specDecPreparation: preparation,
                 assistantLoader: engineV2SlotHooks?.assistantLoader ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry,
                 logInfo: { logger.info($0) }, logWarning: { logger.warning($0) })
@@ -159,9 +164,10 @@ extension ProviderLoop {
             let sizing = original.sizing.replacingAuxiliaryWeightBytes(prepared.assistantBytes)
             replacement = try await makeEngineV2BundleForSlot(
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
-                modelDirectory: directory, container: original.container, tokenizer: original.tokenizer,
+                modelDirectory: directory, container: originalContainer, tokenizer: original.tokenizer,
                 sizing: sizing, kvBytesCapacity: grant, specDecPreparation: preparation,
-                preparedModel: prepared, cacheEligibleWeightHash: original.cacheEligibleWeightHash,
+                preparedModel: prepared, modelArtifactSHA256: original.modelArtifactSHA256,
+                cacheEligibleWeightHash: original.cacheEligibleWeightHash,
                 registerInRuntime: false)
             try Task.checkCancellation()
             let replacement = replacement!
@@ -181,7 +187,7 @@ extension ProviderLoop {
             if let replacement { await replacement.bridge.shutdown(); replacement.releaseAssistant() }
             prepared?.assistant?.release()
             prepared = nil
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             await releaseMTPStagingAndRegrow(lease)
             logger.warning("mtp: model=\(modelID) optional preparation failed: \(error); retaining target engine")
             throw error
@@ -189,8 +195,10 @@ extension ProviderLoop {
     }
 
     func commitMTPUpgradeIfIdle(_ staged: StagedProviderMTPUpgrade) async throws -> Bool {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let modelID = staged.modelID
-        guard let original = staged.original else { throw CancellationError() }
+        guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
         guard modelSlots[modelID]?.engineV2 === original.engineV2,
             pendingMTPUpgradeModels().contains(modelID)
@@ -217,8 +225,9 @@ extension ProviderLoop {
         defer { finishMTPUpgradeTransition(modelID) }
         await engineV2Runtime.register(modelId: modelID, bridge: staged.replacement.bridge)
         modelSlots[modelID] = ModelSlot(
-            engineBundle: staged.replacement, container: original.container,
+            engineBundle: staged.replacement, container: originalContainer,
             tokenizer: original.tokenizer, sizing: staged.sizing,
+            modelArtifactSHA256: original.modelArtifactSHA256,
             cacheEligibleWeightHash: original.cacheEligibleWeightHash,
             isVLM: original.isVLM, modelType: original.modelType,
             lastInferenceAt: original.lastInferenceAt)
@@ -229,7 +238,7 @@ extension ProviderLoop {
         await staged.replacement.bridge.startSSDPrefixCacheStatsLogger()
         await staged.replacement.bridge.configureMTPStatus(staged.replacement.mtpStatus)
         staged.original = nil
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
         mtpStagingReservations.release(staged.lease)
         await kvBudget.finishPendingLoad(staged.lease)
         await resliceGrowSurvivorsLocked()
@@ -240,10 +249,12 @@ extension ProviderLoop {
     }
 
     func discardMTPUpgrade(_ staged: StagedProviderMTPUpgrade) async {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         await staged.replacement.bridge.shutdown()
         staged.replacement.releaseAssistant()
         staged.original = nil
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
         await releaseMTPStagingAndRegrow(staged.lease)
     }
 
@@ -274,7 +285,7 @@ extension ProviderLoop {
         }
     }
 
-    private func finishMTPUpgradeTransition(_ modelID: String) {
+    func finishMTPUpgradeTransition(_ modelID: String) {
         mtpUpgradeTransitions.remove(modelID)
         let waiters = mtpUpgradeWaiters.removeValue(forKey: modelID) ?? []
         for waiter in waiters { waiter.resume() }

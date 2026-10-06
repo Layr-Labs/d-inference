@@ -113,6 +113,11 @@ extension EngineV2Bridge {
         // Coordinator requests are expressed in ordinary tokens. Convert the
         // provider's byte-exact commitments back through the advertised rate;
         // rounding up preserves fixed recurrent and assistant allocation blocks.
+        // A native row can retain its reservation after client termination.
+        // Its engine ledger remains authoritative until real retirement.
+        if tracksNativeShutdown {
+            committedBytes = max(committedBytes, snapshot.kvBytesReserved)
+        }
         let budgetUsed: Int64
         if kvBytesPerToken > 0 {
             let (roundedBytes, roundingOverflow) = committedBytes.addingReportingOverflow(
@@ -131,13 +136,18 @@ extension EngineV2Bridge {
             boundedKVBytesCapacity = min(
                 boundedKVBytesCapacity, snapshot.kvBytesBackendCapacity)
         }
-        let reportedKVBytesCapacity: Int
+        var reportedKVBytesCapacity: Int
         if let kvBytesBudgetClamp {
             reportedKVBytesCapacity = min(boundedKVBytesCapacity, max(0, kvBytesBudgetClamp))
         } else {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
-        let prospectiveRequests = max(0, maxConcurrentRequests - active.count)
+        if tracksNativeShutdown {
+            reportedKVBytesCapacity = min(reportedKVBytesCapacity, nativeAdmissionCapacityBytes())
+        }
+        let servingConcurrency = memoryLimitedConcurrency(
+            configured: effectiveServingConcurrency, capacityBytes: reportedKVBytesCapacity)
+        let prospectiveRequests = max(0, servingConcurrency - active.count)
         let prospectiveOverheadBytes: Int?
         if let perRequestOverhead = maximumRequestOverheadBytes() {
             let (bytes, overflow) = perRequestOverhead.multipliedReportingOverflow(
@@ -147,7 +157,7 @@ extension EngineV2Bridge {
             prospectiveOverheadBytes = nil
         }
         let budgetMax: Int64
-        if kvBytesPerToken > 0, let prospectiveOverheadBytes {
+        if servingConcurrency > 0, kvBytesPerToken > 0, let prospectiveOverheadBytes {
             budgetMax = Int64(
                 max(0, reportedKVBytesCapacity - prospectiveOverheadBytes)
                     / kvBytesPerToken)
@@ -172,6 +182,9 @@ extension EngineV2Bridge {
             queuedPrefillTokens: Int64(queuedPrefillTokens),
             partialPrefillRows: partialPrefillRows,
             prefillTokensTotal: prefillTokensTotal,
+            prefillRequestsTotal: prefillRequestsTotal,
+            generatedTokensTotal: generatedTokensTotal,
+            generationRequestsTotal: generationRequestsTotal,
             isolatedPrefillTps: isolatedPrefillEwmaInitialized ? isolatedPrefillTpsEwma : 0,
             ewmaInitialized: isolatedPrefillEwmaInitialized,
             pumpTasks: Int64(pumpTasks.count),
@@ -191,7 +204,8 @@ extension EngineV2Bridge {
             // legacy `heartbeatSlotState` precedence — so the coordinator
             // deroutes the model without treating it as crashed-forever.
             state = "reloading"
-        } else if wedgeMonitor.wedgeSuspected(now: now) {
+        } else if (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
+            || wedgeMonitor.wedgeSuspected(now: now) {
             // Same truthful-derouting contract as the legacy heartbeat: a
             // wedged slot must not keep advertising healthy.
             state = "crashed"
@@ -206,11 +220,10 @@ extension EngineV2Bridge {
             numWaiting: UInt32(clamping: max(0, snapshot.waitingRequests)),
             activeTokens: Int64(snapshot.activeTokens),
             maxTokensPotential: maxTokensPotential,
-            maxConcurrency: UInt32(clamping: maxConcurrentRequests),
+            maxConcurrency: UInt32(clamping: servingConcurrency),
             observedDecodeTps: observedDecodeTpsEwma,
-            // Bridge-measured cold-prefill EWMA (submit → first token over
-            // prompt tokens; see EngineV2Bridge.recordPrefillSample). Feeds
-            // the coordinator's prefill-honest TTFT estimation.
+            // Engine-measured cold-prefill EWMA published as soon as prompt
+            // computation completes. Explicit metadata carries age and count.
             observedPrefillTps: observedPrefillTpsEwma,
             activeTokenBudgetUsed: budgetUsed,
             activeTokenBudgetMax: budgetMax,
@@ -219,6 +232,17 @@ extension EngineV2Bridge {
             // Slot-level bookkeeping (recorded by ensureModelLoaded on
             // load completion) — previously the legacy scheduler's field.
             modelLoadTimeMs: modelLoadTimeMs,
+            performanceProfile: currentPerformanceProfile.map { .init(
+                id: $0.id, runtimeRevision: $0.runtimeRevision,
+                contextTokens: advertisedContextTokens ?? $0.contextTokensMax, mtp: $0.mtp) },
+            deadlineProfile: currentDeadlineProfile.map { .init(profile: $0) },
+            promptWorkIdentity: promptWorkIdentity,
+            performanceMeasurements: performanceMeasurementSnapshot(now: now),
+            // A resolved profile retains work evidence through temporary
+            // posture withdrawal. Unprofiled slots need no timing-only wire
+            // changes unless aggregate capacity includes a profiled peer.
+            deadlineWork: deadlineProfile == nil ? nil
+                : serviceBudget?.deadlineWork(modelID: modelId, epoch: performanceMeasurements.epoch),
             // Per-slot KV-backend discriminator. This is the RESOLVED kind
             // the engine was built with (post-veto, post-fallback), not the
             // operator's request, and it is reported on EVERY heartbeat —
@@ -281,7 +305,14 @@ extension EngineV2Bridge {
     /// Number of requests currently active on this bridge (heartbeat
     /// aggregate `inferenceActive` input).
     public func activeRequestCount() -> Int {
-        active.count
+        if tracksNativeShutdown || ownedEngine is CBv2NativeBlockEngine {
+            let capacity = capacitySnapshot()
+            // Early terminal delivery is not an idle/evictable native slot.
+            // Include pending retirement and requests still owned by its queue.
+            return max(Set(active.keys).union(pendingSubmissionIDs).count,
+                capacity.activeRequests + capacity.waitingRequests)
+        }
+        return active.count
     }
 
     /// This engine's live-KV admission ceiling in bytes.
@@ -321,8 +352,7 @@ extension EngineV2Bridge {
 
     /// NON-PRIVATE wedge/engine-health field set — the same shape the
     /// legacy `BatchScheduler.engineHealthFields` emitted (operational
-    /// counters + timestamps only; keys mirrored in the Go/Swift/TS
-    /// telemetry allowlists), tagged `backend=engine_v2`. Shared by the
+    /// counters + timestamps only), tagged `backend=engine_v2`. Shared by the
     /// step-wedge transition events above and the self-restart events
     /// (`EngineV2Bridge+Liveness`).
     func wedgeHealthFields(

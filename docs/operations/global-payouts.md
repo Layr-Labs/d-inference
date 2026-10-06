@@ -1,12 +1,12 @@
 # Enable and operate international bank withdrawals
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-10-02
 
 This runbook enables Stripe Global Payouts alongside existing Connect withdrawals. Providers use one bank setup and withdrawal flow. Country selection chooses the payout product; international withdrawals include a local-currency estimate before confirmation.
 
 ## When to use
 
-Enable bank withdrawals for supported destinations outside the current Connect route, or reconcile an international withdrawal. Country policy is `coordinator/billing/globalpayouts/countries.go` (`Countries`): 33 countries use Connect for new destinations and 67 use Global Payouts when enabled. Existing ready Connect accounts remain on their route. Mainland China, Cambodia, and Gibraltar have no new-account route in this policy because account-specific support or bank requirements remain unverified.
+Enable bank withdrawals for supported destinations outside the current Connect route, or reconcile an international withdrawal. Country policy is `coordinator/billing/globalpayouts/countries.go` (`Countries`): 33 countries use Connect for new destinations and 67 use Global Payouts when enabled. Existing ready Connect accounts remain on their route until the explicit global-only cutover. Follow [Stripe account migration](stripe-migration.md) to move them through self-service bank setup. Mainland China, Cambodia, and Gibraltar have no new-account route in this policy because account-specific support or bank requirements remain unverified.
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ Before activation, review the cost of covering these fees. Before confirming the
 
 ## Steps
 
-1. Configure the restricted key (or use the existing restricted Stripe key), base Connect key, financial-account ID and event signing secret using the [configuration reference](../reference/configuration.md#billing-stripe-and-base-rewards). Keep keys out of logs, shell command arguments and review artifacts. Key permission expansion and production configuration changes require their applicable approval.
+1. Configure the restricted key (or use the existing restricted Stripe key), retained Connect key when needed for historical events, financial-account ID and event signing secret using the [configuration reference](../reference/configuration.md#billing-stripe-and-base-rewards). Keep keys out of logs, shell command arguments and review artifacts. Key permission expansion and production configuration changes require their applicable approval.
 2. Install the candidate's production refresh script and manifests as described in the [deployment runbook](coordinator-deploy.md), then run the env refresh check. The release defaults enable Global Payouts when the flag is absent. An explicit `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false` remains off for a staged rollout or pause. The check refuses activation with a missing funding-account ID or webhook secret before changing the live env file.
 3. Deploy the reviewed coordinator and console. The migration creates or extends the Global Payouts tables/indexes; it does not modify earned balances or existing Connect withdrawal rows. If the flag was explicitly set to false during staging, set it to true and recreate the coordinator to activate withdrawals. Funding and Stripe account permissions must be checked before activation.
 4. In the billing or provider earnings page, choose India and complete Stripe-hosted recipient onboarding. This collects the bank details directly with Stripe. The Pay via Email shortcut is domestic-only and is not used by this implementation.
@@ -50,7 +50,7 @@ The source-of-truth payout row is `global_payout_withdrawals` and its `data` obj
 
 Expired unconfirmed quotes are pruned according to the [retention policy](../reference/pricing-model.md#global-payouts-withdrawals); confirmed payout records are preserved.
 
-Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours and receive `failure_code=manual_reconciliation_required`. They keep their debit and remain visible in history, but subsequent automatic scans and claims skip them. Investigate the original request before any manual action; a verified external ID allows readback reconciliation to resume. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
+Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours and receive `failure_code=manual_reconciliation_required`. They keep their debit and remain visible in history, but subsequent automatic scans and claims skip them. Investigate the original request before any manual action; a verified external ID allows readback reconciliation to resume. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/billing/payouts/global_payouts_reconcile.go`, `syncGlobalPayout`).
 
 Inspect without exposing the stored request or recipient information:
 

@@ -2,7 +2,7 @@
 //
 // Our endpoint matches the OpenAI/OpenRouter `image_url` wire format, with one
 // constraint: the image must be an inline base64 `data:` URI (the provider is
-// end-to-end-encrypted and rejects remote URLs). So the browser reads the file,
+// sealed on the coordinator/provider leg and rejects remote URLs). So the browser reads the file,
 // validates it, and base64-encodes it client-side before it enters the
 // (sender→coordinator sealed) request body.
 

@@ -88,6 +88,11 @@ func (r *Registry) ColdSpillProviders(model string, traits RequestTraits, requir
 func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, traits RequestTraits, requiresVision bool, now time.Time) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Cold spill promises a legacy load_model. Managed inventory can be warmed
+	// only by an explicit placement command; never queue on this false promise.
+	if providerLegacyModelChangesBlockedLocked(p) {
+		return false
+	}
 
 	// Structural / trust / privacy / freshness / cooldown / trait gates.
 	if !r.providerPassesRoutingGatesLocked(p, model, traits, false, now) {
@@ -132,7 +137,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 		// the request into its queue — the planner (modelLoadCandidatePendingLocked)
 		// would refuse the load and the request would wait out the 120s queue timeout
 		// instead of failing fast (#390).
-		if admit, reported := reportedFreeForLoadAdmitsWithOffload(entry.SizeGB, advertisedOffloadedMemoryGBLocked(p, model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+		if admit, reported := reportedFreeForLoadAdmitsWithOffload(entry.SizeGB, advertisedOffloadedMemoryGBLocked(p, model, entry.SizeGB), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
 			return false
 		}
 	}

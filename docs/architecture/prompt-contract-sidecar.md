@@ -1,6 +1,14 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-10-03
+
+The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
+media; it does not broaden this sidecar's text-only cache-planning contract.
+Go `endpointContainsMedia` and Rust `content_collection_has_media` reject media
+in both message content and function-call outputs. Text-only production vectors
+and normalization identities remain unchanged. See the
+[Responses API contract](../reference/api-contracts.md#responses-api) for serving
+formats; native multimodal checkpoint reuse is a separate engine capability.
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -153,6 +161,87 @@ this instruction itself. Qwen and Harmony system-turn folding then mirrors
 (`coordinator/promptsidecar/src/leading_system.rs`, `normalize_messages`). Invalid or
 unsupported shapes fail cold.
 
+Five provider-side transformations that precede every template are mirrored in
+`coordinator/promptsidecar/src/normalize.rs`:
+
+1. **Member order.** Foundation dictionaries carry no order and
+   `Jinja.Value(any:)` sorts every object it bridges with Swift `String <`, so
+   `normalize` sorts every object in the final messages, tools and template
+   context once, after all other steps (`sorted_object_keys`). The planner
+   never relies on wire order. Today the shared prelude re-serializes every
+   provider body from the decoded map, which sorts keys
+   (`coordinator/api/inference/inference_preprocess.go`, `parseInferencePrelude`,
+   `ForwardBody.Current`), but that follows from the prelude stamping the
+   request date, not from a contract: `ForwardBody` forwards the caller's
+   bytes verbatim whenever nothing is dirty, and JSON carried inside strings,
+   such as tool-call `arguments`, is never re-serialized. The sort is
+   therefore load-bearing.
+2. **Tool-call arguments.** Decoded `arguments` take the value bridge's
+   shape: sorted members and integral JSON doubles as integers, because
+   `Jinja.Value(any:)` matches `Int` before `Double` (`provider_bridged_value`).
+3. **Tool definitions.** A tool's `function` object keeps `name`,
+   `description` and `parameters`, plus optional `strict` for Nemotron
+   (`typed_function_definition`). `ChatTemplateFixes.normalizeToolMetadata`
+   removes that SDK metadata for other families in both text and native media
+   inputs. It preserves the media producer's existing schema/history handling.
+4. **Harmony framing.** Assistant `content` and `reasoning_content` lose raw
+   Harmony channel framing for every model family
+   (`strip_harmony_channel_framing`, the mirror of `sanitizeJinjaMessages`).
+5. **Content parts.** `output_text` parts contribute text exactly like `text`
+   and `input_text` (`message_text`).
+
+The provider's tokenization is the ground truth, so where the two runtimes
+cannot be shown to agree the planner refuses the request and it is served
+cold. Two such refusals belong to the mirrors above. Object keys that are not
+already NFC are refused (`coordinator/promptsidecar/src/render/input.rs`,
+`visit`): Swift orders keys by their composed scalars while the planner orders
+bytes, so a decomposed key can render in a different position even without a
+colliding sibling. Harmony framing is stripped only when every control token is
+a whole extended grapheme cluster (`require_whole_grapheme_tokens`): Foundation
+and Swift `Character` search do not match a token whose last character carries
+a combining mark, joiner, variation selector, emoji modifier or spacing mark,
+or whose first character follows a prepended format character, and
+`replacingOccurrences` does not agree with `contains` on every one of those.
+
+Three provider-side differences have no mirror and no refusal. Requests that
+exercise them still plan, still fail their receipt with
+`prompt_anchor_mismatch`, and still fence the provider and model:
+
+- **Gemma `dictsort` collation.** The Gemma template orders tool `properties`
+  and tool-call arguments with `dictsort`. MiniJinja compares keys with
+  `unicase::UniCase` (its `unicode` feature is enabled), so keys that differ
+  only in case agree on both sides. swift-jinja compares with
+  `localizedCaseInsensitiveCompare`, which collates `_` before digits and
+  accented letters next to their base letter; `_a` against `1a`, or `é`
+  against `z`, renders in the opposite order. Deciding experiment: add a
+  Gemma case whose tool properties are `_a` and `1a`, regenerate the vectors
+  and run `ProductionPromptParityTests`; it fails at the first property name.
+  Then run the same case on a provider under two system locales with keys
+  `aa` and `z` (Danish collates `aa` after `z`): if the token arrays differ,
+  the provider's order is locale-dependent and no planner mirror can be
+  exact, which leaves a locale-independent comparator on the provider with a
+  renderer version change, or a refusal for Gemma requests with more than one
+  key in a sorted map.
+- **Combining-mark scripts on the Qwen pre-tokenizer.** For Devanagari,
+  Bengali, Tamil, Thai and vocalized Arabic, `swift-transformers` keeps marks
+  with their base letter where the `tokenizers` crate splits them, so the
+  provider's prompt is shorter. Deciding experiment: encode one sentence per
+  script with `LocalTokenizerLoader` and with the crate from the same
+  `tokenizer.json`, then apply the file's pre-tokenizer pattern alone with
+  `NSRegularExpression` and with the crate; the first span that differs shows
+  whether the `\p{M}` and `\p{L}` classes or the matching unit differ.
+- **CRLF on the GPT-OSS and Qwen pre-tokenizers.** `":\r\n"`, a code fence
+  followed by `"\r\n"`, and `"\r\n\r\n"` split differently, so the provider's
+  prompt is longer. Deciding experiment: the same two-step comparison with
+  those three strings; if the pattern spans agree and only the merged tokens
+  differ, the difference is in how `"\r\n"` is segmented before the model's
+  merges apply.
+
+Both pre-tokenizer differences are departures of the provider from the
+reference tokenizer, so they also change what the model reads for those
+inputs. Correcting them changes provider token arrays and therefore requires a
+tokenizer version change.
+
 Constrained tool validation and grammar-cost accounting inspect the same borrowed
 `const`/`enum` values from the parsed schema; they do not allocate temporary
 reference vectors. Numeric, nullable, delimiter and grammar-complexity bounds
@@ -188,8 +277,8 @@ the provider contract, relax receipt checks or clear existing fences.
 
 The semantic versions (`CurrentVersions`) are:
 
-- normalization: `darkbloom-request-normalization-v6` (retains prior model policies and extends the native Qwen4 text prompt and reasoning-effort policy to the exact registry ID)
-- renderer: `swift-jinja-request-date-compatible-v3`
+- normalization: `darkbloom-request-normalization-v8` (retains v7 model policies, including native MiMo history/null handling, and preserves typed function-level `strict` only for Nemotron)
+- renderer: `swift-jinja-request-date-compatible-v4` (Nemotron-scoped Transformers-compatible scalar/JSON filters)
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `PromptContractIdentity.blockHashVersion`, stated in
   [`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)
@@ -228,21 +317,37 @@ them to a different value. The context/error vectors mirror
 `Qwen4SupportPolicy.validateReasoningContext` and
 `MultiModelBatchSchedulerEngine.templateAdditionalContext`.
 
-A v3/v4/v5 provider and v6 coordinator (or the reverse) cannot earn cache credit or
-affinity from the other's contract: `coordinator/registry/cache_tiers.go`
+A provider and coordinator using different normalization or renderer identities
+cannot earn cache credit or affinity from the other's contract:
+`coordinator/registry/cache_tiers.go`
 (`capabilityMatchesPlan`) requires identical IDs while ordinary serving remains
 available. Before an authorized rollout, regenerate prompt artifacts/preloaded
 contracts and any configured exact artifact allowlist using the new identity;
-do not relabel old cache objects as v6. Renderer, tokenizer and block-hash
-versions are unchanged. No deployment or allowlist mutation follows merely
+do not relabel old cache objects as v8. Tokenizer and block-hash versions are
+unchanged. No deployment or allowlist mutation follows merely
 from building this private candidate.
 
 The new registry ID additionally requires a compatible provider version for
 all inference, not merely cache credit; see the
 [registry-ID gate](routing.md#native-model-capacity-and-registry-identity).
-The version transition preserves existing models' template inputs and token
-arrays while regenerating contract-dependent hashes. It is not a change to
-model weights or a new floating-point baseline.
+The v8 transition preserves non-Nemotron template inputs and token arrays while
+regenerating contract-dependent hashes. The checked-in production corpus has
+no Nemotron model; its identity-only transformation cannot establish Nemotron
+prompt parity. Nemotron's reference corpus separately verifies the changed
+tool metadata and filter bytes. Model weights and floating-point behavior are
+unchanged.
+
+Nemotron's Rust filters mirror the provider's `String(Double)` spelling rather
+than Rust's decimal display or serde's exponent spelling. The normalizer applies
+the SDK's Int-before-Double conversion to Nemotron tool values before rendering;
+numeric enum/default/minimum fields therefore produce identical token counts
+and cache blocks. Decimal/exponent tool values at or above the `2^53` exact
+integer boundary stay cold: serde's Double may already have lost a digit that
+Swift's typed Int decoder preserves. Plain signed integer spellings remain
+eligible. The shared 526-value finite-number oracle exercises both
+Swift and Rust filters, and the pinned reference/edge corpora exercise the real
+provider tokenizer and Rust planner. See the
+[Nemotron parity gate](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors).
 
 The artifact loader records the pinned `swift-transformers` precedence:
 `chat_template.jinja`, then `chat_template.json`, then the tokenizer-config
@@ -255,7 +360,7 @@ same production gate; their hashes still remain part of artifact identity.
 ### Block-chain encoding
 
 For block index `i`, the engine, Go package (`BlockHash`,
-`coordinator/promptcontract/blockhash.go`) and Rust sidecar (`block_hash`,
+`coordinator/internal/promptcontract/identity/blockhash.go`) and Rust sidecar (`block_hash`,
 `coordinator/promptsidecar/src/hash.rs`) compute:
 
 ```text
@@ -361,6 +466,29 @@ values remain booleans through `ParserUtilities.asSendable` in
 
 ### Parity fixtures and measured latency
 
+For `model_type=nemotron_h`, the provider and sidecar instead use the pinned
+Nemotron template's Transformers-compatible default scalar and JSON filters.
+`provider-swift/Sources/ProviderCoreFoundation/NemotronTemplateFilters.swift`
+and `coordinator/promptsidecar/src/render/nemotron.rs` preserve Unicode and
+use comma-space/colon-space JSON separators. The Swift writer bounds nesting
+at 128 and output at 16 MiB; unsupported filter options fail closed.
+`NemotronTemplateFilterBinding` binds only the `string` filter to a private
+name because Swift Jinja shares filter and type-test names. It leaves
+`is string` tests intact. Model artifact templates are not modified.
+
+The SDK preserves optional boolean `strict` (including false); provider and
+sidecar normalization retain it only for Nemotron. Unknown function fields
+are still outside the typed SDK contract. This is not a general arbitrary-JSON
+or every-template parity guarantee. The fixture corpus verifies the pinned
+template's supported request shapes; it does not certify model tool-selection
+quality.
+
+The normalization-v8/renderer-v4 identity change affects all model families,
+including those with unchanged prompt bytes. Existing checkpoints remain separated by prompt
+identity and start cold. Coordinator/sidecar contracts and artifact allowlists
+must be regenerated with the provider rollout; rollback restores the prior
+provider/coordinator versions together, never relabeling old cache entries.
+
 `fixtures/prompt-contract/v1` is shared by Rust, Go, and Swift tests:
 `contract_vectors.json` and `block_hash_vectors.json` hold the contract and
 block-hash vectors; `corpus.json` contains complete requests for tools, null
@@ -408,7 +536,7 @@ gate.
    (`compute`).
 3. **Three implementations, one chain.** Go, Rust and the Swift provider
    produce byte-identical chain hashes and boundaries for the shared vectors —
-   `coordinator/promptcontract/blockhash.go` (`ChainHashes`,
+   `coordinator/internal/promptcontract/identity/blockhash.go` (`BlockHash`,
    `LastCompleteBoundary`), `coordinator/promptsidecar/src/hash.rs`
    (`chain_hashes`), `fixtures/prompt-contract/v1`,
    `scripts/verify-prompt-parity.sh`.
@@ -450,13 +578,13 @@ gate.
 
 | Concern | File / symbol |
 |---|---|
-| Supervisor: spawn, probes, restart circuit, shutdown | `coordinator/promptcontract/supervisor.go`, `coordinator/promptcontract/supervisor_status.go`, `coordinator/promptcontract/supervisor_process.go`, `coordinator/promptcontract/supervisor_defaults.go` |
+| Supervisor: spawn, probes, restart circuit, shutdown | `coordinator/promptcontract/supervisor.go`, `coordinator/promptcontract/supervisor_status.go`, `coordinator/internal/promptcontract/process/supervisor_process.go`, `coordinator/promptcontract/supervisor_defaults.go` |
 | Configuration and startup checks | `coordinator/promptcontract/config.go` (`ReadSupervisorConfig`, `Check`) |
 | Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`) |
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
-| Descriptor-relative artifact paths | `coordinator/promptcontract/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
+| Descriptor-relative artifact paths | `coordinator/internal/promptcontract/artifacts/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
 | Preload gate per child generation | `coordinator/promptcontract/preload_controller.go` |
-| Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/promptcontract/blockhash.go` |
+| Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/internal/promptcontract/identity/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |
 | Bounded HTTP JSON decoding | `coordinator/promptsidecar/src/server/handler.rs` (`decode_request`): plan and preload share declared/streamed body bounds, read deadline and JSON decoding; each operation retains its own malformed-request message and worker timeout policy |
 | Planner, contract LRU, artifact loading | `coordinator/promptsidecar/src/planner.rs`, `coordinator/promptsidecar/src/artifact_cache.rs`, `coordinator/promptsidecar/src/artifacts.rs` |
@@ -474,3 +602,13 @@ gate.
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the DBK3 blocks the chain addresses
 - [`../reference/configuration.md#prompt-sidecar-and-media-fetch`](../reference/configuration.md#prompt-sidecar-and-media-fetch) — every `EIGENINFERENCE_PROMPT_SIDECAR_*` variable and default
 - [`../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors`](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors) — regenerating vectors and running the parity gate
+
+### MiMo thinking alias
+
+For exact `mimo_v2`, `coordinator/promptsidecar/src/mimo_v26.rs`
+(`additional_context`) accepts Boolean `chat_template_kwargs.thinking` as a
+fallback alias for `enable_thinking`. Nested `reasoning.enabled`, top-level
+`enable_thinking`, and kwargs `enable_thinking` retain precedence. Every
+supplied alias is type checked. The provider mirrors this in
+`MiMoV26RawControlEvidence` and `MiMoV26TemplateFix`; existing valid requests
+retain identical normalized content and contract identity.

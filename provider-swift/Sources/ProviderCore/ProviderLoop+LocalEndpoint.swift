@@ -53,8 +53,12 @@ extension ProviderLoop {
             // best-effort HTTP probe that a foreign process on the same port
             // could answer). If the bind fails, runService throws below and this
             // never runs, so no stale/foreign discovery record is written.
+            responseTracker: localResponseTracker,
             onServerRunning: { [weak self] _ in
                 await self?.onLocalEndpointBound(cfg)
+            },
+            modelTypeProvider: { [weak self] modelId in
+                await self?.localModelTypeForAudioAdmission(modelId)
             }
         )
         let log = logger
@@ -70,6 +74,11 @@ extension ProviderLoop {
                 log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
             }
         }
+    }
+
+    /// Resident identity wins during a catalog/slot transition; no load occurs.
+    func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
+        modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and
@@ -128,6 +137,10 @@ extension ProviderLoop {
         // is atomic — the reservation is either refused or counted in
         // `hasInflightWork` before any drain snapshot can miss it.
         try throwIfRefusingNewLocalWork(modelId: modelId)
+        let nativeLease = try nativeMiMoConsumerLease(modelID: modelId, entry: .init(
+            tokenizer: slot.tokenizer, modelType: slot.modelType, container: slot.container,
+            diffusionContainer: slot.modelContainer.diffusion, isVLM: slot.isVLM,
+            engineV2Bridge: slot.engineV2, visionGate: slot.visionGate(kvBudget: kvBudget)))
         localReservations.reserve(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in
@@ -135,11 +148,12 @@ extension ProviderLoop {
         }
         return MultiModelBatchSchedulerEngine.AcquiredModel(
             tokenizer: slot.tokenizer,
-            releaseToken: OneShotRelease(release: release, modelId: modelId),
+            releaseToken: OneShotRelease(release: release, modelId: modelId, nativeConsumerLease: nativeLease),
             // From the loaded slot, not advertisedModels — correct during the
             // hard-swap drop window (see ModelSlot.modelType).
             modelType: slot.modelType,
             container: slot.container,
+            diffusionContainer: slot.modelContainer.diffusion,
             isVLM: slot.isVLM,
             // ONE ENGINE (v0.7.5): local requests route through the same v2
             // bridge as coordinator requests; the vision gate covers the

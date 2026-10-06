@@ -40,16 +40,28 @@ fn contains_media(endpoint: Endpoint, body: &Map<String, Value>) -> bool {
     }
 }
 
-const CHAT_MEDIA_TYPES: &[&str] = &["image", "image_url", "video", "video_url"];
-const RESPONSES_MEDIA_TYPES: &[&str] = &[
-    "input_image",
-    "input_file",
+// Audio presence is cache-ineligible even when its payload is malformed.
+// This is not serving support or a vision/routing capability declaration.
+const CHAT_MEDIA_TYPES: &[&str] = &[
     "image",
     "image_url",
     "video",
     "video_url",
+    "input_audio",
+    "audio_url",
 ];
-const MESSAGES_MEDIA_TYPES: &[&str] = &["image", "document"];
+const RESPONSES_MEDIA_TYPES: &[&str] = &[
+    "input_image",
+    "input_file",
+    "input_video",
+    "image",
+    "image_url",
+    "video",
+    "video_url",
+    "input_audio",
+    "audio_url",
+];
+const MESSAGES_MEDIA_TYPES: &[&str] = &["image", "document", "input_audio", "audio_url"];
 
 fn content_collection_has_media(value: &Value, media_types: &[&str]) -> bool {
     match value {
@@ -64,6 +76,10 @@ fn content_collection_has_media(value: &Value, media_types: &[&str]) -> bool {
                 || object
                     .get("content")
                     .is_some_and(|content| content_collection_has_media(content, media_types))
+                || (object.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && object
+                        .get("output")
+                        .is_some_and(|output| content_collection_has_media(output, media_types)))
         }
         _ => false,
     }
@@ -90,9 +106,24 @@ fn lower_completions(input: &Map<String, Value>) -> Result<Map<String, Value>, E
 }
 
 fn lower_responses(input: &Map<String, Value>) -> Result<Map<String, Value>, EndpointError> {
-    let messages = responses_messages(input.get("input").ok_or(EndpointError::Invalid)?)?;
+    let mut messages = responses_messages(input.get("input").ok_or(EndpointError::Invalid)?)?;
+    match input.get("instructions") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(instructions)) => {
+            if !instructions.is_empty() {
+                messages.insert(0, json!({"role": "system", "content": instructions}));
+            }
+        }
+        Some(_) => return Err(EndpointError::Invalid),
+    }
     let mut out = input.clone();
-    for key in ["input", "endpoint", "max_output_tokens", "text"] {
+    for key in [
+        "input",
+        "instructions",
+        "endpoint",
+        "max_output_tokens",
+        "text",
+    ] {
         out.remove(key);
     }
     out.insert("messages".into(), Value::Array(messages));
@@ -535,6 +566,124 @@ fn explicit_max_tokens(input: &Map<String, Value>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_audio_presence_before_text_cache_lowering() {
+        for kind in ["input_audio", "audio_url"] {
+            let parts = [
+                json!({"type": kind}),
+                json!({"type": kind, kind: null}),
+                json!({"type": kind, kind: 42}),
+                json!({"type": kind, kind: {"data": "AAAA", "format": "wav"}}),
+                json!({"type": kind, kind: {"data": "AAAA", "format": "mp3"}}),
+                json!({"type": kind, kind: {"url": "https://example.invalid/private"}}),
+            ];
+            for part in parts {
+                for (endpoint, body) in [
+                    (
+                        Endpoint::ChatCompletions,
+                        json!({"messages": [{"role": "user", "content": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::ChatCompletions,
+                        json!({"messages": [{"role": "tool", "tool_call_id": "c", "content": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::Responses,
+                        json!({"input": [{"type": "message", "role": "user", "content": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::Responses,
+                        json!({"input": [{"type": "function_call_output", "call_id": "c", "output": [part.clone()]}]}),
+                    ),
+                    (
+                        Endpoint::Responses,
+                        json!({"input": [{"type": "function_call_output", "call_id": "c", "output": part.clone()}]}),
+                    ),
+                    (
+                        Endpoint::Messages,
+                        json!({"messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c", "content": [part.clone()]}]}]}),
+                    ),
+                ] {
+                    assert!(
+                        matches!(lower(endpoint, body), Err(EndpointError::Unsupported)),
+                        "{kind}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn audio_words_and_tool_arguments_preserve_text_body() {
+        let body = json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "input_audio audio_url"}]},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "c", "type": "function", "function": {"name": "f", "arguments": "{\"type\":\"input_audio\"}"}}
+                ]}
+            ],
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": {
+                "type": "object", "properties": {"kind": {"type": "audio_url"}}
+            }}}],
+            "metadata": {"content": {"type": "input_audio"}}
+        });
+        assert_eq!(
+            Value::Object(lower(Endpoint::ChatCompletions, body.clone()).unwrap()),
+            body
+        );
+        for body in [
+            json!({"input": "say input_audio and audio_url"}),
+            json!({"input": [
+                {"type": "function_call", "call_id": "c", "name": "f", "arguments": "{\"type\":\"audio_url\"}"},
+                {"type": "function_call_output", "call_id": "c", "output": "input_audio is plain text"}
+            ]}),
+        ] {
+            assert!(lower(Endpoint::Responses, body).is_ok());
+        }
+    }
+
+    #[test]
+    fn lowers_responses_instructions_shared_vectors() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../fixtures/prompt-contract/v1/responses_instructions.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let result = lower(Endpoint::Responses, case["request"].clone());
+            if case["invalid"] == true {
+                assert!(
+                    matches!(result, Err(EndpointError::Invalid)),
+                    "{}: {result:?}",
+                    case["name"]
+                );
+            } else {
+                assert_eq!(
+                    Value::Object(result.unwrap()),
+                    case["expected"],
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_tool_output_media_without_changing_text_history() {
+        for kind in ["input_image", "image_url", "video_url", "input_video"] {
+            let body = json!({"input": [{"type": "function_call_output", "call_id": "actual", "output": [{"type": kind}]}]});
+            assert!(matches!(
+                lower(Endpoint::Responses, body),
+                Err(EndpointError::Unsupported)
+            ));
+        }
+        let body = json!({"input": [{"type": "function_call_output", "call_id": "actual", "output": "plain result"}]});
+        assert_eq!(
+            lower(Endpoint::Responses, body).unwrap()["messages"][0]["content"],
+            "plain result"
+        );
+    }
 
     #[test]
     fn lowers_responses_function_history() {

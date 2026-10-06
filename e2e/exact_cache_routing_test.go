@@ -38,6 +38,9 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		ModelSpecs:                 []testbed.ModelSpec{{ModelID: model, NumProviders: 2}},
 		NumUsers:                   2,
 		EnableEphemeralPrefixCache: true,
+		// This development checkpoint is outside the default-on production
+		// catalog. Ephemeral keys isolate storage; they do not enable caching.
+		PrefixCacheMode: "ssd",
 	})
 	require.NoError(t, suite.Start(context.Background()))
 	t.Cleanup(suite.Stop)
@@ -72,7 +75,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		}
 		return true
 	}, 30*time.Second, 100*time.Millisecond,
-		"contiguous frozen-full hybrid slots did not advertise after SSD scan readiness")
+		"slots did not advertise exact-cache capability after SSD scan readiness")
 
 	fixture := loadExactCacheArtifacts(t, model, firstModel.WeightHash)
 	contractArtifacts, err := promptcontract.PromptArtifacts(fixture.manifest.Files)
@@ -114,11 +117,23 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		return attempts > 0
 	}, 5*time.Second, 100*time.Millisecond,
 		"first request did not enter the provider-confirmed cache protocol")
+	// Novel prompts deliberately skip an SSD write. Repeat the cold request
+	// to establish demand before waiting for a durable checkpoint; neither
+	// request can receive cache credit before that checkpoint exists.
+	require.Eventually(t, func() bool {
+		return suite.Coordinator.Registry.CacheRoutingLifecycleStatus().DonationOutcomes["skipped_novel"] > 0
+	}, 30*time.Second, 100*time.Millisecond,
+		"first request did not settle its novel-prefix donation outcome")
+	holders, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
+	require.Zero(t, holders, "a novel prompt must not publish a reusable holder")
+	donor := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
+	require.Zero(t, donor.cachedTokens, "the demand-establishing request must still prefill cold")
+	require.Equal(t, first.content, donor.content)
 	require.Eventually(t, func() bool {
 		holders, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
 		return holders > 0
 	}, 2*time.Minute, 250*time.Millisecond,
-		"durable frozen-full donation did not publish a reusable cache holder")
+		"durable checkpoint donation did not publish a reusable cache holder")
 	require.Eventually(t, func() bool {
 		lifecycle := suite.Coordinator.Registry.CacheRoutingLifecycleStatus()
 		return lifecycle.SSDLookups > lifecycleBefore.SSDLookups &&
@@ -171,7 +186,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	providers[0].Mu().Unlock()
 
 	// Provider-confirmed evidence must keep the repeated request on the v2 owner
-	// and preserve exact deterministic output through frozen-full adoption.
+	// and preserve exact deterministic output through checkpoint adoption.
 	second := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
 	require.Positive(t, second.cachedTokens)
 	require.Equal(t, first.content, second.content)
@@ -603,16 +618,21 @@ func loadExactCacheArtifacts(
 	}
 }
 
+// exactCacheArtifactRole mirrors the provider's ModelScanner.isIntegrityFile
+// and roleFor (provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift):
+// the aggregate hash the test computes must cover exactly the files the
+// provider hashes, or the sidecar's manifest and the provider's capability
+// disagree on the model. Qwen VL artifacts ship video_preprocessor_config.json.
 func exactCacheArtifactRole(name string) string {
 	switch name {
 	case "model.safetensors.index.json":
 		return "index"
-	case "preprocessor_config.json", "processor_config.json":
+	case "preprocessor_config.json", "processor_config.json", "video_preprocessor_config.json":
 		return "preprocessor"
 	case "tokenizer.json", "tokenizer_config.json", "tokenizer.model",
 		"special_tokens_map.json", "added_tokens.json", "vocab.json", "merges.txt":
 		return "tokenizer"
-	case "config.json", "generation_config.json", "quantize_config.json":
+	case "config.json", "hadamard.json", "generation_config.json", "quantize_config.json":
 		return "config"
 	case "chat_template.jinja", "chat_template.json":
 		return "template"

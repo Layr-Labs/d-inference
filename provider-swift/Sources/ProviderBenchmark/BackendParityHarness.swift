@@ -241,8 +241,9 @@ public enum BackendParityHarness {
     /// model-level capability claims read off it. `@unchecked Sendable` by the
     /// same ownership-transfer argument as `MTPProductionModelBundle`: it is
     /// built once inside `container.perform` and only ever used from the
-    /// serialized engine construction that follows.
-    private struct ServingModel: @unchecked Sendable {
+    /// serialized engine construction that follows. Internal (not private)
+    /// so unit tests can drive the probes with a scripted engine and no model.
+    struct ServingModel: @unchecked Sendable {
         let model: any LanguageModel
         let tokenizer: any MLXLMCommon.Tokenizer
         /// `CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill`.
@@ -255,7 +256,7 @@ public enum BackendParityHarness {
         let spanEmbedding: MLXArray?
     }
 
-    private struct EngineBox: @unchecked Sendable {
+    struct EngineBox: @unchecked Sendable {
         let engine: any CBv2Engine
         let kind: EngineV2KVBackendKind
         let fallbackReason: String?
@@ -272,7 +273,7 @@ public enum BackendParityHarness {
     /// sequentially with each MTP engine shut down before the next is built,
     /// so it is only ever attached to one live engine at a time. Same
     /// ownership-transfer argument `MTPProductionModelBundle` makes.
-    private struct DrafterBox: @unchecked Sendable {
+    struct DrafterBox: @unchecked Sendable {
         let drafter: any CBv2MTPDrafter
     }
 
@@ -407,6 +408,7 @@ public enum BackendParityHarness {
                 tokenizer: serving.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
+                constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 prefixCache: prefixCache,
                 mtpDrafter: drafter?.drafter,
@@ -447,7 +449,7 @@ public enum BackendParityHarness {
     /// difference was even resolvable at the precision the KV is stored in.
     /// Requesting it costs a top-k on rows that ask; rows that do not ask pay
     /// nothing (`DefaultSamplerV2` takes the batch max).
-    private static func generate(
+    static func generate(
         engine: any CBv2Engine,
         id: UInt64,
         name: String,
@@ -497,7 +499,7 @@ public enum BackendParityHarness {
     }
 
     /// Same, but also surfaces the terminal `CBv2Usage` (prefix-cache facts).
-    private static func generateWithUsage(
+    static func generateWithUsage(
         engine: any CBv2Engine,
         id: UInt64,
         name: String,
@@ -562,7 +564,7 @@ public enum BackendParityHarness {
     /// `prefixCacheEnabled: false`), and a token budget below
     /// `rows * chunk` splits the last row into its own group (so the verdict
     /// keys on `groupsExecuted > 0`, never on `rowsExecuted == rowCount`).
-    private static func probePackedPrefill(
+    static func probePackedPrefill(
         box: EngineBox,
         serving: ServingModel,
         seed: [Int],
@@ -656,7 +658,7 @@ public enum BackendParityHarness {
     /// span masks. So submit is a real capability read — and because the model
     /// gate is checked FIRST, a model-side refusal is distinguishable from a
     /// backend-side one and must not be reported as a backend regression.
-    private static func probeVisionSpans(
+    static func probeVisionSpans(
         box: EngineBox,
         serving: ServingModel,
         seed: [Int],
@@ -915,7 +917,7 @@ public enum BackendParityHarness {
     /// candidate lever, `CBv2AttentionV1.queryBlockSize`, is a process-wide
     /// `static let` resolved from `ProcessInfo` at first touch and cannot be
     /// varied in-process at all.
-    private static func probeNumericsControl(
+    static func probeNumericsControl(
         container: ModelContainer,
         serving: ServingModel,
         candidate: BackendParityObservation,
@@ -1081,7 +1083,7 @@ public enum BackendParityHarness {
 
     // MARK: - Probe: MTP
 
-    private static func probeMTP(
+    static func probeMTP(
         container: ModelContainer,
         serving: ServingModel,
         selection: EngineV2KVBackendSelection,
@@ -1153,7 +1155,7 @@ public enum BackendParityHarness {
 
     // MARK: - Helpers
 
-    private static func makeNotes(
+    static func makeNotes(
         baseline: BackendParityObservation,
         candidate: BackendParityObservation,
         isVLM: Bool

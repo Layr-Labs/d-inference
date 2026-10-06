@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -10,10 +11,9 @@ import Glibc
 /// and — critically — the coordinator's latest `trust_status` reason, which is
 /// otherwise only logged.
 ///
-/// The daemon and CLI run as separate processes with no IPC today (only a PID
-/// file). A state file is the smallest addition that fits: the daemon already
-/// assembles this exact data every heartbeat; writing it atomically lets the CLI
-/// read it with zero IPC, and it survives the daemon being asleep or wedged.
+/// The daemon assembles this data every heartbeat and writes it atomically,
+/// allowing read-only status inspection even while asleep or wedged. Lifecycle
+/// commands use a separate owner-only, process-identity-bound mailbox.
 public struct DaemonState: Codable, Sendable, Equatable {
     public static let currentSchema = 1
 
@@ -36,13 +36,29 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// Optional so state files written by older daemons continue to decode.
     public var attestationPublicKey: String?
     public var trust: Trust?
+    /// Coordinator whose live trust status is recorded; a different CLI config
+    /// must not use it to offer removal of another enrollment.
+    public var coordinatorUrl: String?
     public var currentModel: String?
     public var warmModels: [String]
     /// The daemon's ACTUAL advertised set (post CLI overrides, family and
     /// memory filters) — doctor's serving-set floor basis when fresh.
     /// Optional so state files from older daemons continue to decode.
     public var advertisedModels: [String]?
+    /// Remaining startup preload plan, including the candidate currently
+    /// loading. nil means an older daemon did not report this field.
+    public var startupPreloadPendingModels: [String]?
+    public var lifecycle: ProviderDrainStatus?
+    public var modelSwitch: ProviderModelSwitchStatus?
+    public var configPath: String?
+    public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
+    /// Accepted or queued work, including local-endpoint requests that have
+    /// not begun decoding. Nil for older daemon state files.
+    public var requestWorkPending: Bool?
+    /// Written directly from the loop even before backend capacity exists,
+    /// so doctor can defer a verdict during pre-registration preload.
+    public var loadTransitionActive: Bool?
     public var stats: Stats
     public var system: SystemInfo?
     public var capacity: Capacity?
@@ -60,17 +76,37 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// The daemon's last local App Attest observation (launch session, boot
+    /// time, key state, stalled Apple call). Diagnostic only; optional so
+    /// older daemons' files keep decoding.
+    public var autopilot: ModelAutopilotSnapshot?
+    public var autopilotPhase: String?
+    public var autopilotOperation: AutopilotOperation?
+
+    public struct AutopilotOperation: Codable, Sendable, Equatable {
+        public var reason: String
+        public var target: String?
+        public var releasing: [String]
+        public var elapsedMs: Int64?
+        public init(reason: String, target: String?, releasing: [String], elapsedMs: Int64?) {
+            self.reason=reason; self.target=target; self.releasing=releasing; self.elapsedMs=elapsedMs
+        }
+    }
+    public var appAttest: AppAttestLocalStatus?
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
         public var status: String
         public var reason: String
         public var receivedAt: Double
-        public init(trustLevel: String, status: String, reason: String, receivedAt: Double) {
+        public var authorization: ProviderAuthorizationStatus?
+        public init(trustLevel: String, status: String, reason: String, receivedAt: Double,
+                    authorization: ProviderAuthorizationStatus? = nil) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
             self.receivedAt = receivedAt
+            self.authorization = authorization
         }
     }
 
@@ -105,10 +141,24 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// `ProviderLoop.availableMemoryGb()` even when the OS-available reading
         /// is unavailable.
         public var gpuMemoryCacheGb: Double?
-        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil) {
+        /// Live no-eviction load figures; nil for older daemon snapshots.
+        public var loadUsableGb: Double?
+        public var loadHeadroomGb: Double?
+        /// Eviction-aware model-weight allowance for request-time cold loads.
+        public var freeForLoadGb: Double?
+        /// A backend slot is transitioning, so current load memory is not a
+        /// stable idle verdict. Nil for older daemon snapshots.
+        public var loadTransitionActive: Bool?
+        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
+                    loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb
+            self.loadUsableGb = loadUsableGb
+            self.loadHeadroomGb = loadHeadroomGb
+            self.freeForLoadGb = freeForLoadGb
+            self.loadTransitionActive = loadTransitionActive
         }
     }
 
@@ -207,16 +257,28 @@ public struct DaemonState: Codable, Sendable, Equatable {
         startedAt: Double,
         attestationPublicKey: String? = nil,
         trust: Trust? = nil,
+        coordinatorURL: String? = nil,
         currentModel: String? = nil,
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
+        startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
+        requestWorkPending: Bool? = nil,
+        loadTransitionActive: Bool? = nil,
+        lifecycle: ProviderDrainStatus? = nil,
+        modelSwitch: ProviderModelSwitchStatus? = nil,
+        configPath: String? = nil,
+        runtimeCapabilities: [String]? = nil,
         stats: Stats = Stats(),
         system: SystemInfo? = nil,
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
-        connectivity: Connectivity? = nil
+        connectivity: Connectivity? = nil,
+        appAttest: AppAttestLocalStatus? = nil,
+        autopilot: ModelAutopilotSnapshot? = nil,
+        autopilotPhase: String? = nil,
+        autopilotOperation: AutopilotOperation? = nil
     ) {
         self.schema = schema
         self.pid = pid
@@ -226,16 +288,28 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.startedAt = startedAt
         self.attestationPublicKey = attestationPublicKey
         self.trust = trust
+        self.coordinatorUrl = coordinatorURL
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
+        self.startupPreloadPendingModels = startupPreloadPendingModels
+        self.lifecycle = lifecycle
+        self.modelSwitch = modelSwitch
+        self.configPath = configPath
+        self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
+        self.requestWorkPending = requestWorkPending
+        self.loadTransitionActive = loadTransitionActive
         self.stats = stats
         self.system = system
         self.capacity = capacity
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.autopilot = autopilot
+        self.autopilotPhase = autopilotPhase
+        self.autopilotOperation = autopilotOperation
+        self.appAttest = appAttest
     }
 
     // MARK: - Reader helpers

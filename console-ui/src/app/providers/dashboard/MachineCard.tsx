@@ -7,11 +7,14 @@
 import { Cpu, ShieldCheck, Zap } from "lucide-react";
 import type { MyProvider } from "../types";
 import { computeWarnings } from "../warnings";
+import { reportedMacOSMajor } from "../macos-upgrade";
 import { deriveRouting, routingMeta, selectTopWarning, type RoutingCtx } from "./routing";
+import { ownerVerificationPresentation } from "../authorization";
 import { StatusPill, TrustPill } from "./StatusPill";
 import { CardRoutingVerdict } from "./CardRoutingVerdict";
 import { CardVitals } from "./CardVitals";
 import { ModelsStrip } from "./ModelsStrip";
+import { LoadReadinessPanel } from "./LoadReadinessPanel";
 import { CardEarningsRow } from "./CardEarningsRow";
 import { BackendSlotsPanel } from "./BackendSlotsPanel";
 import { AttestationPanel } from "./AttestationPanel";
@@ -75,7 +78,8 @@ export function MachineCard({
         </div>
         <div className="flex flex-col items-end gap-1.5 shrink-0">
           <StatusPill status={provider.status} />
-          <TrustPill trustLevel={provider.trust_level} />
+          <TrustPill presentation={ownerVerificationPresentation(provider)} />
+          <span className="text-[10px] text-text-tertiary">{reportedMacOSMajor(provider) !== null ? `Reported macOS ${provider.os_version}` : "macOS version unknown"}</span>
           {removable && <RemoveMachineButton provider={provider} onRemoved={onRemoved} />}
         </div>
       </div>
@@ -87,6 +91,7 @@ export function MachineCard({
       <div className={dimmed ? "opacity-70" : ""}>
         <CardVitals provider={provider} fleetMaxDecodeTps={fleetMaxDecodeTps} />
         <ModelsStrip provider={provider} />
+        <LoadReadinessPanel provider={provider} heartbeatTimeoutSeconds={ctx.heartbeat_timeout_seconds} />
         <CardEarningsRow provider={provider} />
       </div>
 

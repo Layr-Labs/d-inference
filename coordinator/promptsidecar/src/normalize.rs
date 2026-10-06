@@ -37,29 +37,66 @@ pub fn normalize(
         .ok_or(NormalizeError::MissingModel)?
         .to_owned();
 
+    let mimo = crate::mimo_v26::applies(model_type);
+    // Validate raw controls before permissive generic projection can erase a
+    // supplied wrong type. A family is selected by authenticated model metadata,
+    // never the user-controlled model spelling.
+    let mimo_context = if mimo {
+        Some(crate::mimo_v26::additional_context(&body)?)
+    } else {
+        None
+    };
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
-    let mut messages = template_messages(&body)?;
+    let mut messages = template_messages(&body, mimo)?;
     crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
+    if model_type.is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h")) {
+        // JSONValue decodes integral JSON doubles as Int before toolSpec reaches
+        // Jinja. Nemotron's numeric filters must see that same typed value.
+        // Above f64's exact-integer range, serde has already lost digits that
+        // Swift's direct Int decoder can preserve (9007199254740993.0). Keep
+        // these decimal/exponent spellings cold; signed integer inputs are exact.
+        if tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(ambiguous_nemotron_number))
+        {
+            return Err(NormalizeError::InvalidTools);
+        }
+        tools = tools.map(|tools| tools.into_iter().map(provider_bridged_value).collect());
+    } else {
+        tools = tools.map(drop_nemotron_only_tool_metadata);
+    }
+    if mimo {
+        // Do not qualify a MiMo cache prompt by silently discarding malformed
+        // or unsupported declarations in the generic compatibility translator.
+        if body.get("tools").and_then(Value::as_array).map(Vec::len) != tools.as_ref().map(Vec::len)
+        {
+            return Err(NormalizeError::InvalidTools);
+        }
+        tools = crate::mimo_v26::normalize_tools(tools)?;
+    }
     let requires_tool_call =
         apply_tool_choice_policy(&body, model_type, &mut messages, &mut tools)?;
-    messages = sanitize_array(messages);
-    tools = tools.map(sanitize_array);
-    if crate::leading_system::qwen_applies(&model_id, model_type)
-        || is_harmony(Some(&model_id), model_type)
-    {
-        messages = crate::leading_system::normalize_messages(messages);
-    }
-    validate_tool_history(&messages)?;
-
-    let harmony = is_harmony(Some(&model_id), model_type);
-    if harmony {
-        messages = harmony_messages(messages)?;
-        tools = tools.map(harmony_tools);
-    } else if crate::gemma4::applies(&model_id, model_type) {
-        messages = crate::gemma4::normalize_messages(messages)?;
-        tools = tools.map(crate::gemma4::normalize_tools);
+    let harmony = !mimo && is_harmony(Some(&model_id), model_type);
+    if mimo {
+        messages = crate::mimo_v26::normalize_history(messages)?;
+    } else {
+        messages = sanitize_array(messages);
+        tools = tools.map(sanitize_array);
+        if crate::leading_system::qwen_applies(&model_id, model_type)
+            || is_harmony(Some(&model_id), model_type)
+        {
+            messages = crate::leading_system::normalize_messages(messages);
+        }
+        validate_tool_history(&messages)?;
+        if harmony {
+            messages = harmony_messages(messages)?;
+            tools = tools.map(harmony_tools);
+        } else if crate::gemma4::applies(&model_id, model_type) {
+            messages = crate::gemma4::normalize_messages(messages)?;
+            tools = tools.map(crate::gemma4::normalize_tools);
+        }
     }
 
     // Use the same family predicate as the provider's
@@ -68,7 +105,11 @@ pub fn normalize(
     let forced_qwen_tool = requires_tool_call
         && crate::leading_system::qwen_applies(&model_id, model_type)
         && !native_structured_target(&model_id, model_type);
-    let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
+    let mut additional_context = match mimo_context {
+        Some(context) => context,
+        None => template_additional_context(&body, forced_qwen_tool)?,
+    };
+    crate::diffusion::apply_reasoning(model_type, &mut additional_context)?;
     if crate::qwen4_identity::is_qualified(Some(&model_id))
         && matches!(
             model_type
@@ -102,6 +143,19 @@ pub fn normalize(
         .filter(|value| crate::request_date::valid_date(value))
         .map(str::to_owned);
 
+    // Foundation dictionaries carry no order and `Jinja.Value(any:)` sorts
+    // every object it bridges with Swift `String <`, which for the NFC keys
+    // `validate_request_input` admits is UTF-8 byte order. Sort exactly once,
+    // after every step above that can insert or rebuild members, so template
+    // loops such as Harmony's `properties.items()` and Qwen's
+    // `arguments|items` never observe wire or insertion order.
+    let messages = messages
+        .into_iter()
+        .map(sorted_value_keys)
+        .collect::<Vec<_>>();
+    let tools = tools.map(|tools| tools.into_iter().map(sorted_value_keys).collect::<Vec<_>>());
+    let additional_context = sorted_object_keys(additional_context);
+
     let mut normalized_body = Map::new();
     normalized_body.insert("model".into(), Value::String(model_id.clone()));
     normalized_body.insert("messages".into(), Value::Array(messages.clone()));
@@ -130,6 +184,30 @@ pub fn normalize(
     })
 }
 
+fn ambiguous_nemotron_number(value: &Value) -> bool {
+    match value {
+        Value::Number(number) if number.is_f64() => number
+            .as_f64()
+            .is_some_and(|number| number.abs() >= 9_007_199_254_740_992.0),
+        Value::Array(values) => values.iter().any(ambiguous_nemotron_number),
+        Value::Object(values) => values.values().any(ambiguous_nemotron_number),
+        _ => false,
+    }
+}
+
+fn drop_nemotron_only_tool_metadata(mut tools: Vec<Value>) -> Vec<Value> {
+    for tool in &mut tools {
+        if let Some(function) = tool
+            .as_object_mut()
+            .and_then(|tool| tool.get_mut("function"))
+            .and_then(Value::as_object_mut)
+        {
+            function.remove("strict");
+        }
+    }
+    tools
+}
+
 fn native_structured_target(model_id: &str, model_type: Option<&str>) -> bool {
     match model_type
         .map(str::trim)
@@ -137,6 +215,12 @@ fn native_structured_target(model_id: &str, model_type: Option<&str>) -> bool {
         .as_deref()
     {
         Some("qwen4_exp" | "qwen4_exp_text") => true,
+        Some("prism_hadamard_qwen35") => matches!(
+            model_id,
+            "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+                | "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit"
+                | "ternary-bonsai-2-27b"
+        ),
         Some("nemotron_h") => matches!(
             model_id,
             "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
@@ -216,7 +300,7 @@ fn template_additional_context(
     Ok(context)
 }
 
-fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeError> {
+fn template_messages(body: &Map<String, Value>, mimo: bool) -> Result<Vec<Value>, NormalizeError> {
     let messages = body
         .get("messages")
         .and_then(Value::as_array)
@@ -233,15 +317,31 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
             };
             let mut message = Map::new();
             message.insert("role".into(), Value::String(role.into()));
-            message.insert(
-                "content".into(),
-                Value::String(message_text(input.get("content"))?),
-            );
+            // Mirror sanitizeJinjaMessages: the provider strips raw Harmony
+            // channel framing from every assistant text field for every model
+            // family before any template sees it.
+            let assistant = role == "assistant";
+            let content = if mimo {
+                crate::mimo_v26::message_text(input.get("content"))?
+            } else {
+                message_text(input.get("content"))?
+            };
+            let content = if assistant {
+                strip_harmony_channel_framing(&content)?
+            } else {
+                content
+            };
+            message.insert("content".into(), Value::String(content));
             for key in ["name", "tool_call_id", "reasoning_content"] {
                 match input.get(key) {
                     None | Some(Value::Null) => {}
                     Some(Value::String(value)) => {
-                        message.insert(key.into(), Value::String(value.clone()));
+                        let value = if assistant && key == "reasoning_content" {
+                            strip_harmony_channel_framing(value)?
+                        } else {
+                            value.clone()
+                        };
+                        message.insert(key.into(), Value::String(value));
                     }
                     Some(_) => return Err(NormalizeError::InvalidMessages),
                 }
@@ -255,7 +355,7 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
                         Value::Array(
                             calls
                                 .iter()
-                                .map(template_tool_call)
+                                .map(|call| template_tool_call(call, mimo))
                                 .collect::<Result<Vec<_>, _>>()?,
                         ),
                     );
@@ -267,7 +367,7 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
         .collect()
 }
 
-fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
+fn template_tool_call(value: &Value, mimo: bool) -> Result<Value, NormalizeError> {
     let call = value.as_object().ok_or(NormalizeError::InvalidTools)?;
     let function = call
         .get("function")
@@ -281,8 +381,16 @@ fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
         .get("arguments")
         .and_then(Value::as_str)
         .ok_or(NormalizeError::InvalidTools)?;
-    let arguments =
-        serde_json::from_str(encoded).unwrap_or_else(|_| Value::String(encoded.to_owned()));
+    // MiMo retains its native opaque-argument contract; other families mirror
+    // the current Foundation/Jinja object-only bridge.
+    let arguments = if mimo {
+        crate::mimo_v26::decode_arguments(encoded)?
+    } else {
+        match serde_json::from_str::<Value>(encoded) {
+            Ok(Value::Object(object)) => provider_bridged_value(Value::Object(object)),
+            _ => Value::String(encoded.to_owned()),
+        }
+    };
     let id = call
         .get("id")
         .and_then(Value::as_str)
@@ -303,6 +411,142 @@ fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
     }))
 }
 
+/// Mirror OpenAIFunctionDefinition's typed fields. Function-level `strict`
+/// reaches only Nemotron after the model-scoped projection in `normalize`;
+/// unknown metadata never reaches the provider's template.
+fn typed_function_definition(function: Map<String, Value>) -> Map<String, Value> {
+    let mut typed = Map::new();
+    for key in ["name", "description", "parameters", "strict"] {
+        if let Some(value) = function.get(key) {
+            typed.insert(key.into(), value.clone());
+        }
+    }
+    typed
+}
+
+/// Recursively order object members the way the provider's Jinja value bridge
+/// does (`dict.sorted(by: { $0.key < $1.key })`): byte order of the UTF-8 key.
+fn sorted_object_keys(object: Map<String, Value>) -> Map<String, Value> {
+    let mut entries = object.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    entries
+        .into_iter()
+        .map(|(key, value)| (key, sorted_value_keys(value)))
+        .collect()
+}
+
+fn sorted_value_keys(value: Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(sorted_object_keys(object)),
+        Value::Array(values) => Value::Array(values.into_iter().map(sorted_value_keys).collect()),
+        value => value,
+    }
+}
+
+/// Mirror the provider's value bridge for decoded tool-call arguments:
+/// `Jinja.Value(any:)` sorts object keys with Swift's `String <` (Unicode
+/// scalar order, identical to UTF-8 byte order for distinct scalars) and
+/// matches `Int` before `Double`, so an integral JSON double such as `1.0`
+/// or `1e5` renders as `1` / `100000`. Nested values receive the same bridge.
+fn provider_bridged_value(value: Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            sorted_object_keys(object)
+                .into_iter()
+                .map(|(key, value)| (key, provider_bridged_value(value)))
+                .collect(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(provider_bridged_value).collect())
+        }
+        Value::Number(number) if number.is_f64() => {
+            let n = number.as_f64().unwrap_or(f64::NAN);
+            if n.fract() == 0.0 && n >= i64::MIN as f64 && n < -(i64::MIN as f64) {
+                Value::Number((n as i64).into())
+            } else {
+                Value::Number(number)
+            }
+        }
+        value => value,
+    }
+}
+
+/// Mirror of ProviderCoreFoundation `stripHarmonyChannelFraming`. Strings
+/// without a channel token are returned unchanged; otherwise only the text
+/// after the last final-channel marker survives, cut at the first terminator,
+/// with any remaining control tokens removed.
+///
+/// The provider searches with Foundation and Swift `Character` semantics, not
+/// bytes: a control token whose first or last character shares a grapheme
+/// cluster with a neighbour (a combining mark, ZWJ, variation selector, emoji
+/// modifier or spacing mark after `>`, a prepended format character before
+/// `<`) is not a token to `contains`/`range(of:)`, and `replacingOccurrences`
+/// does not even agree with those two on every extender. Every such input is
+/// refused so the request plans cold instead of guessing the provider's text.
+fn strip_harmony_channel_framing(text: &str) -> Result<String, NormalizeError> {
+    const CHANNEL: &str = "<|channel|>";
+    const FINAL_MARKER: &str = "<|channel|>final<|message|>";
+    const TERMINATORS: [&str; 3] = ["<|end|>", "<|return|>", "<|call|>"];
+    const CONTROL: [&str; 6] = [
+        "<|start|>",
+        "<|end|>",
+        "<|return|>",
+        "<|call|>",
+        "<|message|>",
+        CHANNEL,
+    ];
+    // Character matches are a subset of byte matches for these ASCII tokens.
+    if !text.contains(CHANNEL) {
+        return Ok(text.to_owned());
+    }
+    for token in CONTROL {
+        require_whole_grapheme_tokens(text, token)?;
+    }
+    let mut answer = match text.rfind(FINAL_MARKER) {
+        Some(index) => {
+            let after = &text[index + FINAL_MARKER.len()..];
+            match TERMINATORS.iter().filter_map(|t| after.find(t)).min() {
+                Some(end) => after[..end].to_owned(),
+                None => after.to_owned(),
+            }
+        }
+        None => String::new(),
+    };
+    if CONTROL.iter().any(|token| answer.contains(token)) {
+        for token in CONTROL {
+            // An earlier removal can splice a new token next to an extender.
+            require_whole_grapheme_tokens(&answer, token)?;
+            answer = answer.replace(token, "");
+        }
+    }
+    Ok(answer)
+}
+
+/// Refuse any byte occurrence of `token` that is not delimited by extended
+/// grapheme cluster boundaries, or that is followed by a character Foundation
+/// treats as composing with its predecessor.
+fn require_whole_grapheme_tokens(text: &str, token: &str) -> Result<(), NormalizeError> {
+    use unicode_normalization::char::{canonical_combining_class, is_combining_mark};
+    use unicode_segmentation::GraphemeCursor;
+
+    let boundary = |offset: usize| {
+        GraphemeCursor::new(offset, text.len(), true)
+            .is_boundary(text, 0)
+            .unwrap_or(false)
+    };
+    for (start, matched) in text.match_indices(token) {
+        let end = start + matched.len();
+        let composing_follower = text[end..]
+            .chars()
+            .next()
+            .is_some_and(|next| is_combining_mark(next) || canonical_combining_class(next) != 0);
+        if !boundary(start) || !boundary(end) || composing_follower {
+            return Err(NormalizeError::InvalidMessages);
+        }
+    }
+    Ok(())
+}
+
 fn message_text(content: Option<&Value>) -> Result<String, NormalizeError> {
     match content {
         None | Some(Value::Null) => Ok(String::new()),
@@ -315,7 +559,9 @@ fn message_text(content: Option<&Value>) -> Result<String, NormalizeError> {
                     .get("type")
                     .and_then(Value::as_str)
                     .ok_or(NormalizeError::InvalidMessages)?;
-                if matches!(kind, "text" | "input_text") {
+                // OpenAIContentPart decodes text, input_text and output_text
+                // identically; every other part type contributes no text.
+                if matches!(kind, "text" | "input_text" | "output_text") {
                     text.push_str(
                         object
                             .get("text")
@@ -351,7 +597,7 @@ fn template_tools(body: &Map<String, Value>) -> Result<Option<Vec<Value>>, Norma
         };
         tools.push(json!({
             "type": tool.get("type").and_then(Value::as_str).unwrap_or("function"),
-            "function": function,
+            "function": typed_function_definition(function),
         }));
     }
     Ok(Some(tools))
@@ -373,8 +619,19 @@ fn top_level_function_definition(
         }
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
-    if let Some(parameters) = tool.get("parameters").or_else(|| tool.get("input_schema")) {
+    if let Some(parameters) = tool
+        .get("parameters")
+        .filter(|value| !value.is_null())
+        .or_else(|| tool.get("input_schema"))
+    {
         function.insert("parameters".into(), parameters.clone());
+    }
+    match tool.get("strict") {
+        None | Some(Value::Null) => {}
+        Some(Value::Bool(value)) => {
+            function.insert("strict".into(), Value::Bool(*value));
+        }
+        Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function)
 }
@@ -388,6 +645,10 @@ fn validate_function_definition(
         .ok_or(NormalizeError::InvalidTools)?;
     match function.get("description") {
         None | Some(Value::Null | Value::String(_)) => {}
+        Some(_) => return Err(NormalizeError::InvalidTools),
+    }
+    match function.get("strict") {
+        None | Some(Value::Null | Value::Bool(_)) => {}
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function.clone())
@@ -1333,6 +1594,255 @@ mod tests {
         );
     }
 
+    #[test]
+    fn template_input_is_independent_of_wire_key_order() {
+        let tool = |properties: Value| {
+            json!({"type":"function","function":{"name":"f","description":"d",
+                "parameters":{"type":"object","properties":properties,"required":["path"]}}})
+        };
+        let unsorted = json!({"model":"m","messages":[{"role":"user","content":"hi"}],
+            "tools":[tool(json!({"path":{"type":"string"},"append":{"type":"boolean"},"Content":{"type":"string"}}))]});
+        let sorted = json!({"model":"m","messages":[{"role":"user","content":"hi"}],
+            "tools":[tool(json!({"Content":{"type":"string"},"append":{"type":"boolean"},"path":{"type":"string"}}))]});
+        let left = normalize(unsorted.as_object().unwrap().clone(), None).unwrap();
+        let right = normalize(sorted.as_object().unwrap().clone(), None).unwrap();
+        assert_eq!(left.body, right.body);
+        let keys = left.tools.unwrap()[0]["function"]["parameters"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["Content", "append", "path"]);
+    }
+
+    #[test]
+    fn tool_call_arguments_take_provider_bridge_order_and_numbers() {
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"assistant","content":null,"tool_calls":[{
+                    "id":"c","type":"function",
+                    "function":{"name":"f","arguments":
+                        "{\"path\":\"/tmp/a\",\"content\":\"x\",\"append\":false,\"n\":100.0,\"e\":1e5,\"h\":0.5,\"z\":{\"b\":1.0,\"a\":[2.0]}}"}
+                }]},
+                {"role":"tool","tool_call_id":"c","content":"ok"}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        let arguments = &normalized.messages[0]["tool_calls"][0]["function"]["arguments"];
+        let keys = arguments
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["append", "content", "e", "h", "n", "path", "z"]);
+        assert_eq!(arguments["n"], json!(100));
+        assert_eq!(arguments["e"], json!(100000));
+        assert_eq!(arguments["h"], json!(0.5));
+        assert_eq!(arguments["z"], json!({"a": [2], "b": 1}));
+        assert_eq!(
+            serde_json::to_string(&arguments["z"]).unwrap(),
+            "{\"a\":[2],\"b\":1}"
+        );
+    }
+
+    #[test]
+    fn tool_function_keeps_only_typed_fields() {
+        let body = json!({
+            "model":"m",
+            "messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"function","function":{
+                "name":"f","description":"d","strict":true,
+                "parameters":{"type":"object","properties":{"a":{"type":"string"}}},
+                "response":{"type":"object"},"examples":["x"],"x-vendor":1
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        let function = normalized.tools.unwrap()[0]["function"]
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            function.keys().cloned().collect::<Vec<_>>(),
+            ["description", "name", "parameters"]
+        );
+    }
+
+    #[test]
+    fn assistant_harmony_framing_is_stripped_for_every_model() {
+        let framed = "<|channel|>analysis<|message|>hidden<|end|><|start|>assistant<|channel|>final<|message|>Answer.<|end|>";
+        let strip = |text: &str| strip_harmony_channel_framing(text).unwrap();
+        assert_eq!(strip(framed), "Answer.");
+        assert_eq!(strip("<|channel|>final<|message|>Plain"), "Plain");
+        assert_eq!(strip("<|channel|>analysis<|message|>only<|end|>"), "");
+        assert_eq!(strip("<|channel|>final<|message|>a<|start|>b"), "ab");
+        assert_eq!(strip("no framing <|end|> here"), "no framing <|end|> here");
+        // Ordinary non-ASCII text next to a token is a separate grapheme.
+        assert_eq!(strip("<|channel|>final<|message|>你好<|end|>"), "你好");
+        assert_eq!(strip("é<|channel|>final<|message|>été"), "été");
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"user","content":"q"},
+                {"role":"assistant","content":framed,"reasoning_content":"<|channel|>analysis<|message|>t<|end|>"},
+                {"role":"user","content":framed}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, Some("gemma4")).unwrap();
+        assert_eq!(normalized.messages[1]["content"], "Answer.");
+        assert_eq!(normalized.messages[1]["reasoning_content"], "");
+        assert_eq!(normalized.messages[2]["content"], framed);
+    }
+
+    #[test]
+    fn harmony_tokens_sharing_a_grapheme_with_a_neighbour_are_cold() {
+        // Measured against Foundation on the provider toolchain: `contains`
+        // and `range(of:)` reject every one of these, and
+        // `replacingOccurrences` disagrees with them on ZWJ, SARA AM, the
+        // Devanagari vowel sign and the prepended format character.
+        for extender in [
+            "\u{301}",   // combining acute (Mn)
+            "\u{200d}",  // zero width joiner
+            "\u{200c}",  // zero width non-joiner
+            "\u{fe0f}",  // variation selector
+            "\u{1f3fd}", // emoji modifier
+            "\u{ff9e}",  // halfwidth voiced sound mark (Lm, Grapheme_Extend)
+            "\u{e33}",   // Thai SARA AM (Lo, SpacingMark)
+            "\u{93e}",   // Devanagari vowel sign AA (Mc)
+        ] {
+            for text in [
+                format!("<|channel|>{extender}final<|message|>x"),
+                format!("<|channel|>final<|message|>{extender}x"),
+                format!("<|channel|>final<|message|>x<|end|>{extender}"),
+                format!("<|channel|>final<|message|>x<|start|>{extender}y"),
+            ] {
+                assert!(
+                    strip_harmony_channel_framing(&text).is_err(),
+                    "planned {text:?}"
+                );
+            }
+        }
+        // A prepended format character captures the token's first character.
+        assert!(strip_harmony_channel_framing("\u{600}<|channel|>final<|message|>x").is_err());
+        // Removing one token can splice another next to an extender; the
+        // provider's replacement would then leave it in place.
+        assert!(
+            strip_harmony_channel_framing(
+                "<|channel|>final<|message|>a<|mess<|start|>age|>\u{301}b"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            strip_harmony_channel_framing("<|channel|>final<|message|>a<|mess<|start|>age|>b")
+                .unwrap(),
+            "ab"
+        );
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"user","content":"q"},
+                {"role":"assistant","content":"<|channel|>\u{301}final<|message|>x"}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(matches!(
+            normalize(body, None),
+            Err(NormalizeError::InvalidMessages)
+        ));
+        // The same text in a user turn is never stripped and stays eligible.
+        let body = json!({
+            "model":"m",
+            "messages":[{"role":"user","content":"<|channel|>\u{301}final<|message|>x"}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(normalize(body, None).is_ok());
+    }
+
+    #[test]
+    fn members_inserted_by_normalization_are_sorted_with_the_rest() {
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"assistant","content":null,
+                 "function_call":{"name":"f","arguments":"{\"b\":1,\"a\":2}"}},
+                {"role":"function","name":"f","content":"ok"}
+            ],
+            "tools":[{"type":"function","function":{"name":"f","description":"d",
+                "parameters":{"type":"object","properties":{
+                    "choice":{"x-note":"n","enum":["a","b"]}}}}}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        fn assert_sorted(value: &Value, path: &str) {
+            match value {
+                Value::Object(object) => {
+                    let keys = object.keys().map(String::as_bytes).collect::<Vec<_>>();
+                    assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{path}");
+                    for (key, value) in object {
+                        assert_sorted(value, &format!("{path}/{key}"));
+                    }
+                }
+                Value::Array(values) => {
+                    for (index, value) in values.iter().enumerate() {
+                        assert_sorted(value, &format!("{path}[{index}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (index, message) in normalized.messages.iter().enumerate() {
+            assert_sorted(message, &format!("messages[{index}]"));
+        }
+        let tools = normalized.tools.as_ref().unwrap();
+        assert_sorted(&tools[0], "tools[0]");
+        let choice = &tools[0]["function"]["parameters"]["properties"]["choice"];
+        assert_eq!(
+            choice
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["enum", "type", "x-note"]
+        );
+        assert_sorted(&normalized.body["messages"], "body/messages");
+        assert_sorted(&normalized.body["tools"], "body/tools");
+    }
+
+    #[test]
+    fn output_text_parts_render_like_text_parts() {
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"a"},{"type":"input_text","text":"b"}]},
+                {"role":"assistant","content":[{"type":"output_text","text":"c"},{"type":"refusal","refusal":"d"}]}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        assert_eq!(normalized.messages[0]["content"], "ab");
+        assert_eq!(normalized.messages[1]["content"], "c");
+    }
+
     fn normalize_context(body: Value) -> Map<String, Value> {
         normalize(body.as_object().unwrap().clone(), None)
             .unwrap()
@@ -2093,6 +2603,83 @@ mod tests {
             "parallel_tool_calls":"false"
         });
         assert!(normalize(malformed.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+    }
+
+    #[test]
+    fn strict_tool_metadata_is_scoped_to_nemotron() {
+        let body = json!({
+            "model":"fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":true,
+                "parameters":{"type":"object"}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let nemotron = normalize(body.clone(), Some("nemotron_h")).unwrap();
+        assert_eq!(nemotron.tools.unwrap()[0]["function"]["strict"], true);
+        for model_type in [
+            "qwen3_5",
+            "qwen4_exp",
+            "gemma4_text",
+            "diffusion_gemma",
+            "gpt_oss",
+            "mimo_v2",
+        ] {
+            let normalized = normalize(body.clone(), Some(model_type)).unwrap();
+            assert!(
+                normalized.tools.unwrap()[0]["function"]
+                    .get("strict")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn nemotron_tool_numbers_follow_typed_sdk_decoding_without_changing_other_families() {
+        let body = json!({"model":"fixture","messages":[{"role":"user","content":"number"}],
+            "tools":[{"type":"function","function":{"name":"number","parameters":{
+                "type":"object","properties":{"value":{"type":"number","enum":[1.0,1e-7]}}}}}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        for (model_type, integral_is_float) in [("nemotron_h", false), ("qwen3_5", true)] {
+            let normalized = normalize(body.clone(), Some(model_type)).unwrap();
+            let tools = normalized.tools.unwrap();
+            let values = tools[0]["function"]["parameters"]["properties"]["value"]["enum"]
+                .as_array()
+                .unwrap();
+            assert_eq!(values[0].is_f64(), integral_is_float);
+            assert_eq!(values[1].as_f64(), Some(1e-7));
+        }
+    }
+
+    #[test]
+    fn stripping_function_strict_preserves_mimo_schema_nulls() {
+        let body = json!({
+            "model":"fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":false,
+                "parameters":{"type":"object","properties":{},"default":null,"strict":true,
+                    "enum":[null,"sunny"]}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body.clone(), Some("mimo_v2")).unwrap();
+        let tools = normalized.tools.unwrap();
+        assert!(tools[0]["function"].get("strict").is_none());
+        assert_eq!(
+            tools[0]["function"]["parameters"],
+            body["tools"][0]["function"]["parameters"]
+        );
+        let nemotron = normalize(body, Some("nemotron_h")).unwrap();
+        assert_eq!(nemotron.tools.unwrap()[0]["function"]["strict"], false);
     }
 
     #[test]

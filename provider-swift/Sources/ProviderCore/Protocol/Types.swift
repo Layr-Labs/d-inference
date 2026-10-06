@@ -95,8 +95,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// Omitted for ordinary models; mapped OS pages still consume real memory.
     public var ssdOffloadedWeightBytes: UInt64?
     /// Explicit native load-copy allowance derived from validated checkpoint
-    /// headers. Only eligible Qwen4 SSD-offload loads declare this; nil retains
-    /// the legacy padded estimate. Not an activation/KV reserve or cache credit.
+    /// headers. Eligible Qwen4 declares copies above SSD-reduced resident bytes;
+    /// canonical MiMo declares full root + installed-sidecar LOAD minus ALL
+    /// sizeBytes, with no SSD discount. Both are bytes, while estimatedMemoryGb
+    /// is GiB. nil retains legacy padding. Not activation/KV or cache credit.
     public var nativeLoadTransientBytes: UInt64?
     public var weightHash: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when
@@ -115,6 +117,9 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// capability is advertised only when this equals the code-pinned Gemma
     /// contract hash; ordinary template rendering remains independently gated.
     public var toolConstraintTemplateHash: String?
+    /// Native forced media tools and media-bearing tool results. Missing means
+    /// unsupported; only the qualified native family advertises this capability.
+    public var nativeMediaTools: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -129,6 +134,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
         case toolConstraintTemplateHash = "tool_constraint_template_hash"
+        case nativeMediaTools = "native_media_tools"
     }
 
     public init(
@@ -143,7 +149,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         templateRenderOK: Bool? = nil,
         toolConstraintTemplateHash: String? = nil,
         ssdOffloadedWeightBytes: UInt64? = nil,
-        nativeLoadTransientBytes: UInt64? = nil
+        nativeLoadTransientBytes: UInt64? = nil,
+        nativeMediaTools: Bool? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -157,6 +164,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
         self.toolConstraintTemplateHash = toolConstraintTemplateHash
+        self.nativeMediaTools = nativeMediaTools
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -184,6 +192,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encodeIfPresent(templateRenderOK, forKey: .templateRenderOK)
         try container.encodeIfPresent(
             toolConstraintTemplateHash, forKey: .toolConstraintTemplateHash)
+        try container.encodeIfPresent(nativeMediaTools, forKey: .nativeMediaTools)
     }
 }
 
@@ -449,8 +458,6 @@ public struct EncryptedPayload: Codable, Sendable, Equatable {
 public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var textBackendInprocess: Bool
     public var textProxyDisabled: Bool
-    public var pythonRuntimeLocked: Bool
-    public var dangerousModulesBlocked: Bool
     public var sipEnabled: Bool
     public var antiDebugEnabled: Bool
     public var coreDumpsDisabled: Bool
@@ -459,8 +466,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case textBackendInprocess = "text_backend_inprocess"
         case textProxyDisabled = "text_proxy_disabled"
-        case pythonRuntimeLocked = "python_runtime_locked"
-        case dangerousModulesBlocked = "dangerous_modules_blocked"
         case sipEnabled = "sip_enabled"
         case antiDebugEnabled = "anti_debug_enabled"
         case coreDumpsDisabled = "core_dumps_disabled"
@@ -470,8 +475,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public init(
         textBackendInprocess: Bool,
         textProxyDisabled: Bool,
-        pythonRuntimeLocked: Bool,
-        dangerousModulesBlocked: Bool,
         sipEnabled: Bool,
         antiDebugEnabled: Bool,
         coreDumpsDisabled: Bool,
@@ -479,8 +482,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     ) {
         self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
-        self.pythonRuntimeLocked = pythonRuntimeLocked
-        self.dangerousModulesBlocked = dangerousModulesBlocked
         self.sipEnabled = sipEnabled
         self.antiDebugEnabled = antiDebugEnabled
         self.coreDumpsDisabled = coreDumpsDisabled
@@ -515,6 +516,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var kvBytesPerToken: Int64
     public var maxConcurrency: UInt32
     public var modelLoadTimeMs: Int64
+    public var performanceProfile: ServingPerformanceProfileReference?
+    public var deadlineProfile: DeadlinePerformanceProfileReference?
+    public var promptWorkIdentity: PromptWorkIdentity?
+    /// Transient routing observations; excluded from persisted numeric telemetry.
+    public var performanceMeasurements: PerformanceMeasurements?
+    public var deadlineWork: DeadlineWork?
 
     /// The KV-cache backend this slot's engine was actually built with:
     /// `EngineV2Bridge.kvBackendKind.rawValue` — "paged" | "contiguous",
@@ -623,6 +630,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case kvBytesPerToken = "kv_bytes_per_token"
         case maxConcurrency = "max_concurrency"
         case modelLoadTimeMs = "model_load_time_ms"
+        case performanceProfile = "performance_profile"
+        case deadlineProfile = "deadline_profile"
+        case promptWorkIdentity = "prompt_work_identity"
+        case performanceMeasurements = "performance_measurements"
+        case deadlineWork = "deadline_work"
         case kvBackend = "kv_backend"
         case kvBackendFallbackReason = "kv_backend_fallback_reason"
         case stepsExecuted = "steps_executed"
@@ -653,6 +665,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget: Int64 = 0,
         kvBytesPerToken: Int64 = 0,
         modelLoadTimeMs: Int64 = 0,
+        performanceProfile: ServingPerformanceProfileReference? = nil,
+        deadlineProfile: DeadlinePerformanceProfileReference? = nil,
+        promptWorkIdentity: PromptWorkIdentity? = nil,
+        performanceMeasurements: PerformanceMeasurements? = nil,
+        deadlineWork: DeadlineWork? = nil,
         kvBackend: String? = nil,
         kvBackendFallbackReason: String? = nil,
         stepsExecuted: Int64 = 0,
@@ -681,6 +698,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.queuedTokenBudget = queuedTokenBudget
         self.kvBytesPerToken = kvBytesPerToken
         self.modelLoadTimeMs = modelLoadTimeMs
+        self.performanceProfile = performanceProfile
+        self.deadlineProfile = deadlineProfile
+        self.promptWorkIdentity = promptWorkIdentity
+        self.performanceMeasurements = performanceMeasurements
+        self.deadlineWork = deadlineWork
         self.kvBackend = kvBackend
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.stepsExecuted = stepsExecuted
@@ -712,6 +734,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
         modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
+        performanceProfile = try container.decodeIfPresent(ServingPerformanceProfileReference.self, forKey: .performanceProfile)
+        deadlineProfile = try container.decodeIfPresent(DeadlinePerformanceProfileReference.self, forKey: .deadlineProfile)
+        promptWorkIdentity = try container.decodeIfPresent(PromptWorkIdentity.self, forKey: .promptWorkIdentity)
+        performanceMeasurements = try container.decodeIfPresent(PerformanceMeasurements.self, forKey: .performanceMeasurements)
+        deadlineWork = try container.decodeIfPresent(DeadlineWork.self, forKey: .deadlineWork)
         // No `?? ""` fallback: absent must stay absent, or the coordinator
         // cannot tell a pre-0.8.0 provider from one reporting an empty kind.
         kvBackend = try container.decodeIfPresent(String.self, forKey: .kvBackend)
@@ -738,6 +765,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(model, forKey: .model)
+        try container.encodeIfPresent(performanceProfile, forKey: .performanceProfile)
+        try container.encodeIfPresent(deadlineProfile, forKey: .deadlineProfile)
+        try container.encodeIfPresent(promptWorkIdentity, forKey: .promptWorkIdentity)
+        try container.encodeIfPresent(performanceMeasurements, forKey: .performanceMeasurements)
+        try container.encodeIfPresent(deadlineWork, forKey: .deadlineWork)
         try container.encode(state, forKey: .state)
         try container.encode(numRunning, forKey: .numRunning)
         try container.encode(numWaiting, forKey: .numWaiting)
@@ -831,6 +863,12 @@ public struct MLXCacheReclaimerTelemetry: Codable, Sendable, Equatable {
 
 public struct BackendCapacity: Codable, Sendable, Equatable {
     public var slots: [BackendSlotCapacity]
+    /// Fraction of the shared whole-Mac service allowance currently leased.
+    public var wholeMacServiceUsed: Double?
+    /// Version 1 explicitly acknowledges pipeline and service-lease retirement.
+    public var wholeMacServiceRetirementProtocol: Int?
+    /// Exact coordinator attempts included in the total, omitted for local work.
+    public var wholeMacServiceReservations: [WholeMacServiceReservation]
     public var gpuMemoryActiveGb: Double
     public var gpuMemoryPeakGb: Double
     public var gpuMemoryCacheGb: Double
@@ -843,6 +881,18 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// re-deriving free memory from the gpu/total figures. 0 means "cannot load
     /// anything new right now".
     public var freeForLoadGb: Double
+    /// Current no-eviction load gate, before activation and minimum-KV
+    /// headroom. Unlike freeForLoadGb this never credits resident slots as
+    /// reclaimable, so an owner can explain why startup preload skipped a
+    /// cold model. Absent on older providers.
+    public var loadUsableGb: Double?
+    /// The serving set's resolved activation plus minimum-KV allowance.
+    /// A model needs estimated_memory_gb + this amount of loadUsableGb.
+    public var loadHeadroomGb: Double?
+    /// A model load or related load-gate transition is still in flight. Its
+    /// memory reservation can make a cold-load snapshot look temporarily short.
+    /// Absent on older providers.
+    public var loadTransitionActive: Bool?
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.
     public var mlxCacheReclaimer: MLXCacheReclaimerTelemetry?
@@ -861,11 +911,17 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case slots
+        case wholeMacServiceUsed = "whole_mac_service_used"
+        case wholeMacServiceRetirementProtocol = "whole_mac_service_retirement_protocol"
+        case wholeMacServiceReservations = "whole_mac_service_reservations"
         case gpuMemoryActiveGb = "gpu_memory_active_gb"
         case gpuMemoryPeakGb = "gpu_memory_peak_gb"
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
         case totalMemoryGb = "total_memory_gb"
         case freeForLoadGb = "free_for_load_gb"
+        case loadUsableGb = "load_usable_gb"
+        case loadHeadroomGb = "load_headroom_gb"
+        case loadTransitionActive = "load_transition_active"
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
         case capacitySeq = "capacity_seq"
         case telemetry
@@ -874,22 +930,34 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
 
     public init(
         slots: [BackendSlotCapacity],
+        wholeMacServiceUsed: Double? = nil,
+        wholeMacServiceRetirementProtocol: Int? = nil,
+        wholeMacServiceReservations: [WholeMacServiceReservation] = [],
         gpuMemoryActiveGb: Double,
         gpuMemoryPeakGb: Double,
         gpuMemoryCacheGb: Double,
         totalMemoryGb: Double,
         freeForLoadGb: Double = 0,
+        loadUsableGb: Double? = nil,
+        loadHeadroomGb: Double? = nil,
+        loadTransitionActive: Bool? = nil,
         mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil,
         capacitySeq: UInt64 = 0,
         telemetry: CapacityTelemetry? = nil,
         prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry? = nil
     ) {
         self.slots = slots
+        self.wholeMacServiceUsed = wholeMacServiceUsed
+        self.wholeMacServiceRetirementProtocol = wholeMacServiceRetirementProtocol
+        self.wholeMacServiceReservations = wholeMacServiceReservations
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
         self.gpuMemoryPeakGb = gpuMemoryPeakGb
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
         self.freeForLoadGb = freeForLoadGb
+        self.loadUsableGb = loadUsableGb
+        self.loadHeadroomGb = loadHeadroomGb
+        self.loadTransitionActive = loadTransitionActive
         self.mlxCacheReclaimer = mlxCacheReclaimer
         self.capacitySeq = capacitySeq
         self.telemetry = telemetry
@@ -901,11 +969,18 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
+        self.wholeMacServiceUsed = try c.decodeIfPresent(Double.self, forKey: .wholeMacServiceUsed)
+        self.wholeMacServiceRetirementProtocol = try c.decodeIfPresent(Int.self, forKey: .wholeMacServiceRetirementProtocol)
+        self.wholeMacServiceReservations = try c.decodeIfPresent(
+            [WholeMacServiceReservation].self, forKey: .wholeMacServiceReservations) ?? []
         self.gpuMemoryActiveGb = try c.decode(Double.self, forKey: .gpuMemoryActiveGb)
         self.gpuMemoryPeakGb = try c.decode(Double.self, forKey: .gpuMemoryPeakGb)
         self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
         self.totalMemoryGb = try c.decode(Double.self, forKey: .totalMemoryGb)
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
+        self.loadUsableGb = try c.decodeIfPresent(Double.self, forKey: .loadUsableGb)
+        self.loadHeadroomGb = try c.decodeIfPresent(Double.self, forKey: .loadHeadroomGb)
+        self.loadTransitionActive = try c.decodeIfPresent(Bool.self, forKey: .loadTransitionActive)
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
         self.telemetry = try c.decodeIfPresent(CapacityTelemetry.self, forKey: .telemetry)
@@ -919,11 +994,19 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(slots, forKey: .slots)
+        try c.encodeIfPresent(wholeMacServiceUsed, forKey: .wholeMacServiceUsed)
+        try c.encodeIfPresent(wholeMacServiceRetirementProtocol, forKey: .wholeMacServiceRetirementProtocol)
+        if !wholeMacServiceReservations.isEmpty {
+            try c.encode(wholeMacServiceReservations, forKey: .wholeMacServiceReservations)
+        }
         try c.encode(gpuMemoryActiveGb, forKey: .gpuMemoryActiveGb)
         try c.encode(gpuMemoryPeakGb, forKey: .gpuMemoryPeakGb)
         try c.encode(gpuMemoryCacheGb, forKey: .gpuMemoryCacheGb)
         try c.encode(totalMemoryGb, forKey: .totalMemoryGb)
         try c.encode(freeForLoadGb, forKey: .freeForLoadGb)
+        try c.encodeIfPresent(loadUsableGb, forKey: .loadUsableGb)
+        try c.encodeIfPresent(loadHeadroomGb, forKey: .loadHeadroomGb)
+        try c.encodeIfPresent(loadTransitionActive, forKey: .loadTransitionActive)
         try c.encodeIfPresent(mlxCacheReclaimer, forKey: .mlxCacheReclaimer)
         if capacitySeq != 0 {
             try c.encode(capacitySeq, forKey: .capacitySeq)

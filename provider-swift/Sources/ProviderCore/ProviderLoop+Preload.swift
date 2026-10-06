@@ -27,6 +27,15 @@ extension ProviderLoop {
     /// `succeeded` -- the coordinator can use this as an idempotent
     /// "ensure warm" call.
     internal func handleLoadModelRequest(modelId: String, send: SendHandle) {
+        guard autopilotAllowsModel(modelId) else {
+            send.send(.loadModelStatus(modelId: modelId, status: .failed, error: "model_not_selected"))
+            return
+        }
+        if autopilotManagesResidency {
+            send.send(.loadModelStatus(modelId: modelId, status: .failed,
+                error: "model_autopilot_requires_explicit_command"))
+            return
+        }
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         guard eligibility.isEligible else {
@@ -48,7 +57,11 @@ extension ProviderLoop {
             ))
             return
         }
-        if isDrainingForUpdate {
+        if revisionUpdatesInProgress.contains(modelId) {
+            send.send(.loadModelStatus(modelId: modelId, status: .failed, error: "model revision activation in progress"))
+            return
+        }
+        if isDraining {
             sendDrainingLoadModelFailure(modelId: modelId, send: send)
             return
         }
@@ -122,23 +135,31 @@ extension ProviderLoop {
         }
     }
 
-    internal func waitForPreloads(_ preloads: [Task<Void, Never>], timeout: Duration) async -> Bool {
+    internal func waitForPreloads(
+        _ preloads: [Task<Void, Never>], timeout: Duration,
+        returnOnCancellation: Bool = false,
+        wake: OneShotBoolContinuation? = nil
+    ) async -> Bool {
         guard !preloads.isEmpty else { return true }
-        return await withCheckedContinuation { continuation in
-            let oneShot = OneShotBoolContinuation(continuation)
+        let oneShot = wake ?? OneShotBoolContinuation()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                oneShot.install(continuation)
 
-            Task {
-                for task in preloads { await task.value }
-                oneShot.resume(returning: true)
-            }
+                Task {
+                    for task in preloads { await task.value }
+                    oneShot.resume(returning: true)
+                }
 
-            // Structured timeout: first resume wins (OneShotBoolContinuation
-            // dedupes), so a slept Task replaces the GCD asyncAfter without
-            // changing the race semantics.
-            Task {
-                try? await taskSleep( timeout)
-                oneShot.resume(returning: false)
+                // First resume wins; the timer cannot re-resume a completed
+                // or cancelled wait.
+                Task {
+                    try? await taskSleep(timeout)
+                    oneShot.resume(returning: false)
+                }
             }
+        } onCancel: {
+            if returnOnCancellation { oneShot.cancel() }
         }
     }
 

@@ -23,35 +23,19 @@ import type {
 } from "../api/types";
 import { ThinkStreamParser } from "./think-parser";
 import { readSsePayloads } from "./sse";
+import { assertChatRequestBudget, ChatRequestTooLargeError } from "./request-budget";
+
+import { parseVerification } from "../verification";
 
 type SealContext = { ephemPriv: Uint8Array; coordPub: Uint8Array };
 
-/** Map an upstream error (status + message + error code) to user-facing copy. */
-function chatErrorMessage(status: number, msg: string, code?: string): string {
-  if (code === "no_linked_machine") {
-    return "No machine linked to your account — run `darkbloom login` on your Mac, then try again.";
-  }
-  if (code === "machine_offline") {
-    return "Your machine is offline — start your Darkbloom node and try again. (Free-only self-route won't fall back to the paid network.)";
-  }
-  if (code === "model_not_loaded") {
-    return "This model isn't loaded on your machine — load it on your node, then try again.";
-  }
-  if (code === "machine_busy") {
-    return "Your machine is busy — try again in a moment.";
-  }
-  if (status === 503 && msg.includes("queue timeout")) {
-    return "All providers are busy — please try again in a moment";
-  }
-  if (status === 402) {
-    return "Insufficient credits — buy credits in Billing to continue";
-  }
-  return `Request failed (${status}): ${msg}`;
-}
+import { chatErrorMessage } from "./errors";
 
 /** Extract the provider trust metadata advertised on the response headers. */
-function extractTrustMeta(res: Response): TrustMetadata {
+export function extractTrustMeta(res: Response): TrustMetadata {
   return {
+    verification: parseVerification(res.headers.get("x-provider-verification")),
+    encrypted: res.headers.get("x-provider-encrypted") === "true",
     attested: res.headers.get("x-provider-attested") === "true",
     trustLevel: (res.headers.get("x-provider-trust-level") as TrustMetadata["trustLevel"]) || "none",
     secureEnclave: res.headers.get("x-provider-secure-enclave") === "true",
@@ -117,11 +101,15 @@ async function prepareBody(
   requestBody: unknown,
   selfRouteHeader: Record<string, string>,
 ): Promise<{ headers: Record<string, string>; body: string; sealCtx: SealContext | null }> {
-  if (!isEncryptionEnabled()) {
-    return { headers: proxyHeaders(selfRouteHeader), body: JSON.stringify(requestBody), sealCtx: null };
+  const body = JSON.stringify(requestBody);
+  const willSeal = isEncryptionEnabled();
+  assertChatRequestBudget(body, willSeal);
+  if (!willSeal) {
+    return { headers: proxyHeaders(selfRouteHeader), body, sealCtx: null };
   }
   const coordKey = await getCoordinatorKey();
   const sealed = sealRequest(requestBody, coordKey);
+  assertChatRequestBudget(sealed.envelopeJson);
   return {
     headers: proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE, ...selfRouteHeader }),
     body: sealed.envelopeJson,
@@ -134,9 +122,9 @@ export async function streamChat(
   model: string,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
-  opts?: { selfRoute?: boolean },
+  opts?: { selfRoute?: boolean; enableThinking?: boolean },
 ): Promise<void> {
-  const requestBody = { model, messages, stream: true };
+  const requestBody = { model, messages, stream: true, enable_thinking: opts?.enableThinking ?? true };
   // "Use my machine": prioritize the caller's own provider (free when it serves)
   // but fall back to the paid fleet. Carried as a header so it never enters the
   // (optionally sealed) body.
@@ -150,6 +138,10 @@ export async function streamChat(
   try {
     ({ headers, body, sealCtx } = await prepareBody(requestBody, selfRouteHeader));
   } catch (err) {
+    if (err instanceof ChatRequestTooLargeError) {
+      callbacks.onError(err.message);
+      return;
+    }
     callbacks.onError(
       `Encryption setup failed: ${err instanceof Error ? err.message : String(err)} — disable "Encrypt to coordinator" in Settings to continue in plaintext.`,
     );
@@ -166,6 +158,7 @@ export async function streamChat(
   }
 
   if (!res.ok) {
+    window.dispatchEvent(new Event("darkbloom-promotion-usage"));
     if (res.status === 401) {
       clearConsoleApiKey();
       window.dispatchEvent(new Event("darkbloom-key-expired"));
@@ -203,6 +196,7 @@ export async function streamChat(
   const responseSealed = sealCtx !== null && res.headers.get("x-eigen-sealed") === "true";
 
   const finish = () => {
+    window.dispatchEvent(new Event("darkbloom-promotion-usage"));
     think.flush();
     tracker.emit(callbacks.onMetrics);
     callbacks.onDone(trustMeta, tracker.snapshot());
@@ -227,20 +221,15 @@ export async function streamChat(
       return;
     }
 
-    // Attestation receipt event (sent just before [DONE]).
-    try {
-      const receipt = JSON.parse(payload);
-      if (receipt.se_signature) {
-        trustMeta.seSignature = receipt.se_signature;
-        trustMeta.responseHash = receipt.response_hash;
-        continue;
-      }
-    } catch {
-      // Not a receipt — fall through to normal chunk handling.
-    }
-
     try {
       const chunk = JSON.parse(payload);
+      // Receipts and token deltas share the SSE transport, but each payload
+      // is decoded only once before choosing its destination.
+      if (chunk.se_signature) {
+        trustMeta.seSignature = chunk.se_signature;
+        trustMeta.responseHash = chunk.response_hash;
+        continue;
+      }
       const delta = chunk.choices?.[0]?.delta;
       const content = delta?.content;
       const reasoning = delta?.reasoning_content || delta?.reasoning;

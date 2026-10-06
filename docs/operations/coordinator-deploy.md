@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-10-05
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -10,10 +10,21 @@ edit the env file. Provider CLI releases are a separate runbook:
 [`provider-release.md`](provider-release.md); the dev coordinator is
 [dev-environment.md](dev-environment.md).
 
+For the 0.9.10 upgrade, complete the console compatibility, database migration,
+App Attest cohort, and mixed-version checks in the
+[0.9.10 rollout order](provider-release.md#0910-rollout-order) before and after
+the container swap. The production operation still requires the approval and
+image/digest preflight below.
+
+The first swap to a coordinator built after v0.9.10 also needs the
+[retired-backfill marker check](#2-pre-swap-checks-vm-and-db) and the
+[provider version floor raise](#raise-the-provider-version-floor-first-deploy-after-v0910)
+before the container swap.
+
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
 
-For international payout configuration and validation, also follow [Global Payouts](global-payouts.md).
+For bank payout configuration and validation, follow [Global Payouts](global-payouts.md) and the [Stripe account cutover](stripe-migration.md). The global-only cutover is explicit and remains false in release defaults; deploying code alone does not switch accounts.
 
 ## When to use
 
@@ -28,7 +39,7 @@ For international payout configuration and validation, also follow [Global Payou
 
 - `gcloud` authenticated with IAM to SSH via IAP into project `darkbloom-mainnet`
   and to read Cloud Build / Artifact Registry.
-- `psql` access to the production RDS database (`PROD_DB_URL`) for the
+- `psql` access to the production Cloud SQL database (`PROD_DB_URL`) for the
   pre-swap lock check.
 - Explicit human approval for the production mutation (rule 1 in
   [README.md](README.md) is the canonical statement), recorded where your team
@@ -52,10 +63,11 @@ For international payout configuration and validation, also follow [Global Payou
 | Access | `gcloud compute ssh darkbloom-coordinator --project darkbloom-mainnet --zone us-east4-a --tunnel-through-iap` |
 | Ingress | `api.darkbloom.dev` → host Caddy (systemd, static certificate) → `:8080`. Do not reload Caddy during a swap; it reconnects the whole provider fleet |
 | Image | `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` built by [`deploy/gcp/cloudbuild-prod.yaml`](../../deploy/gcp/cloudbuild-prod.yaml) from [`coordinator/Dockerfile`](../../coordinator/Dockerfile) |
-| Container | `coordinator`: `--network host`, `--restart unless-stopped`, `--stop-timeout 630`, `-v /mnt/disks/userdata:/mnt/disks/userdata`, `--env-file /etc/d-inference/env`; entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
+| Container | `coordinator`: `--network host`, `--restart unless-stopped`, `--stop-timeout 75`, `-v /mnt/disks/userdata:/mnt/disks/userdata`, `--env-file /etc/d-inference/env`; entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
+| Shutdown policy | Production sets `EIGENINFERENCE_DRAIN_GRACE=45s`; Docker allows 75 seconds from SIGTERM before SIGKILL. The application default remains `10m` when the env override is absent. |
 | Inside the container | `start.sh` symlinks `/data -> /mnt/disks/userdata`, starts MicroMDM on `:9002` (state in `/data/micromdm`, command webhook `http://localhost:8080/v1/mdm/webhook`), then `exec coordinator` as PID 1. `/usr/local/bin/promptsidecar` is spawned by the coordinator when `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true` |
 | Persistent disk | `/mnt/disks/userdata`: MicroMDM BoltDB, prompt-contract artifacts (`EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts`), logs. **Omitting the bind mount boots a blank MDM and drops the fleet to `self_signed` trust** (2026-07-04 incident) |
-| Database | AWS RDS PostgreSQL via `EIGENINFERENCE_DATABASE_URL`; schema migrations run at coordinator start |
+| Database | Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet` (read replica `d-inference-prod-pg17-ro`) via `EIGENINFERENCE_DATABASE_URL`; pending goose migrations apply at coordinator start |
 | Env file | `/etc/d-inference/env`, root-only `0600`, on the boot disk (never tmpfs). Managed by [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) with [`deploy/gcp/prod/required-env-keys.txt`](../../deploy/gcp/prod/required-env-keys.txt) and [`deploy/gcp/prod/release-env-defaults`](../../deploy/gcp/prod/release-env-defaults); applied at boot by [`deploy/gcp/prod/darkbloom-env-refresh.service`](../../deploy/gcp/prod/darkbloom-env-refresh.service) (`Before=docker.service`) |
 | Fallback | The previous container is renamed `coordinator_fallback_<timestamp>` and kept stopped |
 
@@ -103,15 +115,29 @@ by hand; shell variables do not cross SSH.
 
 ### 2. Pre-swap checks (VM and DB)
 
-Startup runs schema migrations. An `ALTER TABLE` queued behind a long query's
-relation lock hangs the deploy (2026-07-03 outage — the fix was killing the
-blocker, not restarting). No rows means safe to proceed:
+Startup applies pending goose migrations
+([schema lifecycle](../architecture/schema-lifecycle.md)). An SQL migration
+statement waits at most 3 s for a lock (`lock_timeout`); after three failed
+attempts the coordinator exits 1. Before goose, an `ALTER TABLE` queued behind
+a long query's relation lock hung the deploy (2026-07-03 outage). No rows
+means safe to proceed:
 
 ```bash
 psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(query,80)
   from pg_stat_activity where state <> 'idle'
     and query_start < now() - interval '60 seconds' and pid <> pg_backend_pid();"
 psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted = false;"
+```
+
+A coordinator built after v0.9.10 refuses to start on a database that holds
+billing, usage or earnings rows but never ran the retired one-shot backfills
+(`checkRetiredBackfills`, see
+[schema lifecycle](../architecture/schema-lifecycle.md#version-2-the-retired-backfill-guard)).
+Production ran them; confirm all three markers before the swap (three rows):
+
+```bash
+psql "$PROD_DB_URL" -c "select id, applied_at from schema_migrations where id in
+  ('backfill_withdrawable_balance_v1', 'backfill_usage_totals_v1', 'backfill_earnings_summary_v1');"
 ```
 
 On the VM, pull the candidate and prove it is the reviewed commit:
@@ -140,73 +166,79 @@ sudo sh -c 'umask 077; awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ || $1 =
   /etc/d-inference/env | LC_ALL=C sort | sha256sum | cut -d" " -f1 > /tmp/darkbloom-cache-env.before.sha256'
 ```
 
-### Optional: prepare compatible migrations before draining
+### Frozen legacy MDM cutover prerequisites
 
-After reviewing the exact candidate's schema changes, a human-approved operator
-can run its database-only command while the current coordinator serves. This is
-a production database mutation and needs approval for that operation. Only
-backward-compatible migrations belong before cutover; `--migrate-only` executes
-all normal migrations and does not establish compatibility automatically.
+For the upcoming frozen legacy MDM policy, schema preparation is **not** the
+cohort freeze. The first upgraded production startup calls
+`Owner.InitializeLegacyMDMPolicy` (`coordinator/api/provider/trust/owner.go`),
+wired in `configureBillingAndTrust` (`coordinator/app/services.go`), after revocation
+replay and before accepting providers. `FreezeLegacyMDMCohort`
+(`coordinator/store/legacy_mdm_cohort.go`) records a durable cutoff and
+stored account/key/serial cohort; later restarts reuse it, even if empty.
+New accounts/devices/associations must not enlarge it. Before approving cutover,
+review historical evidence completeness: lost or hashless records may be
+conservatively excluded, while retained hardware snapshots plus account-scoped historical
+inventory can supplement them. Do not repair omissions by clearing the freeze
+or manually adding newly enrolled identities.
 
-```bash
-sudo docker run --rm --network host --env-file /etc/d-inference/env \
-  --entrypoint /usr/local/bin/coordinator \
-  "${CANDIDATE_IMAGE%:*}@${CANDIDATE_DIGEST}" --migrate-only
-```
+Startup synchronously drains eligible historical inventory through
+`Policy.Initialize` (`coordinator/internal/provider/legacymdm/policy.go`) in
+100-row `BackfillMachineInventory` batches before freezing, within the existing
+30-second initialization deadline, including on restarts. If the drain errors,
+is cancelled or exceeds the deadline, startup fails without creating a new
+freeze marker; retry after resolving the failure, not
+by bypassing the drain. A zero batch does not recover recent/open sessions or
+missing durable evidence. Historical bindings retain their existing stored-account
+and endpoint-key semantics, not proof of fresh historical token authentication;
+see the [evidence limits](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 
-The executable override is mandatory: the image's default `start.sh` starts
-MicroMDM and touches persistent MDM state. The database-only container needs no
-userdata mount, publishes no port, seeds no admin key, starts no workers and
-exits after migration success (with a 15-minute upper bound). Do not start a
-second ordinary coordinator container. Rerun the blocked-query/lock checks and
-verify current serving health after preparation; success is not approval to
-swap.
+`EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` defaults to `production`; unknown values
+fail startup. Only explicit `development` or actual opted-in memory-store fallback
+skips this cutover (`coordinator/internal/startup/legacy_mdm.go`,
+`InitializeLegacyMDMPolicy`). Setting `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`
+does not exempt a configured Postgres database. Neither `DD_ENV` nor the App
+Attest proof environment selects this policy. Do not change the production
+classification to bypass prerequisites; [dev setup](dev-environment.md) uses a
+separate database and explicit development configuration.
 
-The earnings-summary migration captures missing-key history once, commits a
-resumable plan, then adds each pending delta and removes it in a short transaction.
-Its repeatable-read snapshot is pinned before the attempted-plan marker commits,
-so settlement during marker creation cannot hide missing historical totals.
-Initial planning uses one additional short-lived database connection for that
-marker, even with a single-connection pool; budget for it before preparation.
-A failed or uncertain marker write aborts preparation.
-Existing `CreditProviderAccount` and `SettleProviderFloorDraw` writers can continue:
-their atomic earning/summary updates coexist with the captured deltas without a
-new writer-lock protocol. Quiesce any old record-only/import writer that lacks
-atomic summary updates. Already inconsistent counters at plan time need explicit
-reconciliation; this migration preserves existing totals rather than guessing.
-The final marker makes subsequent startup avoid the historical scan. If the attempt marker committed but the
-initial planning transaction fails, that marker makes subsequent
-startup fail closed rather than silently replan against newly created partial
-counters. Follow the recovery procedure below; a committed plan's per-key
-progress instead resumes automatically. New
-provider-recovery indexes are built concurrently and checked for validity. An
-interrupted build that leaves an invalid index fails closed with its index name;
-repair it under a separate approved operation. Ordinary startup still applies
-schema checks, and this preparation does not prove a five-second handoff.
+Before starting the upgraded binary, explicitly approve and configure production
+App Attest serving: `EIGENINFERENCE_APP_ATTEST_SERVING=true`,
+`EIGENINFERENCE_APP_ATTEST_ENVIRONMENT=production` and
+`EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT=100`. The startup policy validates
+these prerequisites **before** freezing membership and fails closed on invalid
+configuration; it must not silently freeze or start with new identities unable
+to use the required path. These settings do not qualify a build or waive any
+proof, receipt or runtime check. See [qualification](app-attest-build-qualification.md)
+and [authorization controls](../reference/provider-authorization.md#controls).
 
-#### Recover an incomplete initial earnings-summary plan
+Inspect the host ingress configuration read-only for anonymous static enrollment
+profile routes, including `/enroll.mobileconfig`. Production uses host Caddy:
+removing a handler from the checked-in `coordinator/Caddyfile` does not remove
+the host's route through a coordinator container swap. Any host Caddy change
+needs separate approval for that mutation; do not claim the container upgrade
+alone closes an anonymous static-profile route. Direct MicroMDM SCEP/check-in
+remains the separate copied-profile limitation described below.
 
-This recovery is an explicit production database/traffic operation and needs
-operator approval. A failed initial plan intentionally blocks readiness.
+After the approved swap, verify that the frozen cohort loaded, an existing
+allowed identity can reverify, and a nonmember cannot gain MDM authorization
+through registration recovery, scheduling, live/late results or cached trust
+reuse. Authenticated reenrollment needs the linked provider token and signed
+[SE-key proof](../reference/api-contracts.md#legacy-mdm-enrollment-proof).
+MicroMDM enrollment alone is not this check: [copied profiles can still use
+direct SCEP/check-in](../architecture/security/enrollment.md#copied-profile-boundary).
+New identities need qualified App Attest, with no unsupported-OS fallback.
+No grace period is selected and no expiry is implemented. Preserve the cutoff
+and cohort during rollback; rolling back to code without these gates removes
+their enforcement, so review that security regression before approval.
 
-1. Quiesce all earnings/summary writers and preserve the failure evidence,
-   `schema_migrations`, `earnings_summary`, `provider_earnings`, and
-   `earnings_summary_backfill_pending` in the team's normal backup process.
-2. Determine whether `prepare_earnings_summary_backfill_v1` committed. If it did,
-   retain the plan and pending rows and rerun the candidate migration command;
-   committed per-key updates are already protected from double application.
-3. If only `attempt_earnings_summary_backfill_v1` exists, diagnose the failed
-   snapshot and reconcile affected account/provider totals against authoritative
-   earning/ledger history and retained pre-migration evidence. Preserve money
-   while excluding base rewards from inference counts/tokens. History retention
-   can make a blind recomputation incorrect; insufficient evidence requires a
-   vetted backup or a separately reviewed accounting repair.
-4. Only after that reconciliation, with writers still quiesced, verify that no
-   final/ready-plan marker or pending plan rows exist. An approved operator may
-   reset the attempted-plan marker and rerun preparation. Do not merely delete
-   that marker while serving, and never discard committed pending deltas.
-5. Verify the final marker, empty pending queue and reconciled totals before
-   resuming writers or proceeding with the separately approved swap.
+### Schema migrations
+
+If the candidate adds goose versions, follow steps 1 to 4 of
+[Apply schema migrations in production](schema-migration.md#steps) now: scope
+the versions, take and record a Cloud SQL backup, check for long queries, and
+optionally apply additive versions with `--migrate-only` while the current
+coordinator serves. The first deploy of a goose build also follows its
+[first cut-over checklist](schema-migration.md#first-production-cut-over-to-goose).
 
 ### 3. Refresh the env file and capture rollback inputs
 
@@ -254,7 +286,35 @@ sudo sh -c 'umask 077; awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ || $1 =
   /etc/d-inference/env | LC_ALL=C sort | sha256sum | cut -d" " -f1 > /tmp/darkbloom-cache-env.pre-swap.sha256'
 sudo cmp /tmp/darkbloom-cache-env.before.sha256 /tmp/darkbloom-cache-env.pre-swap.sha256
 sudo grep -Fx 'EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000' /etc/d-inference/env   # production first-content base
+sudo grep '^EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS=' /etc/d-inference/env  # exact account selector; verify against the stored user
 ```
+
+#### Raise the provider version floor (first deploy after v0.9.10)
+
+**Human-only.** Coordinators built after v0.9.10 dropped the routing
+compatibility paths for providers older than 0.9.5 (see `CHANGELOG.md`,
+"coordinator legacy-compat cleanup") and assume nothing below 0.9.5 is
+routable. `EIGENINFERENCE_MIN_PROVIDER_VERSION` is what enforces that, and
+`refresh-env.sh` never changes an existing key, so the live value must be
+raised by hand. `deploy/environments/prod.env` already says `0.9.5`, but it is
+only a reference copy.
+
+1. Take a fleet-version census: in Datadog, graph
+   `d_inference.providers.per_version` by `version` over the last 24 hours.
+   Record in the deploy record how many providers run a version below 0.9.5.
+   They stay connected after the swap but get no traffic.
+2. Once that loss is approved, set the floor to at least `0.9.5`. Do this after
+   `--apply`, so the rollback backup keeps the previous value. If the current
+   floor is already 0.9.5 or higher, skip the edit.
+
+```bash
+sudo grep '^EIGENINFERENCE_MIN_PROVIDER_VERSION=' /etc/d-inference/env        # current floor; skip the edit if >= 0.9.5
+sudo sed -i 's/^EIGENINFERENCE_MIN_PROVIDER_VERSION=.*/EIGENINFERENCE_MIN_PROVIDER_VERSION=0.9.5/' /etc/d-inference/env
+sudo grep -Fx 'EIGENINFERENCE_MIN_PROVIDER_VERSION=0.9.5' /etc/d-inference/env
+```
+
+After the swap, `d_inference.coordinator.min_provider_version_set{min_version:0.9.5}`
+confirms the running floor.
 
 Record the current container's immutable image and persist the rollback state
 root-only, then confirm the running image is the approved rollback target
@@ -273,24 +333,41 @@ printf '%s\n%s\n%s\n%s\n' "$PREVIOUS_IMAGE" "$PREVIOUS_ENV_BACKUP" "$PREVIOUS_EN
 ### 4. Swap
 
 Rules: **one host-network container at a time** (stop before start; two
-containers on `:8080` caused the 2026-07-03 outage); **630-second stop
-timeout** so the 10-minute application drain completes instead of Docker's
-10-second SIGKILL; **the volume mount is mandatory**.
+containers on `:8080` caused the 2026-07-03 outage); **45-second application
+drain grace and 75-second Docker stop timeout**; **the volume mount is mandatory**.
+Confirm the override in both the running container and the env file before
+stopping the old container; editing the file does not update an existing process.
+The application's unconfigured default is 10 minutes, not the production policy.
+
+The stop timeout includes the drain, not an additional 75 seconds afterward.
+If the full drain grace is consumed, only 30 seconds remain for cleanup.
+`coordinator/app/lifecycle.go` (`drainAndStop`) separately bounds HTTP shutdown
+at 15 s, provider-socket close and join at 5 s, persistence-loop join at 15 s,
+the final cache routing flush at 10 s, and a second handler join and flush at
+10 s each when the first join timed out: up to 65 s after the drain. These
+budgets are not shortened by Docker's timeout. This policy does **not** guarantee
+all in-flight requests or final persistence complete; Docker can force SIGKILL
+before cleanup finishes. Record forced termination or incomplete flushes when
+verifying the swap.
 
 ```bash
+sudo grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' /etc/d-inference/env || exit 2
+sudo docker inspect coordinator --format '{{range .Config.Env}}{{if eq . "EIGENINFERENCE_DRAIN_GRACE=45s"}}{{println .}}{{end}}{{end}}' \
+  | grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' || exit 2
 sudo docker rename coordinator "$FALLBACK"
-sudo docker stop -t 630 "$FALLBACK"               # drains: /readyz goes 503, new requests get retryable 429s
+sudo docker stop -t 75 "$FALLBACK"                # drains: /readyz goes 503, new requests get retryable 429s
 sudo docker run -d --name coordinator \
-  --network host --restart unless-stopped --stop-timeout 630 \
+  --network host --restart unless-stopped --stop-timeout 75 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   "$CANDIDATE_IMAGE"
 ```
 
 Startup takes ~15–40 s (MicroMDM init, migrations, listeners). If `/health`
-does not answer after ~60 s, suspect a migration behind a DB lock: re-run the
-`pg_stat_activity` query and `pg_terminate_backend(<pid>)` the blocker. **Do
-not restart the container again** — restarts stack migrations.
+does not answer after ~60 s, or the container exits with `store: run
+migrations`, follow [schema migration troubleshooting](schema-migration.md#troubleshooting).
+A failed migration exits before the coordinator serves and records no failed
+version. **Do not loop restarts of the container.**
 
 ## Verification
 
@@ -323,7 +400,7 @@ curl -fsS localhost:8080/v1/cache/status | jq -e \
 # Fleet trust rebuild (~2 min) and MDM sanity.
 sudo docker logs coordinator 2>&1 | grep -c "upgraded live provider to hardware trust"   # should climb
 sudo docker logs coordinator 2>&1 | grep -c "device not found in MDM"        # baseline is a few dozen; hundreds = missing volume mount → Rollback
-sudo docker logs coordinator 2>&1 | grep "postgres migration completed"      # one line per migration; result already_applied on steady state
+sudo docker logs coordinator 2>&1 | grep '"postgres migration"'             # one line per applied version; none when nothing was pending
 
 # Public.
 curl -fsS https://api.darkbloom.dev/health
@@ -341,10 +418,10 @@ psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
 ## Rollback
 
 Roll back only to the image and env captured in step 3. Never start a
-coordinator older than the `backfill_withdrawable_balance_v1` migration
-(`coordinator/store/postgres_withdrawable_migration.go`): pre-marker binaries
-re-run the historical balance backfill on every start, which is not
-financially safe — for those cases roll **forward** with a patched image.
+coordinator built before the `backfill_withdrawable_balance_v1` marker existed
+(`ac3d934a9`, #557): those binaries re-run the historical balance backfill on
+every start, which is not financially safe — for those cases roll **forward**
+with a patched image.
 
 ```bash
 ROLLBACK_STATE=/var/lib/darkbloom-deploy/rollback-state
@@ -356,11 +433,18 @@ FALLBACK=$(sudo sed -n 4p "$ROLLBACK_STATE")
 [[ "$(sudo sha256sum "$PREVIOUS_ENV_BACKUP" | cut -d' ' -f1)" == "$PREVIOUS_ENV_BACKUP_SHA256" ]]
 sudo docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}'
 
-sudo docker stop -t 630 coordinator && sudo docker rm coordinator     # one host-network container at a time
-sudo docker ps -q --filter "name=$FALLBACK" | grep -q . && sudo docker stop -t 630 "$FALLBACK"
+sudo grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' "$PREVIOUS_ENV_BACKUP" || exit 2
+sudo docker inspect coordinator --format '{{range .Config.Env}}{{if eq . "EIGENINFERENCE_DRAIN_GRACE=45s"}}{{println .}}{{end}}{{end}}' \
+  | grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' || exit 2
+sudo docker stop -t 75 coordinator && sudo docker rm coordinator     # one host-network container at a time
+if sudo docker ps -q --filter "name=$FALLBACK" | grep -q .; then
+  sudo docker inspect "$FALLBACK" --format '{{range .Config.Env}}{{if eq . "EIGENINFERENCE_DRAIN_GRACE=45s"}}{{println .}}{{end}}{{end}}' \
+    | grep -Fx 'EIGENINFERENCE_DRAIN_GRACE=45s' || exit 2
+  sudo docker stop -t 75 "$FALLBACK"
+fi
 sudo cp "$PREVIOUS_ENV_BACKUP" /etc/d-inference/env
 sudo docker run -d --name coordinator \
-  --network host --restart unless-stopped --stop-timeout 630 \
+  --network host --restart unless-stopped --stop-timeout 75 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   "$PREVIOUS_IMAGE"
@@ -390,7 +474,11 @@ cause in the deploy record; the failed candidate image stays in Artifact
 Registry for diagnosis.
 
 Providers reconnect on their own; the live registry is in-process and rebuilt
-from reconnects, durable state is in RDS and on the persistent disk.
+from reconnects, durable state is in Cloud SQL and on the persistent disk.
+
+Rollback never reverts the schema. Which previous images are safe on a
+migrated database is in the
+[schema migration rollback rules](schema-migration.md#rollback).
 
 ## Environment file
 
@@ -448,7 +536,8 @@ reference copy; editing it changes nothing on the host.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| No `/health` after 60 s | migration behind an RDS relation lock | `pg_stat_activity` → `pg_terminate_backend(<pid>)`; do not restart the container |
+| No `/health` after 60 s, or exit with `store: run migrations` | a migration failed: a relation lock through three `lock_timeout` attempts, the 5 min advisory-lock wait, or an invalid index | [schema migration troubleshooting](schema-migration.md#troubleshooting); do not loop restarts |
+| Exit at boot with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | the database never ran a one-shot backfill retired after v0.9.10 (not production, which has all three markers) | roll back to the captured image, which runs the backfills at start, then redeploy the candidate |
 | Fleet drops to `self_signed`; "device not found in MDM" storm | container started without `-v /mnt/disks/userdata:/mnt/disks/userdata` (blank MicroMDM) | Rollback, then redo the swap with the mount |
 | `/v1/models` empty; providers `self_signed` | MicroMDM not running or `MICROMDM_API_KEY` ≠ `EIGENINFERENCE_MDM_API_KEY` | fix the env file, recreate the container |
 | Port conflict / crash loop | a second host-network container is running | `docker ps`; stop the old one first |
@@ -460,9 +549,16 @@ reference copy; editing it changes nothing on the host.
 
 ## Related
 
-- [dev-environment.md](dev-environment.md) — the dev coordinator (`sepolia-ai`), which auto-deploys from Cloud Build.
+- [dev-environment.md](dev-environment.md) — the dev coordinator (`darkbloom-dev`).
 - [`provider-release.md`](provider-release.md) — provider CLI release runbook.
+- [`schema-migration.md`](schema-migration.md) — backup, checks and rollback rules for schema migrations.
 - [`../developer/build.md`](../developer/build.md) — what the Dockerfile builds.
 - [`../reference/configuration.md`](../reference/configuration.md) — every environment variable.
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — what the cache-routing controls do.
 - [`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) — why prod is on GCE (historical).
+
+## First-content SLA account selection
+
+`EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` selects exact authenticated account IDs or stored emails; an empty value disables the SLA for everyone. Provision the selector privately in the runtime environment and verify it against the stored user before rollout. The checked-in template contains only a commented placeholder. Prefer a verified account ID. This is independent of the service role and cannot be selected by a User-Agent/header. Set model exceptions in `EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS`, for example `ternary-bonsai-2-27b=10000:5` (10-second upstream base, 9-second coordinator base, 5 ms/input token). The code change and template do not mutate the running environment.
+
+During the authorized rollout, verify that an OpenRouter request carries a positive provider first-content budget with its configured slope, while a direct request has no budget and can pass the old cutoff. Verify both API keys on the same selected account inherit the policy. Preserve and restore the prior immutable image and environment for rollback. Policy implementation: `coordinator/api/inference/first_content_accounts.go` (`requestFirstContentDeadline`); configuration details: [configuration](../reference/configuration.md#routing-admission-and-ttft).

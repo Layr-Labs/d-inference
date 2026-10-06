@@ -25,7 +25,9 @@ extension ProviderLoop {
             request.encryptedChallenge = nil
         }
         if appAttestShadowClient == nil {
-            appAttestShadowClient = AppAttestShadowClient(scope: loopConfig.coordinatorURL)
+            let probe = AppAttestProcessProbe(pushHistory: apnsPushHistory)
+            appAttestShadowClient = AppAttestShadowClient(
+                scope: loopConfig.coordinatorURL, processDiagnostics: { probe.diagnostics() })
         }
         guard let client = appAttestShadowClient else { return }
         let publicKey = keyPair.publicKeyBase64
@@ -38,12 +40,24 @@ extension ProviderLoop {
             cpuEfficiency: String(loopConfig.hardware.cpuCores.efficiency), gpuCores: String(loopConfig.hardware.gpuCores), attestationPublicKey: signer?.publicKeyBase64)
         appAttestShadowTask = Task.detached(priority: .utility) { [weak self] in
             let reply = await client.respond(to: message, publicKey: publicKey, status: status)
+            let localStatus = await client.currentLocalStatus()
             guard !Task.isCancelled else { return }
-            await self?.finishAppAttestShadow(reply, generation: generation, send: send)
+            await self?.finishAppAttestShadow(reply, localStatus: localStatus, prepared: message.action == "prepare",
+                                              generation: generation, send: send)
         }
     }
 
-    private func finishAppAttestShadow(_ reply: AppAttestShadowPayload, generation: UInt64, send: SendHandle) {
+    private func finishAppAttestShadow(_ reply: AppAttestShadowPayload, localStatus: AppAttestLocalStatus?,
+                                       prepared: Bool, generation: UInt64, send: SendHandle) {
+        // Proof key/history updates and failures reach doctor and report now,
+        // not at the next prepare; the daemon keeps its current stall fields.
+        if let localStatus, let published = AppAttestLocalStatus.published(
+            current: appAttestLocalStatus, client: localStatus, prepared: prepared) {
+            appAttestLocalStatus = published
+            writeDaemonState()
+        }
+        // Only these results can leave an unanswered Apple call holding admission.
+        if reply.result == "busy" || reply.result == "operation_timeout" { startAppAttestStallMonitorIfNeeded() }
         guard generation == appAttestShadowGeneration else { return }
         appAttestShadowTask = nil
         send.send(.appAttestShadow(reply))

@@ -1,6 +1,6 @@
 # Gemma 4 Frozen-KV MTP on Continuous Batching V2
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Implemented (v0.7.12, PR #547)** — 2026-07-14 — merged as d-inference [#547](https://github.com/Layr-Labs/d-inference/pull/547) with mlx-swift-lm [#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74) / [#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75) and built as `Gemma4AssistantDraftModel` loaded by `EngineV2MTPAssistant` (`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`); the `DARKBLOOM_CBV2_MTP=1` opt-in below is now a negative kill switch (`CBv2MTPConfig.envEnabled`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`) and activation comes from `mtp_mode` or a catalog `spec_dec` artifact; as built: [`../architecture/inference.md`](../architecture/inference.md#multi-token-prediction).
 

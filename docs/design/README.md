@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-15 · commit `dfe556c13`
+> Last updated: 2026-10-04
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -17,6 +17,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [first-content-performance.md](first-content-performance.md) | In progress | 2026-09-28 | Coordinator first-content routing, followed by qualified provider profiles and fleet placement |
 | [routing-v2.md](routing-v2.md) | Implemented | 2026-06-16 | Admit by measurement, serve all compute, never ship bad streams — the plan behind today's [`../architecture/routing.md`](../architecture/routing.md) |
 | [routing-v2-attestation-churn.md](routing-v2-attestation-churn.md) | Implemented | 2026-06-16 | W5 root cause of code-attestation churn and its fix |
 | [routing-telemetry-and-calibration.md](routing-telemetry-and-calibration.md) | Implemented | 2026-06-16 | Per-route telemetry and calibration of the cost model |
@@ -27,6 +28,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [mdm-optional-provider-authorization.md](mdm-optional-provider-authorization.md) | In progress | 2026-09-15 | Independent legacy or App Attest authorization, dispatch fencing, stable identity and scoped MDM removal |
 | [app-attest-migration.md](app-attest-migration.md) | In progress | 2026-09-12 | App Attest shadow rollout with APNs/MDM authoritative, coverage evidence, and later retirement |
 | [app-attest-release-observability.md](app-attest-release-observability.md) | Proposed | 2026-09-14 | Next-release unique-machine/OS census, complete proof and receipt archive, and migration from serial-based identity |
 | [app-attest-retirement.md](app-attest-retirement.md) | In progress | 2026-09-14 | Complete shadow policy, receipt and key lifecycle, live connection authorization, accounting continuity, and gates for removing APNs/MDM |
@@ -55,8 +57,9 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [consumer-referrals.md](consumer-referrals.md) | In progress | 2026-09-07 | Open Sales Program: recurring consumer referral rewards, atomic settlement, and sharing |
 | [base-rewards.md](base-rewards.md) | Implemented | 2026-06-06 | Additive base income for providers; as built in [`../architecture/billing.md`](../architecture/billing.md) |
-| [provider-referral-growth-program.md](provider-referral-growth-program.md) | Proposed | 2026-08-21 | Provider-acquisition referral rewards plus an interim payout share, on top of the existing referral fee split |
+| [provider-referral-growth-program.md](provider-referral-growth-program.md) | Proposed | 2026-08-21 | Provider-acquisition referral rewards plus an interim payout share, independent of the Open Sales Program |
 
 ## Adding a record
 

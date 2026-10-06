@@ -1,8 +1,13 @@
 package registry
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/providerdrain"
+	providerwrite "github.com/eigeninference/d-inference/coordinator/internal/registry/providerwrite"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -51,12 +56,25 @@ import (
 // enough that a provider whose drain was aborted but whose heartbeats stopped
 // arriving is back in routing within minutes. It is the heartbeat-loss
 // fallback; a live provider clears its mark with its next idle/serving.
-const drainStateTTL = 150 * time.Second
+const drainStateTTL = providerdrain.TTL
+
+var ErrProviderDraining = errors.New("provider draining")
+
+var errProviderDrainSuperseded = providerdrain.ErrSuperseded
+
+func (r *Registry) newProviderDrain(id string) *providerdrain.Authority {
+	if r.providerDrainFactory != nil {
+		if authority := r.providerDrainFactory(id); authority != nil {
+			return authority
+		}
+	}
+	return &providerdrain.Authority{}
+}
 
 // providerDrainingLocked reports whether p has an unexpired draining mark.
 // Caller holds p.mu.
 func providerDrainingLocked(p *Provider, now time.Time) bool {
-	return !p.drainingUntil.IsZero() && now.Before(p.drainingUntil)
+	return p.drain.Draining(now)
 }
 
 // applyHeartbeatDrainStateLocked updates the draining mark from a heartbeat's
@@ -67,12 +85,7 @@ func providerDrainingLocked(p *Provider, now time.Time) bool {
 // reports "draining" while it refuses work, so an idle/serving heartbeat
 // means the drain is over (see the file header). Caller holds p.mu.
 func applyHeartbeatDrainStateLocked(p *Provider, status string, now time.Time) {
-	switch status {
-	case protocol.HeartbeatStatusDraining:
-		p.drainingUntil = now.Add(drainStateTTL)
-	case "idle", "serving":
-		p.drainingUntil = time.Time{}
-	}
+	p.drain.Heartbeat(status, now)
 }
 
 // MarkDraining marks a live provider draining for drainStateTTL (the typed
@@ -87,14 +100,13 @@ func (r *Registry) MarkDraining(id string) (transitioned bool) {
 	}
 	now := time.Now()
 	p.mu.Lock()
-	was := providerDrainingLocked(p, now)
-	p.drainingUntil = now.Add(drainStateTTL)
+	transitioned = p.drain.Mark(now)
 	p.mu.Unlock()
-	if !was {
+	if transitioned {
 		r.logger.Info("provider draining: routing skips it until it reports idle/serving or the drain TTL lapses",
 			"provider_id", id, "ttl", drainStateTTL)
 	}
-	return !was
+	return transitioned
 }
 
 // ProviderDraining reports whether the provider currently carries an
@@ -109,4 +121,70 @@ func (r *Registry) ProviderDraining(id string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return providerDrainingLocked(p, time.Now())
+}
+
+// CommitProviderDrain fences admission until disconnect or an inventory replacement
+// authorized by this barrier. A later barrier supersedes every earlier receipt,
+// even when the caller reuses its wire request ID. Zero means the session is stale.
+func (r *Registry) CommitProviderDrain(p *Provider, requestID string) uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.drain.Commit(requestID, len(p.pendingReqs))
+}
+
+// CompleteProviderDrain binds terminal settlement to the exact barrier generation.
+func (r *Registry) CompleteProviderDrain(p *Provider, requestID string, generation uint64) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.drain.Complete(requestID, generation, len(p.pendingReqs))
+}
+
+// WriteProviderDrainAck checks the barrier again at the control writer's final
+// handoff. A newer barrier (including a reused wire ID) invalidates queued acks,
+// not just workers that are still waiting for settlement.
+func (r *Registry) WriteProviderDrainAck(ctx context.Context, p *Provider, requestID string, generation uint64) error {
+	data, _ := json.Marshal(protocol.ProviderDrainMessage{Type: protocol.TypeProviderDrainAck, RequestID: requestID})
+	p.mu.Lock()
+	w := p.writer
+	p.mu.Unlock()
+	if w == nil {
+		return errProviderWriterStopped
+	}
+	_, err := w.WriteRequest(ctx, providerwrite.NewFrame(data, func() error {
+		if !r.CompleteProviderDrain(p, requestID, generation) {
+			return errProviderDrainSuperseded
+		}
+		return nil
+	}), true, nil)
+	return err
+}
+
+// ProviderDrainPending returns an event for reservations held at the barrier,
+// including data-lane writes that must fail their final authorization check.
+// A nil event means they have already settled; false means a stale barrier.
+func (r *Registry) ProviderDrainPending(p *Provider, generation uint64) (<-chan struct{}, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return nil, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.drain.Pending(generation)
+}
+
+// settleDrainPendingLocked broadcasts the final removal (or disconnect) to
+// every barrier waiter. Ordinary dispatch never allocates settlement tracking.
+func (p *Provider) settleDrainPendingLocked() {
+	p.drain.SettlePending()
 }

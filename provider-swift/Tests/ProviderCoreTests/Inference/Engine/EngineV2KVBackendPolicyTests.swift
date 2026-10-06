@@ -18,11 +18,15 @@ import Testing
 struct EngineV2KVBackendPolicyTests {
 
     @Test(arguments: [
-        "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
         "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit",
         "nvidia-nemotron-3.5-lightning",
         "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
         "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
+        "nvidia-nemotron-3.5-lightning-hybrid8",
+        "nvidia-nemotron-3.5-lightning-4bit-r1",
+        "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+        "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b",
     ])
     func exactReleaseArtifactAutoPolicy(modelID: String) {
         let parsed = EngineV2KVBackendPolicy.parseSelection(
@@ -51,7 +55,8 @@ struct EngineV2KVBackendPolicyTests {
     @Test(arguments: [
         nil, "", "unknown", "gemma-4-26b", "gemma-4-31b", "gemma-4-26b-8bit",
         "gemma-4-26b-qat-4bit-other", "gpt-oss-20b-other",
-        "qwen3.5-9b", "qwen3.5-27b", "qwen3.6-35b-a3b",
+        "qwen3.5-9b", "QWEN3.5-9B", "Qwen/Qwen3.5-9B", "Qwen3.5-9B-mtp", " Qwen3.5-9B",
+        "qwen3.5-27b", "qwen3.6-35b-a3b",
         "EigenLabs/Qwen3.8-27B-4bit", "Qwen3.8-27B-4bit-mtp",
         "eigenlabs/qwen3.8-27b-4bit-mtp", "QWEN3.5-35B-A3B",
         " qwen3.5-35b-a3b", "qwen3.5-35b-a3b ", "org/qwen3.5-35b-a3b",
@@ -59,6 +64,7 @@ struct EngineV2KVBackendPolicyTests {
         "EigenLabs/Qwen3.8-27B-4bit-mtp-other",
         "nvidia-nemotron-3.5-lightning-other", "NVIDIA-NEMOTRON-3.5-LIGHTNING",
         "nvidia-nemotron-3.5-lightning ", "arbitrary/Nemotron-MTP",
+        "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit-other", "arbitrary/Bonsai",
     ] as [String?])
     func otherIDsRemainContiguous(modelID: String?) {
         #expect(EngineV2KVBackendPolicy.preferredBackend(

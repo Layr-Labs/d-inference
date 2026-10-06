@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-10-04
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -10,17 +10,95 @@ memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
 
+## Registering interest for unsupported hardware
+
+| Earn-page behavior | Meaning | Code |
+|---|---|---|
+| Smaller-model or production-readiness notification action | Both register the same account's selected Mac hardware; selecting different hardware permits an update | `console-ui/src/app/earn/SmallModelsInterest.tsx`, `useSmallModelsInterest.ts` |
+| Pending sign-in or saving state | Registration has not been acknowledged; closing the sign-in modal keeps the visible intent pending until explicit cancellation or expiry | `console-ui/src/app/earn/useSmallModelsInterest.ts` (`useSmallModelsInterest`) |
+| Confirmed notification interest | The coordinator acknowledged persistence, or authenticated readback matched the selected hardware; this does not change hardware eligibility | `coordinator/api/accounts/small_models_interest.go` (`HandleRegisterSmallModelsInterest`, `HandleGetSmallModelsInterest`) |
+
+Follow the [authenticated registration steps](../consumer/authentication.md#6-register-hardware-interest). Registration is an opt-in record; email delivery is a separate operation.
+
 ## Minimum requirements
+
+New network providers require macOS 27 or later and current qualified App Attest
+authorization. The binary build floor below is not network eligibility. Only
+the [frozen legacy cohort](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort)
+may temporarily retain legacy serving; an old OS or installed profile cannot
+create membership. These are provider requirements, not consumer requirements.
+
+Native DiffusionGemma retains its vision tower and applies the existing per-frame
+allocation checks and shared process budget; enabling media discovery does not
+lower load, activation or KV reserves. See the [native block memory and media
+contract](../architecture/native-block-inference.md). No new physical RAM-tier
+or throughput guarantee follows from the capability flag.
 
 | Component | Requirement | Code |
 |---|---|---|
-| CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
+| CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5`, `M6` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
 | Architecture | `arm64` only; the installer refuses Intel Macs | `coordinator/api/install.sh` |
-| RAM | At least 8 GB to start at all ([`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)); per-model needs below | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` (`hardware.memoryGb < 8`) |
+| RAM | At least 8 GB to start at all ([`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)); per-model needs below | `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift` (`hardware.memoryGb < 8`) |
 | macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
+
+## MiMo candidate qualification scope
+
+The [native MiMo V2.6 candidate](../architecture/inference.md#native-mimo-v26-candidate)
+has no qualified minimum RAM tier or sustained-throughput guarantee. Its
+managed loader prices the complete validated load plan, including retained
+trained components; a separately loaded audio codec has its own admitted owner.
+WAV input conversion prices every decoded channel and the native resampling
+plan. Wider accepted input formats do not reduce the activation or OS reserves
+or establish a new minimum RAM tier; see `MiMoV26OrdinaryServingPolicy` and
+`MiMoV26EncodedMediaIngress`.
+File size, header estimates and logical permit settlement are not measured
+whole-process peak residency. The configured native context is not replaced by
+a smaller benchmark input bound.
+
+The existing load cap, operator reserve, activation reserve, KV allowance and
+live OS-headroom checks remain decisive. The default standing-residency policy
+(rollback: `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0`) keeps the native weight
+payload resident; without it the driver re-wires the expert tensors per command
+buffer under memory pressure and decode collapses on a 256 GiB host. It
+uses the shared MLX manager and computes its group ceiling after allowing the
+larger of 16 GiB or 10% of physical RAM for unwired system use. It does not lower
+a pre-existing manager baseline or cap other policy groups, so this is not a
+process-wide unwired-reserve guarantee. A manager return is neither proof that
+particular pages are wired nor a grant to load a model.
+
+Provider 0.9.14 defaults the [exact MiMo identities](../architecture/prefix-cache.md#mimo-complete-state)
+to encrypted text-prefix SSD caching. Allow disk space for useful checkpoints
+under the [shared cache budget and write limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
+Restoration stays inside the existing request memory admission; this does not
+reserve idle prefix payloads in RAM or reduce model/OS/activation requirements.
+Image, audio and video requests remain uncached. The MiMo-specific rollback is
+`DARKBLOOM_MIMO_COMPLETE_PREFIX=0`; for launchd, apply it using the replacement
+`darkbloom start` flow described in the [release runbook](../operations/provider-release.md).
+
+NAX kernels additionally require the pinned core's actual device/OS/build
+capability and compatible GPU streams. An M5 label alone is not eligibility;
+non-NAX devices retain the native fallback. Neither component skips on another
+device nor benchmark completion qualifies all RAM configurations.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift`
+(`estimatedWeightsGb`),
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26AudioSidecarReservation.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`Bounds.safeCeiling`, `Policy`), and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXGatherQMM.swift`
+(`gpuStream`, `naxAvailable`).
+
+## Bonsai 2 qualification scope
+
+The unchanged Prism Bonsai 2 27B MLX 2-bit payload is 8,595,477,990 bytes,
+including its vision tensors. File size is not a RAM-tier qualification:
+activation/KV reserves and live OS headroom remain required. The initial draft
+targets M5 Max testing; no minimum-RAM catalog value, full-context guarantee or
+MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
+exact artifact ID; all existing admission checks remain in effect. The artifact
+contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
 
 ## Chip families
 
@@ -29,11 +107,36 @@ and are not repeated here.
 | M1, M2 | `ChipFamily.m1`, `.m2` | MTP `maxRectangularTokens = 4` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`) |
 | M3, M4 | `.m3`, `.m4` | MTP `maxRectangularTokens = 8` |
 | M5 | `.m5` | As M3/M4, plus the provider advertises runtime capability `apple_m5` (and `mlx_nax` when the NAX kernels are available); the catalog's `required_provider_capabilities` uses these to decide eligibility (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`, `coordinator/registry/provider_capabilities.go`) |
+| M6 | `.m6` | Uses a conservative 153 GB/s nominal bandwidth and the 4-token MTP rectangle limit until physically qualified; a passing NAX diagnostic can advertise `mlx_nax`, but M6 does not claim the M5-specific `apple_m5` capability (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
 | Other | `.unknown` | Treated like M1/M2 for MTP |
 
 Chip tier (`Base`, `Pro`, `Max`, `Ultra`) is reported to the coordinator but
 does not gate any model (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`,
 `parseChipIdentity`).
+
+## New 2026 desktop identifiers
+
+The base-reward catalog (`coordinator/hardware/mac_models.go`,
+`ModelMaxMemoryGB`) includes the three unambiguous identifiers below. It
+excludes the M5 Ultra's disputed identifier until the conflict is resolved.
+This catalog does not bypass serving authorization, model requirements or the
+provider load gate. Actual model serving still needs physical validation.
+
+| Mac | Identifier | Maximum unified memory | Base-reward memory cap |
+|---|---|---:|---:|
+| Mac mini, M6 | `Mac18,5` | 32 GB | 32 GB |
+| Mac mini, M5 Pro | `Mac17,16` | 64 GB | 64 GB |
+| Mac Studio, M5 Max | `Mac17,14` | 128 GB | 128 GB |
+| Mac Studio, M5 Ultra | `Mac17,15` | 512 GB | Ineligible pending identifier confirmation |
+
+Apple's [Mac mini identification page](https://support.apple.com/en-us/102852)
+currently prints `Mac17,15` for the M5 Pro mini, while its
+[Mac Studio page](https://support.apple.com/en-us/102231) prints that identifier
+for the M5 Ultra Studio. An [M5 Pro mini benchmark submission](https://browser.geekbench.com/v7/cpu/425786)
+reports `Mac17,16`. Confirm `hw.model` on a physical mini before relying on
+its base-reward tier. `Mac17,15` remains unknown to the reward catalog so a
+mini cannot inherit the Ultra's 512 GB cap; this does not block the Studio
+from enrolling or serving otherwise eligible models.
 
 ## RAM tiers and catalog models
 
@@ -83,6 +186,18 @@ with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 (`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`;
 [after the load](../architecture/hardware-support.md#after-the-load)).
 
+## Native MiMo loading quotation
+
+For validated exact `mimo_v2`, discovery prices the strict main and ordinary
+audio-sidecar full LOAD requests, not disk bytes times a generic multiplier or
+steady-state residency. It retains the same activation/minimum-KV headroom and
+all actual loading/post-load gates. The coordinator also keeps the raw catalog
+size floor. Unsupported or stale inventory retains conservative legacy pricing.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) and `coordinator/registry/offloaded_weights.go`
+(`advertisedOffloadedMemoryGBLocked`). A corrected quotation does not prove
+hardware serviceability or full-context operation.
+
 ## Qwen4 learned-table offload
 
 The [Flash-Next candidate](../reference/qwen4-next-support.md)
@@ -115,7 +230,7 @@ not certify space for a concurrently staged assistant replacement.
 |---|---|---|
 | Assistant download | The pinned catalog assistant adds 236,127,665 bytes (about 236 MB) of files beside the target and SSD cache. This is artifact size, not a promise of loaded memory use; future catalog revisions may differ | [Pinned assistant file sizes](../reports/evidence/2026-09-08-gemma-qat-defaults/hf-assistant-identity-verification.json); `provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift` (`SpecDecResolver`) |
 | Replacement memory | Before preparation, reserve the assistant's resident-byte estimate plus the minimum serviceable KV grant (1 GiB) while the old engine remains resident. Existing activation/headroom reserves remain enforced; shared target weights are retained and counted once. Insufficient memory defers the optional upgrade without evicting a serving model | `provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift` (`prepareMTPUpgrade`); `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` (`EngineV2KVSizing.minimumServiceableGrantBytes`); `provider-swift/Sources/ProviderCore/Inference/MTP/MTPStagingReservations.swift` (`extraBytes`) |
-| Download, verification and preparation | The original engine continues serving. Missing or invalid artifacts and preparation failures preserve target-only serving | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`prepare`); `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`) |
+| Download, verification and preparation | The original engine continues serving. Missing or invalid artifacts and preparation failures preserve target-only serving | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`prepare`); `provider-swift/Sources/ProviderCore/Models/ModelIdleUpgrade.swift` (`run`) |
 | Prepared-engine activation | Network serving continues through the configured rollout jitter, then new admissions for this model close until accepted work finishes and the engine swaps. Other models remain eligible. Standalone skips fleet jitter; new acquisitions during either model drain can receive transient 503. Timeout/cancellation discards the candidate and reopens the original engine without force-cancelling accepted work | [Drain bounds, controls and failure behavior](../architecture/inference.md#multi-token-prediction); [`update_jitter_seconds`](cli-reference.md#providertoml-keys-read-by-the-cli) |
 
 Jitter spreads independent network-provider upgrades; it does not reserve spare
@@ -142,7 +257,37 @@ See [engine MTP constraints](../architecture/inference.md#multi-token-prediction
 | Location | [`../reference/ssd-kv-cache.md#paths`](../reference/ssd-kv-cache.md#paths) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` |
 | Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
-| When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+| When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Exact MiMo IDs default to native contiguous text-only COMPLETE checkpoints; media stays uncached. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+
+## Storage
+
+Model discovery and downloads share the [resolved Hugging Face hub cache](../reference/configuration.md#model-cache-location)
+(`ModelScanner.resolveCache`, `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`).
+Use [`darkbloom models location`](cli-reference.md#darkbloom-models-location) to inspect
+or choose an existing directory, including one on an external volume. Empty
+directories are valid for future downloads; the command never moves existing
+weights. `--check` lists discovered MLX model IDs without claiming integrity or
+network eligibility. Existing providers keep their legacy cache until a location
+is explicitly saved; ambient Hugging Face/XDG variables never override it.
+`--from-env` is an explicit one-time import that pins the resolved directory.
+
+After saving a location, use `darkbloom restart` (or `darkbloom start` if stopped)
+to apply it. Mount external volumes first; a missing selected cache does not fall
+back to another directory. No automatic weight movement or restart occurs.
+
+Plan disk space per model from the catalog output of `darkbloom models catalog`.
+Logs and telemetry are small; the bundle plus `mlx.metallib` is roughly 200 MB.
+
+## Network
+
+| Direction | Requirement |
+|-----------|-------------|
+| Outbound | `wss://api.darkbloom.dev/ws/provider` and `https://api.darkbloom.dev` on port 443 |
+| Inbound | None for normal provider operation |
+| Local | Optional: `darkbloom start --local` or `--local-endpoint` binds a loopback/tailnet address |
+
+Persistent WebSocket idle bandwidth is low (heartbeat every 5 seconds by
+default).
 
 ## Thermal and power
 

@@ -112,7 +112,7 @@ func (r *Registry) mergeProviderModels(
 		// When the catalog pins an expected hash, a models_update MUST carry a
 		// non-empty MATCHING hash. A missing hash is rejected just like a
 		// mismatched one.
-		if exp := entry.WeightHash; exp != "" && !strings.EqualFold(m.WeightHash, exp) {
+		if exp := entry.WeightHash; exp != "" && !entry.acceptsWeightHash(m.WeightHash) {
 			r.logger.Warn("models_update weight-hash missing or mismatched; rejecting build",
 				"provider_id", providerID, "model_id", m.ID, "expected", exp, "got", m.WeightHash)
 			continue
@@ -124,7 +124,7 @@ func (r *Registry) mergeProviderModels(
 					delete(p.PrefixCacheStatuses, m.ID)
 					delete(p.PrefixCacheV2Models, m.ID)
 					delete(p.PrefixCacheMemoryModels, m.ID)
-					p.prefixCacheRevision++
+					p.advanceCacheRevisionLocked()
 					cacheStateInvalidated[m.ID] = struct{}{}
 				}
 				p.Models[i] = m
@@ -134,6 +134,12 @@ func (r *Registry) mergeProviderModels(
 		}
 		if !replaced {
 			p.Models = append(p.Models, m)
+		}
+		p.autopilotState.RefreshModel(m)
+		for _, target := range aliasTargets {
+			if target.Desired == m.ID && providerSelectedModelLocked(p, target.Previous) {
+				p.autopilotState.PromoteSuccessor(m.ID)
+			}
 		}
 		merged = append(merged, m.ID)
 		present[m.ID] = struct{}{}
@@ -179,13 +185,14 @@ func (r *Registry) mergeProviderModels(
 				delete(p.PrefixCacheStatuses, m.ID)
 				delete(p.PrefixCacheV2Models, m.ID)
 				delete(p.PrefixCacheMemoryModels, m.ID)
-				p.prefixCacheRevision++
+				p.advanceCacheRevisionLocked()
 				cacheStateInvalidated[m.ID] = struct{}{}
 				continue
 			}
 			kept = append(kept, m)
 		}
 		p.Models = kept
+		p.autopilotState.DropRetired(drop)
 	}
 	p.PrefixCacheStatuses, p.PrefixCacheStatusReported =
 		reconcilePrefixCacheStatuses(

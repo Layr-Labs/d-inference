@@ -25,19 +25,19 @@ final class StagedStandaloneMTPUpgrade: @unchecked Sendable {
 
 extension StandaloneServer {
     var mtpStagingBytes: UInt64 {
-        mtpStagingReservations.extraBytes(residentTargets: Set(slots.values.map { ObjectIdentifier($0.container) }))
+        mtpStagingReservations.extraBytes(residentTargets: Set(slots.values.map { $0.modelContainer.identity }))
     }
 
     func isMTPUpgradeTargetRetained(_ modelID: String) -> Bool {
         guard let slot = slots[modelID] else { return false }
-        return mtpStagingReservations.retains(ObjectIdentifier(slot.container))
+        return mtpStagingReservations.retains(slot.modelContainer.identity)
     }
 
     func startMTPUpgradeMonitor() {
         guard mtpUpgradeMonitorTask == nil else { return }
         mtpUpgradeMonitorTask = Task { [weak self] in
             var nextAttempt: [String: ContinuousClock.Instant] = [:]
-            var lastOutcome: [String: MTPIdleUpgrade.Outcome] = [:]
+            var lastOutcome: [String: ModelIdleUpgrade.Outcome] = [:]
             while !Task.isCancelled {
                 guard let self else { return }
                 let candidates = await self.pendingMTPUpgradeModels()
@@ -47,7 +47,7 @@ extension StandaloneServer {
                     if lastOutcome[modelID] == nil {
                         await self.logMTPUpgrade("checking/downloading verified assistant; target remains available", modelID: modelID)
                     }
-                    let outcome = await MTPIdleUpgrade.run(
+                    let outcome = await ModelIdleUpgrade.run(
                         prepare: { try await self.prepareMTPUpgrade(modelID) },
                         beginDrain: { try await self.beginMTPUpgradeDrain($0) },
                         commitIfIdle: { try await self.commitMTPUpgradeIfIdle($0) },
@@ -73,11 +73,12 @@ extension StandaloneServer {
     }
 
     func pendingMTPUpgradeModels() -> [String] {
-        guard lifecycleState == .running,
+        guard lifecycleState == .running, nativeMiMoReclaimAllowed,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
         return slots.compactMap { modelID, slot in
-            guard modelID == "gemma-4-26b-qat-4bit", !slot.bundle.mtpStatus.active,
+            guard !isNativeMiMoSlot(modelID), slot.container != nil,
+                modelID == "gemma-4-26b-qat-4bit", !slot.bundle.mtpStatus.active,
                 config.mtpMode.enablesMTP(
                     forModelType: slot.modelType, embeddedArtifactDeclared: false, modelID: modelID),
                 !evictingModels.contains(modelID), models.contains(where: { $0.id == modelID })
@@ -87,9 +88,10 @@ extension StandaloneServer {
     }
 
     func prepareMTPUpgrade(_ modelID: String, modelDirectory: URL? = nil) async throws -> StagedStandaloneMTPUpgrade? {
+        try requireNativeMiMoNewWorkAllowed()
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
             let target = slots[modelID].map({
-                (ObjectIdentifier($0.container), UInt64(max(0, $0.sizing.weightsBytes)))
+                ($0.modelContainer.identity, UInt64(max(0, $0.sizing.weightsBytes)))
             }) else { return nil }
         let retention = mtpStagingReservations.retainPreparingTarget(target.0, bytes: target.1)
         do {
@@ -106,7 +108,8 @@ extension StandaloneServer {
     private func prepareRetainedMTPUpgrade(_ modelID: String, modelDirectory: URL?,
                                           target: ObjectIdentifier) async throws -> StagedStandaloneMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
-            let original = slots[modelID], ObjectIdentifier(original.container) == target,
+            let original = slots[modelID], original.modelContainer.identity == target,
+            let originalContainer = original.container,
             let info = models.first(where: { $0.id == modelID }),
             let directory = modelDirectory ?? ModelScanner.resolveLocalPath(modelID: modelID)
         else { return nil }
@@ -118,7 +121,10 @@ extension StandaloneServer {
             slots[modelID]?.bridge === original.bridge,
             pendingMTPUpgradeModels().contains(modelID)
         else { return nil }
+        try requireNativeMiMoNewWorkAllowed()
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let grant = Int(clamping: EngineV2KVSizing.minimumServiceableGrantBytes)
         guard let lease = await kvBudget.claimPendingLoad(
             requestID: "mtp-upgrade:\(modelID):\(UUID().uuidString)",
@@ -126,9 +132,9 @@ extension StandaloneServer {
         else {
             standaloneLogger.warning("mtp: model=\(modelID) assistant staging deferred: insufficient memory; retaining target engine")
             await finishMTPUpgradeLoad()
-            throw MTPIdleUpgrade.PreparationError.insufficientMemory
+            throw ModelIdleUpgrade.PreparationError.insufficientMemory
         }
-        mtpStagingReservations.reserve(lease, target: ObjectIdentifier(original.container),
+        mtpStagingReservations.reserve(lease, target: original.modelContainer.identity,
             targetBytes: UInt64(max(0, original.sizing.weightsBytes)),
             assistantBytes: artifact.residentBytes, kvBytes: UInt64(grant))
         let preparationStarted = ContinuousClock.now
@@ -136,10 +142,12 @@ extension StandaloneServer {
         var replacement: ProviderEngineBundle?
         do {
             try Task.checkCancellation()
+            try requireNativeMiMoNewWorkAllowed()
             guard await kvBudget.recheckPendingLoad(lease) else { throw CancellationError() }
+            try requireNativeMiMoNewWorkAllowed()
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelID, isVLM: original.isVLM, modelDirectory: directory,
-                container: original.container, specDecPreparation: preparation,
+                container: originalContainer, specDecPreparation: preparation,
                 assistantLoader: v2TestHooks?.assistantLoader ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 logInfo: { standaloneLogger.info("\($0)") }, logWarning: { standaloneLogger.warning("\($0)") })
@@ -151,16 +159,22 @@ extension StandaloneServer {
                 await kvBudget.recheckPendingLoad(lease)
             else { throw CancellationError() }
             let sizing = original.sizing.replacingAuxiliaryWeightBytes(prepared.assistantBytes)
+            v2TestHooks?.onModelArtifactSHA256?(original.modelArtifactSHA256)
             v2TestHooks?.onCacheEligibleWeightHash?(original.cacheEligibleWeightHash)
+            try requireNativeMiMoNewWorkAllowed()
             replacement = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
-                modelDirectory: directory, container: original.container, tokenizer: original.tokenizer,
+                modelDirectory: directory, container: originalContainer, tokenizer: original.tokenizer,
                 sizing: sizing, kvBytesCapacity: grant,
-                maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID), kvBudget: kvBudget,
+                maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID),
+                automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
+                    && config.engineV2MaxConcurrentByModel[modelID] == nil,
+                kvBudget: kvBudget,
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
+                modelArtifactSHA256: original.modelArtifactSHA256,
                 weightHash: original.cacheEligibleWeightHash,
                 specDecPreparation: preparation, preparedModel: prepared,
                 startServingTelemetry: false,
@@ -169,6 +183,7 @@ extension StandaloneServer {
                 logInfo: { standaloneLogger.info("\($0)") },
                 logWarning: { standaloneLogger.warning("\($0)") })
             try Task.checkCancellation()
+            try requireNativeMiMoNewWorkAllowed()
             let replacement = replacement!
             let active: Bool
             if v2TestHooks != nil { active = replacement.mtpStatus.active }
@@ -187,7 +202,7 @@ extension StandaloneServer {
             if let replacement { await replacement.bridge.shutdown(); replacement.releaseAssistant() }
             prepared?.assistant?.release()
             prepared = nil
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             mtpStagingReservations.release(lease)
             await kvBudget.finishPendingLoad(lease)
             // Preparation still owns the load gate, which serializes reslices.
@@ -199,15 +214,19 @@ extension StandaloneServer {
     }
 
     func commitMTPUpgradeIfIdle(_ staged: StagedStandaloneMTPUpgrade) async throws -> Bool {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let modelID = staged.modelID
-        guard let original = staged.original else { throw CancellationError() }
+        guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
+        try requireNativeMiMoNewWorkAllowed()
         guard slots[modelID]?.bridge === original.bridge,
             pendingMTPUpgradeModels().contains(modelID)
         else { throw CancellationError() }
         guard slotReservations[modelID, default: 0] == 0, !isLoadingAny else { return false }
         let capacity = await original.bridge.capacitySnapshot()
         try Task.checkCancellation()
+        try requireNativeMiMoNewWorkAllowed()
         guard capacity.activeRequests == 0, capacity.waitingRequests == 0,
             capacity.kvBytesReserved == 0 else { return false }
         guard slots[modelID]?.bridge === original.bridge,
@@ -220,10 +239,11 @@ extension StandaloneServer {
         // gate so accepted requests never wait behind their admission drain.
         mtpUpgradeTransitions.insert(modelID)
         slots[modelID] = CachedSlot(
-            bundle: staged.replacement, container: original.container,
+            bundle: staged.replacement, container: originalContainer,
             tokenizer: original.tokenizer, modelType: original.modelType,
             isVLM: original.isVLM, sizing: staged.sizing,
             lastUsedAt: original.lastUsedAt,
+            modelArtifactSHA256: original.modelArtifactSHA256,
             cacheEligibleWeightHash: original.cacheEligibleWeightHash)
         // Publication is committed. Shutdown of the old idle engine releases
         // its pool before the minimal replacement grant is grown.
@@ -232,7 +252,7 @@ extension StandaloneServer {
         await staged.replacement.bridge.startSSDPrefixCacheStatsLogger()
         await staged.replacement.bridge.configureMTPStatus(staged.replacement.mtpStatus)
         staged.original = nil
-        MLX.Memory.clearCache()
+        if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
         mtpStagingReservations.release(staged.lease)
         await kvBudget.finishPendingLoad(staged.lease)
         await resliceGrowSurvivors()
@@ -245,10 +265,12 @@ extension StandaloneServer {
     }
 
     func discardMTPUpgrade(_ staged: StagedStandaloneMTPUpgrade) async {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         await staged.replacement.bridge.shutdown()
         staged.replacement.releaseAssistant()
         staged.original = nil
-        MLX.Memory.clearCache()
+        if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
         // Unlike failed preparation, a staged discard owns no load gate.
         // Wait even when cancelled: resource cleanup must complete, and its
         // regrow must not interleave with a newcomer's shrink/build/install.

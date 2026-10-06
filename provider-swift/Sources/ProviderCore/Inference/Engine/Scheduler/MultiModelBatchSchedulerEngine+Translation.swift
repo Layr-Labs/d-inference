@@ -23,6 +23,9 @@ public struct ChatTemplateControls: Sendable, Equatable {
     public let enableThinking: Bool?
     public let preserveThinking: Bool?
     public let promptDate: PromptRenderDate?
+    // Included in synthesized equality: refusal evidence cannot be erased by
+    // comparing only the permissively decoded legacy control fields.
+    var rawMiMoControls = MiMoV26RawControlEvidence()
 
     public init(
         reasoningEffort: String? = nil,
@@ -39,6 +42,13 @@ public struct ChatTemplateControls: Sendable, Equatable {
     func withPromptDate(_ date: PromptRenderDate) -> Self {
         .init(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
               preserveThinking: preserveThinking, promptDate: date)
+            .withRawMiMoControls(rawMiMoControls)
+    }
+
+    func withRawMiMoControls(_ evidence: MiMoV26RawControlEvidence) -> Self {
+        var copy = self
+        copy.rawMiMoControls = evidence
+        return copy
     }
 
     func resolvingPromptDate(at now: Date = Date()) -> Self {
@@ -105,6 +115,10 @@ extension MultiModelBatchSchedulerEngine {
             context["enable_thinking"] = explicit
         } else if ChatTemplateControls(reasoningEffort: effort).effortDisablesThinking {
             context["enable_thinking"] = false
+        } else if modelType == "diffusion_gemma",
+            let thinking = DiffusionGemmaReasoningControl.enabled(for: effort)
+        {
+            context["enable_thinking"] = thinking
         } else if hasMedia && controls.enableThinking == nil && effort == nil {
             // Qwen templates default thinking on. Grounded media defaults off
             // only when the caller supplied no thinking control at all.

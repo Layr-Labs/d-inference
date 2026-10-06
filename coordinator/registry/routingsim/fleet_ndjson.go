@@ -42,10 +42,8 @@ type ProviderSpec struct {
 	FreeForLoadGB     *float64
 	// Version is the provider binary version the snapshot recorded
 	// (fleet_snapshots.provider_version, already folded by
-	// registry.ProviderVersionFold). Build applies it to Provider.Version, the
-	// field the capability version floors (tools) compare against. "" when
-	// the export predates the column: tool-bearing arrivals are then rejected,
-	// which is honest — the snapshot does not know the floor was met.
+	// registry.ProviderVersionFold). Build applies it to Provider.Version for
+	// the version-dependent gates. "" when the export predates the column.
 	Version string
 	// ModelFlags carries, per advertised model id, the capability flags the
 	// slot row recorded for it. A model with no entry (a hardware-override
@@ -71,8 +69,8 @@ type ModelFlags struct {
 // for the reader's benefit, but the loader only reconstructs the provider and
 // slot state the preflight classifier consumes; a replay that needs fault
 // state must apply it itself. Capability gating IS rebuilt: the provider
-// version (tools floor) and the per-model vision / template-render flags come
-// from the row when the export carries them.
+// version and the per-model vision / template-render flags come from the row
+// when the export carries them.
 type FleetSpec struct {
 	// SampledAt is the tick the fleet was reconstructed from.
 	SampledAt time.Time
@@ -338,8 +336,8 @@ func (f FleetSpec) Build(logger *slog.Logger) (*registry.Registry, error) {
 		armSimProvider(p)
 		// Register does not read the register message's version; the api layer
 		// stores it on the provider under its lock (api/provider.go, "Store
-		// provider version"). Same path here so the tools version floor
-		// (registry.providerMeetsTraitFloorsLocked) sees what the snapshot saw.
+		// provider version"). Same path here so version-dependent routing
+		// sees what the snapshot saw.
 		if ps.Version != "" {
 			p.Mu().Lock()
 			p.Version = ps.Version

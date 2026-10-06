@@ -129,7 +129,6 @@ personal-data writes have the separate [late-write protections](#late-writes).
 | `idx_model_token_reservations_account` | `model_token_reservations (account_id)` | 14 | Erasure finds rows by account |
 | `idx_inference_routes_consumer_key_hash` | `inference_routes (consumer_key_hash)` | 15 | Erasure finds rows by hashed key |
 | `idx_request_rejections_consumer_key_hash` | `request_rejections (consumer_key_hash)` | 16 | Erasure finds rows by hashed key |
-
 | `idx_billing_sessions_referral_code` | `billing_sessions (referral_code) WHERE referral_code <> ''` | 23 | Scrub referral-code copies |
 | `idx_users_privy_deleted` | `users (privy_user_id) WHERE deleted_at IS NOT NULL` | 24 | Pending-erasure Privy lookup |
 
@@ -167,7 +166,6 @@ history-table files and tests outside this gate.
 | `CreateAPIKey`, `CreateProviderToken`, `UpsertProvider`, `UpsertProviderWithReputation`, `ObserveMachine`, `CreateReferrer`, hardware-interest writes, payout admission | Refused after acquiring the same user fence as erasure; cancellation permits new writes again. Provider upserts also leave an existing soft-deleted provider row unchanged | `coordinator/store/postgres/erasure_fences.go` (`lockAccountAdmission`), `coordinator/store/postgres/providers.go` (`upsertProviderRecord`), `coordinator/store/memory/erasure_ownership.go` (`accountAdmissionLocked`), `coordinator/store/memory/providers.go` (`upsertProviderRecordLocked`) |
 | `SetUserStripeAccount`, `SaveGlobalRecipient`, and Checkout creation results | Preserve cleanup IDs in the erasure outbox and refuse restoring personal fields | `coordinator/store/postgres/erasure_external.go` (`fenceErasureExternalObject`), `coordinator/store/memory/erasure_external.go` (`retainDeletedExternalObjectLocked`) |
 | Usage and route persistence | Preserve accounting while clearing erased owners' location and region fields | `coordinator/store/postgres/erasure_observations.go` (`erasedObservationOwners`), `coordinator/store/memory/usage.go` (`RecordUsage`), `coordinator/store/memory/route_telemetry.go` (`recordInferenceRouteLocked`) |
-
 | Trust-reuse upsert/recovery and verification jobs | Hold the shared privacy fence through SE-owner validation and persistence; erased-only keys are rejected, while a live co-owner or a subsequent authenticated owner remains usable | `coordinator/store/postgres/erasure_personal_writes.go` (`checkPersonalSEOwner`), `coordinator/store/memory/erasure_ownership.go` (`erasedSEOwnerLocked`) |
 
 ## Related

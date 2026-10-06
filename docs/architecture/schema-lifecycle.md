@@ -80,7 +80,6 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 19 | `coordinator/store/postgres/schema/migrations/00019_users_privy_drop_unique_constraint.sql` | One transaction: drops `users_privy_user_id_key`. |
 | 20 | `coordinator/store/postgres/schema/migrations/00020_users_privy_drop_old_index.sql` | `NO TRANSACTION`: `SET lock_timeout = '1min'`, then `DROP INDEX CONCURRENTLY IF EXISTS idx_users_privy`. |
 | 21 | `coordinator/store/postgres/schema/migrations/00021_referrals_referrer_code_cascade.sql` | `NO TRANSACTION`: adds `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`) `NOT VALID`, validates it, then drops `referrals_referrer_code_fkey`. |
-
 | 22 | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql` | Creates account-erasure requests, external cleanup outbox, and hashed SE/account ownership with primary-key and account indexes in one transaction. |
 | 23 | `indexMigrations` | Builds `idx_billing_sessions_referral_code` concurrently for referrer-code scrubbing. |
 | 24 | `indexMigrations` | Builds `idx_users_privy_deleted` concurrently for pending-erasure login checks. |

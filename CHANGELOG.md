@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — coordinator schema migrations
+
+- Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.
+- Fail startup without recording the baseline when a required schema statement fails, so a later startup retries missing columns. Preserve current consumer-settlement, legacy MDM cohort, small-model interest and Stripe refund-index schema changes as subsequent versions.
+- Check in the schema as `coordinator/store/postgres/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
+
+## Unreleased — Stripe refund clock skew
+
+- Refund a rejected Stripe withdrawal when the coordinator clock is ahead of the PostgreSQL clock. Before, the refund check missed the withdrawal debit, refused the refund, and the recovery loop and `payout-audit --apply-refund` retried without success. The check still credits each withdrawal at most once and still refuses a ledger that does not show the exact debit.
+
+## Unreleased - nightly Linear workflow
+
+- Package one-time Codex setup and a nightly playbook that reconciles work from Codex, Claude Code, and Pi with each teammate's Linear. Reuse existing issues and route unclassified deliverables to Others.
+- Fetch shared skills from the configured repo branch on every trigger while keeping personal settings and recovery state local. Include offline updater tests; teammate installation and live automation remain separate rollout steps.
+
 ## Unreleased — stale cache allowlist entries
 
 - Report cache-routing allowlist entries that a model revision has left behind. Publishing new weights or a new template under the same model ID changes the artifact tuple, so the model silently lost cache routing and its cache hits fell to zero until an operator appended the new tuple. `GET /v1/cache/status` now counts such models as `artifact_allowlist.stale_models`, with matching Prometheus and Datadog gauges, and the coordinator log names each live tuple once. Routing behaviour and the allowlist's exact-match rule are unchanged.
@@ -69,6 +84,23 @@
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
 - Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.
 - Preserve normal selected-model successor updates independently of Autopilot inventory, and show the serving selection in My Macs instead of observational candidates.
+
+## Unreleased - frozen legacy MDM authorization
+
+- Freeze a durable authenticated account/SE-key/serial cohort of already successfully MDM-verified devices on the first upgraded coordinator startup after revocation replay. Restarts preserve even an empty cohort; new accounts/devices and new associations cannot expand it. Gate identity recovery, scheduling, live/late MDM results and cached trust reuse. No grace period has been chosen and no expiry is implemented.
+- Require a linked provider Bearer token and fresh signed SE-key proof for `/v1/enroll`; reenrollment is limited to the existing key under its frozen account. New identities require qualified App Attest, with no unsupported-OS fallback. Generic copied profiles can still enroll directly in MicroMDM; the restriction guarantees coordinator MDM authorization, not prevention of that direct enrollment.
+- Require App Attest for noncohort owner self/prefer routing as well as public serving. Validate enabled production App Attest serving with full rollout before the startup freeze; invalid configuration fails closed without freezing membership.
+- Require macOS 27 or later and current qualified App Attest authorization for base rewards for every provider, old or new, including machines with both MDM and App Attest evidence. The OS claim must belong to that same authorization; missing, malformed or older versions fail closed. Legacy MDM-only machines remain eligible for grandfathered serving but not base rewards. Existing economics guards and inference/work earnings remain unchanged, with no retroactive reward clawback.
+- Check authenticated frozen account/key eligibility in `darkbloom enroll` even when a legacy profile is already installed; a successful check preserves that profile without reinstallation. Clarify that new providers need macOS 27 or later and current qualified App Attest, not an OS-only grant; consumers have no macOS 27 requirement.
+- Update the enrollment HTTP integration fixture to verify a linked test token and canonical P-256 proof instead of expecting anonymous profile downloads.
+- Drain eligible account-scoped historical inventory in 100-row batches before the first cohort freeze, within the existing 30-second startup deadline; errors or cancellation leave no new freeze marker. Preserve existing evidence and alias rules, exclusion of insufficient history, and the inability of later aliases to widen a frozen cohort.
+- Keep the production cutover fail-closed while allowing explicit development and actual opted-in memory-store startup without freezing a cohort; deployment classification defaults to production and does not use telemetry tags.
+- Retry transient provider-token store failures instead of misclassifying credentials: WebSocket registration closes with retryable 1013 and enrollment returns 503. Invalid or revoked credentials remain unauthorized.
+- Stop anonymous installer profile requests; defer eligible legacy reenrollment until after installation through account login and the signed CLI eligibility check. Existing management is preserved, and new-provider macOS 27+/qualified App Attest guidance remains explicit.
+
+## Unreleased - native queued cancellation retirement
+
+- Fix a pre-existing SDK race exposed during prefill-deadline validation: concurrent cancellation could remove a queued native request without retiring it, leaving its reservation charged. Use one cancellation decision for retirement and queue removal; retain exactly-once completion and reservation release after retirement.
 
 ## Unreleased — provider 0.9.16
 

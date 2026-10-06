@@ -445,8 +445,8 @@ floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
 [first sight](cache-aware-routing.md#first-sight) on, its default, sends a novel
 prompt's own boundary in a separate count, `cache_first_sight_tokens`, and
 leaves the repeat count at 0: a provider that understands the field may write
-that checkpoint as a speculative one, and a provider that does not ignores it
-and settles `skipped_novel`. Older coordinators and local serving
+that checkpoint as a speculative one, and a provider that has the demand gate
+but not the field ignores it and settles `skipped_novel`. Older coordinators and local serving
 write unconditionally (`SSDCheckpointDemand.writeClass`; policy in the
 [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). Qwen includes attention KV, recurrent state and normalized typed
 MTP history. Historical attention includes exact owning full rows and the
@@ -497,8 +497,14 @@ capture for the rest of the prompt.
 Every donor retains at most three boundaries
 (`CBv2CheckpointRetention`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointRetention.swift`):
-the **first**, the **fork target** named by `cache_repeated_prefix_tokens`
-when the coordinator sent a hint above the first, and the **rolling latest**.
+the **first**, the **fork target** named by the coordinator's hint when it
+lies above the first, and the **rolling latest**. The hint is the larger of
+`cache_repeated_prefix_tokens` and `cache_first_sight_tokens`
+(`SSDCheckpointDonationDemand.checkpointTargetTokens`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`):
+the observed repeat, or, for a prompt that
+[first sight](cache-aware-routing.md#first-sight) prepared, the prompt's own
+deepest 1,024-stride boundary.
 A historical donor's boundaries are every 1,024 multiple, so its target is
 planned ahead of capture (`plannedTarget`, `floor_1024(hint)`) and only that
 interior boundary is copied; a recurrent donor's boundaries are whatever
@@ -508,12 +514,13 @@ The coordinator observes demand at every 1,024-token boundary and at the
 prompt end, so a target can be any 1,024 multiple. A target within 1,024
 tokens of the final latest (`defaultTargetAdjacencyTokens`, every layout) is
 dropped at publication; a recurrent target one 2,048-token chunk below the
-latest is kept. Without a hint (older coordinator, local serving) or with a
-fleet-novel hint of 0 the donor retains first and latest only. Only boundaries that retention will keep are copied. An adopter that
+latest is kept. Without a hint (older coordinator, local serving) or with
+both counts 0 the donor retains first and latest only. Only boundaries that retention will keep are copied. An adopter that
 restored at `M` captures only above `M`: no first, and a target only when the
 hint names one above `M`. The hint reaches the engine as
 `CBv2Request.prefixCheckpointTargetTokens`, set by the provider bridge from
-`RemotePrefixCacheContext.repeatedPrefixTokens`.
+`RemotePrefixCacheContext.donationDemand`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`).
 
 Staged windows are transient reservations on the same admission ledger that
 request chunks reserve against, so they are bounded twice, both read from the

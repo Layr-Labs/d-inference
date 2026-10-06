@@ -174,10 +174,13 @@ of physical disk errors.
 
 The complete-checkpoint writer also distinguishes novel-share exhaustion
 (`write_priority_limited`) from total-budget exhaustion (`write_rate_limited`)
-through `SSDWriteRateLimiter.decision`. Ahead of both, the demand gate settles
-`skipped_novel` for a checkpoint with no coordinator-observed or local repeat
-demand, spending no bytes or budget (`SSDCheckpointDemand.writeClass`). All
-three settle the same typed heartbeat counter; none creates a new event field. The [protocol reference](../reference/protocol-messages.md)
+through `SSDWriteRateLimiter.decision`, and settles
+`write_speculative_limited` for a first-sight checkpoint classed speculative
+that yielded to write-budget, writer or disk pressure. Ahead of all three, the
+demand gate settles `skipped_novel` for a checkpoint with no
+coordinator-observed repeat, no first-sight count and no local repeat demand,
+spending no bytes or budget (`SSDCheckpointDemand.writeClass`). All four
+settle the same typed heartbeat counter; none creates a new event field. The [protocol reference](../reference/protocol-messages.md)
 owns the closed outcome vocabulary, and the [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)
 defines the write policy.
 

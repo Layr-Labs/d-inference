@@ -1067,10 +1067,13 @@ boundary wherever it falls, and, for a plan longer than that 64-stride window,
 the power-of-two multiples of 1,024 below the window (1,024, 2,048, 4,096 …, at
 most `cacheDemandMaxLadderBoundaries = 10`). The stride matches the two
 provider consumers of the reported repeat: the engine keeps the 1,024-aligned
-checkpoint at or below it (`CBv2Request.prefixCheckpointTargetTokens`, set by
-the provider bridge from `RemotePrefixCacheContext.repeatedPrefixTokens`), and
-`SSDCheckpointDemand.writeClass` gates the write on the repeat reaching
-`minEffectiveTokens` (1,024). Two prompts sharing 7,000 tokens report 6,144; two
+checkpoint at or below its target (`CBv2Request.prefixCheckpointTargetTokens`,
+which the provider bridge sets to the larger of the repeat count and the
+[first-sight](#first-sight) count,
+`SSDCheckpointDonationDemand.checkpointTargetTokens`; retention is in
+[`prefix-cache.md`](prefix-cache.md#streamed-complete-checkpoints)), and
+`SSDCheckpointDemand.writeClass` classes the write by whether the repeat
+reaches `minEffectiveTokens` (1,024). Two prompts sharing 7,000 tokens report 6,144; two
 100,000-token prompts sharing an 8,192-token system prompt report 8,192 through
 the ladder. A plan reads and records at most `cacheDemandMaxPlanBoundaries = 75`
 boundaries whatever its length (65 up to 65,536 tokens, 71 under 131,072). A
@@ -1177,28 +1180,43 @@ adds nothing for the request and the opportunity funnel below still reports it
 as `no_repeat_observed`. The first-sight count appears on no status, metric or
 consumer-visible surface; only the plan count `activation.first_sight` does.
 
-A provider that does not understand `cache_first_sight_tokens` ignores it. It
-reads a repeat count of 0, settles the request's checkpoints as
-`skipped_novel` and writes nothing, exactly as with first sight off. The
-affinity key is coordinator-side and still applies, so the follow-up prefers
-the same provider among equivalent candidates, reports the repeat and is
-written there; the third request is then the first that can hit. First sight
-changes what is written only on a provider release that understands the field.
+A provider that does not understand `cache_first_sight_tokens` ignores it. One
+that has the demand gate reads a repeat count of 0 and settles the request's
+checkpoints as `skipped_novel`, unless its own tag history has seen the tag,
+exactly as with first sight off. The affinity key is coordinator-side and
+still applies, so the follow-up prefers the same provider among equivalent
+candidates, reports the repeat and is written there; the third request is then
+the first that can hit. First sight changes what is written only on a provider
+release that understands the field. The other version pairs (a provider older
+than the demand gate, a coordinator that sends the first-sight depth in the
+repeat count) are in the
+[`cache_first_sight_tokens` row](../reference/protocol-messages.md#inference_request).
 
 On a provider that understands the field, a first-sight request's checkpoints
-form a third write class, `speculative`, beside the two existing ones (a tag
-the store saw before, and everything else that passed the demand gate). A
-request is speculative only when its repeat count is below the 1,024-token
-floor, its first-sight count reaches the floor and it did not restore a
-checkpoint from that store; a request with an observed repeat, or one that
-restored, keeps today's class. A speculative write is admitted only while it
-leaves both write buckets within the headroom H of full, where H is one cache
-lifetime of refill (`cap x TTL / 86,400`, 2.08% of the daily cap at the
-30-minute TTL and never more than the novel share), only when no other
-checkpoint write is in flight or queued on that store, and only when it fits
-the disk budget without an eviction. Any of the three pressures refuses it
-before file I/O, charges nothing and settles `write_speculative_limited`
+form a third write class, `speculative`, beside the two proven ones
+(`repeated`, a tag the store saw within the cache TTL, and `novel`, everything
+else that passed the demand gate). An offered checkpoint is speculative only
+when the store has not seen its tag within the TTL, the request's repeat count
+is below the 1,024-token floor, its first-sight count reaches the floor and
+the request did not restore a checkpoint from that store
+(`SSDCheckpointDemand.writeClass`); a first-sight request's offer of a tag the
+store saw, or after a restore from the store, gets a proven class. A
+speculative write is admitted only while it leaves both write buckets (the
+whole daily cap and the 90% novel share) within the headroom H of full, only
+while no other checkpoint write is registered on that store, and only while
+the box-wide cache bytes plus its own stay within the disk budget.
+H is what the whole-cap bucket refills in one cache lifetime
+(`cap x TTL / 86,400`, 2.08% of the daily cap at the 30-minute TTL and never
+more than the novel share). The novel share refills at 90% of that rate, so it
+needs `TTL / 0.9`, 33 minutes 20 seconds at the defaults, to refill H. Any of
+the three pressures refuses the write before a byte is written, charges
+nothing and settles `write_speculative_limited`
 ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)).
+The disk condition is a check before the write, not a reservation: once
+written, a speculative file counts toward the disk budget like any other
+entry, and enforcement after a later write evicts the oldest entry by last hit
+whatever its class (`SSDDiskBudget.enforce`), so a later proven write can evict
+an older checkpoint, including a proven one.
 
 The scheduler treats a first-sight key as it treats a repeat's key: a tie-break
 among candidates equal in the first-content band and in whole-Mac service work,
@@ -1246,28 +1264,72 @@ Limits:
    `EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS` exits the coordinator
    even with `EIGENINFERENCE_CACHE_ROUTING_MODE=off`.
 
-6. **The headroom bounds harm, not volume.** At any moment speculation has
-   taken at most H from each bucket, so a proven write sees at least its
-   balance without speculation minus H; that cost is not zero. H does not cap
-   what speculation writes per day: a store with little proven traffic can
-   spend its spare refill on files that are never read.
-7. **The write queue.** While a speculative file is being written one proven
-   write can queue behind it; a second proven arrival in that window settles
-   `write_queue_full`.
+6. **The headroom bounds balances, not refused bytes or volume.** With the
+   same proven writes accepted, each bucket holds at most H less than it would
+   with no speculative write, and a refused speculative write charges nothing
+   (`SSDWriteRateLimiter.decision`). The limiter admits or refuses a write
+   whole, so the cost to proven writes is not "at most H bytes refused": each
+   time a bucket runs from full to empty, the extra proven bytes refused are
+   less than the speculative bytes accepted in that run (at most H) plus one
+   proven file, which can be larger than H, and the cost can recur in every
+   such cycle. `speculationCostsOneProvenFilePerRefillCycle` and
+   `independentHistoryCostIsBoundedPerRefillCycle`
+   (`provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDSpeculativeWriteBudgetTests.swift`)
+   pin that bound for proven offers of one class with no refill inside the
+   cycle. Nor does H cap what speculation writes per day: a store with little
+   proven traffic can spend its spare refill on files that are never read.
+7. **The write queue.** The idle-writer rule tests the store's set of
+   registered writes (`writing`, `SSDHybridCheckpointStore.prepareWriteJob`),
+   not the writer task, and one write runs while one waits
+   (`BoundedSingleConsumerPipeline`, one buffered slot). A proven offer can
+   therefore lose where, without the speculative job, it would have been
+   queued:
+   - **In flight.** While a speculative file is being written one proven
+     write can queue behind it; a second proven arrival in that window finds
+     two writes registered and settles `write_queue_full`.
+   - **Buffered.** `writing` can be empty while the writer task is not yet
+     waiting for work: before the task first runs, and while it is still
+     finishing the previous job, because `settle` removes the finished tag
+     from `writing` before that job's completion callback runs. A speculative
+     offer accepted in such a span waits in the buffered slot, and a proven
+     offer that arrives before the writer has picked it up is dropped by
+     `pipeline.submit` as `write_queue_full`.
+   - **Absorbed.** The duplicate check runs before the class check, so a
+     proven offer for a checkpoint whose speculative write is registered
+     settles `already_queued`. If that speculative job then refuses itself
+     (disk room gone, low disk space, an epoch change) or fails, nothing is
+     written for either offer.
+   - **Already durable.** A first-sight offer classed speculative for a
+     checkpoint that is already durable on the store is held to the same
+     rule. With another write registered it settles
+     `write_speculative_limited`, not `already_durable`, and returns no
+     position, so the request's ready receipt does not name that checkpoint.
+     With none registered it revalidates the file, spends no write budget and
+     settles `already_durable`.
 8. **Speculative capacity is first come, first served** across accounts on a
    store, and an account that repeats a shared 1,024-token opening is a proven
    repeat for every checkpoint, exactly as with first sight off.
 9. **Per store, forgotten at restart.** The buckets start full when a store is
    built, so a restart or rebuild grants a fresh headroom. A shorter TTL
-   shrinks H in proportion, a write cap of 0 leaves only the idle-writer and
-   disk conditions, and at a small cap a large checkpoint never fits in H.
+   shrinks H in proportion and a write cap of 0 leaves only the idle-writer
+   and disk conditions. Under any other cap a checkpoint larger than H is
+   never admitted as speculative: below a cap of
+   `checkpoint size x 86,400 / TTL` (48 times its size at the 30-minute TTL)
+   no first-sight write of that size is admitted, and first sight then only
+   chooses the provider
+   ([rollout runbook](../operations/cache-routing-rollout.md#first-sight-minimum)).
 
 `activation.first_sight` keeps its meaning, requests asked to keep a prefix.
-`lifecycle.donation_outcomes.write_speculative_limited` is how many of those
-offered checkpoints yielded to pressure, counted per offered checkpoint (a
-request offers up to two). `write_priority_limited`, `write_rate_limited` and
-`write_queue_full` no longer include first-sight offers, so together they
-show proven writes that were refused.
+`lifecycle.donation_outcomes.write_speculative_limited` counts the speculative
+offers that yielded to pressure, one per offered checkpoint (a donor retains
+at most three, `CBv2CheckpointRetention.maximumRetained`).
+`write_priority_limited`, `write_rate_limited` and `write_queue_full` are not
+reported for an offer classed speculative, so together they show refused
+writes of the two proven classes. Those include a first-sight request's
+offers that are not speculative: a tag the store saw within the TTL, a request
+that restored from the store, and an offer whose demand hint is gone when it
+arrives, which is classed `novel` like a request without a hint
+(`SSDCheckpointDemandHints`).
 
 The cost is provider writes, on providers that understand the field. The
 complete checkpoints a first-sight request's donor retains can be written
@@ -1277,8 +1339,12 @@ charged to the provider's existing daily write budget
 ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)). A
 first-sight write is speculative, so a provider under write-budget, writer or
 disk pressure declines it before spending bytes or budget and reports donation
-outcome `write_speculative_limited`. Watch that outcome and raise the minimum
-token count if it grows; the procedure is in the
+outcome `write_speculative_limited`. That outcome counts the three refusals
+without separating them and a refusal costs no bytes or budget, so its growth
+shows first-sight checkpoints going unwritten, not a write-budget problem.
+Raising the minimum token count lowers the number of first-sight requests; the
+prompts it keeps are longer, and their larger checkpoints need more of H. How
+to read the outcome and change the minimum is in the
 [rollout runbook](../operations/cache-routing-rollout.md#first-sight-minimum).
 
 The existing once-only cache terminal event now emits per-model
@@ -1457,7 +1523,7 @@ back are operator procedures, kept in the runbook
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `MaxStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `cachepolicy.SanitizeStatuses` and `ReconcileStatuses` sanitize optional status (`coordinator/internal/registry/cachepolicy/eligibility.go`); `CacheSnapshotUpdater.Apply` publishes it without weakening routing capability (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | First-content band and whole-Mac service work decide; there is no hard affinity |
 | A new conversation's second request misses | [First sight](#first-sight) is set to `0`, the first prompt was shorter than the configured minimum or had no more than 1,024 tokens, the conversation opened with an already-seen prefix of at least 1,024 tokens (a repeat, routed by the shared opening's key), the provider release does not understand `cache_first_sight_tokens`, the provider refused the write (`write_speculative_limited`, `write_priority_limited`, `write_rate_limited`), or the follow-up ran on another machine because affinity only breaks ties | The second request runs cold, reports the repeat and is written; the third can hit |
-| `donation_outcomes.write_speculative_limited` grows with first sight on | Providers are under write-budget, writer or disk pressure, so first-sight writes yield | The provider skips those writes before spending bytes or budget and requests complete normally; raise `EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS` or set it to `0` |
+| `donation_outcomes.write_speculative_limited` grows with first sight on | Speculative offers found the store more than H below full, another checkpoint write registered, or no room in the disk budget; the counter does not say which. On a store with a non-zero write cap whose H is smaller than the checkpoint every such offer is refused ([first sight](#first-sight), limit 9) | The provider skips those writes before spending bytes or budget and requests complete normally; a conversation none of whose first-sight checkpoints was written has its second request run cold, as with first sight off. Growth alone shows no write-budget problem and no refused proven write |
 
 Receipt rejection telemetry distinguishes invalid shape, missing/expired attempt,
 request/connection/capability changes, prior rejection fencing, duplicate or stale

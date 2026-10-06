@@ -30,12 +30,14 @@ space, unsafe roots, write I/O failure, unreadable existing files and eviction.
 `skipped_novel` identifies a complete checkpoint declined before any write
 budget was charged because neither the coordinator's
 `cache_repeated_prefix_tokens` nor local tag history showed repeat demand.
-`write_speculative_limited` identifies a first-sight checkpoint (the request
-carried `cache_first_sight_tokens` and no observed repeat) that yielded to
-write-budget, writer or disk pressure before any budget was charged. It is
-counted per offered checkpoint and published as a fleet-wide total; the three
-limited outcomes (`write_queue_full` and the two below) no longer include
-first-sight offers.
+`write_speculative_limited` identifies a first-sight checkpoint classed
+speculative (the request carried `cache_first_sight_tokens` and no observed
+repeat, the store had not seen the tag and the request restored nothing from
+it) that yielded to write-budget, writer or disk pressure before any budget
+was charged. It is counted per offered checkpoint and published as a
+fleet-wide total. The three limited outcomes (`write_queue_full` and the two
+below) are not emitted for a speculative offer; they still count a
+first-sight request's offers of the other two classes.
 `write_priority_limited` identifies exhaustion of the novel-checkpoint write
 share; `write_rate_limited` identifies exhaustion of the total write budget.
 See the [SSD write policy](ssd-kv-cache.md#size-and-eviction-rules) for admission

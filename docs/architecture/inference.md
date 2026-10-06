@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-04
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -101,6 +101,11 @@ engine retirement, not when a caller merely requests cancellation. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
 remain owned until that acknowledgement completes.
+
+For queued native requests, `CBv2NativeBlockEngine.pump` makes one cancellation
+decision for both `finishWaiting` and queue removal, so a concurrent cancellation
+cannot remove a request without retiring its reservation. Completion remains
+exactly once (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/NativeBlockEngine.swift`).
 
 The optional `CBv2SchedulerConfig.mixedStepPrefillTokenCap` is per engine and
 feeds the same scheduler plan used by execution and first-token projection.

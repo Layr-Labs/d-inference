@@ -94,8 +94,8 @@ func (s *engineStore) balance(accountID string) (int64, int64) {
 
 // --- registry helpers ---
 
-// addProvider registers an eligible-by-default provider on reg and returns its
-// live pointer so the test can override individual gate fields.
+// addProvider registers a legacy hardware-attested fixture without App Attest
+// authorization and returns its live pointer for test-specific gate setup.
 func addProvider(reg *registry.Registry, id, providerKey, serial, hardwareModel string, memGB int) *registry.Provider {
 	msg := &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
@@ -179,10 +179,9 @@ func newTestEngine(st store.Store, reg *registry.Registry, clock time.Time, conf
 
 func TestSettleEpoch_Disabled(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	addMachineRewardProvider(t, st, reg, "p1", "PK1", "acc1", "apple1")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -204,10 +203,9 @@ func TestSettleEpoch_Disabled(t *testing.T) {
 
 func TestSettleEpoch_EpochNotClosed(t *testing.T) {
 	epochID, start, end, _ := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	addMachineRewardProvider(t, st, reg, "p1", "PK1", "acc1", "apple1")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -224,14 +222,13 @@ func TestSettleEpoch_EpochNotClosed(t *testing.T) {
 
 // TestSettleEpoch_MemoryCapPreventsOverclaim proves the anti-gaming property:
 // a small machine that self-reports a huge memory tier is clamped DOWN to the
-// max its SE-signed hardware model ever shipped, so it cannot bank a higher
+// max its authorized hardware model ever shipped, so it cannot bank a higher
 // tier's floor. A 16GB MacBook Air claiming 512GB earns $0, not $40.
 func TestSettleEpoch_MemoryCapPreventsOverclaim(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "air", "PKair", "Sair", "MacBookAir10,1", 512) // lies: 512GB
-	setSerial(p, "Sair", "MacBookAir10,1")                               // cap = 16GB
+	addMachineRewardProvider(t, st, reg, "air", "PKair", "accAir", "appleAir", protocol.Hardware{MachineModel: "MacBookAir10,1", MemoryGB: 512}) // cap = 16GB
 	st.sessions = []store.ProviderSession{fullUptimeSession("air", "PKair", "Sair", "accAir", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PKair", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -250,10 +247,9 @@ func TestSettleEpoch_MemoryCapPreventsOverclaim(t *testing.T) {
 
 func TestSettleEpoch_UnknownHardwareModelUnpaid(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "unknown", "PKunknown", "Sunknown", "Mac99,1", 512)
-	setSerial(p, "Sunknown", "Mac99,1")
+	addMachineRewardProvider(t, st, reg, "unknown", "PKunknown", "accUnknown", "appleUnknown", protocol.Hardware{MachineModel: "Mac99,1", MemoryGB: 512})
 	st.sessions = []store.ProviderSession{fullUptimeSession("unknown", "PKunknown", "Sunknown", "accUnknown", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PKunknown", "consumer", "j1", 1_000_000, start.Add(time.Minute))}
 
@@ -275,14 +271,13 @@ func TestSettleEpoch_UnknownHardwareModelUnpaid(t *testing.T) {
 
 func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	addMachineRewardProvider(t, st, reg, "p1", "PK1", "acc1", "apple1")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	// $5 organic + 64GB floor $18/mo, additive (k=0) → full prorated 5-minute
 	// base reward on top.
-	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 5_000_000, start.Add(time.Minute))}
+	st.earnings = []store.ProviderEarning{organicEarning("PK1", "acc1", "j1", 5_000_000, start.Add(time.Minute))}
 
 	e := newTestEngine(st, reg, clock)
 	res, err := e.SettleEpoch(context.Background(), epochID)
@@ -312,10 +307,9 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 
 func TestSettleEpoch_RestartSafe(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	addMachineRewardProvider(t, st, reg, "p1", "PK1", "acc1", "apple1")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	// A prior job contributes $0 to this period's earned; eligibility no longer
 	// depends on demand, so the machine draws its prorated floor.
@@ -343,11 +337,10 @@ func TestSettleEpoch_RestartSafe(t *testing.T) {
 
 func TestSettleEpoch_PreAttestationUnpaid(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
-	p.Attested = false // un-attested → gate 1 fails
+	p, _ := addMachineRewardProvider(t, st, reg, "p1", "PK1", "acc1", "apple1")
+	reg.ClearAppAttestServingAuthorization(p)
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -365,10 +358,9 @@ func TestSettleEpoch_NoDemandStillPaid(t *testing.T) {
 	// Base rewards are demand-independent: zero organic earnings + a full-uptime
 	// eligible session still earns the prorated floor.
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	addMachineRewardProvider(t, st, reg, "p1", "PK1", "acc1", "apple1")
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = nil // self-route leaves no billed earning row
 
@@ -385,7 +377,7 @@ func TestSettleEpoch_NoDemandStillPaid(t *testing.T) {
 
 func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
 
 	// Many idle workhorses, each wanting the full $18 floor, over-subscribing a
@@ -395,8 +387,7 @@ func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 	for i := 0; i < n; i++ {
 		pk := "PK" + string(rune('A'+i))
 		acc := "acc" + string(rune('A'+i))
-		p := addProvider(reg, "p"+string(rune('A'+i)), pk, pk, "Mac15,8", 64)
-		setSerial(p, pk, "Mac15,8")
+		addMachineRewardProvider(t, st, reg, "p"+pk, pk, acc, "apple"+pk)
 		st.sessions = append(st.sessions, fullUptimeSession("p"+pk, pk, pk, acc, start, end))
 		st.earnings = append(st.earnings, organicEarning(pk, "consumer", "j"+pk, 1_000_000, start.Add(time.Hour)))
 	}
@@ -437,10 +428,10 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 	// Two overlapping open sessions for one machine (blue-green deploy) must union
 	// to at most 100% uptime — never >1.0, which would over-pay the floor.
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	addMachineRewardProvider(t, st, reg, "s1", "PK1", "acc1", "apple1")
+	addMachineRewardProvider(t, st, reg, "s2", "PK1", "acc1", "apple1")
 
 	// Two sessions, each covering most of the epoch, heavily overlapping. Closed
 	// at end so they fully cover the period.
@@ -471,10 +462,9 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 func TestSettleEpoch_BelowUptimeGate(t *testing.T) {
 	// 80% uptime is below the 90% hard gate → $0.
 	epochID, start, end, clock := closedEpoch()
-	st := newEngineStore()
+	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	addMachineRewardProvider(t, st, reg, "s1", "PK1", "acc1", "apple1")
 
 	covered := time.Duration(float64(end.Sub(start)) * 0.80)
 	disc := start.Add(covered)

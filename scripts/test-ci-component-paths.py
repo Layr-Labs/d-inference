@@ -21,6 +21,13 @@ spec.loader.exec_module(workflow)
 
 
 class ComponentPathsTests(unittest.TestCase):
+    def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
+        for filename in ("ci.yml", "integration.yml"):
+            source = (ROOT / ".github/workflows" / filename).read_text()
+            concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+            self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n", concurrency)
+            self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+
     def test_instructions_and_docs_never_select_expensive_lanes(self):
         paths = ["AGENTS.md", "docs/AGENTS.md", "docs/developer/test.md",
                  "provider-swift/AGENTS.md", "console-ui/AGENTS.md",
@@ -47,6 +54,7 @@ class ComponentPathsTests(unittest.TestCase):
             ".github/actions/provider-ci-build/action.yml": {"provider", "integration", "benchmark"},
             ".github/workflows/ci.yml": {"coordinator", "provider", "sidecar", "console"},
             ".github/workflows/integration.yml": {"integration"},
+            "scripts/test-integration-ci-workflow.py": {"integration"},
             ".github/workflows/benchmarks.yml": {"benchmark"},
         }
         for path, expected in cases.items():

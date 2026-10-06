@@ -84,7 +84,9 @@ def classify(paths):
         selected["sidecar"] |= ci or sidecar
         selected["console"] |= ci or matches(path, CONSOLE)
         e2e = provider or coordinator or sidecar or matches(path, E2E_TOOLING)
-        selected["integration"] |= e2e or path == ".github/workflows/integration.yml"
+        selected["integration"] |= e2e or path in (
+            ".github/workflows/integration.yml", "scripts/test-integration-ci-workflow.py",
+        )
         selected["benchmark"] |= e2e or path == ".github/workflows/benchmarks.yml"
     return selected
 

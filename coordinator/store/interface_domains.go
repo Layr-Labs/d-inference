@@ -249,6 +249,9 @@ type LedgerStore interface {
 // BillingStore covers referrals, billing (deposit) sessions, custom per-account
 // model pricing, and Stripe Connect withdrawals.
 type BillingStore interface {
+	// FinalizeConsumerCharge atomically settles a job and its 5% consumer referral reward.
+	FinalizeConsumerCharge(ConsumerChargeSettlement) (ConsumerChargeResult, error)
+
 	// --- Referral System ---
 
 	// CreateReferrer registers an account as a referrer with the given code.
@@ -477,6 +480,8 @@ type DeviceAuthStore interface {
 	CreateProviderToken(token *ProviderToken) error
 
 	// GetProviderToken validates a provider token and returns it.
+	// Missing or revoked tokens match ErrProviderTokenInvalid via errors.Is;
+	// other errors indicate a storage failure, not an invalid credential.
 	GetProviderToken(token string) (*ProviderToken, error)
 
 	// RevokeProviderToken deactivates a provider token.

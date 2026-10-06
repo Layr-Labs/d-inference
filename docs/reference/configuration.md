@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -12,6 +12,20 @@ read once at process start and a restart applies a change.
 [App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default `100`) selects the separate account cohort for coordinator-requested [dead-key rotation](app-attest-shadow.md#dead-key-rotation). [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
 
 Autopilot `selected_models` is the cached planning inventory; `backend.enabled_models` and explicit startup overrides remain ordinary serving permission in waiting/shadow mode. See [the protocol and activation boundary](../architecture/model-autopilot.md).
+
+## Deployment environment
+
+| Setting | Default / bounds | Consumer |
+|---|---|---|
+| `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` | `production`; only `production` or `development`, unknown values fail startup | `coordinator/config/deployment.go` (`CheckDeploymentEnvironment`, `RequiresProductionAppAttest`); `coordinator/internal/startup/legacy_mdm.go` (`InitializeLegacyMDMPolicy`) |
+
+Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
+and freezes the legacy cohort. Explicit `development`, or actual memory-store
+fallback (`EIGENINFERENCE_ALLOW_MEMORY_STORE=true` with no database URL), skips
+that startup freeze. Allowing memory fallback does not exempt a configured
+Postgres store. `DD_ENV`, the App Attest proof environment, base URL and client
+claims do not classify deployment security. A later production startup freezes
+then-current eligible membership; dev startup does not establish a cutoff.
 
 ## Provider drain deadline
 
@@ -78,12 +92,24 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
 
+## Provider email operator command
+
+These variables apply only to the separately invoked `provider-emails` tool,
+not the coordinator server. See [provider email campaigns](../operations/provider-emails.md).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `PROVIDER_EMAIL_DATABASE_URL` | PostgreSQL connection string | unset | `coordinator/provideremail/command/run.go` (`loadSnapshot`) | Read fleet ownership, reported versions and owner email in a read-only snapshot; unnecessary with a local fixture or `test`. |
+| `RESEND_API_KEY` | Secret, Full access for contact/segment/broadcast operations | unset | `coordinator/provideremail/command/run.go` (`Run`) | Authenticate Resend sync/draft operations and explicitly addressed test sends; unnecessary for fleet preview. |
+
 ## Coordinator
 
 ### Core server
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
+| `EIGENINFERENCE_NONSTREAM_RESPONSE_MAX_BYTES` | positive integer bytes | `67108864` (64 MiB) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/internal/inference/responselimit/nonstream_response_limit.go` (`NewBudget`) | Aggregate decrypted provider payload cap per non-streaming attempt, enforced before queuing/settlement and during assembly. Invalid or non-positive values use the default. |
+| `EIGENINFERENCE_NONSTREAM_RESPONSE_MAX_CHUNKS` | positive integer frames | `262144` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/internal/inference/responselimit/nonstream_response_limit.go` (`NewBudget`) | Bounds frame/string overhead, counting empty and malformed chunks too. Invalid or non-positive values use the default. |
 | `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
 | `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
 | `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/access/device/handlers.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
@@ -394,12 +420,11 @@ operator pause. See `coordinator/registry/autopilot_activation.go`
 
 ### Billing, Stripe and base rewards
 
-Prices, the platform fee and the referral share live in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants); this table only names the switches.
+Prices, the platform fee and the fixed consumer referral reward live in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants); this table only names the switches.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_BILLING_MOCK` | `true` | `false` | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/app/services.go` | Bypasses Stripe with an instant-credit mock (dev only). |
-| `EIGENINFERENCE_REFERRAL_SHARE_PCT` | integer percent | `20` | `coordinator/billing/config.go` (`ReadConfig`) | Share of the platform fee paid to a consumer's referrer. |
 | `EIGENINFERENCE_STRIPE_SECRET_KEY` | secret | unset (deposits disabled) | `coordinator/billing/config.go` (`ReadConfig`) | Stripe API key for consumer deposits. |
 | `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Checkout webhooks. |
 | `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/stripe.go` (`NewStripeProcessor`) | Checkout redirect targets. |
@@ -768,6 +793,7 @@ uploads, catalog changes, signing or production promotion.
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | GiB (floor 1) | `8` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` | MLX buffer-cache limit, applied by serving and the throughput sweep before model loading. |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | GiB | `provider.toml` `memory_reserve_gb` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` | Overrides the whole-machine memory reserve. |
 | `DARKBLOOM_MEM_CAP_FRACTION` | fraction | `0.90` | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` | Share of unified memory the engine may address. |
+| `DARKBLOOM_MEMORY_AVAILABILITY` | `reclaimable` / `free-only` | `reclaimable` | `provider-swift/Sources/ProviderCore/Inference/Memory/SystemMemory.swift` | Process-start policy shared by admission, KV budgets and diagnostics; persisted into the provider launchd plist on background start. `reclaimable` counts Mach free + inactive pages; `free-only` excludes inactive pages and fails closed if sampling fails. Unknown/empty explicit values select `free-only`. See [shared-host admission](../architecture/scheduling.md#shared-host-memory-admission). |
 | `DARKBLOOM_ACTIVATION_RESERVE_GB` | GiB (raise-only) | `5.5` | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` | Activation headroom kept out of the weight budget. |
 | `DARKBLOOM_VISION_MAX_TOWER_PATCHES` | integer (lower-only) | model default | `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift` | Caps vision-tower patches. |
 | `DARKBLOOM_MAX_IMAGE_MEGAPIXELS`, `DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS` | megapixels | `100`, `384` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-image and per-request pixel caps. |

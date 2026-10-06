@@ -1,6 +1,6 @@
 # Authentication
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`ExtractBearerToken`, `coordinator/api/access/auth.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `RequireAuth` decides which by shape — JWTs (starting `eyJ`) are verified with Privy, the admin key is compared in constant time, everything else is looked up as an API key. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -61,6 +61,7 @@ The console signs you in with Privy (email only, in an in-page modal — `/login
 |---|---|
 | `POST`/`DELETE /v1/auth/keys`, all of `/v1/keys*` | 403 `forbidden` |
 | `GET /v1/me/summary`, `GET /v1/me/providers`, `GET /v1/me/self-route-models`, `DELETE /v1/me/providers/{id}` | 403 `forbidden` |
+| `POST`/`GET /v1/interest/small-models` | 403 `forbidden` |
 | `POST /v1/device/approve` | 403 `forbidden` |
 | `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account` | 403 `forbidden` |
 
@@ -75,6 +76,15 @@ A second group accepts `RequireAuth` but then insists on a resolved account user
 3. The CLI polls `POST /v1/device/token` with `{"device_code"}` every `interval` seconds (`HandleDeviceToken`). While unapproved it gets 200 `{"status": "authorization_pending"}`; after approval 200 `{"status": "authorized", "token": "eigeninference-pt-...", "account_id": "..."}`; once `DeviceCodeExpiry` has passed, 410 `expired_token`; an unknown code is 404 `invalid_grant`.
 
 The `token` is a **provider token**, stored on the machine and labelled `device-<user_code>` in your account. It authorises that machine to earn for your account and to be targeted by self-route requests ([`../provider/self-route.md`](../provider/self-route.md)); it is not a consumer API key and does not authenticate inference requests. The bindings behind the flow are in [`../architecture/security/identity-binding.md#device-code-account-linking`](../architecture/security/identity-binding.md#device-code-account-linking).
+
+### 6. Register hardware interest
+
+1. On the Earn page, select your Mac model, chip, and memory, then choose the notification action.
+2. Sign in when prompted. The page stays pending until the coordinator saves the hardware against your account. Closing the login modal leaves the visible intent pending; choose **Cancel registration** to disarm it before a later login. You can register again when ready.
+3. Wait for the confirmation. On a network, authentication, or storage error, retry the registration action. An account without a stored email cannot register; the page shows an email requirement instead of confirming.
+4. Reopen the page while signed in to check the server record. Selecting different hardware enables a new update. Browser storage alone never confirms registration, including markers written by the older flow. After reload, select your hardware and click the registration action again; a stale marker cannot silently register after cancellation.
+
+Both notification buttons share one record per account. This records your opt-in; it does not itself send email or enable unsupported hardware. See the [request and status contract](../reference/api-contracts.md#small-model-interest); implementation: `console-ui/src/app/earn/useSmallModelsInterest.ts` (`useSmallModelsInterest`).
 
 ## Verify
 

@@ -101,8 +101,11 @@ type Provider struct {
 	verifiedMachineAccount string
 	// Enabled before registration attestation is attached for a connection
 	// using MDM-optional onboarding. Claimed serials cannot seed fault history.
-	requireVerifiedMachineIdentity   bool
-	runtimeCapabilitiesFromAppAttest bool
+	requireVerifiedMachineIdentity bool
+	// Connection-only serving policy, independent of operational identity.
+	// Once required, legacy evidence cannot substitute for an App Attest lease.
+	requireAppAttestServingAuthorization bool
+	runtimeCapabilitiesFromAppAttest     bool
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE

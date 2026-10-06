@@ -1,6 +1,13 @@
 package store
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrProviderTokenInvalid means the provider token is missing or revoked.
+// Lookup failures caused by the storage backend do not match this error.
+var ErrProviderTokenInvalid = errors.New("provider token is missing or revoked")
 
 // DeviceCode represents a pending device authorization request (RFC 8628-style).
 // The provider CLI creates one, displays the UserCode, and polls until approved.

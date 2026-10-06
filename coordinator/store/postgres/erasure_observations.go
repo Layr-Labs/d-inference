@@ -6,7 +6,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Observation writers share this transaction lock; only an irreversible scrub
+// Personal-data writers share this transaction lock; only an irreversible scrub
 // takes it exclusively. No network or inference work runs while it is held.
 // The erased-state read is a later statement, so a writer waiting for a scrub
 // observes its committed state before inserting or refreshing personal fields.
@@ -17,11 +17,16 @@ func beginErasureObservation(ctx context.Context, pool interface {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(714320, 2)`); err != nil {
+	if err := lockPersonalDataWrite(ctx, tx); err != nil {
 		rollbackErasureTx(tx)
 		return nil, err
 	}
 	return tx, nil
+}
+
+func lockPersonalDataWrite(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(714320, 2)`)
+	return err
 }
 
 func erasedObservationOwners(ctx context.Context, tx pgx.Tx, hashes, providers []string) (map[string]bool, map[string]bool, error) {

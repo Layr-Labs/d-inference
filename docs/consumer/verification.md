@@ -42,6 +42,10 @@ local diagnostic `sip_enabled` observation is distinct from the legacy attestati
 fields and method verdict exposed by the public endpoint. See the [diagnostic field contract](../reference/app-attest-shadow.md#provider-diagnostics)
 and [attestation boundary](../architecture/security/attestation.md).
 
+A scrubbed account cannot restore raw proofs through a delayed verification
+callback. Another live account on a shared device keeps its own verification
+evidence; see [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys).
+
 ## Read verification in chat and network stats
 
 Open a response's verification panel to see **Verified via App Attest**,

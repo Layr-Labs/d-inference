@@ -219,9 +219,10 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		Store: st, Access: s.access, Logger: logger, MaxBodyBytes: maxControlPlaneBodyBytes,
 		Datadog: s.observation.Datadog,
 		Hooks: erasureapi.Hooks{
-			DisconnectAccount: reg.DisconnectAccount,
-			ForgetSEKeys:      s.trust.ForgetErasedKeys,
-			ForgetConsumer:    s.ledger.ForgetConsumer,
+			DisconnectAccount:  reg.DisconnectAccount,
+			ForgetSEKeys:       s.trust.ForgetErasedKeys,
+			ForgetAccountTrust: s.trust.LegacyMDM.ForgetAccount,
+			ForgetConsumer:     s.ledger.ForgetConsumer,
 		},
 	})
 	s.billingHTTP = billinghttp.New(billinghttp.Dependencies{

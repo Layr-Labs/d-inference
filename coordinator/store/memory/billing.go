@@ -25,6 +25,18 @@ func (s *MemoryStore) CreateBillingSession(session *store.BillingSession) error 
 	if s.retainDeletedExternalObjectLocked(session.AccountID, store.ErasureTargetCheckoutSessions, externalID) {
 		copy.ExternalID, copy.ReferralCode, copy.Status = "", "", "erased"
 	}
+	if copy.ReferralCode != "" {
+		ref := s.referrersByAccount[copy.ReferrerAccountID]
+		if copy.ReferrerAccountID == "" {
+			ref = s.referrersByCode[copy.ReferralCode]
+		}
+		if ref == nil || s.erasedAccounts[ref.AccountID] {
+			copy.ReferralCode = ""
+		} else {
+			copy.ReferralCode = ref.Code
+		}
+	}
+	copy.ReferrerAccountID = ""
 	s.billingSessions[session.ID] = &copy
 	if rejected {
 		return store.ErrErasureConflict

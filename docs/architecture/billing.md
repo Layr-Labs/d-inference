@@ -183,7 +183,8 @@ The platform fee follows the same per-user override as everyone else.
 1. `POST /v1/billing/stripe/create-session` (`HandleStripeCreateSession`;
    auth + financial limiter) requires `amount_usd` at or above the [Stripe deposit minimum](../reference/pricing-model.md#constants), validates an
    optional `referral_code`, creates a Checkout Session whose metadata carries
-   `billing_session_id`, `consumer_key`, and `referral_code`
+   `billing_session_id` and `consumer_key`; the personal referral code stays
+   in the local session
    (`coordinator/billing/stripe.go` `CreateCheckoutSession`), stores a
    `billing_sessions` row with `status = pending`, and returns
    `{session_id, stripe_session, url, amount_usd, amount_micro_usd}`.
@@ -196,7 +197,8 @@ The platform fee follows the same per-user override as everyone else.
    non-withdrawable funds and completes the session under a row lock. Duplicate
    events from either the current or retained legacy signing secret cannot credit
    twice. A pre-existing matching ledger credit is recognized without adding it
-   again. Referral attribution retries independently; the same normalized code is idempotent, and inapplicable codes (different pre-existing attribution, self-referral or a missing code) are acknowledged without retrying the settled payment. Database failures remain retryable.
+   again. Referral attribution reads the canonical local session, not historical
+   Stripe metadata, and retries independently; the same normalized code is idempotent, and inapplicable codes (different pre-existing attribution, self-referral or a missing code) are acknowledged without retrying the settled payment. Database failures remain retryable.
 4. `GET /v1/billing/stripe/session?id=<session_id>` polls the row;
    `GET /v1/billing/methods` (public) lists configured methods — Stripe only
    (`coordinator/billing/billing.go` `SupportedMethods`).
@@ -673,6 +675,11 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Rate limits | `coordinator/ratelimit/config.go` (`Financial`, `Service`) | — |
 
 ### Account erasure during billing work
+
+Checkout revalidates the captured referrer account after Stripe responds, under
+the personal-data scrub fence. If that referrer was erased, the live payer's
+session keeps its payment details and drops the obsolete code
+(`coordinator/store/postgres/billing_erasure.go`, `fenceBillingSession`).
 
 Account deletion fences new withdrawal admission before balances are changed.
 Scrub locks existing payment rows before balances, allowing settlement callbacks

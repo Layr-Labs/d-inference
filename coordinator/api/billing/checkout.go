@@ -40,24 +40,28 @@ func (s *Owner) HandleStripeCreateSession(w http.ResponseWriter, r *http.Request
 	accountID := access.ResolveAccountID(r)
 
 	req.ReferralCode = strings.ToUpper(strings.TrimSpace(req.ReferralCode))
+	var referrerAccountID string
 	if req.ReferralCode != "" {
-		if _, err := s.billing.Store().GetReferrerByCode(req.ReferralCode); err != nil {
+		referrer, err := s.billing.Store().GetReferrerByCode(req.ReferralCode)
+		if err != nil {
 			httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "invalid referral code"))
 			return
 		}
+		referrerAccountID = referrer.AccountID
 	}
 
 	sessionID := uuid.New().String()
 	amountMicroUSD := amountCents * 10_000
 
 	billingSession := &store.BillingSession{
-		ID:             sessionID,
-		AccountID:      accountID,
-		PaymentMethod:  "stripe",
-		AmountMicroUSD: amountMicroUSD,
-		Status:         "pending",
-		ReferralCode:   req.ReferralCode,
-		CreatedAt:      time.Now(),
+		ID:                sessionID,
+		AccountID:         accountID,
+		PaymentMethod:     "stripe",
+		AmountMicroUSD:    amountMicroUSD,
+		Status:            "pending",
+		ReferralCode:      req.ReferralCode,
+		ReferrerAccountID: referrerAccountID,
+		CreatedAt:         time.Now(),
 	}
 
 	stripeResp, err := s.billing.Stripe().CreateCheckoutSession(billing.CheckoutSessionRequest{
@@ -72,7 +76,6 @@ func (s *Owner) HandleStripeCreateSession(w http.ResponseWriter, r *http.Request
 			"coordinator_host":   r.Host,
 			"billing_session_id": sessionID,
 			"consumer_key":       accountID,
-			"referral_code":      req.ReferralCode,
 		},
 	})
 	if err != nil {

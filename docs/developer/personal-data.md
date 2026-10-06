@@ -1,6 +1,6 @@
 # Add personal data safely
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How-to for a coordinator change that stores personal data or writes to an
 account: add an erasure rule for a new column or table, add an outbox target
@@ -20,8 +20,8 @@ data and the marker tests prove it. Why the scrub works this way is in
 Personal data here is any value that can identify a person: an email, a
 user-chosen name or label, a host name, a serial number, UDID or push token, a
 location, region or IP address, a Stripe or other external account ID, a
-wallet address, a raw proof, receipt or log. Random IDs, public keys, counts
-and amounts are not personal data alone
+wallet address, a raw proof, receipt or log. Retained identifiers and financial
+records are pseudonymous, not guaranteed anonymous
 ([context](../architecture/account-erasure.md#context)).
 
 ## Steps
@@ -202,7 +202,12 @@ object or another service) that must be deleted after the scrub.
    row, as `upsertProviderRecord` does with
    `WHERE providers.deleted_at IS NULL` and `upsertProviderRecordLocked`
    does in memory. Otherwise a heartbeat or retry writes the data back during
-   the grace period or after the scrub.
+   the grace period or after the scrub. For delayed personal-data writes, hold
+   the shared scrub fence through the ownership check and the write; scrub takes
+   it exclusively before collecting keys. Carry the originating account when
+   registry persistence may not exist yet, as `BeginAppAttestEvidence` does.
+   An erased session cannot borrow another account's shared-key exception.
+   See `coordinator/store/postgres/erasure_personal_writes.go`.
 
 4. **A new in-memory copy of personal data** (a cache or map keyed by
    account, provider or Secure Enclave key): add a forget method and call it
@@ -215,7 +220,7 @@ object or another service) that must be deleted after the scrub.
 
 5. **A new credit path**:
    - Postgres: write the credit as an `INSERT` into `ledger_entries` with a
-     positive amount and an increase of `balances`. The migration 21
+     positive amount and an increase of `balances`. The migration 25
      triggers then refuse it for an erased account
      ([refused credits](../architecture/account-erasure.md#refused-credits-after-the-scrub)).
      Money held in another table is not covered; refuse it there.

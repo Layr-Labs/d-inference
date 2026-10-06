@@ -10,6 +10,10 @@ release, account, billing, reporting and operations owners described in the
 [code navigation guide](../developer/navigation.md). Package boundaries do not
 change HTTP paths, middleware ordering, status codes or wire shapes.
 
+Offline caller conformance is exercised through the real handler by
+`coordinator/tests/internal/conformance/`, including concrete-provider-model to
+public-alias rewriting. See the [conformance test entry points](../developer/test.md#offline-openrouter-caller-conformance).
+
 The public model catalog optionally includes `hugging_face_artifact` for direct
 provider downloads; the admin registration accepts the same object. See the
 [registry artifact contract](model-registry-format.md#hugging-face-download-artifact).

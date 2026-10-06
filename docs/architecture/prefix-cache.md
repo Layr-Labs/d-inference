@@ -421,6 +421,13 @@ changing survivor identity or sequence. A new write therefore keeps its READY
 eligibility when maintenance removes an older file. The same retirement helper
 serves attention-only stores and active-owner whole-root maintenance.
 
+If the durable record cannot be read at all (the open or read itself failed, so
+the record was not read), the owned operation is refused and the store keeps its
+epoch; the next owned operation rereads the record and proceeds once it matches.
+A record that was read and is gone, unparseable, oversized, replaced by a
+symlink, directory or other non-regular entry, or names another schema, epoch or
+binding still disowns the store for good.
+
 Removed-file routing hints are best-effort and bounded by miss invalidation/TTL;
 they never authorize adoption without native file authentication and complete
 state validation. Missing/replaced indexed files and corruption reconcile only their affected

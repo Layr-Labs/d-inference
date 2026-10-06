@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(os)
+import os
+#endif
 
 /// Durable, random generation for one model's reusable SSD cache. The record is
 /// descriptor-read/written without following links; binding drift wipes DBK3
@@ -47,12 +50,19 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     private static let maxRecordBytes = 64 * 1024
     private static let epochs = EpochLedger()
     private static let recordLock = NSLock()
+    #if canImport(os)
+    private static let logger = Logger(
+        subsystem: "com.darkbloom.provider", category: "ssd_cache_epoch_store")
+    #endif
 
     private let lock = NSLock()
     private let root: URL
     private let rootKey: String
     private let binding: Binding
     private var epoch: String?
+    /// Logs once per run of consecutive read failures; a budget pass retries
+    /// per victim. Guarded by `lock`.
+    private var loggedRecordReadFailure = false
 
     init(root: URL, binding: Binding) throws {
         self.root = root
@@ -170,15 +180,7 @@ final class SSDCacheEpochStore: @unchecked Sendable {
             guard let ownedEpoch = epoch,
                 Self.epochs.current(root: rootKey) == ownedEpoch else { return nil }
             return Self.recordLock.withLock {
-                let url = root.appendingPathComponent(Self.fileName)
-                guard let existing = try? Self.readRecord(at: url),
-                    let record = existing.record,
-                    record.schema == Self.schema, record.epoch == ownedEpoch,
-                    record.binding == binding else {
-                    epoch = nil
-                    Self.epochs.publish(root: rootKey, epoch: nil)
-                    return nil
-                }
+                guard ownedRecordStillCurrentLocked(epoch: ownedEpoch) else { return nil }
                 return body()
             }
         }
@@ -199,18 +201,9 @@ final class SSDCacheEpochStore: @unchecked Sendable {
             }
             let fresh = Self.newEpoch()
             return Self.recordLock.withLock {
+                guard ownedRecordStillCurrentLocked(epoch: ownedEpoch) else { return nil }
                 do {
                     let url = root.appendingPathComponent(Self.fileName)
-                    guard let existing = try? Self.readRecord(at: url),
-                        let record = existing.record,
-                        record.schema == Self.schema,
-                        record.epoch == ownedEpoch,
-                        record.binding == binding
-                    else {
-                        epoch = nil
-                        Self.epochs.publish(root: rootKey, epoch: nil)
-                        return nil
-                    }
                     try Self.write(
                         record: Record(
                             schema: Self.schema,
@@ -230,6 +223,48 @@ final class SSDCacheEpochStore: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Rereads the durable record before an owned operation. A record that was
+    /// read and is missing, unparseable, or names another schema, epoch or
+    /// binding refutes ownership and disowns this instance. A read that fails
+    /// (I/O error, busy or unopenable file, non-regular path) says nothing
+    /// about the record, so the operation is refused and ownership is kept;
+    /// the next owned operation rereads. Caller holds `lock`, then `recordLock`.
+    private func ownedRecordStillCurrentLocked(epoch ownedEpoch: String) -> Bool {
+        let existing: ReadResult
+        do {
+            existing = try Self.readRecord(at: root.appendingPathComponent(Self.fileName))
+        } catch SSDBlockStoreError.ioFailure {
+            // `readRecord`'s own verdicts about the entry: the path is no
+            // longer a regular file (symlink, directory, device, or an
+            // unopenable parent) or the record is oversized. Persistent and
+            // refuting, exactly as before.
+            epoch = nil
+            Self.epochs.publish(root: rootKey, epoch: nil)
+            return false
+        } catch {
+            // The open or read itself failed, so the record was not read.
+            if !loggedRecordReadFailure {
+                loggedRecordReadFailure = true
+                #if canImport(os)
+                Self.logger.warning(
+                    "ssd cache epoch (\(self.binding.modelId, privacy: .public)): epoch record read failed (\(String(describing: error), privacy: .public)) — owned operation refused, epoch kept until the next reread")
+                #endif
+            }
+            return false
+        }
+        loggedRecordReadFailure = false
+        guard let record = existing.record,
+            record.schema == Self.schema,
+            record.epoch == ownedEpoch,
+            record.binding == binding
+        else {
+            epoch = nil
+            Self.epochs.publish(root: rootKey, epoch: nil)
+            return false
+        }
+        return true
     }
 
     /// Serializes per-file deletion on an unloaded root with store

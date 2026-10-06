@@ -1241,7 +1241,8 @@ the same room. The rule, with its constants, is in the
   registered store's index counts: files of unloaded or closed models, temp
   files that belong to no in-flight write, files published and never indexed.
   A first-sight write is granted room on the writer, before its write-budget
-  charge and before a byte is written, only if the indexed bytes of every
+  charge and before a byte is written, only while the occupancy of its cache
+  root is known (limit 10) and only if the indexed bytes of every
   registered store, those unowned bytes, every other reservation, the proven
   work every registered store has accepted and not yet recorded, and its own
   stored bytes fit the budget as it will be once the reserved and queued
@@ -1499,15 +1500,28 @@ Limits:
       60-second task first starts and every 60 seconds after), plus what a deregistering store adds. A pass that walked
       while bytes changed sides between an index and the unowned figure, or
       that could not list a directory, may
-      raise the figure and not lower it (it is zero for a
-      root no pass has published yet). The figure errs high after a store
+      raise the figure and not lower it. The figure errs high after a store
       registers or a pass is disturbed, which declines a first-sight write
-      that would have fitted. It can also be too low: zero before a root's
-      first pass, without the files that arrived since the last pass, and
-      never counting a block file whose header cannot be read or a file
-      whose attributes cannot be read. A first-sight write admitted against
-      a figure that is too low can be followed by a pass that counts the
-      missing bytes and evicts.
+      that would have fitted. Where the ledger cannot tell that the figure
+      is complete it admits nothing: a cache root's occupancy is unknown
+      until a whole, undisturbed pass has published it; after a pass that
+      could not list a directory, read an entry's attributes or size, or
+      open a block file's header (a file that is there and could not be
+      read, as opposed to one whose header was read and is not ours, or
+      that went away since it was listed); after a start-up scan that could
+      not finish; and after an index entry was dropped whose file its store
+      did not remove in the same step (a file found missing by a reader or
+      by the reconcile that follows a pass, a corrupt file that was already
+      gone or could not be removed). While it is unknown every first-sight write under that root
+      is declined before I/O (`write_speculative_limited`), and one in
+      flight is told to stop and is not published or indexed; proven writes
+      are not affected. The next whole, undisturbed pass counts the files as
+      unowned and restores it; a whole pass that ends disturbed with the
+      root still unknown walks again, at most three times in one pass. The
+      provider logs each change between known and unknown. A known figure
+      can still miss files that arrived from outside the provider since the
+      last pass, and block files whose header was read and is not ours,
+      which neither enforcer counts.
     - **The half-of-free arithmetic trusts the volume's free figure.** It
       assumes the figure falls by the bytes written as they are written and
       rises again when they are removed. That was measured once, on one

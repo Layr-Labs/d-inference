@@ -82,6 +82,10 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     /// speculative write anywhere on the budget must leave them room
     /// (`queuedWriteBytes`).
     var provenWriteBytes: [Data: Int] = [:]
+    /// Set when index entries were dropped whose files this store did not
+    /// remove in the same step; the disk budget reads and clears it
+    /// (`takeUnaccountedIndexDrop`). Under `lock`.
+    var unaccountedIndexDrop = false
     var readyReceipts: [CBv2RequestID: ReadyReceipt] = [:]
     var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
     var pipeline: BoundedSingleConsumerPipeline<WriteJob>!

@@ -69,7 +69,8 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
                    keyFingerprint: String = "fixture-key",
                    writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
                    maintainWholeRoot: @escaping @Sendable () -> Void = {},
-                   diskBudgetBasis: (@Sendable () -> SSDDiskBudgetBasis)? = nil) throws -> SSDHybridCheckpointStore {
+                   diskBudgetBasis: (@Sendable () -> SSDDiskBudgetBasis)? = nil,
+                   firstPass: Bool = true) throws -> SSDHybridCheckpointStore {
         let epochStore: SSDCacheEpochStore? = epoch ? try .init(root: modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: identity.modelAggregateHash,
             promptContractId: identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
@@ -84,6 +85,13 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
             maintainWholeRoot: maintainWholeRoot, diskBudgetBasis: diskBudgetBasis),
             kekKey: key, kvBudget: useGlobalBudget ? budget : nil, diskBudget: diskBudget, maxWriteBytesPerDay: maxWriteBytesPerDay, donationRecorder: donationRecorder, writeNowSeconds: writeNowSeconds)
         store.scanOnDisk()
+        // The factory runs one whole-root pass after the scan. Until a pass
+        // has published what is on disk, no first-sight write is admitted.
+        if firstPass {
+            _ = SSDWholeRootMaintainer().maintain(
+                root: root, ttlSeconds: 0, nowSeconds: Int64(Date().timeIntervalSince1970),
+                budgetBytes: .max, budget: diskBudget)
+        }
         return store
     }
 
@@ -133,4 +141,15 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
     }
 
     func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+extension SSDDiskBudget {
+    /// The state a whole, undisturbed pass over a root with no unowned
+    /// bytes leaves: its occupancy is known. For tests that drive the
+    /// ledger or a writer without a store behind it.
+    func declareOccupancyKnown(wholeRootKey: String) {
+        publishWholeRoot(
+            wholeRootKey: wholeRootKey, bytesByModelRoot: [:], unreservedTempBytes: 0,
+            observation: endWholeRootObservation(beginWholeRootObservation()))
+    }
 }

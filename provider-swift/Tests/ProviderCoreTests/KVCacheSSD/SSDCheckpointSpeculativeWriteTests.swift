@@ -432,8 +432,8 @@ struct SSDCheckpointSpeculativeWriteTests {
         try await SSDCheckpointCoordinationTestSupport.waitUntil {
             store.fileCoordinator.pendingCount(for: file) == 1
         }
-        try FileManager.default.removeItem(at: file)
-        store.forgetMissing(tag16)
+        // The store removes the file and its entry together, as an eviction does.
+        store.removeCorrupt(tag16)
         #expect(store.stats().entries == 0)
         lease.release()
         // Now a fresh write, it is judged as the speculative write it is.
@@ -473,8 +473,8 @@ struct SSDCheckpointSpeculativeWriteTests {
         try await SSDCheckpointCoordinationTestSupport.waitUntil {
             store.fileCoordinator.pendingCount(for: file) == 1
         }
-        try FileManager.default.removeItem(at: file)
-        store.forgetMissing(tag16)
+        // The store removes the file and its entry together, as an eviction does.
+        store.removeCorrupt(tag16)
         #expect(store.stats().entries == 0)
         // The write budget is whole; the disk budget has no room at all.
         diskBudget.bytes = 0

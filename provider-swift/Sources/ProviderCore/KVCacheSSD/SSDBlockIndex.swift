@@ -207,6 +207,11 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     /// Read under the budget lock: an implementation takes at most a lock
     /// whose holders never call the budget.
     var queuedWriteBytes: Int { get }
+    /// True once after this store dropped index entries whose files it did
+    /// not remove in the same step: the files may still be on disk, or the
+    /// entries may have hidden other bytes from the last whole-root pass.
+    /// Read and cleared under the budget lock, as `queuedWriteBytes` is.
+    func takeUnaccountedIndexDrop() -> Bool
 }
 
 /// How the box-wide budget moves when bytes land on, or leave, its volume.
@@ -315,13 +320,23 @@ final class SSDDiskReservation: @unchecked Sendable {
 /// `removalLock`. No store's state lock is held when this lock is taken, and
 /// no volume is queried under it. A store's state lock and a write-behind's
 /// queue lock are taken under this lock as leaves (`ownsEvictionRoot`,
-/// `queuedWriteBytes`, the closure of `registerProven`): their holders never
-/// call the budget.
+/// `queuedWriteBytes`, `takeUnaccountedIndexDrop`, the closure of
+/// `registerProven`, the closure of `invalidateOccupancy`): their holders
+/// never call the budget.
 ///
 /// What the ledger assumes of its callers, as both factories arrange it: the
 /// stores on one budget share one whole root when the budget moves with the
 /// volume, and a store whose budget moves passes its basis and runs the
 /// whole-root pass. A store built without them is held to a fixed budget.
+///
+/// A speculative write is admitted, published and indexed only while the
+/// occupancy of its whole root is known: a pass that listed every directory
+/// and read every attribute has published the unowned bytes, and nothing has
+/// invalidated that figure since. A root no pass has published, a pass that
+/// could not see everything and a start-up scan that dropped index entries
+/// whose files are still on disk all leave it unknown, and every speculative
+/// write there is declined until a whole pass restores it. Proven writes
+/// are not affected.
 final class SSDDiskBudget: @unchecked Sendable {
 
     static let shared = SSDDiskBudget()
@@ -331,6 +346,10 @@ final class SSDDiskBudget: @unchecked Sendable {
         let modelRootKey: String
         let wholeRootKey: String
     }
+
+    #if canImport(os)
+    private static let logger = Logger(subsystem: "com.darkbloom.provider", category: "ssd_disk_budget")
+    #endif
 
     private let lock = NSLock()
     private var stores: [ObjectIdentifier: Registration] = [:]
@@ -342,10 +361,17 @@ final class SSDDiskBudget: @unchecked Sendable {
     /// files published but never indexed. Published by every whole-root
     /// pass and raised when a store deregisters with its files on disk.
     private var unownedBytes: [String: Int] = [:]
+    /// Whole roots whose `unownedBytes` figure is known not to be too low.
+    private var knownOccupancy: Set<String> = []
+    /// Roots whose unknown occupancy has been logged since it last changed.
+    private var reportedUnknown: Set<String> = []
     /// Moves whenever bytes change sides between `unownedBytes` and an
     /// index, so a whole-root pass that walked across such a move does not
     /// lower the figure to one that misses them.
     private var generation: UInt64 = 0
+    /// The same per whole root, so a pass over one root is not disturbed by
+    /// what moves under another.
+    private var rootGenerations: [String: UInt64] = [:]
     private var observations: [UInt64: WholeRootObservation] = [:]
     private var nextObservation: UInt64 = 0
     /// Counts speculative writes that ended without an entry. A volume
@@ -361,6 +387,8 @@ final class SSDDiskBudget: @unchecked Sendable {
 
     struct WholeRootObservation {
         fileprivate(set) var generation: UInt64 = 0
+        /// The root the pass walks; nil compares against every root's moves.
+        fileprivate(set) var wholeRootKey: String?
         /// Keys of speculative reservations outstanding at any time while
         /// the pass walked the tree.
         fileprivate(set) var speculativeKeys: Set<String> = []
@@ -390,23 +418,28 @@ final class SSDDiskBudget: @unchecked Sendable {
             wholeRootKey: Self.wholeRootKey(ofModelRoot: store.evictionRoot))
         lock.withLock {
             stores[ObjectIdentifier(store)] = registration
-            generation &+= 1
+            movedLocked(registration.wholeRootKey)
         }
     }
 
     func deregister(_ store: SSDEvictableStore) {
         lock.withLock {
             guard let registration = stores.removeValue(forKey: ObjectIdentifier(store)) else { return }
+            // A drop it reported and nobody has read yet still counts.
+            if store.takeUnaccountedIndexDrop() {
+                makeUnknownLocked(registration.wholeRootKey, because: "an index entry was dropped without its file")
+            }
             // Its files stay on disk and still count against the whole
             // root, so they stay in the occupancy a speculative write sees.
             addUnownedLocked(store.diskBytesOnDisk, wholeRootKey: registration.wholeRootKey)
-            generation &+= 1
+            movedLocked(registration.wholeRootKey)
         }
     }
 
     func reconcileAll() {
         lock.withLock {
             for registration in stores.values { registration.store.reconcileExternalRemovals() }
+            absorbUnaccountedDropsLocked()
         }
     }
 
@@ -422,6 +455,7 @@ final class SSDDiskBudget: @unchecked Sendable {
             let owners = stores.values.filter { $0.modelRootKey == key && $0.store.ownsEvictionRoot }
             // A store refuses without running the body, so an owner that was
             // disowned since the filter simply yields to the next one.
+            defer { absorbUnaccountedDropsLocked() }
             for owner in owners where owner.store.performExternalDestructiveChange(body) {
                 return true
             }
@@ -436,6 +470,7 @@ final class SSDDiskBudget: @unchecked Sendable {
             guard let owner = stores.values.first(where: {
                 $0.modelRootKey == key && $0.store.ownsEvictionRoot
             }) else { return nil }
+            defer { absorbUnaccountedDropsLocked() }
             return owner.store.retireOwnedEntries(urls)
         }
     }
@@ -641,16 +676,43 @@ final class SSDDiskBudget: @unchecked Sendable {
         lock.withLock { unownedBytes[wholeRootKey] ?? 0 }
     }
 
+    /// Whether a speculative write under this whole root can be admitted at
+    /// all. For tests and stats.
+    func isOccupancyKnown(wholeRootKey: String) -> Bool {
+        lock.withLock { knownOccupancy.contains(wholeRootKey) }
+    }
+
+    /// The indexes under this whole root no longer account for what is on
+    /// disk: a start-up scan failed, or index entries were dropped whose
+    /// files the store did not remove in the same step. Speculative writes
+    /// there are declined, and the ones in flight told to stop, until a
+    /// whole pass publishes again. A pass that is walking now saw the old
+    /// state and cannot restore it.
+    ///
+    /// `dropping` performs the drop itself and says whether anything was
+    /// dropped. It runs under the budget lock, so no speculative check sees
+    /// the smaller index with the occupancy still known. It may take what a
+    /// removal takes (a store's removal lock, then its state lock, its epoch
+    /// store's lock and its index lock) and may unlink a file; it must not
+    /// call the budget or wait for a file lease.
+    func invalidateOccupancy(wholeRootKey: String, dropping: () -> Bool = { true }) {
+        lock.withLock {
+            if dropping() { makeUnknownLocked(wholeRootKey, because: "an index no longer accounts for its files") }
+        }
+    }
+
     // MARK: Whole-root accounting
 
     /// Opens a window in which every reservation that is or becomes
     /// outstanding is recorded, so the pass can tell an in-flight write's
     /// temp or not-yet-indexed file from committed bytes even when the write
     /// starts or ends while the tree is being walked.
-    func beginWholeRootObservation() -> UInt64 {
+    func beginWholeRootObservation(wholeRootKey: String? = nil) -> UInt64 {
         lock.withLock {
+            absorbUnaccountedDropsLocked()
             nextObservation &+= 1
-            var observation = WholeRootObservation(generation: generation)
+            var observation = WholeRootObservation(
+                generation: generationLocked(wholeRootKey), wholeRootKey: wholeRootKey)
             for reservation in reservations.values { observation.record(reservation) }
             observations[nextObservation] = observation
             return nextObservation
@@ -679,14 +741,20 @@ final class SSDDiskBudget: @unchecked Sendable {
     /// What one whole-root pass left on disk: readable block bytes per
     /// model root and temp bytes that belong to no reservation. A pass that
     /// walked while bytes changed sides, or that could not list a directory
-    /// (`complete` false), may have missed some, so it can raise the figure
-    /// and not lower it; the next whole, undisturbed pass sets it. Erring
-    /// high declines a speculative write that would have fitted.
+    /// or read an attribute (`complete` false), may have missed some, so it
+    /// can raise the figure and not lower it; the next whole, undisturbed
+    /// pass sets it. Erring high declines a speculative write that would
+    /// have fitted.
+    ///
+    /// Only a whole, undisturbed pass makes the occupancy known. A pass that
+    /// was disturbed leaves it as it was: a known figure can only have been
+    /// raised. A pass that could not see everything makes it unknown.
     func publishWholeRoot(
         wholeRootKey: String, bytesByModelRoot: [String: Int], unreservedTempBytes: Int,
         observation: WholeRootObservation, complete: Bool = true
     ) {
         lock.withLock {
+            absorbUnaccountedDropsLocked()
             var indexed: [String: Int] = [:]
             for registration in stores.values {
                 indexed[registration.modelRootKey, default: 0] += registration.store.diskBytesOnDisk
@@ -695,8 +763,23 @@ final class SSDDiskBudget: @unchecked Sendable {
             for (modelRoot, bytes) in bytesByModelRoot {
                 unowned = Self.saturatingSum(unowned, max(0, bytes - (indexed[modelRoot] ?? 0)))
             }
-            unownedBytes[wholeRootKey] = complete && observation.generation == generation
-                ? unowned : max(unowned, unownedBytes[wholeRootKey] ?? 0)
+            let undisturbed = observation.generation == generationLocked(observation.wholeRootKey)
+                && (observation.wholeRootKey ?? wholeRootKey) == wholeRootKey
+            if complete && undisturbed {
+                unownedBytes[wholeRootKey] = unowned
+                reportedUnknown.remove(wholeRootKey)
+                if knownOccupancy.insert(wholeRootKey).inserted {
+                    #if canImport(os)
+                    Self.logger.info(
+                        "ssd disk budget: occupancy of \(wholeRootKey, privacy: .public) is known; first-sight writes can be admitted")
+                    #endif
+                }
+            } else {
+                unownedBytes[wholeRootKey] = max(unowned, unownedBytes[wholeRootKey] ?? 0)
+                if !complete {
+                    makeUnknownLocked(wholeRootKey, because: "a maintenance pass could not see everything", moved: false)
+                }
+            }
         }
     }
 
@@ -722,11 +805,11 @@ final class SSDDiskBudget: @unchecked Sendable {
         switch disposition {
         case .committed:
             settledBytes &+= UInt64(reservation.bytes)
-            generation &+= 1
+            movedLocked(reservation.wholeRootKey)
         case .abandonedOnDisk:
             settledBytes &+= UInt64(reservation.bytes)
             addUnownedLocked(reservation.bytes, wholeRootKey: reservation.wholeRootKey)
-            generation &+= 1
+            movedLocked(reservation.wholeRootKey)
         case .discarded:
             break
         }
@@ -759,7 +842,17 @@ final class SSDDiskBudget: @unchecked Sendable {
         bytes: Int, includesReserved: Bool, excluding own: SSDDiskReservation? = nil,
         ownBytesStillToLand: Int, wholeRootKey: String, basis: SSDDiskBudgetBasis
     ) -> Bool {
-        guard bytes >= 0 else { return false }
+        absorbUnaccountedDropsLocked()
+        // Nothing fits a root whose occupancy is not known.
+        guard bytes >= 0, knownOccupancy.contains(wholeRootKey) else {
+            #if canImport(os)
+            if bytes >= 0, reportedUnknown.insert(wholeRootKey).inserted {
+                Self.logger.notice(
+                    "ssd disk budget: first-sight writes under \(wholeRootKey, privacy: .public) are declined: no whole maintenance pass has published its occupancy")
+            }
+            #endif
+            return false
+        }
         var occupied = 0
         var pending = includesReserved ? max(0, reservedBytes - (own?.bytes ?? 0)) : 0
         for registration in stores.values {
@@ -783,11 +876,49 @@ final class SSDDiskBudget: @unchecked Sendable {
         for reservation in reservations.values where reservation.isSpeculative { reservation.revoke() }
     }
 
+    /// The occupancy of this whole root is not known from here on. The
+    /// speculative writes in flight under it are told to stop: none of them
+    /// could be published or indexed now. `moved` is false when a pass that
+    /// is publishing reports it, since nothing changed sides.
+    private func makeUnknownLocked(_ wholeRootKey: String, because reason: String, moved: Bool = true) {
+        let wasKnown = knownOccupancy.remove(wholeRootKey) != nil
+        for reservation in reservations.values
+        where reservation.isSpeculative && reservation.wholeRootKey == wholeRootKey {
+            reservation.revoke()
+        }
+        if moved { movedLocked(wholeRootKey) }
+        #if canImport(os)
+        if wasKnown {
+            reportedUnknown.insert(wholeRootKey)
+            Self.logger.notice(
+                "ssd disk budget: occupancy of \(wholeRootKey, privacy: .public) is unknown (\(reason, privacy: .public)); first-sight writes are declined until a whole maintenance pass")
+        }
+        #endif
+    }
+
+    /// Index drops that stores made inside ledger calls, or reported since.
+    private func absorbUnaccountedDropsLocked() {
+        for registration in stores.values where registration.store.takeUnaccountedIndexDrop() {
+            makeUnknownLocked(registration.wholeRootKey, because: "an index entry was dropped without its file")
+        }
+    }
+
     /// Bytes that in-flight speculative writes have on the volume. They are
     /// nobody's entry yet and are withdrawn if their room is needed, so an
     /// enforcement limit is the one that holds without them.
     private func speculativeLandedBytesLocked() -> Int {
         reservations.values.reduce(0) { $1.isSpeculative ? Self.saturatingSum($0, $1.landedBytes) : $0 }
+    }
+
+    /// Bytes changed sides between an index and the unowned figure under
+    /// this whole root, or its indexes stopped accounting for its files.
+    private func movedLocked(_ wholeRootKey: String) {
+        generation &+= 1
+        rootGenerations[wholeRootKey, default: 0] &+= 1
+    }
+
+    private func generationLocked(_ wholeRootKey: String?) -> UInt64 {
+        wholeRootKey.map { rootGenerations[$0] ?? 0 } ?? generation
     }
 
     private func addUnownedLocked(_ bytes: Int, wholeRootKey: String) {
@@ -835,6 +966,7 @@ final class SSDDiskBudget: @unchecked Sendable {
     }
 
     private func enforceLocked(basis: SSDDiskBudgetBasis) -> Int {
+        defer { absorbUnaccountedDropsLocked() }
         do {
             var evicted = 0
             var blockedStores: Set<ObjectIdentifier> = []

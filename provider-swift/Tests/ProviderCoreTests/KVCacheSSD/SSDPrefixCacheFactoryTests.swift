@@ -320,6 +320,9 @@ struct SSDPrefixCacheFactoryConstructionTests {
         let passes = SSDPrefixCacheFactory.wholeRootPasses
         let before = passes.count(root: wholeRoot)
         #expect(before >= 1, "the factory's own pass, after its scan")
+        // That pass is what makes the root's occupancy known; before it
+        // every first-sight write would be declined.
+        #expect(SSDDiskBudget.shared.isOccupancyKnown(wholeRootKey: SSDDiskBudget.rootKey(wholeRoot)))
         store.config.maintainWholeRoot()
         #expect(passes.count(root: wholeRoot) == before + 1)
         #expect(passes.lastVolumeProbe(root: wholeRoot) == wholeRoot.standardizedFileURL.path)

@@ -425,6 +425,27 @@ struct SSDBlockStoreTests {
         #expect(FileManager.default.fileExists(atPath: young.path))
     }
 
+    @Test("a block-tier index entry whose file went away without the cache removing it makes the cache root's occupancy unknown at the reconcile that drops it")
+    func blockTierReconcileDropInvalidatesOccupancy() throws {
+        let parent = tempDir("block-tier-reconcile")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let modelRoot = parent.appendingPathComponent("cccccccccccc", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: modelRoot)
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
+        let cache = makeCache(
+            dir: modelRoot, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000), diskBudget: ledger)
+        defer { cache.close() }
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        // The index holds an entry with no file behind it.
+        cache.index.insert(tag16: Data(repeating: 0xab, count: 16), fileBytes: 64, lastAccess: 10_000)
+        #expect(ledger.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRootKey, basis: .fixed(1 << 20)))
+        ledger.reconcileAll()
+        #expect(cache.index.count == 0)
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        #expect(!ledger.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRootKey, basis: .fixed(1 << 20)))
+    }
+
     @Test("active cache I/O rejects symlinked root, model, and fanout paths")
     func activeSymlinkIOFailsClosed() throws {
         let parent = tempDir("active-symlinks")
@@ -472,13 +493,23 @@ struct SSDBlockStoreTests {
         }
         #expect((try fm.contentsOfDirectory(atPath: outsideFanout.path)).isEmpty)
 
+        // The cache root's occupancy is known before the scan.
+        let ledger = SSDDiskBudget()
+        let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
+        ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
+        #expect(ledger.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRootKey, basis: .fixed(1 << 20)))
         let cache = makeCache(
             dir: modelRoot,
             kek: SymmetricKey(size: .bits256),
-            clock: ClockBox(10_000))
+            clock: ClockBox(10_000),
+            diskBudget: ledger)
         defer { cache.close() }
         cache.scanOnDisk()
         #expect(cache.index.count == 0)
+        // A scan that cannot finish accounts for none of this model's files,
+        // so no first-sight checkpoint is admitted against this root.
+        #expect(!ledger.isOccupancyKnown(wholeRootKey: wholeRootKey))
+        #expect(!ledger.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRootKey, basis: .fixed(1 << 20)))
         let scanStatus = cache.prefixCacheModelStatus(base: PrefixCacheModelStatus(
             modelId: "test-model",
             backend: .contiguous,
@@ -1968,7 +1999,10 @@ struct SSDReadyWriteBarrierTests {
         index: SSDBlockIndex = SSDBlockIndex(),
         onBlockSettled: @escaping @Sendable (Data) -> Void = { _ in }
     ) -> SSDWriteBehind {
-        SSDWriteBehind(
+        // As after the first whole-root pass: without it no first-sight
+        // room exists for these tests to measure.
+        diskBudget.declareOccupancyKnown(wholeRootKey: SSDDiskBudget.wholeRootKey(ofModelRoot: dir))
+        return SSDWriteBehind(
             config: .init(
                 root: dir,
                 kekKey: SymmetricKey(size: .bits256),
@@ -2001,6 +2035,7 @@ struct SSDReadyWriteBarrierTests {
         var ownsEvictionRoot: Bool { true }
         var diskBytesOnDisk: Int { index.totalBytes }
         var queuedWriteBytes: Int { lock.withLock { queued }() }
+        func takeUnaccountedIndexDrop() -> Bool { false }
         func oldestEntryAccess() -> Int64? { nil }
         func evictOldestEntry() -> Int { 0 }
         func reconcileExternalRemovals() {}
@@ -2239,6 +2274,7 @@ struct SSDReadyWriteBarrierTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = SSDDiskBudget()
         let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        budget.declareOccupancyKnown(wholeRootKey: wholeRoot)
         let inFlight = try #require(budget.reserveSpeculative(
             bytes: 1, keys: ["first-sight"], wholeRootKey: wholeRoot, basis: .fixed(1)))
         // The budget holds the first-sight byte and nothing else.
@@ -2287,6 +2323,7 @@ struct SSDReadyWriteBarrierTests {
         // half of whatever is still to land. One first-sight block fits
         // (1 <= 1.5); with a block-tier block registered, 2 > (4 - 2) / 2.
         let free = 4 * stored
+        budget.declareOccupancyKnown(wholeRootKey: wholeRoot)
         let inFlight = try #require(budget.reserveSpeculative(
             bytes: stored, keys: ["first-sight"], wholeRootKey: wholeRoot, basis: .halfOfFree(freeBytes: free)))
         let writer = pipeline(

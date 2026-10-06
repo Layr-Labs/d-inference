@@ -16,6 +16,12 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             }
         }
     }
+    func takeUnaccountedIndexDrop() -> Bool {
+        lock.withLock {
+            defer { unaccountedIndexDrop = false }
+            return unaccountedIndexDrop
+        }
+    }
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
     func evictOldestEntry() -> Int {
@@ -51,18 +57,34 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
         }
         guard !removed.isEmpty else { return }
+        // Their files went without this store removing them, or could not be
+        // classified: what the last pass published may no longer be enough.
+        // Set before the drop and again after it, so that neither a check
+        // nor a pass that reads the flag in between is the last to see it.
+        lock.withLock { unaccountedIndexDrop = true }
         performIndexReconciliation { removed.forEach { _ = self.index.remove(tag16: $0) } }
+        lock.withLock { unaccountedIndexDrop = true }
     }
 
     /// Forget one entry whose file a reader found already gone. Index-only,
     /// and rechecked under the removal lock so a checkpoint rewritten at the
     /// same tag since the failed read keeps its entry.
     func forgetMissing(_ tag: Data) {
-        performIndexReconciliation {
-            let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
-            guard SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) != .regular
-            else { return }
-            _ = self.index.remove(tag16: tag)
+        // Usually the evictor that removed the file has removed the entry
+        // too: nothing to drop, and no reason to wait for the budget lock.
+        guard index.contains(tag16: tag) else { return }
+        // The entry goes in one step with the occupancy of its cache root:
+        // this store did not remove the file, so it cannot account for it.
+        diskBudget.invalidateOccupancy(wholeRootKey: wholeRootKey) {
+            var dropped = false
+            self.performIndexReconciliation {
+                let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
+                guard SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) != .regular
+                else { return }
+                dropped = self.index.contains(tag16: tag)
+                _ = self.index.remove(tag16: tag)
+            }
+            return dropped
         }
     }
 
@@ -108,19 +130,29 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     private func dropIndexEntriesWithoutFiles() {
+        var dropped = false
         for tag in index.allTags() {
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
             if SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular {
                 _ = index.remove(tag16: tag)
+                dropped = true
             }
         }
+        if dropped { lock.withLock { unaccountedIndexDrop = true } }
     }
 
     func removeCorrupt(_ tag: Data) {
-        _ = performIndexedRemoval {
-            let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
-            _ = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
-            _ = self.index.remove(tag16: tag)
+        // Accounted only when this store unlinked the file itself. An
+        // indexed entry whose file was already gone, or could not be
+        // removed, leaves the root's occupancy unknown.
+        diskBudget.invalidateOccupancy(wholeRootKey: wholeRootKey) {
+            self.performIndexedRemoval {
+                let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
+                let removed = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
+                let indexed = self.index.contains(tag16: tag)
+                _ = self.index.remove(tag16: tag)
+                return indexed && !removed
+            } ?? false
         }
         statsBox.update { $0.corruptDropped += 1 }
     }
@@ -131,14 +163,14 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         let manager = FileManager.default
         guard let fanouts = try? manager.contentsOfDirectory(
             at: config.root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-        else { return }
+        else { abandonScan(); return }
         let now = config.nowSeconds()
         for fanout in fanouts where SSDBlockStore.isLowerHex(fanout.lastPathComponent, count: 2) {
             guard SSDBlockStore.isRealDirectory(fanout), SSDBlockStore.pathResolvesToItself(fanout),
                 let files = try? manager.contentsOfDirectory(
                     at: fanout, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
                     options: [.skipsHiddenFiles])
-            else { index.removeAll(); return }
+            else { abandonScan(); return }
             for file in files where file.pathExtension == SSDBlockStore.fileExtension {
                 if isClosed { return }
                 // Scan inserts must obey the same file/index commit boundary.
@@ -146,7 +178,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 defer { access.release() }
                 guard SSDBlockStore.isSafeBlockURL(file, modelRoot: config.root),
                     let tag = SSDPrefixCache.hexDecode(file.deletingPathExtension().lastPathComponent)
-                else { index.removeAll(); return }
+                else { abandonScan(); return }
                 guard let metadata = try? SSDBlockStore.readMetadataOnly(
                     from: file, maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60),
                     metadata.weightHash == identity.modelAggregateHash,
@@ -162,6 +194,19 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             }
         }
         lock.withLock { if !closed { scanReady = true } }
+    }
+
+    /// A scan that cannot finish leaves the index empty while this model's
+    /// files stay on disk. Until a whole-root pass has counted them as
+    /// bytes no index owns, no speculative write under this cache root is
+    /// admitted.
+    private func abandonScan() {
+        // One step under the budget lock: no speculative check sees the
+        // emptied index with the occupancy still known.
+        diskBudget.invalidateOccupancy(wholeRootKey: wholeRootKey) {
+            self.index.removeAll()
+            return true
+        }
     }
 
     func prefixCacheV2Capability() -> PrefixCacheV2Capability? {

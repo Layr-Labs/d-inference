@@ -197,6 +197,11 @@ public final class SSDPrefixCache:
     let index: SSDBlockIndex
     private let kvBudget: GlobalKVCacheBudget?
     private let diskBudget: SSDDiskBudget
+    /// This cache's whole root on the disk budget's ledger, resolved once.
+    private let wholeRootKey: String
+    /// Set when index entries were dropped whose files this cache did not
+    /// remove in the same step; the disk budget reads and clears it. Under `lock`.
+    private var unaccountedIndexDrop = false
     private let donationRecorder: any PrefixCacheDonationRecording
     let statsBox = SSDPrefixCacheStatsBox()
     private var writeBehind: SSDWriteBehind!
@@ -299,6 +304,7 @@ public final class SSDPrefixCache:
         self.index = SSDBlockIndex()
         self.kvBudget = kvBudget
         self.diskBudget = diskBudget
+        self.wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: config.root)
         self.donationRecorder = donationRecorder
         let root = config.root
         self.writeBehind = SSDWriteBehind(
@@ -1429,10 +1435,7 @@ public final class SSDPrefixCache:
                     break
                 }
                 statsBox.add(corruptDropped: 1)
-                _ = performIndexedRemoval {
-                    _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
-                    index.remove(tag16: tags16[i])
-                }
+                dropCorrupt(tags16[i], at: url)
                 #if canImport(os)
                 Self.logger.warning(
                     "ssd prefix cache (\(self.config.modelId, privacy: .public)): dropped unreadable block (\(String(describing: error), privacy: .public)) — recompute fallback")
@@ -1674,10 +1677,7 @@ public final class SSDPrefixCache:
                     return nil
                 }
                 statsBox.add(corruptDropped: 1)
-                _ = performIndexedRemoval {
-                    _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
-                    index.remove(tag16: tag16)
-                }
+                dropCorrupt(tag16, at: url)
                 #if canImport(os)
                 Self.logger.warning(
                     "ssd prefix cache (\(self.config.modelId, privacy: .public)): dropped unreadable window sidecar (\(String(describing: error), privacy: .public)) — replay fallback")
@@ -1766,6 +1766,12 @@ public final class SSDPrefixCache:
     var diskBytesOnDisk: Int { index.totalBytes }
 
     var queuedWriteBytes: Int { writeBehind.queuedStoredBytes }
+    func takeUnaccountedIndexDrop() -> Bool {
+        lock.withLock {
+            defer { unaccountedIndexDrop = false }
+            return unaccountedIndexDrop
+        }
+    }
 
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
@@ -1807,35 +1813,68 @@ public final class SSDPrefixCache:
         guard hasSafeRoot else { return }
         let removed = externallyRemovedTags()
         guard !removed.isEmpty else { return }
+        // Their files went without this cache removing them, or could not be
+        // classified: what the last pass published may no longer be enough.
+        // Set before the drop and again after it, so that neither a check
+        // nor a pass that reads the flag in between is the last to see it.
+        lock.withLock { unaccountedIndexDrop = true }
         performIndexReconciliation {
             for tag16 in removed {
                 index.remove(tag16: tag16)
             }
         }
+        lock.withLock { unaccountedIndexDrop = true }
     }
 
     /// Forget one entry whose file a reader found already gone. Index-only,
     /// and rechecked under the removal lock so a block rewritten at the same
     /// tag since the failed read keeps its entry.
     private func forgetMissing(_ tag16: Data) {
-        performIndexReconciliation {
-            let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
-            else { return }
-            index.remove(tag16: tag16)
+        // Usually the evictor that removed the file has removed the entry
+        // too: nothing to drop, and no reason to wait for the budget lock.
+        guard index.contains(tag16: tag16) else { return }
+        // The entry goes in one step with the occupancy of its cache root:
+        // this cache did not remove the file, so it cannot account for it.
+        diskBudget.invalidateOccupancy(wholeRootKey: wholeRootKey) {
+            var dropped = false
+            self.performIndexReconciliation {
+                let url = SSDBlockStore.fileURL(
+                    root: self.config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+                guard SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) != .regular
+                else { return }
+                dropped = self.index.contains(tag16: tag16)
+                self.index.remove(tag16: tag16)
+            }
+            return dropped
+        }
+    }
+
+    /// Drops a block that failed to read. Accounted only when this cache
+    /// unlinked the file itself; an indexed entry whose file was already
+    /// gone, or could not be removed, leaves the root's occupancy unknown.
+    private func dropCorrupt(_ tag16: Data, at url: URL) {
+        diskBudget.invalidateOccupancy(wholeRootKey: wholeRootKey) {
+            self.performIndexedRemoval {
+                let removed = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
+                let indexed = self.index.contains(tag16: tag16)
+                self.index.remove(tag16: tag16)
+                return indexed && !removed
+            } ?? false
         }
     }
 
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
         // Whole-root callers do not know this store's index. Reconcile before
         // the removal barrier lifts so the index never outlives the files.
+        var dropped = false
         let completed: Void? = performIndexedRemoval {
             body()
             for tag16 in externallyRemovedTags() {
                 index.remove(tag16: tag16)
+                dropped = true
             }
         }
+        if dropped { lock.withLock { unaccountedIndexDrop = true } }
         return completed != nil
     }
 
@@ -1874,8 +1913,7 @@ public final class SSDPrefixCache:
             }
         }
         guard hasSafeRoot else {
-            index.removeAll()
-            markScanFailed()
+            markScanFailed(droppingIndex: true)
             return
         }
         SSDBlockStore.sweepStaleTempFiles(under: config.root)
@@ -1900,8 +1938,7 @@ public final class SSDPrefixCache:
                 dir.standardizedFileURL.path
                     == dir.resolvingSymlinksInPath().standardizedFileURL.path
             else {
-                index.removeAll()
-                markScanFailed()
+                markScanFailed(droppingIndex: true)
                 return
             }
             guard let files = try? fm.contentsOfDirectory(
@@ -1912,8 +1949,7 @@ public final class SSDPrefixCache:
                 ],
                 options: [.skipsHiddenFiles])
             else {
-                index.removeAll()
-                markScanFailed()
+                markScanFailed(droppingIndex: true)
                 return
             }
             for url in files where url.pathExtension == SSDBlockStore.fileExtension {
@@ -1925,8 +1961,7 @@ public final class SSDPrefixCache:
                     fileValues.isRegularFile == true, fileValues.isSymbolicLink != true,
                     SSDBlockStore.isSafeBlockURL(url, modelRoot: config.root)
                 else {
-                    index.removeAll()
-                    markScanFailed()
+                    markScanFailed(droppingIndex: true)
                     return
                 }
                 let name = url.deletingPathExtension().lastPathComponent
@@ -1992,7 +2027,15 @@ public final class SSDPrefixCache:
         SSDBlockStore.isSafeModelRoot(config.root, dedicatedRoot: config.dedicatedRoot)
     }
 
-    private func markScanFailed() {
+    private func markScanFailed(droppingIndex: Bool = false) {
+        // The index does not account for this model's files on disk. Until a
+        // whole-root pass has counted them as bytes no index owns, no
+        // speculative checkpoint write under this cache root is admitted.
+        // A dropped index goes in the same step, under the budget lock.
+        diskBudget.invalidateOccupancy(wholeRootKey: wholeRootKey) {
+            if droppingIndex { self.index.removeAll() }
+            return true
+        }
         lock.withLock {
             guard !closed else { return }
             scanReady = false

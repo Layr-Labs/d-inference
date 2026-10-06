@@ -603,7 +603,17 @@ admitted against a budget that is too high and a later pass can evict. The
 disk reservations live in the provider process and are gone at restart; the
 files of models that are not loaded and leftover temp files are counted again
 by the maintenance pass that runs when a complete-checkpoint store is built
-or when the 60-second task first starts.
+or when the 60-second task first starts. Until such a pass has seen the whole
+cache root, and again after a pass that could not list a directory or read a
+file's attributes or header, after a start-up scan that failed, or after a
+cache file was found missing or left behind by a failed unlink, the provider
+declines every first-sight write under that root; `write_speculative_limited`
+then grows with no write or disk pressure, the provider's log (category
+`ssd_disk_budget`) says the occupancy of the cache root is unknown and why,
+and the next whole pass (at most 60 seconds later) restores first sight
+unless the fault persists. A directory or cache file that stays unreadable
+keeps first sight off for every model under that cache root until it is
+repaired or removed.
 
 Small caps. Under a write cap other than `0`, a speculative write larger than
 H is never admitted, whatever the buckets hold. On a store whose daily write

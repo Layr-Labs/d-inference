@@ -215,8 +215,8 @@ struct SSDSpeculativeDiskAdmissionTests {
         store.registerDonationDemand(Self.firstSight, requestID: .init(77))
         let offer = Task { try await fixture.donate(store, receipt: 77) }
         try await Support.waitUntil { store.fileCoordinator.pendingCount(for: file) == 1 }
-        try FileManager.default.removeItem(at: file)
-        store.forgetMissing(tag16)
+        // The store removes the file and its entry together, as an eviction does.
+        store.removeCorrupt(tag16)
         #expect(store.stats().entries == 0)
         // Room for the plaintext and not for the file.
         disk.bytes = try SSDHybridCheckpointEnvelope(

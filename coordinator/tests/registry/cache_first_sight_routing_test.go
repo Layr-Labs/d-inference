@@ -16,7 +16,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheactivation"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheplan"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -135,8 +134,7 @@ func (f *firstSightRoutingFixture) send(pr *production.PendingRequest, exclude .
 	if err := f.registry.PrepareCacheAttempt(pr, p); err != nil {
 		f.t.Fatal(err)
 	}
-	var frame protocol.InferenceRequestMessage
-	pr.CacheAttemptSnapshot().ApplyTo(&frame)
+	frame := preparedCacheFrame(pr)
 	if frame.CacheRepeatedPrefixTokens == nil {
 		f.t.Fatal("prepared frame carries no repeated prefix count")
 	}

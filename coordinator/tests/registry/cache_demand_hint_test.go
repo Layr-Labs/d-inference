@@ -13,11 +13,12 @@ import (
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-func repeatedPrefixTokensOnWire(t *testing.T, pr *production.PendingRequest) *int {
-	t.Helper()
+// preparedCacheFrame returns the cache fields the request's prepared attempt
+// puts on its provider frame.
+func preparedCacheFrame(pr *production.PendingRequest) protocol.InferenceRequestMessage {
 	var message protocol.InferenceRequestMessage
 	pr.CacheAttemptSnapshot().ApplyTo(&message)
-	return message.CacheRepeatedPrefixTokens
+	return message
 }
 
 // The provider gates complete-checkpoint writes on this count, so a granted
@@ -35,7 +36,7 @@ func TestCachePrepareForwardsRepeatedPrefixTokensWithGrantedScope(t *testing.T) 
 		if !pr.CacheRoutingParticipates() {
 			t.Fatal("prepared attempt did not participate")
 		}
-		got := repeatedPrefixTokensOnWire(t, pr)
+		got := preparedCacheFrame(pr).CacheRepeatedPrefixTokens
 		if got == nil || *got != tc.want {
 			t.Fatalf("planned %d: wire repeat=%v, want %d", tc.planned, got, tc.want)
 		}
@@ -57,8 +58,7 @@ func TestCachePrepareForwardsFirstSightApartFromTheRepeat(t *testing.T) {
 		if err := r.PrepareCacheAttempt(pr, p); err != nil {
 			t.Fatal(err)
 		}
-		var message protocol.InferenceRequestMessage
-		pr.CacheAttemptSnapshot().ApplyTo(&message)
+		message := preparedCacheFrame(pr)
 		if message.CacheRepeatedPrefixTokens == nil || *message.CacheRepeatedPrefixTokens != tc.repeat ||
 			message.CacheFirstSightTokens != tc.wantFirstSight {
 			t.Fatalf("planned repeat=%d first sight=%d: wire repeat=%v first sight=%d, want %d and %d",
@@ -147,8 +147,7 @@ func TestObservedDemandReachesPreparedFrame(t *testing.T) {
 		if err := r.PrepareCacheAttempt(pr, p); err != nil {
 			t.Fatal(err)
 		}
-		var message protocol.InferenceRequestMessage
-		pr.CacheAttemptSnapshot().ApplyTo(&message)
+		message := preparedCacheFrame(pr)
 		if got := message.CacheRepeatedPrefixTokens; got == nil || *got != planned.RepeatedPrefixTokens {
 			t.Fatalf("%s: wire repeat=%v, want %d", name, got, planned.RepeatedPrefixTokens)
 		}

@@ -6,8 +6,10 @@
 #   deploy/provider-fleet/update-fleet.sh prod    # requires explicit --force-prod
 #
 # Each machine runs the coordinator-served install.sh, which fetches the
-# latest release registered against that coordinator. Dev machines can only
-# ever talk to dev coordinator because the install.sh is served from there.
+# latest release registered against that coordinator. The dev installer also
+# writes the dev coordinator into ~/.config/darkbloom/provider.toml, so the
+# provider connects to dev after its next `darkbloom start`. The prod installer
+# removes that url, so a re-installed Mac goes back to the production default.
 
 set -euo pipefail
 

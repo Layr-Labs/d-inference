@@ -28,4 +28,7 @@ type ProviderToken struct {
 	Label     string    `json:"label"`      // human-readable label (e.g. hostname)
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// DeletedAt marks a soft-deleted token; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }

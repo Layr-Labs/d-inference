@@ -243,7 +243,6 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 		r.logger.Warn("evicting duplicate provider from same device",
 			"evicted_id", id,
 			"kept_id", keepID,
-			"serial", serial,
 		)
 		// Disconnect closes the socket itself.
 		r.Disconnect(id)
@@ -301,6 +300,32 @@ func (r *Registry) RemoveProviderBySerial(serialOrID string, force bool) (online
 // with the health-neutral restart cause instead.
 func (r *Registry) Disconnect(id string) {
 	r.disconnectWithCause(id, protocol.CoordinatorCauseProviderDisconnected)
+}
+
+// DisconnectAccount disconnects every live provider linked to accountID and
+// returns how many it disconnected. Account erasure calls it after the soft
+// delete revoked the provider tokens, so a provider that reconnects comes
+// back unlinked. Disconnect clears each provider's registry state.
+func (r *Registry) DisconnectAccount(accountID string) int {
+	if accountID == "" {
+		return 0
+	}
+	var ids []string
+	r.mu.RLock()
+	for id, p := range r.providers {
+		p.mu.Lock()
+		linked := p.AccountID == accountID
+		p.mu.Unlock()
+		if linked {
+			ids = append(ids, id)
+		}
+	}
+	r.mu.RUnlock()
+	// Disconnect takes r.mu itself, so it runs outside the read lock.
+	for _, id := range ids {
+		r.Disconnect(id)
+	}
+	return len(ids)
 }
 
 // disconnectWithCause preserves the read loop's graceful/abrupt classification

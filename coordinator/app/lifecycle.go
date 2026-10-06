@@ -47,6 +47,10 @@ func startBackgroundLoops(ctx context.Context, srv *api.Server, reg *registry.Re
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
 	srv.StartStripePayoutReconciler(ctx)
 	srv.StartGlobalPayoutReconciler(ctx)
+	// Account erasure: scrub requests whose grace period has ended.
+	srv.StartAccountErasureLoop(ctx)
+	// Deliver the erasure outbox: Stripe deletions and the erasure_log record.
+	srv.StartErasureOutboxLoop(ctx)
 
 }
 

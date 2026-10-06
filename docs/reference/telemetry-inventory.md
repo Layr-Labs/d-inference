@@ -301,6 +301,21 @@ Datadog's; nothing is stored locally.
 | `warm_pool_tick` | info · `custom` | Per-model latest-state sample: `model`, `target_warm`, `warm`, `eligible_cold`, `cold_ineligible`, `warm_saturated`, `warm_foreign_blocked`, `occupancy_ramp`, `headroom_providers`, `running`, `waiting`, `queue_depth`, `oldest_queue_age_ms`, `spill_arrival_rate`, `service_time_ms`, `quality_concurrency`, `demand_concurrency`, `capacity_rejects`, `ttft_misses`, `speculative_started`, `speculative_won`, `cold_dispatches`, `load_duration_ewma_ms`, `actions`, `observe_only`, plus scalar `cold_disq_<reason>` counts. Polled every 15 s and deduplicated by controller snapshot timestamp; intermediate controller ticks can be skipped. No provider or request identity; no Postgres record. | `coordinator/api/observation/warm_pool_telemetry.go` (`StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields`) |
 | `panic in handler <method> <path>: <value>` | fatal · `panic` | `handler`, `endpoint`, plus `stack` | `coordinator/internal/api/middleware/middleware.go` recovery middleware |
 
+## Account erasure log
+
+One record per erased account, written by the erasure outbox worker
+(`writeErasureLog`, `coordinator/api/accounts/erasure/outbox.go`) through
+`datadog.Client.SendLog` (`coordinator/datadog/logs_send.go`): one
+unbatched Logs API post whose failure is retried (up to 8 attempts, then the
+outbox row is `manual_action`), not dropped. `ddsource` `coordinator`, service
+`d-inference-coordinator`, the three attributes under `attributes`. Message
+`account erased`, kind `erasure_log`, severity `info`, ddtags
+`kind:erasure_log,severity:info,erasure_log:true`, attributes `request_id`,
+`account_id`, `erased_at` only; no personal data. Without `DD_API_KEY` the
+record is the `slog` line `erasure_log`. It is the list of completed erasures
+to replay after a database restore, so it must reach a Datadog log archive
+that outlives the database backups ([runbook](../operations/account-erasure.md#after-a-database-restore)).
+
 ## Coordinator per-request records (Postgres)
 
 | Table | Grain | Written by | Retention |

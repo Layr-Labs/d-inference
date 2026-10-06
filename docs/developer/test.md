@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 ## Nightly Linear package
 
@@ -3160,6 +3160,7 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/profile_test.go` | `TestProfile_SingleProviderNonStreaming`, `TestProfile_RequestProfilesRecorded` |
 | `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (blocking paged gate with the pinned e2b fixture; verifies novel-demand suppression, donation, exact reuse, account isolation and recovery) |
 | `e2e/exact_cache_recurrent_test.go` | `TestIntegrationExactCacheRecurrentCompanyLeaves` (opt-in via `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL`): primes an ~18k-token Qwen prompt (fleet-novel, `skipped_novel`), streams a second tenant and after its first token streams the donor beside it (plain chunks), cancels the second tenant after four of its tokens arrive at the slowed beside-a-prefill cadence and while the donor is still prefilling (its remaining ranges run solo on the stripe), and asserts the repeat restores within one 4,096 stripe of the prompt end and more than 8,192 tokens through the real coordinator |
+| `e2e/exact_cache_first_sight_test.go` | `TestIntegrationExactCacheFirstSightWritesSpeculatively`, `TestIntegrationExactCacheFirstSightMixedVersion` (opt-in via `DARKBLOOM_EXACT_CACHE_FIRST_SIGHT_E2E=1`, e2b fixture, one provider behind the wire relay). The first runs first sight on at the loader default: the novel request's frame carries `cache_repeated_prefix_tokens` 0 and `cache_first_sight_tokens`, the provider settles `donated` or `write_speculative_limited` and never `skipped_novel`, and when the checkpoint was written the second request restores it. The second has the relay strip `cache_first_sight_tokens` (`ProviderWireRelay.StripCoordinatorFields`): the prime settles `skipped_novel` with no holder and the follow-up writes as an observed repeat |
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors

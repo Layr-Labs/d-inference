@@ -1069,7 +1069,7 @@ most `cacheDemandMaxLadderBoundaries = 10`). The stride matches the two
 provider consumers of the reported repeat: the engine keeps the 1,024-aligned
 checkpoint at or below it (`CBv2Request.prefixCheckpointTargetTokens`, set by
 the provider bridge from `RemotePrefixCacheContext.repeatedPrefixTokens`), and
-`SSDCheckpointDemand.admitsWrite` gates the write on the repeat reaching
+`SSDCheckpointDemand.writeClass` gates the write on the repeat reaching
 `minEffectiveTokens` (1,024). Two prompts sharing 7,000 tokens report 6,144; two
 100,000-token prompts sharing an 8,192-token system prompt report 8,192 through
 the ladder. A plan reads and records at most `cacheDemandMaxPlanBoundaries = 75`

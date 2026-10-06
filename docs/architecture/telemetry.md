@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -176,7 +176,7 @@ The complete-checkpoint writer also distinguishes novel-share exhaustion
 (`write_priority_limited`) from total-budget exhaustion (`write_rate_limited`)
 through `SSDWriteRateLimiter.decision`. Ahead of both, the demand gate settles
 `skipped_novel` for a checkpoint with no coordinator-observed or local repeat
-demand, spending no bytes or budget (`SSDCheckpointDemand.admitsWrite`). All
+demand, spending no bytes or budget (`SSDCheckpointDemand.writeClass`). All
 three settle the same typed heartbeat counter; none creates a new event field. The [protocol reference](../reference/protocol-messages.md)
 owns the closed outcome vocabulary, and the [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)
 defines the write policy.

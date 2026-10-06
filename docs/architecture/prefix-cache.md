@@ -447,7 +447,7 @@ prompt's own boundary in a separate count, `cache_first_sight_tokens`, and
 leaves the repeat count at 0: a provider that understands the field may write
 that checkpoint as a speculative one, and a provider that does not ignores it
 and settles `skipped_novel`. Older coordinators and local serving
-write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
+write unconditionally (`SSDCheckpointDemand.writeClass`; policy in the
 [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). Qwen includes attention KV, recurrent state and normalized typed
 MTP history. Historical attention includes exact owning full rows and the
 window contents at the captured boundary, preserving borrower relationships.

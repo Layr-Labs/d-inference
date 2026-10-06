@@ -34,7 +34,8 @@ budget was charged because neither the coordinator's
 carried `cache_first_sight_tokens` and no observed repeat) that yielded to
 write-budget, writer or disk pressure before any budget was charged. It is
 counted per offered checkpoint and published as a fleet-wide total; the three
-limited outcomes below no longer include first-sight offers.
+limited outcomes (`write_queue_full` and the two below) no longer include
+first-sight offers.
 `write_priority_limited` identifies exhaustion of the novel-checkpoint write
 share; `write_rate_limited` identifies exhaustion of the total write budget.
 See the [SSD write policy](ssd-kv-cache.md#size-and-eviction-rules) for admission

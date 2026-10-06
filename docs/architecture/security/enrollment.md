@@ -40,7 +40,11 @@ The upcoming policy freezes a durable cohort on the first upgraded production
 coordinator startup, **after revocation replay**. Membership binds the stored account,
 Secure Enclave public key and serial of a device already successfully
 MDM-verified before the freeze. It is not a list of every MicroMDM enrollment,
-every saved `hardware` label, or every account that owns a provider. Subsequent
+every saved `hardware` label, or every account that owns a provider. Initial
+qualification excludes soft-deleted accounts and provider records in both
+`coordinator/store/postgres/legacy_mdm_cohort.go` and
+`coordinator/store/memory/legacy_mdm_cohort.go` (`FreezeLegacyMDMCohort`). These
+filters do not recompute an already frozen snapshot. Subsequent
 restarts reuse the frozen cohort, even when empty; new accounts, devices, keys and new
 account/device associations cannot expand it. Reenrollment requires the
 existing key under its frozen account. A new identity requires macOS 27 or later

@@ -56,7 +56,7 @@ func crossVersionProvider(kPubB64, sePubB64, newVersion string) *registry.Provid
 func seedFreshProcessAttestation(
 	srv *trustFixture, seKey, oldVersion, token, nodeKey, binaryHash string,
 ) {
-	srv.codeAttestThrottle.RecordAttestedForProcess(
+	srv.codeAttestThrottle.RecordAttestedForProcess(srv.codeAttestThrottle.PublicationGeneration(),
 		seKey, oldVersion, token, nodeKey, binaryHash)
 }
 

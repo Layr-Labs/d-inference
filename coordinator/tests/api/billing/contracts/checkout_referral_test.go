@@ -16,8 +16,8 @@ func TestCheckoutNormalizesReferralCode(t *testing.T) {
 		if err := r.ParseForm(); err != nil {
 			t.Error(err)
 		}
-		if code := r.Form.Get("metadata[referral_code]"); code != "PARTNER" {
-			t.Errorf("Stripe referral metadata = %q", code)
+		if code := r.Form.Get("metadata[referral_code]"); code != "" {
+			t.Errorf("personal referral code escaped into Stripe metadata: %q", code)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"cs_referral","url":"https://checkout.example.test/session"}`))

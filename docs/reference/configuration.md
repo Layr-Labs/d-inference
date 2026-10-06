@@ -13,6 +13,23 @@ read once at process start and a restart applies a change.
 
 Autopilot `selected_models` is the cached planning inventory; `backend.enabled_models` and explicit startup overrides remain ordinary serving permission in waiting/shadow mode. See [the protocol and activation boundary](../architecture/model-autopilot.md).
 
+## Runtime metallib snapshots
+
+The provider creates an anonymous snapshot before binding the runtime metallib.
+
+| Variable | Default / accepted values | Consumer |
+|---|---|---|
+| `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
+
+Set `TMPDIR` in the environment of the process that serves inference. A shell
+export applies to `darkbloom start --foreground` and `darkbloom start --local`.
+For background `darkbloom start`, it applies to the invoking CLI's startup
+snapshot, but is not copied into the installed provider's launchd environment:
+`TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
+(`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
+`passthroughEnvironment`). See [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough).
+This setting does not grant sandbox permissions or change snapshot binding checks.
+
 ## Deployment environment
 
 | Setting | Default / bounds | Consumer |
@@ -126,6 +143,7 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 | `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
 | `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`); `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
 | `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
+| `EIGENINFERENCE_ERASURE_GRACE` | Go duration ≥ 0 | `720h` (`defaultGrace`, 30 days) | `coordinator/api/accounts/erasure/loop.go` (`graceFromEnv`) | Time between an account erasure's soft delete and its scrub; an invalid or negative value logs a warning and uses the default. Related erasure constants: [personal-data rules](personal-data-rules.md#configuration-and-constants); procedure: [`../operations/account-erasure.md`](../operations/account-erasure.md). |
 | `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
 | `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
 | `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Allows an unencrypted zip when no recipient is configured. |

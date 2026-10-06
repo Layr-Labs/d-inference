@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -112,3 +112,24 @@ Platform security, signed-artifact qualification and physical SIP/boot transitio
 - [Serving authorization reference](../../reference/provider-authorization.md) — exact controls, deadlines and qualification.
 - [MDM-optional rollout](../../operations/mdm-optional-rollout.md) — activation and removal procedure.
 - [Hybrid trust review](../../reports/2026-09-27-hybrid-provider-trust-review.md) — scoped evidence and limits of this update.
+
+## Account erasure cleanup
+
+Queued App Attest archive completions and APNs proof writes serialize with the
+scrub and recheck durable ownership. Trust-reuse upserts/recovery and verification
+job writes use the same fence, including retained hash-only ownership when an
+ordinary removal or inventory-alias scrub removed the original live source.
+Session-specific evidence cannot return
+after its account is scrubbed; key-scoped receipts and APNs proofs remain usable
+only while another owner is live. The frozen legacy-MDM runtime policy removes
+the erased account's membership through `Policy.ForgetAccount`, preserving other
+members on a shared device (`coordinator/internal/provider/legacymdm/erasure.go`).
+
+After durable scrub succeeds, `ForgetErasedKeys`
+(`coordinator/api/provider/trust/erasure.go`) removes the erased account's
+unshared keys from the trust-reuse cache and verification scheduler. Shared
+keys remain until their last non-erased owner is scrubbed. Publications capture
+an erasure generation before database I/O; `Forget` invalidates it, preventing
+a delayed committed response from repopulating the cache or scheduler. The store also
+removes that account's frozen legacy MDM cohort rows, preserving other owners'
+membership. See [account erasure](../account-erasure.md).

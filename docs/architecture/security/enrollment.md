@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -40,7 +40,11 @@ The upcoming policy freezes a durable cohort on the first upgraded production
 coordinator startup, **after revocation replay**. Membership binds the stored account,
 Secure Enclave public key and serial of a device already successfully
 MDM-verified before the freeze. It is not a list of every MicroMDM enrollment,
-every saved `hardware` label, or every account that owns a provider. Subsequent
+every saved `hardware` label, or every account that owns a provider. Initial
+qualification excludes soft-deleted accounts and provider records in both
+`coordinator/store/postgres/legacy_mdm_cohort.go` and
+`coordinator/store/memory/legacy_mdm_cohort.go` (`FreezeLegacyMDMCohort`). These
+filters do not recompute an already frozen snapshot. Subsequent
 restarts reuse the frozen cohort, even when empty; new accounts, devices, keys and new
 account/device associations cannot expand it. Reenrollment requires the
 existing key under its frozen account. A new identity requires macOS 27 or later
@@ -211,7 +215,7 @@ MicroMDM is started with `command-webhook-url` pointing at the coordinator.
 | Route | `POST /v1/mdm/webhook` | `coordinator/api/routes.go` |
 | Authentication | When `EIGENINFERENCE_MDM_WEBHOOK_SECRET` is set: `X-Webhook-Token: <secret>` header **or** `?token=<secret>` query (MicroMDM cannot add headers), constant-time compare; failure → `403 forbidden` before the body is read. Unset → startup warning; the CommandUUID gate alone protects the webhook | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`); `coordinator/app/services.go` |
 | Body cap | [`maxMDMWebhookBodyBytes`](../../reference/api-contracts.md#limits-and-validation) | `coordinator/api/provider/trust/settings.go` |
-| Logging | `Debug` level: `body_size` and a 500-byte `body_preview` (MDM plist, never inference data) | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`) |
+| Logging | `Debug` level: `body_size` | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`) |
 | Parsing | JSON `{topic, acknowledge_event: {status, raw_payload}}`; only `status == "Acknowledged"` with a non-empty base64 plist is processed | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
 | Solicited-response gate | `parseCommandUUID(plist)` must match an outstanding command; otherwise the payload is dropped — a forged SecurityInfo can never drive a grant | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
 | Dispatch | `SecurityInfo` → the waiting `VerifyProviderWithUDIDObserver` or the late path `ApplyLateSecurityInfo`; `DevicePropertiesAttestation` → `ApplyLateMDA` | `coordinator/mdm/mdm.go` (`SetOnLateSecurityInfo`, `SetOnMDA`); `coordinator/api/provider/` (`ApplyLateSecurityInfo`); `coordinator/internal/provider/verification/callbacks.go` (`ApplyLateMDA`) |

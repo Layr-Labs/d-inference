@@ -12,14 +12,19 @@ func (t *Throttle) BeginLoop(seKey string) uint64 {
 	if seKey == "" {
 		return 0
 	}
+	publicationGeneration := t.PublicationGeneration()
 	unlockReservation := t.lockPushReservation(seKey)
 	defer unlockReservation()
-	return t.beginLoopReservationHeld(seKey)
+	return t.beginLoopReservationHeld(seKey, publicationGeneration)
 }
 
-func (t *Throttle) beginLoopReservationHeld(seKey string) uint64 {
+func (t *Throttle) beginLoopReservationHeld(seKey string, publicationGeneration uint64) uint64 {
 	generation := t.loopGeneration.Add(1)
 	t.mu.Lock()
+	if !t.publicationCurrentLocked(seKey, publicationGeneration) {
+		t.mu.Unlock()
+		return 0
+	}
 	t.loopGenerations[seKey] = generation
 	delete(t.loopTokens, seKey)
 	t.mu.Unlock()
@@ -37,10 +42,14 @@ func (t *Throttle) RotateLoopAndClearPushBudget(
 	if seKey == "" {
 		return 0
 	}
+	publicationGeneration := t.PublicationGeneration()
 	unlockReservation := t.lockPushReservation(seKey)
 	defer unlockReservation()
-	generation := t.beginLoopReservationHeld(seKey)
-	t.clearPushBudgetReservationHeld(ctx, seKey)
+	generation := t.beginLoopReservationHeld(seKey, publicationGeneration)
+	if generation == 0 {
+		return 0
+	}
+	t.clearPushBudgetReservationHeld(ctx, seKey, publicationGeneration)
 	return generation
 }
 
@@ -235,9 +244,10 @@ func (t *Throttle) ClearPushBudget(ctx context.Context, seKey string) bool {
 	if seKey == "" {
 		return false
 	}
+	publicationGeneration := t.PublicationGeneration()
 	unlockReservation := t.lockPushReservation(seKey)
 	defer unlockReservation()
-	return t.clearPushBudgetReservationHeld(ctx, seKey)
+	return t.clearPushBudgetReservationHeld(ctx, seKey, publicationGeneration)
 }
 
 // clearPushBudgetReservationHeld runs the full throttled clear (reservation
@@ -248,9 +258,13 @@ func (t *Throttle) ClearPushBudget(ctx context.Context, seKey string) bool {
 // Fail-closed: on store error nothing is cleared; the rotated token is only
 // DELAYED until the floor elapses — the rate limit never weakens.
 func (t *Throttle) clearPushBudgetReservationHeld(
-	ctx context.Context, seKey string,
+	ctx context.Context, seKey string, publicationGeneration uint64,
 ) bool {
 	t.mu.Lock()
+	if !t.publicationCurrentLocked(seKey, publicationGeneration) {
+		t.mu.Unlock()
+		return false
+	}
 	now := t.Now()
 	if last, ok := t.lastBudgetClear[seKey]; ok &&
 		now.Sub(last) < t.BudgetClearCooldown {
@@ -274,6 +288,10 @@ func (t *Throttle) clearPushBudgetReservationHeld(
 			// window. Mirror the durable verdict locally so the next flood
 			// attempt short-circuits without a store round-trip.
 			t.mu.Lock()
+			if !t.publicationCurrentLocked(seKey, publicationGeneration) {
+				t.mu.Unlock()
+				return false
+			}
 			if lastClear.After(t.lastBudgetClear[seKey]) {
 				t.lastBudgetClear[seKey] = lastClear
 			}
@@ -286,6 +304,10 @@ func (t *Throttle) clearPushBudgetReservationHeld(
 	}
 
 	t.mu.Lock()
+	if !t.publicationCurrentLocked(seKey, publicationGeneration) {
+		t.mu.Unlock()
+		return false
+	}
 	t.lastBudgetClear[seKey] = now
 	delete(t.novelTokenBlockedUntil, seKey)
 	// An honored rotation lifts the novel-token admission floor: the freshly

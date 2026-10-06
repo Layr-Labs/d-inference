@@ -67,6 +67,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 |---|---|
 | [storage.md](storage.md) | Coordinator persistence: Postgres tables, memory store, retention jobs |
 | [schema-lifecycle.md](schema-lifecycle.md) | How the Postgres schema changes: goose versions, migration kinds, locks and timeouts, the checked-in schema, failure modes |
+| [account-erasure.md](account-erasure.md) | GDPR account erasure: request states, the checked scrub transaction, refused credits, protections against undoing it, shared keys, what is kept |
 | [billing.md](billing.md) | Pricing, reservations, ledger, Stripe deposits and Connect payouts, referrals, base rewards |
 | [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, retired client ingestion, Datadog |
 | [request-outcome-observability.md](request-outcome-observability.md) | Closed outcome taxonomy across client, provider, and billing dimensions |

@@ -18,6 +18,9 @@ func (s *MemoryStore) UpsertSmallModelsInterest(ctx context.Context, record stor
 	if s.usersByAccountID[record.AccountID] == nil {
 		return store.ErrNotFound
 	}
+	if err := s.accountAdmissionLocked(record.AccountID); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	previous, exists := s.smallModelsInterest[record.AccountID]
 	record.CreatedAt = now
@@ -50,7 +53,7 @@ func (s *MemoryStore) ListSmallModelsInterest(ctx context.Context, after string,
 	defer s.mu.RUnlock()
 	ids := make([]string, 0, len(s.smallModelsInterest))
 	for id := range s.smallModelsInterest {
-		if id > after {
+		if user := s.usersByAccountID[id]; id > after && user != nil && user.DeletedAt == nil {
 			ids = append(ids, id)
 		}
 	}

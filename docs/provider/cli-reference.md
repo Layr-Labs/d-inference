@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1354,7 +1354,7 @@ override `provider.toml` for one process, are in
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
 | `[backend.model_autopilot] pinned_models` | `[]` | Models autopilot must retain; configured `[backend] model` is additionally pinned (`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`, `autopilotPinnedModels`) |
 | `[backend] startup_preload` | `true` | Preload `preload_models` when set, otherwise selected models (previously loaded first on coordinator starts), within slot and memory limits |
-| `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |
+| `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | The installer binds it to the coordinator that served it: another coordinator, such as dev, writes its URL; the production installer removes the line so this default applies (`scripts/install.sh`, `bind_provider_coordinator`) |
 | `[coordinator] heartbeat_interval_secs` | `5` | Heartbeat; state file refresh is half of it |
 | `[coordinator] private_only` | `false` | Serve only the owner's [self-route](./self-route.md) traffic |
 | `[gemma_optimizations] prefill_layer18`, `weighted_r1` | `true` | See [beta features](./beta-features.md) |
@@ -1370,6 +1370,11 @@ Pure-prefill stripes are unchanged. These variables are not forwarded to a Launc
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
 ## LaunchAgent environment passthrough
+
+For sandboxed foreground/local startup, `TMPDIR` selects the anonymous runtime
+metallib snapshot directory. It is not forwarded to the background provider;
+see [runtime metallib snapshots](../reference/configuration.md#runtime-metallib-snapshots)
+for accepted paths, failure behavior, and serving-process scope.
 
 The [MiMo candidate controls](../reference/configuration.md#native-mimo-v26-candidate)
 are process-scoped settings, not new CLI subcommands or release switches. Native

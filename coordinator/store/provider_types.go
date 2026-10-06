@@ -37,6 +37,9 @@ type ProviderRecord struct {
 	LastSessionStats           json.RawMessage `json:"last_session_stats,omitempty"`
 	RegisteredAt               time.Time       `json:"registered_at"`
 	LastSeen                   time.Time       `json:"last_seen"`
+
+	// DeletedAt marks a soft-deleted provider record; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }
 
 // ProviderSession is one connect→disconnect lifecycle of a provider machine.

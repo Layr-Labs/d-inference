@@ -50,7 +50,21 @@ func (s *PostgresStore) RecordUsage(rec store.UsageRecord) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		slog.Error("store: begin usage write failed", "request_id", rec.RequestID, "error", err)
+		return
+	}
+	defer rollbackErasureTx(tx)
+	erased, _, err := erasedObservationOwners(ctx, tx, []string{h}, nil)
+	if err != nil {
+		slog.Error("store: fence usage location failed", "request_id", rec.RequestID, "error", err)
+		return
+	}
+	if erased[h] {
+		rec.RequestLocation = nil
+	}
+	_, err = tx.Exec(ctx,
 		`WITH ins AS (
 			INSERT INTO usage (provider_id, consumer_key_hash, key_id, model, public_model, prompt_tokens, cached_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -63,6 +77,9 @@ func (s *PostgresStore) RecordUsage(rec store.UsageRecord) {
 		rec.ProviderID, h, rec.KeyID, rec.Model, rec.PublicModel, rec.PromptTokens, rec.CachedTokens, rec.CompletionTokens,
 		rec.RequestID, rec.CostMicroUSD, marshalProviderLocation(rec.RequestLocation),
 	)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	if err != nil {
 		slog.Error("store: record usage failed", "request_id", rec.RequestID, "model", rec.Model, "error", err)
 	}

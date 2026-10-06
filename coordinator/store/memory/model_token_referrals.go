@@ -37,8 +37,9 @@ func (s *MemoryStore) preparePromotionReferralLocked(r store.ModelTokenReservati
 
 func (s *MemoryStore) recordPromotionReferralLocked(record consumersettlement.Record) {
 	if reward := record.Result.ReferralRewardMicroUSD; reward > 0 {
-		s.creditLocked(record.Referrer, reward, store.LedgerReferralReward, record.Input.JobID, s.now())
-		s.withdrawable[record.Referrer] += reward
+		if s.creditLocked(record.Referrer, reward, store.LedgerReferralReward, record.Input.JobID, s.now()) {
+			s.withdrawable[record.Referrer] += reward
+		}
 	}
 	s.consumerSettlements[record.Input.JobID] = record
 }

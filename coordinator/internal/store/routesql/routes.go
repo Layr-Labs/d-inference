@@ -179,7 +179,7 @@ func InsertArgs(dst []any, record *store.InferenceRouteRecord, now time.Time) []
 		record.EstimatedPromptTokens, record.RequestedMaxTokens,
 		record.RequiresVision, record.HasTools, record.SelfRouteOnly, record.PreferOwner,
 		createdAt, updatedAt,
-		record.ProviderRegion, record.ConsumerRegion, record.ErrorReason,
+		nullableRegion(record.ProviderRegion), nullableRegion(record.ConsumerRegion), record.ErrorReason,
 	)
 }
 
@@ -230,4 +230,12 @@ func SplitBatches(records []*store.InferenceRouteRecord, maxRows int) [][]*store
 	}
 	flush()
 	return out
+}
+
+// An omitted or erased region is SQL NULL, matching the scrub representation.
+func nullableRegion(region string) any {
+	if region == "" {
+		return nil
+	}
+	return region
 }

@@ -571,7 +571,7 @@ func TestCoordinatorRestartContinuityReconnectAvoidsMDMStorm(t *testing.T) {
 			}
 			priority := srv.VerificationSubmitPriority(fp.seKey, fp.serial)
 			if priority != store.VerificationPriorityRefresh {
-				errCh <- fmt.Errorf("%s: submit priority = %q, want refresh (continuity candidate)", fp.id, priority)
+				errCh <- fmt.Errorf("%s: submit priority = %v, want refresh (continuity candidate)", fp.id, priority)
 				return
 			}
 			if gen := sch.Submit(
@@ -722,7 +722,7 @@ func TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave(t *testing.T)
 				fp.id, job.State, job.LastOutcome)
 		}
 		if job.Priority != store.VerificationPriorityFirstOrExpired {
-			t.Fatalf("%s: scheduler priority = %q, want first/expired", fp.id, job.Priority)
+			t.Fatalf("%s: scheduler priority = %v, want first/expired", fp.id, job.Priority)
 		}
 		if due := job.NextAttemptAt.Sub(reconnectAt); due > mdmFirstVerifySpreadMax {
 			t.Fatalf("%s: live verification due %s out, must be within %s of the declined fast-skip",

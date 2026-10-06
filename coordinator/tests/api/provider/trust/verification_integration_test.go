@@ -41,7 +41,7 @@ func TestContinuityMissPromotesRefreshSubmitToImmediateDue(t *testing.T) {
 		cur.Add(-20*time.Minute), cur.Add(-60*time.Second)))
 	priority := srv.VerificationSubmitPriority("se-cont-miss", "serial-cont-miss")
 	if priority != store.VerificationPriorityRefresh {
-		t.Fatalf("submit priority = %q, want refresh for a continuity candidate", priority)
+		t.Fatalf("submit priority = %v, want refresh for a continuity candidate", priority)
 	}
 	sch.Submit(context.Background(), p.ID, p, priority)
 
@@ -62,7 +62,7 @@ func TestContinuityMissPromotesRefreshSubmitToImmediateDue(t *testing.T) {
 		t.Fatalf("promoted job not persisted: %+v, %v", rec, err)
 	}
 	if rec.Priority != store.VerificationPriorityFirstOrExpired {
-		t.Fatalf("priority = %q after continuity miss, want promoted first/expired", rec.Priority)
+		t.Fatalf("priority = %v after continuity miss, want promoted first/expired", rec.Priority)
 	}
 	if due := rec.NextAttemptAt.Sub(now); due > mdmFirstVerifySpreadMax {
 		t.Fatalf("continuity-miss settle due %s out, must be within %s", due, mdmFirstVerifySpreadMax)

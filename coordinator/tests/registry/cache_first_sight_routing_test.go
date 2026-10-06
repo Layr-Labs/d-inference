@@ -16,6 +16,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheactivation"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheplan"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -108,9 +109,12 @@ func (f *firstSightRoutingFixture) plan(promptTokens int, conversation uint32) p
 	return result.Plan
 }
 
+// wireCounts are the two cache counts one prepared frame carries.
+type wireCounts struct{ repeat, firstSight int }
+
 // dispatch reserves a provider for the plan and returns it with the routing
-// decision, the terminal cache diagnostics and the count its frame carries.
-func (f *firstSightRoutingFixture) dispatch(plan production.CachePlan) (*production.Provider, production.RoutingDecision, *production.PendingRequest, int) {
+// decision, the terminal cache diagnostics and the counts its frame carries.
+func (f *firstSightRoutingFixture) dispatch(plan production.CachePlan) (*production.Provider, production.RoutingDecision, *production.PendingRequest, wireCounts) {
 	f.t.Helper()
 	f.requests++
 	pr := &production.PendingRequest{RequestID: fmt.Sprintf("request-%d", f.requests), Model: "model", CachePlan: plan,
@@ -119,10 +123,10 @@ func (f *firstSightRoutingFixture) dispatch(plan production.CachePlan) (*product
 	return p, decision, pr, onWire
 }
 
-// send reserves a provider outside exclude for the request, reads the count
+// send reserves a provider outside exclude for the request, reads the counts
 // its prepared frame carries, and releases the provider as a dispatch that
 // ended before any content does.
-func (f *firstSightRoutingFixture) send(pr *production.PendingRequest, exclude ...string) (*production.Provider, production.RoutingDecision, int) {
+func (f *firstSightRoutingFixture) send(pr *production.PendingRequest, exclude ...string) (*production.Provider, production.RoutingDecision, wireCounts) {
 	f.t.Helper()
 	p, decision := f.registry.ReserveProviderEx("model", pr, exclude...)
 	if p == nil {
@@ -131,14 +135,16 @@ func (f *firstSightRoutingFixture) send(pr *production.PendingRequest, exclude .
 	if err := f.registry.PrepareCacheAttempt(pr, p); err != nil {
 		f.t.Fatal(err)
 	}
-	onWire := repeatedPrefixTokensOnWire(f.t, pr)
-	if onWire == nil {
+	var frame protocol.InferenceRequestMessage
+	pr.CacheAttemptSnapshot().ApplyTo(&frame)
+	if frame.CacheRepeatedPrefixTokens == nil {
 		f.t.Fatal("prepared frame carries no repeated prefix count")
 	}
+	onWire := wireCounts{repeat: *frame.CacheRepeatedPrefixTokens, firstSight: frame.CacheFirstSightTokens}
 	f.registry.ForgetCacheAttempt(pr)
 	p.RemovePending(pr.RequestID)
 	f.registry.SetProviderIdle(p.ID)
-	return p, decision, *onWire
+	return p, decision, onWire
 }
 
 func TestCacheFirstSightOffRoutesANovelPromptAsBefore(t *testing.T) {
@@ -151,8 +157,8 @@ func TestCacheFirstSightOffRoutesANovelPromptAsBefore(t *testing.T) {
 	if decision.SelectionPath != production.SelectionRandom || decision.NearTiePoolSize != 2 || pr.CacheOpportunity.AffinityApplied {
 		t.Fatalf("equivalent providers were not spread at random: %+v", decision)
 	}
-	if onWire != 0 || pr.CacheOpportunityReason() != "no_repeat_observed" {
-		t.Fatalf("frame carries %d and the request reports %q, want 0 and no_repeat_observed", onWire, pr.CacheOpportunityReason())
+	if onWire != (wireCounts{}) || pr.CacheOpportunityReason() != "no_repeat_observed" {
+		t.Fatalf("frame carries %+v and the request reports %q, want neither count and no_repeat_observed", onWire, pr.CacheOpportunityReason())
 	}
 	if status := f.registry.CacheRoutingActivationStatus(); status.FirstSight != 0 || status.Planned != 1 {
 		t.Fatalf("activation status=%+v, want one planned request and no first sight", status)
@@ -161,7 +167,9 @@ func TestCacheFirstSightOffRoutesANovelPromptAsBefore(t *testing.T) {
 
 // The first request of a conversation is told to keep its deepest stride
 // boundary and is routed by the key its follow-up will derive, so the
-// follow-up lands on the provider that wrote the checkpoint.
+// follow-up lands on the provider that wrote the checkpoint. The frame keeps
+// the two counts apart: first sight never reads as an observed repeat, and a
+// proven repeat carries no first-sight count.
 func TestCacheFirstSightRoutesTheFollowUpToTheFirstRequestsProvider(t *testing.T) {
 	f := newFirstSightRoutingFixture(t, 4_096)
 	const conversations = 6
@@ -175,8 +183,8 @@ func TestCacheFirstSightRoutesTheFollowUpToTheFirstRequestsProvider(t *testing.T
 		if decision.SelectionPath != production.SelectionPrefixAffinity || decision.CacheDiscountMs != 0 || pr.CacheSelectionSelected {
 			t.Fatalf("conversation %d: first request was not placed by affinity alone: %+v", conversation, decision)
 		}
-		if onWire != 6_144 || pr.CacheOpportunity.RepeatedPrefixTokens != 0 || pr.CacheOpportunityReason() != "no_repeat_observed" {
-			t.Fatalf("conversation %d: frame carries %d, diagnostics repeat=%d reason=%q; want 6,144 on the wire and a novel request",
+		if onWire != (wireCounts{firstSight: 6_144}) || pr.CacheOpportunity.RepeatedPrefixTokens != 0 || pr.CacheOpportunityReason() != "no_repeat_observed" {
+			t.Fatalf("conversation %d: frame carries %+v, diagnostics repeat=%d reason=%q; want first sight 6,144 beside repeat 0 and a novel request",
 				conversation, onWire, pr.CacheOpportunity.RepeatedPrefixTokens, pr.CacheOpportunityReason())
 		}
 
@@ -186,8 +194,8 @@ func TestCacheFirstSightRoutesTheFollowUpToTheFirstRequestsProvider(t *testing.T
 				conversation, followUp.FirstSightTokens, followUp.RepeatedPrefixTokens, followUp.AffinityKey() == first.AffinityKey())
 		}
 		again, decision, _, onWire := f.dispatch(followUp)
-		if again != provider || decision.SelectionPath != production.SelectionPrefixAffinity || onWire != 6_144 {
-			t.Fatalf("conversation %d: follow-up went to %s by %s carrying %d, first request went to %s",
+		if again != provider || decision.SelectionPath != production.SelectionPrefixAffinity || onWire != (wireCounts{repeat: 6_144}) {
+			t.Fatalf("conversation %d: follow-up went to %s by %s carrying %+v, first request went to %s",
 				conversation, again.ID, decision.SelectionPath, onWire, provider.ID)
 		}
 	}
@@ -201,8 +209,8 @@ func TestCacheFirstSightSkipsPromptsBelowTheMinimum(t *testing.T) {
 	f := newFirstSightRoutingFixture(t, 8_192)
 	plan := f.plan(7_000, 1)
 	_, decision, _, onWire := f.dispatch(plan)
-	if plan.FirstSightTokens != 0 || plan.AffinityKey() != "" || onWire != 0 || decision.SelectionPath != production.SelectionRandom {
-		t.Fatalf("short prompt: first sight=%d affinity key present=%v wire=%d path=%s",
+	if plan.FirstSightTokens != 0 || plan.AffinityKey() != "" || onWire != (wireCounts{}) || decision.SelectionPath != production.SelectionRandom {
+		t.Fatalf("short prompt: first sight=%d affinity key present=%v wire=%+v path=%s",
 			plan.FirstSightTokens, plan.AffinityKey() != "", onWire, decision.SelectionPath)
 	}
 	if status := f.registry.CacheRoutingActivationStatus(); status.FirstSight != 0 {
@@ -221,14 +229,14 @@ func TestCacheFirstSightSecondDispatchStillCarriesTheKeptPrefix(t *testing.T) {
 			EstimatedPromptTokens: plan.PromptTokenCount, RequestedMaxTokens: 128}
 	}
 	first, _, onWire := f.send(attempt())
-	if onWire != 6_144 {
-		t.Fatalf("first dispatch carries %d, want 6,144", onWire)
+	if onWire != (wireCounts{firstSight: 6_144}) {
+		t.Fatalf("first dispatch carries %+v, want first sight 6,144 and repeat 0", onWire)
 	}
 	retry := attempt()
 	second, _, onWire := f.send(retry, first.ID)
-	if second == first || onWire != 6_144 || retry.CachePlan.RepeatedPrefixTokens != 0 ||
+	if second == first || onWire != (wireCounts{firstSight: 6_144}) || retry.CachePlan.RepeatedPrefixTokens != 0 ||
 		retry.CacheOpportunityReason() != "no_repeat_observed" {
-		t.Fatalf("second dispatch went to %s carrying %d with repeat=%d reason=%q; want another provider, 6,144 on the wire and a novel request",
+		t.Fatalf("second dispatch went to %s carrying %+v with repeat=%d reason=%q; want another provider, first sight 6,144 on the wire and a novel request",
 			second.ID, onWire, retry.CachePlan.RepeatedPrefixTokens, retry.CacheOpportunityReason())
 	}
 	if status := f.registry.CacheRoutingActivationStatus(); status.FirstSight != 1 || status.Planned != 1 {

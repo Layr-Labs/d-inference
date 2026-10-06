@@ -22,7 +22,7 @@ type Plan struct {
 	Boundaries           []protocol.PrefixCacheAnchor
 	// FirstSightTokens is the boundary a novel prompt asks its provider to
 	// keep for a follow-up. It is set only while RepeatedPrefixTokens is 0
-	// and is never evidence of a repeat.
+	// and is never evidence of a repeat, so it travels in its own frame field.
 	FirstSightTokens int
 }
 
@@ -34,13 +34,6 @@ func (p Plan) HasOrigin() bool                  { return p.origin.HasOrigin() }
 func (p Plan) Authenticates(g *Generation) bool { return p.origin.Authenticates(g) }
 func (p Plan) Provenance() Accepted             { return p.origin }
 func (p Plan) AffinityKey() string              { return p.affinityKey }
-
-// RetainedPrefixTokens is the depth sent to the provider, which keeps the
-// checkpoint at or below it and writes this request's checkpoints only when it
-// is at least one stride.
-func (p Plan) RetainedPrefixTokens() int {
-	return max(0, p.RepeatedPrefixTokens, p.FirstSightTokens)
-}
 
 // Detached copies every string and the boundary slice, so retaining the result
 // keeps none of the caller's storage alive. Provenance is unchanged.

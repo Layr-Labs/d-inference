@@ -19,8 +19,8 @@ func (r cacheReceiptRetention) Terminal(nonce string) {
 	r.tracker.markAttemptTerminal(nonce, r.tracker.now())
 }
 
-func newCacheAttemptOwner(tracker *cacheRoutingTracker, generation cacheattempt.Gate, nonce, scope, boundaryMode string, repeated int) *cacheAttemptOwner {
-	return cacheattempt.New(cacheattempt.Metadata{Nonce: nonce, Scope: scope, BoundaryMode: boundaryMode, RepeatedPrefixTokens: repeated}, generation, cacheReceiptRetention{tracker: tracker})
+func newCacheAttemptOwner(tracker *cacheRoutingTracker, generation cacheattempt.Gate, nonce, scope, boundaryMode string, repeated, firstSight int) *cacheAttemptOwner {
+	return cacheattempt.New(cacheattempt.Metadata{Nonce: nonce, Scope: scope, BoundaryMode: boundaryMode, RepeatedPrefixTokens: repeated, FirstSightTokens: firstSight}, generation, cacheReceiptRetention{tracker: tracker})
 }
 
 // CacheAttemptSnapshot captures immutable receipt metadata for a queued frame.

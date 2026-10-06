@@ -116,9 +116,9 @@ func (f *preparationFixture) bind(plan production.CachePlan) production.CachePla
 func assertOrdinaryCacheFrame(t *testing.T, snapshot production.CacheAttemptSnapshot) {
 	t.Helper()
 	staleRepeat := 512
-	message := protocol.InferenceRequestMessage{CacheReceiptNonce: "old", CacheScope: "old", PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: "old", CacheRepeatedPrefixTokens: &staleRepeat}
+	message := protocol.InferenceRequestMessage{CacheReceiptNonce: "old", CacheScope: "old", PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: "old", CacheRepeatedPrefixTokens: &staleRepeat, CacheFirstSightTokens: 1024}
 	snapshot.ApplyTo(&message)
-	if message.CacheReceiptNonce != "" || message.CacheScope != "" || message.PrefixCacheProtocol != 0 || message.CacheReceiptBoundaryMode != "" || message.CacheRepeatedPrefixTokens != nil {
+	if message.CacheReceiptNonce != "" || message.CacheScope != "" || message.PrefixCacheProtocol != 0 || message.CacheReceiptBoundaryMode != "" || message.CacheRepeatedPrefixTokens != nil || message.CacheFirstSightTokens != 0 {
 		t.Fatalf("revoked attempt leaked cache metadata: %+v", message)
 	}
 }

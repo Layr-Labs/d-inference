@@ -122,6 +122,9 @@ func TestIntegrationExactCacheRecurrentCompanyLeaves(t *testing.T) {
 		return suite.Coordinator.Registry.CacheRoutingLifecycleStatus().SSDMisses > before.SSDMisses
 	}, 2*time.Minute, 250*time.Millisecond, "the prime did not enter the cache protocol")
 	settleCacheRoutingTelemetry(t, suite.Coordinator.Registry)
+	// This is a first-sight-off test: the CacheRoutingConfig literal leaves
+	// FirstSightMinTokens at 0, so the prime carries a repeat count of 0 and
+	// no cache_first_sight_tokens.
 	holders, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
 	require.Zero(t, holders, "a fleet-novel prime must not publish a holder (skipped_novel)")
 

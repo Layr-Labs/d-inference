@@ -1,6 +1,7 @@
 package inference_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -192,12 +193,63 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_attempt_budget_refused",
 		"exact_cache_attempt_grace_reclaimed",
 		"exact_cache_donation_outcome{outcome=skipped_novel}",
+		"exact_cache_donation_outcome{outcome=write_speculative_limited}",
 		"exact_cache_demand_entries",
 		"exact_cache_demand_cap_evictions",
 	} {
 		if _, ok := gauges[key]; !ok {
 			t.Fatalf("missing exact-cache gauge %q", key)
 		}
+	}
+}
+
+// A provider's write_speculative_limited count reaches the public status body
+// and the metrics registry under its own name. It is neither folded into
+// write_priority_limited nor dropped as an unknown outcome.
+func TestExactCacheStatusExportsSpeculativeLimitedUnderItsOwnName(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	reg := registry.New(logger)
+	if err := reg.ConfigureCacheRouting(registry.CacheRoutingConfig{
+		Mode: registry.CacheRoutingOn, ActivationPct: 100,
+		MasterKey: base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := testkit.NewServer(t, reg, memory.NewMemory(store.Config{}), api.ServerConfig{}, logger)
+	provider := reg.Register("provider", nil, &protocol.RegisterMessage{
+		PrefixCacheProtocol: 2, Models: []protocol.ModelInfo{{ID: "model"}},
+	})
+	reported := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 3},
+		{Outcome: "write_speculative_limited", Count: 8},
+	}
+	if err := reg.UpdatePrefixCacheTelemetry(provider.ID, nil, &reported); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/cache/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var status infer.ExactCacheStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	outcomes := status.Lifecycle.DonationOutcomes
+	if _, listed := outcomes["write_priority_limited"]; !listed ||
+		outcomes["write_speculative_limited"] != 8 || outcomes["write_priority_limited"] != 0 || outcomes["donated"] != 3 {
+		t.Fatalf("status donation outcomes=%v, want 8 speculative-limited, 3 donated and a priority-limited bucket at 0", outcomes)
+	}
+	if !strings.Contains(response.Body.String(), `"write_speculative_limited":8`) {
+		t.Fatalf("status body does not name the outcome: %s", response.Body.String())
+	}
+	gauges := srv.Metrics().Snapshot().Gauges
+	if got, ok := gauges["exact_cache_donation_outcome{outcome=write_speculative_limited}"]; !ok || got != 8 {
+		t.Fatalf("speculative-limited gauge=%v present=%v, want 8", got, ok)
+	}
+	if got, ok := gauges["exact_cache_donation_outcome{outcome=write_priority_limited}"]; !ok || got != 0 {
+		t.Fatalf("priority-limited gauge=%v present=%v, want 0", got, ok)
 	}
 }
 

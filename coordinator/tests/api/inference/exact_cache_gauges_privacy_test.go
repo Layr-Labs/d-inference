@@ -87,6 +87,13 @@ func TestExactCacheDatadogGaugesAreAggregateAndPrivacySafe(t *testing.T) {
 		}
 	}
 	encodedPackets := strings.Join(packets, "\n")
+	// Every known donation outcome has its own tagged series. A first-sight
+	// write that yielded to pressure is never reported as priority-limited.
+	for _, outcome := range []string{"write_priority_limited", "write_speculative_limited"} {
+		if !strings.Contains(encodedPackets, "outcome:"+outcome) {
+			t.Fatalf("Datadog donation outcome gauge lacks the %s series: %s", outcome, encodedPackets)
+		}
+	}
 	for _, sensitive := range []string{
 		"private-provider", "private-model", strings.Repeat("a", 64),
 		strings.Repeat("b", 64), "11111111-1111-1111-1111-111111111111",

@@ -44,6 +44,66 @@ func TestProviderInferenceWireMessageCarriesPreparedV2Attempt(t *testing.T) {
 	if !strings.Contains(string(encoded), `"cache_repeated_prefix_tokens":0`) {
 		t.Fatalf("0 repeat demand omitted from wire JSON: %s", encoded)
 	}
+	// First sight is off in this configuration, so the frame never names it.
+	if pending.CachePlan.FirstSightTokens != 0 || strings.Contains(string(encoded), "cache_first_sight_tokens") {
+		t.Fatalf("first sight is off, yet the plan holds %d and the frame reads %s", pending.CachePlan.FirstSightTokens, encoded)
+	}
+}
+
+// A first-sight request names its own boundary in cache_first_sight_tokens and
+// keeps the repeat count at 0, so its provider can tell speculation from a
+// proven repeat. Its follow-up is a proven repeat and carries only the repeat.
+func TestProviderInferenceFrameKeepsFirstSightApartFromTheObservedRepeat(t *testing.T) {
+	reg, provider, first := preparedFirstSightCacheAttemptForTest(t, 1024)
+	if first.CachePlan.FirstSightTokens != 4096 || first.CachePlan.RepeatedPrefixTokens != 0 {
+		t.Fatalf("first plan: first sight=%d repeat=%d, want 4096 and 0",
+			first.CachePlan.FirstSightTokens, first.CachePlan.RepeatedPrefixTokens)
+	}
+	firstFrame := providerwire.FrameBuilder("request", "ephemeral", "ciphertext", first)
+	encoded, err := firstFrame(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"cache_first_sight_tokens":4096`) ||
+		!strings.Contains(string(encoded), `"cache_repeated_prefix_tokens":0`) {
+		t.Fatalf("first-sight frame does not carry the boundary beside a repeat of 0: %s", encoded)
+	}
+
+	secondPlan := cachePreparationPlanForTest(t, reg, cacheEligibilityV2Capability("model"))
+	if secondPlan.FirstSightTokens != 0 || secondPlan.RepeatedPrefixTokens != 4096 {
+		t.Fatalf("follow-up plan: first sight=%d repeat=%d, want 0 and 4096", secondPlan.FirstSightTokens, secondPlan.RepeatedPrefixTokens)
+	}
+	second := &registry.PendingRequest{RequestID: "request-2", Model: "model", CachePlan: secondPlan}
+	if err := reg.PrepareCacheAttempt(second, provider); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.ForgetCacheAttempt(second) })
+	repeated, err := providerwire.FrameBuilder("request-2", "ephemeral", "ciphertext", second)(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(repeated), `"cache_repeated_prefix_tokens":4096`) || strings.Contains(string(repeated), "cache_first_sight_tokens") {
+		t.Fatalf("proven repeat does not carry the repeat alone: %s", repeated)
+	}
+	for _, frame := range [][]byte{encoded, repeated} {
+		for _, leaked := range []string{secondPlan.Boundaries[0].ChainHash, "chain_hash", "boundaries"} {
+			if strings.Contains(string(frame), leaked) {
+				t.Fatalf("wire frame carries prompt-derived identifier %q: %s", leaked, frame)
+			}
+		}
+	}
+
+	// The queued first-sight frame is encoded at dequeue, after revocation.
+	reg.ForgetCacheAttempt(first)
+	revoked, err := firstFrame(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"cache_first_sight_tokens", "cache_repeated_prefix_tokens", "cache_scope"} {
+		if strings.Contains(string(revoked), field) {
+			t.Fatalf("revoked first-sight frame still carries %s: %s", field, revoked)
+		}
+	}
 }
 
 func TestProviderInferenceFrameFreezesCommittedServiceReservation(t *testing.T) {
@@ -124,6 +184,7 @@ func TestProviderInferenceWireMessageOmitsUnpreparedCachePlan(t *testing.T) {
 		message.PrefixCacheProtocol != 0 ||
 		message.CacheReceiptBoundaryMode != "" ||
 		message.CacheRepeatedPrefixTokens != nil ||
+		message.CacheFirstSightTokens != 0 ||
 		message.ToolSchemaMetadataProtocol != 1 {
 		t.Fatalf("unprepared plan leaked onto wire: %+v", message)
 	}
@@ -194,7 +255,12 @@ func TestProviderInferenceFrameBuilderRejectsExpiredDeadline(t *testing.T) {
 func TestProviderInferenceQueuedCacheRevocationKeepsOrdinaryInference(t *testing.T) {
 	for _, revoke := range []string{"reconfigure", "off", "forget", "terminal", "disconnect"} {
 		t.Run(revoke, func(t *testing.T) {
-			reg, provider, pending := preparedCacheAttemptForTest(t)
+			// The owner holds a first-sight count, so every revocation path
+			// is shown to drop it with the scope.
+			reg, provider, pending := preparedFirstSightCacheAttemptForTest(t, 1024)
+			if pending.CachePlan.FirstSightTokens != 4096 {
+				t.Fatalf("prepared plan first sight=%d, want 4096", pending.CachePlan.FirstSightTokens)
+			}
 			deadline := time.Now().Add(time.Second)
 			pending.FirstContentDeadline = deadline
 			builder := providerwire.FrameBuilder("request", "ephemeral", "ciphertext", pending)
@@ -224,7 +290,7 @@ func TestProviderInferenceQueuedCacheRevocationKeepsOrdinaryInference(t *testing
 			if message.RequestID != "request" || message.EncryptedBody == nil || message.EncryptedBody.Ciphertext != "ciphertext" || message.EncryptedBody.EphemeralPublicKey != "ephemeral" || message.FirstContentBudgetMS != 350 {
 				t.Fatalf("revocation changed ordinary encrypted request: %+v", message)
 			}
-			if message.CacheScope != "" || message.CacheReceiptNonce != "" || message.PrefixCacheProtocol != 0 || message.CacheReceiptBoundaryMode != "" || message.CacheRepeatedPrefixTokens != nil {
+			if message.CacheScope != "" || message.CacheReceiptNonce != "" || message.PrefixCacheProtocol != 0 || message.CacheReceiptBoundaryMode != "" || message.CacheRepeatedPrefixTokens != nil || message.CacheFirstSightTokens != 0 {
 				t.Fatalf("revoked cache fields emitted at dequeue: %+v", message)
 			}
 			if pending.CacheRoutingParticipates() {

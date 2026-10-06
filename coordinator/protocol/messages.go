@@ -781,10 +781,18 @@ type InferenceRequestMessage struct {
 	// only with a granted cache scope, so a pointer keeps three states on the
 	// wire: absent (older coordinator or no scope, provider keeps writing every
 	// checkpoint), 0 (novel fleet-wide) and n > 0 (repeated). The provider
-	// gates complete-checkpoint donations on it (`skipped_novel`). With first
-	// sight configured, a novel prompt long enough carries its own deepest
-	// 1,024-token boundary here, so its provider writes it for a follow-up.
+	// gates complete-checkpoint donations on it (`skipped_novel`). It is the
+	// observed repeat only: first sight never raises it.
 	CacheRepeatedPrefixTokens *int `json:"cache_repeated_prefix_tokens,omitempty"`
+	// CacheFirstSightTokens is the depth a novel prompt asks its provider to
+	// keep for a follow-up: the prompt's own deepest 1,024-token boundary. It
+	// is a token count derived from prompt length only and carries no
+	// content-derived value; it is coarser than prompt_work.prompt_tokens. It
+	// is set only with a granted cache scope and only while
+	// cache_repeated_prefix_tokens is 0, and is omitted otherwise. A provider
+	// treats it as speculative and may decline the write. A provider that
+	// does not know the field ignores it and treats the request as novel.
+	CacheFirstSightTokens int `json:"cache_first_sight_tokens,omitempty"`
 	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
 	// metadata carried inside the encrypted body. Version 1 means the
 	// coordinator rejected client-forged reserved keys before normalization.

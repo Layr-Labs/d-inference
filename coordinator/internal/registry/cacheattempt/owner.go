@@ -21,6 +21,9 @@ type Metadata struct {
 	Scope                string
 	BoundaryMode         string
 	RepeatedPrefixTokens int
+	// FirstSightTokens is a novel prompt's own boundary, sent apart from the
+	// observed repeat so the provider can tell speculation from proof.
+	FirstSightTokens int
 }
 
 type Owner struct {
@@ -70,11 +73,12 @@ func (s Snapshot) MetadataMessage() protocol.InferenceRequestMessage {
 	if o == nil {
 		return protocol.InferenceRequestMessage{}
 	}
-	repeated := o.metadata.RepeatedPrefixTokens
+	repeated := max(0, o.metadata.RepeatedPrefixTokens)
 	return protocol.InferenceRequestMessage{
 		CacheReceiptNonce: o.metadata.Nonce, CacheScope: o.metadata.Scope,
 		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: o.metadata.BoundaryMode,
 		CacheRepeatedPrefixTokens: &repeated,
+		CacheFirstSightTokens:     max(0, o.metadata.FirstSightTokens),
 	}
 }
 
@@ -83,7 +87,7 @@ func (s Snapshot) MetadataMessage() protocol.InferenceRequestMessage {
 func (o *Owner) ApplyTo(message *protocol.InferenceRequestMessage) {
 	message.CacheReceiptNonce, message.CacheScope = "", ""
 	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = 0, ""
-	message.CacheRepeatedPrefixTokens = nil
+	message.CacheRepeatedPrefixTokens, message.CacheFirstSightTokens = nil, 0
 	if o == nil {
 		return
 	}
@@ -95,5 +99,5 @@ func (o *Owner) ApplyTo(message *protocol.InferenceRequestMessage) {
 	wire := (Snapshot{owner: o}).MetadataMessage()
 	message.CacheReceiptNonce, message.CacheScope = wire.CacheReceiptNonce, wire.CacheScope
 	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = wire.PrefixCacheProtocol, wire.CacheReceiptBoundaryMode
-	message.CacheRepeatedPrefixTokens = wire.CacheRepeatedPrefixTokens
+	message.CacheRepeatedPrefixTokens, message.CacheFirstSightTokens = wire.CacheRepeatedPrefixTokens, wire.CacheFirstSightTokens
 }

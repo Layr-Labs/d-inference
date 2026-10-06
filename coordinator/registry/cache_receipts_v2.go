@@ -84,7 +84,7 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 	if capable {
 		boundaryMode = admitted.V2Capability.ReadyBoundaryMode
 	}
-	owner := newCacheAttemptOwner(tracker, admitted.Plan.Provenance(), nonce, admitted.Plan.CacheScope, boundaryMode, admitted.Plan.RetainedPrefixTokens())
+	owner := newCacheAttemptOwner(tracker, admitted.Plan.Provenance(), nonce, admitted.Plan.CacheScope, boundaryMode, admitted.Plan.RepeatedPrefixTokens, admitted.Plan.FirstSightTokens)
 	if tracker.attempts.Len() > tracker.settings.MaxAttempts {
 		tracker.enforceAttemptCapLocked()
 	}

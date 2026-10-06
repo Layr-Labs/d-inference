@@ -22,9 +22,9 @@ func (f *demandStrideFixture) firstSight(promptTokens int, conversation uint32, 
 
 func assertNoFirstSight(t *testing.T, name string, plan cacheplan.Plan, prepared bool) {
 	t.Helper()
-	if prepared || plan.FirstSightTokens != 0 || plan.RepeatedPrefixTokens != 0 || plan.AffinityKey() != "" || plan.RetainedPrefixTokens() != 0 {
-		t.Fatalf("%s: prepared=%v first sight=%d repeat=%d affinity key present=%v retained=%d, want an untouched novel plan",
-			name, prepared, plan.FirstSightTokens, plan.RepeatedPrefixTokens, plan.AffinityKey() != "", plan.RetainedPrefixTokens())
+	if prepared || plan.FirstSightTokens != 0 || plan.RepeatedPrefixTokens != 0 || plan.AffinityKey() != "" {
+		t.Fatalf("%s: prepared=%v first sight=%d repeat=%d affinity key present=%v, want an untouched novel plan",
+			name, prepared, plan.FirstSightTokens, plan.RepeatedPrefixTokens, plan.AffinityKey() != "")
 	}
 }
 
@@ -65,8 +65,8 @@ func TestCacheFirstSightIsOffUnlessConfigured(t *testing.T) {
 }
 
 // The provider keeps the checkpoint at the 1,024-token boundary at or below
-// the count it is sent, so a novel prompt names its own deepest one. The
-// repeat count stays 0: nothing was observed twice.
+// the first-sight count it is sent, so a novel prompt names its own deepest
+// one. The repeat count stays 0: nothing was observed twice.
 func TestCacheFirstSightKeepsTheDeepestStrideBoundary(t *testing.T) {
 	for _, tc := range []struct{ promptTokens, firstSight, affinityBoundary int }{
 		{1_025, 1_024, 1_024},
@@ -77,10 +77,10 @@ func TestCacheFirstSightKeepsTheDeepestStrideBoundary(t *testing.T) {
 	} {
 		f := newDemandStrideFixture(t)
 		plan, prepared := f.firstSight(tc.promptTokens, 1, 1_024)
-		if !prepared || plan.FirstSightTokens != tc.firstSight || plan.RetainedPrefixTokens() != tc.firstSight ||
+		if !prepared || plan.FirstSightTokens != tc.firstSight ||
 			plan.RepeatedPrefixTokens != 0 || f.affinityTokens(plan) != tc.affinityBoundary {
-			t.Fatalf("%d tokens: prepared=%v first sight=%d retained=%d repeat=%d affinity boundary=%d, want %d kept, repeat 0 and affinity at %d",
-				tc.promptTokens, prepared, plan.FirstSightTokens, plan.RetainedPrefixTokens(), plan.RepeatedPrefixTokens,
+			t.Fatalf("%d tokens: prepared=%v first sight=%d repeat=%d affinity boundary=%d, want %d kept, repeat 0 and affinity at %d",
+				tc.promptTokens, prepared, plan.FirstSightTokens, plan.RepeatedPrefixTokens,
 				f.affinityTokens(plan), tc.firstSight, tc.affinityBoundary)
 		}
 	}
@@ -110,8 +110,7 @@ func TestCacheFirstSightFollowUpDerivesTheSameAffinityKey(t *testing.T) {
 				tc.promptTokens, prepared, f.affinityTokens(first), tc.rung)
 		}
 		followUp, prepared := f.firstSight(tc.promptTokens+tc.growth, 1, 1_024)
-		if prepared || followUp.FirstSightTokens != 0 || followUp.RepeatedPrefixTokens != tc.repeat ||
-			followUp.RetainedPrefixTokens() != tc.repeat {
+		if prepared || followUp.FirstSightTokens != 0 || followUp.RepeatedPrefixTokens != tc.repeat {
 			t.Fatalf("%d+%d tokens: prepared=%v first sight=%d repeat=%d, want an ordinary repeat of %d",
 				tc.promptTokens, tc.growth, prepared, followUp.FirstSightTokens, followUp.RepeatedPrefixTokens, tc.repeat)
 		}
@@ -137,7 +136,7 @@ func TestCacheFirstSightLeavesOtherPlansUntouched(t *testing.T) {
 	// Planning the same value again is a repeat, which owns the count it sends.
 	f.now = f.now.Add(time.Second)
 	if plan.ObserveRouteDemand(f.generation, f.demand.tracker, f.key, f.now, 4_096) ||
-		plan.FirstSightTokens != 0 || plan.RepeatedPrefixTokens != 3_840 || plan.RetainedPrefixTokens() != 3_840 {
+		plan.FirstSightTokens != 0 || plan.RepeatedPrefixTokens != 3_840 {
 		t.Fatalf("repeated plan: first sight=%d repeat=%d, want 0 and its final boundary 3,840",
 			plan.FirstSightTokens, plan.RepeatedPrefixTokens)
 	}

@@ -117,9 +117,11 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		return attempts > 0
 	}, 5*time.Second, 100*time.Millisecond,
 		"first request did not enter the provider-confirmed cache protocol")
-	// Novel prompts deliberately skip an SSD write. Repeat the cold request
-	// to establish demand before waiting for a durable checkpoint; neither
-	// request can receive cache credit before that checkpoint exists.
+	// Novel prompts deliberately skip an SSD write. This is a first-sight-off
+	// test: the CacheRoutingConfig literal above leaves FirstSightMinTokens at
+	// 0, so the frame carries no cache_first_sight_tokens. Repeat the cold
+	// request to establish demand before waiting for a durable checkpoint;
+	// neither request can receive cache credit before that checkpoint exists.
 	require.Eventually(t, func() bool {
 		return suite.Coordinator.Registry.CacheRoutingLifecycleStatus().DonationOutcomes["skipped_novel"] > 0
 	}, 30*time.Second, 100*time.Millisecond,

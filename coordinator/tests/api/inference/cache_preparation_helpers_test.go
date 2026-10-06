@@ -19,8 +19,14 @@ import (
 
 func configureCachePreparationTest(t testing.TB, reg *registry.Registry) {
 	t.Helper()
+	configureCacheFirstSightTest(t, reg, 0)
+}
+
+// A minimum of 0 leaves first sight off, as a configuration literal does.
+func configureCacheFirstSightTest(t testing.TB, reg *registry.Registry, firstSightMinTokens int) {
+	t.Helper()
 	if err := reg.ConfigureCacheRouting(registry.CacheRoutingConfig{
-		Mode: registry.CacheRoutingOn, ActivationPct: 100,
+		Mode: registry.CacheRoutingOn, ActivationPct: 100, FirstSightMinTokens: firstSightMinTokens,
 		MasterKey: base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
 	}); err != nil {
 		t.Fatal(err)
@@ -76,8 +82,15 @@ func cachePreparationPlanForTest(t testing.TB, reg *registry.Registry, capabilit
 
 func preparedCacheAttemptForTest(t testing.TB) (*registry.Registry, *registry.Provider, *registry.PendingRequest) {
 	t.Helper()
+	return preparedFirstSightCacheAttemptForTest(t, 0)
+}
+
+// The planned prompt holds 4,097 tokens, so with first sight on from one
+// stride its first plan names the boundary at 4,096.
+func preparedFirstSightCacheAttemptForTest(t testing.TB, firstSightMinTokens int) (*registry.Registry, *registry.Provider, *registry.PendingRequest) {
+	t.Helper()
 	reg := registry.New(quietLogger())
-	configureCachePreparationTest(t, reg)
+	configureCacheFirstSightTest(t, reg, firstSightMinTokens)
 	capability := cacheEligibilityV2Capability("model")
 	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
 	provider := reg.Register("provider", nil, &protocol.RegisterMessage{

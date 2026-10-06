@@ -146,7 +146,7 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 				"already_durable,already_queued,cache_closed,disk_unavailable,write_failed," +
 				"host_memory_unavailable,cache_epoch_changed,cache_maintenance_busy," +
 				"disk_space_insufficient,unsafe_cache_root,write_io_failed,existing_cache_unreadable,cache_entry_evicted," +
-				"skipped_novel",
+				"skipped_novel,write_speculative_limited",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -496,11 +496,11 @@ func TestPrefixCacheStatusReplacementClearDisconnectAndMixedOmission(t *testing.
 
 func TestDonationOutcomeForwardVersionHeadroomPreservesKnownCounters(t *testing.T) {
 	knownOutcomes := production.PrefixCacheDonationOutcomes()
-	if len(knownOutcomes) != 23 {
-		t.Fatalf("known outcome buckets=%d, want 23", len(knownOutcomes))
+	if len(knownOutcomes) != 24 {
+		t.Fatalf("known outcome buckets=%d, want 24", len(knownOutcomes))
 	}
-	if reserve := cachepolicy.MaxDonationOutcomeEntries - len(knownOutcomes); reserve < 9 {
-		t.Fatalf("forward-version reserve=%d, want at least 9", reserve)
+	if reserve := cachepolicy.MaxDonationOutcomeEntries - len(knownOutcomes); reserve < 8 {
+		t.Fatalf("forward-version reserve=%d, want at least 8", reserve)
 	}
 	knownCounters := func(offset uint64) []protocol.PrefixCacheDonationOutcomeCount {
 		result := make(
@@ -703,6 +703,45 @@ func TestPrefixCacheTelemetryStructuralAbuseDropsWholeOptionalSnapshot(t *testin
 				t.Fatalf("structural outcome snapshot was not dropped: %+v", msg.PrefixCacheDonationOutcomes)
 			}
 		})
+	}
+}
+
+// A first-sight write that yields to pressure is reported under its own name.
+// The coordinator counts it there and nowhere else: it is neither folded into
+// write_priority_limited nor dropped as an unknown outcome.
+func TestSpeculativeLimitedOutcomeIsCountedUnderItsOwnName(t *testing.T) {
+	reported := []protocol.PrefixCacheDonationOutcomeCount{{Outcome: "write_speculative_limited", Count: 8}}
+	if got := cachepolicy.SanitizeDonationOutcomes(&reported); got["write_speculative_limited"] != 8 || len(reported) != 1 {
+		t.Fatalf("sanitized=%v retained=%+v, want the outcome accepted", got, reported)
+	}
+	reg, provider, _ := exactTestRegistry(t)
+	first := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "write_priority_limited", Count: 4},
+		{Outcome: "write_speculative_limited", Count: 1},
+	}
+	if err := reg.UpdatePrefixCacheTelemetry(provider.ID, nil, &first); err != nil {
+		t.Fatal(err)
+	}
+	second := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 3},
+		{Outcome: "write_priority_limited", Count: 4},
+		{Outcome: "write_speculative_limited", Count: 8},
+	}
+	if err := reg.UpdatePrefixCacheTelemetry(provider.ID, nil, &second); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.CacheRoutingLifecycleStatus().DonationOutcomes
+	for outcome, want := range map[string]uint64{"donated": 3, "write_priority_limited": 4, "write_speculative_limited": 8} {
+		if got[outcome] != want {
+			t.Fatalf("%s=%d, want %d: %v", outcome, got[outcome], want, got)
+		}
+	}
+	var total uint64
+	for _, count := range got {
+		total += count
+	}
+	if total != 15 {
+		t.Fatalf("donation outcomes sum to %d, want 15 with nothing counted twice: %v", total, got)
 	}
 }
 

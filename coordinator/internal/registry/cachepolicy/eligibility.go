@@ -60,6 +60,9 @@ var (
 		// coordinator's cache_repeated_prefix_tokens nor its local tag history
 		// showed repeat demand. No bytes or write budget were spent.
 		"skipped_novel",
+		// A first-sight checkpoint yielded to write-budget, writer or disk
+		// pressure on the provider. No bytes or write budget were spent.
+		"write_speculative_limited",
 	}
 )
 

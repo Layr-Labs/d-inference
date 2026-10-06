@@ -16,7 +16,7 @@ import (
 func TestProviderWireRelayPreservesTransport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	input := `{"type":"inference_request","request_id":"r","encrypted_body":{"ciphertext":"unchanged-secret"},"cache_scope":"tenant-secret","cache_receipt_nonce":"nonce-secret","cache_receipt_boundary_mode":"checkpoint","cache_repeated_prefix_tokens":0}`
+	input := `{"type":"inference_request","request_id":"r","encrypted_body":{"ciphertext":"unchanged-secret"},"cache_scope":"tenant-secret","cache_receipt_nonce":"nonce-secret","cache_receipt_boundary_mode":"checkpoint","cache_repeated_prefix_tokens":0,"cache_first_sight_tokens":4096}`
 	terminal := `{"type":"inference_complete","request_id":"r","usage":{"cached_tokens":1024}}`
 	seen := make(chan string, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +65,8 @@ func TestProviderWireRelayPreservesTransport(t *testing.T) {
 	require.Equal(t, json.RawMessage("true"), events[0].Fields["encrypted_body_present"])
 	// The demand count is observable as sent, including a literal 0.
 	require.Equal(t, json.RawMessage("0"), events[0].Fields["cache_repeated_prefix_tokens"])
+	// The first-sight count is recorded beside it, not folded into it.
+	require.Equal(t, json.RawMessage("4096"), events[0].Fields["cache_first_sight_tokens"])
 	require.Equal(t, events[0].Connection, events[1].Connection)
 }
 func TestProviderWireRelayRedactsAnchorsAndBounds(t *testing.T) {

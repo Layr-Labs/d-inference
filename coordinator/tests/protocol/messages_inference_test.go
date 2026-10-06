@@ -189,6 +189,49 @@ func TestInferenceRequestFirstContentBudgetIsOptionalOuterAndCompatible(t *testi
 	}
 }
 
+// The first-sight depth is a bare integer beside the repeat count. It is left
+// off the frame at 0, and a frame without it decodes to 0, which is how a
+// provider that predates the field reads every request.
+func TestInferenceRequestFirstSightTokensIsAnOptionalCount(t *testing.T) {
+	repeat := 0
+	msg := production.InferenceRequestMessage{Type: production.TypeInferenceRequest, RequestID: "req",
+		CacheScope: "opaque-scope", CacheRepeatedPrefixTokens: &repeat, CacheFirstSightTokens: 4096}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outer map[string]any
+	if err := json.Unmarshal(data, &outer); err != nil {
+		t.Fatal(err)
+	}
+	if outer["cache_first_sight_tokens"] != float64(4096) || outer["cache_repeated_prefix_tokens"] != float64(0) {
+		t.Fatalf("first-sight frame does not carry both counts as integers: %s", data)
+	}
+	var decoded production.InferenceRequestMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.CacheFirstSightTokens != 4096 || decoded.CacheRepeatedPrefixTokens == nil || *decoded.CacheRepeatedPrefixTokens != 0 {
+		t.Fatalf("first-sight frame decoded incorrectly: %+v", decoded)
+	}
+
+	msg.CacheFirstSightTokens = 0
+	without, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(without, []byte("cache_first_sight_tokens")) {
+		t.Fatalf("zero first-sight count must be omitted: %s", without)
+	}
+	var repeated production.InferenceRequestMessage
+	if err := json.Unmarshal([]byte(`{"type":"inference_request","request_id":"repeat","cache_scope":"s","cache_repeated_prefix_tokens":2048}`), &repeated); err != nil {
+		t.Fatal(err)
+	}
+	if repeated.CacheFirstSightTokens != 0 || repeated.CacheRepeatedPrefixTokens == nil || *repeated.CacheRepeatedPrefixTokens != 2048 {
+		t.Fatalf("frame without the field decoded incorrectly: %+v", repeated)
+	}
+}
+
 func TestInferenceRequestCacheFieldsAreOptionalAndOuter(t *testing.T) {
 	msg := production.InferenceRequestMessage{Type: production.TypeInferenceRequest, RequestID: "req"}
 	without, err := json.Marshal(msg)

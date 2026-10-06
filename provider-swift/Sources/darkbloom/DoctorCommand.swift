@@ -48,6 +48,9 @@ struct Doctor: AsyncParsableCommand {
 
         print("darkbloom doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
+        print("Build: \(BuildEnvironment.current.rawValue)")
+        print("Coordinator: \(coordinator ?? snapshot.config.coordinator.url)")
+        print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
         print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")

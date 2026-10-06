@@ -20,9 +20,23 @@ public struct ModelDownloader: Sendable {
         public let bytesTotal: Int64?
     }
 
-    /// CDN root for model artifacts. Override with `DARKBLOOM_R2_CDN_URL` for
-    /// transition/testing against alternate buckets.
-    public static let defaultR2CDNURL = "https://models.darkbloom.ai"
+    /// CDN root for model artifacts, fixed by the build environment. Override
+    /// with `DARKBLOOM_R2_CDN_URL` for transition/testing against alternate buckets.
+    public static let defaultR2CDNURL = BuildEnvironment.current.modelCDNURL
+
+    /// The CDN this process downloads from: explicit value, then
+    /// DARKBLOOM_R2_CDN_URL, then the build default.
+    public static func resolveCDNURL(
+        explicit: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        let slash = CharacterSet(charactersIn: "/")
+        if let explicit { return explicit.trimmingCharacters(in: slash) }
+        if let value = environment["DARKBLOOM_R2_CDN_URL"], !value.isEmpty {
+            return value.trimmingCharacters(in: slash)
+        }
+        return defaultR2CDNURL
+    }
 
     internal let r2CDNURL: String
     internal let urlSession: URLSession
@@ -37,12 +51,7 @@ public struct ModelDownloader: Sendable {
         concurrency: Int = 4,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = []
     ) {
-        if let r2CDNURL { self.r2CDNURL = r2CDNURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
-        else if let env = ProcessInfo.processInfo.environment["DARKBLOOM_R2_CDN_URL"], !env.isEmpty {
-            self.r2CDNURL = env.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        } else {
-            self.r2CDNURL = ModelDownloader.defaultR2CDNURL
-        }
+        self.r2CDNURL = Self.resolveCDNURL(explicit: r2CDNURL)
         self.urlSession = urlSession
         self.catalogClient = catalogClient
         self.concurrency = max(1, concurrency)

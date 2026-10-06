@@ -99,7 +99,7 @@ public enum AppAttestDeepDiagnosis {
         if !problems.isEmpty {
             return Diagnostic(section: .appAttest, name: "app signing", level: .fail,
                               message: problems.joined(separator: "; ") + ".",
-                              fix: "reinstall the signed release: `curl -fsSL https://api.darkbloom.dev/install.sh | bash`, then `darkbloom restart`.")
+                              fix: "reinstall the signed release: `curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash`, then `darkbloom restart`.")
         }
         guard p.optInEntitlement != nil || p.environmentEntitlement != nil
             || p.profilePresent != nil || p.profileExpired != nil else { return nil }

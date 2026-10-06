@@ -99,10 +99,15 @@ supply every unrelated canonical document to ensure ownership or API-contract
 updates cannot satisfy another domain's requirement, then verify each permitted
 domain document satisfies it. Go test files remain excluded from these rules.
 The soft-delete rule separately requires `docs/reference/soft-delete.md` for
-the current live-row readers and writers; sqlc sources still require their
+the current live-row readers and writers, including small-model contact exports
+and initial legacy MDM cohort qualification; the cohort owners also retain their
+trust-documentation requirement. sqlc sources still require their
 canonical generation/type docs too. New reader/writer paths must extend the
 rule. The tests cover both backends, generated queries, unrelated history
 files, test exclusions and the maintainer override.
+`coordinator/tests/store/contracts/soft_delete_domain_reads_test.go` exercises
+contact filtering before pagination and cohort evidence filtering in memory and
+isolated PostgreSQL, including repeated reads of a frozen cohort.
 Shared fixtures in `coordinator/tests/protocol/testdata/` retain the protocol
 documentation requirement because they define cross-language wire examples.
 

@@ -83,6 +83,10 @@ class DocsImpactCheckTests(unittest.TestCase):
 
     def test_soft_delete_reads_and_writes_require_canonical_docs(self) -> None:
         sources = (
+            "coordinator/store/memory/small_models_interest.go",
+            "coordinator/store/memory/legacy_mdm_cohort.go",
+            "coordinator/store/postgres/small_models_interest.go",
+            "coordinator/store/postgres/legacy_mdm_cohort.go",
             "coordinator/store/memory/users.go",
             "coordinator/store/postgres/users.go",
             "coordinator/store/memory/device_auth.go",
@@ -96,7 +100,8 @@ class DocsImpactCheckTests(unittest.TestCase):
         )
         for source in sources:
             with self.subTest(source=source):
-                related = ("docs/reference/sqlc-type-mapping.md", "docs/architecture/storage.md")
+                related = ("docs/reference/sqlc-type-mapping.md", "docs/architecture/storage.md",
+                           "docs/architecture/security/enrollment.md")
                 missing = self.run_check(source, *related)
                 self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
                 self.assertIn("soft-delete reads and writes source changed", missing.stderr)
@@ -327,6 +332,10 @@ class DocsImpactCheckTests(unittest.TestCase):
 
     def test_relocated_domain_owners_require_behavior_documentation(self) -> None:
         cases = {
+            "trust and attestation": (
+                "coordinator/store/memory/legacy_mdm_cohort.go",
+                "coordinator/store/postgres/legacy_mdm_cohort.go",
+            ),
             "HTTP and API contracts": (
                 "coordinator/api/releases/artifact_metadata.go",
             ),

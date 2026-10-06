@@ -1,5 +1,6 @@
 version: "1.1"
 created: "2026-05-14"
+# Initial legacy MDM cohort soft-delete filtering verified 2026-10-06.
 # Upcoming frozen legacy MDM policy documented 2026-10-04, not a production
 # activation claim or a revalidation of the older threat entries. Cohort gates
 # restrict coordinator authorization; generic profiles remain directly copyable.
@@ -984,7 +985,9 @@ trust_boundaries:
       - "Upcoming legacy MDM policy freezes authenticated account/SE-key/serial
         membership for already successfully MDM-verified devices on first upgraded
         startup after revocation replay. FreezeLegacyMDMCohort persists the cutoff
-        and cohort across restarts, including an empty cohort. New accounts,
+        and cohort across restarts, including an empty cohort. Initial qualification
+        excludes soft-deleted users and provider records; later reads preserve
+        the frozen snapshot. See docs/architecture/security/enrollment.md. New accounts,
         devices, keys and associations are excluded. Lost or hashless historical
         evidence may be conservatively omitted; retained hardware snapshots plus
         authenticated inventory may supplement it. Membership never replaces

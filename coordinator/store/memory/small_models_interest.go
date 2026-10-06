@@ -50,7 +50,7 @@ func (s *MemoryStore) ListSmallModelsInterest(ctx context.Context, after string,
 	defer s.mu.RUnlock()
 	ids := make([]string, 0, len(s.smallModelsInterest))
 	for id := range s.smallModelsInterest {
-		if id > after {
+		if user := s.usersByAccountID[id]; id > after && user != nil && user.DeletedAt == nil {
 			ids = append(ids, id)
 		}
 	}

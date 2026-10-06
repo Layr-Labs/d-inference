@@ -1,6 +1,6 @@
 # Reusing segmented decode dispatch metadata
 
-> Last updated: 2026-09-06 · commit `191291d96`
+> Last updated: 2026-09-06
 
 Full-attention paged decode now reuses its last immutable dispatch plan and device
 metadata within unchanged page coverage. Native regressions pass in 69 functions

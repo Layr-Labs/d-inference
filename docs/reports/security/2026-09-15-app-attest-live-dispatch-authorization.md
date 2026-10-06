@@ -1,6 +1,6 @@
 # App Attest live-dispatch authorization gap
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 Review of the v0.9.4 App Attest authorization boundary. Durable prospective
 verdict events exist, but the coordinator has no authoritative authorization

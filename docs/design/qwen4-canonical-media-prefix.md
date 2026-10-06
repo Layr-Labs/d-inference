@@ -1,6 +1,6 @@
 # Qwen4 media-prefix identity for appended text
 
-> Last updated: 2026-09-14 · commit `e548a179`
+> Last updated: 2026-09-14
 
 Status: **In progress** — 2026-09-15 — implemented draft with scoped native/cache checks; full release qualification remains separate. See the [performance/stability record](../reports/2026-09-15-qwen38-performance-stability.md).
 

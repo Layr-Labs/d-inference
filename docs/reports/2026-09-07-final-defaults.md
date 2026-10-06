@@ -1,6 +1,6 @@
 # Final five-model serving defaults
 
-> Last updated: 2026-09-07 · commit `4805797ff`
+> Last updated: 2026-09-07
 
 All five release artifacts select paged attention automatically on the verified 0.9.0 runtime. The three Qwens use their normal automatic MTP policy and restore an SSD prefix on the repeated request. GPT-OSS and Gemma QAT keep SSD and automatic MTP off. All ten connected HTTP requests pass completion and usage accounting.
 

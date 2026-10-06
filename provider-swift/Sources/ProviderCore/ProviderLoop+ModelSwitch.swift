@@ -7,6 +7,13 @@ extension ProviderLoop {
         guard let identity = ProcessIdentity.current(), request.isValid(for: identity) else {
             return .init(requestID: request.id, outcome: .failed, message: "Invalid or stale model-switch request.")
         }
+        refreshAutopilotSettings()
+        guard !autopilotConsented, autopilotCommand == nil else {
+            let busy = ProviderModelSwitchStatus(requestID: request.id, outcome: .busy,
+                message: "Autopilot owns model selection. Use darkbloom autopilot models, or disable Autopilot before darkbloom switch.")
+            writeModelSwitchReceipt(busy)
+            return busy
+        }
         if let task = modelSwitchTask {
             if modelSwitchStatus.requestID == request.id { return await task.value }
             let busy = ProviderModelSwitchStatus(requestID: request.id, outcome: .busy,
@@ -25,7 +32,7 @@ extension ProviderLoop {
             return busy
         }
         // Recheck after the client hop, before claiming exclusive ownership.
-        guard modelSwitchTask == nil, !isShuttingDown, updatePhase == .idle,
+        guard modelSwitchTask == nil, autopilotCommand == nil, !autopilotConsented, !isShuttingDown, updatePhase == .idle,
               pendingRetirementReconnect == nil, plannedReconnectRevision == issuedReconnectRevision,
               servingDrain.owner == nil || servingDrain.owner == .modelSwitch else {
             let busy = ProviderModelSwitchStatus(requestID: request.id, outcome: .busy,
@@ -130,7 +137,7 @@ extension ProviderLoop {
     }
 
     internal var modelSwitchMutationsSettled: Bool {
-        !isLoadingAny && modelsLoading.isEmpty && modelsUnloading.isEmpty && !isReslicing
+        autopilotCommand == nil && !isLoadingAny && modelsLoading.isEmpty && modelsUnloading.isEmpty && !isReslicing
             && pendingAdvertise.isEmpty && retiringModels.isEmpty && preloadTasks.isEmpty
             && startupPreloadTask == nil && modelAdvertisementsInFlight == 0
             && mtpUpgradeTransitions.isEmpty && mtpStagingBytes == 0

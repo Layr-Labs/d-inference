@@ -51,6 +51,9 @@ extension EngineV2SlotFactory {
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?,
         logInfo: @escaping @Sendable (String) -> Void
     ) throws -> any LanguageModel {
+        guard !(snapshot.model is MiMoV26LoadedModel) else {
+            throw MiMoV26ServingLoadError.managedLoadRequired
+        }
         guard isVLM else { return snapshot.model }
         if snapshot.model is MLXVLM.Qwen4Exp || snapshot.model is MLXVLM.PrismHadamardQwen35 {
             return try EngineV2Factory.directServingModel(model: snapshot.model, isVLM: true)

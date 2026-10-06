@@ -1,6 +1,6 @@
 # Qwen3.6 contiguous versus paged output regression
 
-> Last updated: 2026-09-05 · commit `47ece4b3c`
+> Last updated: 2026-09-05
 
 The first Qwen3.6 35B B1 comparison between contiguous and paged storage fails
 strict generated-token equality. Both backends pass their own cache-off/SSD

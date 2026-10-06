@@ -1,6 +1,6 @@
 # Isolated persistent SSD test namespace
 
-> Last updated: 2026-09-06 · commit `d3d525014`
+> Last updated: 2026-09-06
 
 The standalone cache benchmark can now select a separate persistent key hierarchy
 and isolated payload root. Source validation passes 23 provider functions and 24

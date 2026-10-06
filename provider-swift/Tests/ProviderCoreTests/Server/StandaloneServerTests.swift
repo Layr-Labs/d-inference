@@ -797,6 +797,33 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
     #expect(SSDPrefixCacheFactory.verifiedWeightHash(hashes.snapshot[0]) != nil)
 }
 
+@Test func standaloneFactoryRetainsArtifactIdentityWithoutEnablingCacheReuse() async throws {
+    let server = standaloneTestServer()
+    let artifacts = StandaloneHashRecorder()
+    let cacheHashes = StandaloneHashRecorder()
+    let verifiedArtifact = String(repeating: "a", count: 64)
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            onModelArtifactSHA256: artifacts.record,
+            onCacheEligibleWeightHash: cacheHashes.record,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+
+    let bridge = try await server.buildSlotForTesting(
+        modelId: "outside-ssd-cohort", modelType: "test",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15),
+        modelArtifactSHA256: verifiedArtifact,
+        cacheEligibleWeightHash: nil)
+
+    #expect(artifacts.snapshot == [verifiedArtifact])
+    #expect(cacheHashes.snapshot == [nil])
+    #expect(await server.slots["outside-ssd-cohort"]?.modelArtifactSHA256 == verifiedArtifact)
+    #expect(await server.slots["outside-ssd-cohort"]?.cacheEligibleWeightHash == nil)
+    await bridge.shutdown()
+}
+
 @Test func standaloneSecondLoadReslicesAndEvictionRegrows() async throws {
     let server = standaloneTestServer()
     let recorder = StandaloneGrantRecorder()

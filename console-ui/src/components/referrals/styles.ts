@@ -1,0 +1,2 @@
+export const referralInputClass = "min-h-11 w-full rounded-lg border border-border-default bg-bg-primary px-3 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-brand focus:outline-none focus:ring-1 focus:ring-accent-brand";
+export const referralButtonClass = "inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg bg-accent-brand px-4 text-sm font-medium text-white hover:bg-accent-brand-hover disabled:opacity-50 dark:text-bg-primary";

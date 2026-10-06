@@ -1,6 +1,6 @@
 # App Attest release-build disconnect investigation
 
-> Last updated: 2026-09-14 · commit `2232503f8`
+> Last updated: 2026-09-14
 
 The published provider 0.9.3 aborts in the App Attest callback deadline's generic
 `Task.sleep(for:)` cleanup. The exact release binary reproduced the production

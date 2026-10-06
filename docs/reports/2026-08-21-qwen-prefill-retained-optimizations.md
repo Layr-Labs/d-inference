@@ -1,6 +1,6 @@
 # Qwen Prefill Retained Optimizations on Current Master
 
-> Last updated: 2026-08-21 · commit `7b7044cbd`
+> Last updated: 2026-08-21
 
 **Date:** 2026-08-21  
 **Status:** Rolled back for v0.8.9 after v0.8.8 production decode and uptime regression; retained measurements remain prefill-only evidence.

@@ -100,7 +100,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     try {
       await unlinkStripeAccount();
       setSelectedCountry("");
-      addToast("Stripe account unlinked — you can now set up payouts again", "success");
+      addToast("Bank setup reset — link your bank again to withdraw", "success");
       await reload(false);
     } catch (e) {
       addToast(`Unlink failed: ${(e as Error).message}`);

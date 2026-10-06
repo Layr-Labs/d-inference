@@ -1,6 +1,6 @@
 # Qwen3.6 candidate backend logits with SSD disabled
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The rebuilt candidate still fails strict contiguous/paged token equality for Qwen3.6 with normal MTP and SSD disabled. Both backends complete coherently and reproduce their own outputs exactly. The captured decisions use different MTP verification widths, so these observations do not isolate attention as the remaining cause.
 

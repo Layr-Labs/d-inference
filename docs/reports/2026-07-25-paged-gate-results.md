@@ -1,6 +1,6 @@
 # v0.8.0 PagedAttention — Live Gate Results
 
-> Last updated: 2026-07-28 · commit `3eefaf1ed`
+> Last updated: 2026-07-28
 
 Measured on Apple M4 Max, 40 GPU cores, 128 GB, 546 GB/s.
 Model: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` (real weights, 15 GB, 3 shards).

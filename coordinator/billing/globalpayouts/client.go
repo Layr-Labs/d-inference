@@ -59,6 +59,10 @@ func (c *Client) do(ctx context.Context, method, path, account, key string, body
 	if err != nil {
 		return err
 	}
+	// Automatic transport POST retries could hide an ambiguous first send.
+	if method != http.MethodGet {
+		req.GetBody = nil
+	}
 	req.Header.Set("Authorization", "Bearer "+c.Key)
 	req.Header.Set("Stripe-Version", APIVersion)
 	req.Header.Set("Content-Type", "application/json")
@@ -107,6 +111,17 @@ func (c *Client) Recipient(ctx context.Context, id string) (*Recipient, error) {
 	var result Recipient
 	err := c.do(ctx, "GET", "/v2/core/accounts/"+url.PathEscape(id)+"?"+q.Encode(), "", "", nil, &result)
 	return &result, err
+}
+
+// CloseRecipient closes a recipient account (account erasure). Stripe
+// requires every configuration on the account; CreateRecipient sets only
+// "recipient".
+func (c *Client) CloseRecipient(ctx context.Context, id string) error {
+	body := map[string]any{"applied_configurations": []string{"recipient"}}
+	var result struct {
+		ID string `json:"id"`
+	}
+	return c.do(ctx, "POST", "/v2/core/accounts/"+url.PathEscape(id)+"/close", "", "", body, &result)
 }
 
 func (c *Client) OnboardingLink(ctx context.Context, id, returnURL, refreshURL string) (string, error) {

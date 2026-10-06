@@ -1,6 +1,6 @@
 # Security reports
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 Dated security reviews and validation records. Each report describes the code
 at its stamped commit and separates observed behavior from the effect of a

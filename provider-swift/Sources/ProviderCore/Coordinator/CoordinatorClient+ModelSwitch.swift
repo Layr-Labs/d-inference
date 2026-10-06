@@ -38,10 +38,13 @@ internal struct PendingModelReadiness: Sendable {
 }
 
 extension CoordinatorClient {
+    func allowOrdinaryModel(_ id: String) { ordinaryServingModelIDs.insert(id) }
+
     /// Keeps the next registration truthful while the caller mutates its local
     /// inventory under a closed admission gate. This sends no wire traffic.
     internal func stageModelSelection(_ models: [ModelInfo]) {
         advertisedModelStore.replace(models)
+        ordinaryServingModelIDs = Set(models.map(\.id))
         modelWeightHashOverrides = Dictionary(uniqueKeysWithValues: models.compactMap { model in
             model.weightHash.map { (model.id, $0) }
         })
@@ -82,6 +85,7 @@ extension CoordinatorClient {
 
         let oldModels = advertisedModelStore.models
         let oldHashes = modelWeightHashOverrides
+        let oldServingIDs = ordinaryServingModelIDs
         let id = UUID().uuidString
         let (stream, continuation) = AsyncStream<Result<Void, ModelSwitchError>>.makeStream()
         modelReplacement = PendingModelReplacement(
@@ -124,6 +128,7 @@ extension CoordinatorClient {
                 // Do not overwrite a new session's inventory after teardown.
                 if !validateOnly, nwConnection === connection {
                     advertisedModelStore.replace(oldModels)
+                    ordinaryServingModelIDs = oldServingIDs
                     modelWeightHashOverrides = oldHashes
                 }
             default:

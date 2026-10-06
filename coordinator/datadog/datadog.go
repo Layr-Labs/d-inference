@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/DataDog/datadog-go/v5/statsd"
+	logformat "github.com/eigeninference/d-inference/coordinator/internal/datadog/logformat"
+	metricseries "github.com/eigeninference/d-inference/coordinator/internal/datadog/series"
 )
 
 // Client wraps DogStatsD and the Logs API forwarder.
@@ -45,7 +47,7 @@ type Client struct {
 	logFlushWg sync.WaitGroup
 
 	// HTTP metric submission (no agent needed). See metrics_http.go.
-	series            *seriesBuffer
+	series            *metricseries.Buffer
 	seriesURL         string
 	metricsHost       string
 	metricsTags       []string
@@ -61,6 +63,12 @@ type Config struct {
 	StatsdAddr   string // DD_DOGSTATSD_URL, default "localhost:8125"
 	FlushSecs    int    // Log batch flush interval (default 5)
 	MaxBatchSize int    // Max logs per batch (default 100)
+	// HTTPClient optionally supplies the intake transport. Nil uses a ten-second timeout.
+	HTTPClient *http.Client `json:"-"`
+	// StatsdClient supplies an already-configured transport. Client.Close owns its shutdown.
+	StatsdClient *statsd.Client `json:"-"`
+	// BaseTags overrides the env/service tags when non-nil.
+	BaseTags []string
 }
 
 // ConfigFromEnv reads Datadog configuration from environment variables.
@@ -87,15 +95,17 @@ func envOr(key, fallback string) string {
 // Returns nil if DD is not configured (no API key and statsd connect fails).
 // The caller should defer client.Close().
 func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
+	client := cfg.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	c := &Client{
-		logger:    logger,
-		apiKey:    cfg.APIKey,
-		logBuf:    make([]ddLog, 0, cfg.MaxBatchSize),
-		logDone:   make(chan struct{}),
-		logTicker: time.NewTicker(time.Duration(cfg.FlushSecs) * time.Second),
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		logger:     logger,
+		apiKey:     cfg.APIKey,
+		logBuf:     make([]ddLog, 0, cfg.MaxBatchSize),
+		logDone:    make(chan struct{}),
+		logTicker:  time.NewTicker(time.Duration(cfg.FlushSecs) * time.Second),
+		httpClient: client,
 	}
 
 	// Build intake URLs from site.
@@ -106,24 +116,27 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	c.logsURL = fmt.Sprintf("https://http-intake.logs.%s/api/v2/logs", site)
 	c.eventsURL = fmt.Sprintf("https://api.%s/api/v1/events", site)
 	c.seriesURL = fmt.Sprintf("https://api.%s/api/v1/series", site)
-	c.series = newSeriesBuffer()
+	c.series = metricseries.New()
 	c.metricsTags = []string{"env:" + cfg.Env, "service:" + cfg.Service}
+	if cfg.BaseTags != nil {
+		c.metricsTags = append([]string{}, cfg.BaseTags...)
+	}
 	c.metricsHost = envOr("DD_HOSTNAME", cfg.Service)
 	c.flushIntervalSecs = int64(cfg.FlushSecs)
 
 	// DogStatsD client — best effort. If the agent isn't running, metrics
 	// calls become no-ops (the library handles reconnection).
-	sd, err := statsd.New(cfg.StatsdAddr,
-		statsd.WithNamespace("d_inference."),
-		statsd.WithTags([]string{
-			"env:" + cfg.Env,
-			"service:" + cfg.Service,
-		}),
-	)
-	if err != nil {
-		logger.Warn("datadog: DogStatsD client init failed (metrics disabled)", "error", err, "addr", cfg.StatsdAddr)
-	} else {
-		c.Statsd = sd
+	c.Statsd = cfg.StatsdClient
+	if c.Statsd == nil {
+		sd, err := statsd.New(cfg.StatsdAddr,
+			statsd.WithNamespace("d_inference."),
+			statsd.WithTags(c.metricsTags),
+		)
+		if err != nil {
+			logger.Warn("datadog: DogStatsD client init failed (metrics disabled)", "error", err, "addr", cfg.StatsdAddr)
+		} else {
+			c.Statsd = sd
+		}
 	}
 
 	// Start the log flush goroutine.
@@ -141,11 +154,20 @@ func (c *Client) Close() {
 	c.logTicker.Stop()
 	close(c.logDone)
 	c.logFlushWg.Wait()
-	c.flushLogs()
-	c.flushSeries()
+	c.Flush()
 	if c.Statsd != nil {
 		_ = c.Statsd.Close()
 	}
+}
+
+// Flush submits buffered logs and metric series without closing either transport.
+// Delivery remains best-effort, matching the periodic flush and shutdown paths.
+func (c *Client) Flush() {
+	if c == nil {
+		return
+	}
+	c.flushLogs()
+	c.flushSeries()
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +193,7 @@ func (c *Client) Count(name string, value int64, tags []string) {
 		return
 	}
 	if c.httpMetrics() {
-		c.series.addCount(name, float64(value), tags, time.Now().Unix())
+		c.series.AddCount(name, float64(value), tags, time.Now().Unix())
 		return
 	}
 	if c.Statsd != nil {
@@ -194,7 +216,7 @@ func (c *Client) Gauge(name string, value float64, tags []string) {
 		return
 	}
 	if c.httpMetrics() {
-		c.series.setGauge(name, value, tags, time.Now().Unix())
+		c.series.SetGauge(name, value, tags, time.Now().Unix())
 		return
 	}
 	if c.Statsd != nil {
@@ -265,7 +287,7 @@ func (c *Client) ForwardLog(entry TelemetryLogEntry) {
 		DDTags:   fmt.Sprintf("kind:%s,severity:%s", entry.Kind, entry.Severity),
 		Hostname: entry.MachineID,
 		Service:  "d-inference-coordinator",
-		Status:   mapSeverityToStatus(entry.Severity),
+		Status:   logformat.Status(entry.Severity),
 		Message:  entry.Message,
 		Attrs:    attrs,
 	}
@@ -285,30 +307,12 @@ func (c *Client) ForwardLog(entry TelemetryLogEntry) {
 	}
 }
 
-func mapSeverityToStatus(sev string) string {
-	switch sev {
-	case "debug":
-		return "debug"
-	case "info":
-		return "info"
-	case "warn":
-		return "warning"
-	case "error":
-		return "error"
-	case "fatal":
-		return "critical"
-	default:
-		return "info"
-	}
-}
-
 func (c *Client) logFlushLoop() {
 	defer c.logFlushWg.Done()
 	for {
 		select {
 		case <-c.logTicker.C:
-			c.flushLogs()
-			c.flushSeries()
+			c.Flush()
 		case <-c.logDone:
 			return
 		}
@@ -359,7 +363,7 @@ func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
 		return
 	}
 	event := map[string]any{
-		"title":      "[d-inference] Fatal: " + truncate(entry.Message, 100),
+		"title":      "[d-inference] Fatal: " + logformat.Truncate(entry.Message, 100),
 		"text":       entry.Message,
 		"alert_type": "error",
 		"source":     "d-inference",
@@ -388,13 +392,6 @@ func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
 	}
 	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }
 
 // Check validates the configuration.

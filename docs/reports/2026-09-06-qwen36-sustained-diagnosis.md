@@ -1,6 +1,6 @@
 # Qwen3.6 sustained exposure stops on strict token comparison
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The five-model sustained run stops in its first Qwen3.6 cell because cancellation recovery generates different tokens from its completed donor. The strict failure remains recorded. Source analysis shows that normal MTP selects verification depth using measured execution time and retained history; this run does not isolate an SSD corruption defect.
 

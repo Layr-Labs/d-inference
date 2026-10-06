@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"iter"
 	"sync"
 )
 
@@ -87,4 +88,27 @@ func (r *TPSRegistry) Median(model, chipFamily string) float64 {
 	median := r.medians[key]
 	r.mu.RUnlock()
 	return median
+}
+
+// SampleCount reports the retained observations for a model and chip family.
+// Like Median, it is a constant-time read and never exposes sample storage.
+func (r *TPSRegistry) SampleCount(model, chipFamily string) int {
+	r.mu.RLock()
+	count := len(r.samples[tpsKey{Model: model, ChipFamily: chipFamily}])
+	r.mu.RUnlock()
+	return count
+}
+
+// SampleCounts iterates retained observation counts without exposing storage.
+// Callbacks run under the read lock and must not mutate the registry.
+func (r *TPSRegistry) SampleCounts() iter.Seq2[tpsKey, int] {
+	return func(yield func(tpsKey, int) bool) {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		for key, samples := range r.samples {
+			if !yield(key, len(samples)) {
+				return
+			}
+		}
+	}
 }

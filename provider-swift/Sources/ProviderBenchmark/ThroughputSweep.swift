@@ -280,7 +280,8 @@ public enum ThroughputSweep {
     /// refuses. `requestedBatchSizes` versus `unmeasuredCells` is that
     /// partial case — invisible in `resolvedBackends`, which stays non-empty
     /// as long as ANY cell built.
-    private struct DecodeOutcome {
+    /// Internal, not private, so unit tests pin it without a GPU.
+    struct DecodeOutcome {
         var samples: [ThroughputSweepReport.DecodeSample] = []
         /// Distinct resolved-backend descriptors, in first-seen order. EMPTY
         /// means no cell ever built an engine.
@@ -369,7 +370,7 @@ public enum ThroughputSweep {
 
         for iteration in 1 ... repetitions {
             for batchSize in sizes {
-                let (totalTokens, maxElapsed, resolved, failure, submitFailure, timing) = await runDecodeBatch(
+                let (totalTokens, maxElapsed, resolved, failure, submitFailure, timing, effectiveCap) = await runDecodeBatch(
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                     weightBytes: weightBytes, isVLM: isVLM,
@@ -407,7 +408,8 @@ public enum ThroughputSweep {
                     perSequenceTokensPerSecond: perSeq,
                     elapsedMs: secs * 1000,
                     resolvedKVBackend: resolved,
-                    decodeTiming: timing
+                    decodeTiming: timing,
+                    effectiveMaxConcurrentRequests: effectiveCap
                 ))
             }
         }
@@ -439,7 +441,7 @@ public enum ThroughputSweep {
     ) async -> (
         totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?,
         constructionFailure: String?, submitFailure: String?,
-        timing: ThroughputSweepReport.DecodeTiming?
+        timing: ThroughputSweepReport.DecodeTiming?, effectiveCap: Int?
     ) {
         // The engine's KV admission ceiling: the same unified-memory budget a
         // single-model provider slot would be granted. Far above what these
@@ -454,6 +456,7 @@ public enum ThroughputSweep {
             let engine: any CBv2Engine
             /// The backend the factory resolved to, with any fallback reason.
             let resolvedBackend: String
+            let effectiveMaxConcurrentRequests: Int
         }
         let parts: EngineParts
         do {
@@ -472,11 +475,13 @@ public enum ThroughputSweep {
                     tokenizer: ctx.tokenizer,
                     kvBytesCapacity: kvCapacity,
                     maxConcurrentRequests: max(batchSize, 1),
+                    constructionPurpose: .benchmark,
                     kvBudget: BenchmarkMemoryBudget.shared,
                     kvBackend: kvBackend)
                 return EngineParts(
                     engine: build.engine,
-                    resolvedBackend: build.resolvedKVBackendDescriptor)
+                    resolvedBackend: build.resolvedKVBackendDescriptor,
+                    effectiveMaxConcurrentRequests: build.effectiveMaxConcurrentRequests)
             }
         } catch {
             // Since OPEN-9 this is the path an explicit `--kv-backend paged`
@@ -484,9 +489,15 @@ public enum ThroughputSweep {
             // Return the reason so the report and the process exit status can
             // both name it instead of showing a bare curve of zeros.
             log("  engine construction failed: \(error)")
-            return (0, .zero, nil, "\(error)", nil, nil)
+            return (0, .zero, nil, "\(error)", nil, nil, nil)
         }
         let engine = parts.engine
+        log("engine scheduler cap: \(parts.effectiveMaxConcurrentRequests)")
+        guard parts.effectiveMaxConcurrentRequests == batchSize else {
+            await engine.shutdown()
+            let reason = "Requested width \(batchSize), but native engine cap is \(parts.effectiveMaxConcurrentRequests)"
+            return (0, .zero, parts.resolvedBackend, nil, reason, nil, parts.effectiveMaxConcurrentRequests)
+        }
 
         // Each row timestamps against one epoch; independent row durations
         // cannot establish the interval when all B rows are decoding.
@@ -562,7 +573,8 @@ public enum ThroughputSweep {
         return (
             totalTokens: cell.totalTokens, maxElapsed: cell.maxElapsed,
             resolvedBackend: parts.resolvedBackend, constructionFailure: nil,
-            submitFailure: cell.submitFailure, timing: timing)
+            submitFailure: cell.submitFailure, timing: timing,
+            effectiveCap: parts.effectiveMaxConcurrentRequests)
     }
 
     // MARK: - Helpers
@@ -654,7 +666,8 @@ public enum ThroughputSweep {
         return nil
     }
 
-    private static func makeNotes(
+    /// Internal, not private, so unit tests pin it without a GPU.
+    static func makeNotes(
         hardware: HardwareInfo,
         efficiency: Double,
         derived: ThroughputSweepReport.Derived,

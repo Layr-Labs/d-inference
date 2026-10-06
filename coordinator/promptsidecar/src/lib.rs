@@ -8,6 +8,7 @@ mod gemma4;
 pub mod hash;
 mod leading_system;
 pub mod metrics;
+mod mimo_v26;
 pub mod normalize;
 pub mod planner;
 pub mod preload;

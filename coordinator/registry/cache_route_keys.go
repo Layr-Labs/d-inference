@@ -2,16 +2,16 @@ package registry
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
 	"time"
 
+	cacheactivation "github.com/eigeninference/d-inference/coordinator/internal/registry/cacheactivation"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheplan"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -36,31 +36,41 @@ func decodeCacheMasterKey(raw string) ([]byte, error) {
 	return nil, errors.New("key must encode exactly 32 bytes as base64url, base64, or hex")
 }
 
+// Derivation labels. Every persisted holder and demand key is a function of
+// the master key and of these versions, so all of them feed the persistence
+// fingerprint below: bumping any one resets the durable copy on the next boot
+// instead of restoring keys no request can derive.
+const (
+	cacheRouteKeyLabel         = "darkbloom/cache-routing/route/v3"
+	cacheScopeKeyLabel         = "darkbloom/cache-routing/scope/v3"
+	cacheActivationKeyLabel    = "darkbloom/cache-routing/activation/v1"
+	cacheScopeSerialization    = "scope-v3"
+	cacheBoundarySerialization = cacheplan.BoundarySerialization
+	// cachePersistenceGeneration names the persisted row schema and the key
+	// serialization as a whole; bump it with any change to either that the
+	// labels above do not already capture.
+	cachePersistenceGeneration = "persist/v1"
+)
+
 func deriveCacheKeys(master []byte) cacheRouteKeys {
 	return cacheRouteKeys{
-		route:      hmacBytes(master, []byte("darkbloom/cache-routing/route/v3")),
-		scope:      hmacBytes(master, []byte("darkbloom/cache-routing/scope/v3")),
-		activation: hmacBytes(master, []byte("darkbloom/cache-routing/activation/v1")),
+		route:      cacheactivation.HMACBytes(master, []byte(cacheRouteKeyLabel)),
+		scope:      cacheactivation.HMACBytes(master, []byte(cacheScopeKeyLabel)),
+		activation: cacheactivation.HMACBytes(master, []byte(cacheActivationKeyLabel)),
+		// A non-secret marker of this key generation (cachepersist.Restore):
+		// the master key plus every derivation version and the block
+		// contract the keys are serialized under.
+		persistFingerprint: hex.EncodeToString(cacheactivation.HMACBytes(master,
+			[]byte("darkbloom/cache-routing/persistence-fingerprint/v1"),
+			[]byte(cacheRouteKeyLabel), []byte(cacheScopeKeyLabel), []byte(cacheActivationKeyLabel),
+			[]byte(cacheScopeSerialization), []byte(cacheBoundarySerialization),
+			[]byte(promptcontract.BlockHashVersion), []byte(strconv.FormatUint(uint64(promptcontract.BlockSize), 10)),
+			[]byte(cachePersistenceGeneration)))[:24],
 	}
-}
-
-func hmacBytes(key []byte, parts ...[]byte) []byte {
-	m := hmac.New(sha256.New, key)
-	var n [4]byte
-	for _, part := range parts {
-		binary.BigEndian.PutUint32(n[:], uint32(len(part)))
-		_, _ = m.Write(n[:])
-		_, _ = m.Write(part)
-	}
-	return m.Sum(nil)
 }
 
 func opaqueHMAC(key []byte, parts ...string) string {
-	values := make([][]byte, 0, len(parts))
-	for _, part := range parts {
-		values = append(values, []byte(part))
-	}
-	return base64.RawURLEncoding.EncodeToString(hmacBytes(key, values...))
+	return cacheactivation.OpaqueHMAC(key, parts...)
 }
 
 // CachePlanInput is the final provider-bound text request plus immutable
@@ -75,25 +85,11 @@ type CachePlanInput struct {
 	HasMedia             bool
 }
 
-// CachePlanOutcome is deliberately low-cardinality and privacy-safe so it can
-// be used directly in operational metrics.
-type CachePlanOutcome string
-
-const (
-	CachePlanOff          CachePlanOutcome = "off"
-	CachePlanIneligible   CachePlanOutcome = "ineligible"
-	CachePlanSampledOut   CachePlanOutcome = "sampled_out"
-	CachePlanThrottled    CachePlanOutcome = "throttled"
-	CachePlanColdOnly     CachePlanOutcome = "cold_only"
-	CachePlanSidecarError CachePlanOutcome = "sidecar_error"
-	CachePlanNoBoundaries CachePlanOutcome = "no_boundaries"
-	CachePlanInvalid      CachePlanOutcome = "invalid_plan"
-	CachePlanPlanned      CachePlanOutcome = "planned"
-)
-
 type CachePlanResult struct {
+	// PromptWork is valid tokenizer accounting even when there are no reusable boundaries.
+	PromptWork    *protocol.PromptWork
 	Plan          CachePlan
-	Outcome       CachePlanOutcome
+	Outcome       cacheactivation.CachePlanOutcome
 	PlanLatency   time.Duration
 	SidecarCalled bool
 }
@@ -121,7 +117,7 @@ func (r *Registry) PlanCacheRouteWithResult(
 		input.Account == "" || input.Model == "" ||
 		!validLowerHex256(input.PromptContractID) ||
 		!validLowerHex256(input.ModelAggregateSHA256) || len(input.Body) == 0 {
-		return CachePlanResult{Outcome: CachePlanIneligible}
+		return CachePlanResult{Outcome: cacheactivation.CachePlanIneligible}
 	}
 
 	r.mu.RLock()
@@ -136,17 +132,17 @@ func (r *Registry) PlanCacheRouteWithResult(
 	artifacts := r.cacheRoutingAllowedArtifacts
 	catalog, ok := r.modelCatalog[input.Model]
 	r.mu.RUnlock()
-	if mode != CacheRoutingOn || tracker == nil || tracker.generation.revoked.Load() {
-		return CachePlanResult{Outcome: CachePlanOff}
+	if mode != CacheRoutingOn || tracker == nil || !tracker.generation.Active() {
+		return CachePlanResult{Outcome: cacheactivation.CachePlanOff}
 	}
 	aggregateHash := strings.ToLower(strings.TrimSpace(catalog.WeightHash))
 	if !ok || len(keys.route) == 0 || len(keys.activation) == 0 ||
 		!validLowerHex256(aggregateHash) || aggregateHash != input.ModelAggregateSHA256 {
-		return CachePlanResult{Outcome: CachePlanIneligible}
+		return CachePlanResult{Outcome: cacheactivation.CachePlanIneligible}
 	}
 
-	if !artifacts.allows(input) {
-		return CachePlanResult{Outcome: CachePlanIneligible}
+	if !artifacts.Allows(cachepolicy.Artifact{ModelID: input.Model, ModelAggregateSHA256: input.ModelAggregateSHA256, PromptContractID: input.PromptContractID}) {
+		return CachePlanResult{Outcome: cacheactivation.CachePlanIneligible}
 	}
 
 	scope := providerCacheScope(
@@ -157,18 +153,18 @@ func (r *Registry) PlanCacheRouteWithResult(
 		input.PromptContractID,
 	)
 	if scope == "" {
-		return CachePlanResult{Outcome: CachePlanIneligible}
+		return CachePlanResult{Outcome: cacheactivation.CachePlanIneligible}
 	}
 	// The sampling cohort is stable for identical account + resolved model +
 	// provider-bound body so a sampled miss can later donate and hit. Only this
 	// keyed digest reaches the gate; raw identity/prompt bytes are never stored,
 	// logged, persisted, tagged, or returned.
-	cohort := cacheActivationCohort(keys.activation, input.Account, input.Model, input.Body)
-	switch activation.allow(cohort, time.Now()) {
-	case cacheActivationSampledOut:
-		return CachePlanResult{Outcome: CachePlanSampledOut}
-	case cacheActivationThrottled:
-		return CachePlanResult{Outcome: CachePlanThrottled}
+	cohort := cacheactivation.Cohort(keys.activation, input.Account, input.Model, input.Body)
+	switch activation.Allow(cohort, time.Now()) {
+	case cacheactivation.SampledOut:
+		return CachePlanResult{Outcome: cacheactivation.CachePlanSampledOut}
+	case cacheactivation.Throttled:
+		return CachePlanResult{Outcome: cacheactivation.CachePlanThrottled}
 	}
 	started := time.Now()
 	sidecarPlan, err := client.Plan(ctx, promptcontract.PlanInput{
@@ -183,62 +179,55 @@ func (r *Registry) PlanCacheRouteWithResult(
 	current := r.cacheRouting == tracker && currentMode == CacheRoutingOn
 	r.mu.RUnlock()
 	if !current {
-		outcome := CachePlanIneligible
+		outcome := cacheactivation.CachePlanIneligible
 		if currentMode == CacheRoutingOff {
-			outcome = CachePlanOff
+			outcome = cacheactivation.CachePlanOff
 		}
 		return CachePlanResult{Outcome: outcome, PlanLatency: latency, SidecarCalled: true}
 	}
 	if err != nil {
-		outcome := CachePlanSidecarError
+		outcome := cacheactivation.CachePlanSidecarError
 		if errors.Is(err, promptcontract.ErrDynamicContract) {
-			outcome = CachePlanColdOnly
+			outcome = cacheactivation.CachePlanColdOnly
 		} else if errors.Is(err, promptcontract.ErrInvalidPlan) ||
 			errors.Is(err, promptcontract.ErrPlanTooLarge) {
-			outcome = CachePlanInvalid
+			outcome = cacheactivation.CachePlanInvalid
 		}
-		activation.recordPlan(outcome)
+		activation.RecordPlan(outcome)
 		return CachePlanResult{
 			Outcome: outcome, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
 	if !sidecarPlan.Participating {
-		activation.recordPlan(CachePlanInvalid)
+		activation.RecordPlan(cacheactivation.CachePlanInvalid)
 		return CachePlanResult{
-			Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
+			Outcome: cacheactivation.CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
 		}
+	}
+	work := &protocol.PromptWork{Version: protocol.PromptWorkVersion, Source: protocol.PromptWorkExact,
+		PromptTokens: int(sidecarPlan.PromptTokenCount), UpperBoundTokens: int(sidecarPlan.PromptTokenCount),
+		PromptContractID: input.PromptContractID, ModelArtifactHash: aggregateHash}
+	if !work.IsQualifiedFor(aggregateHash, input.PromptContractID) {
+		work = nil
 	}
 	if len(sidecarPlan.BlockBoundaries) == 0 {
-		activation.recordPlan(CachePlanNoBoundaries)
+		activation.RecordPlan(cacheactivation.CachePlanNoBoundaries)
 		return CachePlanResult{
-			Outcome: CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
+			PromptWork: work, Outcome: cacheactivation.CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
-	boundaries := make([]protocol.PrefixCacheAnchor, 0, len(sidecarPlan.BlockBoundaries))
-	for _, boundary := range sidecarPlan.BlockBoundaries {
-		anchor := protocol.PrefixCacheAnchor{
-			TokenCount: int(boundary.TokenCount),
-			ChainHash:  boundary.ChainHash,
+	plan, accepted := cacheplan.PlanFromSidecar(tracker.generation, cacheplan.Identity{
+		ModelAggregateHash: aggregateHash, PromptContractID: input.PromptContractID, CacheScope: scope,
+	}, sidecarPlan)
+	if !accepted {
+		activation.RecordPlan(cacheactivation.CachePlanInvalid)
+		return CachePlanResult{
+			Outcome: cacheactivation.CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
 		}
-		if !validV2Anchor(anchor, promptcontract.BlockSize) {
-			activation.recordPlan(CachePlanInvalid)
-			return CachePlanResult{
-				Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
-			}
-		}
-		boundaries = append(boundaries, anchor)
-	}
-	plan := CachePlan{
-		generation:         tracker.generation,
-		ModelAggregateHash: aggregateHash,
-		PromptContractID:   input.PromptContractID,
-		CacheScope:         scope,
-		PromptTokenCount:   int(sidecarPlan.PromptTokenCount),
-		Boundaries:         boundaries,
 	}
 	tracker.observeCacheDemand(&plan, keys.route, time.Now())
-	activation.recordPlan(CachePlanPlanned)
-	return CachePlanResult{Plan: plan, Outcome: CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
+	activation.RecordPlan(cacheactivation.CachePlanPlanned)
+	return CachePlanResult{Plan: plan, PromptWork: work, Outcome: cacheactivation.CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
 }
 
 // providerCacheScope is the only provider-visible routing value. It binds the
@@ -255,7 +244,7 @@ func providerCacheScope(
 	}
 	return opaqueHMAC(
 		scopeKey,
-		"scope-v3",
+		cacheScopeSerialization,
 		account,
 		model,
 		strings.ToLower(aggregateHash),
@@ -273,17 +262,5 @@ func cacheBoundaryKey(
 	plan CachePlan,
 	anchor protocol.PrefixCacheAnchor,
 ) string {
-	if len(routeKey) == 0 || !plan.present() ||
-		!validV2Anchor(anchor, promptcontract.BlockSize) {
-		return ""
-	}
-	return opaqueHMAC(
-		routeKey,
-		"prefix-v4",
-		plan.CacheScope,
-		plan.ModelAggregateHash,
-		plan.PromptContractID,
-		strconv.Itoa(anchor.TokenCount),
-		anchor.ChainHash,
-	)
+	return plan.BoundaryKey(routeKey, anchor)
 }

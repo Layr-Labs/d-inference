@@ -1,6 +1,6 @@
 # Gemma QAT matches across backends with MTP disabled
 
-> Last updated: 2026-09-06 · commit `bc1819129`
+> Last updated: 2026-09-06
 
 Both real-model MTP-off controls pass execution and integrity checks, and the
 unchanged strict backend comparison passes. All seven completed trajectories

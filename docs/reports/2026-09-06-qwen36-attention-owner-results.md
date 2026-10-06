@@ -1,6 +1,6 @@
 # Qwen3.6 complete attention-owner metadata
 
-> Last updated: 2026-09-06 · commit `4d53fd012`
+> Last updated: 2026-09-06
 
 The corrected contiguous diagnostic captures all ten Qwen3.6 attention owners:
 original queries, incoming keys/values, visible cache storage, kernel outputs,

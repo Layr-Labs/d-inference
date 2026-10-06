@@ -71,7 +71,7 @@ extension CapacityRejectionReason {
             self = .deadline
         case .jinjaChannelTags, .jinjaNullBridge, .jinjaTemplate:
             self = .template
-        case .cancelled, .clientError, .toolNoncompliance:
+        case .cancelled, .clientError, .toolNoncompliance, .mediaMemoryUnavailable:
             return nil
         }
     }

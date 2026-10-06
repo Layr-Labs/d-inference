@@ -1,6 +1,6 @@
 # Qwen3.6 candidate: ordinary paged control and SSD restoration
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The current release candidate passed two separate bounded B1 checks on the exact Qwen3.6 MXFP8 artifact. Ordinary generation with MTP and SSD disabled produced identical complete outputs with contiguous and paged attention. Normal MTP generation with paged attention and SSD enabled exactly matched the retained paged cache-off run, including actual prefix restoration, tenant isolation and cancellation recovery.
 

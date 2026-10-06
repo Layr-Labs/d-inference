@@ -1,6 +1,6 @@
 # Correct attention metadata owner identity for production caches
 
-> Last updated: 2026-09-06 · commit `c9bd3ab78`
+> Last updated: 2026-09-06
 
 The diagnostic now binds each concrete cache to its dense storage owner explicitly.
 The actual Qwen production adapter keeps its original cache indices. Native

@@ -1,6 +1,6 @@
 # App Attest machine-alias freshness review
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 The v0.9.4 machine inventory can make an old App Attest alias look freshly
 verified without receiving a new assertion. Enforcement does not repair this

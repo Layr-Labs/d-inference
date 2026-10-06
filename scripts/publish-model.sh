@@ -128,6 +128,11 @@ export AWS_SECRET_ACCESS_KEY="$(gcloud secrets versions access latest --project 
 export AWS_DEFAULT_REGION="auto"
 export R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
+# Reserve immutable content before any R2 object can be overwritten.
+REVISION_PUBLICATION_STATE="$(python3 "$ROOT_DIR/scripts/publish-model-revision.py" reserve --manifest "$MANIFEST" \
+  --bucket "$R2_BUCKET" --endpoint "$R2_ENDPOINT")"
+
+if [[ "$REVISION_PUBLICATION_STATE" != "published" ]]; then
 printf 'Uploading model files to s3://%s/%s with concurrency 8...\n' "$R2_BUCKET" "$R2_PREFIX"
 python3 - "$MANIFEST" "$MODEL_DIR" "$R2_BUCKET" "$R2_PREFIX" <<'PY'
 import concurrent.futures
@@ -152,6 +157,7 @@ PY
 
 printf 'Uploading manifest last...\n'
 aws s3 cp "$MANIFEST" "s3://${R2_BUCKET}/${R2_PREFIX}/manifest.json" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+fi
 
 cat <<EOF
 

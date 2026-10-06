@@ -1,6 +1,6 @@
 # Strict cache evidence and the first Qwen3.6 paged SSD pair
 
-> Last updated: 2026-09-05 · commit `1a4a4504b`
+> Last updated: 2026-09-05
 
 The evaluator now requires a real cache-off/cache-on pair, checks both batch
 arms and verifies idle/shutdown ownership. Fifty Python test functions pass.

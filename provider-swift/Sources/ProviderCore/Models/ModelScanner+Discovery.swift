@@ -135,7 +135,14 @@ extension ModelScanner {
         let nativeLoad = Qwen4ExpLoadFootprint.estimate(
             snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes,
             offloadedBytes: mmapExcluded)
-        let estimatedMemoryGb = nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
+        // Canonical MiMo uses the strict root + ordinary installed-sidecar LOAD
+        // requests, not disk×1.2 or a measured steady-residency substitution.
+        // The helper reads metadata/headers only; actual native admission still
+        // revalidates and claims its real bound before allocation.
+        let mimoLoad = MiMoV26DiscoveryLoadFootprint.estimate(
+            snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes)
+        let estimatedMemoryGb = mimoLoad.map { Double($0.totalBytes) / 1_073_741_824 }
+            ?? nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
             ?? (Double(residentBytes) / 1_073_741_824) * memoryOverheadFactor
 
         // Advertise whether this build can serve image/video input so the
@@ -168,7 +175,7 @@ extension ModelScanner {
             templateRenderOK: templateRenderOK,
             toolConstraintTemplateHash: toolConstraintTemplateHash,
             ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,
-            nativeLoadTransientBytes: nativeLoad?.transientBytes
+            nativeLoadTransientBytes: mimoLoad?.transientBytes ?? nativeLoad?.transientBytes
         )
         if ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info) {
             info.nativeMediaTools = true

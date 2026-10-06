@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -23,7 +24,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := !providerDrainingLocked(p, time.Now()) && r.providerServesCatalogModelLocked(p, modelID)
+	eligible := !providerDrainingLocked(p, time.Now()) && !providerLegacyModelChangesBlockedLocked(p) && r.providerServesCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {
@@ -49,7 +50,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
+	if err := p.writeModelCommand(ctx, data); err != nil {
 		return fmt.Errorf("failed to send load_model to provider %q: %w", providerID, err)
 	}
 
@@ -76,7 +77,7 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := !providerDrainingLocked(p, time.Now()) && r.providerCanAcquireCatalogModelLocked(p, modelID)
+	eligible := !providerDrainingLocked(p, time.Now()) && !providerLegacyModelChangesBlockedLocked(p) && r.providerCanAcquireCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {
@@ -99,7 +100,7 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
+	if err := p.writeModelCommand(ctx, data); err != nil {
 		return fmt.Errorf("failed to send prefetch_model to provider %q: %w", providerID, err)
 	}
 
@@ -166,7 +167,7 @@ func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredMode
 	if !forceEmpty {
 		for _, entry := range entries {
 			if entry.DesiredBuild == "" ||
-				!r.providerCanAcquireCatalogModelLocked(p, entry.DesiredBuild) {
+				!r.providerCanAcquireDesiredModelLocked(p, entry.DesiredBuild, entry.PreviousBuild) {
 				continue
 			}
 			if entry.PreviousBuild != "" &&
@@ -212,7 +213,7 @@ func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredMode
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
+	if err := p.writeModelCommand(ctx, data); err != nil {
 		return fmt.Errorf("failed to send desired_models to provider %q: %w", providerID, err)
 	}
 	recordDesiredModelsSent(p, entries)
@@ -224,15 +225,7 @@ func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredMode
 }
 
 func desiredModelEntriesEqual(left, right []protocol.DesiredModelEntry) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(left, right)
 }
 
 func recordDesiredModelsSent(p *Provider, entries []protocol.DesiredModelEntry) {
@@ -253,7 +246,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, ok := r.providers[providerID]
-	if !ok || len(r.modelAliases) == 0 {
+	if !ok {
 		return nil
 	}
 	p.mu.Lock()
@@ -263,17 +256,24 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 	}
 	advertised := make(map[string]struct{}, len(p.Models))
 	for _, m := range p.Models {
-		if m.ID != "" {
+		if m.ID != "" && providerOrdinaryModelAllowedLocked(p, m.ID) {
 			advertised[m.ID] = struct{}{}
 		}
 	}
 
+	supportsRevisions := false
+	for _, capability := range p.ReportedRuntimeCapabilities {
+		if capability == "model_revisions_v1" {
+			supportsRevisions = true
+		}
+	}
 	var entries []protocol.DesiredModelEntry
+	covered := make(map[string]bool)
 	for alias, t := range r.modelAliases {
 		if t.OpenRouterOnly || t.Desired == "" {
 			continue
 		}
-		if !r.providerCanAcquireCatalogModelLocked(p, t.Desired) {
+		if !r.providerCanAcquireDesiredModelLocked(p, t.Desired, t.Previous) {
 			continue
 		}
 
@@ -299,10 +299,34 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		if previous != "" && !r.providerCanAcquireCatalogModelLocked(p, previous) {
 			previous = ""
 		}
+		artifact := r.modelCatalog[t.Desired]
+		if !supportsRevisions {
+			artifact.Revision = ""
+			artifact.WeightHash = ""
+		}
 		entries = append(entries, protocol.DesiredModelEntry{
+			Revision: artifact.Revision, AggregateSHA256: artifact.WeightHash,
 			ModelName:     alias,
 			DesiredBuild:  t.Desired,
 			PreviousBuild: previous,
+		})
+		// Suppress lineage only when this provider actually receives the
+		// alias target. Otherwise its eligible old build still needs its own
+		// revision updates (for example, when the desired build requires M5).
+		covered[t.Desired] = true
+		covered[t.Previous] = true
+		for _, id := range t.Retired {
+			covered[id] = true
+		}
+	}
+	// Same-ID updates also cover concrete builds whose alias target cannot be acquired.
+	for id := range advertised {
+		artifact, exists := r.modelCatalog[id]
+		if !supportsRevisions || !exists || artifact.Revision == "" || covered[id] || !r.providerCanAcquireCatalogModelLocked(p, id) {
+			continue
+		}
+		entries = append(entries, protocol.DesiredModelEntry{
+			ModelName: id, DesiredBuild: id, Revision: artifact.Revision, AggregateSHA256: artifact.WeightHash,
 		})
 	}
 	p.mu.Unlock()

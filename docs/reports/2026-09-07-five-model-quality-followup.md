@@ -1,6 +1,6 @@
 # Five-model quality follow-up
 
-> Last updated: 2026-09-07 · commit `72be6e10d`
+> Last updated: 2026-09-07
 
 The verified 0.9.0 runtime completes all nine jobs and their structural checks. All 12 arithmetic responses finish with correct answers. Matched code controls reproduce the earlier concerns on contiguous attention; GPT-OSS code and prose need a further matched control before their quality result can be attributed to the migration.
 

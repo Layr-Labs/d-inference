@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) qualification record
 
-> Last updated: 2026-09-14 · commit `4e90ac8b`
+> Last updated: 2026-09-14
 
 This record summarizes native Qwen4 implementation checks on the affine-Q4
 candidate. It contains no developer endpoint, credential, machine identifier

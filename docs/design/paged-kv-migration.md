@@ -1,6 +1,6 @@
 # Migration Plan: Contiguous → Paged KV, and B=4 → B=8
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Implemented (v0.8.0)** — 2026-07-25 — shipped as v0.8.0's paged default and B=8 ([`../releases/v0.8.0-notes.md`](../releases/v0.8.0-notes.md)); v0.8.1 reverted both defaults (`case .auto: resolvedKind = .contiguous` in `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`, `defaultEngineV2MaxConcurrent` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) and paged stays opt-in via `engine_v2_kv_backend = "paged"`; supersedes [paged-attention-for-prefill.md](paged-attention-for-prefill.md) (§21).
 

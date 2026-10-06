@@ -15,35 +15,6 @@
 
 import Foundation
 
-// MARK: - Config types (serializable)
-
-/// A single availability window as stored in config.
-public struct ScheduleWindow: Codable, Sendable, Equatable {
-    /// Days this window applies to (e.g. ["mon", "tue", "wed"]).
-    public var days: [String]
-    /// Start time in HH:MM 24h format.
-    public var start: String
-    /// End time in HH:MM 24h format. If end < start, wraps overnight.
-    public var end: String
-
-    public init(days: [String], start: String, end: String) {
-        self.days = days
-        self.start = start
-        self.end = end
-    }
-}
-
-/// Schedule configuration as stored in the config file.
-public struct ScheduleConfig: Codable, Sendable, Equatable {
-    public var enabled: Bool
-    public var windows: [ScheduleWindow]
-
-    public init(enabled: Bool = false, windows: [ScheduleWindow] = []) {
-        self.enabled = enabled
-        self.windows = windows
-    }
-}
-
 // MARK: - Day of week
 
 /// Days of the week.
@@ -141,6 +112,10 @@ public struct TimeOfDay: Sendable, Equatable, Comparable {
 
     /// Parse from "HH:MM" format. Returns nil on invalid input.
     public static func parse(_ s: String) -> TimeOfDay? {
+        let bytes = Array(s.utf8)
+        guard bytes.count == 5, bytes[2] == 58,
+              [bytes[0], bytes[1], bytes[3], bytes[4]].allSatisfy({ (48...57).contains($0) })
+        else { return nil }
         let parts = s.split(separator: ":")
         guard parts.count == 2,
               let h = Int(parts[0]),
@@ -169,37 +144,25 @@ struct ParsedWindow: Sendable {
     let end: TimeOfDay
     /// True when end <= start (e.g. 22:00-08:00 = serve overnight).
     let overnight: Bool
-
-    /// The same membership rule drives availability and the close timer.
-    func secondsUntilEnd(on today: DayOfWeek, nowSeconds: Int) -> Int? {
-        if overnight {
-            if days.contains(today) && nowSeconds >= start.totalSeconds {
-                return 86400 - nowSeconds + end.totalSeconds
-            }
-            if days.contains(today.previous) && nowSeconds < end.totalSeconds {
-                return end.totalSeconds - nowSeconds
-            }
-        } else if days.contains(today),
-                  nowSeconds >= start.totalSeconds, nowSeconds < end.totalSeconds {
-            return end.totalSeconds - nowSeconds
-        }
-        return nil
-    }
 }
 
 /// A fully-parsed schedule ready for `isActiveNow()` checks.
 ///
-/// Create via `Schedule.from(config:)`. If scheduling is disabled or no
-/// valid windows exist, `from(config:)` returns nil -- meaning "always available".
+/// Create via `Schedule.from(config:)`. Disabled schedules return nil (always
+/// available); invalid enabled schedules contain no windows (unavailable).
 public struct Schedule: Sendable {
     let windows: [ParsedWindow]
 
     /// Parse a `ScheduleConfig` into a `Schedule`.
     ///
-    /// Returns nil when scheduling is disabled or no valid windows can be parsed,
-    /// which means "always available" (no scheduling constraint).
+    /// Returns nil only when disabled. Invalid enabled configurations fail closed.
     public static func from(config: ScheduleConfig) -> Schedule? {
-        guard config.enabled, !config.windows.isEmpty else { return nil }
+        guard config.enabled else { return nil }
+        do {
+            try config.validate()
+        } catch {
+            return Schedule(windows: [])
+        }
 
         var parsed: [ParsedWindow] = []
         for window in config.windows {
@@ -212,7 +175,6 @@ public struct Schedule: Sendable {
             parsed.append(ParsedWindow(days: days, start: start, end: end, overnight: overnight))
         }
 
-        guard !parsed.isEmpty else { return nil }
         return Schedule(windows: parsed)
     }
 
@@ -223,89 +185,26 @@ public struct Schedule: Sendable {
 
     /// Check whether a specific date falls within any scheduled window.
     /// Exposed for testing with deterministic times.
-    public func isActive(at date: Date) -> Bool {
-        let calendar = Calendar.current
-        let components = calendar.dateComponents([.weekday, .hour, .minute], from: date)
-        guard let weekday = components.weekday,
-              let hour = components.hour,
-              let minute = components.minute,
-              let today = DayOfWeek.fromFoundationWeekday(weekday)
-        else { return false }
-
-        let nowSeconds = hour * 3600 + minute * 60
-        return windows.contains { $0.secondsUntilEnd(on: today, nowSeconds: nowSeconds) != nil }
+    public func isActive(at date: Date, calendar: Calendar = .current) -> Bool {
+        intervals(around: date, calendar: calendar).contains { $0.start <= date && date < $0.end }
     }
 
-    /// How long until the current active window ends.
-    /// Returns nil if not currently active.
-    public func durationUntilInactive(from date: Date = Date()) -> TimeInterval? {
-        let calendar = Calendar.current
-        let components = calendar.dateComponents([.weekday, .hour, .minute, .second], from: date)
-        guard let weekday = components.weekday,
-              let hour = components.hour,
-              let minute = components.minute,
-              let second = components.second,
-              let today = DayOfWeek.fromFoundationWeekday(weekday)
-        else { return nil }
-
-        let nowSeconds = hour * 3600 + minute * 60 + second
-        // Preserve configured window order when availability windows overlap.
-        for window in windows {
-            if let remaining = window.secondsUntilEnd(on: today, nowSeconds: nowSeconds) {
-                return TimeInterval(remaining)
-            }
-        }
-        return nil
+    /// How long until the union of active windows ends.
+    /// Returns nil when inactive or continuously available all week.
+    public func durationUntilInactive(from date: Date = Date(), calendar: Calendar = .current) -> TimeInterval? {
+        guard let active = intervals(around: date, calendar: calendar).first(where: {
+            $0.start <= date && date < $0.end
+        }), !coversEntireWeek else { return nil }
+        return active.end.timeIntervalSince(date)
     }
 
     /// How long until the next window opens.
     /// Returns zero if already active.
-    public func durationUntilNextActive(from date: Date = Date()) -> TimeInterval {
-        if isActive(at: date) { return 0 }
-
-        let calendar = Calendar.current
-        let components = calendar.dateComponents([.weekday, .hour, .minute, .second], from: date)
-        guard let weekday = components.weekday,
-              let hour = components.hour,
-              let minute = components.minute,
-              let second = components.second,
-              let today = DayOfWeek.fromFoundationWeekday(weekday)
-        else { return 3600 }
-
-        let now = TimeOfDay(hour: hour, minute: minute)
-        let nowSeconds = hour * 3600 + minute * 60 + second
-        var minWait = Int.max
-
-        // Check each window across the next 7 days
-        for w in windows {
-            for dayOffset in 0..<7 {
-                let checkDay = today.adding(dayOffset)
-                guard w.days.contains(checkDay) else { continue }
-
-                let wait: Int
-                if dayOffset == 0 && now < w.start {
-                    // Today, window hasn't started yet
-                    wait = w.start.totalSeconds - nowSeconds
-                } else if dayOffset > 0 {
-                    // Future day
-                    let remainingToday = 86400 - nowSeconds
-                    let fullDays = (dayOffset - 1) * 86400
-                    let intoTarget = w.start.totalSeconds
-                    wait = remainingToday + fullDays + intoTarget
-                } else {
-                    continue // Today but window already passed (or currently active, handled above)
-                }
-
-                if wait < minWait {
-                    minWait = wait
-                }
-            }
+    public func durationUntilNextActive(from date: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
+        for interval in intervals(around: date, calendar: calendar) where interval.end > date {
+            return max(0, interval.start.timeIntervalSince(date))
         }
-
-        if minWait == Int.max {
-            return 3600 // Fallback: check again in 1 hour
-        }
-        return TimeInterval(minWait)
+        return 3600 // Invalid enabled schedule: remain unavailable and recheck later.
     }
 
     /// Human-readable description of the schedule.

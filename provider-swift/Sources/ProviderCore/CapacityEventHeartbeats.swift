@@ -50,6 +50,12 @@ public enum CapacityHeartbeatMateriality {
         // A pending load can reserve memory before any slot exists. Surface
         // both edges promptly so owner diagnostics do not call it a failure.
         if previous.loadTransitionActive != current.loadTransitionActive { return true }
+        // Service ownership starts before engine submission and ends after
+        // retirement. Either edge can leave slot counts and token budgets
+        // unchanged while changing whole-Mac admission headroom.
+        if previous.wholeMacServiceUsed != current.wholeMacServiceUsed { return true }
+        if previous.wholeMacServiceReservations != current.wholeMacServiceReservations { return true }
+        if previous.wholeMacServiceRetirementProtocol != current.wholeMacServiceRetirementProtocol { return true }
 
         // Slot roster: a model loaded, unloaded, or evicted.
         let previousSlots = Dictionary(
@@ -67,6 +73,15 @@ public enum CapacityHeartbeatMateriality {
             if before.state != slot.state { return true }
             if before.numRunning != slot.numRunning { return true }
             if before.numWaiting != slot.numWaiting { return true }
+            // Posture can withdraw a reviewed profile and lower concurrency
+            // on an idle slot without changing its contiguous token budget.
+            // Publish both directions and the full qualification identity.
+            if before.maxConcurrency != slot.maxConcurrency { return true }
+            if before.performanceProfile != slot.performanceProfile { return true }
+            if before.deadlineProfile != slot.deadlineProfile { return true }
+            if before.promptWorkIdentity != slot.promptWorkIdentity { return true }
+            if before.deadlineWork != slot.deadlineWork { return true }
+            if performanceChanged(before, slot) { return true }
             // Token budget drifting without an admission-count change
             // (re-slice, queued work retiring, KV reclaim) is compared PER
             // SLOT: the coordinator's ledger is per-model, so opposing
@@ -88,6 +103,22 @@ public enum CapacityHeartbeatMateriality {
         // sum to a fleet-level shift the coordinator's total-capacity view
         // cares about (e.g. three slots each +400 tokens ≥ the 1024 floor).
         return budgetShiftIsMaterial(previous: previousBudget, current: currentBudget)
+    }
+
+    /// Sample ages grow on every rebuild and are deliberately immaterial. A
+    /// new observation at an identical rate still advances count/freshness;
+    /// raw work counters cover valid computation excluded from rate training.
+    private static func performanceChanged(_ before: BackendSlotCapacity, _ current: BackendSlotCapacity) -> Bool {
+        let old = before.performanceMeasurements
+        let new = current.performanceMeasurements
+        return old?.epoch != new?.epoch
+            || old?.isolatedPrefill?.sampleCount != new?.isolatedPrefill?.sampleCount
+            || old?.contendedPrefill?.sampleCount != new?.contendedPrefill?.sampleCount
+            || old?.decode?.sampleCount != new?.decode?.sampleCount
+            || before.telemetry?.prefillTokensTotal != current.telemetry?.prefillTokensTotal
+            || before.telemetry?.prefillRequestsTotal != current.telemetry?.prefillRequestsTotal
+            || before.telemetry?.generatedTokensTotal != current.telemetry?.generatedTokensTotal
+            || before.telemetry?.generationRequestsTotal != current.telemetry?.generationRequestsTotal
     }
 
     /// Materiality of one budget figure moving to another: a shift of

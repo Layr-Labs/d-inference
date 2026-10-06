@@ -1,6 +1,6 @@
 # Gemma QAT defaults: validation evidence
 
-> Last updated: 2026-09-08 · commit `4ae34f033`
+> Last updated: 2026-09-08
 
 Evidence for the [Gemma QAT defaults report](../../2026-09-08-gemma-qat-defaults.md). Candidate5 is the final runtime; earlier restart/failure results retain their own provenance.
 

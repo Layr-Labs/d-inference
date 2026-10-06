@@ -13,6 +13,8 @@ type InferenceFailureCode string
 type CoordinatorInferenceErrorCause string
 
 const (
+	// CoordinatorCauseResponseLimit is local-only: decrypted non-streaming output exceeded its budget.
+	CoordinatorCauseResponseLimit CoordinatorInferenceErrorCause = "response_limit"
 	// CoordinatorCauseProviderDisconnected marks the pending-request flush of
 	// an ABRUPT socket loss (read error, OOM-suspected drop, stale eviction,
 	// duplicate-serial kick): the provider vanished with work in flight, so
@@ -35,6 +37,10 @@ const (
 // ingress sanitizer maps every provider-supplied error_reason through a closed
 // per-failure-code allowlist that does not include it.
 const InferenceErrorReasonProviderRestart = "provider_restart"
+
+// InferenceErrorReasonMediaMemoryUnavailable describes this request's media
+// preparation reservation. It does not invalidate the provider's text/KV budget.
+const InferenceErrorReasonMediaMemoryUnavailable = "media_memory_unavailable"
 
 // IsProviderDisconnect reports whether the cause marks a coordinator-synthetic
 // disconnect flush of either flavor (abrupt or graceful restart) — the

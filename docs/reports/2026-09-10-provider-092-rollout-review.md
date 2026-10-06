@@ -1,6 +1,6 @@
 # Provider 0.9.2: compatibility and rollout review
 
-> Last updated: 2026-09-10 · commit `5f021ba4d`
+> Last updated: 2026-09-10
 
 **The provider can use the current 0.9.1 coordinator, but the combined 0.9.2
 runtime is not yet fully qualified for fleet publication.** No direct interface

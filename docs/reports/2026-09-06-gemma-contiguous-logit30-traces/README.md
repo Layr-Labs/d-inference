@@ -1,6 +1,6 @@
 # Gemma contiguous position-30 raw evidence capsule
 
-> Last updated: 2026-09-06 · commit `a34ef5944`
+> Last updated: 2026-09-06
 
 This additive capsule preserves every one of the 137 payloads named by the original execution-results manifest. The original report and its banked manifests remain byte-identical. Both bounded trace analyses reproduce exactly from the capsule on CPU, without model binaries, model weights, a test host or private keys.
 

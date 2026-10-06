@@ -1,6 +1,6 @@
 # Routing flags: kill switches and flag flips
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-10-02
 
 The routing-v2 rollout is complete: every behaviour it introduced ships in the
 coordinator binary and is **on by default**. This runbook is what remains
@@ -40,8 +40,8 @@ is not explained by one of the behaviours below; roll the binary back per
    below cite where each is read.
 2. Edit the env file, restart the coordinator, and confirm the startup log
    line for that flag (each flag logs its resolved value at boot from
-   `coordinator/cmd/coordinator/main.go`, `coordinator/api/cold_dispatch.go`,
-   `coordinator/api/throughput_anomaly.go` or `coordinator/registry/config.go`).
+   `coordinator/app/routing.go`, `coordinator/api/inference/cold_dispatch.go`,
+   `coordinator/api/observation/throughput_anomaly.go` or `coordinator/registry/config.go`).
 3. Watch the metric named in the row for one observation window before
    deciding whether to keep the flip or revert the binary.
 
@@ -49,18 +49,18 @@ is not explained by one of the behaviours below; roll the binary back per
 
 | Variable | Default (code) | Read in | Flip | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_TTFT_HARD_REJECT` | unset → soft | `coordinator/cmd/coordinator/main.go` (`SetTTFTHardReject`) | `=true` | Restores the legacy hard `429` when every candidate's estimated TTFT exceeds the request's first-content deadline (`ttft_too_slow`). Vision requests are never TTFT-gated. |
-| `EIGENINFERENCE_PREFILL_DECODE_RATIO` | `defaultPrefillToDecodeRatio = 12.0` | `coordinator/cmd/coordinator/main.go` → `SetPrefillToDecodeRatio` | `=4` | Pre-v2 prefill estimate for providers that report no measured prefill rate. Shifts TTFT estimates and the `ttft_ceiling` gate for unmeasured providers only. |
-| `EIGENINFERENCE_MIN_DECODE_TPS` | `15.0` | `coordinator/cmd/coordinator/main.go` | `=0` | Disables the per-request decode-quality floor (soft pool narrowing; never rejects). Keep on unless the floor is demonstrably starving a model. |
-| `EIGENINFERENCE_SERVABILITY_GATE` | on | `coordinator/cmd/coordinator/main.go` (`SetServabilityGate`) | `=false` | Stops the early `429` for structurally unservable long prompts; such requests fall through to queueing and provider-side rejection. |
-| `EIGENINFERENCE_LONG_PROMPT_TOKENS` / `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | `0` (off) / `2.0` | `coordinator/cmd/coordinator/main.go` → `SetLongPromptThreshold`, `SetLongPromptPrefillWeight` | set a threshold | Enables the long-prompt fastest-first-token bias ([`routing.md`](../architecture/routing.md#cost-model)). |
+| `EIGENINFERENCE_TTFT_HARD_REJECT` | unset → soft | `coordinator/app/routing.go` (`SetTTFTHardReject`) | `=true` | Restores the legacy hard `429` when every candidate's estimated TTFT exceeds the request's first-content deadline (`ttft_too_slow`). Vision requests are never TTFT-gated. |
+| `EIGENINFERENCE_PREFILL_DECODE_RATIO` | `defaultPrefillToDecodeRatio = 12.0` | `coordinator/app/routing.go` → `SetPrefillToDecodeRatio` | `=4` | Pre-v2 prefill estimate for providers that report no measured prefill rate. Shifts TTFT estimates and the `ttft_ceiling` gate for unmeasured providers only. |
+| `EIGENINFERENCE_MIN_DECODE_TPS` | `15.0` | `coordinator/app/routing.go` | `=0` | Disables the per-request decode-quality floor (soft pool narrowing; never rejects). Keep on unless the floor is demonstrably starving a model. |
+| `EIGENINFERENCE_SERVABILITY_GATE` | on | `coordinator/app/routing.go` (`SetServabilityGate`) | `=false` | Stops the early `429` for structurally unservable long prompts; such requests fall through to queueing and provider-side rejection. |
+| `EIGENINFERENCE_LONG_PROMPT_TOKENS` / `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | `0` (off) / `2.0` | `coordinator/app/routing.go` → `SetLongPromptThreshold`, `SetLongPromptPrefillWeight` | set a threshold | Enables the long-prompt fastest-first-token bias ([`routing.md`](../architecture/routing.md#cost-model)). |
 
 ### Queue and cold dispatch
 
 | Variable | Default (code) | Read in | Flip | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `true` | `coordinator/api/cold_dispatch.go` | `=false` | `machine_busy` preflight rejections are shed immediately as `429` instead of entering the dispatch queue. Watch queue depth and tail latency. |
-| `EIGENINFERENCE_COLD_DISPATCH` | `true` | `coordinator/api/cold_dispatch.go` | `=false` | `no_provider` is shed instead of spilling to an idle on-disk provider, and enqueue no longer kicks model swaps. Watch provider load/memory churn. |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `true` | `coordinator/api/inference/cold_dispatch.go` | `=false` | `machine_busy` preflight rejections are shed immediately as `429` instead of entering the dispatch queue. Watch queue depth and tail latency. |
+| `EIGENINFERENCE_COLD_DISPATCH` | `true` | `coordinator/api/inference/cold_dispatch.go` | `=false` | `no_provider` is shed instead of spilling to an idle on-disk provider, and enqueue no longer kicks model swaps. Watch provider load/memory churn. |
 | `EIGENINFERENCE_QUEUE_MAX_DEPTH` / `EIGENINFERENCE_QUEUE_MAX_WAIT` | `32` / `120s` | `coordinator/registry/queue.go` | retune | Per-model queue depth and per-request wait bound ([`scheduling.md`](../architecture/scheduling.md#per-model-request-queue)). |
 
 ### Warm pool
@@ -89,7 +89,7 @@ parameters, is in [`scheduling.md`](../architecture/scheduling.md#warm-pool-cont
 
 | Variable | Default (code) | Read in | Flip | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_INTERVAL` | `throughputAnomalySweepInterval = 5 * time.Minute` | `coordinator/api/throughput_anomaly.go` | widen | Fewer sweeps. |
+| `EIGENINFERENCE_THROUGHPUT_ANOMALY_INTERVAL` | `throughputAnomalySweepInterval = 5 * time.Minute` | `coordinator/api/observation/throughput_anomaly.go` | widen | Fewer sweeps. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO` | `DefaultAnomalyRatioThreshold = 0.35` | `coordinator/registry/throughput_anomaly.go` | lower | Flag only deeper shortfalls. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_MIN_SAMPLES` | `DefaultAnomalyMinSamples = 3` | `coordinator/registry/throughput_anomaly.go` | raise | Require more samples before flagging. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | `DefaultDecodeEfficiency = 0.80` | `coordinator/registry/throughput_anomaly.go` | — | Fraction of peak bandwidth assumed sustained. |
@@ -100,7 +100,7 @@ The detector is observability only; it never changes routing.
 
 | Variable | Default (code) | Read in | Flip | Effect |
 |---|---|---|---|---|
-| `APNS_MODE` | `background` | `coordinator/cmd/coordinator/main.go` (`loadAPNsAttestor`) | `=alert` | Priority-10 code-identity pushes that are not background-throttled. Safe only while the provider never requests `UNUserNotificationCenter` authorization; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md). Unset to return to `background`. |
+| `APNS_MODE` | `background` | `coordinator/app/apns.go` (`loadAPNsAttestor`) | `=alert` | Priority-10 code-identity pushes that are not background-throttled. Safe only while the provider never requests `UNUserNotificationCenter` authorization; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md). Unset to return to `background`. |
 
 Attestation freshness (`challengeFreshnessMaxAge = 16 * time.Minute`) and the
 challenge/attest timeouts are compile-time constants, not flags; changing them

@@ -1,6 +1,6 @@
 # GPT-OSS 20B prefill and decode optimization
 
-> Last updated: 2026-09-05 · commit `0df59f51a`
+> Last updated: 2026-09-05
 
 Status: **Superseded by [implementation results](../reports/2026-09-05-gptoss20b-optimization-results.md)** — 2026-09-05. Implemented candidates, measured controls and reviewable PRs; no production rollout.
 

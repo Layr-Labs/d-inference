@@ -1,6 +1,6 @@
 # App Attest enforcement coordinator-backpressure review
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 Review of how v0.9.4 attributes coordinator-side App Attest failures during a
 macOS 27 rollout. Turning on enforcement does not correct the attribution:

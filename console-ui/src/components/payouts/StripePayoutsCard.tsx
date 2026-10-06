@@ -57,6 +57,7 @@ export function StripePayoutsCard({
   // Stripe payouts not configured on this coordinator — hide the card entirely.
   if (status && !status.configured) return null;
 
+  const migrating = status?.migration_required === true;
   const ready = status?.status === "ready" || confirmationPending;
   const restricted = status?.status === "restricted";
   const rejected = status?.status === "rejected";
@@ -90,7 +91,14 @@ export function StripePayoutsCard({
       {children}
       {status?.payouts_available === false && <p role="status" className="text-sm text-coral mb-4">Bank withdrawals are temporarily unavailable. Your earnings remain in your account.</p>}
 
-      {!status?.has_account ? (
+      {migrating && (
+        <p role="status" className="text-sm text-text-secondary mb-4 leading-relaxed">
+          Update your bank details to continue withdrawing. Complete the secure setup yourself in Stripe.
+          Your earnings and withdrawal history stay with your Darkbloom account.
+        </p>
+      )}
+
+      {!status?.has_account && !confirmationPending ? (
         <>
           <p className="text-sm text-text-secondary mb-4 leading-relaxed">
             Set up a bank account to withdraw your {noun}.
@@ -106,7 +114,7 @@ export function StripePayoutsCard({
             className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
-            {onboardLoading ? "Redirecting..." : "Link bank via Stripe"}
+            {onboardLoading ? "Redirecting..." : migrating ? "Update bank details" : "Link bank via Stripe"}
           </button>
           {!selectedCountry && (
             <p className="text-xs text-text-tertiary mt-2">
@@ -116,11 +124,11 @@ export function StripePayoutsCard({
         </>
       ) : ready ? (
         <>
-          <PayoutDestinationRow
+          {status && <PayoutDestinationRow
             status={status}
             onOpenDashboard={onOpenDashboard}
             dashboardLoading={dashboardLoading}
-          />
+          />}
           <button
             onClick={onOpenWithdraw}
             disabled={!canWithdraw}
@@ -162,7 +170,7 @@ export function StripePayoutsCard({
               disabled={unlinkLoading}
               className="mt-3 block text-xs text-text-tertiary underline underline-offset-2 hover:text-coral disabled:opacity-50 transition-colors"
             >
-              {unlinkLoading ? "Unlinking..." : "Unlink Stripe account and start over"}
+              {unlinkLoading ? "Unlinking..." : "Reset bank setup"}
             </button>
           )}
         </>

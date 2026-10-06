@@ -74,6 +74,8 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let started = ContinuousClock.now
         let scope = request.checkpointCacheSalt ?? ""
         let chain = hashes(tokens: request.promptTokens, scope: scope)

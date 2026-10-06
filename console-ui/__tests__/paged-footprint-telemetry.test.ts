@@ -5,7 +5,7 @@ import type { PagedStorageTelemetry } from "@/app/providers/types";
 
 it("preserves allocator padding separately from usable slack in the canonical wire", () => {
   const sample = JSON.parse(readFileSync(resolve(process.cwd(),
-    "../coordinator/protocol/testdata/paged_footprint_wire.json"), "utf8")) as PagedStorageTelemetry;
+    "../coordinator/tests/protocol/testdata/paged_footprint_wire.json"), "utf8")) as PagedStorageTelemetry;
   expect(sample.committed_bytes).toBe(sample.reserved_page_bytes + sample.poison_bytes
     + sample.slack_bytes + sample.allocator_padding_bytes!);
   expect(sample.last_allocation_allowance_bytes).toBe(77);

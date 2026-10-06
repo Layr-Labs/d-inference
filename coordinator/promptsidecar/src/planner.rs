@@ -208,15 +208,20 @@ impl Planner {
         // Reject known key, number and argument-shape bridge ambiguities
         // before lowering or normalization can discard the input evidence;
         // ordinary provider serving remains available without a cache plan.
-        render::validate_request_input(&request.body).map_err(PlanError::Render)?;
+        render::validate_request_input_before_contract(&request.body).map_err(PlanError::Render)?;
         let (contract, _) = self.load_contract(&request.prompt_contract_id)?;
-        let lowered =
-            endpoint::lower(request.endpoint, request.body).map_err(|_| PlanError::Endpoint)?;
-        let provider_body = Value::Object(lowered.clone());
         let model_type = contract
             .model_config
             .get("model_type")
             .and_then(serde_json::Value::as_str);
+        // The same trusted contract selects policy and template/tokenizer.
+        // Request model/model_type fields cannot opt into MiMo. Legacy encoded
+        // shapes still reject, after a bounded lookup when type is necessary.
+        render::validate_request_input_for_model(&request.body, model_type)
+            .map_err(PlanError::Render)?;
+        let lowered =
+            endpoint::lower(request.endpoint, request.body).map_err(|_| PlanError::Endpoint)?;
+        let provider_body = Value::Object(lowered.clone());
         let normalized =
             normalize::normalize(lowered, model_type).map_err(|_| PlanError::Normalize)?;
         let prompt = render::render(&contract, &normalized).map_err(PlanError::Render)?;

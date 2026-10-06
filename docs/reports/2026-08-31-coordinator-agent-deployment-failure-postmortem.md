@@ -1,6 +1,6 @@
 # Coordinator Agent Deployment Failure Postmortem
 
-> Last updated: 2026-08-31 · commit `5d400cf75`
+> Last updated: 2026-08-31
 
 **Date:** 2026-08-31  
 **System:** Production Darkbloom coordinator  

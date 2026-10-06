@@ -1,6 +1,6 @@
 # Provider-aligned cache service-cost check
 
-> Last updated: 2026-09-05 · commit `8ada7e548`
+> Last updated: 2026-09-05
 
 Verified prefix reuse now reduces the prefill component of coordinator service
 cost by its expected time saving after SSD staging. The estimate follows the

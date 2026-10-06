@@ -1,6 +1,6 @@
 # Qwen3.8 retained B4 passes both backend and SSD comparisons
 
-> Last updated: 2026-09-06 · commit `35fea6d0`
+> Last updated: 2026-09-06
 
 The fresh Qwen3.8 B4 triad passes the unchanged strict backend and cache comparisons. All four warm requests restore authenticated 5,120-token checkpoints, with identical same-ID outputs and no resident prefix bank. Both measured cohorts in all three arms show actual completed width-four target forwards. This is one retained B4 experiment, not full-matrix or release approval.
 

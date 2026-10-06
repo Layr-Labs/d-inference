@@ -1,6 +1,6 @@
 # Prefix cache hit rate: production analysis and levers
 
-> Last updated: 2026-09-26 · commit `efc7b71f9`
+> Last updated: 2026-09-26
 
 As of 2026-09-26, exact prefix-cache routing is on in production at 100%
 (container started 2026-09-23; the flip date is not recorded here), 1,196 of

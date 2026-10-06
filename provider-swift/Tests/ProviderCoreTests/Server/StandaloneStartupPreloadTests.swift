@@ -62,3 +62,20 @@ func standaloneStartupAttemptsLoad() async throws {
     #expect(summary.loaded.isEmpty)
     #expect(await server.debugOutstandingKVReservationBytes() == 0)
 }
+
+@Test("standalone preload consumes the genuine strict scanner quote with unchanged headroom")
+func standaloneMiMoStartupPlanUsesNativeLoadEnvelope() async throws {
+    let root = try MiMoDiscoveryFixture.copyTiny()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let info = try MiMoDiscoveryFixture.scan(root)
+    let server = StandaloneServer(config: .init(maxCachedModels: 1), models: [info],
+        kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [info.id]))
+    let plan = await server.startupPreloadPlan(configuredModelIDs: [info.id])
+    #expect(plan.count == 1)
+    #expect(plan.first?.requiredGb == ModelLoadAdmission.requiredToLoadGb(
+        weightsGb: info.estimatedMemoryGb, headroomGb: 6.5))
+    let readiness = try #require(ModelLoadReadiness(estimatedMemoryGb: info.estimatedMemoryGb,
+        headroomGb: 6.5, usableGb: info.estimatedMemoryGb + 6.5))
+    #expect(readiness.requiredGb == plan.first?.requiredGb)
+    #expect(await server.debugOutstandingKVReservationBytes() == 0)
+}

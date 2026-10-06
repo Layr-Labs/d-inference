@@ -97,6 +97,10 @@ public struct BenchmarkReport: Sendable {
 /// Runs standardized inference benchmarks against a local MLX model.
 public struct ModelBenchmark: Sendable {
 
+    /// Task-scoped refusal/observation only, before native-route hash/runtime
+    /// work. Nil in production; no replacement model, policy or result.
+    @TaskLocal static var nativeRouteEntryForTesting: (@Sendable (UInt64?) throws -> Void)? = nil
+
     public static let defaultPrompt = "Write a short story about a robot learning to paint."
     public static let defaultIterations = 3
     public static let defaultMaxTokens = 256
@@ -124,7 +128,8 @@ public struct ModelBenchmark: Sendable {
         iterations: Int = defaultIterations,
         maxTokens: Int = defaultMaxTokens,
         hardware: HardwareInfo,
-        kvBackend: String = "auto"
+        kvBackend: String = "auto",
+        configuredMemoryReserveGB: UInt64? = nil
     ) async throws -> BenchmarkReport {
         try validateArguments(iterations: iterations, maxTokens: maxTokens)
         let hardwareDesc = "\(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores, \(hardware.memoryBandwidthGbs) GB/s"
@@ -134,6 +139,8 @@ public struct ModelBenchmark: Sendable {
 
         let modelType = try decodedModelType(
             from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+        let operatorReserveBytes = try nativeOperatorReserveBytes(
+            modelType: modelType, configuredMemoryReserveGB: configuredMemoryReserveGB)
         if usesNativeBlockGeneration(modelType: modelType) {
             let results = try await runNativeDiffusion(modelID: modelID, directory: modelDirectory,
                 prompt: prompt, iterations: iterations, maxTokens: maxTokens, backend: kvBackend)
@@ -141,9 +148,11 @@ public struct ModelBenchmark: Sendable {
                 prompt: prompt, iterations: results, hardwareDescription: hardwareDesc)
         }
         if usesNativeGeneration(modelType: modelType) {
+            try nativeRouteEntryForTesting?(operatorReserveBytes)
             let results = try await runNativeQwen4(
                 modelID: modelID, modelDirectory: modelDirectory,
-                prompt: prompt, iterations: iterations, maxTokens: maxTokens)
+                prompt: prompt, iterations: iterations, maxTokens: maxTokens, kvBackend: kvBackend,
+                operatorReserveBytes: operatorReserveBytes)
             return BenchmarkReport(modelID: modelID, modelPath: modelDirectory.path,
                 prompt: prompt, iterations: results, hardwareDescription: hardwareDesc)
         }

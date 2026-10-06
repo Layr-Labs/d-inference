@@ -1,6 +1,6 @@
 # Qwen3.6 35B contiguous SSD reference
 
-> Last updated: 2026-09-05 · commit `ac1dc301c`
+> Last updated: 2026-09-05
 
 The exact fleet Qwen3.6 35B artifact passed one normal-MTP, B1 cache-off versus encrypted SSD comparison on the dedicated M5 Max. All eight paired request outputs matched across 645 generated token IDs; the repeated 5,523-token prompt reused 4,096 tokens. This is a contiguous-backend reference for the 0.9.0 paged work, with explicit ephemeral test keys.
 

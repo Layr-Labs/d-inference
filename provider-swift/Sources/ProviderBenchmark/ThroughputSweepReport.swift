@@ -19,7 +19,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
     /// 5 adds required effective config-projected Gemma settings.
     /// 6 adds raw decode timing and the shared all-row decode overlap metric.
     /// 7 records deterministic row-index decode submission.
-    public static let currentSchemaVersion = 7
+    /// 8 records the actual built scheduler cap for each decode cell.
+    public static let currentSchemaVersion = 8
 
     public struct Hardware: Codable, Sendable {
         public let chipName: String
@@ -71,6 +72,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
         public let resolvedKVBackend: String?
         /// Raw host-observed token timing. Nil on legacy/synthesized samples.
         public let decodeTiming: DecodeTiming?
+        /// Nil only when construction failed or reading older reports.
+        public let effectiveMaxConcurrentRequests: Int?
 
         public init(
             batchSize: Int,
@@ -79,7 +82,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
             perSequenceTokensPerSecond: Double,
             elapsedMs: Double,
             resolvedKVBackend: String? = nil,
-            decodeTiming: DecodeTiming? = nil
+            decodeTiming: DecodeTiming? = nil,
+            effectiveMaxConcurrentRequests: Int? = nil
         ) {
             self.batchSize = batchSize
             self.decodeTokensPerSequence = decodeTokensPerSequence
@@ -88,6 +92,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
             self.elapsedMs = elapsedMs
             self.resolvedKVBackend = resolvedKVBackend
             self.decodeTiming = decodeTiming
+            self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
         }
     }
 

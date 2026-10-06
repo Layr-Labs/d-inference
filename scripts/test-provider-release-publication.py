@@ -33,6 +33,33 @@ class PublicationFixture(unittest.TestCase):
 
 
 class PublicationTests(PublicationFixture):
+    def test_resumed_signing_preserves_original_source_and_records_tooling_identity(self):
+        target = self.base / 'resumed'
+        env = dict(self.env, GITHUB_SHA='e'*40, GITHUB_REF_TYPE='branch', GITHUB_REF_NAME='master',
+                   RELEASE_SOURCE_SHA='d'*40, RELEASE_TAG='v0.9.8', RELEASE_BUILD_RUN_ID='99',
+                   RELEASE_BUILD_RUN_ATTEMPT='1', RELEASE_UNSIGNED_ARTIFACT_ID='77',
+                   RELEASE_UNSIGNED_ARTIFACT_DIGEST='sha256:'+'f'*64)
+        with patch.object(PUB, 'release_changelog', return_value='retained tag notes'):
+            payload = PUB.prepare(target, self.root / PUB.BUNDLE, env)
+        self.assertEqual(payload['source_commit'], 'd'*40)
+        self.assertEqual(payload['ci_run_id'], '123')
+        provenance = json.loads((target / 'release-provenance.json').read_text())
+        self.assertEqual(provenance['signing_workflow_commit'], 'e'*40)
+        self.assertEqual(provenance['build_run_id'], '99')
+        self.assertEqual(provenance['unsigned_artifact_id'], '77')
+        PUB.validate(payload, env)
+        with self.assertRaisesRegex(ValueError, 'source_commit'):
+            PUB.validate(payload, dict(env, RELEASE_SOURCE_SHA='c'*40))
+
+    def test_resumed_tag_move_blocks_registration_and_aliases(self):
+        env = dict(self.env, RELEASE_SOURCE_SHA='d'*40, RELEASE_TAG='v0.9.8', RELEASE_RESUME_RUN_ID='99')
+        with patch('provider_release_resume.api.verify_tag', side_effect=ValueError('tag moved')), \
+                patch.object(PUB, 'coordinator') as api, patch.object(PUB, 'upload') as upload:
+            with self.assertRaisesRegex(ValueError, 'tag moved'):
+                PUB.publish(self.root, env)
+            api.assert_not_called()
+            upload.assert_not_called()
+
     def test_stage_is_not_publication_and_requires_operator_evidence(self):
         q = json.loads((self.root / 'qualification-request.json').read_text())
         self.assertEqual(q['evidence'], '')

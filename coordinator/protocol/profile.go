@@ -278,23 +278,27 @@ type EngineProfile struct {
 
 // SlotTelemetry is the optional per-slot sub-object on BackendSlotCapacity.
 // Presence is the "new provider" sentinel; inside it an absent numeric reads
-// as 0. MEASUREMENT ONLY: decoded, clamped (registry.clampBackendCapacity)
-// and retained for fleet_snapshots; routing is not gated on any field.
+// as 0. Fields are clamped and retained for fleet snapshots. First-content
+// forecasts also require explicit performance age/count or bounded legacy
+// evidence; workload counters inform warm-capacity planning.
 type SlotTelemetry struct {
-	QueuedPrefillTokens *int64   `json:"queued_prefill_tokens,omitempty"` // Σ prompt tokens of requests whose engine submit has not returned
-	PartialPrefillRows  *int64   `json:"partial_prefill_rows,omitempty"`  // admitted rows with no first token yet
-	PrefillTokensTotal  *int64   `json:"prefill_tokens_total,omitempty"`  // cumulative
-	IsolatedPrefillTPS  *float64 `json:"isolated_prefill_tps,omitempty"`
-	EWMAInitialized     *bool    `json:"ewma_initialized,omitempty"`
-	PumpTasks           *int64   `json:"pump_tasks,omitempty"`
-	MTPRoundsTotal      *int64   `json:"mtp_rounds_total,omitempty"`   // cumulative
-	MTPProposedTotal    *int64   `json:"mtp_proposed_total,omitempty"` // cumulative
-	MTPAcceptedTotal    *int64   `json:"mtp_accepted_total,omitempty"` // cumulative
-	KVBytesInUse        *int64   `json:"kv_bytes_in_use,omitempty"`
-	KVBytesCapacity     *int64   `json:"kv_bytes_capacity,omitempty"`
-	EvalInFlightMS      *int64   `json:"eval_in_flight_ms,omitempty"`
-	StepWallNSTotal     *int64   `json:"step_wall_ns_total,omitempty"` // cumulative; slice 3 producer
-	DecodeRowsTotal     *int64   `json:"decode_rows_total,omitempty"`  // cumulative; slice 3 producer
+	QueuedPrefillTokens     *int64   `json:"queued_prefill_tokens,omitempty"` // Σ prompt tokens of requests whose engine submit has not returned
+	PartialPrefillRows      *int64   `json:"partial_prefill_rows,omitempty"`  // admitted rows with no first token yet
+	PrefillTokensTotal      *int64   `json:"prefill_tokens_total,omitempty"`  // cumulative actual completed-prompt work
+	PrefillRequestsTotal    *int64   `json:"prefill_requests_total,omitempty"`
+	GeneratedTokensTotal    *int64   `json:"generated_tokens_total,omitempty"` // terminal-paired, includes cancelled partial output
+	GenerationRequestsTotal *int64   `json:"generation_requests_total,omitempty"`
+	IsolatedPrefillTPS      *float64 `json:"isolated_prefill_tps,omitempty"`
+	EWMAInitialized         *bool    `json:"ewma_initialized,omitempty"`
+	PumpTasks               *int64   `json:"pump_tasks,omitempty"`
+	MTPRoundsTotal          *int64   `json:"mtp_rounds_total,omitempty"`   // cumulative
+	MTPProposedTotal        *int64   `json:"mtp_proposed_total,omitempty"` // cumulative
+	MTPAcceptedTotal        *int64   `json:"mtp_accepted_total,omitempty"` // cumulative
+	KVBytesInUse            *int64   `json:"kv_bytes_in_use,omitempty"`
+	KVBytesCapacity         *int64   `json:"kv_bytes_capacity,omitempty"`
+	EvalInFlightMS          *int64   `json:"eval_in_flight_ms,omitempty"`
+	StepWallNSTotal         *int64   `json:"step_wall_ns_total,omitempty"` // cumulative; slice 3 producer
+	DecodeRowsTotal         *int64   `json:"decode_rows_total,omitempty"`  // cumulative; slice 3 producer
 }
 
 // Clone returns a detached deep copy (nil-safe).
@@ -303,20 +307,23 @@ func (t *SlotTelemetry) Clone() *SlotTelemetry {
 		return nil
 	}
 	return &SlotTelemetry{
-		QueuedPrefillTokens: clonePtr(t.QueuedPrefillTokens),
-		PartialPrefillRows:  clonePtr(t.PartialPrefillRows),
-		PrefillTokensTotal:  clonePtr(t.PrefillTokensTotal),
-		IsolatedPrefillTPS:  clonePtr(t.IsolatedPrefillTPS),
-		EWMAInitialized:     clonePtr(t.EWMAInitialized),
-		PumpTasks:           clonePtr(t.PumpTasks),
-		MTPRoundsTotal:      clonePtr(t.MTPRoundsTotal),
-		MTPProposedTotal:    clonePtr(t.MTPProposedTotal),
-		MTPAcceptedTotal:    clonePtr(t.MTPAcceptedTotal),
-		KVBytesInUse:        clonePtr(t.KVBytesInUse),
-		KVBytesCapacity:     clonePtr(t.KVBytesCapacity),
-		EvalInFlightMS:      clonePtr(t.EvalInFlightMS),
-		StepWallNSTotal:     clonePtr(t.StepWallNSTotal),
-		DecodeRowsTotal:     clonePtr(t.DecodeRowsTotal),
+		QueuedPrefillTokens:     clonePtr(t.QueuedPrefillTokens),
+		PartialPrefillRows:      clonePtr(t.PartialPrefillRows),
+		PrefillTokensTotal:      clonePtr(t.PrefillTokensTotal),
+		PrefillRequestsTotal:    clonePtr(t.PrefillRequestsTotal),
+		GeneratedTokensTotal:    clonePtr(t.GeneratedTokensTotal),
+		GenerationRequestsTotal: clonePtr(t.GenerationRequestsTotal),
+		IsolatedPrefillTPS:      clonePtr(t.IsolatedPrefillTPS),
+		EWMAInitialized:         clonePtr(t.EWMAInitialized),
+		PumpTasks:               clonePtr(t.PumpTasks),
+		MTPRoundsTotal:          clonePtr(t.MTPRoundsTotal),
+		MTPProposedTotal:        clonePtr(t.MTPProposedTotal),
+		MTPAcceptedTotal:        clonePtr(t.MTPAcceptedTotal),
+		KVBytesInUse:            clonePtr(t.KVBytesInUse),
+		KVBytesCapacity:         clonePtr(t.KVBytesCapacity),
+		EvalInFlightMS:          clonePtr(t.EvalInFlightMS),
+		StepWallNSTotal:         clonePtr(t.StepWallNSTotal),
+		DecodeRowsTotal:         clonePtr(t.DecodeRowsTotal),
 	}
 }
 

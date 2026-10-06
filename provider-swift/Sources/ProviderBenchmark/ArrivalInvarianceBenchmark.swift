@@ -10,12 +10,14 @@ import ProviderCore
 /// rows use greedy decoding, and exact output-token checksums pin numerical
 /// invariance independently from latency and throughput.
 public enum ArrivalInvarianceBenchmark {
-    private struct PatternDefinition: Sendable {
+    // Internal, not private, so unit tests can drive the measurement path
+    // with a scripted engine and no model.
+    struct PatternDefinition: Sendable {
         let name: String
         let delaysMs: [Int]
     }
 
-    private struct ModelFacts: Sendable {
+    struct ModelFacts: Sendable {
         let baseTokens: [Int]
         let weightBytes: Int
     }
@@ -26,9 +28,10 @@ public enum ArrivalInvarianceBenchmark {
         let engine: any CBv2Engine
         /// The backend the factory resolved to, with any fallback reason.
         let resolvedBackend: String
+        let effectiveMaxConcurrentRequests: Int
     }
 
-    private struct MeasuredRow: Sendable {
+    struct MeasuredRow: Sendable {
         let report: ArrivalInvarianceBenchmarkReport.Row
         let tokenIDs: [Int]
         let firstTokenAt: UInt64
@@ -36,23 +39,21 @@ public enum ArrivalInvarianceBenchmark {
         let finishedAt: UInt64
     }
 
-    private struct MeasuredSample: Sendable {
+    struct MeasuredSample: Sendable {
         let report: ArrivalInvarianceBenchmarkReport.Sample
         let outputs: [[Int]]
     }
 
-    private static let patterns = [
-        PatternDefinition(name: "burst", delaysMs: [0, 0, 0, 0]),
-        PatternDefinition(name: "stagger-25ms", delaysMs: [0, 25, 50, 75]),
-        PatternDefinition(name: "stagger-100ms", delaysMs: [0, 100, 200, 300]),
-        PatternDefinition(name: "rolling-250ms", delaysMs: [0, 250, 500, 750]),
-    ]
+    static func patterns(width: Int) -> [PatternDefinition] {
+        [("burst", 0), ("stagger-25ms", 25), ("stagger-100ms", 100), ("rolling-250ms", 250)]
+            .map { name, gap in PatternDefinition(name: name, delaysMs: (0..<width).map { $0 * gap }) }
+    }
 
     /// The tightest inter-arrival gap any topology asks for (25 ms today),
     /// derived from the definitions so a future, denser pattern automatically
     /// tightens the bound instead of silently outgrowing it.
-    private static let minimumArrivalGapMs: Double = {
-        let gaps = patterns
+    static let minimumArrivalGapMs: Double = {
+        let gaps = patterns(width: 4)
             .flatMap { zip($0.delaysMs, $0.delaysMs.dropFirst()).map { $1 - $0 } }
             .filter { $0 > 0 }
         return Double(gaps.min() ?? 25)
@@ -63,9 +64,9 @@ public enum ArrivalInvarianceBenchmark {
     /// named topology remains the topology that was actually delivered.
     /// Override with `DARKBLOOM_ARRIVAL_TOLERANCE_MS` on hosts that cannot
     /// hold it (the loosened value is recorded in the report).
-    private static let defaultArrivalToleranceMs = minimumArrivalGapMs / 5
+    static let defaultArrivalToleranceMs = minimumArrivalGapMs / 5
 
-    private static let arrivalToleranceEnvKey = "DARKBLOOM_ARRIVAL_TOLERANCE_MS"
+    static let arrivalToleranceEnvKey = "DARKBLOOM_ARRIVAL_TOLERANCE_MS"
 
     /// Settle time between a rejected attempt and its retry.
     private static let retryCooldownNanoseconds: UInt64 = 250_000_000
@@ -79,6 +80,7 @@ public enum ArrivalInvarianceBenchmark {
         modelDirectory: URL,
         promptTokens: Int = 512,
         promptLengths: [Int]? = nil,
+        width: Int = 4,
         decodeTokens: Int = 64,
         iterations: Int = 3,
         arrivalToleranceMs: Double? = nil,
@@ -87,8 +89,10 @@ public enum ArrivalInvarianceBenchmark {
         gemmaOptimizations: GemmaOptimizationSettings
     ) async throws -> ArrivalInvarianceBenchmarkReport {
         let promptTokens = max(2, promptTokens)
-        let promptLengths = promptLengths ?? Array(repeating: promptTokens, count: 4)
-        guard promptLengths.count == 4, promptLengths.allSatisfy({ $0 >= 2 }) else {
+        guard (1...16).contains(width) else { throw BenchmarkError.invalidPromptLengths }
+        let patterns = patterns(width: width)
+        let promptLengths = promptLengths ?? Array(repeating: promptTokens, count: width)
+        guard promptLengths.count == width, promptLengths.allSatisfy({ $0 >= 2 }) else {
             throw BenchmarkError.invalidPromptLengths
         }
         let decodeTokens = max(2, decodeTokens)
@@ -138,6 +142,12 @@ public enum ArrivalInvarianceBenchmark {
             kvBackend: kvBackend
         )
         let engine = engineParts.engine
+        guard engineParts.effectiveMaxConcurrentRequests == width else {
+            await engine.shutdown()
+            throw NSError(domain: "ArrivalInvarianceBenchmark", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Requested width \(width), but native engine cap is \(engineParts.effectiveMaxConcurrentRequests)"])
+        }
+        log("engine scheduler cap: \(engineParts.effectiveMaxConcurrentRequests)")
         log("kv backend selection \(kvBackend.rawValue), engine resolved "
             + engineParts.resolvedBackend)
 
@@ -250,6 +260,7 @@ public enum ArrivalInvarianceBenchmark {
             promptLengthsPerRequest: promptLengths,
             decodeTokensPerRequest: decodeTokens,
             iterations: iterations,
+            effectiveMaxConcurrentRequests: engineParts.effectiveMaxConcurrentRequests,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
             arrivalToleranceMs: toleranceMs,
@@ -264,7 +275,7 @@ public enum ArrivalInvarianceBenchmark {
     /// Explicit argument wins, then `DARKBLOOM_ARRIVAL_TOLERANCE_MS`, then the
     /// default. A non-positive or non-finite override is ignored rather than
     /// silently disabling the check.
-    private static func resolvedToleranceMs(explicit: Double?) -> Double {
+    static func resolvedToleranceMs(explicit: Double?) -> Double {
         if let explicit, explicit.isFinite, explicit > 0 { return explicit }
         if let raw = ProcessInfo.processInfo.environment[arrivalToleranceEnvKey],
            let parsed = Double(raw.trimmingCharacters(in: .whitespaces)),
@@ -277,7 +288,7 @@ public enum ArrivalInvarianceBenchmark {
     /// Runs one arrival topology, re-running it while the delivered arrivals
     /// miss `toleranceMs`, and failing outright once the attempts are spent —
     /// a sample whose arrivals were not the named topology is never reported.
-    private static func measure(
+    static func measure(
         engine: any CBv2Engine,
         facts: ModelFacts,
         pattern: PatternDefinition,
@@ -397,7 +408,7 @@ public enum ArrivalInvarianceBenchmark {
         try await Task.sleep(until: deadline, tolerance: .zero, clock: clock)
     }
 
-    private static func makeSample(
+    static func makeSample(
         rows: [MeasuredRow],
         iteration: Int,
         scenarioStartedAt: UInt64,
@@ -466,12 +477,14 @@ public enum ArrivalInvarianceBenchmark {
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
+                constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend
             )
             return EngineParts(
                 engine: build.engine,
-                resolvedBackend: build.resolvedKVBackendDescriptor)
+                resolvedBackend: build.resolvedKVBackendDescriptor,
+                effectiveMaxConcurrentRequests: build.effectiveMaxConcurrentRequests)
         }
     }
 
@@ -565,7 +578,7 @@ public enum ArrivalInvarianceBenchmark {
         Double(end - start) / 1_000_000
     }
 
-    private static func median(_ values: [Double]) -> Double {
+    static func median(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
         let middle = sorted.count / 2
@@ -575,7 +588,7 @@ public enum ArrivalInvarianceBenchmark {
         return sorted[middle]
     }
 
-    private static func checksum(_ tokens: [Int]) -> String {
+    static func checksum(_ tokens: [Int]) -> String {
         var value: UInt64 = 0xcbf29ce484222325
         for token in tokens {
             var word = UInt64(bitPattern: Int64(token))
@@ -588,7 +601,7 @@ public enum ArrivalInvarianceBenchmark {
         return String(format: "%016llx", value)
     }
 
-    private enum BenchmarkError: Error, CustomStringConvertible {
+    enum BenchmarkError: Error, CustomStringConvertible {
         case noTokens(Int)
         case invalidPromptLengths
         case unexpectedFinish(row: Int, reason: String)
@@ -603,7 +616,7 @@ public enum ArrivalInvarianceBenchmark {
 
         var description: String {
             switch self {
-            case .invalidPromptLengths: return "arrival prompt lengths must contain exactly four integers >= 2"
+            case .invalidPromptLengths: return "arrival width must be 1...16 and prompt lengths must contain that many integers >= 2"
             case .noTokens(let row): return "row \(row) produced no tokens"
             case .unexpectedFinish(let row, let reason):
                 return "row \(row) finished unexpectedly: \(reason)"

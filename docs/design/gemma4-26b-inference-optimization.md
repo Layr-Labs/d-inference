@@ -1,6 +1,6 @@
 # Gemma 4 26B-A4B Inference Optimization — Plan, 2026-08-03
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Proposed** — 2026-08-03 — none of §7's ten decode items or §8's prefill items is in the engine: decode still runs the 2-slice `temporalOrder` concat (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift`), `SwitchLayers.swift` passes no `lhsIndices`, and `prefillChunkSize` keeps its pre-plan default ([`../architecture/inference.md`](../architecture/inference.md#scheduler-and-loop-configuration)); the Gemma work that shipped in v0.8.2 (`[gemma_optimizations]`, `CHANGELOG.md`) is a different item set.
 

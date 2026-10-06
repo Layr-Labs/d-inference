@@ -128,6 +128,7 @@ actor SpecDecArtifactFunnel {
     func prewarmCatalog(
         modelId: String,
         timeout: Duration,
+        forceRefresh: Bool = false,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await taskSleep(duration)
         }
@@ -136,7 +137,7 @@ actor SpecDecArtifactFunnel {
         return await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 do {
-                    _ = try await catalog.model(id: modelId)
+                    _ = try await (forceRefresh ? catalog.freshModel(id: modelId) : catalog.model(id: modelId))
                     return true
                 } catch {
                     return false

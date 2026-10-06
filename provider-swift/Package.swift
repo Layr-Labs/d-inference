@@ -1,6 +1,7 @@
 // swift-tools-version: 6.1
 
 import PackageDescription
+import Foundation
 
 let package = Package(
     name: "DarkbloomProvider",
@@ -135,6 +136,7 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "Jinja", package: "swift-jinja"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),
                 .product(name: "TOMLKit", package: "TOMLKit"),
@@ -227,6 +229,17 @@ let package = Package(
         // Swift runtime wire contracts.
         // ----------------------------------------------------------------
         .testTarget(
+            name: "ServingQualificationTests",
+            dependencies: [
+                "ProviderCore", "ProviderCoreFoundation",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXLMServer", package: "mlx-swift-lm"),
+            ],
+            path: "Tests/ServingQualificationTests"
+        ),
+
+        .testTarget(
             name: "GPTOSSOptimizationTests",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
@@ -254,7 +267,8 @@ let package = Package(
                 // ProviderCoreFoundationTests cannot link.
                 .product(name: "Jinja", package: "swift-jinja"),
             ],
-            path: "Tests/ProviderCoreTests"
+            path: "Tests/ProviderCoreTests",
+            resources: [.copy("Fixtures")]
         ),
 
         // ----------------------------------------------------------------
@@ -324,3 +338,10 @@ let package = Package(
     ],
     cxxLanguageStandard: .cxx17
 )
+
+// Existing correctness suites intentionally exercise DEBUG-only seams. This
+// explicit release qualification graph leaves production targets/settings
+// unchanged and links only the supervised, opt-in hardware receipt harness.
+if ProcessInfo.processInfo.environment["DARKBLOOM_SERVING_QUALIFICATION_BUILD"] == "1" {
+    package.targets.removeAll { $0.type == .test && $0.name != "ServingQualificationTests" }
+}

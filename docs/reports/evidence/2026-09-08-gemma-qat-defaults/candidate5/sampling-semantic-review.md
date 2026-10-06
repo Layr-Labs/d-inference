@@ -1,6 +1,6 @@
 # Candidate 5 sampled adaptive/off pair
 
-> Last updated: 2026-09-08 · commit `4ae34f033`
+> Last updated: 2026-09-08
 
 All six adaptive outputs were read against the synthetic source, matched sampled-off answers and prior greedy controls. Both reports use the same candidate5 binary and identical per-row prompt token IDs. Every on/off row records identical `sampling` values: temperature 0.699999988079071, top-p 0.8999999761581421, top-k 40, seed 4242, with zero frequency/presence penalties, repetition penalty 1 and empty logit bias. These are the requested 0.7/0.9 values represented as Float32. Nonzero-temperature MTP is actually exercised, not merely enabled in configuration.
 

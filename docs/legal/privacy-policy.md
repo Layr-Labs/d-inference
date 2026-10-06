@@ -1,6 +1,6 @@
 # Darkbloom Privacy Policy
 
-> Last updated: 2026-08-25 · commit `3b7c281fd`
+> Last updated: 2026-08-25
 
 Updated: June 16, 2026
 

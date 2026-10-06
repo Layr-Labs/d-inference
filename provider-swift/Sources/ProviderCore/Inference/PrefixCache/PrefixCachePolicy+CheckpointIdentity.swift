@@ -13,7 +13,8 @@ extension PrefixCachePolicy {
         mtpConfig: CBv2MTPConfig, assistantCodecID: String?,
         environment: [String: String], processEnvironment: [String: String],
         storage: CompleteCheckpointStorageIdentity? = nil,
-        additionalNumerics: [String: String] = [:]
+        additionalNumerics: [String: String] = [:],
+        nativeModelType: String? = nil
     ) -> CBv2CompleteCheckpointIdentity? {
         guard let modelHash = checkpointIdentityHash(modelAggregateHash),
             let promptHash = checkpointIdentityHash(promptContractID),
@@ -49,6 +50,11 @@ extension PrefixCachePolicy {
                     || key.hasPrefix("DARKBLOOM_GPTOSS_") || key.hasPrefix("DARKBLOOM_GEMMA4_")
                     || key.hasPrefix("DARKBLOOM_DIFFUSION_") {
                 numerics[scope + "." + key] = value
+            }
+            if nativeModelType == "mimo_v2" {
+                for (key, value) in values where key.hasPrefix("DARKBLOOM_MIMO_") {
+                    numerics[scope + "." + key] = value
+                }
             }
         }
         return CBv2CompleteCheckpointIdentity(

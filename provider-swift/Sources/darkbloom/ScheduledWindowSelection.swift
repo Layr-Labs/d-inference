@@ -2,7 +2,8 @@ import Foundation
 import ProviderCore
 
 /// Keeps manual startup overrides until the durable selection changes. Only
-/// model selection is live across scheduled windows; all other inputs stay frozen.
+/// model selection and Autopilot policy are live across scheduled windows;
+/// all other inputs stay frozen.
 struct ScheduledWindowSelection {
     private let startup: ProviderLoopConfig
     private var hasOpenedWindow = false
@@ -34,32 +35,38 @@ struct ScheduledWindowSelection {
         if !hasSeenConfigFile, !FileManager.default.fileExists(atPath: path.path) {
             return startup
         }
-        let saved = try ConfigManager.load(from: path).backend.enabledModels
+        let savedBackend = try ConfigManager.load(from: path).backend
+        let saved = savedBackend.enabledModels
         hasSeenConfigFile = true
         usesSavedSelection = usesSavedSelection || saved != startup.config.backend.enabledModels
-        guard usesSavedSelection else { return startup }
+        guard usesSavedSelection || savedBackend.modelAutopilot != startup.config.backend.modelAutopilot
+        else { return startup }
         // Empty enabled_models means every eligible local model at normal start.
         // Re-resolve that set for each scheduled window as local artifacts change.
-        let selectedIDs = saved.isEmpty
+        let selectedIDs = !usesSavedSelection ? startup.models.map(\.id) : (saved.isEmpty
             ? try Switch.selectModels(requested: [], local: scanLocalModels(startup.hardware),
                 capabilities: startup.runtimeCapabilities)
-            : saved
+            : saved)
+        let inventoryIDs = savedBackend.modelAutopilot.hasConsent ? savedBackend.modelAutopilot.selectedModels : []
+        let combinedIDs = selectedIDs + inventoryIDs.filter { !selectedIDs.contains($0) }
 
         // Capture BEFORE scan's weight hashing, as in attachWeightHashes. A
         // concurrent file change must force re-hashing, never bless stale bytes.
         var fingerprints: [String: String] = [:]
-        for id in selectedIDs {
+        for id in combinedIDs {
             if let snapshot = resolveLocalPath(id),
                 let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: snapshot) {
                 fingerprints[id] = fingerprint
             }
         }
-        let models = try resolveModels(selectedIDs, startup.runtimeCapabilities)
-        let hashes = Dictionary(uniqueKeysWithValues: models.compactMap { model in
+        let verified = try resolveModels(combinedIDs, startup.runtimeCapabilities)
+        let models = verified.filter { selectedIDs.contains($0.id) }
+        let hashes = Dictionary(uniqueKeysWithValues: verified.compactMap { model in
             model.weightHash.map { (model.id, $0) }
         })
         var config = startup.config
         config.backend.enabledModels = saved
+        config.backend.modelAutopilot = savedBackend.modelAutopilot
         return ProviderLoopConfig(
             coordinatorURL: startup.coordinatorURL,
             hardware: startup.hardware,
@@ -71,7 +78,8 @@ struct ScheduledWindowSelection {
             modelHashes: hashes,
             modelHashFingerprints: fingerprints,
             localEndpoint: startup.localEndpoint,
-            configPath: path
+            configPath: path,
+            autopilotInventory: verified.filter { inventoryIDs.contains($0.id) && $0.weightHash?.isEmpty == false }
         )
     }
 }

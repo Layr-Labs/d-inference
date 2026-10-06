@@ -1,6 +1,6 @@
 # KV-cache lookup shadowing on small-window hybrid models
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Superseded by [../architecture/prefix-cache.md](../architecture/prefix-cache.md)** — 2026-06-13 — `PrefixCacheManager` and `PrefixCacheRAM` no longer exist; the tier is one durable SSD store whose blocks are staged into RAM per request (`SSDPrefixCache.stage`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift`), so no second tier can shadow it.
 

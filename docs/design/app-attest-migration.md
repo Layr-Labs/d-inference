@@ -1,6 +1,6 @@
 # App Attest shadow rollout alongside APNs and MDM
 
-> Last updated: 2026-09-14 · commit `cc4847115`
+> Last updated: 2026-09-14
 
 Status: **In progress** — 2026-09-14 — [physical macOS 27 validation](../reports/2026-09-14-app-attest-macos27-validation.md) passes with a signed debug provider; final release-artifact and cohort qualification remain open.
 

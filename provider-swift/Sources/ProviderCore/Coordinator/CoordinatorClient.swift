@@ -111,6 +111,7 @@ public actor CoordinatorClient {
     /// prefetch (Layer 3) appends newly-verified builds so re-registration and
     /// reconnects pick them up without dropping the currently-served model.
     internal let advertisedModelStore: AdvertisedModelStore
+    internal var ordinaryServingModelIDs: Set<String>
 
     public init(
         config: CoordinatorClientConfig,
@@ -119,6 +120,7 @@ public actor CoordinatorClient {
         liveAPNsToken: (@Sendable () -> String?)? = nil
     ) {
         self.config = config
+        self.ordinaryServingModelIDs = Set(config.models.map(\.id))
         self.stats = stats
         self.state = state
         self.advertisedModelStore = AdvertisedModelStore(config.models.filter {

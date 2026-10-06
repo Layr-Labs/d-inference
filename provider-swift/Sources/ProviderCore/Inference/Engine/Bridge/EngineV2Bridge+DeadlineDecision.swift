@@ -27,7 +27,11 @@ extension RequestProfileBuilder {
         update { f, _ in
             var d = DeadlineDecisionProfile()
             d.submitRemainingUs = remaining
-            d.prefillTps = admission?.conservativePrefillTokensPerSecond
+            if let native = admission?.nativeTargetPrefill {
+                d.prefillTps = native.observation?.tokensPerSecond
+            } else {
+                d.prefillTps = admission?.conservativePrefillTokensPerSecond
+            }
             d.decodeTps = admission?.conservativeDecodeTokensPerSecond
             if admission == nil {
                 d.projection = .notAttempted
@@ -61,8 +65,17 @@ extension RequestProfileBuilder {
                         d.projectedPrefillTokens = Int64(work.prefillTokens)
                         d.projectedDecodeTokens = Int64(work.decodeTokens)
                         d.projectedServiceUs = Self.microseconds(duration)
-                    case .unbounded:
+                    case .unbounded(let reason):
                         d.projection = .unbounded
+                        d.unboundedReason = reason.map {
+                            DeadlineUnboundedReason(rawValue: $0.rawValue) ?? .other
+                        }
+                    case .unmeasuredNativeMedia(let work):
+                        d.projection = .notAttempted
+                        d.projectionReason = .unmeasuredPrefill
+                        d.projectedPrefillTokens = Int64(work.prefillTokens)
+                        d.projectedDecodeTokens = Int64(work.decodeTokens)
+                        d.projectedServiceUs = nil
                     }
                 }
             }

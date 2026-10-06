@@ -1,6 +1,6 @@
 # Upstream MLX comparison — what's worth importing (2026-08-30)
 
-> Last updated: 2026-08-30 · commit `5d400cf75`
+> Last updated: 2026-08-30
 
 Comparison of our three vendored forks against upstream `ml-explore` HEAD, scoped to the
 production workload: **B=1–5 continuous batching, decode-weighted**, serving

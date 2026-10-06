@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { Bell, Check } from "lucide-react";
 import { trackEvent } from "@/lib/google-analytics";
 import type { EarningsCalculator } from "./useEarningsCalculator";
+import { useSmallModelsInterest, type InterestAuth } from "./useSmallModelsInterest";
+import type { InterestHardware } from "@/lib/api/interest";
 
 type InterestVariant = "smaller-models" | "production-readiness";
 
 interface InterestContent {
-  storageKey: string;
   event: string;
   button: string;
   detail: string;
@@ -16,7 +17,6 @@ interface InterestContent {
 }
 
 const SMALLER_MODELS_CONTENT: InterestContent = {
-  storageKey: "darkbloom.smallModelsInterest",
   event: "small_models_interest_registered",
   button: "Notify me when smaller models launch",
   detail:
@@ -25,7 +25,6 @@ const SMALLER_MODELS_CONTENT: InterestContent = {
 };
 
 const PRODUCTION_READINESS_CONTENT: InterestContent = {
-  storageKey: "darkbloom.productionReadinessInterest",
   event: "production_readiness_interest_registered",
   button: "Register your interest",
   detail: "We'll email you as soon as your Mac is ready to start earning.",
@@ -38,51 +37,48 @@ export function SmallModelsInterest({
   authenticated,
   ready,
   login,
+  accountId,
+  getAccessToken,
   variant = "smaller-models",
 }: {
   calc: EarningsCalculator;
-  authenticated: boolean;
-  ready: boolean;
-  login: () => void;
   variant?: InterestVariant;
-}) {
-  const [registered, setRegistered] = useState(false);
+} & InterestAuth) {
   const content =
     variant === "production-readiness"
       ? PRODUCTION_READINESS_CONTENT
       : SMALLER_MODELS_CONTENT;
 
-  useEffect(() => {
-    setRegistered(Boolean(window.localStorage.getItem(content.storageKey)));
-  }, [content.storageKey]);
-
-  const register = () => {
+  const onRegistered = useCallback((hardware: InterestHardware) => {
     trackEvent(content.event, {
       source: "earn_page",
-      mac_type: calc.hardware.macType,
-      chip: calc.hardware.chip,
-      ram_gb: calc.effectiveRAM,
-      authenticated: String(authenticated),
+      ...hardware,
+      authenticated: "true",
     });
-    window.localStorage.setItem(
-      content.storageKey,
-      JSON.stringify({
-        macType: calc.hardware.macType,
-        chip: calc.hardware.chip,
-        ramGB: calc.effectiveRAM,
-        at: Date.now(),
-      }),
-    );
-    setRegistered(true);
-    // Sign-in is what actually captures a contactable email.
-    if (!authenticated) login();
-  };
+  }, [content.event]);
+  const { registered, waitingForLogin, saving, error, register, cancel } = useSmallModelsInterest(
+    { mac_type: calc.hardware.macType, chip: calc.hardware.chip, ram_gb: calc.effectiveRAM },
+    { authenticated, ready, accountId, getAccessToken, login },
+    onRegistered,
+  );
 
   if (registered) {
     return (
       <div className="mt-4 inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent-green/10 text-sm text-text-primary">
         <Check size={14} className="text-accent-green shrink-0" />
         {content.registered}
+      </div>
+    );
+  }
+
+  if (waitingForLogin || saving) {
+    return (
+      <div className="mt-4 text-sm text-text-secondary">
+        <p role="status">{saving ? "Saving your interest…" : "Sign in to finish registering. Your registration is still pending."}</p>
+        {waitingForLogin && <>
+          <button onClick={login} className="mt-2 mr-4 text-accent-brand">Continue sign-in</button>
+          <button onClick={cancel} className="mt-2 underline">Cancel registration</button>
+        </>}
       </div>
     );
   }
@@ -102,6 +98,7 @@ export function SmallModelsInterest({
         {content.button}
       </button>
       <p className="mt-2 text-xs text-text-secondary">{content.detail}</p>
+      {error && <p role="alert" className="mt-2 text-sm text-accent-amber">{error}</p>}
     </div>
   );
 }

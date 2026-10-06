@@ -31,7 +31,7 @@ struct MTPConfigKeyTests {
     }
 
 
-    @Test("absent mode enables embedded Qwen heads and exact Gemma QAT")
+    @Test("absent mode enables supported embedded heads and exact Gemma QAT")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -56,6 +56,10 @@ struct MTPConfigKeyTests {
             forModelType: "gemma4", embeddedArtifactDeclared: false,
             modelID: "gemma-4-26b-qat-4bit"))
         #expect(config.backend.mtpDrafterPath == nil)
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelType: "mimo_v2", embeddedArtifactDeclared: true))
+        #expect(!config.backend.mtpMode.enablesMTP(
+            forModelType: "mimo_v2", embeddedArtifactDeclared: false))
     }
 
     @Test("explicit auto, on, and off modes decode")
@@ -122,12 +126,14 @@ struct MTPConfigKeyTests {
         // Declared embedded heads in Qwen 3.5, native Qwen4, and Nemotron Lightning
         // checkpoints self-activate under `auto`. Exact Gemma QAT uses
         // its separately validated external assistant policy below.
-        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "nemotron_h"]
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2"]
         let nonFamilyModelTypes: [String?] = [
             "gemma4",
             "gemma4_text",
             "gpt_oss",
             "qwen3_vl_moe",
+            "mimo_v2_flash",
+            "mimo_v2_typo",
             nil,
             "  ",
         ]
@@ -214,6 +220,9 @@ struct MTPConfigKeyTests {
         }
         #expect(!MTPMode.off.requiresCatalogPrewarm(
             forModelType: "gemma4", modelID: "gemma-4-26b-qat-4bit"))
+        for mode in [MTPMode.auto, .on, .off] {
+            #expect(!mode.requiresCatalogPrewarm(forModelType: "mimo_v2", modelID: "native-mimo-fixture"))
+        }
     }
 
     @Test("provider and standalone configs use the same target decision")

@@ -14,9 +14,20 @@ import MLXVLM
 import ProviderCoreFoundation
 
 enum ModelContainerLoading {
-    static func loadServingContainer(from directory: URL, modelID: String? = nil) async throws -> ProviderModelContainer {
+    static func loadServingContainer(from directory: URL, modelID: String? = nil,
+                                     nativeMiMoLoad: MiMoV26ServingLoad? = nil) async throws -> ProviderModelContainer {
+        if let nativeMiMoLoad {
+            guard directory.resolvingSymlinksInPath().standardizedFileURL == nativeMiMoLoad.plan.canonicalRoot else {
+                throw MiMoV26ServingLoadError.nativeOwnerMismatch
+            }
+            try nativeMiMoLoad.recheck()
+            return try await nativeMiMoLoad.load()
+        }
         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
         let base = try JSONDecoder().decode(BaseConfiguration.self, from: data)
+        if base.modelType == "mimo_v2" {
+            throw MiMoV26ServingLoadError.managedLoadRequired
+        }
         if base.modelType == "diffusion_gemma" {
             return .diffusion(try await DiffusionGemmaModelFactory.shared.loadContainer(
                 from: directory, using: LocalTokenizerLoader()))
@@ -27,6 +38,7 @@ enum ModelContainerLoading {
     enum FactorySelection: Equatable {
         case text
         case vision
+        case nativeMiMo
     }
 
     /// Architecture selection is explicit, separate from media advertisement.
@@ -34,7 +46,8 @@ enum ModelContainerLoading {
     /// VLM wrapper instead retains its tower using the original staged config.
     /// No factory rewrites the checkpoint configuration during loading.
     static func factorySelection(for configuration: [String: Any], modelID: String? = nil) -> FactorySelection {
-        ModelMediaPolicy.advertisesMedia(configuration, modelID: modelID) ? .vision : .text
+        if configuration["model_type"] as? String == "mimo_v2" { return .nativeMiMo }
+        return ModelMediaPolicy.advertisesMedia(configuration, modelID: modelID) ? .vision : .text
     }
 
     static func factorySelection(at directory: URL, modelID: String?) -> FactorySelection {
@@ -47,6 +60,7 @@ enum ModelContainerLoading {
     /// Load the checkpoint at `directory`, VLM-aware.
     static func loadContainer(from directory: URL, modelID: String? = nil) async throws -> MLXLMCommon.ModelContainer {
         let selection = factorySelection(at: directory, modelID: modelID)
+        guard selection != .nativeMiMo else { throw MiMoV26ServingLoadError.managedLoadRequired }
         let adopted = try Qwen4ExpPLEResidency.adoptForLoadIfQwen4Exp(directory: directory)
         // Construction owns a temporary binding. A native Qwen4 model takes
         // its own lease, so unload/deinit does not depend on path bookkeeping.

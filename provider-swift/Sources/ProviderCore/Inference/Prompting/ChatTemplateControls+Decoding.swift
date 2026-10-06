@@ -25,5 +25,6 @@ extension ChatTemplateControls: Decodable {
             enableThinking: topLevel ?? alias,
             preserveThinking: try? values.decode(Bool.self, forKey: .preserveThinking),
             promptDate: (try? values.decode(String.self, forKey: .promptDate)).flatMap(PromptRenderDate.init))
+        rawMiMoControls = MiMoV26RawControlEvidence.capture(from: decoder, surface: .chat)
     }
 }

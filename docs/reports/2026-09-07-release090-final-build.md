@@ -1,6 +1,6 @@
 # 0.9.0 final candidate build
 
-> Last updated: 2026-09-07 · commit `dfa72078a`
+> Last updated: 2026-09-07
 
 The versioned candidate builds and passes artifact review on the M5 Max. Both optimized executables are verified, and the CLI reports **0.9.0**. This closes the versioned-build requirement; final model, HTTP and persistent-restart qualification remain separate.
 

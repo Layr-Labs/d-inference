@@ -1,6 +1,6 @@
 # Routing Telemetry & Algorithm Calibration
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Implemented (PR #375)** — 2026-06-16 — `inference_routes` and `request_rejections` exist as designed (`coordinator/store/postgres.go`); the per-candidate and fleet time-series phases landed as the system profiler's `request_profiles` and `fleet_snapshots` ([`../architecture/system-profiler.md`](../architecture/system-profiler.md)) rather than the tables named below, and the §2 constants were recalibrated — current values in [`../architecture/routing.md`](../architecture/routing.md#cost-model).
 

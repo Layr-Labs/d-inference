@@ -1,6 +1,6 @@
 # Isolated signing validation — intact app accepted
 
-> Last updated: 2026-09-06 · commit `f9423f94`
+> Last updated: 2026-09-06
 
 Frozen signing-infrastructure report for release reviewers. Run `34043318652`
 proves Developer ID signing and notarization of the intact old-source app; it

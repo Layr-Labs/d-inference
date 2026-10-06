@@ -1,6 +1,6 @@
 # Qwen production-default HTTP smoke, 2026-09-06
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 All three Qwen models passed the two-request production-default HTTP smoke on the reviewed104 correctness runtime. Each provider was configured with backend `auto`, MTP `auto`, and cache enablement unset. Each actually selected paged attention without a fallback, advertised an enabled and ready complete SSD cache for the exact model and prompt contract, and used MTP. Each cold request donated a checkpoint; its repeat reported an SSD hit restoring 4,096 tokens with no required recomputation.
 

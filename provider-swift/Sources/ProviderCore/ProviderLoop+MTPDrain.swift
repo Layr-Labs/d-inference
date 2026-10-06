@@ -3,10 +3,10 @@ import Foundation
 /// Close new admission only after a verified replacement is prepared.
 /// Accepted requests retain the serving engine until the idle publication.
 extension ProviderLoop {
-    func waitBeforeMTPUpgradeDrain(_ modelID: String) async throws {
+    func waitBeforeModelUpgradeDrain(_ modelID: String) async throws {
         let delay = UpdateJitter.delay(maxSeconds: loopConfig.config.provider.updateJitterSeconds)
         guard delay > .zero else { return }
-        logger.info("mtp: model=\(modelID) replacement ready; serving during rollout jitter \(delay)")
+        logger.info("model update: model=\(modelID) replacement ready; serving during rollout jitter \(delay)")
         try await taskSleep(delay)
     }
 

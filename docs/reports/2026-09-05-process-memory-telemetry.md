@@ -1,6 +1,6 @@
 # Process-memory telemetry validation
 
-> Last updated: 2026-09-05 · commit `f2b6bb3ea`
+> Last updated: 2026-09-05
 
 Optional process-memory observations now carry one coherent ledger snapshot
 through provider heartbeats, coordinator validation and bounded metrics. Swift,

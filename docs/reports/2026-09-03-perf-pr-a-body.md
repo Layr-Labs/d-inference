@@ -1,6 +1,6 @@
 # PR body — coordinator performance program, PR A: `store/` + `api/` (2026-09-03)
 
-> Last updated: 2026-09-04 · commit `bda995368`
+> Last updated: 2026-09-04
 
 _Branch `perf/coordinator-store-api-2026-09-03`. Merge after
 `perf/coordinator-tier1-2026-09-03`; before `perf/coordinator-registry-scan-2026-09-03`._

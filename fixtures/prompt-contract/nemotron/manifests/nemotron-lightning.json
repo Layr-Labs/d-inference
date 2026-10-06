@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "model_id": "nvidia-nemotron-3.5-lightning",
+  "version": "2026-09-09-r1",
+  "r2_prefix": "v2/nvidia-nemotron-3.5-lightning--ed925578dfaf/2026-09-09-r1",
+  "aggregate_sha256": "be622ff6ae88533eb31ce984ddc95e5edc3bc52de1767536f2058151383d891a",
+  "total_size_bytes": 18544223673,
+  "file_count": 10,
+  "files": [
+    {
+      "path": "chat_template.jinja",
+      "size_bytes": 9867,
+      "sha256": "58933db77d3099b4f78c55a38347a72e1ea05b97d6bd8f38775303dc0194e0a9",
+      "role": "template"
+    },
+    {
+      "path": "config.json",
+      "size_bytes": 3044,
+      "sha256": "93dcd00b9caf4bc42f803550ecbb95d79a942dfc89314797ee33c0c20c8dbb67",
+      "role": "config"
+    },
+    {
+      "path": "generation_config.json",
+      "size_bytes": 210,
+      "sha256": "0ed94823ae737b507aef6af01e837041b7aa2fb0306793a310cd201d89a31ff4",
+      "role": "config"
+    },
+    {
+      "path": "model-00001-of-00004.safetensors",
+      "size_bytes": 5118631458,
+      "sha256": "7cc60a26a46712e471d74c64dc4460558b15194a879a99426c5647ef1d588ca6",
+      "role": "weight"
+    },
+    {
+      "path": "model-00002-of-00004.safetensors",
+      "size_bytes": 5291568451,
+      "sha256": "ed6020dad4cdeac47bb24d31ce8d212a607476358845b8620f1767b2fae30b3a",
+      "role": "weight"
+    },
+    {
+      "path": "model-00003-of-00004.safetensors",
+      "size_bytes": 5291568415,
+      "sha256": "fcc12aa6d00fa75447fc01ba7efe288e5bae025ae44aaad0afde265ac3abb7f1",
+      "role": "weight"
+    },
+    {
+      "path": "model-00004-of-00004.safetensors",
+      "size_bytes": 2825296063,
+      "sha256": "d670bb4b3485c47a563c8fb4c962d278d7401490a5bef0b25d73749c6109d03e",
+      "role": "weight"
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "size_bytes": 68251,
+      "sha256": "1107ee24b73b0597e660e94e0ef12bff716d0b24114258eeb31263c8ca5f40c7",
+      "role": "index"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size_bytes": 430,
+      "sha256": "ec380f0a6c0c2e294eb2435f5ec521fb2121cfc970e6ebf023d06829714a4eaa",
+      "role": "tokenizer"
+    },
+    {
+      "path": "tokenizer.json",
+      "size_bytes": 17077484,
+      "sha256": "623c34567aebb18582765289fbe23d901c62704d6518d71866e0e58db892b5b7",
+      "role": "tokenizer"
+    }
+  ],
+  "created_at": "2026-09-11T18:54:24.002257Z"
+}

@@ -124,7 +124,7 @@ func (r *Registry) providerVerificationLocked(p *Provider, now time.Time) Verifi
 		a := p.appAttestAuthorization
 		if r.providerAppAttestServingAuthorizedLocked(p, now) {
 			v.AppAttest = VerificationPath{State: "verified", VerifiedAt: a.IssuedAt.Unix(), ExpiresAt: a.ValidUntil.Unix()}
-		} else if !a.ValidUntil.IsZero() && !a.ValidUntil.After(now) {
+		} else if !a.ValidUntil.IsZero() && !a.ValidUntil.After(r.appAttestNow(now)) {
 			v.AppAttest.State = "expired"
 		}
 	}

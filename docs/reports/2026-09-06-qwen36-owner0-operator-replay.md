@@ -1,6 +1,6 @@
 # Qwen3.6 operator replay reproduces the captured arithmetic difference
 
-> Last updated: 2026-09-06 · commit `75b526348`
+> Last updated: 2026-09-06
 
 Three genuine operators reproduce the two previously captured attention
 outputs on exactly the same input. Native SDPA matches the contiguous capture

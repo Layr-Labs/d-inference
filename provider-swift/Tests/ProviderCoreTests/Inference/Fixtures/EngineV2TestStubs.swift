@@ -22,10 +22,13 @@ final class InertStubEngine: CBv2Engine, @unchecked Sendable {
     /// to observe whether the failed newcomer's weights are still resident
     /// when a survivor's grant is restored.
     private let onUpdate: @Sendable (Int) -> Void
+    private let onShutdown: @Sendable () async -> Void
 
-    init(kvBytesCapacity: Int = 0, onUpdate: @escaping @Sendable (Int) -> Void = { _ in }) {
+    init(kvBytesCapacity: Int = 0, onUpdate: @escaping @Sendable (Int) -> Void = { _ in },
+         onShutdown: @escaping @Sendable () async -> Void = {}) {
         self._kvBytesCapacity = kvBytesCapacity
         self.onUpdate = onUpdate
+        self.onShutdown = onShutdown
     }
 
     var capacityUpdates: [Int] { lock.withLock { _capacityUpdates } }
@@ -53,6 +56,7 @@ final class InertStubEngine: CBv2Engine, @unchecked Sendable {
     }
     func shutdown() async {
         lock.withLock { _shutdownCalls += 1 }
+        await onShutdown()
     }
 }
 

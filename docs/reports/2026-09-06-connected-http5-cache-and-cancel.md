@@ -1,6 +1,6 @@
 # Connected SSD routing works; canceled settlement loses usage evidence
 
-> Last updated: 2026-09-06 · commit `dda0b8807`
+> Last updated: 2026-09-06
 
 The rebuilt provider publishes a durable prefix and serves real SSD hits through
 the coordinator. Qwen3.8 passes all ten cache-off cases and the first seven SSD

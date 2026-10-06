@@ -1,0 +1,77 @@
+package registry_test
+
+import (
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+
+	production "github.com/eigeninference/d-inference/coordinator/registry"
+)
+
+func registerWithWeightHash(reg *production.Registry, id, modelID, hash string) *production.Provider {
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{{
+		ID:           modelID,
+		SizeBytes:    1000,
+		ModelType:    "chat",
+		Quantization: "4bit",
+		WeightHash:   hash,
+	}}
+	return reg.Register(id, nil, msg)
+}
+
+func TestUpdateModelWeightHashesRefreshesStoredHash(t *testing.T) {
+	reg := production.New(testLogger())
+	registerWithWeightHash(reg, "p1", "gemma-test", "stale-hash")
+
+	reg.UpdateModelWeightHashes("p1", map[string]string{"gemma-test": "fresh-hash"})
+
+	p := reg.GetProvider("p1")
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	if got := p.Models[0].WeightHash; got != "fresh-hash" {
+		t.Errorf("stored weight hash = %q, want %q", got, "fresh-hash")
+	}
+}
+
+func TestUpdateModelWeightHashesIgnoresUnknownModelAndClearsUnavailableHash(t *testing.T) {
+	reg := production.New(testLogger())
+	registerWithWeightHash(reg, "p1", "gemma-test", "stale-hash")
+
+	// Hash for a model this provider does not advertise: must not be added.
+	reg.UpdateModelWeightHashes("p1", map[string]string{"other-model": "x"})
+	p := reg.GetProvider("p1")
+	if len(p.Models) != 1 || p.Models[0].WeightHash != "stale-hash" {
+		t.Errorf("unknown model must not change stored models: %+v", p.Models)
+	}
+
+	// Explicit empty hash: the loaded model could not be re-verified, so clear
+	// the stale registration value while retaining ordinary cold eligibility.
+	reg.UpdateModelWeightHashes("p1", map[string]string{"gemma-test": ""})
+	if got := reg.GetProvider("p1").Models[0].WeightHash; got != "" {
+		t.Errorf("unavailable hash must clear stale value, got %q", got)
+	}
+
+	// Unknown provider / empty map: must not panic.
+	reg.UpdateModelWeightHashes("nonexistent", map[string]string{"gemma-test": "x"})
+	reg.UpdateModelWeightHashes("p1", nil)
+}
+
+func TestUpdateModelWeightHashesIsCopyOnWrite(t *testing.T) {
+	reg := production.New(testLogger())
+	registerWithWeightHash(reg, "p1", "gemma-test", "stale-hash")
+
+	// A reader holding the pre-update slice must keep seeing consistent old
+	// data — the update must swap the slice, never mutate it in place.
+	before := reg.GetProvider("p1").Models
+
+	reg.UpdateModelWeightHashes("p1", map[string]string{"gemma-test": "fresh-hash"})
+
+	if before[0].WeightHash != "stale-hash" {
+		t.Error("pre-update slice was mutated in place (not copy-on-write)")
+	}
+	if got := reg.GetProvider("p1").Models[0].WeightHash; got != "fresh-hash" {
+		t.Errorf("stored weight hash = %q, want %q", got, "fresh-hash")
+	}
+}

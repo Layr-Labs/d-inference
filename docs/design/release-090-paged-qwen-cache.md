@@ -1,6 +1,6 @@
 # 0.9.0 paged attention and Qwen caching
 
-> Last updated: 2026-09-07 · commit `32a756317`
+> Last updated: 2026-09-07
 
 Status: **In progress** — 2026-09-07 — implementation and bounded model/cache/routing validation are [ready for code review](../reports/2026-09-07-release090-readiness.md). [Combined QAT sustained exposure](../reports/2026-09-07-qat-sustained-followup.md) and [final two-provider routing](../reports/2026-09-07-final-cache-routing.md) complete the remaining local investigations; original failed benchmark verdicts remain preserved. Production-key restart still requires the separately supplied signed candidate. The decision body is preserved as recorded.
 

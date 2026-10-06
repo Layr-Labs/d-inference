@@ -57,6 +57,9 @@ public enum InferenceErrorReason: String, Codable, Sendable, Equatable, CaseIter
     case capacityTimeout = "capacity_timeout"
     case queueFull = "queue_full"
     case tokenBudgetExhausted = "token_budget_exhausted"
+    /// Request-local media preparation could not reserve memory. No inference
+    /// engine terminal is implied; mirrors the coordinator protocol constant.
+    case mediaMemoryUnavailable = "media_memory_unavailable"
     case requestExceedsContext = "request_exceeds_context"
     case requestExceedsNode = "request_exceeds_node"
     case requestExceedsNodeBudget = "request_exceeds_node_budget"

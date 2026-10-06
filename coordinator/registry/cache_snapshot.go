@@ -28,11 +28,14 @@ func clonePrefixCacheStatuses(
 	return out
 }
 
-// UpdatePrefixCacheSnapshot atomically applies the resulting authoritative
-// capability and optional observability state from one heartbeat. Strict
-// capability errors abort the update. Optional status is sanitized and
-// reconciled against the same resulting capability map before either becomes
-// visible, so /v1/cache/status cannot observe a transient contradiction.
+// UpdatePrefixCacheSnapshot applies the resulting authoritative capability
+// and optional observability state from one heartbeat. The apply itself is
+// atomic under the registry read lock and the provider lock (Strict
+// capability errors abort it; optional status is sanitized and reconciled
+// against the same resulting capability map before either becomes visible,
+// so /v1/cache/status cannot observe a transient contradiction) and binds
+// one chunk of parked rows; any remaining chunks bind afterwards outside
+// those locks, chunk by chunk, with ownership re-checked.
 func (r *Registry) UpdatePrefixCacheSnapshot(
 	providerID string,
 	replaceCapabilities bool,
@@ -42,21 +45,100 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
 ) (bool, error) {
+	updater := CacheSnapshotUpdater{registry: r}
+	var result CacheSnapshotResult
+	var err error
+	if r != nil && r.cacheDependencies.Snapshots != nil {
+		result, err = r.cacheDependencies.Snapshots(updater).Apply(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
+	} else {
+		result, err = updater.Apply(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
+	}
+	if err == nil && len(result.Drops) > 0 {
+		// Rows parked under epochs the capability change left behind are
+		// settled here, outside the apply's locks and in chunks, for as
+		// long as this session still owns its ID and its current capability
+		// still leaves them behind (a later heartbeat may have republished
+		// the epoch meanwhile).
+		for _, d := range result.Drops {
+			result.SettleDrop(d)
+		}
+	}
+	if err == nil && result.Remaining {
+		// The snapshot bound one chunk of parked rows under its locks (the
+		// heartbeat path); the rest binds here, chunk by chunk, with the
+		// registry read lock and the session's ownership re-taken around
+		// each chunk, so a large bucket parked for an already-connected
+		// session binds on its next heartbeat rather than one chunk per
+		// heartbeat.
+		result.BindRemaining()
+	}
+	return result.Changed, err
+}
+
+// parkedDrop names a (cache epoch, model) whose parked rows no bind will take
+// again: the model's SSD capability is gone or moved to another epoch.
+type parkedDrop struct {
+	epoch, model string
+}
+
+func (updater CacheSnapshotUpdater) Apply(
+	providerID string,
+	replaceCapabilities bool,
+	version int,
+	capabilities []protocol.PrefixCacheV2Capability,
+	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
+	statuses *[]protocol.PrefixCacheModelStatus,
+	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
+) (result CacheSnapshotResult, err error) {
+	r := updater.registry
 	if r == nil {
-		return false, nil
+		return result, nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	provider := r.providers[providerID]
 	if provider == nil {
-		return false, errInvalidPrefixCacheCapability
+		return result, errInvalidPrefixCacheCapability
 	}
+	commit := CacheSnapshotCommit{
+		registry: r, provider: provider, providerID: providerID,
+		replaceCapabilities: replaceCapabilities, version: version, capabilities: capabilities,
+		memoryCapabilities: memoryCapabilities, statuses: statuses, outcomes: outcomes,
+	}
+	if r.cacheDependencies.SnapshotCommits != nil {
+		return r.cacheDependencies.SnapshotCommits(commit).Commit()
+	}
+	return commit.Commit()
+}
+
+type CacheSnapshotCommitting interface {
+	Commit() (CacheSnapshotResult, error)
+}
+
+// CacheSnapshotCommit publishes and reconciles one provider snapshot while its
+// caller retains registry ownership. The provider lock spans all invalidation.
+type CacheSnapshotCommit struct {
+	registry            *Registry
+	provider            *Provider
+	providerID          string
+	replaceCapabilities bool
+	version             int
+	capabilities        []protocol.PrefixCacheV2Capability
+	memoryCapabilities  *[]protocol.PrefixCacheV2Capability
+	statuses            *[]protocol.PrefixCacheModelStatus
+	outcomes            *[]protocol.PrefixCacheDonationOutcomeCount
+}
+
+func (commit CacheSnapshotCommit) Commit() (result CacheSnapshotResult, err error) {
+	r, provider, providerID := commit.registry, commit.provider, commit.providerID
+	replaceCapabilities, version, capabilities := commit.replaceCapabilities, commit.version, commit.capabilities
+	memoryCapabilities, statuses, outcomes := commit.memoryCapabilities, commit.statuses, commit.outcomes
 
 	provider.mu.Lock()
 	models, err := uniqueProviderModels(provider.Models)
 	if err != nil {
 		provider.mu.Unlock()
-		return false, err
+		return result, err
 	}
 
 	resultVersion := provider.PrefixCacheProtocol
@@ -67,7 +149,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			version, capabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, err
+			return result, err
 		}
 		resultVersion = version
 	}
@@ -76,7 +158,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			resultVersion, *memoryCapabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, err
+			return result, err
 		}
 	} else if resultVersion < 2 {
 		resultMemoryCapabilities = nil
@@ -123,11 +205,12 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	protocolChanged := provider.PrefixCacheProtocol != resultVersion
 	changedModels := changedPrefixCacheModels(provider.PrefixCacheV2Models, resultCapabilities,
 		provider.PrefixCacheMemoryModels, resultMemoryCapabilities)
+	previousCapabilities := provider.PrefixCacheV2Models
 	if capabilitiesChanged {
 		provider.PrefixCacheProtocol = resultVersion
 		provider.PrefixCacheV2Models = resultCapabilities
 		provider.PrefixCacheMemoryModels = resultMemoryCapabilities
-		provider.prefixCacheRevision++
+		provider.advanceCacheRevisionLocked()
 	}
 	provider.PrefixCacheStatuses = resultStatuses
 	provider.PrefixCacheStatusReported = statusReported
@@ -145,10 +228,48 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			tracker.invalidateProviderModels(providerID, changedModels)
 		}
 		tracker.reconcileFences(providerID, resultCapabilities, resultMemoryCapabilities)
+		// Rows parked under an (epoch, model) no bind will take again are
+		// settled by the caller after these locks are released, in chunks:
+		// the model's SSD capability is gone, or it moved to another cache
+		// epoch, so the bind below (which takes the new epoch's bucket) would
+		// never reach them. Each durable row is settled against the holders
+		// still live: a row another session of the same machine holds is
+		// that session's evidence, not this capability's. A change under the
+		// same epoch (the artifact, contract or ready-boundary mode moved)
+		// keeps its bucket: the bind takes it chunk by chunk and settles
+		// each row on its own identity, so rows an overlapping session
+		// parked under the new capability bind while rows of the old one
+		// are deleted as mismatches (bindRowsLocked); sweeping the bucket
+		// here would discard them unread. (A parked row for a key this
+		// session itself held live under the old capability is still
+		// dropped: unless another live session still holds the key under
+		// the same epoch, the invalidation above is a delete decision that
+		// outranks the older parked evidence, whatever its identity.) Only
+		// the SSD
+		// capability counts: changedModels also names models whose
+		// resident-tier capability moved, and parked rows are SSD evidence
+		// under the SSD epoch (the live invalidation above stays per model
+		// across tiers, as before).
+		for model := range changedModels {
+			prev, had := previousCapabilities[model]
+			next, has := resultCapabilities[model]
+			if had && (!has || prev.CacheEpoch != next.CacheEpoch) {
+				result.Drops = append(result.Drops, CacheParkedDrop{Epoch: prev.CacheEpoch, Model: model})
+			}
+		}
+	}
+	if tracker != nil {
+		// Rows restored from the durable copy that name one of these epochs
+		// become live holders now (cache_persistence.go). Not gated on a
+		// change: registration already carries the capabilities, so the first
+		// apply after a reconnect is an unchanged one. One chunk here, under
+		// the locks; the caller completes the rest outside them.
+		result.Remaining = tracker.bindRestoredHolders(provider, resultCapabilities)
 	}
 	provider.mu.Unlock()
 	if tracker != nil {
 		tracker.recordDonationOutcomes(deltas)
 	}
-	return capabilitiesChanged, nil
+	result.Changed, result.registry, result.provider = capabilitiesChanged, r, provider
+	return result, nil
 }

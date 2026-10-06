@@ -38,7 +38,7 @@ struct LocalChatRequestTests {
         #expect(local.request == upstream)
         #expect(local.templateControls == ChatTemplateControls(
             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
-            promptDate: try #require(local.templateControls.promptDate)))
+            promptDate: try #require(local.templateControls.promptDate)).withRawMiMoControls(evidence(invalid: true)))
         #expect(local.request.reasoning?.enabled == true)
         #expect(local.request.streamOptions?.includeUsage == true)
         #expect(local.request.streamOptions?.continuousUsageStats == true)
@@ -46,23 +46,25 @@ struct LocalChatRequestTests {
 
     @Test("malformed extension fields are isolated and retain alias precedence", arguments: [
         (#""reasoning_effort":7,"enable_thinking":false,"preserve_thinking":true"#,
-         ChatTemplateControls(enableThinking: false, preserveThinking: true)),
+         ChatTemplateControls(enableThinking: false, preserveThinking: true), true),
         (#""reasoning_effort":" custom ","enable_thinking":"yes","chat_template_kwargs":{"enable_thinking":true},"preserve_thinking":false"#,
-         ChatTemplateControls(reasoningEffort: "custom", enableThinking: true, preserveThinking: false)),
+         ChatTemplateControls(reasoningEffort: "custom", enableThinking: true, preserveThinking: false), true),
         (#""reasoning_effort":" \n ","enable_thinking":null,"chat_template_kwargs":{"enable_thinking":false},"preserve_thinking":{}"#,
-         ChatTemplateControls(enableThinking: false)),
+         ChatTemplateControls(enableThinking: false), true),
         (#""enable_thinking":true,"chat_template_kwargs":false,"preserve_thinking":false"#,
-         ChatTemplateControls(enableThinking: true, preserveThinking: false)),
+         ChatTemplateControls(enableThinking: true, preserveThinking: false), true),
         (#""enable_thinking":0,"chat_template_kwargs":{"enable_thinking":1},"preserve_thinking":"false""#,
-         ChatTemplateControls()),
+         ChatTemplateControls(), true),
         (#""unknown_extension":{"enable_thinking":true},"reasoning":{"enabled":false}"#,
-         ChatTemplateControls()),
+         ChatTemplateControls(), false),
     ])
-    func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls) throws {
+    func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls, invalid: Bool) throws {
         let data = Data((#"{"model":"test/qwen","messages":[],"# + fragment + "}").utf8)
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
-        #expect(local.templateControls == expected.withPromptDate(try #require(local.templateControls.promptDate)))
-        #expect(ProviderLoop.extractChatTemplateControls(from: data) == expected)
+        let complete = expected.withRawMiMoControls(evidence(invalid: invalid))
+        #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
+        #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
+        #expect(local.templateControls.rawMiMoControls.invalid == invalid)
     }
 
     @Test("batch controls follow their request, including items without extensions")
@@ -81,7 +83,7 @@ struct LocalChatRequestTests {
         let expected = [
             ChatTemplateControls(enableThinking: false),
             ChatTemplateControls(),
-            ChatTemplateControls(enableThinking: true),
+            ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true)),
         ]
         for (item, controls) in zip(local, expected) {
             #expect(item.templateControls == controls.withPromptDate(try #require(item.templateControls.promptDate)))
@@ -128,5 +130,11 @@ struct LocalChatRequestTests {
                 throw error
             }
         }
+    }
+
+    private func evidence(invalid: Bool) -> MiMoV26RawControlEvidence {
+        var evidence = MiMoV26RawControlEvidence()
+        evidence.invalid = invalid
+        return evidence
     }
 }

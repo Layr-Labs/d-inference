@@ -1,6 +1,6 @@
 # Qwen3.8 B2 passes after authenticated-read coordination
 
-> Last updated: 2026-09-06 · commit `35fea6d0`
+> Last updated: 2026-09-06
 
 The fresh Qwen3.8 B2 triad passes both unchanged strict comparisons: contiguous versus paged with caching off, and paged cache-off versus SSD-enabled. Both warm rows now consume authenticated 5,120-token checkpoints and preserve their own complete output vectors. This closes the exercised missing-restore regression; it is not full-fleet or release approval.
 

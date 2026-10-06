@@ -198,6 +198,10 @@ extension SSDHybridCheckpointStore {
     }
 
     func write(_ job: WriteJob) {
+        // Export readSegment can perform device materialization/readback on
+        // this background worker, independently of the original request.
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let started = ContinuousClock.now
         var result = WriteResult()
         performWrite(job, result: &result)

@@ -1,6 +1,6 @@
 # App Attest protocol 2, inventory, and archive validation
 
-> Last updated: 2026-09-14 · commit `b7d0735e4`
+> Last updated: 2026-09-14
 
 The draft coexistence implementation passed real Apple attestation, assertion,
 and independent initial-receipt verification on one M5 Max running macOS 27.0

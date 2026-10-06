@@ -437,9 +437,12 @@ public struct SlotTelemetry: Codable, Sendable, Equatable {
     public var queuedPrefillTokens: Int64?
     /// Admitted rows that have not produced a first token yet.
     public var partialPrefillRows: Int64?
-    /// Cumulative Σ(prompt − cached) over finished requests (attributed at
-    /// finish; see `EngineV2Bridge.recordFinish`).
+    /// Actual prompt work from completed prompt computation, including
+    /// generations that later cancel or fail. Paired with prefillRequestsTotal.
     public var prefillTokensTotal: Int64?
+    public var prefillRequestsTotal: Int64?
+    public var generatedTokensTotal: Int64?
+    public var generationRequestsTotal: Int64?
     public var isolatedPrefillTps: Double?
     public var ewmaInitialized: Bool?
     public var pumpTasks: Int64?
@@ -457,6 +460,9 @@ public struct SlotTelemetry: Codable, Sendable, Equatable {
         case queuedPrefillTokens = "queued_prefill_tokens"
         case partialPrefillRows = "partial_prefill_rows"
         case prefillTokensTotal = "prefill_tokens_total"
+        case prefillRequestsTotal = "prefill_requests_total"
+        case generatedTokensTotal = "generated_tokens_total"
+        case generationRequestsTotal = "generation_requests_total"
         case isolatedPrefillTps = "isolated_prefill_tps"
         case ewmaInitialized = "ewma_initialized"
         case pumpTasks = "pump_tasks"
@@ -474,6 +480,9 @@ public struct SlotTelemetry: Codable, Sendable, Equatable {
         queuedPrefillTokens: Int64? = nil,
         partialPrefillRows: Int64? = nil,
         prefillTokensTotal: Int64? = nil,
+        prefillRequestsTotal: Int64? = nil,
+        generatedTokensTotal: Int64? = nil,
+        generationRequestsTotal: Int64? = nil,
         isolatedPrefillTps: Double? = nil,
         ewmaInitialized: Bool? = nil,
         pumpTasks: Int64? = nil,
@@ -489,6 +498,9 @@ public struct SlotTelemetry: Codable, Sendable, Equatable {
         self.queuedPrefillTokens = queuedPrefillTokens
         self.partialPrefillRows = partialPrefillRows
         self.prefillTokensTotal = prefillTokensTotal
+        self.prefillRequestsTotal = prefillRequestsTotal
+        self.generatedTokensTotal = generatedTokensTotal
+        self.generationRequestsTotal = generationRequestsTotal
         self.isolatedPrefillTps = isolatedPrefillTps
         self.ewmaInitialized = ewmaInitialized
         self.pumpTasks = pumpTasks

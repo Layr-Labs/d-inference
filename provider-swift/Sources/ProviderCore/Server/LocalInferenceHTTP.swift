@@ -71,7 +71,8 @@ func makeLocalInferenceApplication(
     availableModels: @escaping @Sendable () async -> [String],
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
     responseTracker: LocalResponseTracker? = nil,
-    onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+    onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
+    modelTypeProvider: (@Sendable (String) async -> String?)? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -91,7 +92,8 @@ func makeLocalInferenceApplication(
             availableModels: availableModels,
             defaultMaxTokens: defaultMaxTokens,
             templateControls: controls,
-            nativeLocalCacheScope: nativeCacheScope
+            nativeLocalCacheScope: nativeCacheScope,
+            modelTypeProvider: modelTypeProvider
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)

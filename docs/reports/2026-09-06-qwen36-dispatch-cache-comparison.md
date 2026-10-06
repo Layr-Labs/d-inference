@@ -1,6 +1,6 @@
 # Qwen3.6 dispatch metadata reuse preserves outputs with small delivery gains
 
-> Last updated: 2026-09-06 · commit `9ec095e7d`
+> Last updated: 2026-09-06
 
 All twelve matched runtime cells pass execution and integrity checks. With MTP
 disabled, the three primary delivery-rate comparisons improve by 0.90%–1.77%.

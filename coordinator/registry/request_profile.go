@@ -29,6 +29,7 @@ package registry
 // store per stamp. It never blocks, allocates per token, or takes r.mu.
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/timerslot"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,6 +103,7 @@ type RequestProfile struct {
 
 	finalize      ProfileFinalizeFn
 	fallbackGrace time.Duration
+	timers        func() *timerslot.Slot
 
 	attemptsMu sync.Mutex
 	inline     [profileAttemptInline]AttemptProfile
@@ -114,6 +116,11 @@ type RequestProfile struct {
 // fallbackGrace bounds how long an attempt may wait for its terminal half after
 // the handler half completed before it is finalized without a terminal.
 func NewRequestProfile(t0 time.Time, coordRequestID string, finalize ProfileFinalizeFn, fallbackGrace time.Duration) *RequestProfile {
+	return NewRequestProfileWithTimers(t0, coordRequestID, finalize, fallbackGrace, nil)
+}
+
+// NewRequestProfileWithTimers binds the fallback scheduler for all attempts.
+func NewRequestProfileWithTimers(t0 time.Time, coordRequestID string, finalize ProfileFinalizeFn, fallbackGrace time.Duration, timers func() *timerslot.Slot) *RequestProfile {
 	if t0.IsZero() {
 		t0 = time.Now()
 	}
@@ -122,6 +129,7 @@ func NewRequestProfile(t0 time.Time, coordRequestID string, finalize ProfileFina
 		CoordRequestID: coordRequestID,
 		finalize:       finalize,
 		fallbackGrace:  fallbackGrace,
+		timers:         timers,
 	}
 }
 
@@ -187,6 +195,12 @@ func (rp *RequestProfile) NewAttempt(requestID string, attempt int, backupOf str
 	ap.BackupOf = backupOf
 	ap.Index = rp.count
 	ap.parent = rp
+	ap.timerSlot = &ap.fallback
+	if rp.timers != nil {
+		if slot := rp.timers(); slot != nil {
+			ap.timerSlot = slot
+		}
+	}
 	rp.count++
 	return ap
 }

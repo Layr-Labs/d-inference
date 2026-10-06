@@ -348,3 +348,19 @@ private func quote(
     #expect(quote(probe: decoded, capacity: capacity([slot()]), model: nil)
         .rejectionReason == .capability)
 }
+
+@Test func mimoFullLoadQuoteMatchesPreloadGapWithoutDoubleHeadroom() {
+    let info = MiMoDiscoveryFixture.selectedArithmeticInfo()
+    for usable in [179.0, 182.0, 183.0, 190.0, 199.0] {
+        let publishedFree = usable - 6.5 // real free-for-load basis nets headroom
+        let actual = quote(probe: probe(model: info.id), capacity: capacity([], freeForLoadGb: publishedFree), model: info)
+        #expect(actual.admissibleNow == (usable >= info.estimatedMemoryGb + 6.5))
+        var old = info
+        old.estimatedMemoryGb = MiMoDiscoveryFixture.oldLoadGiB
+        let prior = quote(probe: probe(model: info.id), capacity: capacity([], freeForLoadGb: publishedFree), model: old)
+        #expect(!prior.admissibleNow)
+    }
+    let atBoundary = quote(probe: probe(model: info.id),
+        capacity: capacity([], freeForLoadGb: info.estimatedMemoryGb), model: info)
+    #expect(atBoundary.admissibleNow)
+}

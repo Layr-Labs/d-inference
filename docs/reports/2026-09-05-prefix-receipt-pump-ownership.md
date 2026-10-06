@@ -1,6 +1,6 @@
 # Prefix receipt ownership through the engine event pump
 
-> Last updated: 2026-09-05 · commit `d25296c65`
+> Last updated: 2026-09-05
 
 Successful provider submission now leaves prefix receipts owned by the event pump
 through engine terminal. A deterministic real-engine test reproduces the original

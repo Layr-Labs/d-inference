@@ -5,6 +5,11 @@ import MLXLMServer
 /// Bounded native think-channel lexer. Tool frames are opaque argument data:
 /// reasoning markers within them are never interpreted as channel controls.
 /// Conversely, tool frames inside reasoning remain reasoning, not invocations.
+///
+/// Content-state `</think>` handling follows the vendor-documented Nemotron
+/// parser (vLLM `nemotron_v3`, which reuses the qwen3 parser-engine config):
+/// when explicitly enabled, a close already in content is absorbed and the text
+/// before it stays content. It is never reinterpreted as a reasoning boundary.
 struct NativeChannelSplitter {
     private enum State { case content, reasoning, tool(end: String) }
     private var state: State
@@ -13,17 +18,19 @@ struct NativeChannelSplitter {
     private let qwenStructuredFrames: Bool
     private var toolScanner: Qwen35ToolFrameScanner?
     private let preserveInnerReasoningSpans: Bool
+    private let absorbStrayThinkClose: Bool
     private var innerReasoningDepth = 0
     private(set) var reasoningNestingLimitExceeded = false
     static let maximumInnerReasoningDepth = 32
     var bufferedCharacterCount: Int { buffer.count + (toolScanner?.bufferedCharacterCount ?? 0) }
 
     init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false,
-         preserveInnerReasoningSpans: Bool = false) {
+         preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
         self.qwenStructuredFrames = qwenStructuredFrames
         self.preserveInnerReasoningSpans = preserveInnerReasoningSpans
+        self.absorbStrayThinkClose = absorbStrayThinkClose
     }
 
     mutating func parse(_ text: String) -> [ParsedReasoning] {
@@ -66,7 +73,10 @@ struct NativeChannelSplitter {
             let reasoning: Bool
             switch state {
             case .content:
-                markers = protectToolFrames ? ["<think>", "<tool_call>", "<function="] : ["<think>"]
+                var contentMarkers = ["<think>"]
+                if absorbStrayThinkClose { contentMarkers.append("</think>") }
+                if protectToolFrames { contentMarkers += ["<tool_call>", "<function="] }
+                markers = contentMarkers
                 reasoning = false
             case .reasoning:
                 markers = preserveInnerReasoningSpans ? ["<think>", "</think>"] : ["</think>"]
@@ -83,7 +93,10 @@ struct NativeChannelSplitter {
                 case .content:
                     append(String(buffer[..<range.lowerBound]), reasoning: false, to: &result)
                     if marker == "<think>" { state = .reasoning }
-                    else {
+                    else if marker == "</think>" {
+                        // Stray close after a prompt-side `<think></think>` (or a
+                        // duplicate close): drop the marker, stay in content.
+                    } else {
                         append(marker, reasoning: false, to: &result)
                         state = .tool(end: marker == "<tool_call>" ? "</tool_call>" : "</function>")
                         if qwenStructuredFrames && marker == "<tool_call>" {

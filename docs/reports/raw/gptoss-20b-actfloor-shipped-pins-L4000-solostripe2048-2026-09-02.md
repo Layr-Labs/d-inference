@@ -1,6 +1,6 @@
 # BenchCBv2RealModel report
 
-> Last updated: 2026-09-03 · commit `dd63b83f1`
+> Last updated: 2026-09-03
 
 | | |
 |---|---|

@@ -26,6 +26,9 @@ extension PrefixCachePolicy {
         guard let data = try? Data(contentsOf: modelDirectory.appendingPathComponent("config.json")),
             let declaration = try? JSONDecoder().decode(LoadModelDeclaration.self, from: data)
         else { return true }
+        if declaration.modelType == "mimo_v2" {
+            return isMiMoCompletePrefixEnabled(modelId: modelId, environment: environment)
+        }
         if ["qwen4_exp", "qwen4_exp_text"].contains(declaration.modelType),
             let configuration = try? JSONDecoder().decode(MLXLLM.Qwen4ExpConfiguration.self, from: data)
         {

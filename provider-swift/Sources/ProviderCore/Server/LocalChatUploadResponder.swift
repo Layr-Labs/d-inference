@@ -47,27 +47,47 @@ where Inner.Context == BasicRequestContext {
         path == "/v1/chat/completions/batch"
     }
 
+    static func isResponsesCreationPath(_ path: String) -> Bool {
+        path == "/v1/responses" || path == "/responses"
+    }
+
     public func respond(to request: Request, context: Context) async throws -> Response {
         guard request.method == .post else {
             return try await inner.respond(to: request, context: context)
         }
         let path = request.uri.path
         let isBatch = Self.isChatCompletionsBatchPath(path)
-        guard isBatch || Self.isChatCompletionsPath(path) else {
+        let isResponses = Self.isResponsesCreationPath(path)
+        guard isBatch || Self.isChatCompletionsPath(path) || isResponses else {
             return try await inner.respond(to: request, context: context)
         }
 
         var request = request
+        // Responses previously used BasicRequestContext's 2 MiB ceiling.
+        let bodyLimit = isResponses ? min(maxUploadBytes, 2 * 1024 * 1024) : maxUploadBytes
         let buffer: ByteBuffer
         do {
-            buffer = try await request.collectBody(upTo: maxUploadBytes)
+            buffer = try await request.collectBody(upTo: bodyLimit)
         } catch is NIOTooManyBytesError {
             // Same 413 status the stock path produces, but with an
             // OpenAI-shaped envelope that names the REAL limit.
             return CORSResponder<Inner>.openAIErrorResponse(
                 status: .contentTooLarge,
-                message: "request body exceeds the \(maxUploadBytes / (1024 * 1024)) MiB local endpoint limit"
+                message: "request body exceeds the \(bodyLimit / (1024 * 1024)) MiB local endpoint limit"
             )
+        }
+
+        if isResponses {
+            let item: LocalResponseRequest
+            switch decodeBody(LocalResponseRequest.self, from: buffer) {
+            case .success(let decoded): item = decoded
+            case .failure(let badRequest): return badRequest
+            }
+            let responseService = serviceForTemplateControls(item.templateControls)
+            if item.request.stream == true {
+                return Self.sseResponse(try await responseService.streamResponseFrames(request: item.request))
+            }
+            return try Self.jsonResponse(try await responseService.createResponse(request: item.request))
         }
 
         if isBatch {

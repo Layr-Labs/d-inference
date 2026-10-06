@@ -31,8 +31,16 @@ fi
 
 CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-only HEAD~1)
 
-HAS_GO=$(echo "$CHANGED_FILES" | grep -q '^coordinator/' && echo 1 || echo 0)
-HAS_TS=$(echo "$CHANGED_FILES" | grep -q '^console-ui/' && echo 1 || echo 0)
+# Avoid an early-exit grep pipeline: with pipefail, a large list can make the
+# producer receive SIGPIPE and incorrectly classify a matching component as absent.
+HAS_GO=0
+HAS_TS=0
+if grep -q '^coordinator/' <<< "$CHANGED_FILES"; then
+    HAS_GO=1
+fi
+if grep -q '^console-ui/' <<< "$CHANGED_FILES"; then
+    HAS_TS=1
+fi
 
 # ---------------------------------------------------------------------------
 # Go — formatting + tests
@@ -48,9 +56,8 @@ if [ "$HAS_GO" = "1" ]; then
     fi
 
     echo ">> [pre-push] Go tests..."
-    # Skip internal/api — its WebSocket integration tests are slow (~5 min) and
-    # timing-sensitive. They run in CI instead.
-    if ! (cd coordinator && go test $(go list ./... | grep -v /internal/api) 2>&1 | tail -15); then
+    # Standard Go discovery includes the complete mirrored test tree.
+    if ! go test ./coordinator/...; then
         echo "ERROR: Go tests failed."
         FAILED=1
     fi

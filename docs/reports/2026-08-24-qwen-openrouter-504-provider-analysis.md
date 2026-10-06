@@ -1,6 +1,6 @@
 # Qwen 3.6 OpenRouter 504 and Provider Performance Analysis
 
-> Last updated: 2026-08-24 · commit `5d400cf75`
+> Last updated: 2026-08-24
 
 **Date:** 2026-08-24  
 **Model:** `qwen3.6-35b-a3b-vl-mtp-mxfp8`  

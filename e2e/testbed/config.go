@@ -173,6 +173,7 @@ func DescribeKVPosture(cfg ProviderConfig) string {
 }
 
 type ProviderConfig struct {
+	Autopilot bool // explicit isolated-test enrollment; false preserves ordinary serving
 	// LocalEndpointPort opts into the native authenticated loopback endpoint
 	// alongside coordinator serving. Zero preserves the existing launch.
 	LocalEndpointPort int
@@ -280,6 +281,7 @@ type UserAccount struct {
 }
 
 type SuiteConfig struct {
+	Autopilot bool // enroll only the testbed provider in its selected cached builds
 	// LocalEndpointPort is supported for one locally launched provider only.
 	// It exposes that same engine's metrics, never a second model process.
 	LocalEndpointPort int

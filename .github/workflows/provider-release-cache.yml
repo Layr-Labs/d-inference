@@ -28,6 +28,8 @@ on:
       - 'scripts/test-provider-release-pipeline.py'
       - 'scripts/provider-release-swift.sh'
       - 'scripts/prepare-provider-release-toolchain.sh'
+      - 'scripts/install-release-rust.sh'
+      - 'scripts/install-release-cmake.sh'
       - 'scripts/prepare-metal-toolchain.py'
       - 'scripts/test-prepare-metal-toolchain.py'
       - 'scripts/fetch-metallib.sh'
@@ -51,7 +53,7 @@ jobs:
   warm:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     name: SDK 27 ${{ matrix.lane }}
-    runs-on: xcode-27-xlarge
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -65,6 +67,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - name: Warm the same unsigned build used by releases
         id: build
         uses: ./.github/actions/provider-release-build

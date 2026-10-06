@@ -94,6 +94,13 @@ extension EngineV2SlotFactory {
             else { return nil }
             return .init(kind: kind, layerDTypes: nativeDTypes ?? modelDTypes, pagedConfig: pagedConfig)
         }
+        if supportsHistoricalAttention, kind == .contiguous {
+            guard assistant == .none, let nativeDTypes,
+                  modelDTypes == nil || modelDTypes == nativeDTypes,
+                  nativeDTypes.count == layerKinds.count else { return nil }
+            return .init(kind: kind, layerDTypes: nativeDTypes, pagedConfig: pagedConfig,
+                         target: .historicalAttention(layerKinds))
+        }
         guard supportsHistoricalAttention, kind == .paged, let nativeDTypes,
               assistant == .none || assistant == .stateless else { return nil }
         // Gemma's stateless per-round drafter remains configured normally. It

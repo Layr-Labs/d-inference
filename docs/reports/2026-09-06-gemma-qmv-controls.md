@@ -1,6 +1,6 @@
 # Corrected Gemma QAT backend parity; verifier equality remains open
 
-> Last updated: 2026-09-06 · commit `38b674d53`
+> Last updated: 2026-09-06
 
 The corrected runtime produces identical complete Gemma QAT4 outputs across
 contiguous and paged attention in ordinary, automatic speculative and

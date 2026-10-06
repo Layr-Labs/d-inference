@@ -62,4 +62,28 @@ struct BenchmarkProductionGrantTests {
                 measuredHeadroomBytes: UInt64(gib)))
         }
     }
+
+    @Test func explicitNativeOperatorReserveIsPreservedInTheGrant() throws {
+        let physical = UInt64(64 * gib), requested = UInt64(24 * gib)
+        let native = try EngineV2Factory.benchmarkProductionGrant(
+            modelId: "native-mimo-fixture", sizing: sizing(), physicalBytes: physical,
+            environment: [:], operatorReserveBytes: requested)
+        #expect(native.operatorReserveBytes == requested)
+        #expect(native.effectiveCapBytes == UInt64(40 * gib))
+        let expected = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: physical, residentWeightBytes: UInt64(20 * gib),
+            activationReserveBytes: native.activationReserveBytes, ramPrefixAllowanceBytes: 0,
+            configReserveBytes: requested, capFraction: native.capFraction)
+        #expect(UInt64(native.grantBytes) == expected)
+        let unchanged = try EngineV2Factory.benchmarkProductionGrant(
+            modelId: "native-mimo-fixture", sizing: sizing(), physicalBytes: physical,
+            environment: [:])
+        #expect(unchanged.operatorReserveBytes == UInt64(4 * gib))
+        #expect(native.grantBytes < unchanged.grantBytes)
+        #expect(throws: EngineV2BenchmarkSession.Failure.self) {
+            try EngineV2Factory.benchmarkProductionGrant(
+                modelId: "native-mimo-fixture", sizing: sizing(), physicalBytes: physical,
+                environment: [:], operatorReserveBytes: .max)
+        }
+    }
 }

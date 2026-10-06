@@ -1,6 +1,6 @@
 # Final tool and vision capability checks
 
-> Last updated: 2026-09-07 · commit `dbf2b73cf`
+> Last updated: 2026-09-07
 
 Qwen 3.5, Qwen 3.6, GPT-OSS 20B and Gemma 4 26B QAT pass seven connected HTTP capability requests on the verified 0.9.0 runtime. All four tool calls select the requested function and arguments; all three vision responses finish naturally and correctly describe the test image. Qwen 3.8's final capability check remains part of the separate routing successor.
 

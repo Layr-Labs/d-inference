@@ -1,6 +1,6 @@
 # Paged resident prefix cache: GPT-OSS model check
 
-> Last updated: 2026-09-05 · commit `da7303d42`
+> Last updated: 2026-09-05
 
 Explicit paged serving reused 3,920 prefill tokens on the measured long GPT-OSS
 repeat, reducing time to first token from 1.578716708 to 0.854751458 seconds

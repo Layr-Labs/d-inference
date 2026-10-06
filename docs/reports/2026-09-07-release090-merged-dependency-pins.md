@@ -1,6 +1,6 @@
 # 0.9.0 merged dependency pins
 
-> Last updated: 2026-09-07 · commit `9a4992d26`
+> Last updated: 2026-09-07
 
 The release stack now pins the merged MLX and C bridge commits. Their source trees are identical to the dependency revisions used by the verified 0.9.0 candidate. This changes dependency provenance without changing the selected inference implementation.
 

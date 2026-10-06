@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) native support reference
 
-> Last updated: 2026-09-17 · commit `04dadef3b`
+> Last updated: 2026-09-17
 
 Reference for the native Qwen4 support candidate and its remaining qualification gates. These source defaults do not publish a model, approve a catalog entry, qualify a hardware tier or establish a production release. The composed SDK's `libs/mlx-swift-lm/docs/qwen4/composition.md` records source selection and excluded experiments.
 

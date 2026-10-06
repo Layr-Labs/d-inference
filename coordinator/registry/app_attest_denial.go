@@ -16,6 +16,6 @@ func (r *Registry) denyAppAttestProviderLocked(p *Provider) {
 	}
 	p.untrustedRecoverable = false
 	p.appAttestSecurityDenied = true
-	p.appAttestAuthorization = AppAttestServingAuthorization{}
+	p.clearAppAttestServingAuthorizationLocked()
 	p.RuntimeCapabilities = nil
 }

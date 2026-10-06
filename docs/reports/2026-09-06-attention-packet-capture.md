@@ -1,6 +1,6 @@
 # Bounded native attention packets at the ordinary decode boundary
 
-> Last updated: 2026-09-06 · commit `384c321aa`
+> Last updated: 2026-09-06
 
 The diagnostic can capture one selected attention owner's original Q, incoming
 K/V, post-update stored K/V and returned output in their native dtypes. Native

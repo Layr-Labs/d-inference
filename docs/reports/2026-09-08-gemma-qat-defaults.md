@@ -1,6 +1,6 @@
 # Gemma 4 26B QAT: default prefix cache and MTP validation
 
-> Last updated: 2026-09-08 · commit `4ae34f033`
+> Last updated: 2026-09-08
 
 Report date: 2026-09-08. Review checkout: `4ae34f033472f2b2b3d69cce0f9f0b0c85f31f39`. Scope: `gemma-4-26b-qat-4bit`; Gemma 8-bit is excluded.
 

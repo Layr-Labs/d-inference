@@ -400,6 +400,26 @@ func (c *StripeConnect) GetAccount(accountID string) (*ExpressAccount, error) {
 	return parseAccount(body)
 }
 
+// DeleteAccount deletes a connected Express account (account erasure).
+// Stripe deletes a live account only when all its balances are zero; that
+// refusal is a definitive *APIError. Callers must distinguish a missing
+// account from a permission failure before recording erasure as complete.
+func (c *StripeConnect) DeleteAccount(accountID string) error {
+	if c.secretKey == "" && !c.mockMode {
+		return errors.New("stripe connect: not configured")
+	}
+	if c.mockMode {
+		return nil
+	}
+	if err := validAccountID(accountID); err != nil {
+		return err
+	}
+	if _, err := c.do(http.MethodDelete, "/v1/accounts/"+accountID, nil, ""); err != nil {
+		return fmt.Errorf("stripe connect: delete account: %w", err)
+	}
+	return nil
+}
+
 // CreateTransferParams describes a transfer from the platform balance into a
 // connected account's balance. amountCents is the integer-cent amount net of
 // any user-facing fee.
@@ -741,6 +761,12 @@ func (c *StripeConnect) do(method, path string, form url.Values, idempotencyKey 
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
+	// The transport otherwise automatically retries replayable POSTs carrying
+	// Idempotency-Key. Surface every ambiguous attempt to retryAmbiguousStripe:
+	// a later rejection must not erase evidence that the first send may exist.
+	if method != http.MethodGet {
+		req.GetBody = nil
+	}
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}

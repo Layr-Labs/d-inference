@@ -1,6 +1,6 @@
 # Final Qwen 3.5 and 3.6 concurrency checks
 
-> Last updated: 2026-09-07 · commit `363117ca7`
+> Last updated: 2026-09-07
 
 Both Qwen models pass the final batch-size 2 and 4 comparisons on the verified 0.9.0 runtime. All 12 cells execute their required forward widths; all eight backend/cache comparisons pass structural checks. The 72 main responses finish naturally and preserve the requested summary's meaning despite wording differences.
 

@@ -1,6 +1,6 @@
 # App Attest enforcement retry-freshness review
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 Review of the macOS 27 App Attest refresh and recovery timings in v0.9.4.
 Turning on enforcement does not correct these timings: the existing retry

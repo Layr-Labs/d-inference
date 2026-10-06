@@ -1,6 +1,6 @@
 # Paged model validation tools
 
-> Last updated: 2026-09-05 · commit `8b8935fb4`
+> Last updated: 2026-09-05
 
 The offline engine harness now supports B1/B2/B4 runs and explicit slot KV grants in one binary. This milestone banks measurement tools and their checks; it contains no real-model concurrent or paged performance result.
 

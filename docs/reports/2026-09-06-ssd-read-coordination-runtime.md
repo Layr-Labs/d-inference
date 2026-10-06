@@ -1,6 +1,6 @@
 # SSD read coordination builds and passes bounded validation
 
-> Last updated: 2026-09-06 · commit `35fea6d0e`
+> Last updated: 2026-09-06
 
 The same-file SSD checkpoint read-coordination candidate builds both release products on M5 and passes **30 fresh provider/CLI suites: 270 functions, 324 expanded cases, no skips or failures**. This record banks source, build, CPU-regression and synthetic test evidence only. The subsequent [Qwen3.8 B2 retest](2026-09-06-qwen38-b2-coordinated-reads.md) is reported separately; these build results alone establish no model, performance or release acceptance.
 

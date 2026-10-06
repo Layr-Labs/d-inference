@@ -63,7 +63,7 @@ struct ProcessMemoryTelemetryTests {
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("coordinator/protocol/testdata/process_memory_wire.json")
+            .appendingPathComponent("coordinator/tests/protocol/testdata/process_memory_wire.json")
         let data = try Data(contentsOf: file)
         let value = try JSONDecoder().decode(CapacityTelemetry.self, from: data)
         let encoded = try JSONEncoder().encode(value)

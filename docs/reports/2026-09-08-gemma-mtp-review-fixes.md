@@ -1,6 +1,6 @@
 # Gemma MTP: review findings and regression fixes
 
-> Last updated: 2026-09-08 · commit `fce72956c`
+> Last updated: 2026-09-08
 
 Both automated P2 findings on native PR #144 are reproducible and warrant fixes. They concern adaptive MTP performance measurements: request-generation isolation and exact verification-shape warmup. The provider PR #872 review reported no findings at the checked revision.
 

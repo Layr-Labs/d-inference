@@ -1,6 +1,6 @@
 # Qwen3.6 attention outputs differ on identical captured inputs
 
-> Last updated: 2026-09-06 · commit `0b91fa8d4`
+> Last updated: 2026-09-06
 
 Four real-model control/capture cells pass their integrity and trajectory checks.
 At dense attention owner 0, the two backends have identical captured query,

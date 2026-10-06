@@ -220,8 +220,11 @@ public struct StartupPreloader: Sendable {
             || ((message.hasPrefix("loading '")
                     || (message.hasPrefix("Model '")
                         && message.contains(" MTP fallback engine construction failed:")))
-                && message.contains("' would re-slice some model's KV grant below the ")
-                && message.contains(" GB serviceability floor "))
+                && ((message.contains("' would re-slice some model's KV grant below the ")
+                        && message.contains(" GB serviceability floor "))
+                    || (message.contains("' would leave a model without its fixed request workspace, admission watermark and ")
+                        && message.contains(" GB minimum KV allowance "))))
+            || message.contains("MiMo memory grant cannot fit one request workspace plus minimum KV")
     }
 
     // MARK: - Formatting helpers

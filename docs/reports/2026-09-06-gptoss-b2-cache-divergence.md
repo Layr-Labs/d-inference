@@ -1,6 +1,6 @@
 # GPT-OSS B2 cache divergence — retained failed pilot
 
-> Last updated: 2026-09-06 · commit `5073f696d`
+> Last updated: 2026-09-06
 
 Frozen evidence record for inference reviewers: strict cache parity **fails**;
 strict backend comparison **passes only for the retained cache-off arms**.

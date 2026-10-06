@@ -7,7 +7,7 @@ import tempfile
 
 
 def publish_github_release(root, bundle_name, expected_hash, env, is_latest):
-    tag = env['GITHUB_REF_NAME']
+    tag = env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']
     repo = env['GITHUB_REPOSITORY']
 
     def gh(*args, **kwargs):

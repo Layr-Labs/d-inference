@@ -156,6 +156,7 @@ export interface RecipientAmountLimits {
 }
 
 export interface StripeStatus {
+  migration_required?: boolean;
   recipient_limits?: RecipientAmountLimits;
   account_id?: string;
   payout_rail?: "connect" | "global";

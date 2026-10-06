@@ -200,7 +200,7 @@ struct StandaloneMTPUpgradeTests {
         let staged = try #require(try await fixture.prepare())
         let paused = UpgradeBarrier()
         let task = Task {
-            await MTPIdleUpgrade.run(prepare: { staged },
+            await ModelIdleUpgrade.run(prepare: { staged },
                 beginDrain: { try await fixture.server.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.server.commitMTPUpgradeIfIdle($0) },
                 discard: { await fixture.server.discardMTPUpgrade($0) },
@@ -234,7 +234,7 @@ struct StandaloneMTPUpgradeTests {
         let fixture = try await StandaloneUpgradeFixture.make()
         let existing = try await fixture.server.acquireModel(standaloneUpgradeModelID)
         let staged = try #require(try await fixture.prepare())
-        let outcome = await MTPIdleUpgrade.run(maximumIdleChecks: 2, prepare: { staged },
+        let outcome = await ModelIdleUpgrade.run(maximumIdleChecks: 2, prepare: { staged },
             beginDrain: { try await fixture.server.beginMTPUpgradeDrain($0) },
             commitIfIdle: { try await fixture.server.commitMTPUpgradeIfIdle($0) },
             discard: { await fixture.server.discardMTPUpgrade($0) },
@@ -289,7 +289,7 @@ struct StandaloneMTPUpgradeTests {
         // Deterministically leave no optional-load headroom in this fixture's
         // own ledger, independent of host RAM or concurrent MLX test activity.
         await budget.setActivationReserveBytes(.max)
-        await #expect(throws: MTPIdleUpgrade.PreparationError.self) {
+        await #expect(throws: ModelIdleUpgrade.PreparationError.self) {
             _ = try await fixture.prepare()
         }
         await fixture.checkOriginal()
@@ -318,7 +318,7 @@ struct StandaloneMTPUpgradeTests {
         let pause = UpgradeBarrier()
         fixture.originalEngine.setBusy(true)
         let task = Task {
-            await MTPIdleUpgrade.run(prepare: { staged },
+            await ModelIdleUpgrade.run(prepare: { staged },
                 beginDrain: { try await fixture.server.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.server.commitMTPUpgradeIfIdle($0) },
                 discard: { await fixture.server.discardMTPUpgrade($0) },

@@ -36,33 +36,9 @@ import (
 	"fmt"
 	"math/big"
 	"time"
-)
 
-// AttestationBlob mirrors the Swift AttestationBlob struct.
-// JSON field names must match exactly for signature verification.
-// AttestationBlob fields are in alphabetical order by JSON key name.
-// This is critical: Go's json.Marshal uses struct declaration order,
-// and Swift's JSONEncoder with .sortedKeys uses alphabetical order.
-// Keeping them aligned ensures both produce identical JSON.
-type AttestationBlob struct {
-	AuthenticatedRootEnabled bool     `json:"authenticatedRootEnabled"`
-	BinaryHash               string   `json:"binaryHash,omitempty"`
-	ChipFamily               string   `json:"chipFamily,omitempty"`
-	ChipName                 string   `json:"chipName"`
-	EncryptionPublicKey      string   `json:"encryptionPublicKey,omitempty"`
-	HardwareModel            string   `json:"hardwareModel"`
-	MetallibHash             string   `json:"metallibHash,omitempty"`
-	OSVersion                string   `json:"osVersion"`
-	PublicKey                string   `json:"publicKey"`
-	RDMADisabled             bool     `json:"rdmaDisabled"`
-	RuntimeCapabilities      []string `json:"runtimeCapabilities,omitempty"`
-	SecureBootEnabled        bool     `json:"secureBootEnabled"`
-	SecureEnclaveAvailable   bool     `json:"secureEnclaveAvailable"`
-	SerialNumber             string   `json:"serialNumber,omitempty"`
-	SIPEnabled               bool     `json:"sipEnabled"`
-	SystemVolumeHash         string   `json:"systemVolumeHash,omitempty"`
-	Timestamp                string   `json:"timestamp"`
-}
+	attestationwire "github.com/eigeninference/d-inference/coordinator/internal/attestation/wire"
+)
 
 // SignedAttestation is a signed attestation blob with a base64-encoded
 // DER ECDSA signature. The AttestationRaw field preserves the exact JSON
@@ -70,9 +46,9 @@ type AttestationBlob struct {
 // and Go encode JSON slightly differently — e.g., Swift escapes forward
 // slashes in base64 strings).
 type SignedAttestation struct {
-	Attestation    AttestationBlob `json:"attestation"`
-	AttestationRaw json.RawMessage `json:"-"` // original bytes for verification
-	Signature      string          `json:"signature"`
+	Attestation    attestationwire.AttestationBlob `json:"attestation"`
+	AttestationRaw json.RawMessage                 `json:"-"` // original bytes for verification
+	Signature      string                          `json:"signature"`
 }
 
 // UnmarshalJSON preserves the raw attestation bytes for signature verification.
@@ -113,11 +89,6 @@ type VerificationResult struct {
 	SystemVolumeHash         string
 	Timestamp                time.Time
 	Error                    string
-}
-
-// ecdsaSig holds the two integers in a DER-encoded ECDSA signature.
-type ecdsaSig struct {
-	R, S *big.Int
 }
 
 // Verify checks a signed attestation's P-256 ECDSA signature against
@@ -190,7 +161,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 	} else {
 		// Fallback: re-encode (works for Go-generated test attestations)
 		var err error
-		blobJSON, err = marshalSortedJSON(signed.Attestation)
+		blobJSON, err = attestationwire.MarshalSortedJSON(signed.Attestation)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to re-encode attestation: %v", err)
 			return result
@@ -200,7 +171,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 	// Hash and verify
 	hash := sha256.Sum256(blobJSON)
 
-	var sig ecdsaSig
+	var sig attestationwire.ECDSASignature
 	if _, err := asn1.Unmarshal(sigBytes, &sig); err != nil {
 		result.Error = fmt.Sprintf("invalid DER signature: %v", err)
 		return result
@@ -289,56 +260,6 @@ func ParseP256PublicKey(raw []byte) (*ecdsa.PublicKey, error) {
 		"unsupported public key format: expected 64 or 65 bytes, got %d",
 		len(raw),
 	)
-}
-
-// marshalSortedJSON re-encodes the attestation blob as JSON with keys
-// in alphabetical order, matching Swift's JSONEncoder with .sortedKeys.
-//
-// Go's encoding/json marshals struct fields in declaration order, which
-// may not match Swift's alphabetical order. We use a map to ensure
-// correct key ordering.
-func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
-	// Build an ordered map matching Swift's .sortedKeys output.
-	// Swift sorts keys alphabetically (Unicode code point order).
-	// encoding/json marshals map keys in sorted order as of Go 1.12+.
-	m := map[string]interface{}{
-		"authenticatedRootEnabled": blob.AuthenticatedRootEnabled,
-		"chipName":                 blob.ChipName,
-		"hardwareModel":            blob.HardwareModel,
-		"osVersion":                blob.OSVersion,
-		"publicKey":                blob.PublicKey,
-		"rdmaDisabled":             blob.RDMADisabled,
-		"secureBootEnabled":        blob.SecureBootEnabled,
-		"secureEnclaveAvailable":   blob.SecureEnclaveAvailable,
-		"sipEnabled":               blob.SIPEnabled,
-		"timestamp":                blob.Timestamp,
-	}
-
-	// Only include optional fields if set (Swift's JSONEncoder with
-	// .sortedKeys omits nil optionals, so we must match that behavior).
-	if blob.ChipFamily != "" {
-		m["chipFamily"] = blob.ChipFamily
-	}
-	if blob.BinaryHash != "" {
-		m["binaryHash"] = blob.BinaryHash
-	}
-	if blob.EncryptionPublicKey != "" {
-		m["encryptionPublicKey"] = blob.EncryptionPublicKey
-	}
-	if blob.MetallibHash != "" {
-		m["metallibHash"] = blob.MetallibHash
-	}
-	if blob.SerialNumber != "" {
-		m["serialNumber"] = blob.SerialNumber
-	}
-	if len(blob.RuntimeCapabilities) > 0 {
-		m["runtimeCapabilities"] = blob.RuntimeCapabilities
-	}
-	if blob.SystemVolumeHash != "" {
-		m["systemVolumeHash"] = blob.SystemVolumeHash
-	}
-
-	return json.Marshal(m)
 }
 
 // StatusCanonicalInput holds the fields covered by StatusSignature in
@@ -501,7 +422,7 @@ func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
 	hash := sha256.Sum256([]byte(data))
 
 	// Parse DER-encoded ECDSA signature
-	var sig ecdsaSig
+	var sig attestationwire.ECDSASignature
 	if _, err := asn1.Unmarshal(sigBytes, &sig); err != nil {
 		return fmt.Errorf("invalid DER signature: %w", err)
 	}

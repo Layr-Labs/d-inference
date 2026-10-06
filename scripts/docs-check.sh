@@ -1,10 +1,10 @@
 #!/bin/bash
 # Lint the docs tree. Fails (exit 1) on:
 #   1. a doc without a freshness stamp in its first 12 lines
-#        > Last updated: YYYY-MM-DD · commit `<sha>`
+#        > Last updated: YYYY-MM-DD
 #      (add or refresh with scripts/docs-stamp.sh)
 #   2. a relative Markdown link whose target file/directory does not exist
-#      (frozen source links may instead exist at the document's stamped commit)
+#      (frozen source links may instead be verified through document history)
 #   3. an inline-code citation of a repo path that does not exist, e.g.
 #      `coordinator/api/server.go` or `provider-swift/Sources/ProviderCore/`
 #      (line/symbol suffixes such as `file.go:123` or `file.go:Func` are
@@ -54,8 +54,8 @@ fail() { printf 'docs-check: %s\n' "$*" >&2; ERRORS=$((ERRORS + 1)); }
 # ---------------------------------------------------------------------------
 for f in "${FILES[@]}"; do
     case "$f" in docs/.private/*) continue ;; esac
-    if ! head -n 12 "$f" | grep -Eq '^> Last updated: [0-9]{4}-[0-9]{2}-[0-9]{2} .*commit `[0-9a-f]{7,40}`'; then
-        fail "$f: missing freshness stamp (run scripts/docs-stamp.sh \"$f\")"
+    if ! head -n 12 "$f" | grep -Eq '^> Last updated: [0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+        fail "$f: missing date-only freshness stamp (run scripts/docs-stamp.sh \"$f\")"
     fi
 done
 
@@ -103,7 +103,7 @@ historical_repo_path() {
 }
 
 historical_source_exists() {
-    local f=$1 path record stamp commit kind
+    local f=$1 path record
     record=$(historical_repo_path "$f") || return 1
     case "$record" in
         docs/reports/*|docs/releases/*|docs/design/*) ;;
@@ -119,24 +119,18 @@ historical_source_exists() {
         coordinator/*|provider-swift/*|console-ui/*|admin-ui/*|landing/*|scripts/*|deploy/*|e2e/*|.github/*|.githooks/*|libs/*|fixtures/*) ;;
         *) return 1 ;;
     esac
-    stamp=$(sed -nE '1,12s/^> Last updated: [0-9]{4}-[0-9]{2}-[0-9]{2} .*commit `([0-9a-f]{7,40})`.*/\1/p' "$f")
-    if [ -z "$stamp" ]; then
-        printf 'docs-check: %s: historical source requires a valid freshness stamp\n' "$f" >&2
+    if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != false ]; then
+        printf 'docs-check: %s: historical source requires complete Git history; fetch --unshallow first\n' "$f" >&2
         return 1
     fi
-    if ! commit=$(git rev-parse --verify "${stamp}^{commit}" 2>/dev/null); then
-        printf 'docs-check: %s: cannot resolve historical commit %s; verify the stamp and fetch complete Git history\n' "$f" "$stamp" >&2
-        return 1
-    fi
-    kind=$(git cat-file -t "$commit:$path" 2>/dev/null) || return 1
-    case "$kind" in blob|tree) return 0 ;; *) return 1 ;; esac
+    python3 scripts/docs-historical-source.py "$record" "$path" "$3"
 }
 
 # ---------------------------------------------------------------------------
 # 2. Relative links
 # ---------------------------------------------------------------------------
 check_links() {
-    local f=$1 dir target path
+    local f=$1 dir target path original_target
     dir=$(dirname "$f")
     # Inline links [text](target) and reference definitions [id]: target.
     # The loop reads from process substitution (not a pipeline) so that `fail`
@@ -145,6 +139,7 @@ check_links() {
         case "$target" in
             http://*|https://*|mailto:*|\#*|tel:*) continue ;;
         esac
+        original_target=$target
         target=${target%%#*}
         target=${target%%\?*}
         [ -z "$target" ] && continue
@@ -155,7 +150,7 @@ check_links() {
             *)  path="$dir/$target" ;;
         esac
         if [ ! -e "$path" ]; then
-            historical_source_exists "$f" "$path" && continue
+            historical_source_exists "$f" "$path" "$original_target" && continue
             fail "$f: broken link -> $target"
         fi
     done < <(

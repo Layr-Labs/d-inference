@@ -1,6 +1,6 @@
 # GPT-OSS 20B default SSD prefix-cache qualification
 
-> Last updated: 2026-09-11 · commit `6938e8547`
+> Last updated: 2026-09-11
 
 Exact `gpt-oss-20b` passes the bounded runtime qualification for default encrypted SSD prefix caching on the measured M5 Max: optimized selected tests, real-checkpoint reconstruction, concurrent different suffixes, B1/B2/B4 cache comparisons and five standalone HTTP requests. Across the benchmark matrix, all 84 workload answers and 30 isolation/recovery control answers pass; median paired warm-hit TTFT reductions are 86.25%, 88.79% and 91.28% at B1, B2 and B4.
 

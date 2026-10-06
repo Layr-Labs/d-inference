@@ -1,6 +1,6 @@
 # Qwen3.6 uniform-prefill concurrency control
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 One Qwen3.6 batch-of-two control passes the original strict per-index repeat comparison when all four requests use uniform 512-token prefill chunks. This is a diagnostic control, not acceptance of the production default or the complete concurrency matrix.
 

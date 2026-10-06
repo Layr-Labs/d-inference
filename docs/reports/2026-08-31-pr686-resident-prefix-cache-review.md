@@ -1,6 +1,6 @@
 # Review: PR #686 + mlx-swift-lm #116 (resident "radix" prefix cache) — legitimacy, fit, and what to delete
 
-> Last updated: 2026-08-31 · commit `5d400cf75`
+> Last updated: 2026-08-31
 
 Date: 2026-08-31. Companion to
 `docs/design/prefix-cache-and-cached-routing.md`

@@ -1,5 +1,10 @@
 import Foundation
 import Logging
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 // MARK: - Model Scanner
 
@@ -102,7 +107,8 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Snapshot Discovery
 
-    /// Find the latest snapshot directory by modification time.
+    /// Resolve an explicit refs/main selection, or the latest legacy snapshot
+    /// by modification time only when that selection is genuinely absent.
     ///
     /// The returned URL is symlink-resolved. `contentsOfDirectory(at:)`
     /// canonicalises the paths it hands back (on macOS a `/var/...` input
@@ -112,6 +118,25 @@ public struct ModelScanner: Sendable {
     /// treat one directory as two.
     public static func findLatestSnapshot(in snapshotsDir: URL) -> URL? {
         let fm = FileManager.default
+        // A managed revision is selected explicitly. Modification times must
+        // never activate a staged download or undo a rollback.
+        let mainRef = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs/main")
+        switch readSnapshotReference(at: mainRef) {
+        case .invalid:
+            return nil
+        case .selected(let raw):
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
+                  !name.utf8.contains(0) else { return nil }
+            let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+            // Use the same POSIX canonicalization as legacy discovery so one
+            // selected directory cannot acquire two cache/ownership identities.
+            return resolved(selected)
+        case .absent:
+            break
+        }
         let entries: [URL]
         do {
             entries = try fm.contentsOfDirectory(
@@ -126,20 +151,64 @@ public struct ModelScanner: Sendable {
         var latest: (url: URL, date: Date)?
 
         for entry in entries {
+            // Foundation reports the type of a directory symlink itself.
+            // Validate its canonical target, but rank by the original entry's
+            // modification date so snapshot-selection ordering is unchanged.
+            let candidate = resolved(entry)
             guard let resourceValues = try? entry.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
-                  resourceValues.isDirectory == true else {
+                  let candidateValues = try? candidate.resourceValues(forKeys: [.isDirectoryKey]),
+                  candidateValues.isDirectory == true else {
                 continue
             }
 
             let modified = resourceValues.contentModificationDate ?? Date.distantPast
 
             if latest == nil || modified > latest!.date {
-                latest = (entry, modified)
+                latest = (candidate, modified)
             }
         }
 
         guard let latest else { return nil }
         return resolved(latest.url)
+    }
+
+    private enum SnapshotReference {
+        case absent
+        case selected(String)
+        case invalid
+    }
+
+    /// A failed read is not absence. Keep valid reference symlinks, but do not
+    /// follow a broken refs directory into the legacy discovery fallback.
+    private static func readSnapshotReference(at url: URL) -> SnapshotReference {
+        var named = stat()
+        if lstat(url.path, &named) != 0 {
+            guard errno == ENOENT else { return .invalid }
+            let parent = url.deletingLastPathComponent()
+            var parentState = stat()
+            if lstat(parent.path, &parentState) == 0 {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else { return .invalid }
+            } else {
+                guard errno == ENOENT else { return .invalid }
+            }
+            return .absent
+        }
+        // Reuse the bounded, nonblocking metadata reader policy below. Resolve
+        // existing HF links, then refuse special objects and a raced leaf link.
+        let reference = url.resolvingSymlinksInPath()
+        let fd = open(reference.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return .invalid }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size >= 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577),
+              data.count == Int(state.st_size),
+              let text = String(data: data, encoding: .utf8) else { return .invalid }
+        return .selected(text)
     }
 
     // MARK: - MLX Detection
@@ -178,6 +247,27 @@ public struct ModelScanner: Sendable {
     }
 
     // MARK: - Weight File Collection
+
+    /// MiMo's strict native loader consumes one of these source-bound receipts.
+    /// Include it in both local attestation and the publisher/downloader file
+    /// list. Do not expand the global filename policy: unrelated existing model
+    /// aggregates must not change merely because they contain a conversion log.
+    private static func modelSpecificIntegrityFileNames(in root: URL) -> Set<String> {
+        // HF snapshot symlinks are supported, but never block opening a FIFO
+        // or read a special/oversized file during ordinary model discovery.
+        let url = root.appendingPathComponent("config.json").resolvingSymlinksInPath()
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return [] }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size > 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577), data.count == Int(state.st_size),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["model_type"] as? String == "mimo_v2" else { return [] }
+        return ["conversion_manifest.json", "artifact-provenance.json"]
+    }
 
     /// Whether a filename is an integrity-relevant file (weight or config/tokenizer/template).
     public static func isIntegrityFile(_ name: String) -> Bool {
@@ -249,6 +339,7 @@ public struct ModelScanner: Sendable {
     /// calculation.
     public static func collectWeightFiles(in snapshotDir: URL) -> (sizeBytes: UInt64, paths: [URL]) {
         let fm = FileManager.default
+        let modelMetadata = modelSpecificIntegrityFileNames(in: snapshotDir)
         guard let enumerator = fm.enumerator(
             at: snapshotDir,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
@@ -262,7 +353,9 @@ public struct ModelScanner: Sendable {
 
         for case let entry as URL in enumerator {
             let name = entry.lastPathComponent
-            guard isIntegrityFile(name) else { continue }
+            let isRootModelMetadata = entry.deletingLastPathComponent().standardizedFileURL == snapshotDir.standardizedFileURL
+                && modelMetadata.contains(name)
+            guard isIntegrityFile(name) || isRootModelMetadata else { continue }
 
             let isWeight = isWeightFile(name)
 

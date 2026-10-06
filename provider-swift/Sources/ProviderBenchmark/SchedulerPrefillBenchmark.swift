@@ -237,6 +237,7 @@ public enum SchedulerPrefillBenchmark {
                 tokenizer: ctx.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
+                constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend)
             return EngineParts(

@@ -1,0 +1,27 @@
+{
+  "model_type": "mimo_v2",
+  "processor_config": {
+    "patch_size": 16,
+    "merge_size": 2,
+    "temporal_patch_size": 2,
+    "temporal_compression_ratio": 1,
+    "image_min_pixels": 8192,
+    "image_max_pixels": 8388608,
+    "video_min_pixels": 8192,
+    "video_max_pixels": 8388608,
+    "video_total_max_pixels": 268435456,
+    "fps": 1,
+    "min_frames": null,
+    "max_frames": 3600,
+    "rope_type": "rope",
+    "use_video_timestamps": true,
+    "use_per_grid_t_timestamps": false,
+    "audio_sampling_rate": 24000,
+    "audio_hop_length": 240,
+    "audio_stride_size": 2,
+    "audio_avg_pooler": 2,
+    "audio_group_size": 4,
+    "audio_segment_size": 6000
+  },
+  "vision_config": {"patch_size":16,"spatial_merge_size":2,"temporal_patch_size":2}
+}

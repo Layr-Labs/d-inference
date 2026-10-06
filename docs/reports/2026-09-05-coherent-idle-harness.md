@@ -1,6 +1,6 @@
 # Coherent benchmark idle observations
 
-> Last updated: 2026-09-05 · commit `26204c759`
+> Last updated: 2026-09-05
 
 The benchmark now waits for published retirement at known idle boundaries,
 preserving the actual last tuple on timeout or cancellation. Eight focused Swift

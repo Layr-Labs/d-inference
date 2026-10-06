@@ -17,7 +17,10 @@ import os
 extension ProviderLoop {
     // MARK: - Cancellation
 
-    internal func handleCancellation(requestId: String, receivedFromCoordinator: Bool = true) async {
+    internal func handleCancellation(
+        requestId: String, receivedFromCoordinator: Bool = true,
+        afterNativeCancellationAssociationErasureForTesting: (@Sendable () async -> Void)? = nil
+    ) async {
         logger.info("Cancelling request: \(requestId)")
         let hadInflightTask = inflightTasks[requestId] != nil
         let hadModelReservation = requestToModel[requestId] != nil
@@ -84,11 +87,32 @@ extension ProviderLoop {
 
         await cancellationRegistry.cancel(requestId: requestId)
 
+        // The earlier bridge/registry calls suspend this actor. Read the
+        // CURRENT association and retain the CURRENT actual native Task now,
+        // before erasing the link retirement uses to find that Task. No await
+        // may separate this handoff from association removal below. Keep the
+        // original capacity snapshot and Task.cancel ordering unchanged.
+        let currentModelID = requestToModel[requestId]
+        let isNativeCancellation = currentModelID.map { modelID in
+            nativeMiMoLoads[modelID] != nil
+                || modelSlots[modelID].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil
+        } ?? false
+        if let modelID = currentModelID, let task = inflightTasks[requestId] {
+            retainNativeMiMoHostConsumer(task, modelID: modelID)
+        }
+
         if requestToModel.removeValue(forKey: requestId) != nil {
             if !hadInflightTask {
                 stats.incrementCancelDuringModelLoad()
             }
             powerAssertion.release()
+        }
+
+        // Internal, nil in production. This native-only observation/hold seam
+        // cannot replace the handoff, snapshot, registry or Task cancellation.
+        // It exposes the actor suspension window after association erasure.
+        if isNativeCancellation, let afterNativeCancellationAssociationErasureForTesting {
+            await afterNativeCancellationAssociationErasureForTesting()
         }
 
         syncWarmModelState()
@@ -103,6 +127,14 @@ extension ProviderLoop {
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
+        }
+        // A native task can have registered during one of those actor hops.
+        // Retain its exact handle before clearing maps; legacy behavior stays.
+        for (requestID, task) in inflightTasks {
+            if let modelID = requestToModel[requestID], nativeMiMoLoads[modelID] != nil {
+                retainNativeMiMoHostConsumer(task, modelID: modelID)
+                task.cancel()
+            }
         }
         inflightTasks.removeAll()
         completedBeforeTaskRegistration.removeAll()
@@ -124,8 +156,12 @@ extension ProviderLoop {
 
     internal func finishInflightRequest(requestId: String) async {
         acceptedLifecycleRequests.remove(requestId)
-        let hadRegisteredTask = inflightTasks.removeValue(forKey: requestId) != nil
+        let completedTask = inflightTasks.removeValue(forKey: requestId)
+        let hadRegisteredTask = completedTask != nil
         let modelId = requestToModel.removeValue(forKey: requestId)
+        if let completedTask, let modelId {
+            retainNativeMiMoHostConsumer(completedTask, modelID: modelId)
+        }
         // Dropping the map entry does not disarm the builder's
         // `onTokensAfterCancel` hook: the bridge holds the builder through
         // `ActiveRequestState.profile` until its own finish, and the hook
@@ -152,10 +188,10 @@ extension ProviderLoop {
     }
 
     internal func waitForInflightDrain(timeout: Duration, reason: String = "shutdown") async -> Bool {
-        guard hasInflightWork else { return true }
+        guard hasInflightWork || autopilotCommand != nil else { return true }
         logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before \(reason)")
         let started = ContinuousClock.now
-        while hasInflightWork {
+        while hasInflightWork || autopilotCommand != nil {
             if Task.isCancelled { return false }
             if ContinuousClock.now - started >= timeout {
                 return false

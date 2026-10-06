@@ -1,6 +1,6 @@
 # Generation Deadline Incident and Terminal-State Redesign
 
-> Last updated: 2026-07-20 · commit `5d400cf75`
+> Last updated: 2026-07-20
 
 **Date:** 2026-07-20
 **Status:** Investigation complete; implementation not started

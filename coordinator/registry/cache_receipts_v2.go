@@ -1,9 +1,8 @@
 package registry
 
 import (
-	"math"
-	"time"
-
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheplan"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -18,13 +17,13 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		return nil
 	}
 	ticket, open := pr.beginCachePreparation()
-	if !open || !plan.present() || plan.generation == nil {
+	if !open || !plan.Present() || !plan.HasOrigin() {
 		return nil
 	}
 	r.mu.RLock()
 	tracker := r.cacheRouting
 	current := r.cacheRoutingMode == CacheRoutingOn && tracker != nil &&
-		plan.generation == tracker.generation && r.providers[provider.ID] == provider
+		plan.Authenticates(tracker.generation) && r.providers[provider.ID] == provider
 	r.mu.RUnlock()
 	if !current {
 		return nil
@@ -35,11 +34,11 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 	memoryCapability, memoryCapable := provider.PrefixCacheMemoryModels[pr.Model]
 	providerID := provider.ID
 	protocolVersion := provider.PrefixCacheProtocol
-	revision := provider.prefixCacheRevision
+	revision := provider.prefixCacheRevision.Capture()
 	provider.mu.Unlock()
 	promptAnchor := plan.Boundaries[len(plan.Boundaries)-1]
-	capable = capable && capabilityMatchesPlan(capability, plan)
-	memoryCapable = memoryCapable && capabilityMatchesPlan(memoryCapability, plan)
+	capable = capable && CapabilityMatchesPlan(capability, plan)
+	memoryCapable = memoryCapable && CapabilityMatchesPlan(memoryCapability, plan)
 	if !capable {
 		capability = protocol.PrefixCacheV2Capability{}
 	}
@@ -54,19 +53,12 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		!validV2Anchor(promptAnchor, blockSize) {
 		return nil
 	}
-	boundaries := make(map[int]string, len(plan.Boundaries))
-	for _, boundary := range plan.Boundaries {
-		if !validV2Anchor(boundary, blockSize) ||
-			boundary.TokenCount > promptAnchor.TokenCount {
-			return nil
-		}
-		if _, duplicate := boundaries[boundary.TokenCount]; duplicate {
-			return nil
-		}
-		boundaries[boundary.TokenCount] = boundary.ChainHash
+	boundaries, valid := cacheplan.NewClaims(plan.Boundaries, blockSize, promptAnchor)
+	if !valid {
+		return nil
 	}
 
-	nonce, err := newCacheReceiptNonce()
+	nonce, err := r.newCacheReceiptNonce()
 	if err != nil {
 		return err
 	}
@@ -85,20 +77,26 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		ExpectedPrompt:     promptAnchor,
 		ExpectedBoundaries: boundaries,
 	}
-	owner := &cacheAttemptOwner{tracker: tracker, generation: plan.generation,
-		nonce: nonce, scope: plan.CacheScope,
-		repeatedPrefixTokens: max(0, plan.RepeatedPrefixTokens)}
+	boundaryMode := ""
 	if capable {
-		owner.boundaryMode = capability.ReadyBoundaryMode
+		boundaryMode = capability.ReadyBoundaryMode
 	}
+	owner := newCacheAttemptOwner(tracker, plan.Provenance(), nonce, plan.CacheScope, boundaryMode, max(0, plan.RepeatedPrefixTokens))
 	tracker.mu.Lock()
 	tracker.storeAttemptLocked(nonce, attempt)
-	if len(tracker.attempts) > tracker.maxAttempts {
+	if tracker.attempts.Len() > tracker.settings.MaxAttempts {
 		tracker.enforceAttemptCapLocked()
 	}
 	tracker.mu.Unlock()
 
-	if r.publishCacheAttempt(pr, provider, revision, ticket, owner) {
+	publication := CachePublication{registry: r, request: pr, provider: provider, revision: revision, ticket: ticket, owner: owner, tracker: tracker}
+	var published bool
+	if r.cacheDependencies.Publications != nil {
+		published = r.cacheDependencies.Publications(publication).Publish()
+	} else {
+		published = publication.Publish()
+	}
+	if published {
 		ttftCalibration.discardPrediction(pr.RequestID, pr.Attempt)
 	}
 	return nil
@@ -130,10 +128,8 @@ func (r *Registry) ApplyPrefixCacheLookupV2Result(
 	}
 	decision := tracker.applyLookupV2Decision(
 		providerID, provider, capability, msg, routeKey, tracker.now())
-	if decision.mismatch {
-		r.disablePrefixCacheV2Model(providerID, msg.ModelID, msg.Tier,
-			provider, tracker, capability, decision.plan, routeKey)
-	}
+	decision.ResolveMismatch(CacheQuarantine{registry: r, providerID: providerID, modelID: msg.ModelID, tier: msg.Tier,
+		provider: provider, tracker: tracker, expected: capability, routeKey: routeKey})
 	return decision
 }
 
@@ -163,145 +159,21 @@ func (r *Registry) ApplyPrefixCacheReadyV2Result(
 	}
 	decision := tracker.applyReadyV2Decision(
 		providerID, provider, capability, msg, routeKey, tracker.now())
-	if decision.mismatch {
-		r.disablePrefixCacheV2Model(providerID, msg.ModelID, msg.Tier,
-			provider, tracker, capability, decision.plan, routeKey)
-	}
+	decision.ResolveMismatch(CacheQuarantine{registry: r, providerID: providerID, modelID: msg.ModelID, tier: msg.Tier,
+		provider: provider, tracker: tracker, expected: capability, routeKey: routeKey})
 	return decision
-}
-
-func (r *Registry) currentPrefixCacheV2Capability(providerID, modelID, tier string) (protocol.PrefixCacheV2Capability, bool) {
-	c, reason := r.currentPrefixCacheV2CapabilityResult(providerID, modelID, tier)
-	return c, reason == CacheReceiptAccepted
 }
 
 func (r *Registry) currentPrefixCacheV2CapabilityResult(
 	providerID, modelID, tier string,
 ) (protocol.PrefixCacheV2Capability, CacheReceiptReason) {
-	r.mu.RLock()
-	provider := r.providers[providerID]
-	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if provider == nil {
-		return protocol.PrefixCacheV2Capability{}, CacheReceiptProviderMissing
+	admission := CacheReceiptAdmission{registry: r}
+	if r.cacheDependencies.ReceiptAdmissions != nil {
+		return r.cacheDependencies.ReceiptAdmissions(admission).Admit(providerID, modelID, tier)
 	}
-	provider.mu.Lock()
-	defer provider.mu.Unlock()
-	if provider.PrefixCacheProtocol < 2 {
-		return protocol.PrefixCacheV2Capability{}, CacheReceiptProtocol
-	}
-	capability, ok := provider.prefixCacheCapabilityLocked(modelID, tier)
-	if !ok || !capability.Enabled || !capability.Ready {
-		return protocol.PrefixCacheV2Capability{}, CacheReceiptCapabilityUnavailable
-	}
-	if tracker != nil &&
-		tracker.capabilityRejected(providerID, modelID, tier, capability, tracker.now()) {
-		return protocol.PrefixCacheV2Capability{}, CacheReceiptCapabilityFenced
-	}
-	return capability, CacheReceiptAccepted
-}
-
-// disablePrefixCacheV2Model fences the advertised capability for a bounded
-// window and drops the evidence the mismatch discredited. A present plan
-// (anchor mismatches) narrows the drop to this provider's holders at that
-// plan's boundaries; without one (identity mismatches, where every holder was
-// recorded under a stale identity) the provider's whole model is dropped.
-func (r *Registry) disablePrefixCacheV2Model(
-	providerID, modelID, tier string,
-	provider *Provider, tracker *cacheRoutingTracker,
-	expected protocol.PrefixCacheV2Capability,
-	plan CachePlan, routeKey []byte,
-) {
-	// One r → provider → tracker transition also fences connection replacement.
-	// These leaf mutations perform no I/O or callbacks into the registry.
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	current := r.providers[providerID] == provider && r.cacheRouting == tracker
-	if !current || provider == nil || tracker == nil {
-		return
-	}
-	provider.mu.Lock()
-	defer provider.mu.Unlock()
-	capability, ok := provider.prefixCacheCapabilityLocked(modelID, tier)
-	if !ok || capability != expected ||
-		!tracker.rejectCapability(providerID, modelID, tier, capability, tracker.now()) {
-		return
-	}
-	if plan.present() && len(routeKey) > 0 {
-		tracker.invalidateProviderPlan(providerID, plan, routeKey, cacheHolderRemovalProofMismatch)
-	} else {
-		tracker.invalidateProviderModel(providerID, modelID, cacheHolderRemovalProofMismatch)
-	}
-	provider.prefixCacheRevision++
-}
-
-func (t *cacheRoutingTracker) applyLookupV2(
-	providerID string,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheLookupV2Message,
-	now time.Time,
-) bool {
-	accepted, _ := t.applyLookupV2Result(
-		providerID, nil, capability, msg, []byte("test-cache-route-key"), now)
-	return accepted
-}
-
-func (t *cacheRoutingTracker) applyReadyV2(
-	providerID string,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheReadyV2Message,
-	now time.Time,
-) bool {
-	accepted, _ := t.applyReadyV2Result(
-		providerID, nil, capability, msg, []byte("test-cache-route-key"), now)
-	return accepted
-}
-
-func (t *cacheRoutingTracker) acceptV2SequenceLocked(
-	providerID string,
-	capability protocol.PrefixCacheV2Capability,
-	tier string,
-	sequence uint64,
-) bool {
-	if sequence == 0 || t.generation.revoked.Load() {
-		return false
-	}
-	key := cacheV2SequenceKey{
-		ProviderID: providerID,
-		ModelID:    capability.ModelID,
-		CacheEpoch: capability.CacheEpoch,
-		Tier:       tier,
-	}
-	if sequence <= t.v2Sequences[key] {
-		return false
-	}
-	t.v2Sequences[key] = sequence
-	return true
-}
-
-func v2IdentityMatches(
-	modelID, aggregateHash, contractID, epoch string,
-	capability protocol.PrefixCacheV2Capability,
-) bool {
-	return modelID == capability.ModelID &&
-		aggregateHash == capability.ModelAggregateHash &&
-		contractID == capability.PromptContractID &&
-		epoch == capability.CacheEpoch &&
-		capability.Enabled &&
-		capability.Ready
+	return admission.Admit(providerID, modelID, tier)
 }
 
 func validV2Anchor(anchor protocol.PrefixCacheAnchor, blockSize uint32) bool {
-	return blockSize > 0 &&
-		anchor.TokenCount > 0 &&
-		anchor.TokenCount <= cacheRoutingMaxReceiptTokens &&
-		anchor.TokenCount%int(blockSize) == 0 &&
-		validLowerHex256(anchor.ChainHash)
-}
-
-func validV2Stage(stage float64) bool {
-	return stage >= 0 &&
-		stage <= cacheRoutingMaxStageMs &&
-		!math.IsNaN(stage) &&
-		!math.IsInf(stage, 0)
+	return cachepolicy.Anchor(anchor, blockSize)
 }

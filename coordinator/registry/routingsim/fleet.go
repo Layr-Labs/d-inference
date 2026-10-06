@@ -1,14 +1,10 @@
-// Package routingsim is a trace-driven routing simulation harness that
-// exercises the REAL coordinator scheduler/admission code in
-// coordinator/registry. It builds a fleet of fully-routable synthetic
-// providers, replays an arrival trace through the same preflight admission the
-// consumer uses (registry.QuickCapacityCheckWithTTFTForRequest), and reports
-// accept/reject outcomes bucketed by prompt size.
-//
-// The harness is additive and test-only in spirit: it imports the registry
-// package through its public API exactly the way the production consumer does,
-// so a routing change can be replayed against realistic demand in CI without
-// any live providers, WebSockets, or Postgres.
+// Package routingsim is a trace-driven calibration regression harness using
+// coordinator/registry admission and its historical calibrated TTFT diagnostic
+// (QuickCapacityCheckWithTTFTForRequest). It builds synthetic routable providers
+// and reports accept/reject outcomes by prompt size without live providers,
+// WebSockets or Postgres. The replay preserves the historical calibration
+// baseline; it does not qualify the active first-content policy, whose request
+// clock, cache proof and evidence freshness require separate coverage.
 //
 // Design note (why a homogeneous fleet reproduces the prod cliff): the
 // preflight reports bestTTFT as the MINIMUM time-to-first-token across every

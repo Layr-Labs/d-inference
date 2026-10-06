@@ -1,17 +1,14 @@
 package registry
 
-import (
-	"strings"
-
-	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-)
+import "github.com/eigeninference/d-inference/coordinator/protocol"
 
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
 	ID                           string
-	WeightHash                   string  // expected SHA-256 weight fingerprint (empty = not enforced)
-	SizeGB                       float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	Revision                     string
+	ServingWeightHashes          []string // only operator-promoted, non-retired revisions
+	WeightHash                   string   // expected SHA-256 weight fingerprint (empty = not enforced)
+	SizeGB                       float64  // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
 	RequiredProviderCapabilities []string
 	// MinRAMGB is the catalog's authoritative minimum unified memory (GB) to run
 	// this model — the operator-published requirement. The hardware-fit gate
@@ -27,12 +24,14 @@ type CatalogEntry struct {
 func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.pruneWarmPoolWorkBaselinesLocked()
 	if entries == nil {
 		r.modelCatalog = nil
 		return
 	}
 	catalog := make(map[string]CatalogEntry, len(entries))
 	for _, e := range entries {
+		e.ServingWeightHashes = append([]string(nil), e.ServingWeightHashes...)
 		e.RequiredProviderCapabilities = effectiveRequiredProviderCapabilities(
 			e.ID, e.RequiredProviderCapabilities)
 		catalog[e.ID] = e
@@ -126,15 +125,19 @@ func (r *Registry) modelAllowedByCatalogLocked(model protocol.ModelInfo) bool {
 	if !ok {
 		return false
 	}
-	return entry.WeightHash == "" || model.WeightHash == "" || model.WeightHash == entry.WeightHash
+	return entry.WeightHash == "" || model.WeightHash == "" || entry.acceptsWeightHash(model.WeightHash)
 }
 
 // providerServesCatalogModelLocked returns true if the provider advertises the
 // model and that model is currently allowed by the catalog. Caller must hold
 // r.mu and p.mu.
 func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) bool {
+	return (&ProviderEligibility{registry: r}).servesCatalogLocked(p, model)
+}
+
+func (e *ProviderEligibility) servesCatalogLocked(p *Provider, model string) bool {
 	for _, m := range p.Models {
-		if m.ID == model && r.providerModelAllowedByCatalogLocked(p, m) {
+		if m.ID == model && e.modelAllowedLocked(p, m) {
 			return true
 		}
 	}
@@ -161,7 +164,7 @@ func (r *Registry) modelTrackedByCatalogLocked(id string) bool {
 // requirements even with catalog filtering disabled. Caller holds r.mu and
 // p.mu.
 func (r *Registry) modelServableForOwnerLocked(p *Provider, m protocol.ModelInfo) bool {
-	return (r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)) &&
+	return providerOrdinaryModelAllowedLocked(p, m.ID) && (r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)) &&
 		r.providerMeetsModelRequirementsLocked(p, m.ID)
 }
 
@@ -170,8 +173,12 @@ func (r *Registry) modelServableForOwnerLocked(p *Provider, m protocol.ModelInfo
 // and that build is servable for its owner (catalog-allowed, or absent from
 // the catalog entirely). Caller must hold r.mu and p.mu.
 func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model string) bool {
+	return (&ProviderEligibility{registry: r}).servesOwnedLocked(p, model)
+}
+
+func (e *ProviderEligibility) servesOwnedLocked(p *Provider, model string) bool {
 	for _, m := range p.Models {
-		if m.ID == model && r.modelServableForOwnerLocked(p, m) {
+		if m.ID == model && e.registry.modelServableForOwnerLocked(p, m) {
 			return true
 		}
 	}
@@ -191,25 +198,7 @@ func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model str
 // MergeProviderModels/UpdateModelWeightHashes. Pre-0.6.0 providers never set
 // IsVision, so they are correctly excluded.
 func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, allowOffCatalog bool) bool {
-	for _, m := range p.Models {
-		if m.ID != model || !m.IsVision {
-			continue
-		}
-		if allowOffCatalog {
-			if !r.modelServableForOwnerLocked(p, m) {
-				continue
-			}
-		} else if !r.providerModelAllowedByCatalogLocked(p, m) {
-			continue
-		}
-		if model == modelpolicy.Qwen3VL30BA3BInstructModelID &&
-			strings.EqualFold(strings.TrimSpace(p.Hardware.ChipFamily), "M5") {
-			// This concrete VLM produces incorrect visual inference on M5.
-			return false
-		}
-		return true
-	}
-	return false
+	return (&ProviderEligibility{registry: r}).visionLocked(p, model, allowOffCatalog)
 }
 
 // HasVisionProviderForModel reports whether any online, non-untrusted provider

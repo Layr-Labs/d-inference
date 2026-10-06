@@ -41,7 +41,7 @@ type AppAttestBuildStore interface {
 	SetQualifiedRelease(context.Context, AppAttestBuildIdentity) error
 }
 
-func validBuildDigest(s string, size int) bool {
+func ValidBuildDigest(s string, size int) bool {
 	if len(s) != size || strings.ToLower(s) != s {
 		return false
 	}
@@ -52,8 +52,8 @@ func validBuildDigest(s string, size int) bool {
 func (b AppAttestBuildIdentity) Validate() error {
 	r := b.Release
 	if r.Version == "" || len(r.Version) > 128 || r.Platform != "macos-arm64" || r.Backend != "mlx-swift" ||
-		!validBuildDigest(r.BinaryHash, 64) || !validBuildDigest(r.BundleHash, 64) || !validBuildDigest(r.MetallibHash, 64) ||
-		!validBuildDigest(b.CodeDirectoryHash, 64) || !validBuildDigest(b.SourceCommit, 40) ||
+		!ValidBuildDigest(r.BinaryHash, 64) || !ValidBuildDigest(r.BundleHash, 64) || !ValidBuildDigest(r.MetallibHash, 64) ||
+		!ValidBuildDigest(b.CodeDirectoryHash, 64) || !ValidBuildDigest(b.SourceCommit, 40) ||
 		b.CIRunID == "" || len(b.CIRunID) > 32 || strings.Trim(b.CIRunID, "0123456789") != "" ||
 		r.URL == "" || len(r.URL) > 2048 || r.TemplateHashes != "" {
 		return errors.New("qualification requires a complete signed macos-arm64 mlx-swift release, full SHA-256 CodeDirectory measurement, source commit and CI run ID")
@@ -62,11 +62,11 @@ func (b AppAttestBuildIdentity) Validate() error {
 }
 
 func (b AppAttestBuildIdentity) Matches(other AppAttestBuildIdentity) bool {
-	return sameBuildRelease(b.Release, other.Release) && b.CodeDirectoryHash == other.CodeDirectoryHash &&
+	return SameBuildRelease(b.Release, other.Release) && b.CodeDirectoryHash == other.CodeDirectoryHash &&
 		b.SourceCommit == other.SourceCommit && b.CIRunID == other.CIRunID
 }
 
-func sameBuildRelease(a, b Release) bool {
+func SameBuildRelease(a, b Release) bool {
 	// Changelog, creation time and activation are not signed artifact identity.
 	a.Changelog, b.Changelog = "", ""
 	a.CreatedAt, b.CreatedAt = time.Time{}, time.Time{}
@@ -74,20 +74,13 @@ func sameBuildRelease(a, b Release) bool {
 	return a == b
 }
 
-func (q AppAttestBuildQualification) validateApproval() error {
+func (q AppAttestBuildQualification) ValidateApproval() error {
 	if err := q.AppAttestBuildIdentity.Validate(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(q.Evidence) == "" || len(q.Evidence) > 4096 || q.ApprovedBy == "" || len(q.ApprovedBy) > 256 ||
 		!q.RevokedAt.IsZero() || q.RevokedBy != "" || q.RevocationReason != "" {
 		return errors.New("qualification requires operator identity and test evidence; revocation is a separate operation")
-	}
-	return nil
-}
-
-func validateBuildRevocation(binary, actor, reason string) error {
-	if !validBuildDigest(binary, 64) || actor == "" || len(actor) > 256 || strings.TrimSpace(reason) == "" || len(reason) > 4096 {
-		return errors.New("revocation requires binary SHA-256, operator identity and reason")
 	}
 	return nil
 }

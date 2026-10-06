@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-26 · commit `279224c5d`
+> Last updated: 2026-10-05
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -39,7 +39,7 @@ that local provider setting.
 
 The mode remains global, and `PERCENT` samples a deterministic cohort keyed on
 account + resolved model + provider-bound body (`cacheActivationCohort`,
-`coordinator/registry/cache_activation.go`). Within the admitted artifact subset,
+`coordinator/internal/registry/cacheactivation/gate.go`). Within the admitted artifact subset,
 the same request from the same account remains in or out of the cohort.
 
 ## Prerequisites
@@ -72,9 +72,9 @@ the same request from the same account remains in or out of the cohort.
   it every request gets a non-participating plan and routing `on` changes
   nothing.
 - Datadog open on the `exact_cache.*` gauges
-  (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`) and the
+  (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`) and the
   `routing.cache_selection_terminal`, `routing.cache_selection_precision` and
-  `routing.cache_selection_discount_ms` series (`coordinator/api/provider.go`).
+  `routing.cache_selection_discount_ms` series (`coordinator/api/provider/`).
 
 ## Steps
 
@@ -138,7 +138,7 @@ the same request from the same account remains in or out of the cohort.
    percentage is a deterministic per-request cohort over account, resolved
    model and provider-bound body, the QPS cap bounds sidecar planning; neither
    rejects or delays ordinary inference (`cacheActivationGate`,
-   `coordinator/registry/cache_activation.go`). Take a root-only backup, then
+   `coordinator/internal/registry/cacheactivation/gate.go`). Take a root-only backup, then
    edit the three lines in place:
 
    ```bash
@@ -166,9 +166,16 @@ the same request from the same account remains in or out of the cohort.
    → "Refresh the env file" and "Swap", with the currently approved image. On
    boot the process logs `provider-confirmed cache routing configured` with
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
-   `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
+   `max_discount_ms` and `max_cost_fraction` (`coordinator/app/registry.go`);
    `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
-   exits before listening.
+   exits before listening. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on (the
+   default), boot also logs `cache routing persistence restored` with parked
+   holder and demand counts. Check `lifecycle.persistence.ready` and then
+   `bound_holders` in `GET /v1/cache/status` as providers reconnect and apply
+   matching capabilities. A failed boot restore is retried every 5 s; mutations
+   stay pending and holder/demand writes wait for success. Routing still reads
+   its in-memory index. See [persistence during restarts](#persistence-during-restarts)
+   for reset precautions.
 
    ```bash
    sudo docker logs coordinator 2>&1 | grep -E 'cache routing configuration rejected|provider-confirmed cache routing configured'
@@ -180,6 +187,37 @@ the same request from the same account remains in or out of the cohort.
    `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` — never both in one change —
    by repeating steps 3–4 with the new value, and observe again before the
    next step.
+
+### Persistence during restarts
+
+Inspect `GET /v1/cache/status` → `lifecycle.persistence` after a swap. Restored,
+parked and bound counts describe routing evidence, not confirmed cache hits.
+The final flush follows HTTP shutdown, provider-socket closure/join and the
+periodic writer's join; a bounded shutdown can still lose pending work.
+
+- If `flush_errors` grows, inspect store health. Failed writes remain pending;
+  successful chunks acknowledge only their matching revisions. `rows_deleted`
+  counts successfully submitted keys, including keys with no row, not rows
+  actually removed. Exact [counter semantics](../reference/api-contracts.md#exact-cache-status)
+  distinguish dropped work and stale-evidence rejection.
+- If `overflow_resets` grows, the delete backlog exceeded its budget. The writer
+  wakes to reset the durable copy; the counter records overflow, not completion.
+  The process keeps a timestamp cutoff that rejects older or equal evidence
+  even after reset. A durable in-progress marker makes an interrupted reset
+  recoverable on boot, but a crash before that marker can still restore
+  invalidated evidence. Verify recovery in the logs and `flush_errors`.
+- Rotate `EIGENINFERENCE_CACHE_MASTER_KEY`, or deploy changed key-derivation
+  versions, with an approved **non-overlapping restart**: stop the old container
+  before the new one boots. `key_rotated: true` indicates the resulting rebuild.
+  The writer is serialized only within one process. Another container can write
+  stale rows during a generation or overflow reset; neither the marker nor the
+  process-local cutoff coordinates multiple writers.
+- Keep coordinator clocks aligned. Beyond the store's one-minute skew
+  allowance, the lagging instance can prune the other's fresh rows.
+
+The [persistence mechanism](../architecture/cache-aware-routing.md#persistence-across-restarts)
+and its limits are unchanged at the store-schema, wire and configuration level
+by the refactor; no new rollout knob is required.
 
 ### Add Bonsai to an existing routing cohort
 
@@ -291,7 +329,12 @@ cap, one bound per restart, and observe between steps.
    `ternary-bonsai-2-27b` `2026-09-17-r1`) with the coordinator's own
    `promptcontract.ContractID` over the manifest's tokenizer/template/config
    files; the same derivation reproduces the live `gpt-oss-20b` tuple exactly.
-   Re-derive if either model's active version changes. Append, never replace:
+   Re-derive if either model's active version changes. Both literals below
+   predate `darkbloom-request-normalization-v8` and Nemotron revision
+   `2026-09-30-r1`, so neither matches a current build. Where the list already
+   holds them, take the current tuples from the
+   [stale-entry warning](#stale-entries-after-a-model-revision); otherwise
+   re-derive them. Append, never replace:
 
    ```bash
    sudo python3 - <<'PY'
@@ -330,7 +373,7 @@ curl -fsS localhost:8080/v1/cache/status | jq -e \
 
 Adjust the two numbers to the bounds you set. Then, over the observation
 window (fields from `CacheRoutingActivationStatus`,
-`coordinator/registry/cache_activation.go`, and `CacheRoutingLifecycleStatus`,
+`coordinator/internal/registry/cacheactivation/gate.go`, and `CacheRoutingLifecycleStatus`,
 `coordinator/registry/cache_routing.go`):
 
 - `.activation.evaluated` climbs; `.activation.sampled_in` tracks the
@@ -343,6 +386,9 @@ window (fields from `CacheRoutingActivationStatus`,
   request later hits — and `.holders` rises above `0`.
 - `.sidecar.restarts`, `.sidecar.timeouts` and `.sidecar.overloads` do not
   grow; `.prompt_artifacts.failed` stays `0`.
+- `.artifact_allowlist.stale_models` is `0`. Any other value means a listed
+  model is being served without cache routing; see
+  [stale entries](#stale-entries-after-a-model-revision).
 - Datadog: `exact_cache.routing_mode` reports `mode:on`;
   `exact_cache.activation.total` by `outcome` matches the counters above;
   `routing.cache_selection_terminal` carries `selected`, `lookup_outcome`,
@@ -363,6 +409,39 @@ Compare with the snapshot from step 1 when in doubt:
 diff <(jq -S . /tmp/darkbloom-cache-rollout.before.json) <(curl -fsS localhost:8080/v1/cache/status | jq -S \
   '{routing_mode, activation, sidecar: {enabled: .sidecar.enabled, ready: .sidecar.ready, restarts: .sidecar.restarts}, providers, holders, attempts}')
 ```
+
+### Stale entries after a model revision
+
+A tuple names one artifact. Publishing new weights or a new template under the
+same model ID changes `model_aggregate_sha256`, and a new template also changes
+`prompt_contract_id`, so the existing entry stops matching
+(`coordinator/internal/registry/cachepolicy/artifacts.go`, `ArtifactAllowlist.Allows`).
+Every request for that model is then planned as `ineligible`, its providers
+receive no cache scope, and its cache hits fall to zero while other models keep
+theirs. Inference itself is unaffected. A coordinator release that changes a
+prompt-contract version does the same to every listed model at once.
+
+The coordinator reports the gap instead of leaving it to be inferred:
+
+- `.artifact_allowlist.stale_models` in `GET /v1/cache/status` counts catalog
+  models the list names only under a superseded artifact, with gauges
+  `exact_cache_artifact_allowlist_stale_models` and
+  `exact_cache.artifact_allowlist.stale_models`. Alert when it is above `0`.
+- The coordinator log carries one warning per stale model, naming its live
+  `model_id`, `model_aggregate_sha256` and `prompt_contract_id`
+  (`coordinator/api/inference/exact_cache_allowlist_staleness.go`,
+  `warnNewlyMissingAllowlistEntries`). That is the tuple to append.
+
+```bash
+sudo docker logs coordinator 2>&1 | grep 'cache routing allowlist names this model under another artifact'
+```
+
+Qualify the new artifact as in step 1 of
+[the Bonsai procedure](#add-bonsai-to-an-existing-routing-cohort), append the
+logged tuple without removing the previous one, and restart through the
+approved procedure. Keep the previous tuple while providers converge or a
+rollback is possible. `stale_models` returns to `0` after the restart. A model
+that was never listed is excluded on purpose and is not counted.
 
 ### Per-model rollout evidence
 

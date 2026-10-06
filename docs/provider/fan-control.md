@@ -1,6 +1,6 @@
 # Fan control (experimental)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-30
 
 Hold the fans of an Apple Silicon Mac at a fixed speed while the provider is
 serving and the GPU is hot, so thermal throttling does not cut decode
@@ -66,7 +66,7 @@ it.
 
 3. Serve. Every serve path — the LaunchAgent daemon, `--foreground` and
    `--local` — wraps its run in `withFanActivityLease`
-   (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`;
+   (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`;
    `provider-swift/Sources/darkbloom/FanActivityLease.swift`). The provider
    asks the helper for a short lease and renews it well inside its lifetime
    (`FanIPC.leaseDurationSeconds`, `renewalIntervalSeconds`,

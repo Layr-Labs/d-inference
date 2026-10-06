@@ -1,6 +1,6 @@
 # App Attest enforcement and owner self-routing
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15
 
 This review records a routing-policy hazard that remains when App Attest
 enforcement is enabled unless the new authorization check is independent of

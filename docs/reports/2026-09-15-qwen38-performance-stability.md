@@ -1,6 +1,6 @@
 # Qwen 3.8 Next performance and stability draft update
 
-> Last updated: 2026-09-15 · commit `28da956a`
+> Last updated: 2026-09-15
 
 This report records the qualified native Qwen4 speed/cache work and native
 required-tool framing and scoped mixed-position correction in the draft update. It is engineering-review

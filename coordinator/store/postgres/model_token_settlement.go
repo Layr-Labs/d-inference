@@ -1,0 +1,119 @@
+package postgres
+
+import (
+	"context"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+func (s *PostgresStore) ReleaseModelTokenReservation(id string) (bool, error) {
+	return s.releaseModelTokenBefore(id, time.Time{})
+}
+
+func (s *PostgresStore) releaseModelTokenBefore(id string, before time.Time) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	r, err := lockPromotionReservation(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if r == nil || r.State != "reserved" || (!before.IsZero() && !r.TouchedAt.Before(before)) {
+		return false, nil
+	}
+	if _, err = tx.Exec(ctx, `UPDATE model_token_grants SET reserved_tokens=reserved_tokens-$3 WHERE account_id=$1 AND model_id=$2`, r.AccountID, r.ModelID, r.FreeTokens); err != nil {
+		return false, err
+	}
+	if r.ReservedMicroUSD > 0 {
+		if err = refundPromotionBalance(ctx, tx, r.AccountID, r.ReservedMicroUSD, r.ReservedWithdrawableMicroUSD, "promotion-release:"+id); err != nil {
+			return false, err
+		}
+	}
+	r.State = "released"
+	if err = savePromotionReservation(ctx, tx, *r); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning, referralEligible bool) (store.ModelTokenSettlement, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	defer tx.Rollback(ctx)
+	r, err := lockPromotionReservation(ctx, tx, id)
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	if r == nil {
+		return store.ModelTokenSettlement{}, store.ErrNotFound
+	}
+	if r.State != "reserved" {
+		return store.ModelTokenSettlement{Reservation: *r}, nil
+	}
+	next, err := shared.PromotionSettlement(*r, actual, quote, earning)
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE model_token_grants SET reserved_tokens=reserved_tokens-$3,used_tokens=used_tokens+$4 WHERE account_id=$1 AND model_id=$2`, r.AccountID, r.ModelID, r.FreeTokens, next.UsedTokens); err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	referrer := ""
+	if referralEligible {
+		referrer, err = settlementReferrer(ctx, tx, r.AccountID)
+		if err != nil {
+			return store.ModelTokenSettlement{}, err
+		}
+	}
+	accounts := []string{r.AccountID}
+	if earning != nil {
+		accounts = append(accounts, earning.AccountID)
+	}
+	if referrer != "" {
+		accounts = append(accounts, referrer)
+	}
+	if err = lockSettlementBalances(ctx, tx, accounts); err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	delta := next.ConsumerCostMicroUSD - r.ReservedMicroUSD
+	if delta > 0 {
+		err = debitBalance(ctx, tx, r.AccountID, delta, store.LedgerCharge, "promotion-settle:"+id)
+	}
+	if delta < 0 {
+		err = refundPromotionBalance(ctx, tx, r.AccountID, -delta, min(-delta, r.ReservedWithdrawableMicroUSD), "promotion-settle:"+id)
+	}
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	credited, err := carryModelTokenEarningPostgres(ctx, tx, earning)
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	if credited != nil {
+		next.ProviderPayoutMicroUSD = credited.AmountMicroUSD
+		if credited.AmountMicroUSD > 0 {
+			if err = creditProviderAccount(ctx, tx, credited); err != nil {
+				return store.ModelTokenSettlement{}, err
+			}
+		}
+	}
+	if err = recordPromotionReferral(ctx, tx, next, referrer, referralEligible); err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	if err = savePromotionReservation(ctx, tx, next); err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	return store.ModelTokenSettlement{Reservation: next, Applied: true}, nil
+}

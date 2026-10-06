@@ -1,6 +1,6 @@
 # Optimized binaries for packet capture and cancellation settlement
 
-> Last updated: 2026-09-06 · commit `6d9fa6cfe`
+> Last updated: 2026-09-06
 
 Both the provider CLI and native benchmark build from the committed union of
 attention packet capture and canceled-prefix settlement. All 21 argument and

@@ -132,6 +132,12 @@ extension ProviderLoop {
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
     internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
+        if let modelId, !autopilotAllowsModel(modelId) {
+            throw MultiModelBatchSchedulerEngineError.requestRejected("model_not_selected")
+        }
+        if autopilotCommand != nil {
+            throw MultiModelBatchSchedulerEngineError.queueFull("model autopilot placement in progress")
+        }
         if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
@@ -182,8 +188,13 @@ extension ProviderLoop {
         firstContentDeadline: FirstContentDeadline? = nil,
         receivedAt: ContinuousClock.Instant = .now,
         profile requestProfile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
+        promptWork: PromptWork? = nil,
         send: SendHandle
     ) async {
+        let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
+            send.send(.serviceReservationReleased(serviceReservationID: id))
+        }
         // Profiler accumulator anchored at frame receipt (a fresh one for
         // direct/test callers). Registered so `handleCancellation` can stamp
         // cancel receipt; removed on every exit that does not hand it to the
@@ -235,6 +246,7 @@ extension ProviderLoop {
         defer {
             if !receiptTransferredToTask { acceptedLifecycleRequests.remove(requestId) }
             if !receiptTransferredToTask {
+                serviceReservation?.finishPipeline()
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 inflightProfiles.removeValue(forKey: requestId)
             }
@@ -348,6 +360,24 @@ extension ProviderLoop {
         }
         profile.mark(.parsed)
 
+        // Reject unknown/non-native audio before acceptance or cold loading.
+        // Only provider-owned architecture metadata selects MiMo dispatch;
+        // actual loaded slot/profile validation remains mandatory below.
+        // This handler still owns lookup and service-reservation settlement.
+        do {
+            try MediaIngest.rejectUnsupportedAudio(chatRequest,
+                modelType: localModelTypeForAudioAdmission(chatRequest.model))
+        } catch {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.sanitizedInferenceFailure(from: error, phase: .request),
+                    profile: profile),
+                fallbackFailure: .policy,
+                send: send)
+            return
+        }
+
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
             requestId: requestId,
@@ -392,6 +422,15 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
+        // This metadata is provider-authored, never a caller model_type/name
+        // heuristic. Revalidate against the actual acquired slot below.
+        do {
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls,
+                modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
+        } catch {
+            rejectInvalidRequest() // Never publish raw decrypted validation details.
+            return
+        }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
         // Warm/cold classification for the TTFT tracker, captured BEFORE the
@@ -454,6 +493,17 @@ extension ProviderLoop {
         // and requestToModel registration, so the drain sees every old owner.
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
+
+        // Authoritative autopilot check after all admission suspensions and
+        // before request ownership is registered. Managed network work may use
+        // warm models only; owner-local work retains its own load path.
+        if !autopilotAllowsModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(requestId: requestId,
+                    failure: InferenceFailure(code: .capacity, statusCode: 503), profile: profile),
+                fallbackFailure: .capacity, send: send)
+            return
+        }
 
         // 5. Send inference_accepted
         acceptedLifecycleRequests.insert(requestId)
@@ -581,6 +631,13 @@ extension ProviderLoop {
         // <think> tokens for a Gemma build. The slot carries the type captured at
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
+        do {
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
+        } catch {
+            await finishAcceptedRequestWithoutTask(requestId: requestId)
+            rejectInvalidRequest()
+            return
+        }
         let slotContainer = slot.container
         let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
@@ -638,6 +695,9 @@ extension ProviderLoop {
         profile.mark(.taskSpawned)
         let task = Task.detached {
             defer {
+                // Stream construction awaited bridge admission before returning;
+                // remaining inner tasks consume events and cannot acquire anew.
+                serviceReservation?.finishPipeline()
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 // Profiler cancel-abort latency: only meaningful when a cancel
                 // was received AND this task actually aborted (both stamps
@@ -810,7 +870,14 @@ extension ProviderLoop {
                 engineV2Sampling: samplingOverrides,
                 engineV2Usage: v2UsageSignal,
                 firstContentDeadline: firstContentDeadline,
-                profile: profile
+                profile: profile,
+                serviceReservationID: serviceReservationID,
+                serviceReservation: serviceReservation,
+                nativeConsumerLeaseProvider: { [weak me] modelID, entry in
+                    guard let me else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
+                    return try await me.nativeMiMoConsumerLease(modelID: modelID, entry: entry)
+                },
+                promptWork: promptWork
             )
 
             // Force-stream so we get SSE frames even if the original request

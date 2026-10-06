@@ -1,6 +1,6 @@
 # GPT-OSS and Gemma QAT default HTTP smoke
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 Both exact release artifacts passed the final-candidate B1 default HTTP smoke. Configuration requested `engine_v2_kv_backend=auto` and `mtp_mode=auto`, with no global prefix-cache override or assistant override. Both actually loaded paged attention without a fallback, disabled SSD prefix caching (`config_disabled`, no cache capability), and performed ordinary generation with MTP inactive and zero MTP rounds.
 

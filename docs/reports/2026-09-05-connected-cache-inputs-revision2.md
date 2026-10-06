@@ -1,6 +1,6 @@
 # Reviewed connected cache inputs, revision 2
 
-> Last updated: 2026-09-05 · commit `9e49059a1`
+> Last updated: 2026-09-05
 
 Revision 2 prepares all five exact model pairs with the corrected Gemma assistant
 directory and SSE reasoning reader. Root independently verified the frozen

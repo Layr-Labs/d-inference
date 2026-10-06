@@ -1,6 +1,6 @@
 # Actual forward-width runtime build and native validation
 
-> Last updated: 2026-09-06 · commit `2f7e4dd06`
+> Last updated: 2026-09-06
 
 The instrumented runtime builds on M5 and passes the four requested native suites. It observes actual target-call row and sequence dimensions, so queued concurrency, speculative columns and padded compiled components cannot stand in for batched target execution. This milestone does not certify real-model B2/B4 throughput or the six-artifact matrix.
 

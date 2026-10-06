@@ -1,6 +1,6 @@
 # Qwen3.6 SDPA partial precision: selected operator discriminator
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 On one sealed Qwen3.6 owner0 B1/D256 input, widening native SDPA's two-pass
 partial storage from BF16 to FP32 changes 786 of 4,096 output elements and

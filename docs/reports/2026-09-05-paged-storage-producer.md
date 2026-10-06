@@ -1,6 +1,6 @@
 # Paged storage telemetry and private checkpoint transfers
 
-> Last updated: 2026-09-05 · commit `c8ec9469f`
+> Last updated: 2026-09-05
 
 The Swift provider now emits queue-captured paged storage observations through
 the coordinator ingestion already banked in `92a2fc235`. Native commit

@@ -5,10 +5,6 @@ package registry
 // handler half guarantees finalization when no terminal ever arrives, and
 // ClaimTerminal lets provider ingress suppress that fallback.
 
-import (
-	"time"
-)
-
 // ProfilePart identifies which half of an attempt's lifecycle has completed.
 type ProfilePart uint8
 
@@ -134,26 +130,24 @@ func (ap *AttemptProfile) armFallback() {
 		ap.mu.Unlock()
 		return
 	}
-	if ap.fallback == nil {
-		ap.fallback = time.AfterFunc(rp.fallbackGrace, func() {
-			// No terminal within the grace: finalize with what we have — unless a
-			// terminal was observed at ingress and is still being processed
-			// (slow settlement); then the real CompleteTerminal will follow. The
-			// check and the claim are one critical section so a terminal that
-			// lands in between can never lose its outcome to the fallback.
-			ap.mu.Lock()
-			if ap.terminalClaimed || ap.terminalRecorded {
-				ap.mu.Unlock()
-				return
-			}
-			ap.terminalRecorded = true
-			if ap.providerOutcome == "" {
-				ap.providerOutcome = "no_terminal"
-			}
+	ap.timerSlot.Arm(rp.fallbackGrace, func() {
+		// No terminal within the grace: finalize with what we have — unless a
+		// terminal was observed at ingress and is still being processed
+		// (slow settlement); then the real CompleteTerminal will follow. The
+		// check and the claim are one critical section so a terminal that
+		// lands in between can never lose its outcome to the fallback.
+		ap.mu.Lock()
+		if ap.terminalClaimed || ap.terminalRecorded {
 			ap.mu.Unlock()
-			ap.complete(ProfilePartTerminal)
-		})
-	}
+			return
+		}
+		ap.terminalRecorded = true
+		if ap.providerOutcome == "" {
+			ap.providerOutcome = "no_terminal"
+		}
+		ap.mu.Unlock()
+		ap.complete(ProfilePartTerminal)
+	})
 	ap.mu.Unlock()
 }
 
@@ -163,9 +157,8 @@ func (ap *AttemptProfile) runFinalize() {
 			rp.Stamp(&ap.FinalizedUS)
 		}
 		ap.mu.Lock()
-		if ap.fallback != nil {
-			ap.fallback.Stop()
-			ap.fallback = nil
+		if ap.timerSlot != nil {
+			ap.timerSlot.Retire()
 		}
 		ap.mu.Unlock()
 		rp := ap.parent

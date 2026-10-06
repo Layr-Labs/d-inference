@@ -1,6 +1,6 @@
 # Qwen3.5 normal speculative decoding and SSD cache pairs
 
-> Last updated: 2026-09-05 · commit `6cae0b866`
+> Last updated: 2026-09-05
 
 Qwen3.5 35B passes two fresh paged B1 cache-off/SSD comparisons after the
 [useful-output-budget policy](2026-09-05-mtp-output-budget.md). The unchanged

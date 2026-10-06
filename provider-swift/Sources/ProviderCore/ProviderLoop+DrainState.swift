@@ -3,7 +3,7 @@ extension ProviderLoop {
     /// retirement reconnect barrier, including the late in-flight drain.
     internal func setRetirementReconnectBarrier(_ active: Bool) {
         isReconnectingAfterRetirement = active
-        state.refusingNewWork = active || isDraining || isShuttingDown
+        state.refusingNewWork = active || isDraining || isShuttingDown || autopilotCommand != nil
         if let client = coordinatorClient {
             Task { await client.sendEventHeartbeat() }
         }

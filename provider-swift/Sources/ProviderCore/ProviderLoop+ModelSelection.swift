@@ -99,6 +99,7 @@ extension ProviderLoop {
         defer { releaseResliceGate() }
         try checkModelSwitchOwnership()
         advertisedModels = next
+        ordinaryServingModelIDs = Set(next.keys)
         modelHashes = Dictionary(uniqueKeysWithValues: models.compactMap { model in
             model.weightHash.map { (model.id, $0) }
         })
@@ -129,6 +130,10 @@ extension ProviderLoop {
         deferredDesiredModels = nil
         staleDesiredPrefetches.formUnion(desiredPrefetchTargets.subtracting(advertisedModels.keys))
         desiredPrefetchTargets.removeAll()
+        // Same-ID revision workers also belong to the old serving selection.
+        // Clearing through the reconciler cancels any prepared attempt before
+        // resume can let it re-advertise a model the operator just deselected.
+        updateDesiredModelRevisions([])
         desiredSwapDrop.removeAll()
         reserveDeferredPrefetches.removeAll()
         for task in desiredPrefetchRetryTasks.values { task.cancel() }

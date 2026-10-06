@@ -20,15 +20,18 @@ public struct EngineV2BenchmarkProductionGrant: Codable, Sendable, Equatable {
 }
 
 extension EngineV2Factory {
-    /// Offline single-slot mode deliberately uses the standard provider settings.
+    /// Existing offline families keep the standard settings. The managed native
+    /// MiMo path supplies its unchanged operator reserve from the same load policy.
     /// Co-resident callers must use explicit grants and a shared injected budget;
     /// their complete resident/draining serving set belongs to ProviderLoop.
     static func benchmarkProductionGrant(
         modelId: String, sizing: SlotSizingSnapshot,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
-        environment: [String: String]
+        environment: [String: String],
+        operatorReserveBytes: UInt64? = nil
     ) throws -> EngineV2BenchmarkProductionGrant {
-        let operatorReserve = ProviderSettings(name: "benchmark").memoryReserveGB * (1 << 30)
+        let operatorReserve = operatorReserveBytes
+            ?? ProviderSettings(name: "benchmark").memoryReserveGB * (1 << 30)
         let fraction = UnifiedMemoryCap.resolvedCapFraction(explicit: nil, env: environment)
         let activation = UnifiedMemoryCap.resolvedActivationReserveBytes(env: environment, modelIDs: [modelId])
         let hardCap = UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes, capFraction: fraction)

@@ -1,6 +1,6 @@
 # perf(registry): land the routing-scan half of the 2026-09-02 performance program
 
-> Last updated: 2026-09-03 · commit `99b03a161`
+> Last updated: 2026-09-03
 
 PR B of the landing plan in
 `docs/reports/2026-09-03-coordinator-perf-proposal/05-port-feasibility.md`

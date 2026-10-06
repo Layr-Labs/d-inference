@@ -1,6 +1,6 @@
 # App Attest release inventory, evidence archive, and machine identity
 
-> Last updated: 2026-09-14 · commit `d90945f66`
+> Last updated: 2026-09-14
 
 Status: **In progress** — 2026-09-14 — machine inventory, stable identities, complete PostgreSQL proof/receipt archive, protocol 2 recovery/status, and private dashboard implemented in PR #995 for provider 0.9.3; final release qualification remains open. The [as-built reference](../reference/app-attest-shadow.md) describes the implementation. DeviceCheck is deferred.
 

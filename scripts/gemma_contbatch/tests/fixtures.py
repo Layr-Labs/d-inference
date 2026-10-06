@@ -74,6 +74,7 @@ def sweep_payload(
             decode.append(
                 {
                     "batchSize": batch,
+                    "effectiveMaxConcurrentRequests": batch,
                     "decodeTokensPerSequence": decode_tokens,
                     "aggregateTokensPerSecond": aggregate,
                     "perSequenceTokensPerSecond": aggregate / batch,
@@ -82,7 +83,7 @@ def sweep_payload(
                 }
             )
     return {
-        "schemaVersion": 5,
+        "schemaVersion": 8,
         "modelID": MODEL_ID,
         "modelPath": MODEL_PATH,
         "hardware": dict(HARDWARE),
@@ -201,10 +202,12 @@ def arrival_payload(
     return {
         "modelID": MODEL_ID,
         "modelPath": MODEL_PATH,
-        "schemaVersion": 4,
+        "schemaVersion": 6,
         "gemmaOptimizations": copy.deepcopy(GEMMA_OPTIMIZATIONS),
         "kvBackend": {"selection": selection, "resolved": [resolved]},
         "promptTokensPerRequest": prompt_tokens,
+        "promptLengthsPerRequest": [prompt_tokens] * 4,
+        "effectiveMaxConcurrentRequests": 4,
         "decodeTokensPerRequest": decode_tokens,
         "arrivalToleranceMs": tolerance,
         "arrivalMaxAttemptsPerSample": 3,

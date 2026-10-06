@@ -58,3 +58,20 @@ struct ModelScannerMemoryFilterTests {
         #expect(roomy.contains { $0.id == "test-org/too-big-4bit" })
     }
 }
+
+@Test("strict MiMo scanner propagates a complete native LOAD quote without changing llama fallback")
+func scannerMiMoNativeLoadQuoteIsNotGenericDiskPadding() throws {
+    let root = try MiMoDiscoveryFixture.copyTiny()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let info = try MiMoDiscoveryFixture.scan(root)
+    let quoted = try #require(MiMoV26DiscoveryLoadFootprint.estimate(
+        snapshotDir: root, modelType: info.modelType, sizeBytes: info.sizeBytes))
+    #expect(info.estimatedMemoryGb == Double(quoted.totalBytes) / MiMoDiscoveryFixture.GiB)
+    #expect(info.nativeLoadTransientBytes == quoted.transientBytes)
+    #expect(info.ssdOffloadedWeightBytes == nil)
+    let configURL = root.appendingPathComponent("config.json")
+    try Data(#"{"model_type":"llama"}"#.utf8).write(to: configURL)
+    let other = try #require(ModelScanner.parseModelInfo(snapshotDir: root, modelName: "test/llama"))
+    #expect(other.nativeLoadTransientBytes == nil)
+    #expect(other.estimatedMemoryGb == Double(other.sizeBytes) / MiMoDiscoveryFixture.GiB * 1.2)
+}

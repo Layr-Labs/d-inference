@@ -37,29 +37,66 @@ pub fn normalize(
         .ok_or(NormalizeError::MissingModel)?
         .to_owned();
 
+    let mimo = crate::mimo_v26::applies(model_type);
+    // Validate raw controls before permissive generic projection can erase a
+    // supplied wrong type. A family is selected by authenticated model metadata,
+    // never the user-controlled model spelling.
+    let mimo_context = if mimo {
+        Some(crate::mimo_v26::additional_context(&body)?)
+    } else {
+        None
+    };
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
-    let mut messages = template_messages(&body)?;
+    let mut messages = template_messages(&body, mimo)?;
     crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
+    if model_type.is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h")) {
+        // JSONValue decodes integral JSON doubles as Int before toolSpec reaches
+        // Jinja. Nemotron's numeric filters must see that same typed value.
+        // Above f64's exact-integer range, serde has already lost digits that
+        // Swift's direct Int decoder can preserve (9007199254740993.0). Keep
+        // these decimal/exponent spellings cold; signed integer inputs are exact.
+        if tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(ambiguous_nemotron_number))
+        {
+            return Err(NormalizeError::InvalidTools);
+        }
+        tools = tools.map(|tools| tools.into_iter().map(provider_bridged_value).collect());
+    } else {
+        tools = tools.map(drop_nemotron_only_tool_metadata);
+    }
+    if mimo {
+        // Do not qualify a MiMo cache prompt by silently discarding malformed
+        // or unsupported declarations in the generic compatibility translator.
+        if body.get("tools").and_then(Value::as_array).map(Vec::len) != tools.as_ref().map(Vec::len)
+        {
+            return Err(NormalizeError::InvalidTools);
+        }
+        tools = crate::mimo_v26::normalize_tools(tools)?;
+    }
     let requires_tool_call =
         apply_tool_choice_policy(&body, model_type, &mut messages, &mut tools)?;
-    messages = sanitize_array(messages);
-    tools = tools.map(sanitize_array);
-    if crate::leading_system::qwen_applies(&model_id, model_type)
-        || is_harmony(Some(&model_id), model_type)
-    {
-        messages = crate::leading_system::normalize_messages(messages);
-    }
-    validate_tool_history(&messages)?;
-
-    let harmony = is_harmony(Some(&model_id), model_type);
-    if harmony {
-        messages = harmony_messages(messages)?;
-        tools = tools.map(harmony_tools);
-    } else if crate::gemma4::applies(&model_id, model_type) {
-        messages = crate::gemma4::normalize_messages(messages)?;
-        tools = tools.map(crate::gemma4::normalize_tools);
+    let harmony = !mimo && is_harmony(Some(&model_id), model_type);
+    if mimo {
+        messages = crate::mimo_v26::normalize_history(messages)?;
+    } else {
+        messages = sanitize_array(messages);
+        tools = tools.map(sanitize_array);
+        if crate::leading_system::qwen_applies(&model_id, model_type)
+            || is_harmony(Some(&model_id), model_type)
+        {
+            messages = crate::leading_system::normalize_messages(messages);
+        }
+        validate_tool_history(&messages)?;
+        if harmony {
+            messages = harmony_messages(messages)?;
+            tools = tools.map(harmony_tools);
+        } else if crate::gemma4::applies(&model_id, model_type) {
+            messages = crate::gemma4::normalize_messages(messages)?;
+            tools = tools.map(crate::gemma4::normalize_tools);
+        }
     }
 
     // Use the same family predicate as the provider's
@@ -68,7 +105,10 @@ pub fn normalize(
     let forced_qwen_tool = requires_tool_call
         && crate::leading_system::qwen_applies(&model_id, model_type)
         && !native_structured_target(&model_id, model_type);
-    let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
+    let mut additional_context = match mimo_context {
+        Some(context) => context,
+        None => template_additional_context(&body, forced_qwen_tool)?,
+    };
     crate::diffusion::apply_reasoning(model_type, &mut additional_context)?;
     if crate::qwen4_identity::is_qualified(Some(&model_id))
         && matches!(
@@ -142,6 +182,30 @@ pub fn normalize(
         body: Value::Object(normalized_body),
         prompt_date,
     })
+}
+
+fn ambiguous_nemotron_number(value: &Value) -> bool {
+    match value {
+        Value::Number(number) if number.is_f64() => number
+            .as_f64()
+            .is_some_and(|number| number.abs() >= 9_007_199_254_740_992.0),
+        Value::Array(values) => values.iter().any(ambiguous_nemotron_number),
+        Value::Object(values) => values.values().any(ambiguous_nemotron_number),
+        _ => false,
+    }
+}
+
+fn drop_nemotron_only_tool_metadata(mut tools: Vec<Value>) -> Vec<Value> {
+    for tool in &mut tools {
+        if let Some(function) = tool
+            .as_object_mut()
+            .and_then(|tool| tool.get_mut("function"))
+            .and_then(Value::as_object_mut)
+        {
+            function.remove("strict");
+        }
+    }
+    tools
 }
 
 fn native_structured_target(model_id: &str, model_type: Option<&str>) -> bool {
@@ -236,7 +300,7 @@ fn template_additional_context(
     Ok(context)
 }
 
-fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeError> {
+fn template_messages(body: &Map<String, Value>, mimo: bool) -> Result<Vec<Value>, NormalizeError> {
     let messages = body
         .get("messages")
         .and_then(Value::as_array)
@@ -257,7 +321,11 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
             // channel framing from every assistant text field for every model
             // family before any template sees it.
             let assistant = role == "assistant";
-            let content = message_text(input.get("content"))?;
+            let content = if mimo {
+                crate::mimo_v26::message_text(input.get("content"))?
+            } else {
+                message_text(input.get("content"))?
+            };
             let content = if assistant {
                 strip_harmony_channel_framing(&content)?
             } else {
@@ -287,7 +355,7 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
                         Value::Array(
                             calls
                                 .iter()
-                                .map(template_tool_call)
+                                .map(|call| template_tool_call(call, mimo))
                                 .collect::<Result<Vec<_>, _>>()?,
                         ),
                     );
@@ -299,7 +367,7 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
         .collect()
 }
 
-fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
+fn template_tool_call(value: &Value, mimo: bool) -> Result<Value, NormalizeError> {
     let call = value.as_object().ok_or(NormalizeError::InvalidTools)?;
     let function = call
         .get("function")
@@ -313,12 +381,15 @@ fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
         .get("arguments")
         .and_then(Value::as_str)
         .ok_or(NormalizeError::InvalidTools)?;
-    // decodeToolCallArguments keeps the raw string unless it decodes to an
-    // object; the object then crosses Foundation and the Jinja value bridge,
-    // which sorts keys and renders integral doubles as integers.
-    let arguments = match serde_json::from_str::<Value>(encoded) {
-        Ok(Value::Object(object)) => provider_bridged_value(Value::Object(object)),
-        _ => Value::String(encoded.to_owned()),
+    // MiMo retains its native opaque-argument contract; other families mirror
+    // the current Foundation/Jinja object-only bridge.
+    let arguments = if mimo {
+        crate::mimo_v26::decode_arguments(encoded)?
+    } else {
+        match serde_json::from_str::<Value>(encoded) {
+            Ok(Value::Object(object)) => provider_bridged_value(Value::Object(object)),
+            _ => Value::String(encoded.to_owned()),
+        }
     };
     let id = call
         .get("id")
@@ -340,13 +411,12 @@ fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
     }))
 }
 
-/// OpenAIFunctionDefinition decodes only `name`, `description` and
-/// `parameters`; `OpenAITool.toolSpec()` renders exactly those. Any other
-/// member of a caller's `function` object (`strict`, `response`, `examples`,
-/// vendor extensions) never reaches the provider's template.
+/// Mirror OpenAIFunctionDefinition's typed fields. Function-level `strict`
+/// reaches only Nemotron after the model-scoped projection in `normalize`;
+/// unknown metadata never reaches the provider's template.
 fn typed_function_definition(function: Map<String, Value>) -> Map<String, Value> {
     let mut typed = Map::new();
-    for key in ["name", "description", "parameters"] {
+    for key in ["name", "description", "parameters", "strict"] {
         if let Some(value) = function.get(key) {
             typed.insert(key.into(), value.clone());
         }
@@ -549,8 +619,19 @@ fn top_level_function_definition(
         }
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
-    if let Some(parameters) = tool.get("parameters").or_else(|| tool.get("input_schema")) {
+    if let Some(parameters) = tool
+        .get("parameters")
+        .filter(|value| !value.is_null())
+        .or_else(|| tool.get("input_schema"))
+    {
         function.insert("parameters".into(), parameters.clone());
+    }
+    match tool.get("strict") {
+        None | Some(Value::Null) => {}
+        Some(Value::Bool(value)) => {
+            function.insert("strict".into(), Value::Bool(*value));
+        }
+        Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function)
 }
@@ -564,6 +645,10 @@ fn validate_function_definition(
         .ok_or(NormalizeError::InvalidTools)?;
     match function.get("description") {
         None | Some(Value::Null | Value::String(_)) => {}
+        Some(_) => return Err(NormalizeError::InvalidTools),
+    }
+    match function.get("strict") {
+        None | Some(Value::Null | Value::Bool(_)) => {}
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function.clone())
@@ -2518,6 +2603,83 @@ mod tests {
             "parallel_tool_calls":"false"
         });
         assert!(normalize(malformed.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+    }
+
+    #[test]
+    fn strict_tool_metadata_is_scoped_to_nemotron() {
+        let body = json!({
+            "model":"fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":true,
+                "parameters":{"type":"object"}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let nemotron = normalize(body.clone(), Some("nemotron_h")).unwrap();
+        assert_eq!(nemotron.tools.unwrap()[0]["function"]["strict"], true);
+        for model_type in [
+            "qwen3_5",
+            "qwen4_exp",
+            "gemma4_text",
+            "diffusion_gemma",
+            "gpt_oss",
+            "mimo_v2",
+        ] {
+            let normalized = normalize(body.clone(), Some(model_type)).unwrap();
+            assert!(
+                normalized.tools.unwrap()[0]["function"]
+                    .get("strict")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn nemotron_tool_numbers_follow_typed_sdk_decoding_without_changing_other_families() {
+        let body = json!({"model":"fixture","messages":[{"role":"user","content":"number"}],
+            "tools":[{"type":"function","function":{"name":"number","parameters":{
+                "type":"object","properties":{"value":{"type":"number","enum":[1.0,1e-7]}}}}}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        for (model_type, integral_is_float) in [("nemotron_h", false), ("qwen3_5", true)] {
+            let normalized = normalize(body.clone(), Some(model_type)).unwrap();
+            let tools = normalized.tools.unwrap();
+            let values = tools[0]["function"]["parameters"]["properties"]["value"]["enum"]
+                .as_array()
+                .unwrap();
+            assert_eq!(values[0].is_f64(), integral_is_float);
+            assert_eq!(values[1].as_f64(), Some(1e-7));
+        }
+    }
+
+    #[test]
+    fn stripping_function_strict_preserves_mimo_schema_nulls() {
+        let body = json!({
+            "model":"fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":false,
+                "parameters":{"type":"object","properties":{},"default":null,"strict":true,
+                    "enum":[null,"sunny"]}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body.clone(), Some("mimo_v2")).unwrap();
+        let tools = normalized.tools.unwrap();
+        assert!(tools[0]["function"].get("strict").is_none());
+        assert_eq!(
+            tools[0]["function"]["parameters"],
+            body["tools"][0]["function"]["parameters"]
+        );
+        let nemotron = normalize(body, Some("nemotron_h")).unwrap();
+        assert_eq!(nemotron.tools.unwrap()[0]["function"]["strict"], false);
     }
 
     #[test]

@@ -85,6 +85,30 @@ struct PrefixCacheReceiptTests {
         #expect(result.outcome == .hit)
         #expect(result.cachedTokens == 4096)
         #expect(result.prefillTokensSaved == 2560)
+        #expect(signal.prefixCacheHitTokens == 4096)
+    }
+
+    @Test("a staged match whose adoption failed reports no cached tokens")
+    func failedAdoptionReportsNoCachedTokens() throws {
+        let signal = EngineV2RequestUsageSignal()
+        signal.record(stageResult: SSDPrefixCacheStageResult(
+            disposition: .staged(
+                matchedTokens: 4096,
+                expectedPrefillTokensSaved: 4096,
+                shortenedByCorruption: false),
+            stageMs: 45))
+        signal.record(usage: CBv2Usage(
+            promptTokens: 6046,
+            completionTokens: 32,
+            prefixCacheOutcome: .adoptionFailed,
+            prefixCacheMatchedTokens: 4096))
+
+        #expect(signal.prefixCacheHitTokens == 0)
+        #expect(signal.prefixCachePrefillTokensSaved == 0)
+        let result = try #require(signal.lookupResult)
+        #expect(result.outcome == .skippedPolicy)
+        #expect(result.cachedTokens == 0)
+        #expect(result.prefillTokensSaved == 0)
     }
 
     @Test("resident L1 wins are memory even when SSD staging also matched")

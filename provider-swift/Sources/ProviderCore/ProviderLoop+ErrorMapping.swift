@@ -69,6 +69,8 @@ extension ProviderLoop {
             return .queueFull
         case .tokenBudgetExhausted(let message):
             return boundedCapacityReason(from: message, fallback: .tokenBudgetExhausted)
+        case .mediaMemoryUnavailable:
+            return .mediaMemoryUnavailable
         case .requestRejected(let message):
             let lower = message.lowercased()
             if lower.contains("duplicate request id") {
@@ -120,6 +122,7 @@ extension ProviderLoop {
         if errorReason == .capacityTimeout
             || errorReason == .queueFull
             || errorReason == .tokenBudgetExhausted
+            || errorReason == .mediaMemoryUnavailable
             || errorReason == .requestExceedsContext
             || errorReason == .requestExceedsNode
             || errorReason == .requestExceedsNodeBudget
@@ -157,7 +160,7 @@ extension ProviderLoop {
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
-            case .queueFull, .tokenBudgetExhausted, .requestRejected:
+            case .queueFull, .tokenBudgetExhausted, .mediaMemoryUnavailable, .requestRejected:
                 return .capacity
             case .mediaUnsupportedByModel:
                 return .unsupportedMedia
@@ -265,6 +268,8 @@ extension ProviderLoop {
             case .queueFull:
                 return 429
             case .tokenBudgetExhausted:
+                return 503
+            case .mediaMemoryUnavailable:
                 return 503
             case .requestRejected:
                 return 503

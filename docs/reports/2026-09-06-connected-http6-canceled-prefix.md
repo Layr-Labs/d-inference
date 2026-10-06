@@ -1,6 +1,6 @@
 # Connected SSD cancellation and recovery preserve native cache usage
 
-> Last updated: 2026-09-06 · commit `6790dea1c`
+> Last updated: 2026-09-06
 
 Qwen3.8 passes all ten cache-off cases, all ten SSD cases and the unchanged
 strict HTTP pair comparison. Cancellation now records actual SSD reuse and its

@@ -60,13 +60,17 @@ func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, 
 		return nil, errors.New("privy: verification key is not an ECDSA key")
 	}
 
+	client := cfg.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	return &PrivyAuth{
 		appID:           cfg.AppID,
 		appSecret:       cfg.AppSecret,
 		verificationKey: ecKey,
 		store:           st,
 		logger:          logger,
-		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		httpClient:      client,
 	}, nil
 }
 
@@ -100,13 +104,27 @@ func (p *PrivyAuth) VerifyToken(tokenStr string) (string, error) {
 	return claims.Subject, nil // subject is the Privy DID (e.g. "did:privy:abc123")
 }
 
+// ErrAccountPendingDeletion is returned by GetOrCreateUser when the Privy
+// user's account is soft deleted and waits for erasure. Creating a second
+// live account for the same person during the grace period would split their
+// data and outlive a cancel.
+var ErrAccountPendingDeletion = errors.New("privy: account is pending deletion")
+
 // GetOrCreateUser looks up an existing user by Privy DID, or creates one by
-// fetching wallet details from Privy's REST API.
+// fetching wallet details from Privy's REST API. It refuses with
+// ErrAccountPendingDeletion while the account waits for erasure.
 func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 	// Try existing user first.
 	user, err := p.store.GetUserByPrivyID(privyUserID)
 	if err == nil {
 		return user, nil
+	}
+	pending, err := p.store.PrivyUserPendingErasure(context.Background(), privyUserID)
+	if err != nil {
+		return nil, fmt.Errorf("privy: check pending erasure: %w", err)
+	}
+	if pending {
+		return nil, ErrAccountPendingDeletion
 	}
 
 	// Fetch user details from Privy to get wallet and email info.
@@ -133,7 +151,6 @@ func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 	p.logger.Info("privy: created user",
 		"privy_user_id", privyUserID,
 		"account_id", user.AccountID,
-		"email", details.Email,
 	)
 
 	return user, nil

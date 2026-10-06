@@ -19,6 +19,8 @@ public actor EngineV2Runtime {
 
     /// modelId → bridge. There is one bridge per resident model.
     private var bridges: [String: EngineV2Bridge] = [:]
+    private let measurementActivity = EngineMeasurementActivity()
+    nonisolated let performanceUpdates = EnginePerformanceUpdates()
 
     /// Test instrumentation: total `capacitySummary()` + `cancel(requestId:)`
     /// invocations. Lets tests prove the zero-slot production paths never
@@ -31,7 +33,8 @@ public actor EngineV2Runtime {
 
     // MARK: - Registration (model lifecycle)
 
-    public func register(modelId: String, bridge: EngineV2Bridge) {
+    public func register(modelId: String, bridge: EngineV2Bridge) async {
+        await bridge.setMeasurementActivity(measurementActivity, updates: performanceUpdates)
         bridges[modelId] = bridge
     }
 

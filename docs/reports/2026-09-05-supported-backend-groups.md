@@ -1,6 +1,6 @@
 # Initial supported backend and SSD comparison groups
 
-> Last updated: 2026-09-05 · commit `82ce12db8`
+> Last updated: 2026-09-05
 
 GPT-OSS20B and the 8-bit Gemma4-26B artifact pass their initial B1 contiguous/paged
 cache-off comparisons and paged SSD comparisons. Qwen3.5 passes both within-backend

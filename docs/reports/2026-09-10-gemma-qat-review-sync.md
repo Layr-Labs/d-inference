@@ -1,6 +1,6 @@
 # Gemma QAT: September 10 merge, review fixes and validation
 
-> Last updated: 2026-09-10 · commit `b4b8797ae`
+> Last updated: 2026-09-10
 
 **Review fixes and 799 selected Swift tests pass; qualification of the new runtime remains incomplete.** Repeated M5 contention interrupted the matching ordinary-decode attempts and prevented the new B4/HTTP checks. Both PRs are ready for review and mergeable at the recorded snapshot, but the outstanding model/serving evidence still blocks a claim that the September 10 runtime is fully qualified for release.
 

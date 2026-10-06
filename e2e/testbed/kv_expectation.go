@@ -31,7 +31,9 @@ import (
 // pre-warmed through the coordinator's own `load_model` push — the same
 // pre-warm mechanism production uses — because a freshly-booted testbed
 // provider has nothing resident (empty persisted set → `.nothingToPreload`)
-// and a backend that was never constructed cannot be observed.
+// and a backend that was never constructed cannot be observed. Explicit
+// Autopilot suites start their controller before this gate and leave residency
+// to it; the same backend assertion observes the resulting real slot.
 
 // EnvExpectKVBackend declares the KV backend every engine slot in the suite
 // must have actually been BUILT with: "paged" or "contiguous". Empty/unset
@@ -89,6 +91,7 @@ func (s *Suite) verifyKVBackendExpectation() error {
 type kvSlotTarget struct {
 	providerID string
 	model      string
+	autopilot  bool
 }
 
 func (t kvSlotTarget) String() string { return t.providerID + "/" + t.model }
@@ -115,6 +118,13 @@ func VerifyRegistryKVBackends(
 	timeout time.Duration,
 	logger *slog.Logger,
 ) error {
+	return verifyRegistryKVBackends(ctx, reg, expected, timeout, logger, reg.SendLoadModel)
+}
+
+func verifyRegistryKVBackends(
+	ctx context.Context, reg *registry.Registry, expected string, timeout time.Duration,
+	logger *slog.Logger, prewarm func(string, string) error,
+) error {
 	if expected != KVBackendPaged && expected != KVBackendContiguous {
 		return fmt.Errorf("unassertable expected KV backend %q", expected)
 	}
@@ -124,7 +134,8 @@ func VerifyRegistryKVBackends(
 		p.Mu().Lock()
 		for _, m := range p.Models {
 			if m.ID != "" {
-				targets = append(targets, kvSlotTarget{providerID: p.ID, model: m.ID})
+				targets = append(targets, kvSlotTarget{providerID: p.ID, model: m.ID,
+					autopilot: p.ModelAutopilot != nil && p.ModelAutopilot.Enabled})
 			}
 		}
 		p.Mu().Unlock()
@@ -144,7 +155,10 @@ func VerifyRegistryKVBackends(
 	// provider that cannot load will simply never report and the deadline
 	// below converts that into a failure that names it.
 	for _, t := range targets {
-		if err := reg.SendLoadModel(t.providerID, t.model); err != nil {
+		if t.autopilot {
+			continue
+		}
+		if err := prewarm(t.providerID, t.model); err != nil {
 			logger.Warn("kv-backend pre-warm load_model send failed",
 				"provider_id", t.providerID, "model", t.model, "error", err)
 		}
@@ -152,6 +166,7 @@ func VerifyRegistryKVBackends(
 
 	deadline := time.Now().Add(timeout)
 	pending := targets
+	nextDiagnostic := time.Now().Add(30 * time.Second)
 	for {
 		var stillPending []kvSlotTarget
 		for _, t := range pending {
@@ -173,6 +188,15 @@ func VerifyRegistryKVBackends(
 		}
 		if len(stillPending) == 0 {
 			return nil
+		}
+		if !time.Now().Before(nextDiagnostic) {
+			for _, target := range stillPending {
+				if target.autopilot {
+					logAutopilotStartupDiagnostics(reg, logger)
+					break
+				}
+			}
+			nextDiagnostic = time.Now().Add(30 * time.Second)
 		}
 		if time.Now().After(deadline) {
 			names := make([]string, len(stillPending))

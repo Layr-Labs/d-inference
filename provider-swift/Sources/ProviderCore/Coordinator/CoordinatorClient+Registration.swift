@@ -35,7 +35,10 @@ extension CoordinatorClient {
             prefixCacheMemoryModels: prefixCache.protocolVersion == 2
                 ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
+            modelAutopilot: state.modelAutopilot,
+            ordinaryServingModelIDs: ordinaryServingModelIDs,
+            autopilotInventory: state.autopilotInventory
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
@@ -81,7 +84,7 @@ extension CoordinatorClient {
         // EVERY heartbeat build flows through here — the 5s baseline and the
         // event-triggered sends — so seq is dense, monotonic, and the
         // published snapshot is exactly what the coordinator last saw.
-        let capacity = state.stampAndPublishHeartbeatCapacity(state.backendCapacity)
+        let (capacity, modelAutopilot) = state.modelAutopilotHeartbeat()
         let prefixCache = state.prefixCacheV2Advertisement()
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
@@ -127,7 +130,8 @@ extension CoordinatorClient {
                 ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
-            idleUnloadMins: config.idleUnloadMins
+            idleUnloadMins: config.idleUnloadMins,
+            modelAutopilot: modelAutopilot
         )
 
         do {

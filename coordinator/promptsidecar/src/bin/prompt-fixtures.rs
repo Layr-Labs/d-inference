@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
             cases: generated_cases,
         });
     }
-    let encoded = serde_json::to_vec_pretty(&GeneratedCorpus {
+    let encoded = encode_corpus(&GeneratedCorpus {
         schema_version: 1,
         models,
     })?;
@@ -171,6 +171,10 @@ async fn main() -> Result<()> {
     fs::write(&temporary, encoded)?;
     fs::rename(temporary, arguments.output)?;
     Ok(())
+}
+
+fn encode_corpus(corpus: &GeneratedCorpus) -> serde_json::Result<Vec<u8>> {
+    serde_json::to_vec_pretty(corpus)
 }
 
 fn is_dynamic_time(error: &anyhow::Error) -> bool {
@@ -327,6 +331,19 @@ fn require_case_ids(cases: &[FixtureCase]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_corpus_matches_the_checked_in_fixture_eof_format() {
+        let encoded = encode_corpus(&GeneratedCorpus {
+            schema_version: 1,
+            models: vec![],
+        })
+        .unwrap();
+        assert_eq!(encoded, b"{\n  \"schema_version\": 1,\n  \"models\": []\n}");
+        let fixture =
+            include_bytes!("../../../../fixtures/prompt-contract/v1/production_vectors.json");
+        assert!(fixture.ends_with(b"}"));
+    }
 
     #[test]
     fn production_model_inventory_is_mandatory() {

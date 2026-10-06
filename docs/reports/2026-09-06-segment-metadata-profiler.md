@@ -1,6 +1,6 @@
 # Same-binary segmented metadata attribution
 
-> Last updated: 2026-09-06 · commit `e48847902`
+> Last updated: 2026-09-06
 
 A standalone native profiler now compares cached and freshly rebuilt dispatch
 metadata through the actual segmented layer-cache path. On one local M3 Max,

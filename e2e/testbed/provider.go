@@ -227,6 +227,23 @@ func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 		}
 		fmt.Fprintf(&b, "mtp_mode = %q\n", cfg.MTPMode)
 	}
+	if cfg.Autopilot {
+		ids := cfg.ModelIDs
+		if len(ids) == 0 && cfg.ModelID != "" {
+			ids = []string{cfg.ModelID}
+		}
+		if len(ids) == 0 {
+			return "", fmt.Errorf("autopilot test enrollment requires selected models")
+		}
+		b.WriteString("startup_preload = false\n[backend.model_autopilot]\nenabled = true\nconsent_recorded = true\nrevision = \"testbed-autopilot\"\nselected_models = [")
+		for i, id := range ids {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%q", id)
+		}
+		b.WriteString("]\n")
+	}
 	return b.String(), nil
 }
 

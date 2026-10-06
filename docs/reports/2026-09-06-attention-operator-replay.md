@@ -1,6 +1,6 @@
 # Standalone attention operator replay
 
-> Last updated: 2026-09-06 · commit `ae3835969`
+> Last updated: 2026-09-06
 
 The standalone replay tool passes eight Swift functions covering 29 expanded
 cases, plus 35 CPU functions. It invokes actual native SDPA and both paged decode

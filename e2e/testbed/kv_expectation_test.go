@@ -101,6 +101,32 @@ func TestVerifyRegistryKVBackendsPassesWhenEverySlotMatches(t *testing.T) {
 	}
 }
 
+func TestKVExpectationObservesAutopilotWithoutIssuingLegacyLoads(t *testing.T) {
+	r := registry.New(kvExpectationLogger())
+	registerExpectationProvider(r, "managed", "m/one")
+	p := r.GetProvider("managed")
+	p.Mu().Lock()
+	p.ModelAutopilot = &protocol.ModelAutopilotState{Enabled: true}
+	p.Mu().Unlock()
+	legacyLoads := 0
+	waitCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := verifyRegistryKVBackends(waitCtx, r, KVBackendPaged, time.Second, kvExpectationLogger(),
+		func(string, string) error { legacyLoads++; return nil })
+	if err == nil || !errors.Is(err, context.Canceled) || legacyLoads != 0 {
+		t.Fatalf("missing Autopilot slot must still fail without legacy loading: err=%v loads=%d", err, legacyLoads)
+	}
+	heartbeatKVBackend(r, "managed", map[string]string{"m/one": registry.KVBackendContiguous})
+	p.Mu().Lock()
+	p.ModelAutopilot = &protocol.ModelAutopilotState{Enabled: true}
+	p.Mu().Unlock()
+	err = verifyRegistryKVBackends(context.Background(), r, KVBackendPaged, time.Second, kvExpectationLogger(),
+		func(string, string) error { legacyLoads++; return nil })
+	if err == nil || !strings.Contains(err.Error(), "built kv_backend") || legacyLoads != 0 {
+		t.Fatalf("Autopilot cannot bypass the actual backend assertion: err=%v loads=%d", err, legacyLoads)
+	}
+}
+
 func TestVerifyRegistryKVBackendsFailsFastOnMismatchWithFallbackReason(t *testing.T) {
 	r := registry.New(kvExpectationLogger())
 	registerExpectationProvider(r, "box-degraded", "m/one")

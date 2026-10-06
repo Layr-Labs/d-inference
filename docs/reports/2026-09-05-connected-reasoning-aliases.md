@@ -1,6 +1,6 @@
 # Connected HTTP reasoning alias correction
 
-> Last updated: 2026-09-05 · commit `0a9fb484a`
+> Last updated: 2026-09-05
 
 The first real Qwen3.8 connected cache-off run stopped because the test reader
 duplicated equivalent SSE reasoning aliases. Its donor and repeat actually

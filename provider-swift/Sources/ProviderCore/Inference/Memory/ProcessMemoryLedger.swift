@@ -99,6 +99,15 @@ final class ProcessMemoryLedger: @unchecked Sendable {
     private var owners: [Owner: Record] = [:]
     private var charged: UInt64 = 0
     private var materialized: UInt64 = 0
+    /// Per-instance observation only. No callback runs while the ledger lock is
+    /// held; nil in production. It observes retire's real empty-owner removal.
+    private var emptyOwnerRetirementObserverForTesting: (@Sendable (Owner) -> Void)? = nil
+
+    func setEmptyOwnerRetirementObserverForTesting(
+        _ observer: (@Sendable (Owner) -> Void)?
+    ) {
+        lock.withLock { emptyOwnerRetirementObserverForTesting = observer }
+    }
 
     init(
         policy: Policy, prepareUsage: @escaping @Sendable () -> Void = {},
@@ -226,10 +235,12 @@ final class ProcessMemoryLedger: @unchecked Sendable {
     /// until actual native children drain; neither time nor deinit refunds them.
     @discardableResult
     func retire(_ owner: Owner) -> Retirement {
-        lock.withLock {
+        var observer: (@Sendable (Owner) -> Void)?
+        let result: Retirement = lock.withLock {
             guard var record = owners[owner] else { return .alreadyRetired }
             if record.charged == 0 {
                 owners.removeValue(forKey: owner)
+                observer = emptyOwnerRetirementObserverForTesting
                 return .retired
             }
             if !record.closing {
@@ -239,6 +250,8 @@ final class ProcessMemoryLedger: @unchecked Sendable {
             }
             return .draining(chargedBytes: record.charged, materializedBytes: record.materialized)
         }
+        observer?(owner)
+        return result
     }
 
     func snapshot() -> Snapshot {

@@ -1,6 +1,6 @@
 # Gemma contiguous position-30 logit traces
 
-> Last updated: 2026-09-06 · commit `53f3c3d0c`
+> Last updated: 2026-09-06
 
 The two authorized trace cells completed and passed diagnostic validation. The retained automatic-versus-ordinary correctness result remains **FAILED**: their confirmed output at index 30 differs. Tracing preserved each mode's entire seven-main trajectory, verifier counters, and prefill geometry against its own frozen trace-off control. This evidence removes the earlier teacher-path/prefill-geometry confounder but does not establish equality of the full pre-forward state.
 

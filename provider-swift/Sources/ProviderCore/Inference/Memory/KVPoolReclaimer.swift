@@ -82,6 +82,10 @@ actor KVPoolReclaimer {
     /// GPU completion before freeing buffers (matches the engine reclaim paths /
     /// the M4 IOKit completeMemory guard).
     private let clearCache: @Sendable () -> Void
+    /// Revalidated on the actual executor, not just when the signal is queued.
+    /// A refused callback is not a reclaim and consumes neither telemetry nor
+    /// the rate-limit window. The default preserves existing/injected callers.
+    private let isReclaimAllowed: @Sendable () -> Bool
     /// Current reclaimable MLX pool size in bytes (the cache pool that a flush
     /// would return to the OS). Used to gate both reclaim paths so we never run
     /// a GPU sync that could not help.
@@ -111,12 +115,14 @@ actor KVPoolReclaimer {
         clearCache: @escaping @Sendable () -> Void,
         reclaimableBytes: @escaping @Sendable () -> UInt64,
         minInterval: Duration = KVPoolReclaimer.defaultMinInterval,
-        proactiveThresholdBytes: UInt64 = KVPoolReclaimer.defaultProactiveThresholdBytes
+        proactiveThresholdBytes: UInt64 = KVPoolReclaimer.defaultProactiveThresholdBytes,
+        isReclaimAllowed: @escaping @Sendable () -> Bool = { true }
     ) {
         self.clearCache = clearCache
         self.reclaimableBytes = reclaimableBytes
         self.minInterval = minInterval
         self.proactiveThresholdBytes = proactiveThresholdBytes
+        self.isReclaimAllowed = isReclaimAllowed
     }
 
     // MARK: - Fire-and-forget signals (called from the budget actor)
@@ -144,7 +150,7 @@ actor KVPoolReclaimer {
     /// runs on this actor's executor.
     @discardableResult
     func reclaimIfNeeded(shortfall: UInt64) -> Bool {
-        guard shortfall > 0, reclaimableBytes() >= shortfall else { return false }
+        guard isReclaimAllowed(), shortfall > 0, reclaimableBytes() >= shortfall else { return false }
         return flushIfDue()
     }
 
@@ -154,7 +160,7 @@ actor KVPoolReclaimer {
     @discardableResult
     func sweep() -> Bool {
         telemetry.recordSweepSignal()
-        guard reclaimableBytes() >= proactiveThresholdBytes else { return false }
+        guard isReclaimAllowed(), reclaimableBytes() >= proactiveThresholdBytes else { return false }
         return flushIfDue()
     }
 
@@ -163,11 +169,16 @@ actor KVPoolReclaimer {
     }
 
     private func flushIfDue() -> Bool {
+        guard isReclaimAllowed() else { return false }
         let now = ContinuousClock.now
         if let last = lastReclaimAt, now - last < minInterval { return false }
-        lastReclaimAt = now
 
         let cacheBefore = reclaimableBytes()
+        // A previously queued sweep (or a slow observation above) must not
+        // enter its GPU callback after an observed native ownership refusal.
+        // Never hold registry/ledger locks across the blocking native callback.
+        guard isReclaimAllowed() else { return false }
+        lastReclaimAt = now
         let startedAt = ContinuousClock.now
         clearCache()
         let elapsed = ContinuousClock.now - startedAt

@@ -1,6 +1,6 @@
 # Final cache routing checks
 
-> Last updated: 2026-09-07 · commit `dbf2b73cf`
+> Last updated: 2026-09-07
 
 Qwen 3.8 passes all twenty connected HTTP cases across the final cache-OFF and SSD-enabled routing runs. Both runs use paged attention, normal MTP and two isolated provider processes on the M5. SSD routing selects the original prefix holder when both providers are candidates, and four requests each restore 4,096 tokens from SSD.
 

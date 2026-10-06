@@ -1,0 +1,124 @@
+name: Threat Model Review (advisory)
+
+on:
+  pull_request_target:
+    branches: [master, main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number for a maintainer-requested deeper review (normal caps still apply)'
+        required: false
+        type: string
+      preflight:
+        description: 'Verify state writes and provider funding without paid model calls'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # atomic budget ledger and report checkpoints on a dedicated branch
+  pull-requests: write
+
+jobs:
+  preflight:
+    name: Threat review activation preflight
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create a short-lived state-writer token
+        if: ${{ vars.THREAT_REVIEW_APP_ID != '' }}
+        id: state-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.THREAT_REVIEW_APP_ID }}
+          private-key: ${{ secrets.THREAT_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Check out the maintainer-selected workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify activation without paid calls
+        env:
+          GH_TOKEN: ${{ steps.state-token.outputs.token || secrets.THREAT_REVIEW_STATE_TOKEN || github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 .github/scripts/threat-review-preflight.py
+  review:
+    name: Threat Model Review (advisory)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    # Operational failures as well as findings must never become merge gates.
+    continue-on-error: true
+    if: >-
+      ${{ (github.event_name == 'workflow_dispatch' && !inputs.preflight) || (github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
+          (github.event.action != 'edited' || github.event.changes.base.ref.from != '')) }}
+    # Skipped title/body edits never enter the review job's cancellation group.
+    concurrency:
+      group: threat-model-advisory-${{ github.event.pull_request.number || inputs.pr_number }}
+      cancel-in-progress: true
+    steps:
+      - name: Check out trusted base only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Resolve maintainer-requested PR from trusted API data
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_PR: ${{ inputs.pr_number }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+          sys.path.insert(0, '.github/scripts')
+          from threat_review.client import GitHub
+          number = os.environ['REQUESTED_PR']
+          if not re.fullmatch(r'[1-9][0-9]{0,9}', number):
+              raise SystemExit('Invalid PR number')
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          github = GitHub(event['repository']['full_name'], int(number), os.environ['GH_TOKEN'])
+          pull = github.pull()
+          if pull['base']['ref'] != event['repository']['default_branch']:
+              raise SystemExit('Manual review requires the default target branch')
+          event.update(pull_request=pull, review_depth='deep')
+          path = Path(os.environ['RUNNER_TEMP']) / 'threat-review-event.json'
+          path.write_text(json.dumps(event))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'THREAT_REVIEW_EVENT_PATH={path}\n')
+              output.write(f"THREAT_REVIEW_BASE_SHA={pull['base']['sha']}\n")
+          PY
+      - name: Pin manual review to its exact trusted base
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.THREAT_REVIEW_BASE_SHA }}
+          persist-credentials: false
+      - name: Coalesce follow-up pushes
+        if: ${{ github.event.action == 'synchronize' }}
+        run: sleep 75
+      - name: Create a short-lived state-writer token
+        if: ${{ vars.THREAT_REVIEW_APP_ID != '' }}
+        id: state-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.THREAT_REVIEW_APP_ID }}
+          private-key: ${{ secrets.THREAT_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Review PR patches as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          THREAT_REVIEW_STATE_TOKEN: ${{ steps.state-token.outputs.token || secrets.THREAT_REVIEW_STATE_TOKEN }}
+          THREAT_REVIEW_ENABLED: ${{ vars.THREAT_REVIEW_ENABLED }}
+        run: python3 .github/scripts/threat-model-review.py
+      - name: Report infrastructure failure without blocking
+        if: ${{ failure() }}
+        run: echo 'Threat-model review unavailable; this advisory does not block merging.' >> "$GITHUB_STEP_SUMMARY"

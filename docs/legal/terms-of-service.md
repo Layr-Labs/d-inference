@@ -1,6 +1,6 @@
 # Darkbloom Terms of Service
 
-> Last updated: 2026-06-26 · commit `af1eeb06d`
+> Last updated: 2026-06-26
 
 Updated: April 17, 2026
 

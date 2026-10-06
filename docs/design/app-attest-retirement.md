@@ -1,6 +1,6 @@
 # Retiring APNs and MDM through App Attest
 
-> Last updated: 2026-09-14 · commit `2f39698d2`
+> Last updated: 2026-09-14
 
 Status: **In progress** — 2026-09-14 — shadow recovery and prospective policy are implemented in the 0.9.4 candidate; [qualification and retirement gates](../operations/app-attest-rollout.md) remain distinct from enforcement/removal.
 

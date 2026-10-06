@@ -114,6 +114,8 @@ extension ProviderLoop {
     ///     (the largest model loads while memory is emptiest);
     ///   * append newly selected models so a fresh start warms them without
     ///     waiting for their first request, regardless of idle-unload policy.
+    /// Enrollment expands advertised inventory, not implicit warmup preferences:
+    /// retain the saved enabled-model selection and prioritize its model pin.
     /// Ids not in the advertised set are skipped with a WARN. Retain every
     /// candidate so a later small model can fill a slot when an earlier load
     /// is skipped or fails; the driver checks the live slot cap before each.
@@ -128,6 +130,13 @@ extension ProviderLoop {
                     > (advertisedModels[$1]?.estimatedMemoryGb ?? 0)
             }
             ids.append(contentsOf: loopConfig.models.map(\.id))
+            if autopilotConsented {
+                if !backend.enabledModels.isEmpty {
+                    let enabled = Set(backend.enabledModels)
+                    ids.removeAll { !enabled.contains($0) }
+                }
+                if let pin = backend.model, !pin.isEmpty { ids.insert(pin, at: 0) }
+            }
         }
 
         var seen = Set<String>()

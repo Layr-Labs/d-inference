@@ -1,6 +1,6 @@
 # Logit diagnostics without model policy coupling
 
-> Last updated: 2026-09-06 · commit `36d2f559e`
+> Last updated: 2026-09-06
 
 Optional logit diagnostics now use a common top-two reducer when the selected
 step has no retained policy reduction. The actual Gemma adapter passes ordinary

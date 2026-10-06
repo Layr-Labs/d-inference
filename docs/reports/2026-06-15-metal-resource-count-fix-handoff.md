@@ -1,6 +1,6 @@
 # Metal resource-COUNT crash fix — how the upstream C++ was landed
 
-> Last updated: 2026-06-15 · commit `183acbe06`
+> Last updated: 2026-06-15
 
 > **STATUS (2026-06-15): LANDED.** The fork route (Option A below) was taken.
 > `ml-explore/mlx` and `ml-explore/mlx-c` were forked into the org as

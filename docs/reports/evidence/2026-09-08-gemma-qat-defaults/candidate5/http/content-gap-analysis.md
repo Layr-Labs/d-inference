@@ -1,6 +1,6 @@
 # Rollout streamed-content timing
 
-> Last updated: 2026-09-08 · commit `4ae34f033`
+> Last updated: 2026-09-08
 
 47/47 requests were structurally valid.
 

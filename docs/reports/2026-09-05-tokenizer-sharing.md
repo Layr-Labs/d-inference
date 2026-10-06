@@ -1,6 +1,6 @@
 # Shared tokenizer ownership and sidecar load check
 
-> Last updated: 2026-09-05 · commit `1114a8ba0`
+> Last updated: 2026-09-05
 
 The prompt sidecar now shares parsed tokenizers across contracts with identical,
 verified tokenizer bytes. In one ordered local macOS comparison, cold-load peak

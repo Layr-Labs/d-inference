@@ -707,7 +707,6 @@ extension ProviderLoop {
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,
                 pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes,
                 measuredHeadroomBytes: postLoadKVHeadroomBytes)
             let runtimeMTPActive = await engineV2Bridge.mtpStatusSnapshot().active
             if engineBundle.mtpStatus.active,
@@ -751,7 +750,6 @@ extension ProviderLoop {
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: engineV2Bridge.kvBackendKind,
                     pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
-                    activationReserveBytes: resolvedActivationReserveBytes,
                     measuredHeadroomBytes: postLoadKVHeadroomBytes)
             }
             if !postBridgeServeable {

@@ -4,10 +4,11 @@
 //
 // Re-homed from the retired `BatchScheduler+Telemetry` implementation's
 // `measuredLiveKVHeadroomBytes` / `hasServeableKVHeadroom`: pure
-// `UnifiedMemoryCap` math over the live MLX + OS memory counters, used by
-// the post-load guard in `ensureModelLoaded` (a model that loads with no
-// serveable KV headroom is unloaded + 503'd instead of advertising a slot
-// whose every request the KV gate would reject).
+// `UnifiedMemoryCap` math over the MLX + OS memory counters, used by the
+// post-load guards (a model that loads with no serveable KV headroom is
+// unloaded + 503'd instead of advertising a slot whose every request the KV
+// gate would reject). `ensureModelLoaded` reads the counters through the
+// owner's `GlobalKVCacheBudget`; the other forms read them live.
 
 import Foundation
 import MLX

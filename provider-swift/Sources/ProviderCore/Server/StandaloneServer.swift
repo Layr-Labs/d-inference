@@ -1962,7 +1962,6 @@ public actor StandaloneServer {
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: bridge.kvBackendKind,
                 pagedPoolBytes: await bridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes,
                 measuredHeadroomBytes: postLoadKVHeadroomBytes)
             let runtimeMTPActive = await bridge.mtpStatusSnapshot().active
             if bundle.mtpStatus.active,
@@ -1990,7 +1989,6 @@ public actor StandaloneServer {
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: bridge.kvBackendKind,
                     pagedPoolBytes: await bridge.kvBackendPoolBytes(),
-                    activationReserveBytes: resolvedActivationReserveBytes,
                     measuredHeadroomBytes: postLoadKVHeadroomBytes)
             }
             if !postBridgeServeable {

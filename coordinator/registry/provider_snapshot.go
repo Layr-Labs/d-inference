@@ -11,6 +11,7 @@ type ProviderSnapshot struct {
 	AccountID           string // authenticated owner
 	MachineID           string // verified canonical machine; never a client-supplied serial
 	AppAttestAuthorized bool   // complete, current independent serving authorization
+	AppAttestOSVersion  string // authenticated app claim from the current lease only
 	ServingAuthorized   bool   // complete public authorization through either path
 	ProviderKey         string // base64 X25519 public key — earnings/session identity
 	SerialNumber        string
@@ -72,7 +73,9 @@ func (r *Registry) providerRewardSnapshotLocked(p *Provider, now time.Time) Prov
 		machineID = p.verifiedMachineID
 	}
 	memoryGB := p.Hardware.MemoryGB
+	osVersion := ""
 	if appAttestAuthorized {
+		osVersion = p.appAttestAuthorization.OSVersion
 		hardwareModel = p.appAttestAuthorization.MachineModel
 		memoryGB = p.appAttestAuthorization.MemoryGB
 	}
@@ -82,6 +85,7 @@ func (r *Registry) providerRewardSnapshotLocked(p *Provider, now time.Time) Prov
 		AccountID:           p.AccountID,
 		MachineID:           machineID,
 		AppAttestAuthorized: appAttestAuthorized,
+		AppAttestOSVersion:  osVersion,
 		ServingAuthorized:   !p.PrivateOnly && (appAttestAuthorized || r.providerLegacyServingAuthorizedLocked(p, now)),
 		ProviderKey:         p.PublicKey,
 		SerialNumber:        serial,

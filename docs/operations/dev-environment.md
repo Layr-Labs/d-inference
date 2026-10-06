@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `darkbloom-dev`): a GCE VM running the same coordinator container as production,
@@ -22,6 +22,14 @@ production (`darkbloom-mainnet`); that is
   coordinator back to an older image.
 
 ## Prerequisites
+
+The dev templates set `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT=development`.
+This explicit classification skips the production App Attest cutover prerequisite
+and legacy-cohort freeze, including with dev Postgres; `DD_ENV=development`
+alone does not. Local startup using actual opted-in memory-store fallback also
+skips the freeze. A database subsequently started as production freezes its
+then-current eligible cohort, not a cutoff from dev startup. See the
+[deployment setting](../reference/configuration.md#deployment-environment).
 
 - `gcloud` authenticated against `darkbloom-dev` with rights to Compute, Cloud
   Build, Artifact Registry, Secret Manager, and Cloud SQL.

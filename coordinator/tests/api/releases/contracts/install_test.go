@@ -126,11 +126,15 @@ func TestInstallScriptTemplating(t *testing.T) {
 				t.Errorf("install.sh exposes hardware identity through %q", forbidden)
 			}
 		}
-		if !strings.Contains(body, `PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"`) {
-			t.Error("install.sh is missing the privacy-safe enrollment profile path")
+		for _, forbidden := range []string{"/v1/enroll", "Darkbloom-Enroll.mobileconfig"} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("install.sh must defer authenticated enrollment to the CLI, found %q", forbidden)
+			}
 		}
-		if !strings.Contains(body, `-d '{}'`) {
-			t.Error("install.sh enrollment request is not identity-free")
+		for _, required := range []string{"darkbloom login", "darkbloom enroll", "current signed eligibility check"} {
+			if !strings.Contains(body, required) {
+				t.Errorf("install.sh is missing authenticated enrollment guidance %q", required)
+			}
 		}
 	})
 

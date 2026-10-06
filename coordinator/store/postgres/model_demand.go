@@ -11,18 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const modelDemandTableDDL = `CREATE TABLE IF NOT EXISTS model_demand_requests (
- id BIGSERIAL UNIQUE,
- coord_request_id TEXT PRIMARY KEY,
- received_at TIMESTAMPTZ NOT NULL,
- model TEXT NOT NULL,
- consumer_hash TEXT NOT NULL,
- outcome TEXT NOT NULL,
- http_status INTEGER NOT NULL,
- revision BIGINT NOT NULL,
- evidence_conflict BOOLEAN NOT NULL DEFAULT FALSE
-)`
-
 // Retained public evidence remains authoritative after the diagnostic ledger
 // expires. Receipt/model/consumer identity is immutable at every revision.
 const modelDemandProjectionConflictSQL = `model_demand_requests.evidence_conflict OR EXCLUDED.evidence_conflict

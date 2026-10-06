@@ -2,6 +2,9 @@
 
 ## Unreleased — account erasure
 
+- Exclude pending-erasure users from provider-email exports after machine-owner ranking, and retain a private `resend_contact` cleanup obligation before clearing the account email. Resend contact, segment and scheduled-broadcast cleanup remains manual.
+- Route late memory-store referral settlement credits through the erasure-aware credit path, matching PostgreSQL: erased referrers stay at zero balance and receive a refused-credit audit record instead.
+
 - Preserve successful account-erasure results when the caller cancels after commit, so confirmation and scrub still disconnect providers and clear runtime caches.
 
 - Clear unshared APNs token proofs, pending challenges and push bookkeeping from runtime memory after erasure; fence delayed cache publication while preserving live shared keys and fresh ownership.

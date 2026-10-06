@@ -46,6 +46,7 @@ using real erasure transitions and isolated user/provider tombstones.
 | `GetUserByPrivyID` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | `ErrNotFound` |
 | `GetUserByStripeAccount` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | not found |
 | `GetUserByEmail` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | not found |
+| `provideremail.ReadSnapshot` | `coordinator/provideremail/postgres.go` (`audienceSQL`) | Not applicable | email omitted at the final users join, after latest-machine-owner ranking; an older owner is never substituted |
 | `ClaimModelTokenPromotion` | `coordinator/store/postgres/model_token_promotions.go` | `coordinator/store/memory/model_token_promotions.go` | `ErrPromotionIneligible` |
 | `ListSmallModelsInterest` | `coordinator/store/postgres/small_models_interest.go` | `coordinator/store/memory/small_models_interest.go` | omitted before pagination; the admin contact export excludes the email |
 | `FreezeLegacyMDMCohort` (initial qualification) | `coordinator/store/postgres/legacy_mdm_cohort.go` | `coordinator/store/memory/legacy_mdm_cohort.go` | cannot qualify for the initial frozen cohort |

@@ -15,6 +15,7 @@ import (
 type Keys struct {
 	AccountID       string
 	ConsumerKeyHash string
+	ResendEmail     string
 	// StripeAccountIDs are the current Express account and every earlier one
 	// the account's withdrawals used.
 	StripeAccountIDs []string
@@ -119,8 +120,8 @@ func (k *Keys) StripeObjects() []store.ErasureStripeObject {
 	return out
 }
 
-// OutboxRows splits the Stripe objects into outbox rows: one per account,
-// one per batch of Checkout Sessions, and one erasure_log row.
+// OutboxRows retains external cleanup identifiers separately from public status:
+// Stripe objects, a Resend contact email when present, and one erasure_log row.
 func (k *Keys) OutboxRows() []store.ErasureOutboxItem {
 	var out []store.ErasureOutboxItem
 	add := func(t store.ErasureTarget, id string) {
@@ -137,6 +138,9 @@ func (k *Keys) OutboxRows() []store.ErasureOutboxItem {
 		add(store.ErasureTargetCheckoutSessions, strings.Join(k.CheckoutSessionIDs[i:end], ","))
 	}
 	add(store.ErasureTargetErasureLog, "")
+	if email := NormalizeEmail(k.ResendEmail); email != "" {
+		add(store.ErasureTargetResendContact, email)
+	}
 	return out
 }
 

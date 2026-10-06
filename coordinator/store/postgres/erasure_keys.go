@@ -19,6 +19,12 @@ func noRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 // collectErasureKeys reads every key of the account in q's transaction.
 func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stripeAccountID string, wallets []string) (*erasure.Keys, error) {
 	k := erasure.NewKeys(accountID, wallets)
+	// Scrub holds the user lock; capture the contact before the users rule clears it.
+	user, err := q.GetUserForErasurePlan(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	k.ResendEmail = user.Email
 	providers, err := q.ListAccountProviderKeys(ctx, accountID)
 	if err != nil {
 		return nil, err

@@ -68,10 +68,10 @@ cache.
 | Rule table | One rule per personal column or row kind; each backend maps every rule name to its own statements | `coordinator/internal/store/erasure/rules.go` (`Rules`); `coordinator/store/postgres/erasure_rules.go` (`erasureStatements`); `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`) |
 | `CachedStore` | Drops the cached users after each erasure write | `coordinator/store/cached.go` (`RequestAccountErasure`, `CancelAccountErasure`, `ScrubAccount`) |
 | Post-commit clears | Registry, trust-reuse cache, MDM scheduler, ledger usage, API key cache | `coordinator/api/accounts/erasure/loop.go` (`scrub`), through `Hooks` (`coordinator/api/accounts/erasure/owner.go`) |
-| Outbox | One row per Stripe object and one `erasure_log` row, written by the scrub | `coordinator/internal/store/erasure/keys.go` (`Keys.OutboxRows`) |
+| Outbox | Stripe cleanup rows, one `resend_contact` row for a nonblank account email, and one `erasure_log` row, written by the scrub | `coordinator/internal/store/erasure/keys.go` (`Keys.OutboxRows`) |
 
 No worker delivers the outbox rows in this version. Each row stays `pending`,
-and an operator deletes the Stripe objects by hand
+and an operator deletes the external objects by hand
 ([runbook](../operations/account-erasure.md#steps)).
 
 ### Request states
@@ -225,7 +225,14 @@ sequenceDiagram
    nothing commits. A rule whose keys are empty runs no statement (`byKeys`).
 6. **Write the outbox.** One `erasure_outbox` row per Express account, per
    Global Payouts recipient, per batch of up to `ErasureCheckoutBatch`
-   Checkout Session IDs, and one `erasure_log` row (`Keys.OutboxRows`).
+   Checkout Session IDs, one `resend_contact` row for a nonblank account email,
+   and one `erasure_log` row (`Keys.OutboxRows`). Both backends capture the email
+   before the users rule clears it. The normalized contact remains only in
+   `external_id`, excluded from status JSON and Stripe plan fields. No local
+   export history proves contact absence, so even a non-provider account gets
+   this obligation when it has an email. The row commits atomically with the
+   scrub; repeat scrubs are refused rather than duplicating it. Resend removal
+   is manual; see the [runbook](../operations/account-erasure.md#resend-contact-cleanup).
 7. **Mark erased.** `MarkErasureErased` stores the planned and applied counts,
    clears `wallet_addresses`, `lease_until` and `last_error`. The transaction
    reads and decodes the result before committing, then returns that retained
@@ -321,7 +328,7 @@ changes.
 
 The scrub keeps IDs, public keys, financial records, machine sessions, the
 App Attest replay fences, shared rows, the erasure record itself and the
-outbox's Stripe IDs. The full list with each reason is in
+outbox's external cleanup identifiers (including the Resend email). The full list with each reason is in
 [personal-data rules](../reference/personal-data-rules.md#retained-data).
 
 Outside the live database:
@@ -334,6 +341,10 @@ Outside the live database:
   rule that log lines hold no personal data is
   [PR #1327](https://github.com/Layr-Labs/d-inference/pull/1327) (pending).
 - **Stripe** keeps its own copy until an operator deletes or redacts it.
+- **Resend** contact data, segment membership and scheduled broadcasts require
+  [manual cleanup](../operations/account-erasure.md#resend-contact-cleanup).
+  `provideremail.ReadSnapshot` suppresses deleted owners' emails after ranking
+  machine ownership; it cannot retract an earlier export or an in-flight sync.
 
 ## Invariants
 
@@ -461,6 +472,12 @@ Old Stripe sessions belonging to another live payer can still contain historical
 referral metadata; this local scrub does not erase that payer's external payment
 (`coordinator/store/postgres/billing_erasure.go`,
 `coordinator/api/billing/stripe_checkout_webhook.go`).
+
+Late referral settlement in the memory backend uses `creditLocked` before
+increasing withdrawable balance (`coordinator/store/memory/consumer_settlement.go`,
+`coordinator/store/memory/model_token_referrals.go`). Like PostgreSQL's refused-credit
+trigger, it leaves an erased referrer's balance at zero, records the refused
+reward once, and lets the payer's settlement finish normally.
 
 Stripe responses can arrive after local deletion. `fenceErasureExternalObject`
 (`coordinator/store/postgres/erasure_external.go`) reacquires the user fence,

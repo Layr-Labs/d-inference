@@ -106,7 +106,7 @@ The scrub keeps these on purpose. The marker tests allow only
 | `erasure_se_owners`: domain-separated SE-key digests and account IDs | Retained pseudonymous ownership rejects delayed trust/job/proof writes after aliases are deleted; these hashes are not anonymous | `RetainErasureSEOwners`, `checkPersonalSEOwner` |
 | `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token or wallet address after the scrub | `MarkErasureErased` |
 | `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00025_erasure_refuse_credits.sql` |
-| `erasure_outbox.external_id` | The Stripe ID an operator needs to delete or redact the Stripe object | `erasureMarkerAllowList` |
+| `erasure_outbox.external_id` | The Stripe ID or normalized Resend contact email needed for external cleanup; cleared only after verified completion | `Keys.OutboxRows`; `erasureMarkerAllowList` |
 
 The plan and the applied summary list the three shared kinds in `retained`
 (`ErasureRetained`: `table`, `rows`, `reason`), with the reason strings
@@ -119,7 +119,7 @@ The plan and the applied summary list the three shared kinds in `retained`
 (`Keys.OutboxRows`, `coordinator/internal/store/erasure/keys.go`) with `state`
 `pending` and `next_at` = the scrub time. No worker delivers them in this
 version; the [runbook](../operations/account-erasure.md#steps) gives the
-Stripe steps.
+external cleanup steps.
 
 | `target` | One row per | `external_id` holds |
 |---|---|---|
@@ -127,6 +127,7 @@ Stripe steps.
 | `global_recipient` | Global Payouts recipient in `global_payout_recipients.data` or any `global_payout_withdrawals.data.recipient_id` | the recipient account ID |
 | `checkout_sessions` | Batch of up to `ErasureCheckoutBatch` (10) Checkout Session IDs from `billing_sessions.external_id` (`payment_method = 'stripe'`) | comma-separated `cs_…` IDs |
 | `erasure_log` | Erasure (always one) | `''` |
+| `resend_contact` | Account with a nonblank email at scrub, regardless of current provider status or known export history | Trimmed, lowercased email captured before the users rule clears it; manual removal from Resend, its segments and scheduled broadcasts |
 
 `ErasureOutboxState` is closed: `pending`, `done`, `manual_action`.
 
@@ -177,7 +178,7 @@ ownership links before deleting aliases; it stores no serial, UDID or APNs token
 | `id` | `TEXT` PK | Row ID (UUID) |
 | `request_id` | `TEXT` FK `erasure_requests(id)` | The request |
 | `target` | `TEXT` | [Outbox target](#outbox-targets) (`CHECK`) |
-| `external_id` | `TEXT` | Stripe IDs, see [outbox targets](#outbox-targets) |
+| `external_id` | `TEXT` | Stripe IDs or Resend contact email, never serialized by the status API; see [outbox targets](#outbox-targets) |
 | `state` | `TEXT` | `pending`, `done`, `manual_action` (`CHECK`, default `pending`) |
 | `attempts` | `INTEGER` | Delivery attempts |
 | `next_at` | `TIMESTAMPTZ` | When the row is due |

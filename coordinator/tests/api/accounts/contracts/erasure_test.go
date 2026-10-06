@@ -164,8 +164,19 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 		t.Fatalf("status after scrub = %d", code)
 	}
 	outbox := status["outbox"].([]any)
-	if len(outbox) != 1 || outbox[0].(map[string]any)["target"] != string(store.ErasureTargetErasureLog) {
+	if len(outbox) != 2 {
 		t.Fatalf("outbox = %v", outbox)
+	}
+	targets := map[string]bool{}
+	for _, item := range outbox {
+		row := item.(map[string]any)
+		targets[row["target"].(string)] = true
+		if _, exposed := row["external_id"]; exposed {
+			t.Fatal("outbox exposed external identifier")
+		}
+	}
+	if !targets[string(store.ErasureTargetErasureLog)] || !targets[string(store.ErasureTargetResendContact)] {
+		t.Fatalf("outbox targets = %v", targets)
 	}
 	if st.GetBalance(account) != 0 {
 		t.Fatalf("balance after scrub = %d", st.GetBalance(account))

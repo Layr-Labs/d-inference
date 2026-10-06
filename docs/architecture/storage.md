@@ -279,7 +279,7 @@ revokes keys and tokens), and, after the grace period, one scrub transaction
 that applies every rule in `erasure.Rules` (`coordinator/internal/store/erasure/rules.go`)
 with each statement's affected rows checked against a count. It uses four
 tables: `erasure_requests` (state, counts, and retained audit metadata),
-`erasure_outbox` (Stripe deletions), `erasure_refused_credits`
+`erasure_outbox` (Stripe deletions and private Resend contact cleanup), `erasure_refused_credits`
 (credits that triggers keep out of an erased account), and `erasure_se_owners`
 (pseudonymous key digests and account IDs that fence delayed device writes). Goose versions 22 to 25
 add them and their indexes:

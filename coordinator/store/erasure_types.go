@@ -30,6 +30,7 @@ const (
 	ErasureTargetGlobalRecipient  ErasureTarget = "global_recipient"  // Stripe Global Payouts recipient account
 	ErasureTargetCheckoutSessions ErasureTarget = "checkout_sessions" // up to ErasureCheckoutBatch Checkout Session IDs, comma separated
 	ErasureTargetErasureLog       ErasureTarget = "erasure_log"       // durable log record of the erasure
+	ErasureTargetResendContact    ErasureTarget = "resend_contact"    // contact email for manual Resend removal
 )
 
 // ErasureOutboxState is the delivery state of an erasure_outbox row.

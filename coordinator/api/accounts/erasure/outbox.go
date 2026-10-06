@@ -178,13 +178,14 @@ func (s *Owner) deleteStripeAccount(id string) outboxOutcome {
 
 // stripeAccountNotFound accepts only structured missing-resource responses.
 // The onboarding helper IsAccountGoneErr also accepts permission failures:
-// an unusable account is not proof of deletion and must remain in the outbox.
+// an unusable account or an unclassified 404 is not proof of deletion and
+// must remain in the outbox.
 func stripeAccountNotFound(err error) bool {
 	var apiErr *billing.APIError
 	if !errors.As(err, &apiErr) || (apiErr.StatusCode != http.StatusBadRequest && apiErr.StatusCode != http.StatusNotFound) {
 		return false
 	}
-	return apiErr.Code == "resource_missing" || (apiErr.StatusCode == http.StatusNotFound && apiErr.Code == "")
+	return apiErr.Code == "resource_missing"
 }
 
 func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutcome {

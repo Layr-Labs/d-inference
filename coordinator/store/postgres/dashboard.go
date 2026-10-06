@@ -21,9 +21,9 @@ func (s *PostgresStore) AccountEarningsWindows(accountID string, now time.Time) 
 	var w store.AccountEarningsWindows
 	err := s.pool.QueryRow(ctx,
 		`SELECT
-			count(*) FILTER (WHERE created_at >= $2),
+			count(*) FILTER (WHERE model <> 'base_reward' AND created_at >= $2),
 			COALESCE(sum(amount_micro_usd) FILTER (WHERE created_at >= $2), 0),
-			count(*),
+			count(*) FILTER (WHERE model <> 'base_reward'),
 			COALESCE(sum(amount_micro_usd), 0)
 		 FROM provider_earnings
 		 WHERE account_id = $1 AND created_at >= $3`,

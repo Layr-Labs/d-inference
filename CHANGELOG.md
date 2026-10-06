@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — one meaning of jobs on the provider console
+
+- The 24 h and 7 d job counts in the earnings summary now exclude `base_reward` rows, matching the lifetime count; micro-USD sums still include them. The machine card stat that shows the reputation counter is labelled "Requests", and its low-success-rate warning and fix link say "requests" too. The earnings page hides "Avg per Job" until the response carries a numeric `work_usd`, labels the activity column "Source" with base rewards shown as "Base reward" and no token count, and no longer prints the inference-only count in its "latest payouts" caption.
+
 ## Unreleased — coordinator schema migrations
 
 - Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.

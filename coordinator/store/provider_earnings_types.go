@@ -42,9 +42,11 @@ type ProviderEarningsSummary struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
-// AccountEarningsWindows holds an account's rolling-window earnings (row count
+// AccountEarningsWindows holds an account's rolling-window earnings (job count
 // and micro-USD sum over the last 24 h and the last 7 d) as computed by the
-// store, so the dashboard header never sums a truncated row page.
+// store, so the dashboard header never sums a truncated row page. Jobs count
+// inference rows only (base_reward rows excluded, matching the lifetime
+// count); the micro-USD sums include base_reward rows.
 type AccountEarningsWindows struct {
 	Last24hMicroUSD int64 `json:"last_24h_micro_usd"`
 	Last24hJobs     int64 `json:"last_24h_jobs"`

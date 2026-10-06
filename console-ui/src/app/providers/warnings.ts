@@ -268,8 +268,8 @@ export function computeWarnings(
       out.push({
         id: "low_success_rate",
         severity: "info",
-        title: `Job success rate low (${(successRate * 100).toFixed(0)}%)`,
-        detail: `${p.reputation.successful_jobs} of ${p.reputation.total_jobs} jobs succeeded; ${p.reputation.failed_jobs} failed. Check provider logs for failure details.`,
+        title: `Request success rate low (${(successRate * 100).toFixed(0)}%)`,
+        detail: `${p.reputation.successful_jobs} of ${p.reputation.total_jobs} requests succeeded; ${p.reputation.failed_jobs} failed. Check provider logs for failure details.`,
       });
     }
   }

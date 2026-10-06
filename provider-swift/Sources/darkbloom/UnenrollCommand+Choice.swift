@@ -34,6 +34,7 @@ extension Unenroll {
         writeLine("  1. Fully exit Darkbloom — stop providing and offer local-data cleanup.")
         writeLine("  2. Remove only Darkbloom MDM — keep serving with App Attest and retain your data.")
         writeLine("App Attest requires macOS 27 or later and current coordinator approval.")
+        writeLine("Option 2 is only needed if a Darkbloom MDM profile is installed. Keep any organization management profiles installed.")
         if osMajor < 27 {
             writeLine("This Mac runs macOS \(osMajor). Upgrade to macOS 27 or later to use option 2.")
         }

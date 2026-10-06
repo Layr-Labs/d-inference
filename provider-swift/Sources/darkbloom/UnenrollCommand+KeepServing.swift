@@ -17,17 +17,19 @@ extension Unenroll {
         try Self.requireAppAttestOS(osMajor)
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let coordinator = snapshot.config.coordinator.url
+        let enrollment = checkMDMEnrollment(coordinatorURL: coordinator)
         let now = Date().timeIntervalSince1970
         let authorization = DaemonStateFile.read()?.currentProviderAuthorization(
             coordinatorURL: coordinator, now: now)
         guard ProviderAuthorizationReadiness.removalReady(authorization, now: now) else {
-            printError(ProviderAuthorizationReadiness.summary(authorization, now: now))
+            printError(ProviderAuthorizationReadiness.summary(
+                authorization, enrollment: enrollment, now: now))
             throw ExitCode.failure
         }
 
-        switch checkMDMEnrollment(coordinatorURL: coordinator) {
+        switch enrollment {
         case .notEnrolled:
-            print("App Attest authorizes this connection. No Darkbloom MDM enrollment needs removal.")
+            print("App Attest authorizes this connection. No Darkbloom MDM profile is installed, so no action is needed. Keep the provider running.")
             return
         case .enrolledOtherMDM:
             print("App Attest authorizes this connection. Keep your organization's management profile installed.")

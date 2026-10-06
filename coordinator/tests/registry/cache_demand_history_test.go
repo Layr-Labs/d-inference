@@ -73,12 +73,12 @@ func TestCacheDemandOutOfOrderTimestampsCannotReviveExpiredPrefixes(t *testing.T
 	}
 }
 
-// A boundary planned nine minutes ago must still be found while other plans
-// arrive at fleet rate. Before the dedicated cap the demand index shared the
-// then 10,000-entry holder cap and turned over in about a minute against the
-// 10-minute TTL, so nearly every real repeat looked novel.
+// A boundary planned one minute short of the default TTL must still be found
+// while other plans arrive at fleet rate. Before the dedicated cap the demand
+// index shared the then 10,000-entry holder cap and turned over in about a
+// minute, far inside the TTL, so nearly every real repeat looked novel.
 func TestCacheDemandRetainsBoundaryForTTLAtFleetRate(t *testing.T) {
-	const fillRatePerSecond, fillMinutes = 200, 9
+	const fillRatePerSecond, fillMinutes = 200, int(cachedemand.DefaultTTL/time.Minute) - 1
 	const formerSharedCap = 10_000
 	fill := func(d *demandFixture, start time.Time) time.Time {
 		step := time.Second / fillRatePerSecond

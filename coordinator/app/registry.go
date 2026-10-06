@@ -75,6 +75,7 @@ func configureRegistry(ctx context.Context, cfg config.AppConfig, logger *slog.L
 		"max_holders", cacheRoutingCfg.MaxHolders,
 		"max_discount_ms", cacheRoutingCfg.MaxDiscountMs,
 		"max_cost_fraction", cacheRoutingCfg.MaxCostFraction,
+		"first_sight_min_tokens", cacheRoutingCfg.FirstSightMinTokens,
 	)
 	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
 	stopAutopilot := reg.StartAutopilotController(ctx, cfg.RegistryCfg.Autopilot)

@@ -53,6 +53,7 @@ func (s *Owner) RegisterExactCacheGauges() {
 		{name: "cold_only", value: func(s registry.CacheRoutingActivationStatus) uint64 { return s.ColdOnly }},
 		{name: "plan_empty", value: func(s registry.CacheRoutingActivationStatus) uint64 { return s.PlanEmpty }},
 		{name: "plan_failed", value: func(s registry.CacheRoutingActivationStatus) uint64 { return s.PlanFailed }},
+		{name: "first_sight", value: func(s registry.CacheRoutingActivationStatus) uint64 { return s.FirstSight }},
 	} {
 		activationOutcome := activationOutcome
 		s.observation.Metrics().RegisterGaugeLabels("exact_cache_activation", gauge(func(s ExactCacheStatus) float64 {
@@ -305,6 +306,7 @@ func (s *Owner) EmitExactCacheDDGauges() {
 	s.observation.Gauge("exact_cache.activation.total", float64(status.Activation.ColdOnly), []string{"outcome:cold_only"})
 	s.observation.Gauge("exact_cache.activation.total", float64(status.Activation.PlanEmpty), []string{"outcome:plan_empty"})
 	s.observation.Gauge("exact_cache.activation.total", float64(status.Activation.PlanFailed), []string{"outcome:plan_failed"})
+	s.observation.Gauge("exact_cache.activation.total", float64(status.Activation.FirstSight), []string{"outcome:first_sight"})
 	s.observation.Gauge("exact_cache.sidecar.enabled", observation.BoolGauge(status.Sidecar.Enabled), nil)
 	s.observation.Gauge("exact_cache.sidecar.running", observation.BoolGauge(status.Sidecar.Running), nil)
 	s.observation.Gauge("exact_cache.sidecar.ready", observation.BoolGauge(status.Sidecar.Ready), nil)

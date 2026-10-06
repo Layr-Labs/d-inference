@@ -144,7 +144,7 @@ func TestCacheProviderIndexIsClearedOnReconfigure(t *testing.T) {
 	// The demand index is the largest allocation a tracker owns; a prepared
 	// attempt can keep the retired tracker reachable, so retirement must drop it.
 	demandPlan := h.plan(7)
-	demandPlan.ObserveRouteDemand(retired.config.Generation, retiredDemand, h.routeKey, h.clock.Now())
+	demandPlan.ObserveRouteDemand(retired.config.Generation, retiredDemand, h.routeKey, h.clock.Now(), 0)
 	if entries := retiredDemandIndex.Len(); entries == 0 {
 		t.Fatal("demand index should hold the observed boundaries before reconfigure")
 	}

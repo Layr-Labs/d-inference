@@ -39,13 +39,14 @@ func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) 
 func (d *cacheDemandTracker) clear()                                    { d.history.Clear() }
 func (d *cacheDemandTracker) stats() (entries int, capEvictions uint64) { return d.history.Stats() }
 
-func (t *cacheRoutingTracker) observeCacheDemand(plan *CachePlan, routeKey []byte, now time.Time) {
+// observeCacheDemand reports whether the plan received FirstSightTokens.
+func (t *cacheRoutingTracker) observeCacheDemand(plan *CachePlan, routeKey []byte, now time.Time) bool {
 	if t == nil {
-		return
+		return false
 	}
 	var history *cachedemand.Tracker
 	if t.demand != nil {
 		history = t.demand.history
 	}
-	plan.ObserveRouteDemand(t.generation, history, routeKey, now)
+	return plan.ObserveRouteDemand(t.generation, history, routeKey, now, t.firstSightMinTokens)
 }

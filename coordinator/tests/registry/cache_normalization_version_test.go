@@ -58,8 +58,8 @@ func TestNormalizationVersionMismatchFallsBackToOrdinaryServing(t *testing.T) {
 				t.Fatal("same-version positive control")
 			}
 			repeated := plan.RepeatedPrefixTokens
-			plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now())
-			plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now())
+			plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now(), 0)
+			plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now(), 0)
 			plan.RepeatedPrefixTokens = repeated
 			pr := &production.PendingRequest{RequestID: "mixed-normalization", Model: "model", CachePlan: plan,
 				EstimatedPromptTokens: plan.PromptTokenCount, RequestedMaxTokens: 128}

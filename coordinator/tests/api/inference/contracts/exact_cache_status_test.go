@@ -100,6 +100,11 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	if status.Activation.Percent != 100 || status.Activation.MaxPlanQPS != 0 {
 		t.Fatalf("activation status=%+v", status.Activation)
 	}
+	// A typed decode reads an absent key as 0. Readers of the body rely on the
+	// key itself, which is present before first sight has applied to anything.
+	if !strings.Contains(response.Body.String(), `"first_sight":`) {
+		t.Fatalf("cache status body has no first_sight key: %s", response.Body.String())
+	}
 	if !status.Sidecar.Enabled || status.Sidecar.Running || status.Sidecar.Ready {
 		t.Fatalf("sidecar status=%+v", status.Sidecar)
 	}
@@ -122,6 +127,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_activation{outcome=sampled_out}",
 		"exact_cache_activation{outcome=rate_limited}",
 		"exact_cache_activation{outcome=cold_only}",
+		"exact_cache_activation{outcome=first_sight}",
 		"exact_cache_artifact_allowlist_configured",
 		"exact_cache_artifact_allowlist_count",
 		"exact_cache_artifact_allowlist_stale_models",

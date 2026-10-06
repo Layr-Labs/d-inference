@@ -88,7 +88,7 @@ func (f *demandStrideFixture) plan(promptTokens, sharedTokens int, variant uint3
 	f.t.Helper()
 	plan := demandTestPlan(f.generation, promptTokens, sharedTokens, variant)
 	f.now = f.now.Add(time.Second)
-	plan.ObserveRouteDemand(f.generation, f.demand.tracker, f.key, f.now)
+	plan.ObserveRouteDemand(f.generation, f.demand.tracker, f.key, f.now, 0)
 	if (plan.RepeatedPrefixTokens > 0) != (plan.AffinityKey() != "") {
 		f.t.Fatalf("repeat=%d but affinity key present=%v", plan.RepeatedPrefixTokens, plan.AffinityKey() != "")
 	}

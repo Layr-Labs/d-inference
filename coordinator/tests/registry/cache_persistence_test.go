@@ -141,8 +141,8 @@ func testCacheRoutingPersistenceSurvivesRestart(t *testing.T, st store.Store) {
 	// Demand observed through the plan path is marked and flushed too.
 	routeKey := append([]byte(nil), r1.routeKey...)
 	observed := plan
-	observed.ObserveRouteDemand(r1.config.Generation, r1.demand, routeKey, time.Now())
-	observed.ObserveRouteDemand(r1.config.Generation, r1.demand, routeKey, time.Now())
+	observed.ObserveRouteDemand(r1.config.Generation, r1.demand, routeKey, time.Now(), 0)
+	observed.ObserveRouteDemand(r1.config.Generation, r1.demand, routeKey, time.Now(), 0)
 	if observed.RepeatedPrefixTokens <= 0 {
 		t.Fatal("second observation should report repeated demand")
 	}
@@ -176,7 +176,7 @@ func testCacheRoutingPersistenceSurvivesRestart(t *testing.T, st store.Store) {
 	}
 	// Demand came back without any new observation.
 	restoredPlan := plan2
-	restoredPlan.ObserveRouteDemand(r2.config.Generation, r2.demand, routeKey, time.Now())
+	restoredPlan.ObserveRouteDemand(r2.config.Generation, r2.demand, routeKey, time.Now(), 0)
 	if restoredPlan.RepeatedPrefixTokens <= 0 {
 		t.Fatal("restored demand index did not report the repeated prefix")
 	}

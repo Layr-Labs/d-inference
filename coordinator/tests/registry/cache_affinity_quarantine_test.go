@@ -49,7 +49,7 @@ func TestCacheAffinityQuarantineRoutesToHealthyPeer(t *testing.T) {
 			publish(b, capability)
 			plan := r.plans.bind(exactTestPlan(exactTestAnchor(2, "c")))
 			for range 2 {
-				plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now())
+				plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now(), 0)
 			}
 			if plan.AffinityKey() == "" {
 				t.Fatal("repeat demand did not produce affinity")
@@ -115,8 +115,8 @@ func TestCacheAffinityQuarantinePreservesOtherModel(t *testing.T) {
 	plan := r.plans.bind(exactTestPlan(exactTestAnchor(2, "c")))
 	plan.ModelAggregateHash = other.ModelAggregateHash
 	repeated := plan.RepeatedPrefixTokens
-	plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now())
-	plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now())
+	plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now(), 0)
+	plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now(), 0)
 	plan.RepeatedPrefixTokens = repeated
 	pr := &PendingRequest{CachePlan: plan}
 	p.Mu().Lock()
@@ -153,8 +153,8 @@ func TestCacheAffinityQuarantineBetweenScanAndCommit(t *testing.T) {
 				}
 				plan := r.plans.bind(exactTestPlan(exactTestAnchor(2, "c")))
 				repeated := plan.RepeatedPrefixTokens
-				plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now())
-				plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now())
+				plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now(), 0)
+				plan.ObserveRouteDemand(r.plans.generation, r.demand, r.routeKey, time.Now(), 0)
 				plan.RepeatedPrefixTokens = repeated
 				pr := &PendingRequest{RequestID: "quarantine-at-commit", Model: "model", CachePlan: plan,
 					EstimatedPromptTokens: plan.PromptTokenCount, RequestedMaxTokens: 128}

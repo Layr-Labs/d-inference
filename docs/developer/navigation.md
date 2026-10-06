@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -68,6 +68,7 @@ components for the specific invariant:
 | Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |
 | Cache receipt attempts and their retained-byte budget | `coordinator/internal/registry/cachetracker/attempt_budget.go` (`CacheAttemptCharge`, `AttemptBudget`), `coordinator/internal/registry/cachetracker/cache_receipts_kernel.go` (`Tracker.StoreAttemptLocked` admits, `RemoveAttemptLocked` refunds), `coordinator/internal/registry/cachetracker/attempt_pressure.go` (reclaims finished requests' records under byte pressure); `coordinator/registry/cache_receipts_v2.go` (`PreparePrefixCacheV2Attempt`) publishes an owner only for an admitted record |
 | Cache-routing artifact allowlist and stale-entry reporting | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist`); configured instance in `coordinator/registry/cache_artifact_allowlist.go`; status count and one-time warning in `coordinator/api/inference/exact_cache_allowlist_staleness.go` |
+| Observed cache demand, the soft affinity key and first-sight preparation of a new prompt | `coordinator/internal/registry/cachedemand/tracker.go` (`Tracker.Observe`), `coordinator/internal/registry/cachedemand/first_sight.go` (`FirstSight`); applied to a plan by `coordinator/internal/registry/cacheplan/demand.go` (`Plan.ObserveRouteDemand`); threshold in `coordinator/registry/config.go` (`CacheRoutingConfig.FirstSightMinTokens`), count in `coordinator/internal/registry/cacheactivation/gate.go` (`Gate.RecordPlanned`) |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
 | Routing scan candidate storage | `coordinator/internal/registry/candidatearena/` (`Arena`, `Storage`, `ChunkSize`); private ownership in `coordinator/registry/reservation_storage.go`, compact retained evidence in `coordinator/registry/candidate_snapshot.go`; chunk size and retained public lifetimes are guarded by `coordinator/tests/registry/candidate_arena_test.go`, `candidate_storage_test.go` and `reservation_storage_test.go` |
 | Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |

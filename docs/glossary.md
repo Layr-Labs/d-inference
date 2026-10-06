@@ -1,6 +1,6 @@
 # Glossary — the one name for each thing
 
-> Last updated: 2026-09-26
+> Last updated: 2026-10-06
 
 Canonical terms used across the docs and the code, one line each, with the page
 that owns the full definition. Use these spellings everywhere (including code
@@ -51,7 +51,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 | **Heartbeat** / **eviction** | The provider's periodic state report over the WebSocket, sent every `heartbeat_interval_secs`; a provider whose heartbeats stop is marked stale by the coordinator's sweep and evicted after consecutive stale sweeps | cadence default: [`provider/cli-reference.md#providertoml-keys-read-by-the-cli`](provider/cli-reference.md#providertoml-keys-read-by-the-cli); timeout, sweep and eviction: [`architecture/scheduling.md#heartbeat-cadence-and-eviction`](architecture/scheduling.md#heartbeat-cadence-and-eviction) |
 | **Queue** (per-model) | Bounded wait for capacity (`defaultQueueMaxDepth`, `defaultQueueMaxWait`); overflow is a 429 with `Retry-After` | [`architecture/scheduling.md`](architecture/scheduling.md) |
 | **Reputation** | Legacy name for persisted provider job, uptime, challenge, and latency metrics; no composite score or routing-cost term | [`architecture/routing.md`](architecture/routing.md) |
-| **Selection path** | Persisted label for the selection branch: `none` (no winner), `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity` (stable repeat-demand preference among equivalent cache-capable candidates; not proof of a hit), `cache_credit` (cheapest proven cache holder inside the near-tie band) | [`architecture/routing.md`](architecture/routing.md), `coordinator/registry/gate_reason.go` (`SelectionPath`) |
+| **Selection path** | Persisted label for the selection branch: `none` (no winner), `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity` (stable preference among equivalent cache-capable candidates, keyed by an observed repeated prefix or, under first sight, by a new prompt's own boundary; not proof of a hit), `cache_credit` (cheapest proven cache holder inside the near-tie band) | [`architecture/routing.md`](architecture/routing.md), `coordinator/registry/gate_reason.go` (`SelectionPath`) |
 | **Self-route** | An owner's requests routed only to their own providers (trust floor relaxed to `none`) | [`provider/self-route.md`](provider/self-route.md) |
 | **Servability** (`PredictServable`) | Structural early-429 predictor: can this prompt fit any provider's token budget at all | [`architecture/routing.md`](architecture/routing.md) |
 | **Slot** (model slot) | One loaded model instance on a provider, at most `max_model_slots` per provider. Slot states decide warm/loaded/ineligible | [`architecture/scheduling.md`](architecture/scheduling.md) |

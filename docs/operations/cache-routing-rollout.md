@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -13,6 +13,10 @@ Written for an operator with production access; how the feature works is in
 - Raising `EIGENINFERENCE_CACHE_ROUTING_PERCENT` or
   `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` after a clean observation window.
 - Adding a qualified model artifact to an existing routing cohort.
+- Matching the holder TTL and the per-prefix holder limit to the fleet
+  ([holder lifetime and holders per prefix](#holder-lifetime-and-holders-per-prefix)).
+- Raising the first-sight minimum or turning first sight off
+  ([first sight minimum](#first-sight-minimum)).
 - Turning cache routing off — on its own, or as the first step of a coordinator
   binary rollback.
 
@@ -172,8 +176,9 @@ the same request from the same account remains in or out of the cohort.
    → "Refresh the env file" and "Swap", with the currently approved image. On
    boot the process logs `provider-confirmed cache routing configured` with
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
-   `max_discount_ms` and `max_cost_fraction` (`coordinator/app/registry.go`);
-   `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
+   `max_discount_ms`, `max_cost_fraction` and `first_sight_min_tokens`
+   (`coordinator/app/registry.go`); `null` for either score limit means no
+   optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
    exits before listening. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on (the
    default), boot also logs `cache routing persistence restored` with parked
    holder and demand counts. Check `lifecycle.persistence.ready` and then
@@ -310,25 +315,9 @@ cap, one bound per restart, and observe between steps.
    quarter. If `.sidecar.overloads` climbs instead, return to step 1 with a
    higher concurrency before retrying.
 
-3. **Holder lifetime.** Providers keep a cache file for 30 minutes after its
-   last use (`SSDPrefixCachePolicy.defaultTTLSeconds = 1800`, the limit signed
-   off in `docs/threat-model.yaml` T-041) and no longer rotate their epoch on
-   eviction. Keep the coordinator's holder TTL just inside that window so a
-   holder never outlives its file:
-
-   ```bash
-   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_TTL=.*/EIGENINFERENCE_CACHE_ROUTING_TTL=25m/' /etc/d-inference/env
-   ```
-
-   Restart. Do this only after the fleet's majority runs the provider release
-   that carries the 30-minute TTL; against older providers (15 minutes) leave
-   the holder TTL at `10m`. The holder and observed-demand indexes are sized
-   for this window (`cacheRoutingMaxEntries`, `cacheDemandMaxEntries`,
-   `coordinator/registry/cache_routing.go`). `.holders` should rise well above
-   the previous ~1,000, `holder_removed.epoch_change` should fall toward zero
-   as providers upgrade, `holder_removed.capacity_eviction` should stay flat,
-   and `holder_removed.ttl` becomes the dominant removal reason, which is the
-   healthy state.
+3. **Holder lifetime and holders per prefix.** Follow
+   [holder lifetime and holders per prefix](#holder-lifetime-and-holders-per-prefix):
+   the holder TTL first, then the per-prefix limit, one restart each.
 
 4. **Append the two tuples.** Both were derived on 2026-09-26 from the active
    registry versions (`nvidia-nemotron-3.5-lightning` `2026-09-09-r1`,
@@ -369,6 +358,189 @@ cap, one bound per restart, and observe between steps.
    Restart and confirm `artifact_allowlist.count` is 7. Bonsai's median prompt
    is about 126 tokens, so expect few Bonsai hits until the checkpoint floor
    drops; Nemotron has 83% of prompts above 1,024 tokens.
+
+### Holder lifetime and holders per prefix
+
+Run the coordinator with `EIGENINFERENCE_CACHE_ROUTING_TTL=30m` and
+`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=16`. Those are now the compiled
+defaults
+([configuration.md](../reference/configuration.md#routing-admission-and-ttft)),
+and `deploy/gcp/prod/release-env-defaults` seeds the same two values on a host
+that has neither key. `refresh-env.sh` never overwrites an existing value, so a
+host whose env file pins `10m` and `4` keeps them until an operator edits the
+file with the steps below. Check what a host runs with in the boot line
+`provider-confirmed cache routing configured` (`ttl`, `max_holders`).
+
+| Setting | Reason |
+|---|---|
+| `EIGENINFERENCE_CACHE_ROUTING_TTL=30m` | Providers keep a checkpoint for 30 minutes after its last use (`SSDPrefixCachePolicy.defaultTTLSeconds = 1800`, the limit signed off in `docs/threat-model.yaml` T-041) and no longer rotate their epoch on eviction. At a pinned `10m` the coordinator forgets a holder while the provider keeps the file for 20 more minutes, and a repeat in that interval is routed without cache credit. `30m` is the longest TTL the holder and observed-demand indexes are sized for (`cacheRoutingSizingTTL`, `coordinator/registry/cache_routing.go`); a longer value logs a startup warning. |
+| `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=16` | A production reading on 2026-10-05 showed 275,838 of 1,111,687 holder removals were `capacity_eviction` while the holder index held 25,196 of its 250,000 entries (`cacheRoutingMaxEntries`). With the index that far below its cap, the evictions came from the then-default limit of 4 holders per boundary dropping live holders of popular shared prefixes. |
+
+Change one value per restart, under the approval and restart rules in
+[Prerequisites](#prerequisites).
+
+1. **Holder TTL.** Do this only after the fleet's majority runs the provider
+   release that carries the 30-minute TTL; against older providers (15 minutes)
+   leave the holder TTL at `10m`.
+
+   ```bash
+   sudo cp -p /etc/d-inference/env "/etc/d-inference/env.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_TTL=.*/EIGENINFERENCE_CACHE_ROUTING_TTL=30m/' /etc/d-inference/env
+   sudo grep '^EIGENINFERENCE_CACHE_ROUTING_TTL=' /etc/d-inference/env
+   ```
+
+   Restart per [`coordinator-deploy.md`](coordinator-deploy.md). `.holders`
+   should rise, `.lifecycle.holder_removed.epoch_change` should fall toward
+   zero as providers upgrade, and `.lifecycle.holder_removed.ttl` should become
+   the dominant removal reason. `.lifecycle.demand_cap_evictions` must stay
+   flat: the observed-demand index keeps its entries for the same TTL and is
+   sized for 60 plans per second at `30m` (`cacheDemandMaxEntries`), so a
+   growing count means repeated prefixes are being reported as novel and the
+   TTL goes back down. A holder now lapses with its file instead of before it.
+   One that outlives its file by the receipt delay is removed by the next miss
+   on that provider (`.lifecycle.holder_removed.miss_invalidation`), and that
+   request runs cold.
+
+2. **Holders per prefix.**
+
+   ```bash
+   sudo cp -p /etc/d-inference/env "/etc/d-inference/env.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=.*/EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=16/' /etc/d-inference/env
+   sudo grep '^EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=' /etc/d-inference/env
+   ```
+
+   Restart. `.lifecycle.holder_removed.capacity_eviction` should fall as a
+   share of all removals. It need not reach zero: a prefix held by more than
+   16 machines still evicts its oldest holder. `.holders` rises further and
+   must stay well below 250,000. A plan's holder lookup visits at most
+   `2 × B × H` records for `B` boundaries and `H` holders per bucket
+   ([scheduler](../architecture/cache-aware-routing.md#scheduler)), four times
+   the previous worst case, so compare p50/p95 first-content latency before and
+   after as in [Verification](#verification).
+
+Roll either value back by restoring its previous line and restarting.
+
+### First sight minimum
+
+[First sight](../architecture/cache-aware-routing.md#first-sight) lets the
+second request of a new conversation hit instead of the third: the first
+request is placed by the affinity key its follow-up will use, and its provider
+is asked to write its checkpoints. It is on by default: with
+`EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS` unset the coordinator
+uses a minimum of 1,024 tokens
+([configuration.md](../reference/configuration.md#routing-admission-and-ttft)),
+and `deploy/gcp/prod/release-env-defaults` does not seed the variable. It
+applies once routing is `on` and the coordinator binary includes first sight
+(`.activation.first_sight` is present in `GET /v1/cache/status`). Use this
+procedure to raise the minimum or to turn first sight off with `0`.
+
+The cost is provider writes, charged to each provider's daily write budget
+([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)). A
+gpt-oss-20b checkpoint file holds 49,152 B per token plus 6.03 MB of fixed
+state, 308.0 MB at 6,144 tokens
+([sizes per model](../architecture/prefix-cache.md#streamed-complete-checkpoints)).
+The minimum token count is the control: a higher minimum writes for fewer,
+longer prompts.
+
+Watch three readings of `GET /v1/cache/status`, as changes over equal windows:
+
+| Reading | Meaning | Limit |
+|---|---|---|
+| `.activation.first_sight` | Requests that were asked to keep a prefix; a subset of `.activation.planned` | It does not show that the provider wrote the prefix. `.lifecycle.donation_outcomes` shows what was written or skipped, and a provider whose own minimum is above the kept boundary skips it |
+| `.lifecycle.ssd_hits` per `.lifecycle.ssd_lookups` | Share of lookups that hit | First sight applies only to a prompt with no earlier shared boundary. A new conversation that begins with an already-seen opening of at least 1,024 tokens is a repeat: its provider still writes its deepest boundary, but its affinity key is the shared opening's |
+| `.lifecycle.donation_outcomes.write_priority_limited` | Writes refused because the provider's novel write share is exhausted | Growth means the minimum is too low for the fleet's write budget |
+
+Three more limits
+([details](../architecture/cache-aware-routing.md#first-sight)):
+
+- A prompt needs more than 1,024 tokens; one of exactly 1,024 has no stride
+  boundary to keep.
+- With first sight on, the candidate scan of a novel request takes the provider
+  lock and the tracker mutex per candidate, as a repeat request's scan already
+  does. Compare first-content latency as in [Verification](#verification).
+- Setting `0` does not restore the previous output byte for byte: the status
+  JSON, Prometheus and Datadog keep a `first_sight` series at 0 and the boot
+  line keeps `first_sight_min_tokens`.
+
+1. **Record a baseline window.** The counters restart at zero with the
+   coordinator, so compare changes over equal windows, not totals. Take two
+   readings 30 minutes apart:
+
+   ```bash
+   first_sight_reading() {
+     curl -fsS localhost:8080/v1/cache/status | jq '{
+       first_sight: (.activation.first_sight // 0),
+       planned: .activation.planned,
+       ssd_lookups: .lifecycle.ssd_lookups,
+       ssd_hits: .lifecycle.ssd_hits,
+       skipped_novel: (.lifecycle.donation_outcomes.skipped_novel // 0),
+       write_priority_limited: (.lifecycle.donation_outcomes.write_priority_limited // 0),
+       write_rate_limited: (.lifecycle.donation_outcomes.write_rate_limited // 0)}'
+   }
+   first_sight_window() {
+     jq -n --slurpfile a "$1" --slurpfile b "$2" '$a[0] as $a | $b[0] as $b | {
+       first_sight: ($b.first_sight - $a.first_sight),
+       planned: ($b.planned - $a.planned),
+       hits_per_lookup: (if $b.ssd_lookups > $a.ssd_lookups
+         then ($b.ssd_hits - $a.ssd_hits) / ($b.ssd_lookups - $a.ssd_lookups) else null end),
+       skipped_novel: ($b.skipped_novel - $a.skipped_novel),
+       write_priority_limited: ($b.write_priority_limited - $a.write_priority_limited),
+       write_rate_limited: ($b.write_rate_limited - $a.write_rate_limited)}'
+   }
+   first_sight_reading > /tmp/darkbloom-first-sight.before-1.json
+   sleep 1800
+   first_sight_reading > /tmp/darkbloom-first-sight.before-2.json
+   first_sight_window /tmp/darkbloom-first-sight.before-1.json /tmp/darkbloom-first-sight.before-2.json \
+     | tee /tmp/darkbloom-first-sight.before.json
+   ```
+
+2. **Set the minimum.** Choose the new value: a higher minimum such as `4096`,
+   or `0` to turn first sight off. `refresh-env.sh` rejects duplicate keys, so
+   replace the line when it exists and append it otherwise:
+
+   ```bash
+   FIRST_SIGHT_MIN_TOKENS=4096    # or 0 to turn first sight off
+   sudo cp -p /etc/d-inference/env "/etc/d-inference/env.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+   if sudo grep -q '^EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS=' /etc/d-inference/env; then
+     sudo sed -i -E "s/^EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS=.*/EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS=${FIRST_SIGHT_MIN_TOKENS}/" /etc/d-inference/env
+   else
+     printf 'EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS=%s\n' "$FIRST_SIGHT_MIN_TOKENS" | sudo tee -a /etc/d-inference/env >/dev/null
+   fi
+   sudo grep -c "^EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS=${FIRST_SIGHT_MIN_TOKENS}\$" /etc/d-inference/env    # must print 1
+   ```
+
+   The value must be `0` or between 1,024 and 1,048,576. Anything else makes
+   the coordinator log `cache routing configuration rejected` and exit before
+   listening, and it does so even when `EIGENINFERENCE_CACHE_ROUTING_MODE` is
+   `off`
+   ([configuration.md](../reference/configuration.md#routing-admission-and-ttft)).
+
+3. **Restart the coordinator** per [`coordinator-deploy.md`](coordinator-deploy.md).
+   The boot line `provider-confirmed cache routing configured` reports the
+   value as `first_sight_min_tokens`:
+
+   ```bash
+   sudo docker logs coordinator 2>&1 | grep -E 'cache routing configuration rejected|provider-confirmed cache routing configured'
+   ```
+
+4. **Observe an equal window** with the two functions from step 1 and compare
+   it with the baseline:
+
+   | Field | After raising the minimum | After `0` |
+   |---|---|---|
+   | `first_sight` | Lower than the baseline but above zero: one count per planned novel prompt of at least the new minimum | Zero |
+   | `hits_per_lookup` | At or slightly below the baseline; a clear fall means the minimum now excludes prompts whose follow-ups were hitting | Lower than the baseline: a new conversation's second request runs cold again |
+   | `skipped_novel` | Higher than the baseline, because fewer novel requests are written | Higher than the baseline |
+   | `write_priority_limited` | Growing more slowly than the baseline; if not, raise the minimum again with steps 2–3 | Growing more slowly than the baseline |
+   | `write_rate_limited` | Not growing faster than the baseline | Not growing faster than the baseline; if it still grows, providers' whole daily budget is exhausted by other writes |
+
+   Also check first-content latency as in [Verification](#verification);
+   first sight changes placement only among candidates that already tie.
+
+**Roll back** by restoring the backup from step 2 and restarting, or by
+deleting the line to return to the default of 1,024. Checkpoints already
+written stay on their providers until they expire and remain usable by later
+repeats.
 
 ## Verification
 

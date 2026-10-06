@@ -32,9 +32,13 @@ func (p Plan) BoundaryKey(routeKey []byte, anchor protocol.PrefixCacheAnchor) st
 	)
 }
 
-func (p *Plan) ObserveRouteDemand(generation *Generation, history *cachedemand.Tracker, routeKey []byte, now time.Time) {
+// ObserveRouteDemand records the plan's boundaries in the demand history and
+// reads what earlier plans shared. It also prepares a novel prompt for its own
+// follow-up when the prompt holds at least firstSightMinTokens tokens; 0 never
+// does. It reports whether the plan received FirstSightTokens.
+func (p *Plan) ObserveRouteDemand(generation *Generation, history *cachedemand.Tracker, routeKey []byte, now time.Time, firstSightMinTokens int) bool {
 	if p == nil || !p.Authenticates(generation) || !generation.Active() || !p.Present() {
-		return
+		return false
 	}
 	// Both reads and records use the same bounded anchor selection. Holder
 	// lookup still checks every boundary in the independently verified plan.
@@ -47,4 +51,19 @@ func (p *Plan) ObserveRouteDemand(generation *Generation, history *cachedemand.T
 		}
 	}
 	p.ObserveDemand(history, boundaries, now)
+	return p.observeFirstSight(boundaries, firstSightMinTokens)
+}
+
+// observeFirstSight leaves RepeatedPrefixTokens at 0: the request is still
+// reported as novel.
+func (p *Plan) observeFirstSight(boundaries []cachedemand.Boundary, minTokens int) bool {
+	if minTokens <= 0 || p.RepeatedPrefixTokens != 0 || p.PromptTokenCount < minTokens {
+		return false
+	}
+	tokens, affinity := cachedemand.FirstSight(boundaries)
+	if tokens == 0 {
+		return false
+	}
+	p.FirstSightTokens, p.affinityKey = tokens, affinity
+	return true
 }

@@ -15,4 +15,7 @@ type CacheRoutingActivationStatus struct {
 	ColdOnly    uint64  `json:"cold_only"`
 	PlanEmpty   uint64  `json:"plan_empty"`
 	PlanFailed  uint64  `json:"plan_failed"`
+	// FirstSight counts planned novel prompts that were prepared for their
+	// own follow-up. It is a subset of Planned, not an outcome.
+	FirstSight uint64 `json:"first_sight"`
 }

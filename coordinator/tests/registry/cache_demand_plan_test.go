@@ -19,7 +19,7 @@ func TestCacheDemandScopeBuildAndGenerationIsolation(t *testing.T) {
 			demand := newDemandFixture(cachedemand.MaxEntries, time.Minute)
 			generation := &cacheplan.Generation{}
 			first := bindDemandPlan(generation, plan)
-			first.ObserveRouteDemand(generation, demand.tracker, key, time.Now())
+			first.ObserveRouteDemand(generation, demand.tracker, key, time.Now(), 0)
 			other := first
 			other.RepeatedPrefixTokens = 0
 			switch change {
@@ -32,12 +32,12 @@ func TestCacheDemandScopeBuildAndGenerationIsolation(t *testing.T) {
 			case "generation":
 				other = bindDemandPlan(&cacheplan.Generation{}, other)
 			}
-			other.ObserveRouteDemand(generation, demand.tracker, key, time.Now())
+			other.ObserveRouteDemand(generation, demand.tracker, key, time.Now(), 0)
 			if other.RepeatedPrefixTokens != 0 || other.AffinityKey() != "" {
 				t.Fatal("demand crossed identity boundary")
 			}
 			again := first
-			again.ObserveRouteDemand(generation, demand.tracker, key, time.Now())
+			again.ObserveRouteDemand(generation, demand.tracker, key, time.Now(), 0)
 			if again.RepeatedPrefixTokens != 256 || again.AffinityKey() == "" {
 				t.Fatal("same identity did not match")
 			}

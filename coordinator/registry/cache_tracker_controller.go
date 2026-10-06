@@ -38,6 +38,9 @@ type cacheRoutingTracker struct {
 	// The receipt/evidence clock is immutable after construction. Nil uses
 	// time.Now; separate demand/activation/TTFT clocks remain unchanged.
 	clock func() time.Time
+	// firstSightMinTokens is written once, before the tracker is published.
+	// 0 leaves a novel prompt without affinity or a kept prefix.
+	firstSightMinTokens int
 }
 
 func (t *cacheRoutingTracker) now() time.Time {

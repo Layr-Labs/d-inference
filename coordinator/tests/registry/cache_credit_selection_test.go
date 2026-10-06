@@ -184,7 +184,7 @@ func TestCacheCreditAffinityStillAppliesWhenHolderIsBeyondBand(t *testing.T) {
 	holder.BackendCapacity.Slots[0].NumWaiting = 3 // 9 s of queue penalty: outside the band.
 	holder.Mu().Unlock()
 	for range 2 {
-		f.plan.ObserveRouteDemand(f.r.plans.generation, f.demand, f.r.routeKey, time.Now())
+		f.plan.ObserveRouteDemand(f.r.plans.generation, f.demand, f.r.routeKey, time.Now(), 0)
 	}
 	if f.plan.AffinityKey() == "" {
 		t.Fatal("repeat demand did not produce affinity")

@@ -3,8 +3,12 @@
 EIGENINFERENCE_CACHE_ROUTING_MODE=off
 EIGENINFERENCE_CACHE_ROUTING_PERCENT=1
 EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=1
-EIGENINFERENCE_CACHE_ROUTING_TTL=10m
-EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=4
+# Same as the compiled defaults. Providers keep a checkpoint for 30 minutes, so
+# holders live as long; four holders per boundary evicted live holders of
+# popular shared prefixes. First sight needs no line here: its compiled
+# default is on.
+EIGENINFERENCE_CACHE_ROUTING_TTL=30m
+EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=16
 # v0.9: blank optional limits price only avoidable prefill work. Mode stays off.
 EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS=
 EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION=

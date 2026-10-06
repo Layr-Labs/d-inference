@@ -781,7 +781,9 @@ type InferenceRequestMessage struct {
 	// only with a granted cache scope, so a pointer keeps three states on the
 	// wire: absent (older coordinator or no scope, provider keeps writing every
 	// checkpoint), 0 (novel fleet-wide) and n > 0 (repeated). The provider
-	// gates complete-checkpoint donations on it (`skipped_novel`).
+	// gates complete-checkpoint donations on it (`skipped_novel`). With first
+	// sight configured, a novel prompt long enough carries its own deepest
+	// 1,024-token boundary here, so its provider writes it for a follow-up.
 	CacheRepeatedPrefixTokens *int `json:"cache_repeated_prefix_tokens,omitempty"`
 	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
 	// metadata carried inside the encrypted body. Version 1 means the

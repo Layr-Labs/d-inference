@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -434,7 +434,10 @@ A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
 one per file. A remote donor writes them only on evidence of demand: the
 coordinator's `cache_repeated_prefix_tokens` at or above the effective-token
 floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
-`skipped_novel` without touching disk. Older coordinators and local serving
+`skipped_novel` without touching disk. A coordinator with
+[first sight](cache-aware-routing.md#first-sight) on, its default, sends a novel
+prompt's own boundary in that field, so the same rule admits the write although
+the prompt is novel. Older coordinators and local serving
 write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
 [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). Qwen includes attention KV, recurrent state and normalized typed
 MTP history. Historical attention includes exact owning full rows and the

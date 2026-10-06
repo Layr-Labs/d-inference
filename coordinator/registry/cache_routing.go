@@ -19,8 +19,12 @@ const (
 	CacheRoutingOff = "off"
 	CacheRoutingOn  = "on"
 
-	defaultCacheRoutingTTL           = cachedemand.DefaultTTL
-	defaultCacheRoutingMaxHolders    = 4
+	defaultCacheRoutingTTL = cachedemand.DefaultTTL
+	// defaultCacheRoutingMaxHolders bounds the machines kept per boundary and
+	// tier. At 4, a production reading on 2026-10-05 showed 275,838 of
+	// 1,111,687 holder removals were capacity evictions while the holder
+	// index held 25,196 of its 250,000 entries.
+	defaultCacheRoutingMaxHolders    = 16
 	defaultCacheRoutingActivationPct = 100.0
 	defaultCacheRoutingMaxPlanQPS    = 0.0
 	maxCacheRoutingPlanQPS           = 1_000_000.0
@@ -65,6 +69,17 @@ const (
 	cacheRoutingMemoryTTL                 = cachetracker.MemoryTTL
 	cacheRoutingMaxCheckpointReadyAnchors = cachepolicy.MaxCheckpointReadyAnchors
 	cacheRoutingMaxAttemptBytes           = cachetracker.MaxAttemptBytes
+	// A prompt below one stride has no boundary a provider can keep.
+	minCacheRoutingFirstSightTokens = cachedemand.StrideTokens
+	maxCacheRoutingFirstSightTokens = 1 << 20
+	// defaultCacheRoutingFirstSightMinTokens is what the environment loader
+	// uses when the variable is unset: first sight on from one stride. A
+	// CacheRoutingConfig literal that leaves the field zero keeps it off.
+	defaultCacheRoutingFirstSightMinTokens = cachedemand.StrideTokens
+	// invalidCacheRoutingFirstSightMinTokens stands for a malformed variable.
+	// It lies outside the accepted range (0, or one stride to the maximum),
+	// so Check refuses it.
+	invalidCacheRoutingFirstSightMinTokens = -1
 )
 
 type CachePlan = cacheplan.Plan
@@ -290,6 +305,7 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	// Check validated these tuples; compile an owned immutable membership map.
 	artifacts, _ := newCacheArtifactAllowlist(cfg.AllowedArtifacts)
 	tracker := newCacheRoutingTrackerWithDependencies(cfg.TTL, cfg.MaxHolders, r.cacheDependencies)
+	tracker.firstSightMinTokens = cfg.FirstSightMinTokens
 	if r.cacheDependencies.HintQueries != nil {
 		tracker.hintQuery = r.cacheDependencies.HintQueries(CacheHintQuery{registry: r, tracker: tracker})
 	}
@@ -323,13 +339,14 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 	defer r.mu.RUnlock()
 	activation := r.cacheActivation.Snapshot()
 	return CacheRoutingConfig{
-		Mode:             r.cacheRoutingMode,
-		AllowedArtifacts: r.cacheRoutingAllowedArtifacts.Snapshot(),
-		ActivationPct:    activation.Percent,
-		MaxPlanQPS:       activation.MaxPlanQPS,
-		TTL:              r.cacheRouting.settings.TTL,
-		MaxHolders:       r.cacheRouting.settings.MaxHolders,
-		MaxDiscountMs:    cloneCacheScoreLimit(r.cacheRoutingMaxDiscountMs),
-		MaxCostFraction:  cloneCacheScoreLimit(r.cacheRoutingMaxCostFraction),
+		Mode:                r.cacheRoutingMode,
+		AllowedArtifacts:    r.cacheRoutingAllowedArtifacts.Snapshot(),
+		ActivationPct:       activation.Percent,
+		MaxPlanQPS:          activation.MaxPlanQPS,
+		TTL:                 r.cacheRouting.settings.TTL,
+		MaxHolders:          r.cacheRouting.settings.MaxHolders,
+		MaxDiscountMs:       cloneCacheScoreLimit(r.cacheRoutingMaxDiscountMs),
+		MaxCostFraction:     cloneCacheScoreLimit(r.cacheRoutingMaxCostFraction),
+		FirstSightMinTokens: r.cacheRouting.firstSightMinTokens,
 	}
 }

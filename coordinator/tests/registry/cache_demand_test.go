@@ -112,7 +112,7 @@ func TestCacheDemandStatusCountsEntriesAndCapEvictions(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	observe := func(tokens int, variant uint32) int {
 		plan := demandTestPlan(generation, tokens, 0, variant) // variants share nothing
-		plan.ObserveRouteDemand(generation, demand, key, now)
+		plan.ObserveRouteDemand(generation, demand, key, now, 0)
 		return plan.RepeatedPrefixTokens
 	}
 	observe(5_000, 1) // 1,024 ... 4,096 and the final 4,864

@@ -36,6 +36,13 @@ type CacheRoutingConfig struct {
 	// Persist keeps the holder and demand indexes in the store across
 	// restarts (EIGENINFERENCE_CACHE_ROUTING_PERSIST, default on).
 	Persist bool
+	// FirstSightMinTokens is the shortest novel prompt that is prepared for
+	// its own follow-up: it gets the affinity key the follow-up will derive,
+	// and its provider is asked to keep and write the checkpoint at its
+	// deepest 1,024-token boundary. 0 turns this off, so a literal that
+	// leaves the field unset has it off; ReadConfig defaults an unset
+	// EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS to 1,024.
+	FirstSightMinTokens int
 }
 
 // QualityCapConfig governs the per-provider admission concurrency cap derived
@@ -109,6 +116,7 @@ func ReadConfig() Config {
 			MaxDiscountMs:       optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_DISCOUNT_MS"),
 			MaxCostFraction:     optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_COST_FRACTION"),
 			Persist:             env.EnvBool(env.EnvPrefix+"_CACHE_ROUTING_PERSIST", true),
+			FirstSightMinTokens: cacheRoutingFirstSightMinTokensFromEnv(),
 			MasterKey:           strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
 		},
 		QualityCap: QualityCapConfig{
@@ -138,6 +146,23 @@ func envStrictFloat(key string, fallback float64) float64 {
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		return math.NaN()
+	}
+	return value
+}
+
+// cacheRoutingFirstSightMinTokensFromEnv reads
+// EIGENINFERENCE_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS. Unset or blank yields
+// the default, an explicit 0 turns first sight off, and a malformed value is
+// preserved as invalidCacheRoutingFirstSightMinTokens so Check rejects
+// startup instead of silently applying the default.
+func cacheRoutingFirstSightMinTokensFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_ROUTING_FIRST_SIGHT_MIN_TOKENS"))
+	if raw == "" {
+		return defaultCacheRoutingFirstSightMinTokens
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return invalidCacheRoutingFirstSightMinTokens
 	}
 	return value
 }
@@ -197,6 +222,11 @@ func (c CacheRoutingConfig) Check() error {
 	}
 	if !validCacheScoreLimit(c.MaxCostFraction, 1) {
 		return fmt.Errorf("registry: cache routing max cost fraction must be between 0 and 1")
+	}
+	if c.FirstSightMinTokens != 0 &&
+		(c.FirstSightMinTokens < minCacheRoutingFirstSightTokens || c.FirstSightMinTokens > maxCacheRoutingFirstSightTokens) {
+		return fmt.Errorf("registry: cache routing first sight min tokens must be 0 or between %d and %d",
+			minCacheRoutingFirstSightTokens, maxCacheRoutingFirstSightTokens)
 	}
 	if mode != CacheRoutingOff {
 		if _, err := decodeCacheMasterKey(c.MasterKey); err != nil {

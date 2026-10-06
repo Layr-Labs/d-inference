@@ -61,7 +61,7 @@ func measureDemandEntriesPerPlan(t testing.TB, mix demandPromptMix, plans int) f
 	for i := 0; i < plans; i++ {
 		tokens := mix.promptTokensAt((float64(i) + 0.5) / float64(plans))
 		plan := demandTestPlan(generation, tokens, 0, uint32(i+1))
-		plan.ObserveRouteDemand(generation, demand.tracker, key, now)
+		plan.ObserveRouteDemand(generation, demand.tracker, key, now, 0)
 		if plan.RepeatedPrefixTokens != 0 {
 			t.Fatalf("distinct plan %d reported a repeat of %d", i, plan.RepeatedPrefixTokens)
 		}
@@ -160,7 +160,7 @@ func TestCacheDemandRetainsPlanFor29MinutesAtSizingRate(t *testing.T) {
 	demand := newDemandFixture(cachedemand.MaxEntries, cachedemand.SizingTTL)
 	start := time.Unix(1_700_000_000, 0)
 	target := demandTestPlan(generation, targetTokens, targetTokens, 0)
-	target.ObserveRouteDemand(generation, demand.tracker, key, start)
+	target.ObserveRouteDemand(generation, demand.tracker, key, start, 0)
 	now := start
 	for i := 0; i < demandSizingPlansPerSecond*60*fillMinutes; i++ {
 		now = now.Add(time.Second / demandSizingPlansPerSecond)
@@ -168,7 +168,7 @@ func TestCacheDemandRetainsPlanFor29MinutesAtSizingRate(t *testing.T) {
 		// the fill representative of the mix.
 		_, q := math.Modf((float64(i) + 0.5) * 0.6180339887498949)
 		plan := demandStridePlan(generation, mix.promptTokensAt(q), uint32(i+1))
-		plan.ObserveRouteDemand(generation, demand.tracker, key, now)
+		plan.ObserveRouteDemand(generation, demand.tracker, key, now, 0)
 	}
 	if age := now.Sub(start); age < 28*time.Minute+59*time.Second || age >= cachedemand.SizingTTL {
 		t.Fatalf("fill covered %s, want just under %d minutes", age, fillMinutes)
@@ -179,7 +179,7 @@ func TestCacheDemandRetainsPlanFor29MinutesAtSizingRate(t *testing.T) {
 			recorded, formerCap, cachedemand.MaxEntries)
 	}
 	again := demandTestPlan(generation, targetTokens, targetTokens, 0)
-	again.ObserveRouteDemand(generation, demand.tracker, key, now)
+	again.ObserveRouteDemand(generation, demand.tracker, key, now, 0)
 	if again.RepeatedPrefixTokens != 6_912 || again.AffinityKey() == "" {
 		t.Fatalf("plan observed %s earlier reported %d, want its final boundary 6,912 (index holds %d entries)",
 			now.Sub(start), again.RepeatedPrefixTokens, recorded)

@@ -89,12 +89,12 @@ func TestObservedDemandReachesPreparedFrame(t *testing.T) {
 	plan := f.bind(cacheFlowPlan(
 		cacheFlowAnchor(1, "c"), cacheFlowAnchor(2, "c"), cacheFlowAnchor(3, "c"), cacheFlowAnchor(4, "c")))
 	first := plan
-	first.ObserveRouteDemand(f.generation, history, key, time.Now())
+	first.ObserveRouteDemand(f.generation, history, key, time.Now(), 0)
 	if first.RepeatedPrefixTokens != 0 {
 		t.Fatalf("first plan matched itself: %d", first.RepeatedPrefixTokens)
 	}
 	second := plan
-	second.ObserveRouteDemand(f.generation, history, key, time.Now())
+	second.ObserveRouteDemand(f.generation, history, key, time.Now(), 0)
 	if second.RepeatedPrefixTokens != cacheFlowAnchor(4, "c").TokenCount {
 		t.Fatalf("second plan repeat=%d, want final boundary", second.RepeatedPrefixTokens)
 	}

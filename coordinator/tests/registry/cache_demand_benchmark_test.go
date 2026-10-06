@@ -34,7 +34,7 @@ func BenchmarkCacheDemandMemory(b *testing.B) {
 					TokenCount: int(promptcontract.BlockSize), ChainHash: fmt.Sprintf("%064x", index+1),
 				})
 				plan = bindDemandPlan(generation, plan)
-				plan.ObserveRouteDemand(generation, demand.tracker, routeKey, now)
+				plan.ObserveRouteDemand(generation, demand.tracker, routeKey, now, 0)
 			}
 			after := settledHeapBytes()
 			if entries := demand.index.Len(); entries != cachedemand.MaxEntries {

@@ -121,7 +121,7 @@ func TestCacheRoutingConfigFailsClosedUnlessOff(t *testing.T) {
 }
 
 func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
-	for _, suffix := range []string{"MODE", "PERCENT", "MAX_PLAN_QPS", "TTL", "MAX_HOLDERS", "MAX_DISCOUNT_MS", "MAX_COST_FRACTION", "CACHE_MASTER_KEY"} {
+	for _, suffix := range []string{"MODE", "PERCENT", "MAX_PLAN_QPS", "TTL", "MAX_HOLDERS", "MAX_DISCOUNT_MS", "MAX_COST_FRACTION", "FIRST_SIGHT_MIN_TOKENS", "CACHE_MASTER_KEY"} {
 		key := env.EnvPrefix + "_CACHE_ROUTING_" + suffix
 		if suffix == "CACHE_MASTER_KEY" {
 			key = env.EnvPrefix + "_CACHE_MASTER_KEY"
@@ -130,8 +130,8 @@ func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
 	}
 	cfg := production.ReadConfig().CacheRouting
 	if cfg.Mode != "" || cfg.ActivationPct != 100 || cfg.MaxPlanQPS != 0 ||
-		cfg.TTL != 10*time.Minute || cfg.MaxHolders != 4 ||
-		cfg.MaxDiscountMs != nil || cfg.MaxCostFraction != nil {
+		cfg.TTL != 30*time.Minute || cfg.MaxHolders != 16 ||
+		cfg.MaxDiscountMs != nil || cfg.MaxCostFraction != nil || cfg.FirstSightMinTokens != 1_024 {
 		t.Fatalf("cache routing defaults = %+v", cfg)
 	}
 }

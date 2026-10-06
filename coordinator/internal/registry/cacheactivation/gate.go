@@ -44,6 +44,7 @@ type Gate struct {
 	coldOnly   uint64
 	planEmpty  uint64
 	planFailed uint64
+	firstSight uint64
 }
 
 // New creates a limiter with immutable sampling and rate policy.
@@ -145,6 +146,21 @@ func (g *Gate) RecordPlan(outcome CachePlanOutcome) {
 	}
 }
 
+// RecordPlanned counts one planned request and, in the same critical section,
+// whether it was a novel prompt that first sight prepared for its own
+// follow-up, so no snapshot shows FirstSight above Planned.
+func (g *Gate) RecordPlanned(firstSight bool) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.planned++
+	if firstSight {
+		g.firstSight++
+	}
+}
+
 // Snapshot returns detached configuration and aggregate operational counters.
 func (g *Gate) Snapshot() CacheRoutingActivationStatus {
 	if g == nil {
@@ -159,5 +175,6 @@ func (g *Gate) Snapshot() CacheRoutingActivationStatus {
 		Admitted: g.admitted, Planned: g.planned,
 		ColdOnly:  g.coldOnly,
 		PlanEmpty: g.planEmpty, PlanFailed: g.planFailed,
+		FirstSight: g.firstSight,
 	}
 }

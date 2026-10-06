@@ -16,8 +16,10 @@ const (
 	// reclaims storage, so stale records behind newer arrivals never match.
 	MaxExpiryPerObserve = 1_024
 	MaxEntries          = 1_000_000
-	DefaultTTL          = 10 * time.Minute
-	SizingTTL           = 30 * time.Minute
+	// DefaultTTL matches the 30 minutes providers keep a saved prefix, which
+	// is also the lifetime the indexes are sized for (SizingTTL).
+	DefaultTTL = 30 * time.Minute
+	SizingTTL  = 30 * time.Minute
 )
 
 type Boundary struct {

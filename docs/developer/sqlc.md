@@ -1,6 +1,6 @@
 # Write store queries with sqlc
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 How to add a Postgres query to the coordinator store with sqlc, how to move a
 hand-written store domain to sqlc (the api_keys domain is the worked
@@ -64,7 +64,11 @@ the Postgres-to-Go types are in [sqlc type mapping](../reference/sqlc-type-mappi
 4. If the method is new on the `Store` interface, implement it in
    `MemoryStore` (`coordinator/store/memory/`) too and cover both backends in
    one test, as `TestAPIKeyLifecycleOnEveryBackend`
-   (`coordinator/tests/store/contracts/apikey_backends_test.go`) does.
+   (`coordinator/tests/store/contracts/apikey_backends_test.go`) does. If it writes
+   users or model-registry records, add the matching `CachedStore` invalidation
+   override in `coordinator/store/cached.go`; query generation does not provide
+   cache invalidation. Discover optional backend capabilities through `store.As`
+   so they remain available through the decorator.
 
 ## Steps: convert a hand-written domain
 
@@ -133,7 +137,8 @@ go test ./coordinator/tests/store/... -count=1 -run 'APIKey'
 | A parameter is `pgtype.Timestamp`, not `*time.Time` | The cast is `::timestamp` (without time zone); the overrides cover only `timestamptz` | Cast to `::timestamptz`. |
 | A parameter is named `dollar_1` | A positional parameter that sqlc cannot tie to a column | Use `sqlc.arg('name')`. |
 | A reused `$1` has the name of only its first column | sqlc gives a positional parameter one name | Use one `sqlc.arg('name')` for both places, or two parameters. |
-| `go: downloading go1.26...` fails | `GOTOOLCHAIN=local` with an older Go | Unset `GOTOOLCHAIN` or install Go 1.26. |
+| `requires go >= 1.26.0` with `GOTOOLCHAIN=local` | The selected Go version is too old for sqlc | Unset `GOTOOLCHAIN` to permit automatic toolchain selection, or install Go 1.26. |
+| Downloading the Go toolchain fails | The automatic download could not reach the Go module proxy | Restore proxy access, or install Go 1.26 locally. |
 
 ## Related
 

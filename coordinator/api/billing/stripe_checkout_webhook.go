@@ -80,11 +80,11 @@ func (s *Owner) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Checkout settlement not confirmed", status)
 		return
 	}
-	// Referral.Apply is idempotent; repeat deliveries can recover its failure
-	// without re-crediting the payment.
+	// Legacy checkout attribution affects future inference, not the deposit.
+	// Referral.Apply is idempotent; retries recover without re-crediting payment.
 	if code := obj.Metadata["referral_code"]; code != "" {
 		if err := s.billing.Referral().Apply(account, code); err != nil {
-			if errors.Is(err, billing.ErrReferralAlreadyAssigned) || errors.Is(err, billing.ErrReferralSelf) || errors.Is(err, billing.ErrReferralInvalidCode) {
+			if errors.Is(err, billing.ErrInvalidReferral) || errors.Is(err, store.ErrReferralConflict) {
 				// The payment is settled. A permanent, inapplicable referral
 				// cannot improve on retry and must never change attribution.
 				w.WriteHeader(http.StatusOK)

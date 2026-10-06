@@ -100,7 +100,7 @@ The scrub keeps these on purpose. The marker tests allow only
 | Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key another account's provider has; their trust-reuse cache entries and MDM jobs | They belong to the other account too | `retainedSharedSEKey` |
 | App Attest receipts, receipt blobs and receipt jobs of a key another account's session used | They belong to the other account too | `retainedSharedAppAttestKey` |
 | `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token or wallet address after the scrub | `MarkErasureErased` |
-| `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00021_erasure_refuse_credits.sql` |
+| `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00025_erasure_refuse_credits.sql` |
 | `erasure_outbox.external_id` | The Stripe ID an operator needs to delete or redact the Stripe object | `erasureMarkerAllowList` |
 
 The plan and the applied summary list the three shared kinds in `retained`
@@ -129,7 +129,7 @@ Stripe steps.
 
 ### `erasure_requests`
 
-`coordinator/store/postgres/schema/migrations/00018_erasure_tables.sql`.
+`coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -176,7 +176,7 @@ Indexes: `erasure_outbox_request` (`request_id`), `erasure_outbox_due`
 
 ### `erasure_refused_credits`
 
-`coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`.
+`coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -205,8 +205,8 @@ first.
 
 | Version | Index | Used by |
 |---|---|---|
-| 19 | `idx_billing_sessions_referral_code` on `billing_sessions (referral_code) WHERE referral_code <> ''` | Rule 23 |
-| 20 | `idx_users_privy_deleted` on `users (privy_user_id) WHERE deleted_at IS NOT NULL` | `PrivyUserPendingErasure` |
+| 23 | `idx_billing_sessions_referral_code` on `billing_sessions (referral_code) WHERE referral_code <> ''` | Rule 23 |
+| 24 | `idx_users_privy_deleted` on `users (privy_user_id) WHERE deleted_at IS NOT NULL` | `PrivyUserPendingErasure` |
 
 ## Configuration and constants
 

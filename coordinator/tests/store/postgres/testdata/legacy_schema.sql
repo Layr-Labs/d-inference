@@ -3336,5 +3336,3 @@ ALTER TABLE ONLY public.referrals
 --
 -- PostgreSQL database dump complete
 --
-
-

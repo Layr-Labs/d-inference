@@ -103,7 +103,7 @@ stateDiagram-v2
 
 An account has at most one `planned` or `pending` request: the partial unique
 index `erasure_requests_open` enforces it
-(`coordinator/store/postgres/schema/migrations/00018_erasure_tables.sql`). A new plan
+(`coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`). A new plan
 replaces the token of a `planned` request. A plan while a request is `pending`,
 or after the scrub, answers 409 `erasure_conflict`, because the user row is no
 longer live.
@@ -243,7 +243,7 @@ sequenceDiagram
 A payout can bounce, a Global Payout can come back, or a settlement or
 referral reward can land after the scrub. Each would refill a forfeited
 account. Migration 21
-(`coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`)
+(`coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`)
 adds three triggers that fire only when the account has an `erased` request
 (`erasure_account_erased`):
 
@@ -273,7 +273,7 @@ during the grace period still apply, because the erasure can be canceled.
 | A Privy login after the scrub finds the old account | The stored Privy ID is random, so the login makes a new, empty account | `ScrubUsersRow` |
 | A cached user keeps authenticating | `CachedStore` overrides the three writers | `coordinator/store/cached.go` |
 | A Checkout Session completes after the scrub | `ErrCheckoutErased`: the webhook answers 200 and credits nothing | `coordinator/store/postgres/stripe_settlement.go` (`CompleteStripeCheckout`); `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) |
-| A late credit refills the balance | The refused-credit triggers | `00021_erasure_refuse_credits.sql` |
+| A late credit refills the balance | The refused-credit triggers | `00025_erasure_refuse_credits.sql` |
 
 ### Shared machines and shared keys
 
@@ -370,7 +370,7 @@ Outside the live database:
 | Postgres steps | `coordinator/store/postgres/erasure.go` (`PlanAccountErasure`, `RequestAccountErasure`, `ScrubAccount`, `forfeitBalance`); `coordinator/store/postgres/erasure_rules.go` (`erasureStatements`, `applyRules`); `coordinator/store/postgres/erasure_keys.go` (`collectErasureKeys`) |
 | SQL | `coordinator/store/postgres/queries/erasure.sql` (sqlc input), `coordinator/store/postgres/storedb/erasure.sql.go` (generated) |
 | Memory steps | `coordinator/store/memory/erasure.go` (`collectErasureKeysLocked`, `refuseErasedCreditLocked`), `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`, `runMemoryRulesLocked`) |
-| Schema | `coordinator/store/postgres/schema/migrations/00018_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00021_erasure_refuse_credits.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 19, 20) |
+| Schema | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 19, 20) |
 | Cache invalidation | `coordinator/store/cached.go` |
 | HTTP | `coordinator/api/accounts/erasure/handlers.go`; owner built in `coordinator/api/server.go` (`NewRuntime`); routes in `coordinator/api/routes.go` |
 | Loop, post-commit clears | `coordinator/api/accounts/erasure/loop.go` (`Owner.StartLoop`, `scrub`); `coordinator/api/accounts/erasure/owner.go` (`Hooks`); `coordinator/api/accounts_lifecycle.go` (`StartAccountErasureLoop`), called from `coordinator/app/lifecycle.go` |

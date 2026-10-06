@@ -16,6 +16,7 @@ import (
 
 type Store interface {
 	store.InviteStore
+	store.SmallModelsInterestStore
 	GetAccountEarningsSummary(string) (store.ProviderEarningsSummary, error)
 	AccountEarningsWindows(string, time.Time) (store.AccountEarningsWindows, error)
 	GetBalance(string) int64

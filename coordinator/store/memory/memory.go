@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/internal/store/consumersettlement"
 	inventory "github.com/eigeninference/d-inference/coordinator/internal/store/inventory"
 
 	"sync"
@@ -21,11 +22,13 @@ var _ store.Store = (*MemoryStore)(nil)
 type MemoryStore struct {
 	now                       func() time.Time
 	history                   *memoryhistory.State
+	smallModelsInterest       map[string]store.SmallModelsInterest
 	autopilotRecords          map[string]store.AutopilotRecord
 	modelTokenProviderCarries map[string]int64
 	modelTokenPromotions      map[string]store.ModelTokenPromotion
 	modelTokenGrants          map[string]map[string]store.ModelTokenGrant
 	modelTokenReservations    map[string]store.ModelTokenReservation
+	consumerSettlements       map[string]consumersettlement.Record
 
 	mu           sync.RWMutex
 	epochLocks   epochlocks.Owner
@@ -116,7 +119,9 @@ type MemoryStore struct {
 	// codeAttestations: lost on restart in the memory store (same as the in-memory
 	// cache it backs), but the methods exist so the store seam is uniform and
 	// Postgres persists for real as the production backend.
-	providerTrustReuse map[string]store.ProviderTrustReuse
+	providerTrustReuse    map[string]store.ProviderTrustReuse
+	legacyMDMCohortCutoff time.Time
+	legacyMDMCohort       []store.LegacyMDMMachine
 
 	// Durable scheduler parity for tests/development. Key is SE key + task kind.
 	verificationJobs map[string]store.VerificationJob
@@ -162,8 +167,10 @@ func NewMemory(scfg store.Config) *MemoryStore {
 		now = time.Now
 	}
 	s := &MemoryStore{
+		consumerSettlements:           make(map[string]consumersettlement.Record),
 		now:                           now,
 		history:                       memoryhistory.New(),
+		smallModelsInterest:           make(map[string]store.SmallModelsInterest),
 		modelDemandStartedAt:          time.Now().UTC(),
 		erasureRequests:               make(map[string]*memoryErasureRequest),
 		erasedAccounts:                make(map[string]bool),

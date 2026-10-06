@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
@@ -38,6 +39,7 @@ func (s *Owner) HandleStripeCreateSession(w http.ResponseWriter, r *http.Request
 
 	accountID := access.ResolveAccountID(r)
 
+	req.ReferralCode = strings.ToUpper(strings.TrimSpace(req.ReferralCode))
 	if req.ReferralCode != "" {
 		if _, err := s.billing.Store().GetReferrerByCode(req.ReferralCode); err != nil {
 			httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "invalid referral code"))

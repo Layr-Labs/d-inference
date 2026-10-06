@@ -478,7 +478,7 @@ func (s *MemoryStore) ListErasureRefusedCredits(ctx context.Context, accountID s
 }
 
 // refuseErasedCreditLocked records and refuses a credit to an erased
-// account, as the Postgres triggers in 00021_erasure_refuse_credits.sql do.
+// account, as the Postgres triggers in 00025_erasure_refuse_credits.sql do.
 func (s *MemoryStore) refuseErasedCreditLocked(accountID string, amount int64, entryType store.LedgerEntryType, reference string, at time.Time) bool {
 	if amount <= 0 || !s.erasedAccounts[accountID] {
 		return false

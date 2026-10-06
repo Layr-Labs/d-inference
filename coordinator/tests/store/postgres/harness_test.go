@@ -53,6 +53,7 @@ func testPostgresStore(t testing.TB) *postgresFixture {
 		"balances",
 		"ledger_entries",
 		"billing_sessions",
+		"small_models_interest",
 		"users",
 		"device_codes",
 		"provider_tokens",

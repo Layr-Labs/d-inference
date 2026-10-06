@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -17,6 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 ACTION = ROOT / ".github/actions/provider-ci-build/action.yml"
 BUILD_ACTION = "./.github/actions/provider-ci-build"
+PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
+                         '  --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \\\n'
+                         '  --diagnostic-after-seconds 480 --timeout-seconds 900 \\\n'
+                         '  -- ../scripts/run-provider-tests.sh')
 READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
 PROVIDER_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
@@ -41,6 +46,7 @@ MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo retained-fault gate":
         "../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel",
 }
+COVERAGE_STEPS = ("Collect provider coverage profiles", "Report provider coverage")
 LANES = {
     "test-provider": "provider",
     "test-provider-sdk": "sdk",
@@ -203,6 +209,37 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                     self.assertEqual(restores, [])
                 self.assertNotIn("spm-v3-", self.jobs[job_id])
 
+    def test_only_the_provider_lane_collects_and_reports_coverage(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        names = [field(step, "name", indent=6) for step in steps]
+        build = next(index for index, step in enumerate(steps) if field(step, "uses") == BUILD_ACTION)
+        collect = names.index(COVERAGE_STEPS[0])
+        report = names.index(COVERAGE_STEPS[1])
+        upload = names.index("Upload provider coverage report")
+        tests = [index for index, step in enumerate(steps)
+                 if "run-provider-tests.sh" in step or "run-nested-suite.sh" in step]
+        # Profiles go to one directory from the first provider process on;
+        # the report runs after every test step and cannot change their results.
+        self.assertEqual(collect, build + 1)
+        self.assertIn('echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"', steps[collect])
+        self.assertIn('echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"', steps[collect])
+        self.assertGreater(report, max(tests))
+        self.assertEqual(upload, report + 1)
+        self.assertEqual(field(steps[report], "if"),
+                         "${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}")
+        self.assertIn("xcrun llvm-profdata merge", steps[report])
+        self.assertIn("name: provider-coverage", steps[upload])
+        self.assertNotIn("continue-on-error:", steps[report])
+        test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
+        self.assertEqual(field(test_step, "id"), "provider-unit-tests")
+        for job_id in ("test-provider-sdk", "test-provider-parity"):
+            self.assertNotIn("LLVM_PROFILE_FILE", self.jobs[job_id])
+            self.assertNotIn("PROVIDER_COVERAGE_DIR", self.jobs[job_id])
+        build_step = next(step for step in step_blocks(ACTION.read_text(), indent=4)
+                          if field(step, "id", indent=6) == "provider-build")
+        self.assertIn('if [ "$LANE" = provider ]; then\n  coverage=(--enable-code-coverage)',
+                      textwrap.dedent(build_step.split("run: |\n", 1)[1]))
+
     def test_provider_entrypoint_and_resource_installer_checks_are_retained(self):
         steps = step_blocks(self.jobs["test-provider"])
         expected = (
@@ -210,14 +247,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             "python3 scripts/test-profile-inventory-auth.py",
             MIMO_PREPARE,
             MIMO_PROVIDER_PREPARE,
-            "../scripts/run-provider-tests.sh",
+            PROVIDER_TEST_COMMAND,
             *MIMO_NATIVE_COMMANDS.values(),
             'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
             "./scripts/test-install-atomic.sh",
         )
-        self.assertEqual([run_command(step) for step in steps if field(step, "run")], list(expected))
-        test_step = next(step for step in steps if run_command(step) == "../scripts/run-provider-tests.sh")
+        runs = [run_command(step) for step in steps
+                if field(step, "run") and field(step, "name", indent=6) not in COVERAGE_STEPS]
+        self.assertEqual(runs, list(expected))
+        test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
+        self.assertEqual(field(test_step, "id"), "provider-unit-tests")
+        self.assertEqual(field(test_step, "timeout-minutes"), "20")
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
@@ -226,6 +267,66 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(installer, "timeout-minutes"), "2")
         self.assertNotIn("rustup", self.jobs["test-provider"])
         self.assertNotIn("actions/setup-go@", self.jobs["test-provider"])
+
+    def test_provider_watchdog_diagnostics_survive_test_failure_not_cancellation(self):
+        steps = step_blocks(self.jobs["test-provider"])
+        upload = next(step for step in steps if field(step, "name", indent=6) == "Upload provider test diagnostics")
+        self.assertEqual(field(upload, "if"), "${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}")
+        self.assertEqual(field(upload, "uses"), "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1")
+        self.assertEqual(field(upload, "path", indent=10), "${{ runner.temp }}/provider-test-diagnostics")
+        self.assertEqual(field(upload, "retention-days", indent=10), "7")
+        self.assertNotIn("continue-on-error:", self.jobs["test-provider"])
+
+    def test_coverage_summary_preserves_weighted_rows_and_failure_checks(self):
+        report = next(step for step in step_blocks(self.jobs["test-provider"])
+                      if field(step, "id") == "provider-coverage")
+        summary_script = run_command(report).split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        source_root = "/fixture/provider-swift/Sources"
+        metrics = ("lines", "regions", "functions")
+
+        def summary(covered, count):
+            return {metric: {"covered": covered, "count": count} for metric in metrics}
+
+        # Unequal file sizes pin weighted coverage, rather than an average
+        # of percentages. Only the total includes the helper target.
+        files = [
+            {"filename": f"{source_root}/{target}/File.swift", "summary": summary(covered, count)}
+            for target, covered, count in (
+                ("ProviderCore", 1, 2), ("ProviderCoreFoundation", 2, 8),
+                ("ProviderAppAttest", 1, 5), ("DarkbloomFanCore", 1, 5),
+                ("darkbloom", 3, 10), ("ProviderBenchmark", 4, 10),
+                ("darkbloom-fan-helper", 8, 10),
+            )
+        ]
+        baseline = {"data": [{"files": files, "totals": summary(20, 50)}]}
+        with tempfile.TemporaryDirectory(prefix="provider-coverage-summary-") as temporary:
+            export = Path(temporary) / "coverage.json"
+            for scenario in ("valid", "missing metric", "empty row"):
+                with self.subTest(scenario=scenario):
+                    payload = json.loads(json.dumps(baseline))
+                    if scenario == "missing metric":
+                        del payload["data"][0]["files"][0]["summary"]["regions"]
+                    elif scenario == "empty row":
+                        payload["data"][0]["files"] = [entry for entry in payload["data"][0]["files"]
+                                                        if "/darkbloom/" not in entry["filename"]]
+                    export.write_text(json.dumps(payload))
+                    result = subprocess.run(
+                        [sys.executable, "-c", summary_script, str(export), source_root],
+                        capture_output=True, text=True, timeout=5)
+                    if scenario != "valid":
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("regions" if scenario == "missing metric" else
+                                      "No lines for Provider CLI (`darkbloom`)", result.stderr)
+                        continue
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    rows = [line for line in result.stdout.splitlines() if line.startswith("| Provider")]
+                    self.assertEqual(rows, [
+                        "| Provider (Swift) product | 25.00% of 20 lines | 25.00% regions | 25.00% | 80% (report-only) |",
+                        "| Provider CLI (`darkbloom`) | 30.00% of 10 lines | 30.00% regions | 30.00% | 80% (report-only) |",
+                        "| Provider benchmark (`ProviderBenchmark`) | 40.00% of 10 lines | 40.00% regions | 40.00% | 80% (report-only) |",
+                        "| Provider (Swift) total | 40.00% of 50 lines | 40.00% regions | 40.00% | 80% (report-only) |",
+                    ])
+                    self.assertIn("These targets are only in the total: `darkbloom-fan-helper`.", result.stdout)
 
     def test_sdk_retains_every_original_gate_command(self):
         steps = step_blocks(self.jobs["test-provider-sdk"])
@@ -301,7 +402,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertNotIn(selector, self.jobs["test-provider-parity"])
         commands = Counter(run_command(step) for job in self.jobs.values() for step in step_blocks(job))
         self.assertEqual(commands["../../scripts/run-paged-kernel-tests.sh"], 1)
-        self.assertEqual(commands["../scripts/run-provider-tests.sh"], 1)
+        self.assertEqual(commands[PROVIDER_TEST_COMMAND], 1)
         self.assertEqual(commands["./scripts/verify-prompt-parity.sh"], 1)
 
     def test_parity_retains_pinned_go_and_original_script(self):

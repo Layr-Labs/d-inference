@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -22,4 +23,7 @@ type Controller struct {
 	Error         func(string, *registry.PendingRequest, int, string, string, string, ...protocol.CoordinatorInferenceErrorCause)
 	Outcome       func(*registry.PendingRequest, *store.InferenceRouteOutcome)
 	ProviderError func(http.ResponseWriter, protocol.InferenceErrorMessage)
+
+	// ResponseLimits bounds the chunks NonStream holds before it responds.
+	ResponseLimits responselimit.Limits
 }

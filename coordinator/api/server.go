@@ -189,6 +189,8 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		ServiceReservations:      cfg.ServiceReservations,
 		FirstContentDeadlineBase: cfg.FirstContentDeadlineBase,
 		FirstContentSLAAccounts:  cfg.FirstContentSLAAccounts, MediaFetch: cfg.MediaFetch,
+		NonStreamingResponseMaxBytes:  cfg.NonStreamingResponseMaxBytes,
+		NonStreamingResponseMaxChunks: cfg.NonStreamingResponseMaxChunks,
 	})
 	s.access.SetRateObservation(s.observation.Incr, observation.StampRateLimit)
 	s.reporting = reporting.New(reporting.Dependencies{

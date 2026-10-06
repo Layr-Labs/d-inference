@@ -691,9 +691,9 @@ trust_boundaries:
       correlates the callback's CommandUUID against the outstanding commands the
       coordinator itself issued (outstandingCommandTTL 30 min) and processes only the
       read-only request types SecurityInfo and DeviceInformation; uncorrelated callbacks
-      are dropped and never matched by UDID alone. The handler logs body_size and a
-      500-byte body_preview of the plist at Debug level. MicroMDM credentials are used
-      only for outbound API calls to MicroMDM, not to authenticate inbound callbacks.
+      are dropped and never matched by UDID alone. The handler logs body_size, not the
+      body, at Debug level. MicroMDM credentials are used only for outbound API calls
+      to MicroMDM, not to authenticate inbound callbacks.
 
       When a provider registers, the coordinator's store-backed MDM scheduler sends a
       SecurityInfo MDM command to the enrolled device (mdm.go
@@ -735,10 +735,6 @@ trust_boundaries:
         processed — but a forged payload for a live CommandUUID could still grant
         hardware trust without genuine MDM enrollment. No mTLS or IP allowlist
         (server.go HandleMDMWebhook, SEC-004)."
-      - "HandleMDMWebhook logs body_size and a 500-byte body_preview of the MDM plist at
-        Debug level. MDM plists carry device identifiers (UDID, serial), so Debug-level
-        coordinator logs are identity-bearing even though they never contain inference
-        data."
       - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
         visible in the privacy-redacted public attestation status. An attacker can
         pre-compute that binding value; it is not a per-challenge freshness nonce.
@@ -2586,9 +2582,23 @@ threats:
       - coordinator/api/server.go
       - coordinator/api/enroll.go
       - coordinator/api/consumer.go
+      - scripts/install.sh
     mitigations:
       - description: baseURL should be set in production; fallback to Host header is the risk.
         status: open
+      - description: >
+          The installer persists the substituted URL: for any coordinator other
+          than https://api.darkbloom.dev, scripts/install.sh
+          (bind_provider_coordinator) writes it into provider.toml as the
+          provider's [coordinator] url (the production installer removes that
+          url instead), so a Host-derived URL would rebind later
+          login/start traffic, not only the install-time download. The binding
+          accepts only https://host[:port] with a strict host character set
+          (http:// only for localhost/127.0.0.1) and prints the bound URL.
+          Production lists EIGENINFERENCE_BASE_URL in
+          deploy/gcp/prod/required-env-keys.txt and dev sets it in
+          deploy/gcp/refresh-env.sh, so neither serves a Host-derived installer.
+        status: implemented
       - description: >
           enroll.go now generates SCEP/MDM URLs (the ACME payload was removed
           2026-07-03) via the shared resolveBaseURL

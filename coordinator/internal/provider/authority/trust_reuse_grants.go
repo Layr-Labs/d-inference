@@ -176,7 +176,7 @@ func (s *Service,
 	)
 	if granted {
 		s.logger.Info("trust-reuse: hardware trust granted without reuse record (no self-reported binary hash)",
-			"serial", serial)
+			"provider_id", provider.ID)
 	}
 	return granted
 }

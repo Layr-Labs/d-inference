@@ -27,6 +27,33 @@ func memoryNoTable(*MemoryStore, *erasure.Keys, time.Time, bool) int64 { return 
 // form. runMemoryRulesLocked fails on a rule without one, and
 // TestErasurePlanRunsEveryRuleInOrder checks the plan of each backend.
 var memoryErasureRules = map[string]memoryRule{
+	"legacy_mdm_cohort": func(s *MemoryStore, k *erasure.Keys, _ time.Time, apply bool) int64 {
+		var n int64
+		for _, member := range s.legacyMDMCohort {
+			if member.AccountID == k.AccountID {
+				n++
+			}
+		}
+		if apply {
+			kept := s.legacyMDMCohort[:0]
+			for _, member := range s.legacyMDMCohort {
+				if member.AccountID != k.AccountID {
+					kept = append(kept, member)
+				}
+			}
+			s.legacyMDMCohort = kept
+		}
+		return n
+	},
+	"small_models_interest": func(s *MemoryStore, k *erasure.Keys, _ time.Time, apply bool) int64 {
+		if _, ok := s.smallModelsInterest[k.AccountID]; !ok {
+			return 0
+		}
+		if apply {
+			delete(s.smallModelsInterest, k.AccountID)
+		}
+		return 1
+	},
 	"users": func(s *MemoryStore, k *erasure.Keys, _ time.Time, apply bool) int64 {
 		u := s.usersByAccountID[k.AccountID]
 		if u == nil {

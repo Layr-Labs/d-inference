@@ -1,6 +1,6 @@
 # Personal-data rules
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Reference for account erasure: every personal column the scrub changes and
 how, the data it keeps and why, the erasure tables, and the constants. How the
@@ -68,6 +68,9 @@ predicate as the apply query. "Unshared" means no other account uses the key
 | 31 | `payments_provider_address` | `payments` | `provider_address`: random per wallet | `provider_address` = a named wallet address | `CountPaymentProviderAddress` / `ScrubPaymentProviderAddress` |
 | 32 | `provider_payouts_address` | `provider_payouts` | `provider_address`: random per wallet | `provider_address` = a named wallet address | `CountProviderPayoutAddress` / `ScrubProviderPayoutAddress` |
 
+| 33 | `legacy_mdm_cohort` | `legacy_mdm_cohort` | delete row | `account_id` | `CountLegacyMDMCohortRows` / `DeleteLegacyMDMCohortRows` |
+| 34 | `small_models_interest` | `small_models_interest` | delete row | `account_id` | `CountSmallModelsInterestRows` / `DeleteSmallModelsInterestRows` |
+
 Notes:
 
 - Rules 8 to 11, 13 to 18 and 21 run only when the account has keys of
@@ -82,6 +85,7 @@ Notes:
 - Before the rules, `forfeitBalance` sets `balances.balance_micro_usd` and
   `withdrawable_micro_usd` to 0 and writes one `erasure_forfeit` ledger entry
   (`coordinator/store/postgres/erasure.go`).
+
 
 ## Retained data
 

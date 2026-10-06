@@ -3353,3 +3353,16 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Account erasure regressions
+
+`coordinator/tests/internal/erasurefixture/account.go` seeds an account's
+credentials, provider, balances and Stripe session for mirrored store tests.
+`coordinator/tests/store/contracts/erasure_late_writes_test.go` checks late
+external results, location suppression without lost accounting and refused
+credit replay. PostgreSQL tests use real row/advisory-lock barriers for
+withdrawal admission and simultaneous shared-owner scrubs; the composed HTTP
+Checkout regression pauses a local fake Stripe server across erasure.
+The marker fixture in `coordinator/tests/store/postgres/erasure_marker_test.go`
+seeds every personal-data rule, including frozen legacy MDM cohort and saved
+hardware interest, and verifies another account's markers survive.

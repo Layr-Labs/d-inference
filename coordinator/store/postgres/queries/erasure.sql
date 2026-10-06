@@ -437,3 +437,15 @@ WHERE r.account_id = $1 AND r.state <> 'erased' AND o.external_id <> '';
 -- name: DeleteStagedErasureObjects :exec
 DELETE FROM erasure_outbox o USING erasure_requests r
 WHERE r.id = o.request_id AND r.account_id = $1 AND r.state <> 'erased';
+
+-- name: CountLegacyMDMCohortRows :one
+SELECT COUNT(*) FROM legacy_mdm_cohort WHERE account_id = $1;
+
+-- name: DeleteLegacyMDMCohortRows :execrows
+DELETE FROM legacy_mdm_cohort WHERE account_id = $1;
+
+-- name: CountSmallModelsInterestRows :one
+SELECT COUNT(*) FROM small_models_interest WHERE account_id = $1;
+
+-- name: DeleteSmallModelsInterestRows :execrows
+DELETE FROM small_models_interest WHERE account_id = $1;

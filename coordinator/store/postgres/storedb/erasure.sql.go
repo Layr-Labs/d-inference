@@ -178,6 +178,17 @@ func (q *Queries) CountGlobalRecipientRow(ctx context.Context, accountID string)
 	return count, err
 }
 
+const countLegacyMDMCohortRows = `-- name: CountLegacyMDMCohortRows :one
+SELECT COUNT(*) FROM legacy_mdm_cohort WHERE account_id = $1
+`
+
+func (q *Queries) CountLegacyMDMCohortRows(ctx context.Context, accountID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countLegacyMDMCohortRows, accountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countMDASerialAliasesRows = `-- name: CountMDASerialAliasesRows :one
 SELECT COUNT(*) FROM darkbloom_machine_aliases
 WHERE kind = 'mda_serial' AND scope = '' AND digest = ANY($1::text[])
@@ -367,6 +378,17 @@ func (q *Queries) CountReferrersRow(ctx context.Context, accountID string) (int6
 	return count, err
 }
 
+const countSmallModelsInterestRows = `-- name: CountSmallModelsInterestRows :one
+SELECT COUNT(*) FROM small_models_interest WHERE account_id = $1
+`
+
+func (q *Queries) CountSmallModelsInterestRows(ctx context.Context, accountID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countSmallModelsInterestRows, accountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countStripeLedgerReferences = `-- name: CountStripeLedgerReferences :one
 SELECT COUNT(*) FROM ledger_entries WHERE account_id = $1 AND reference LIKE 'stripe:%'
 `
@@ -510,6 +532,18 @@ func (q *Queries) DeleteDeviceCodesRows(ctx context.Context, accountID string) (
 	return result.RowsAffected(), nil
 }
 
+const deleteLegacyMDMCohortRows = `-- name: DeleteLegacyMDMCohortRows :execrows
+DELETE FROM legacy_mdm_cohort WHERE account_id = $1
+`
+
+func (q *Queries) DeleteLegacyMDMCohortRows(ctx context.Context, accountID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteLegacyMDMCohortRows, accountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteMDASerialAliasesRows = `-- name: DeleteMDASerialAliasesRows :execrows
 DELETE FROM darkbloom_machine_aliases
 WHERE kind = 'mda_serial' AND scope = '' AND digest = ANY($1::text[])
@@ -553,6 +587,18 @@ DELETE FROM provider_verification_jobs WHERE se_pubkey = ANY($1::text[])
 
 func (q *Queries) DeleteProviderVerificationJobsRows(ctx context.Context, seKeys []string) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteProviderVerificationJobsRows, seKeys)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteSmallModelsInterestRows = `-- name: DeleteSmallModelsInterestRows :execrows
+DELETE FROM small_models_interest WHERE account_id = $1
+`
+
+func (q *Queries) DeleteSmallModelsInterestRows(ctx context.Context, accountID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSmallModelsInterestRows, accountID)
 	if err != nil {
 		return 0, err
 	}

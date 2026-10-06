@@ -140,6 +140,15 @@ go test ./coordinator/tests/store/... -count=1 -run 'APIKey'
 | `requires go >= 1.26.0` with `GOTOOLCHAIN=local` | The selected Go version is too old for sqlc | Unset `GOTOOLCHAIN` to permit automatic toolchain selection, or install Go 1.26. |
 | Downloading the Go toolchain fails | The automatic download could not reach the Go module proxy | Restore proxy access, or install Go 1.26 locally. |
 
+### Erasure query ownership
+
+Erasure queries include typed historical-provider discovery, shared-key
+ownership excluding erased accounts, payment-row locks and staged external
+object collection. The callback passed to `erasureTx` receives the transaction's
+bounded context; use that argument for every generated query. Source:
+`coordinator/store/postgres/queries/erasure.sql`; adapters:
+`coordinator/store/postgres/erasure.go` and `coordinator/store/postgres/erasure_keys.go`.
+
 ## Related
 
 - [Schema lifecycle](../architecture/schema-lifecycle.md#generated-queries-sqlc) — where sqlc sits between the schema and the store

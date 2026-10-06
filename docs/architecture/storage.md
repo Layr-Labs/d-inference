@@ -473,6 +473,17 @@ KV blocks under a per-model key, not tokens.
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/internal/provider/journal/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |
 
+### Erasure persistence boundaries
+
+Refused credits include `reference_hash`, a SHA-256 identity that preserves
+once-only callback deduplication after the public reference is scrubbed.
+Account-owned credential/provider/hardware-interest writes and payout admissions
+synchronize with deletion using the user row. Late external creation results
+are staged in `erasure_outbox`, including during grace; only erased requests
+may deliver them. The scrub also deletes the account's frozen legacy MDM
+cohort and saved hardware interest. Code and synchronization:
+[concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
+
 ## Related
 
 - [`../reference/configuration.md`](../reference/configuration.md) — `EIGENINFERENCE_DATABASE_URL`, `EIGENINFERENCE_ALLOW_MEMORY_STORE`, `USER_PERSISTENT_DATA_PATH` and the provider path overrides

@@ -10,11 +10,22 @@ import (
 )
 
 func (s *PostgresStore) UpsertSmallModelsInterest(ctx context.Context, record store.SmallModelsInterest) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO small_models_interest (account_id,mac_type,chip,ram_gb)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, record.AccountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO small_models_interest (account_id,mac_type,chip,ram_gb)
  VALUES ($1,$2,$3,$4) ON CONFLICT (account_id) DO UPDATE SET
  mac_type=EXCLUDED.mac_type, chip=EXCLUDED.chip, ram_gb=EXCLUDED.ram_gb, updated_at=NOW()`,
 		record.AccountID, record.MacType, record.Chip, record.RAMGB)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetSmallModelsInterest(ctx context.Context, accountID string) (*store.SmallModelsInterest, error) {

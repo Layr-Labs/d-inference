@@ -395,6 +395,15 @@ Logs carry bounded labels only, never SQL or parameters
 | Tests | `coordinator/tests/store/postgres/migrations_test.go`, `coordinator/tests/store/postgres/migration_index_test.go`, `coordinator/tests/store/postgres/migration_harness_test.go` |
 | Manual SQL | `coordinator/store/postgres/migrations/` |
 
+### Erasure transaction bounds
+
+Version 25's new refused-credit table retains a non-null `reference_hash`
+computed before reference sanitization by `erasure_refuse_ledger_credit`.
+This changes no existing large-table layout. `erasureTx` passes its two-minute
+context to all transaction queries and commit; rollback uses a separate
+five-second cleanup context (`coordinator/store/postgres/erasure.go`,
+`coordinator/store/postgres/erasure_fences.go`).
+
 ## Related
 
 - [Add a database migration](../developer/database-migrations.md) — the steps

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -1099,3 +1099,13 @@ for update activation. Requests are coalesced by revision so an inventory change
 while a close is underway cannot be lost. Deadlines leave work alive; lifecycle
 stop takes precedence. Unexpected network loss still cancels work on the dead
 connection and does not replay partially emitted output.
+
+## Account deletion disconnects
+
+After the account-erasure transaction revokes credentials,
+`DisconnectAccount` (`coordinator/registry/provider_lifecycle.go`) snapshots
+linked provider IDs under the registry read lock, then calls the existing
+`Disconnect` lifecycle outside that lock. Each disconnect cleans reservations,
+queued work and provider state through the ordinary lifecycle. Persistence
+also checks the deleted account, so a heartbeat already in flight cannot add a
+fresh provider row. See [account erasure](account-erasure.md).

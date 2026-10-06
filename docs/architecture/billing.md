@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -670,6 +670,17 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Base rewards | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`); `coordinator/payments/baserewards/` (`floor.go`, `alloc.go`, `epoch.go`, `engine.go`); `coordinator/store/postgres/floor_draw_batch.go` (`SettleProviderFloorDrawBatch`); `coordinator/store/postgres/base_rewards.go` (`settleProviderFloorDraw`, `SumProviderEarningsByKey`); `coordinator/api/billing/base_rewards_handlers.go` (`HandleAdminBaseRewards`); `coordinator/api/server_services.go` (`BaseRewards`) | `GET /v1/admin/base-rewards` |
 | Admin auth | `coordinator/api/access/authorize.go` (`IsAdminAuthorized`); `coordinator/api/access/authorize.go` (`RequireAdminKey`); `coordinator/api/access/publishing.go` (`RequirePublishingAPIKey`) | — |
 | Rate limits | `coordinator/ratelimit/config.go` (`Financial`, `Service`) | — |
+
+### Account erasure during billing work
+
+Account deletion fences new withdrawal admission before balances are changed.
+Scrub locks existing payment rows before balances, allowing settlement callbacks
+to finish without reversing their lock order. Late Stripe account, recipient
+and Checkout creation results become durable cleanup work; they cannot restore
+local personal fields or return a usable Checkout URL. Once-only credits retain
+a hashed reference identity in the refused-credit audit, while ordinary repeatable
+credits keep their existing semantics. Mechanism and code ownership:
+[concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
 
 ## Related
 

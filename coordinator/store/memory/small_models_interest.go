@@ -18,6 +18,9 @@ func (s *MemoryStore) UpsertSmallModelsInterest(ctx context.Context, record stor
 	if s.usersByAccountID[record.AccountID] == nil {
 		return store.ErrNotFound
 	}
+	if err := s.accountAdmissionLocked(record.AccountID); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	previous, exists := s.smallModelsInterest[record.AccountID]
 	record.CreatedAt = now

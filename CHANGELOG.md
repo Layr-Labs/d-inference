@@ -2,6 +2,8 @@
 
 ## Unreleased — account erasure
 
+- Fence in-flight credential creation, provider persistence, financial admission and delayed Stripe responses against deletion. Preserve late external IDs for cleanup, strip late telemetry locations while retaining accounting, and remove frozen MDM cohort/hardware-interest records. Shared identities are removed after the last owner is erased; replayed refused refunds remain idempotent.
+
 - Add admin account erasure (GDPR): `POST /v1/admin/accounts/{account_id}/erasure/plan` (dry run and a 15-minute confirm token), `POST …/erasure` (soft delete; `force` scrubs at once), `GET …/erasure` and `POST …/erasure/cancel`. The confirm call must repeat the token and the account email, and refuses while a withdrawal is in flight.
 - The soft delete revokes the account's API keys and provider tokens, disconnects its providers and starts a grace period (`EIGENINFERENCE_ERASURE_GRACE`, default 30 days). A Privy login during the grace period gets 403 `account_pending_deletion`; after the scrub the same login creates a new account.
 - The scrub removes emails, labels, serial numbers, MDA chains, locations, raw logs, App Attest proofs, referrer codes, Stripe IDs and the named wallet addresses in one checked transaction, forfeits the balance with an `erasure_forfeit` ledger entry, and queues the deletion of every Stripe account and recipient the account used. Rows of a Secure Enclave or App Attest key another account shares are kept. IDs and financial records stay.

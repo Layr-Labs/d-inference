@@ -1,6 +1,6 @@
 # Account erasure
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 This page explains how the coordinator erases the personal data of one
 consumer or provider account (GDPR Article 17): the request states, the scrub
@@ -159,7 +159,7 @@ sequenceDiagram
   X->>C: ScrubAccount(requestID, now)
   C->>S: ScrubAccount
   rect rgba(109, 40, 217, 0.14)
-    Note over S,DB: Lock order: users, erasure_requests, billing_sessions, balances
+    Note over S,DB: Lock order: scrub fence, user, request, billing, withdrawals, recipient, balance
     S->>DB: GetErasureRequest (read the account ID)
     S->>DB: LockUserForErasure (users FOR UPDATE)
     S->>DB: GetErasureRequestForUpdate
@@ -378,6 +378,49 @@ Outside the live database:
 | Login block | `coordinator/auth/privy.go` (`GetOrCreateUser`), `coordinator/api/access/auth.go` (`writePrivyUserError`) |
 | Late Checkout | `coordinator/store/stripe_settlement.go` (`ErrCheckoutErased`), `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) |
 | Tests | `coordinator/tests/store/contracts/erasure_test.go`, `coordinator/tests/store/contracts/erasure_credits_test.go`, `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go`, `coordinator/tests/store/postgres/erasure_marker_test.go`, `coordinator/tests/store/postgres/erasure_lock_order_test.go`, `coordinator/tests/store/memory/erasure_marker_test.go`, `coordinator/tests/api/accounts/contracts/erasure_test.go`, `coordinator/tests/api/billing/contracts/stripe_checkout_erased_test.go`, `coordinator/tests/api/provider/trust/reuse_forget_test.go`, `coordinator/tests/api/provider/trust/verification/forget_test.go`, `coordinator/tests/auth/privy_test.go`; seed helpers `coordinator/tests/internal/erasurefixture/account.go` |
+
+### Concurrent writes and late external results
+
+`lockAccountAdmission` (`coordinator/store/postgres/erasure_fences.go`)
+takes the user row `FOR SHARE` before creating credentials, provider rows,
+hardware interest, payout quotes, or a withdrawal. Confirmation and scrub
+hold that row `FOR UPDATE`. A request authenticated before deletion therefore
+cannot create new usable credentials or move money after deletion. Existing
+settlement callbacks still finish: erasure locks billing sessions, Stripe
+withdrawals, Global Payouts and the recipient before it checks open withdrawals
+and locks the balance. Each table is locked in stable ID order.
+
+Only scrub takes the identity-cleanup advisory lock `(714320, 1)`, before the
+user row. Shared-key ownership excludes irrevocably erased accounts; serializing
+scrubs prevents two accounts from each retaining the other's shared identity.
+Provider IDs come from the mutable provider row and retained provider/machine
+session history, so removing an offline provider cannot hide its App Attest
+proofs from erasure (`collectErasureKeys`, `coordinator/store/postgres/erasure_keys.go`).
+
+Usage and route persistence hold the shared advisory transaction lock
+`(714320, 2)`; scrub holds it exclusively. Their subsequent erased-state read
+sees any scrub that completed while they waited. Late usage retains token and
+cost accounting but omits the request location; single and batch route writes
+omit erased consumer and provider regions. The memory backend applies the same
+policy under its store mutex (`coordinator/store/postgres/erasure_observations.go`,
+`coordinator/store/memory/erasure_ownership.go`).
+
+Stripe responses can arrive after local deletion. `fenceErasureExternalObject`
+(`coordinator/store/postgres/erasure_external.go`) reacquires the user fence,
+stages the external identifier in `erasure_outbox`, and refuses to restore it
+in the account, Checkout or recipient row. The Checkout endpoint returns 409
+without the URL. Outbox work is eligible only after the request is `erased`.
+A canceled request retains staged identifiers without delivering them; any
+later scrub collects those identifiers before replacing staging with the
+complete cleanup set for the new request. This preserves both original and
+late-created resources.
+
+`erasureTx` passes its bounded context to every query and commit; rollback
+uses a separate five-second cleanup context, even if the caller canceled.
+The refused-credit audit retains a SHA-256 reference hash. `CreditWithdrawableOnce`
+checks that hash under its existing reference advisory lock, so a repeated
+callback creates one review record even when its public reference is scrubbed.
+Ordinary repeated credits remain separate audit records.
 
 ## Related
 

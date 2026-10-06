@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -1433,3 +1433,11 @@ Checkout amounts require at most two decimal places and the supported integer
 cent range (`coordinator/api/billing/stripe_checkout_webhook.go`, `checkoutUSDCents`).
 Current and legacy Checkout signatures share exact local-session validation and
 atomic, non-withdrawable credit (`HandleStripeWebhook`, `CompleteStripeCheckout`).
+
+### Checkout after account deletion
+
+`POST /v1/billing/stripe/create-session` returns HTTP 409 with error code
+`account_deleted` when the request's Stripe result reaches persistence after
+its account was deleted. The response omits the session URL; durable erasure
+cleanup retains the newly created Stripe identifier
+(`coordinator/api/billing/checkout.go`, `HandleStripeCreateSession`).

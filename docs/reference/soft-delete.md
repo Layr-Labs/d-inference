@@ -151,6 +151,14 @@ a new reader or writer must be added to the rule as well as the tables above.
 `scripts/test-docs-impact-check.py` verifies the mapping and keeps unrelated
 history-table files and tests outside this gate.
 
+## Late writes
+
+| Writer | Deleted-account behavior | Code |
+|---|---|---|
+| API-key and provider-token creation, provider upserts, hardware-interest writes, payout admission | Refused after acquiring the same user fence as erasure; cancellation permits new writes again | `coordinator/store/postgres/erasure_fences.go` (`lockAccountAdmission`), `coordinator/store/memory/erasure_ownership.go` (`accountAdmissionLocked`) |
+| Stripe account, recipient and Checkout creation results | Preserve cleanup IDs in the erasure outbox and refuse restoring personal fields | `coordinator/store/postgres/erasure_external.go` (`fenceErasureExternalObject`), `coordinator/store/memory/erasure_external.go` (`retainDeletedExternalObjectLocked`) |
+| Usage and route persistence | Preserve accounting while clearing erased owners' location and region fields | `coordinator/store/postgres/erasure_observations.go` (`erasedObservationOwners`), `coordinator/store/memory/usage.go` (`RecordUsage`), `coordinator/store/memory/route_telemetry.go` (`recordInferenceRouteLocked`) |
+
 ## Related
 
 - [Schema lifecycle: soft delete](../architecture/schema-lifecycle.md#soft-delete) — the model and its invariants

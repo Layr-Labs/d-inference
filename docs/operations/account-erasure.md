@@ -1,6 +1,6 @@
 # Erase an account (GDPR)
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Runbook for erasing the personal data of one consumer or provider account:
 plan, confirm, grace period, scrub, the Stripe deletions, review of refused
@@ -333,6 +333,15 @@ has passed or the request was never confirmed.
 
 After the scrub there is no rollback. The data is gone from the live
 database by design. Do not restore a backup to undo an erasure.
+
+## Staged external resources
+
+A Stripe response that arrives after confirmation is retained in the outbox
+without restoring the local object. Do not process outbox rows for `pending`
+or `canceled` requests: the grace period remains reversible. After cancellation,
+any later erasure collects those staged IDs into its own cleanup set. The
+status response may therefore show retained staging on a canceled request.
+Mechanism: [concurrent writes](../architecture/account-erasure.md#concurrent-writes-and-late-external-results).
 
 ## Related
 

@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -234,6 +234,16 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 
 Mechanism for each error, including the exact functions, is in
 [`architecture/billing.md` → Failure modes](../architecture/billing.md#failure-modes).
+
+## Checkout interrupted by account deletion
+
+If account deletion starts while Stripe creates a Checkout session, the
+coordinator responds with 409 `account_deleted` and does not return the
+Checkout URL. The created Stripe object remains queued for cleanup after
+irreversible erasure. If an administrator cancels deletion during the grace
+period, start a new Checkout request. Contract:
+[Checkout](../reference/api-contracts.md); implementation:
+`coordinator/api/billing/checkout.go` (`HandleStripeCreateSession`).
 
 ## Related
 

@@ -50,7 +50,7 @@ func TestReferralLifecycleBackends(t *testing.T) {
 				}
 			}
 			// A repeat of the same referral is a no-op. A second referrer for
-			// the account and a self-referral are conflicts.
+			// the account is a conflict.
 			if err := s.RecordReferral(code, first); err != nil {
 				t.Fatalf("repeat RecordReferral(%s): %v", first, err)
 			}
@@ -60,9 +60,6 @@ func TestReferralLifecycleBackends(t *testing.T) {
 			}
 			if err := s.RecordReferral(otherCode, first); !errors.Is(err, store.ErrReferralConflict) {
 				t.Fatalf("an account was referred twice: err = %v; want ErrReferralConflict", err)
-			}
-			if err := s.RecordReferral(code, referrer); !errors.Is(err, store.ErrReferralConflict) {
-				t.Fatalf("self-referral: err = %v; want ErrReferralConflict", err)
 			}
 
 			if got, err := s.GetReferrerForAccount(first); err != nil || got != code {

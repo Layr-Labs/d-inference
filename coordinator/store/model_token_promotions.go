@@ -101,5 +101,7 @@ type ModelTokenPromotionStore interface {
 	ReserveModelTokens(id, accountID, modelID string, tokens int64, quote ModelTokenQuote) (*ModelTokenReservation, error)
 	TopUpModelTokenReservation(id string, tokens int64, quote ModelTokenQuote) (*ModelTokenReservation, error)
 	ReleaseModelTokenReservation(id string) (bool, error)
-	SettleModelTokenReservation(id string, actualTokens int64, quote ModelTokenQuote, earning *ModelTokenEarning) (ModelTokenSettlement, error)
+	// referralEligible affects only referral attribution and rewards, not charges, earnings, or grants.
+	// Terminal reservations replay their persisted result regardless of current eligibility.
+	SettleModelTokenReservation(id string, actualTokens int64, quote ModelTokenQuote, earning *ModelTokenEarning, referralEligible bool) (ModelTokenSettlement, error)
 }

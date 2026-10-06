@@ -43,7 +43,7 @@ func (d *dispatchState) dispatchPlan() *providerdispatch.Plan {
 
 func (d *dispatchState) dispatchInput(timing *registry.RequestTiming, exclude map[string]struct{}, backupOf string, recordRoute routeDecisionRecorder) providerdispatch.Input {
 	return providerdispatch.Input{
-		Request: d.r, Model: d.model, PublicModel: d.publicModel, Body: d.rawBody,
+		Request: d.r, Model: d.model, PublicModel: d.publicModel, Body: d.rawBody, Stream: d.stream,
 		ConsumerKey: d.consumerKey, ConsumerLocation: d.consumerLocation,
 		ReservedMicroUSD: d.reservedMicroUSD, EstimatedPromptTokens: d.estimatedPromptTokens,
 		Deadline: d.deadline, RequestedMaxTokens: d.requestedMaxTokens, TokenAdmission: d.tokenAdmission,

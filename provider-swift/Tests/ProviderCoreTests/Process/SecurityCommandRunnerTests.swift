@@ -16,6 +16,24 @@ struct SecurityCommandRunnerTests {
         #expect(result.stderr == String(repeating: "\0", count: 131072))
     }
 
+    @Test("Output is drained while every cooperative thread waits on a command")
+    func drainsWhileCooperativePoolIsBlocked() async throws {
+        // The cooperative pool has one thread per active processor. Each task
+        // holds its thread first, so all of them wait in `run` at the same time.
+        let width = ProcessInfo.processInfo.activeProcessorCount
+        let runner = SecurityCommandRunner.bounded(timeout: 10)
+        let outputs = try await withThrowingTaskGroup(of: String.self) { group in
+            for _ in 0..<width {
+                group.addTask {
+                    usleep(200_000)
+                    return try runner.run("/bin/echo", ["drained"]).stdout
+                }
+            }
+            return try await group.reduce(into: []) { $0.append($1) }
+        }
+        #expect(outputs == Array(repeating: "drained\n", count: width))
+    }
+
     @Test("Launch errors remain errors")
     func launchFailure() {
         #expect(throws: (any Error).self) {

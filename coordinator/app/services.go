@@ -81,7 +81,7 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 		for _, m := range methods {
 			names = append(names, string(m.Method))
 		}
-		logger.Info("billing enabled", "methods", names, "referral_share_pct", billingCfg.ReferralSharePercent)
+		logger.Info("billing enabled", "methods", names, "referral_share_pct", billingSvc.Referral().SharePercent())
 	}
 
 	// Configure MDM client for provider security verification.

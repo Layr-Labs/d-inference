@@ -48,10 +48,13 @@ public struct SecurityCommandRunner: @unchecked Sendable {
             let deadline: DispatchTime = timeout.map { .now() + $0 } ?? .distantFuture
             try process.run()
             // Drain both streams while the child runs. Waiting first, or reading
-            // the pipes serially, deadlocks when an unread pipe fills.
+            // the pipes serially, deadlocks when an unread pipe fills. Each reader
+            // has its own serial queue, because a serial queue gets a thread even
+            // when every cooperative thread waits here. A global queue does not.
             let readers = DispatchGroup()
             for output in [stdout, stderr] {
-                DispatchQueue.global(qos: .utility).async(group: readers) { output.drain() }
+                DispatchQueue(label: "dev.darkbloom.command-output", qos: .utility)
+                    .async(group: readers) { output.drain() }
             }
             guard exited.wait(timeout: deadline) == .success else {
                 // A hung tool may ignore SIGTERM. Process reaps asynchronously;

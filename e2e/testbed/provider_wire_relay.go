@@ -1,6 +1,7 @@
 package testbed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -29,7 +30,20 @@ type ProviderWireEvent struct {
 // ProviderWireRelay is a bounded, transparent test-only loopback WS hop. One
 // pump per direction preserves frame order. Neither authentication nor payload
 // encryption is replaced, and no provider frame is synthesized.
+//
+// The one exception to transparency is StripCoordinatorFields, which is empty
+// unless a mixed-version test sets it.
 type ProviderWireRelay struct {
+	// StripCoordinatorFields names top-level JSON keys the relay removes from
+	// coordinator-to-provider frames before forwarding them, so the provider
+	// sees what a coordinator without those fields would have sent. Set it
+	// before Start. Frames that carry none of the keys, frames that are not
+	// JSON objects, and every provider-to-coordinator frame pass through
+	// byte for byte. A recorded event still shows the field as the
+	// coordinator sent it, with the removed keys listed under
+	// "stripped_fields".
+	StripCoordinatorFields []string
+
 	mu          sync.Mutex
 	events      []ProviderWireEvent
 	connections int
@@ -72,21 +86,25 @@ func (r *ProviderWireRelay) Start(coordinatorURL string) string {
 		connectionCtx, end := context.WithCancel(ctx)
 		defer end()
 		done := make(chan struct{}, 2)
-		pump := func(src, dst *websocket.Conn, direction string) {
+		pump := func(src, dst *websocket.Conn, direction string, strip []string) {
 			defer func() { done <- struct{}{} }()
 			for {
 				kind, data, err := src.Read(connectionCtx)
 				if err != nil {
 					return
 				}
-				r.observe(id, direction, data)
-				if err := dst.Write(connectionCtx, kind, data); err != nil {
+				forward, stripped := data, []string(nil)
+				if kind == websocket.MessageText {
+					forward, stripped = stripTopLevelFields(data, strip)
+				}
+				r.observe(id, direction, data, stripped)
+				if err := dst.Write(connectionCtx, kind, forward); err != nil {
 					return
 				}
 			}
 		}
-		go pump(front, back, "provider_to_coordinator")
-		go pump(back, front, "coordinator_to_provider")
+		go pump(front, back, "provider_to_coordinator", nil)
+		go pump(back, front, "coordinator_to_provider", r.StripCoordinatorFields)
 		<-done
 		end()
 		front.CloseNow()
@@ -115,10 +133,44 @@ func (r *ProviderWireRelay) Snapshot() ([]ProviderWireEvent, int) {
 	return events, r.dropped
 }
 
-func (r *ProviderWireRelay) observe(connection int, direction string, data []byte) {
+// stripTopLevelFields returns data without the named top-level keys and the
+// keys it removed. With nothing to remove it returns data itself, so an
+// unaffected frame is forwarded byte for byte. Every remaining value keeps its
+// original bytes; only the order of the keys changes.
+func stripTopLevelFields(data []byte, names []string) ([]byte, []string) {
+	if len(names) == 0 {
+		return data, nil
+	}
+	var frame map[string]json.RawMessage
+	if json.Unmarshal(data, &frame) != nil || frame == nil {
+		return data, nil
+	}
+	var removed []string
+	for _, name := range names {
+		if _, ok := frame[name]; ok {
+			delete(frame, name)
+			removed = append(removed, name)
+		}
+	}
+	if len(removed) == 0 {
+		return data, nil
+	}
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(frame) != nil {
+		return data, nil
+	}
+	return bytes.TrimRight(out.Bytes(), "\n"), removed
+}
+
+func (r *ProviderWireRelay) observe(connection int, direction string, data []byte, stripped []string) {
 	event, ok := summarizeProviderFrame(data)
 	if !ok {
 		return
+	}
+	if len(stripped) > 0 {
+		event.Fields["stripped_fields"], _ = json.Marshal(stripped)
 	}
 	event.Connection, event.Direction, event.At = connection, direction, time.Now().UTC()
 	r.mu.Lock()

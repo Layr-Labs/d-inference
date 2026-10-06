@@ -290,7 +290,8 @@ type SuiteConfig struct {
 	PrefixCacheMode string
 
 	// ProviderRelay observes the normal authenticated encrypted WS transport in
-	// isolated tests. Nil connects directly; it never changes serving frames.
+	// isolated tests. Nil connects directly; it never changes serving frames
+	// unless the test sets its StripCoordinatorFields.
 	ProviderRelay *ProviderWireRelay
 	MTPMode       string
 

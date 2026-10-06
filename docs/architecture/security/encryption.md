@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -144,7 +144,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/routes.go` (`routes`); `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`) |
-| Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts and providers by `account_id` and `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/tests/api/log_personal_data_test.go` |
+| Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/tests/api/log_personal_data_test.go` |
 
 ## Invariants
 

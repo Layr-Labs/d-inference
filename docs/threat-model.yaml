@@ -691,9 +691,9 @@ trust_boundaries:
       correlates the callback's CommandUUID against the outstanding commands the
       coordinator itself issued (outstandingCommandTTL 30 min) and processes only the
       read-only request types SecurityInfo and DeviceInformation; uncorrelated callbacks
-      are dropped and never matched by UDID alone. The handler logs only body_size at
-      Debug level. MicroMDM credentials are used
-      only for outbound API calls to MicroMDM, not to authenticate inbound callbacks.
+      are dropped and never matched by UDID alone. The handler logs body_size, not the
+      body, at Debug level. MicroMDM credentials are used only for outbound API calls
+      to MicroMDM, not to authenticate inbound callbacks.
 
       When a provider registers, the coordinator's store-backed MDM scheduler sends a
       SecurityInfo MDM command to the enrolled device (mdm.go

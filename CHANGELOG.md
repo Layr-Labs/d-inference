@@ -2,7 +2,7 @@
 
 ## Unreleased — personal data in coordinator logs
 
-- Stop writing email addresses, client IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts and providers by `account_id` and `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.
+- Stop writing email addresses, IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.
 
 ## Unreleased — system tool output readers
 

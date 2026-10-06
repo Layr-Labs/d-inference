@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials
@@ -114,7 +114,7 @@ RFC 8628-style flow implemented in `coordinator/api/access/device/handlers.go` a
 | 3 | CLI polls `POST /v1/device/token {device_code}` (no auth; the secret is the code): `200 {status: "authorization_pending"}` while pending; `invalid_grant` when unknown; `expired_token` after `DeviceCodeExpiry` or once consumed; on approval `200 {status: "authorized", token, account_id}` | `HandleDeviceToken` |
 | 4 | Token = the provider token whose shape is under [api-contracts](../../reference/api-contracts.md#device-code-flow-3); the store keeps `ProviderToken{TokenHash, AccountID, Label: "device-" + user_code, Active}`; the CLI writes the token to `~/.darkbloom/auth_token` with mode `0600` | `HandleDeviceToken`; `AuthTokenStore` |
 | 5 | The daemon sends it as `register.auth_token` (binding B6) | `coordinator/api/provider/` |
-| Logging | `device code created {user_code, expires_in}`, `provider token issued {account_id, user_code}`, `device approved {user_code, account_id, email}` at `Info` — never the `device_code` or the token | `coordinator/api/access/device/handlers.go` |
+| Logging | `device code created {user_code, expires_in}`, `provider token issued {account_id, user_code}`, `device approved {user_code, account_id}` at `Info` — never the `device_code` or the token | `coordinator/api/access/device/handlers.go` |
 
 ### Consumer identity: Privy JWT verification
 

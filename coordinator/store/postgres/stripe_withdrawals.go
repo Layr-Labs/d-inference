@@ -38,6 +38,9 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawa
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := lockAccountAdmission(ctx, tx, w.AccountID); err != nil {
+		return err
+	}
 
 	// Guarded dual-column debit: both the total and withdrawable balances
 	// must cover the amount, so the debit is symmetric with CreditWithdrawable

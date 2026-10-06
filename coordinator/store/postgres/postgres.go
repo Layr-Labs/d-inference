@@ -30,7 +30,7 @@ type cachedPrice struct {
 }
 
 // NewPostgres creates a new PostgresStore connected to the given database URL.
-// It runs schema migrations on startup.
+// It applies pending schema migrations before it returns.
 func NewPostgres(ctx context.Context, scfg store.Config) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(scfg.DatabaseURL)
 	if err != nil {

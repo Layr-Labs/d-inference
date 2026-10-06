@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -51,7 +51,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/inference` | Shared admission, dispatch, cancellation and settlement; request lowering and response encoding are separate leaves. |
 | `coordinator/api/provider` | WebSocket sessions and typed inference-event handoff; `provider/trust` owns legacy verification and revocation state. |
 | `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. |
-| `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the payouts child owns provider payout workflows, not a second ledger. |
+| `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the `accounts/erasure` child owns the account erasure admin routes and scrub loop; the payouts child owns provider payout workflows, not a second ledger. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
 | `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
@@ -63,7 +63,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/internal/registry` | Provider-write transport/lanes/watchdog, connection drain authority, immutable connection age/order, eviction grace, identity-gate directory and retained fault evidence, bounded demand windows, detached residency/capacity/forecast policies, reviewed deadline catalog/posture, Autopilot state/control/ledger, cache activation and persistence. Registry/provider critical sections remain authoritative; owned directory and identity-state locks are private to `identitygate`. |
 | `coordinator/store` | Contracts, domain records, errors, configuration, read-through decorator and capability unwrapping. |
 | `coordinator/store/memory`, `coordinator/store/postgres` | Backend owners with domain-focused operations; PostgreSQL owns its migrations. |
-| `coordinator/internal/store` | Shared record normalization, read-cache domain generations, bounded memory history and focused PostgreSQL query/schema helpers; backends retain storage ownership. |
+| `coordinator/internal/store` | Shared record normalization, read-cache domain generations, bounded memory history, the account erasure rule table and keys (`erasure`) and focused PostgreSQL query/schema helpers; backends retain storage ownership. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |
 | `coordinator/internal/wire` | Production frame scanning/decoding used by protocol entrypoints; wire types stay in `coordinator/protocol`. |
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
@@ -116,8 +116,9 @@ failure in any step marked *fatal* exits the process before it listens.
    memory-store opt-in, mock billing with a live Stripe key, malformed media
    fetch or cache-routing values, an unknown trust level). Every variable is
    listed in [`../../reference/configuration.md`](../../reference/configuration.md).
-3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, run the
-   idempotent migration slice, seed the admin key — otherwise the memory store
+3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, apply pending
+   goose migrations ([schema lifecycle](../schema-lifecycle.md)), seed the
+   admin key — otherwise the memory store
    with its 15 minute pruner. Provider sessions orphaned by the previous
    process are closed, best-effort, with a 10 second budget.
 4. **Registry.** `registry.New`, trust floor, dedicated models, quality
@@ -143,7 +144,12 @@ failure in any step marked *fatal* exits the process before it listens.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
-   reconciler; the prompt sidecar supervisor and preloader.
+   reconciler; the account erasure scrub loop (`StartAccountErasureLoop`, which
+   runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`) and
+   outbox worker (`StartErasureOutboxLoop`, which runs `Owner.StartOutboxLoop`
+   in `coordinator/api/accounts/erasure/outbox.go`;
+   [account erasure](../account-erasure.md)); the prompt sidecar supervisor
+   and preloader.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
    a 64 KiB header cap; an optional private pprof listener.
@@ -322,7 +328,7 @@ flowchart TD
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Process exits before binding the port | A `Check` failure, store connect/migration error, missing release inventory, or an unusable trust-reuse journal | The first `Error` log line; [`../storage.md#failure-modes`](../storage.md#failure-modes) |
+| Process exits before binding the port | A `Check` failure, store connect/migration error, missing release inventory, or an unusable trust-reuse journal | The first `Error` log line; [`../storage.md#failure-modes`](../storage.md#failure-modes), [`../schema-lifecycle.md#failure-modes`](../schema-lifecycle.md#failure-modes) |
 | Fleet 429s for minutes after a deploy | Empty registry until providers reconnect and re-attest; release-policy enforcement bites only after its boot grace ([`EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE`](../../reference/configuration.md#release-policy-version-floor-and-binary-hashes)) | [`../../operations/release-policy-rollout.md`](../../operations/release-policy-rollout.md) |
 | CPU saturation under retry storms | Routing scans per dispatch attempt; bounded by `EIGENINFERENCE_ROUTING_CONCURRENCY` | [`../scheduling.md`](../scheduling.md) |
 | Streams cut during a restart | Drain grace shorter than the longest generation | `EIGENINFERENCE_DRAIN_GRACE` in [`../../reference/configuration.md`](../../reference/configuration.md) |

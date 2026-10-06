@@ -2,6 +2,11 @@
 
 > Last updated: 2026-10-06
 
+Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
+signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
+for `scripts/restack-after-squash.py` checks, signed ancestry updates, and
+post-push verification. Branch updates still require the affected CI gates.
+
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
@@ -108,6 +113,8 @@ owners. `go build ./coordinator/...` builds production code and ordinary
 adds checked shard discovery; coverage explicitly instruments the imported
 production packages, excluding all test helpers. See the
 [test-boundary map](test.md#2-coordinator-go) for focused commands.
+The account API contract suite uses the same `testdb.Main` database isolation
+as store tests for [committed-erasure cleanup checks](test.md#account-erasure-regressions).
 Routing snapshot-age regressions run against the ordinary coordinator build;
 the [test guide](test.md#2-coordinator-go) includes a race-enabled repetition
 command using the existing reservation-preparation fixture.
@@ -370,7 +377,7 @@ jobs queued behind a provider quota do not shorten the critical path. See
 
   | Tool | Pin | Used by |
   |---|---|---|
-  | `go` | `1.25.0` | coordinator, e2e (matches `go 1.25.0` in [`go.mod`](../../go.mod)) |
+  | `go` | `1.25.7` | coordinator, e2e (matches `go 1.25.7` in [`go.mod`](../../go.mod)) |
   | `rust` | `1.88.0` | `coordinator/promptsidecar` (matches `rust-version = "1.88"` in `coordinator/promptsidecar/Cargo.toml` and the `rust:1.88.0-alpine` builder in `coordinator/Dockerfile`) |
   | `node` | `22` | `console-ui`, `admin-ui` |
   | `swift` | `6.3` | `provider-swift` (the local `libs/mlx-swift` package declares `swift-tools-version: 6.3`; `provider-swift/Package.swift` itself is `6.1`) |
@@ -519,6 +526,8 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
+Documentation-impact checks also cover the contact-export and legacy-cohort
+store owners; see the [soft-delete reference](../reference/soft-delete.md#documentation-coverage).
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
@@ -888,7 +897,7 @@ The normal coordinator build also supports `coordinator --migrate-only`. It
 requires `EIGENINFERENCE_DATABASE_URL`, runs store migrations, and exits without
 starting the server or seeding an admin key. Container execution must override
 the default MicroMDM entrypoint script; see the
-[deployment procedure](../operations/coordinator-deploy.md#optional-prepare-compatible-migrations-before-draining).
+[schema migration runbook](../operations/schema-migration.md#4-apply-the-migrations).
 
 The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
@@ -903,6 +912,8 @@ local stub servers; its default observation mode sends only public GETs.
 | `coordinator-build` | `go build ./cmd/coordinator` → `./coordinator/coordinator` |
 | `coordinator-build-linux` | `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator` |
 | `coordinator` | `coordinator-test` + `coordinator-build` |
+| `sqlc-generate` | `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate -f coordinator/store/postgres/sqlc.yaml` → `coordinator/store/postgres/storedb` |
+| `sqlc-check` | Needs `DATABASE_URL`. `TestMigrationsBuildCheckedInSchema` (fails when `coordinator/store/postgres/schema/schema.sql` is stale), then `sqlc diff` (fails when `coordinator/store/postgres/storedb` is stale) |
 | `prompt-sidecar-format` | `cargo fmt --all -- --check` |
 | `prompt-sidecar-check` | `cargo check --locked --all-targets` + `cargo clippy --locked --all-targets -- -D warnings` |
 | `prompt-sidecar-test` | `cargo test --locked --all-targets` |

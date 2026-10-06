@@ -36,12 +36,12 @@ func TestContinuityMissPromotesRefreshSubmitToImmediateDue(t *testing.T) {
 
 	p := schedulerTestProvider(t, srv, "cont-miss", "se-cont-miss")
 	// Stale window, continuity-covered 60s ago → a reuse candidate at submit.
-	srv.trustReuseCache.RecordTrust(coveredReuseRecord(
+	srv.trustReuseCache.RecordTrust(srv.trustReuseCache.PublicationGeneration(), coveredReuseRecord(
 		"se-cont-miss", "serial-cont-miss", trHashA,
 		cur.Add(-20*time.Minute), cur.Add(-60*time.Second)))
 	priority := srv.VerificationSubmitPriority("se-cont-miss", "serial-cont-miss")
 	if priority != store.VerificationPriorityRefresh {
-		t.Fatalf("submit priority = %q, want refresh for a continuity candidate", priority)
+		t.Fatalf("submit priority = %v, want refresh for a continuity candidate", priority)
 	}
 	sch.Submit(context.Background(), p.ID, p, priority)
 
@@ -62,7 +62,7 @@ func TestContinuityMissPromotesRefreshSubmitToImmediateDue(t *testing.T) {
 		t.Fatalf("promoted job not persisted: %+v, %v", rec, err)
 	}
 	if rec.Priority != store.VerificationPriorityFirstOrExpired {
-		t.Fatalf("priority = %q after continuity miss, want promoted first/expired", rec.Priority)
+		t.Fatalf("priority = %v after continuity miss, want promoted first/expired", rec.Priority)
 	}
 	if due := rec.NextAttemptAt.Sub(now); due > mdmFirstVerifySpreadMax {
 		t.Fatalf("continuity-miss settle due %s out, must be within %s", due, mdmFirstVerifySpreadMax)
@@ -175,7 +175,7 @@ func TestMDMSchedulerFleet1500LifecycleSimulation(t *testing.T) {
 	for i := range providers {
 		se := fmt.Sprintf("fleet-se-%04d", i)
 		serial := fmt.Sprintf("serial-fleet-%04d", i)
-		transitionCache.RecordTrust(hardwareReuseRecord(se, serial, trHashA, now))
+		transitionCache.RecordTrust(transitionCache.PublicationGeneration(), hardwareReuseRecord(se, serial, trHashA, now))
 		decision := transitionCache.Decide(trustreuse.Input{
 			SEPubKey: se, Serial: serial, FreshBinaryHash: trHashB,
 			ReleaseTransition: releases.ApprovedTransitionFact{
@@ -243,7 +243,7 @@ func TestMDMSchedulerFleet1500LifecycleSimulation(t *testing.T) {
 	// cannot grant an unapproved binary.
 	th := newThrottleFixture()
 	th.Now = func() time.Time { return now }
-	th.RecordAttestedForProcess("fleet-se-app", "1.0", "token", "process-a", trHashA)
+	th.RecordAttestedForProcess(th.PublicationGeneration(), "fleet-se-app", "1.0", "token", "process-a", trHashA)
 	if !th.reuseAttestation("fleet-se-app", "1.0", "token", "process-a") {
 		t.Fatal("valid exact process proof was not reusable")
 	}

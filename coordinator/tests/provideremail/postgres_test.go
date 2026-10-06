@@ -31,11 +31,11 @@ func TestReadSnapshotPostgres(t *testing.T) {
 	}
 	defer conn.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
 	_, err = conn.Exec(ctx, `SET search_path TO `+schema+`;
-CREATE TABLE users(account_id text primary key,email text);
+CREATE TABLE users(account_id text primary key,email text,deleted_at timestamptz);
 CREATE TABLE darkbloom_machines(id text primary key,merged_into text);
 CREATE TABLE darkbloom_machine_sessions(session_id text primary key,machine_id text,account_id text,first_seen timestamptz,last_seen timestamptz,observation jsonb);
 CREATE TABLE providers(id text primary key,last_seen timestamptz);
-INSERT INTO users VALUES ('old-owner','old@example.com'),('new-owner','new@example.com');
+INSERT INTO users(account_id,email) VALUES ('old-owner','old@example.com'),('new-owner','new@example.com');
 INSERT INTO darkbloom_machines VALUES ('transferred',NULL),('anonymous',NULL),('historical',NULL),('merged','transferred');`)
 	if err != nil {
 		t.Fatal(err)

@@ -62,3 +62,11 @@ func (s *Service,
 // pass. SEC-004: a forged localhost MDM webhook that drove a grant would be
 // persisted + reseeded here (amplified across restarts); bounded by the
 // localhost-only webhook, fully mitigated by authenticating it (tracked separately).
+
+// ForgetTrustReuse drops the cached trust-reuse records of erased SE keys.
+func (s *Service) ForgetTrustReuse(seKeys []string) {
+	if s == nil {
+		return
+	}
+	s.trustReuseCache.Forget(seKeys)
+}

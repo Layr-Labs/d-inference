@@ -9,8 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const appAttestEnrollmentDDL = `CREATE TABLE IF NOT EXISTS app_attest_enrollments (id TEXT PRIMARY KEY,owner TEXT NOT NULL,key_id TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL,context JSONB NOT NULL)`
-
 func (s *PostgresStore) SaveAppAttestEnrollment(ctx context.Context, e store.AppAttestEnrollment) error {
 	raw, err := json.Marshal(e)
 	if err != nil {

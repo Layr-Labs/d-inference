@@ -7,17 +7,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-const legacyMDMCohortDDL = `
-CREATE TABLE IF NOT EXISTS legacy_mdm_cohort_freeze (
- singleton BOOLEAN PRIMARY KEY CHECK (singleton), cutoff TIMESTAMPTZ NOT NULL
-);
-CREATE TABLE IF NOT EXISTS legacy_mdm_cohort (
- account_id TEXT NOT NULL CHECK (account_id <> ''),
- se_public_key TEXT NOT NULL CHECK (se_public_key <> ''),
- serial_number TEXT NOT NULL CHECK (serial_number <> ''),
- PRIMARY KEY (account_id, se_public_key, serial_number)
-);`
-
 var _ store.LegacyMDMCohortStore = (*PostgresStore)(nil)
 
 func (s *PostgresStore) FreezeLegacyMDMCohort(ctx context.Context) ([]store.LegacyMDMMachine, error) {
@@ -52,6 +41,7 @@ func (s *PostgresStore) FreezeLegacyMDMCohort(ctx context.Context) ([]store.Lega
 		 AND a.digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(p.se_public_key,'UTF8')), 'hex')
 		 LEFT JOIN provider_trust_reuse r ON r.se_pubkey=p.se_public_key AND r.serial=p.serial_number
 		 WHERE p.account_id<>'' AND p.se_public_key<>'' AND p.serial_number<>''
+			 AND u.deleted_at IS NULL AND p.deleted_at IS NULL
 			 AND u.created_at<f.cutoff AND p.registered_at<f.cutoff
 			 AND ((r.mda_udid<>'' AND r.sip_enabled AND r.secure_boot_full
 			 AND r.hardware_proof_verified_at>'0001-01-01T00:00:00Z'::timestamptz AND r.hardware_proof_verified_at<f.cutoff)

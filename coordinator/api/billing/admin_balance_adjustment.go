@@ -64,7 +64,7 @@ func (s *Owner) handleAdminBalanceAdjustment(w http.ResponseWriter, r *http.Requ
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "failed to "+action+": "+err.Error()))
 		return
 	}
-	s.logger.Info("admin "+action+" applied", "email", req.Email, "account_id", user.AccountID,
+	s.logger.Info("admin "+action+" applied", "account_id", user.AccountID,
 		"amount_micro_usd", amountMicroUSD, "note", req.Note)
 	response := map[string]any{
 		"ok": true, "account_id": user.AccountID, "email": user.Email,

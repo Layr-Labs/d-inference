@@ -95,7 +95,7 @@ func TestLegacyMDMIneligibleCannotScheduleOrReuseTrust(t *testing.T) {
 			if _, err := s.store.UpsertProviderTrustReuse(context.Background(), record, 0); err != nil {
 				t.Fatal(err)
 			}
-			s.trustReuseCache.RecordTrust(record)
+			s.trustReuseCache.RecordTrust(s.trustReuseCache.PublicationGeneration(), record)
 			if s.TryTrustReuseFastSkip(p.ID, p, goodFastSkipResp(), true) || p.GetTrustLevel() != registry.TrustSelfSigned {
 				t.Fatal("seeded cache bypassed frozen machine eligibility")
 			}
@@ -145,7 +145,7 @@ func TestLegacyMDMLateSecurityInfoCannotGrantIneligibleMachine(t *testing.T) {
 	// Bind the command before freezing to exercise the late grant gate itself.
 	bindLateSecurityInfoForTest(t, s, p, "UDID-1")
 	freezeLegacyMDMCohort(t, s)
-	s.trustReuseCache.RecordTrust(hardwareReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, s.trustReuseCache.Now()))
+	s.trustReuseCache.RecordTrust(s.trustReuseCache.PublicationGeneration(), hardwareReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, s.trustReuseCache.Now()))
 	p.SetMDMFailureReason("securityinfo-timeout")
 	s.ApplyLateSecurityInfo("UDID-1", lateSecurityInfoCommandUUID, &mdm.SecurityInfoResponse{SystemIntegrityProtectionEnabled: true, SecureBootLevel: "full"})
 	if p.GetTrustLevel() != registry.TrustSelfSigned || p.GetMDMFailureReason() != "securityinfo-timeout" {

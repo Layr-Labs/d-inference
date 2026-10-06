@@ -26,7 +26,7 @@ const audienceSQL = `WITH sessions AS (
 )
 SELECT l.machine_id, l.account_id, COALESCE(u.email,''), l.last_seen, l.observation,
  l.registered_at IS NOT NULL AND l.registered_at <= l.first_seen AND l.same_order=1
-FROM latest l LEFT JOIN users u ON u.account_id=l.account_id
+FROM latest l LEFT JOIN users u ON u.account_id=l.account_id AND u.deleted_at IS NULL
 ORDER BY l.machine_id`
 
 // ReadSnapshot deliberately does not construct store.PostgresStore, whose

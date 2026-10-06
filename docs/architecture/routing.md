@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -958,6 +958,21 @@ traffic before deploy. It has no binary; it is driven from tests.
 - `report.go` — `Summarize` buckets results by prompt length and
   `EstimatedCliff` finds the prompt size where acceptance collapses.
 
+The closed-loop tests in `coordinator/tests/registry/routingsim/`
+(`closed_loop_sim_test.go`, `closed_loop_starvation_test.go`) feed each
+routing result back into fleet state. The provider that `ReserveProviderEx`
+selects serves the request, releases it with `RemovePending` and
+`SetProviderIdle`, and reports a changed measurement through
+`Registry.Heartbeat`. Idle providers send unchanged heartbeats every 5 s. Each
+scenario runs on the legacy EWMA path and on the explicit
+`performance_measurements` path. The tests run under `testing/synctest`, so
+two simulated hours of arrivals take about one second. They check that every
+idle, loaded provider is selected within
+`forecast.EvidenceExplorationAfter` (5 minutes, #1254) plus one request time
+while requests arrive, and they report the share of the busiest provider.
+That bound is a proposed policy that the maintainers own (#1238), and the
+routing code does not meet it yet: some of these tests fail.
+
 Run it with the package tests, for example
 `go test ./coordinator/tests/registry/routingsim/...` (`TestRoutingSimCalibration`
 and friends in `routingsim_test.go`). Tests that change process-wide tunables
@@ -1110,3 +1125,13 @@ for update activation. Requests are coalesced by revision so an inventory change
 while a close is underway cannot be lost. Deadlines leave work alive; lifecycle
 stop takes precedence. Unexpected network loss still cancels work on the dead
 connection and does not replay partially emitted output.
+
+## Account deletion disconnects
+
+After the account-erasure transaction revokes credentials,
+`DisconnectAccount` (`coordinator/registry/provider_lifecycle.go`) snapshots
+linked provider IDs under the registry read lock, then calls the existing
+`Disconnect` lifecycle outside that lock. Each disconnect cleans reservations,
+queued work and provider state through the ordinary lifecycle. Persistence
+also checks the deleted account, so a heartbeat already in flight cannot add a
+fresh provider row. See [account erasure](account-erasure.md).

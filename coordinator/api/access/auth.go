@@ -3,6 +3,7 @@ package access
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -34,8 +35,7 @@ func (s *Owner) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			user, err := s.privyAuth.GetOrCreateUser(privyUserID)
 			if err != nil {
-				s.logger.Error("privy: user resolution failed", "error", err)
-				httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("auth_error", "failed to resolve user"))
+				s.writePrivyUserError(w, err)
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
@@ -138,6 +138,19 @@ func (s *Owner) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// writePrivyUserError answers a failed Privy user resolution. An account that
+// waits for erasure gets 403 account_pending_deletion: the login must not
+// create a second live account for the same person.
+func (s *Owner) writePrivyUserError(w http.ResponseWriter, err error) {
+	if errors.Is(err, auth.ErrAccountPendingDeletion) {
+		httpx.WriteJSON(w, http.StatusForbidden, httpx.ErrorResponse("account_pending_deletion",
+			"this account is scheduled for deletion; contact support to cancel"))
+		return
+	}
+	s.logger.Error("privy: user resolution failed", "error", err)
+	httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("auth_error", "failed to resolve user"))
+}
+
 // RequirePrivyAuth wraps a handler requiring a Privy JWT session. Unlike
 // RequireAuth, API keys are rejected. Use for sensitive account operations
 // (key creation, device approval) that must not be triggerable by a leaked
@@ -161,8 +174,7 @@ func (s *Owner) RequirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		user, err := s.privyAuth.GetOrCreateUser(privyUserID)
 		if err != nil {
-			s.logger.Error("privy: user resolution failed", "error", err)
-			httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("auth_error", "failed to resolve user"))
+			s.writePrivyUserError(w, err)
 			return
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)

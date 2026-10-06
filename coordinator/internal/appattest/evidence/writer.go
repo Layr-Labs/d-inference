@@ -105,7 +105,7 @@ func (w *Writer) Begin(ctx context.Context, input Input, reply protocol.AppAttes
 	inputs["legacy_mda_verified"] = w.provider.MDAVerified
 	w.provider.Mu().Unlock()
 	contextJSON, _ := json.Marshal(inputs)
-	e := store.AppAttestEvidence{ID: uuid.NewString(), SessionID: w.provider.ID, KeyID: reply.KeyID, ReceivedAt: time.Now().UTC(), Action: reply.Action,
+	e := store.AppAttestEvidence{AccountID: input.Binding.Account, ID: uuid.NewString(), SessionID: w.provider.ID, KeyID: reply.KeyID, ReceivedAt: time.Now().UTC(), Action: reply.Action,
 		ProofField: reply.Proof, Proof: raw, SHA256: hex.EncodeToString(sum[:]), Context: contextJSON}
 	entry := Entry{Evidence: e, Prepared: Prepared{Hash: hash, Err: hashErr}}
 	if err := w.archive.BeginAppAttestEvidence(ctx, e); err != nil {

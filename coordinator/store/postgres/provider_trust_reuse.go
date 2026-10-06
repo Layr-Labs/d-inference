@@ -54,8 +54,17 @@ func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec store.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return store.ProviderTrustReuseWriteResult{}, err
+	}
+	defer rollbackErasureTx(tx)
+	if err := checkPersonalSEOwner(ctx, tx, rec.SEPubKey, ""); err != nil {
+		return store.ProviderTrustReuseWriteResult{}, err
+	}
+
 	var result store.ProviderTrustReuseWriteResult
-	err := s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`WITH written AS (
 			INSERT INTO provider_trust_reuse (
 				se_pubkey, serial, trust_level, binary_hash,
@@ -99,6 +108,9 @@ func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec store.
 	if err != nil {
 		return store.ProviderTrustReuseWriteResult{}, fmt.Errorf("store: upsert provider trust reuse: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.ProviderTrustReuseWriteResult{}, err
+	}
 	return result, nil
 }
 
@@ -109,8 +121,17 @@ func (s *PostgresStore) RecoverProviderTrustReuse(ctx context.Context, rec store
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return store.ProviderTrustReuseWriteResult{}, err
+	}
+	defer rollbackErasureTx(tx)
+	if err := checkPersonalSEOwner(ctx, tx, rec.SEPubKey, ""); err != nil {
+		return store.ProviderTrustReuseWriteResult{}, err
+	}
+
 	var result store.ProviderTrustReuseWriteResult
-	err := s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`WITH written AS (
 			INSERT INTO provider_trust_reuse (
 				se_pubkey, serial, trust_level, binary_hash,
@@ -153,6 +174,9 @@ func (s *PostgresStore) RecoverProviderTrustReuse(ctx context.Context, rec store
 	).Scan(&result.Applied, &result.EvidenceGeneration, &result.RevocationGeneration)
 	if err != nil {
 		return store.ProviderTrustReuseWriteResult{}, fmt.Errorf("store: recover provider trust reuse: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.ProviderTrustReuseWriteResult{}, err
 	}
 	return result, nil
 }

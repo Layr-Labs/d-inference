@@ -2,6 +2,14 @@
 
 > Last updated: 2026-10-06
 
+## Pull-request restacking
+
+Run `python3 scripts/test-restack-after-squash.py` for the regression suite of
+`scripts/restack-after-squash.py`. Follow the [stacking guide](pull-requests.md)
+for the live `--check` before an authorized `--push`; local tests do not replace
+checking the actual squash, current remote refs, Verified signatures, CI,
+mergeability, and approvals after an update.
+
 ## Nightly Linear package
 
 Run from the repository root:

@@ -20,6 +20,10 @@
 - The confirm call repeats the account ID and the planned wallet list. A Stripe payout paid within 30 days still blocks erasure. After the scrub, any late credit is kept out of the balance and listed for review as `refused_credits`.
 - An outbox worker deletes the Stripe Express account, closes the Global Payouts recipient, redacts Checkout Sessions with Stripe Redaction Jobs (public preview; waits when transactions are under 90 days old) and writes one `erasure_log` record to Datadog (tag `erasure_log:true`). Definitive refusals, exhausted retries, stuck jobs and Checkout Sessions Stripe cannot find (each on its own row, the rest of the batch continues) end in `manual_action` for an operator; `GET …/erasure` shows each row's state. Each delivery claims its row just before contacting Stripe; expired workers cannot overwrite newer progress or create duplicate manual-action rows. Permission failures, invalid-account responses and ambiguous 404s retain the Stripe account ID for manual resolution rather than reporting deletion as complete.
 
+## Unreleased - pull-request stack tooling
+
+- Add a checked, signed same-tree ancestry repair for dependent PRs after each parent squash, with atomic non-force pushes and optional retargeting. Document linear bases, manual reconciliation on content differences, and renewed signature, CI and approval checks; the tool does not merge PRs or automate conflict resolution.
+
 ## Unreleased — personal data in coordinator logs
 
 - Stop writing email addresses, IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.

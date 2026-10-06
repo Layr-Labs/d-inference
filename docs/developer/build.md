@@ -106,6 +106,8 @@ owners. `go build ./coordinator/...` builds production code and ordinary
 adds checked shard discovery; coverage explicitly instruments the imported
 production packages, excluding all test helpers. See the
 [test-boundary map](test.md#2-coordinator-go) for focused commands.
+The account API contract suite uses the same `testdb.Main` database isolation
+as store tests for [committed-erasure cleanup checks](test.md#account-erasure-regressions).
 Routing snapshot-age regressions run against the ordinary coordinator build;
 the [test guide](test.md#2-coordinator-go) includes a race-enabled repetition
 command using the existing reservation-preparation fixture.

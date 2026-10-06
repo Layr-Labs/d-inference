@@ -2,6 +2,8 @@
 
 ## Unreleased — account erasure
 
+- Preserve successful account-erasure results when the caller cancels after commit, so confirmation and scrub still disconnect providers and clear runtime caches.
+
 - Clear unshared APNs token proofs, pending challenges and push bookkeeping from runtime memory after erasure; fence delayed cache publication while preserving live shared keys and fresh ownership.
 
 - Fence delayed App Attest proof and receipt writes, APNs token persistence, session backfills and admitted log uploads against completed erasure. Preserve shared live device ownership, clear the frozen runtime MDM cohort by account, and keep late Checkout referral codes local and tied to their original owner.

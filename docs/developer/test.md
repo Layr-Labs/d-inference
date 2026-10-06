@@ -3368,6 +3368,13 @@ external results, location suppression without lost accounting and refused
 credit replay. PostgreSQL tests use real row/advisory-lock barriers for
 withdrawal admission and simultaneous shared-owner scrubs; the composed HTTP
 Checkout regression pauses a local fake Stripe server across erasure.
+`coordinator/tests/internal/erasurefixture/commit.go` cancels the caller through
+pgx tracing after PostgreSQL confirms `COMMIT`. Store regressions cover plan
+creation/replacement, confirmation, cancellation and scrubbing, plus rollback
+when a returned summary cannot be decoded. Composed API regressions verify
+provider disconnects and auth/usage cache cleanup. The account API contract
+package uses `testdb.Main` to isolate this PostgreSQL coverage in a disposable
+database, just like the store suites.
 The marker fixture in `coordinator/tests/store/postgres/erasure_marker_test.go`
 seeds every personal-data rule, including frozen legacy MDM cohort and saved
 hardware interest, and verifies another account's markers survive.

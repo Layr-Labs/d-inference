@@ -3,7 +3,6 @@ package billing_test
 import (
 	"context"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/tests/internal/erasurefixture"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/erasurefixture"
 )
 
 // A Checkout Session that completes after the scrub is acknowledged, not

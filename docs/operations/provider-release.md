@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -484,7 +484,7 @@ coordinator, and create no GitHub Release.
 
 Dev and production builds carry the same version string. A Mac reaches the dev
 release only through the dev installer
-(`curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash`), which writes
+(`curl -fsSL https://api.dev.darkbloom.dev/install.sh | bash`), which writes
 the dev `[coordinator] url` into `provider.toml`
 (`scripts/install.sh`, `bind_provider_coordinator`); updates then come from the
 dev coordinator. See [dev-environment.md](dev-environment.md), step 9.

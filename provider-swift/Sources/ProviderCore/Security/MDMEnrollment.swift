@@ -29,8 +29,8 @@ public enum MDMEnrollmentState: Equatable, Sendable {
 /// coordinator (prod + dev). The enrollment profile's ServerURL is built from
 /// the coordinator base URL (coordinator/api/enroll.go), so the host of the
 /// configured coordinator is also accepted via `expectedHosts`.
-let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.xyz", ".darkbloom.ai"]
-let darkbloomMDMHosts = ["api.darkbloom.dev", "api.dev.darkbloom.xyz"]
+let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.ai"]
+let darkbloomMDMHosts = ["api.darkbloom.dev", "api.dev.darkbloom.dev"]
 
 private let logger = Logger(label: "darkbloom.MDMEnrollment")
 

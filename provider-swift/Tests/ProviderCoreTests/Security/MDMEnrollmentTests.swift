@@ -21,9 +21,21 @@ import Testing
     @Test func darkbloomDevServerIsOurs() {
         let out = """
         MDM enrollment: Yes (User Approved)
-        MDM server: https://api.dev.darkbloom.xyz/mdm/connect
+        MDM server: https://api.dev.darkbloom.dev/mdm/connect
         """
         #expect(parseMDMEnrollmentStatus(out).isDarkbloom)
+    }
+
+    /// The retired dev domain darkbloom.xyz is not ours: no host on it is a
+    /// Darkbloom MDM server.
+    @Test func retiredDevDomainIsForeign() {
+        for url in ["https://api.dev.darkbloom.xyz/mdm/connect", "https://mdm.darkbloom.xyz/mdm/connect"] {
+            let out = """
+            MDM enrollment: Yes (User Approved)
+            MDM server: \(url)
+            """
+            #expect(parseMDMEnrollmentStatus(out) == .enrolledOtherMDM(serverURL: url))
+        }
     }
 
     @Test func coordinatorHostFromConfigIsAccepted() {

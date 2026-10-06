@@ -153,7 +153,7 @@ scope:
     - Durable build qualification, credential revocation and final inference handoff
     - Coexistence, owner routing, machine continuity and optional MDM removal
   out_of_scope:
-    - Dev / staging environment (api.dev.darkbloom.xyz)
+    - Dev / staging environment (api.dev.darkbloom.dev)
     - GitHub Actions / R2 release supply chain
     - Nation-state / physical lab attacks on Apple Silicon
     - Denial-of-service via laptop shutdown (accepted operational risk)

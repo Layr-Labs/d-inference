@@ -10,8 +10,8 @@ import Testing
 /// and the watchdog use.
 @Suite("Installer coordinator binding")
 struct InstallerCoordinatorBindingTests {
-    private static let devCoordinator = "https://api.dev.darkbloom.xyz"
-    private static let devProviderURL = "wss://api.dev.darkbloom.xyz/ws/provider"
+    private static let devCoordinator = "https://api.dev.darkbloom.dev"
+    private static let devProviderURL = "wss://api.dev.darkbloom.dev/ws/provider"
 
     private func tempConfigURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory

@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -10,7 +10,7 @@ each provider prefetches the build in the background and hard-swaps, and
 routing prefers the desired build while still accepting the previous one.
 Rollback is the same write pointed the other way.
 
-**Run the entire flow on the dev coordinator first** (`https://api.dev.darkbloom.xyz`,
+**Run the entire flow on the dev coordinator first** (`https://api.dev.darkbloom.dev`,
 [dev-environment.md](dev-environment.md)) with one or two throwaway providers.
 Production alias writes are production mutations and need explicit human
 approval for the specific operation.

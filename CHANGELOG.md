@@ -119,6 +119,7 @@
 
 ## Unreleased — DevNet
 
+- The dev coordinator host is now `api.dev.darkbloom.dev`. The old dev host `api.dev.darkbloom.xyz` is retired. The provider does not accept an MDM server on `darkbloom.xyz` as a Darkbloom MDM server, and `deploy/provider-fleet/update-fleet.sh dev` uses the new host.
 - An installer served by a coordinator other than production (for example dev) now writes that coordinator's `[coordinator] url` into `~/.config/darkbloom/provider.toml` and keeps the file's other settings, so `darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog connect to it instead of production. The production installer removes that `url` line (and creates no file), so a Mac bound to dev returns to the production default. A running provider changes coordinator at its next `darkbloom start`.
 - Add `coordinator/cmd/devnet-seed`, which fills an empty dev database with fake accounts, API keys, provider sessions, usage, ledger entries and balances. It refuses a database whose `users` table has rows.
 - The dev VM boot path now sets `EIGENINFERENCE_IPAPI_KEY`, as `deploy/gcp/refresh-env.sh` already did.

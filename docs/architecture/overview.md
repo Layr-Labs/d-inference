@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -24,7 +24,7 @@ per-hop encryption so that each party sees only what its role needs
 
 | Component | Code | Runs where | Job |
 |---|---|---|---|
-| Coordinator | `coordinator/` (Go) | GCP Confidential VM (AMD SEV); prod `api.darkbloom.dev`, dev `api.dev.darkbloom.xyz` | HTTP API, provider WebSocket, registry and routing, attestation, billing, model catalog, telemetry |
+| Coordinator | `coordinator/` (Go) | GCP Confidential VM (AMD SEV); prod `api.darkbloom.dev`, dev `api.dev.darkbloom.dev` | HTTP API, provider WebSocket, registry and routing, attestation, billing, model catalog, telemetry |
 | Provider | `provider-swift/` (Swift; product `darkbloom`) | Operators' Macs, as a LaunchAgent | Connect out to the coordinator, prove identity, run models in-process with MLX, encrypt responses |
 | Prompt-contract sidecar | `coordinator/promptsidecar/` (Rust) | Beside the coordinator | Token-boundary planning for prefix-cache routing; failure-isolated |
 | Console | `console-ui/` (Next.js 16 / React 19) | Vercel, `console.darkbloom.dev` | Sign-in, API keys, balance, usage, chat, provider dashboard |

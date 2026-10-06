@@ -758,6 +758,17 @@ uses the normal slot factory after a fresh pre/post-load weight-hash check;
 The baseline conditional and resident reproduction use the direct production
 engine factory (`BenchmarkLoader.swift`).
 
+The candidate also accepts `--mtp-acceptance exact|typical` after its positional
+arguments; historical baseline builds reject an explicit flag. Omission keeps
+`exact`. Rebuild against the provider SPI that exposes
+`EngineV2Factory.makeBenchmarkSession(mtpAcceptanceConfig:)`, a `String` argument
+defaulting to `"exact"`, in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSessionConstruction.swift`.
+The candidate SSD route forwards the flag through that normal slot factory;
+the resident reproduction sets `CBv2MTPConfig.acceptance` directly. Neither route
+changes model/assistant verification or memory gates. The flag does not enable
+MTP and offers no delta override. See [sampled acceptance validation](test.md#sampled-mtp-acceptance-controls).
+
 The paired persistent-test namespace/access-group options require a candidate
 build containing `SSDPersistentTestKeyNamespace`; historical builds reject them.
 The same `RADIX_CANDIDATE_BUILD=1` define also enables the namespace test target.

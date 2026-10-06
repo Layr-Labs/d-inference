@@ -1,6 +1,6 @@
-# Typical MTP acceptance for every Darkbloom MTP target
+# Typical acceptance for target-prefix MTP
 
-> Last updated: 2026-09-27 · commit `34162111a`
+> Last updated: 2026-10-06
 
 Status: **In progress** — 2026-09-26 — engine layer in mlx-swift-lm [#165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165), provider layer in d-inference [#1204](https://github.com/Layr-Labs/d-inference/pull/1204); G4 measurement pending. Source: ddalcu/mlx-serve main `2a93a011e` (David's PR #427, `1ee8af3da`).
 
@@ -12,6 +12,7 @@ This record designs the port of the opt-in **typical** MTP acceptance rule from 
 - **No Metal kernel is needed, and a kernel alone would not enable it.** In mlx-serve the rule is a lazy MLX graph plus a host prefix walk (`src/generate.zig@2a93a011e`). In d-inference the acceptance decision is a host integer walk over a device packet (`EngineLoopV2+MTPFinalize.swift`). The kernel in PR #427 is the paired routed gate/up MoE kernel. It is a Qwen 3.8 pack + M5 speed-up, and it is not part of acceptance (`docs/mtp-acceptance-port.md@2a93a011e`, section "Paired routed gate/up kernel").
 - The port is small because d-inference already pre-samples every verify position with the request's real sampler. That sample is exactly the correction and bonus token that typical acceptance needs. Four engine touch points, one config enum, and provider plumbing complete the work.
 - Greedy requests do not change. Typical acceptance engages only for rows with `temperature >= greedyEpsilon`, the same rule as mlx-serve.
+- Native MiMo uses its separately owned execution path and remains exact. Its slot construction does not apply this preference; configuring `typical` does not enable typical acceptance there.
 
 ## 2. What PR #427 contains, and what ports
 
@@ -104,25 +105,25 @@ Device cost: one gather and one log-multiply-sum over `[B*k, V]` rows inside the
 - Eligibility gates (`mtpBasicEligible`), depth controller, committed-decode baseline, shortlist drafting, prefix checkpoints, paged and contiguous rollback, capture-verify commit for recurrent targets.
 - The one-host-sync finalize contract.
 
-## 5. Configuration for all models
+## 5. Configuration for target-prefix models
 
 Precedence, highest first. A missing level falls through.
 
 | Level | Where | Value | Notes |
 |---|---|---|---|
 | 1 | `[backend] mtp_acceptance_by_model` | TOML table `{ "<build id>" = "typical" }` | Same shape as `engine_v2_kv_backend_by_model` (`ProviderConfig.swift`). |
-| 2 | `[backend] mtp_acceptance` | `"exact"` or `"typical"` | Optional key (`MTPAcceptance?`). nil means "not set". Optional is required: `TOMLEncoder` writes every non-optional key, so a written default would shadow lower levels forever (see the `defaultEngineV2MaxConcurrent` note, `ProviderConfig.swift`, and the optional `prefillDeadlineMode` precedent ). |
-| 3 | Catalog `metadata.mtp_acceptance` (phase 2, decision D3) | `"typical"` | Sibling of `metadata.spec_dec`, parsed next to `SpecDecMetadata.swift`. The catalog manifest is the only per-model channel the coordinator already pushes to providers. Coordinator `runtime_parameters` is request-side only (`coordinator/api/model_runtime_defaults.go`). |
-| 4 | Built-in | `exact` | |
+| 2 | `[backend] mtp_acceptance` | `"exact"` or `"typical"` | Optional `String?` (`BackendSettings.mtpAcceptance`); nil means "not set" and is not serialized as a default. The per-model map is `[String: String]` (`mtpAcceptanceByModel`). |
+| 3 | Built-in | `exact` | Unknown configured values are reported and resolve to `exact`, rather than falling through to another configured level. |
 
-Resolution lives in a new `MTPAcceptancePolicy.resolve(modelID:backend:catalogMetadata:)` beside `MTPAutomaticVerificationPolicy.swift`. The slot factory passes the result into `CBv2MTPConfig(acceptance:)` at `EngineV2SlotFactory.swift`. `delta` is the engine constant `0.2`, not a production key (decision D2).
+Resolution lives in `MTPAcceptancePolicy.resolve(global:byModel:modelID:)` beside `MTPAutomaticVerificationPolicy.swift`. Parsing ignores surrounding whitespace and case. The slot factory passes the result into `CBv2MTPConfig(acceptance:)` at `EngineV2SlotFactory.swift`. `delta` is the engine constant `0.2`, not a production key (decision D2). Catalog `metadata.mtp_acceptance` is a deferred phase-2 proposal, not an implemented resolution source. Native MiMo construction in `EngineV2SlotFactory+Native.swift` retains its exact configuration instead of applying this preference.
 
 Other surfaces:
 
-- Standalone `darkbloom local`: `StandaloneServer` takes `mtpAcceptance` beside `mtpMode` (`StandaloneServer.swift`, wired from `StartCommand+Modes.swift`).
+- Standalone serving (`darkbloom start --local`): `StandaloneServer` takes `mtpAcceptance` and `mtpAcceptanceByModel` beside `mtpMode` (`StandaloneServer.swift`, wired from `StartCommand+Modes.swift`). `darkbloom local` only prints the endpoint and key.
 - Benchmark harness: `DARKBLOOM_MTP_ACCEPTANCE=exact|typical[:<delta>]`, read only by `MTPProductionSession` beside `DARKBLOOM_MTP_VERIFICATION_MODE` (`MTPProductionSession.swift`). Production reads no environment variable for this. No env var can switch a lossy mode on in serving.
+- Candidate radix harness: `--mtp-acceptance exact|typical` in `run_radix_engine.py` and `BenchmarkOptions.swift`; omitted means exact. The production-session route passes `mtpAcceptanceConfig: String = "exact"` through `EngineV2Factory.makeBenchmarkSession` (`@_spi(Benchmarking)`); the candidate resident route sets `CBv2MTPConfig.acceptance` directly. The flag does not enable MTP and does not expose a delta override.
 - Kill switch: `DARKBLOOM_CBV2_MTP=0` still disables all MTP (`MTPContractsV2.swift`).
-- Telemetry: `mtp_acceptance` string in the slot posture fields (`EngineV2Bridge+MTP.swift` region), the allowlist (`TelemetryEvent.swift`) and `docs/reference/telemetry-schema.md`. The bridge comment requires all three mirrors in one change. Fleet dashboards can then split `mtp_acceptance_rate` by mode.
+- Telemetry: optional `mtp_acceptance` (`exact` / `typical`) is a fixed operational key constructed by `EngineV2Bridge.emitSlotPostureTelemetry`, from the installed rule in the snapshot. It is omitted when that snapshot has no rule. The provider client facade discards the event; there is no client ingestion route, field filter or emitter allowlist. This change does not supply a live fleet dashboard dimension. The canonical field contract is in `docs/reference/telemetry-schema.md`.
 - Docs: one row per key in `docs/provider/cli-reference.md` table; one paragraph in `docs/architecture/inference.md` "Multi-token prediction"; this record under `docs/design/` with a README row.
 
 ## 6. Invariants
@@ -155,10 +156,10 @@ One PR per repository layer.
 | Layer | Repository and base | Content |
 |---|---|---|
 | L1 | `Layr-Labs/mlx-swift-lm`, branch `feat/typical-mtp-acceptance` from main `cb5372d` | Section 4.3 items 1 to 6 plus G1 to G3 tests. |
-| L2 | `Layr-Labs/d-inference`, branch `feat/typical-mtp-acceptance` from master | Submodule pin bump, `ProviderConfig` keys and decode/encode, `MTPAcceptancePolicy`, slot factory, standalone server and start command, benchmark env, telemetry three mirrors, docs rows, this record. |
+| L2 | `Layr-Labs/d-inference`, branch `feat/typical-mtp-acceptance` from master | Merged SDK pin with the engine change, `ProviderConfig` keys and decode/encode, `MTPAcceptancePolicy`, target-prefix slot factory, standalone server and start command, benchmark env and candidate radix flag, fixed posture key, docs rows, this record. |
 | L3 (phase 2) | `d-inference` | Provider parse of catalog `metadata.mtp_acceptance` and the `docs/reference/model-registry-format.md` contract. Registration of the key on one build goes through the existing approved registration workflow. No coordinator code change: `metadata` is a free-form map delivered as-is. |
 
-Sequencing fact: d-inference master pins `6f3d171`, the tip of the DiffusionGemma branch that was squash-merged into fork main as #157. The tree at fork main `cb5372d` equals that pin, so the L1 commit sits on fork main and the pin jump in L2 carries only the engine change.
+Original L1 sequencing used the DiffusionGemma pin `6f3d171` and fork main `cb5372d`, whose trees were equal. These are historical source bases, not the current dependency pin. L2 preserves the current merged SDK pin and unrelated native execution changes; the actual submodule revision is recorded by Git, not selected by this design record.
 
 ## 9. Out of scope
 
@@ -188,9 +189,9 @@ Sequencing fact: d-inference master pins `6f3d171`, the tip of the DiffusionGemm
 | Packet | `libs/mlx-swift-lm/.../MTP/EngineLoopV2+MTPExecution.swift`, `CBv2MTPRoundDriver.swift` (`Verify.acceptancePacket`) |
 | Walk and emission | `libs/mlx-swift-lm/.../MTP/EngineLoopV2+MTPFinalize.swift` (`finalizeMTPRound`) |
 | Provider config | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`BackendSettings`) |
-| Per-model resolution | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (new) |
+| Per-model resolution | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve(global:byModel:modelID:)`) |
 | Slot build | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` |
 | Standalone | `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | Benchmark | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` (`makeSession`) |
-| Telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `Telemetry/TelemetryEvent.swift`, `docs/reference/telemetry-schema.md` |
+| Telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift` (`emitSlotPostureTelemetry`), `docs/reference/telemetry-schema.md` |
 | Catalog metadata (phase 2) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecMetadata.swift`, `docs/reference/model-registry-format.md` |

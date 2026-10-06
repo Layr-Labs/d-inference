@@ -431,8 +431,8 @@ verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 `[backend] mtp_acceptance = "typical"`, or the `mtp_acceptance_by_model`
-table, installs typical acceptance for sampled rows of that model: a draft is
-kept when the sampler-filtered target row gives it probability above
+table, installs typical acceptance for eligible sampled target-prefix rows of
+that model: a draft is kept when the sampler-filtered target row gives it probability above
 `min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
 position and the bonus position still commit the keyed target sample. Output
 is then not distribution-exact for the target. Greedy rows keep the exact
@@ -441,6 +441,10 @@ walk, and the default is `exact` (`MTPAcceptancePolicy.resolve`;
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`;
 `mtp_acceptance` in slot posture telemetry). Design record:
 [`../design/typical-mtp-acceptance.md`](../design/typical-mtp-acceptance.md).
+Native MiMo remains exact: its separately owned slot construction does not
+apply this preference, so `typical` is unsupported on that path
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`,
+`nativeMiMoMTPConfig`). The setting does not enable MTP or widen model eligibility.
 Nemotron's assistant uses one speculative request and adaptive depth up to
 seven proposed tokens. Captured target verification, batched M=1 projections
 and KV-only trusted-history priming default on, with separate rollback controls.

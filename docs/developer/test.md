@@ -1995,6 +1995,44 @@ both targets compile the same test without depending on target-local helpers.
 Passing these operator cases does not replace full-model trajectory, cache,
 batching or performance validation.
 
+#### Sampled MTP acceptance controls
+
+Build the [candidate radix executable](build.md#prefix-cache-benchmark-executable)
+with `RADIX_CANDIDATE_BUILD=1`. Both `scripts/benchmarks/run_radix_engine.py`
+and `radix-engine` accept `--mtp-acceptance exact|typical`. The wrapper forwards
+the option only when explicitly supplied, preserving old baseline command lines;
+omission leaves the candidate on `exact`. Historical baseline builds reject the
+explicit flag. Values are the exact lowercase strings, not `typical:<delta>`.
+This flag selects acceptance, not MTP activation: pass `--mtp on` separately.
+
+For an eligible target-prefix model, compare `exact` and `typical` using the same
+candidate binary, target/assistant hashes, backend, grant, prompt, seed, sampling
+knobs and output budget. Use sampled inputs and
+`--generation-comparison-policy record`, retaining full outputs and structural,
+capacity, cancellation and retirement checks. Typical output is not
+distribution-exact; token differences are not a greedy parity failure, and a
+higher acceptance ratio alone proves neither quality nor throughput. Keep strict
+greedy controls separate. Native MiMo does not apply this preference and remains
+exact; do not report it as a typical-acceptance arm.
+
+The candidate SSD route passes `mtpAcceptanceConfig: String = "exact"` through
+`EngineV2Factory.makeBenchmarkSession` (`@_spi(Benchmarking)`) to the ordinary
+slot factory. The resident route sets the same engine rule directly. Actual MTP
+metrics report `acceptance`, the installed rule, rather than merely the requested
+flag (`scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift`,
+`mtpRecord`). Production serving still uses TOML; the separate benchmark-session
+environment override is documented in the
+[configuration reference](../reference/configuration.md#engine-and-scheduler).
+
+Run `python3 -m unittest discover -s scripts/benchmarks -p test_run_radix_engine.py`
+for wrapper omission/forwarding and invalid-value coverage. With the same source
+root and candidate define used for the build, run the radix package's
+`BenchmarkMTPAcceptanceTests` for default/configuration, invalid/duplicate flags,
+and installed configuration/metric serialization. Also run provider
+`MTPAcceptanceConfigTests` for optional TOML round trips, per-model precedence,
+unknown-value fallback and the separate benchmark override. These tests are not
+real-model quality or performance measurements.
+
 <a id="resident-prefix-benchmark-validation"></a>
 
 #### Explicit Gemma verifier and projection controls

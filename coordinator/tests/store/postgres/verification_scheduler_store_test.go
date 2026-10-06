@@ -34,12 +34,8 @@ func TestPostgresVerificationSchedulerMigrationIsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("install legacy budget key: %v", err)
 	}
-	if err := st.reopen(context.Background()); err != nil {
-		t.Fatalf("second scheduler migration: %v", err)
-	}
-	if err := st.reopen(context.Background()); err != nil {
-		t.Fatalf("third scheduler migration: %v", err)
-	}
+	replayMigrations(t, st)
+	replayMigrations(t, st)
 	var compositeBudgetKey bool
 	err := st.pool.QueryRow(context.Background(), `
 		SELECT EXISTS (

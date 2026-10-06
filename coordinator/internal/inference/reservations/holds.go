@@ -4,7 +4,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -103,13 +102,10 @@ func (s *Controller) ReleaseInitial(accountID, model string, amount int64, servi
 	s.observation.Histogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
 }
 
-func (s *Controller) ReleaseService(pr *registry.PendingRequest, reason string) {
-	if pr == nil || !pr.ServiceReservation {
-		return
-	}
-	s.serviceReservations.Release(pr.ConsumerKey, pr.ReservedMicroUSD)
+func (s *Controller) ReleaseService(accountID, model string, amount int64, reason string) {
+	s.serviceReservations.Release(accountID, amount)
 	if reason == "" {
 		reason = "unknown"
 	}
-	s.observation.Incr("billing.reservation_releases", []string{"model:" + pr.Model, "mode:service_hold", "reason:" + reason})
+	s.observation.Incr("billing.reservation_releases", []string{"model:" + model, "mode:service_hold", "reason:" + reason})
 }

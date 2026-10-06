@@ -30,28 +30,32 @@ const EnvPrefix = env.EnvPrefix
 
 // AppConfig is the root configuration struct, composing per-package configs.
 type AppConfig struct {
-	StoreConfig     store.Config
-	ServerConfig    api.ServerConfig
-	BillingConfig   billing.Config
-	AuthConfig      auth.Config
-	RateLimitCfg    ratelimit.Config
-	FinancialRL     ratelimit.Config
-	ServiceRL       ratelimit.Config
-	ConsumerTokens  ratelimit.TokenConfig
-	ServiceTokens   ratelimit.TokenConfig
-	OutputAdmission ratelimit.OutputAdmissionEstimatorConfig
-	RegistryCfg     registry.Config
-	MDMConfig       mdm.Config
-	DatadogConfig   datadog.Config
-	MediaFetchCfg   mediafetch.Config
-	PromptSidecar   promptcontract.SupervisorConfig
-	AdminKey        string
-	AdminEmails     []string
-	ReleaseKey      string
+	DeploymentEnvironment string
+	StoreConfig           store.Config
+	ServerConfig          api.ServerConfig
+	BillingConfig         billing.Config
+	AuthConfig            auth.Config
+	RateLimitCfg          ratelimit.Config
+	FinancialRL           ratelimit.Config
+	ServiceRL             ratelimit.Config
+	ConsumerTokens        ratelimit.TokenConfig
+	ServiceTokens         ratelimit.TokenConfig
+	OutputAdmission       ratelimit.OutputAdmissionEstimatorConfig
+	RegistryCfg           registry.Config
+	MDMConfig             mdm.Config
+	DatadogConfig         datadog.Config
+	MediaFetchCfg         mediafetch.Config
+	PromptSidecar         promptcontract.SupervisorConfig
+	AdminKey              string
+	AdminEmails           []string
+	ReleaseKey            string
 }
 
 // Check runs validation on every per-package config.
 func (c AppConfig) Check() error {
+	if err := c.CheckDeploymentEnvironment(); err != nil {
+		return err
+	}
 	// Preserve validation order: startup reports the first failing component.
 	checks := []struct {
 		name  string
@@ -80,23 +84,24 @@ func (c AppConfig) Check() error {
 func ReadAppConfig() AppConfig {
 	rlCfg := ratelimit.ReadConfig()
 	return AppConfig{
-		StoreConfig:     store.ReadConfig(),
-		ServerConfig:    api.ReadServerConfig(),
-		BillingConfig:   billing.ReadConfig(),
-		AuthConfig:      auth.ReadConfig(),
-		RateLimitCfg:    rlCfg.Inference,
-		FinancialRL:     rlCfg.Financial,
-		ServiceRL:       rlCfg.Service,
-		ConsumerTokens:  rlCfg.ConsumerTokens,
-		ServiceTokens:   rlCfg.ServiceTokens,
-		OutputAdmission: rlCfg.OutputAdmission,
-		RegistryCfg:     registry.ReadConfig(),
-		MDMConfig:       mdm.ReadConfig(),
-		DatadogConfig:   datadog.ConfigFromEnv(),
-		MediaFetchCfg:   mediafetch.ConfigFromEnv(),
-		PromptSidecar:   promptcontract.ReadSupervisorConfig(),
-		AdminKey:        env.EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
-		AdminEmails:     api.ParseCommaList(env.EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:      env.EnvOr(EnvPrefix+"_RELEASE_KEY", ""),
+		DeploymentEnvironment: env.EnvOr(EnvPrefix+"_DEPLOYMENT_ENVIRONMENT", "production"),
+		StoreConfig:           store.ReadConfig(),
+		ServerConfig:          api.ReadServerConfig(),
+		BillingConfig:         billing.ReadConfig(),
+		AuthConfig:            auth.ReadConfig(),
+		RateLimitCfg:          rlCfg.Inference,
+		FinancialRL:           rlCfg.Financial,
+		ServiceRL:             rlCfg.Service,
+		ConsumerTokens:        rlCfg.ConsumerTokens,
+		ServiceTokens:         rlCfg.ServiceTokens,
+		OutputAdmission:       rlCfg.OutputAdmission,
+		RegistryCfg:           registry.ReadConfig(),
+		MDMConfig:             mdm.ReadConfig(),
+		DatadogConfig:         datadog.ConfigFromEnv(),
+		MediaFetchCfg:         mediafetch.ConfigFromEnv(),
+		PromptSidecar:         promptcontract.ReadSupervisorConfig(),
+		AdminKey:              env.EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
+		AdminEmails:           api.ParseCommaList(env.EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:            env.EnvOr(EnvPrefix+"_RELEASE_KEY", ""),
 	}
 }

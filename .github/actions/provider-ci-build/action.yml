@@ -84,9 +84,18 @@ runs:
       id: provider-build
       shell: bash
       working-directory: provider-swift
+      env:
+        LANE: ${{ inputs.lane }}
+      # The provider lane instruments Swift code for the coverage report at the
+      # end of its job. Both builds use the same flags, so neither rebuilds the
+      # other. The parity lane has no coverage report and builds as before.
       run: |
-        swift build --build-tests
-        swift build --product darkbloom-fan-helper
+        coverage=()
+        if [ "$LANE" = provider ]; then
+          coverage=(--enable-code-coverage)
+        fi
+        swift build --build-tests ${coverage[@]+"${coverage[@]}"}
+        swift build --product darkbloom-fan-helper ${coverage[@]+"${coverage[@]}"}
     - name: Build all SDK test products against local MLX
       if: inputs.lane == 'sdk'
       id: sdk-build

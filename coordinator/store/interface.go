@@ -31,8 +31,10 @@ type Store interface {
 	ModelRegistryStore
 	ReleaseStore
 	UserStore
+	SmallModelsInterestStore
 	DeviceAuthStore
 	InviteStore
 	ProviderEarningsStore
 	ProviderStore
+	AccountErasureStore
 }

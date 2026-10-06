@@ -124,6 +124,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_activation{outcome=cold_only}",
 		"exact_cache_artifact_allowlist_configured",
 		"exact_cache_artifact_allowlist_count",
+		"exact_cache_artifact_allowlist_stale_models",
 		"exact_cache_sidecar_enabled",
 		"exact_cache_sidecar_running",
 		"exact_cache_sidecar_ready",

@@ -1,0 +1,9 @@
+-- +goose Up
+CREATE TABLE IF NOT EXISTS small_models_interest (
+ account_id TEXT PRIMARY KEY REFERENCES users(account_id) ON DELETE CASCADE,
+ mac_type TEXT NOT NULL,
+ chip TEXT NOT NULL,
+ ram_gb INTEGER NOT NULL CHECK (ram_gb BETWEEN 1 AND 2048),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

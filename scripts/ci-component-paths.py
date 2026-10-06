@@ -41,6 +41,7 @@ GO = (
     "coordinator/**", "e2e/**", "go.mod", "go.sum", ".golangci.yml",
     "scripts/run-coordinator-tests.py", "scripts/coordinator_tests/**",
     "scripts/test-coordinator-tests.py", "scripts/coordinator-tests.sh",
+    "scripts/coordinator-statement-coverage.sh",
     "scripts/sync-install-embed.sh", "scripts/install.sh", "fixtures/**",
     "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
     "scripts/verify-prompt-sidecar-linux.sh",
@@ -83,7 +84,9 @@ def classify(paths):
         selected["sidecar"] |= ci or sidecar
         selected["console"] |= ci or matches(path, CONSOLE)
         e2e = provider or coordinator or sidecar or matches(path, E2E_TOOLING)
-        selected["integration"] |= e2e or path == ".github/workflows/integration.yml"
+        selected["integration"] |= e2e or path in (
+            ".github/workflows/integration.yml", "scripts/test-integration-ci-workflow.py",
+        )
         selected["benchmark"] |= e2e or path == ".github/workflows/benchmarks.yml"
     return selected
 

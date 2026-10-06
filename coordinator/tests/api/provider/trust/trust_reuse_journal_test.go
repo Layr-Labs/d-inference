@@ -114,7 +114,7 @@ func TestHardUntrustJournalAppendFailureLatchesRoutingClosed(t *testing.T) {
 	}
 	journal.appendErr = errors.New("simulated fsync failure")
 	rec := hardwareReuseRecord("se-append-fail", "SER-A", trHashA, time.Now())
-	srv.trustReuseCache.RecordTrust(rec)
+	srv.trustReuseCache.RecordTrust(srv.trustReuseCache.PublicationGeneration(), rec)
 	if _, err := mem.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil {
 		t.Fatalf("UpsertProviderTrustReuse: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestHardUntrustJournalCleanupFailureLeavesPendingDenial(t *testing.T) {
 	}
 	journal.removeErr = errors.New("simulated rename failure")
 	rec := hardwareReuseRecord("se-cleanup-fail", "SER-C", trHashA, time.Now())
-	srv.trustReuseCache.RecordTrust(rec)
+	srv.trustReuseCache.RecordTrust(srv.trustReuseCache.PublicationGeneration(), rec)
 	if _, err := mem.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil {
 		t.Fatalf("UpsertProviderTrustReuse: %v", err)
 	}

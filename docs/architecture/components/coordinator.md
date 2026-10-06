@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -51,18 +51,19 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/inference` | Shared admission, dispatch, cancellation and settlement; request lowering and response encoding are separate leaves. |
 | `coordinator/api/provider` | WebSocket sessions and typed inference-event handoff; `provider/trust` owns legacy verification and revocation state. |
 | `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. |
-| `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the payouts child owns provider payout workflows, not a second ledger. |
+| `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the `accounts/erasure` child owns the account erasure admin routes and scrub loop; the payouts child owns provider payout workflows, not a second ledger. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
 | `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
-| `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
+| `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, non-streaming response limits, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
 | `coordinator/internal/provider` | Challenge verification, session/inventory/heartbeat components, identity budget/push/coverage, MDM scheduling, trust authority, reuse cache and revocation journal. Trust adapters bind these to live provider sessions. |
+| `coordinator/internal/provider/legacymdm` | One shared immutable authenticated account/SE-key/serial eligibility policy for legacy registration, enrollment, MDM verification and trust reuse; the store owns its durable one-time freeze. |
 | `coordinator/internal/observation` | Independent route, profile and compact-outcome pipelines; queues, backpressure, flush cadence and shutdown remain pipeline-specific. |
 | `coordinator/registry` | Live fleet state, atomic admission/reservation transitions, queues and controllers. Pure detached calculations live in `registry/admission` and `registry/selection`. |
 | `coordinator/internal/registry` | Provider-write transport/lanes/watchdog, connection drain authority, immutable connection age/order, eviction grace, identity-gate directory and retained fault evidence, bounded demand windows, detached residency/capacity/forecast policies, reviewed deadline catalog/posture, Autopilot state/control/ledger, cache activation and persistence. Registry/provider critical sections remain authoritative; owned directory and identity-state locks are private to `identitygate`. |
 | `coordinator/store` | Contracts, domain records, errors, configuration, read-through decorator and capability unwrapping. |
 | `coordinator/store/memory`, `coordinator/store/postgres` | Backend owners with domain-focused operations; PostgreSQL owns its migrations. |
-| `coordinator/internal/store` | Shared record normalization, read-cache domain generations, bounded memory history and focused PostgreSQL query/schema helpers; backends retain storage ownership. |
+| `coordinator/internal/store` | Shared record normalization, read-cache domain generations, bounded memory history, the account erasure rule table and keys (`erasure`) and focused PostgreSQL query/schema helpers; backends retain storage ownership. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |
 | `coordinator/internal/wire` | Production frame scanning/decoding used by protocol entrypoints; wire types stay in `coordinator/protocol`. |
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
@@ -115,8 +116,9 @@ failure in any step marked *fatal* exits the process before it listens.
    memory-store opt-in, mock billing with a live Stripe key, malformed media
    fetch or cache-routing values, an unknown trust level). Every variable is
    listed in [`../../reference/configuration.md`](../../reference/configuration.md).
-3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, run the
-   idempotent migration slice, seed the admin key — otherwise the memory store
+3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, apply pending
+   goose migrations ([schema lifecycle](../schema-lifecycle.md)), seed the
+   admin key — otherwise the memory store
    with its 15 minute pruner. Provider sessions orphaned by the previous
    process are closed, best-effort, with a 10 second budget.
 4. **Registry.** `registry.New`, trust floor, dedicated models, quality
@@ -135,11 +137,19 @@ failure in any step marked *fatal* exits the process before it listens.
    sender-encryption key from the mnemonic, admin emails, Privy, MDM client
    and verification scheduler, profile signer, APNs attestor and the
    code-attestation cache, the trust-reuse cache (*fatal* if its revocation
-   journal is unusable).
+    journal is unusable), then frozen legacy MDM policy initialization (*fatal*
+    if production App Attest serving is not enabled at full rollout, or the
+    durable cohort cannot be frozen/loaded). The freeze follows revocation replay
+    and is not part of schema migration.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
-   reconciler; the prompt sidecar supervisor and preloader.
+   reconciler; the account erasure scrub loop (`StartAccountErasureLoop`, which
+   runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`) and
+   outbox worker (`StartErasureOutboxLoop`, which runs `Owner.StartOutboxLoop`
+   in `coordinator/api/accounts/erasure/outbox.go`;
+   [account erasure](../account-erasure.md)); the prompt sidecar supervisor
+   and preloader.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
    a 64 KiB header cap; an optional private pprof listener.
@@ -155,6 +165,36 @@ HTTP owners depend on registry, store and accounting services; those services
 never import HTTP owners. Store implementations import root store contracts,
 not the reverse. Registry policies take detached values and return decisions;
 the live registry retains locks and commit-time revalidation.
+
+`trust.Owner` (`coordinator/api/provider/trust/owner.go`) retains one
+`legacymdm.Policy` (`coordinator/internal/provider/legacymdm/policy.go`), shared by
+registration, enrollment and the verification/authority components.
+`configureBillingAndTrust` (`coordinator/app/services.go`) calls
+`Owner.InitializeLegacyMDMPolicy` after `SeedTrustReuseCache` replays revocations
+and before listen. `Policy.Initialize` validates the required App Attest serving
+configuration before calling the optional `LegacyMDMCohortStore` capability
+(`coordinator/store/legacy_mdm_cohort.go`, `FreezeLegacyMDMCohort`).
+`Policy.RegistrationAllowed` and `Policy.ProviderAllowed` enforce membership;
+`Policy.AuthorizeEnrollment` validates the linked-token signed reenrollment proof.
+The WebSocket session owner (`coordinator/api/provider/session.go`) marks a
+nonmember connection as requiring App Attest serving and verified machine
+identity, while `AppAttestIdentityCandidate`
+(`coordinator/api/provider/trust/app_attest.go`) prevents legacy serial recovery
+from bypassing that requirement. The policy owns eligibility, not live trust
+grants or a second registry; [enrollment](../security/enrollment.md) owns its
+frozen-membership and copied-profile boundaries.
+
+Base-reward admission stays with the settlement owner rather than the legacy
+serving policy. `rewardSnapshotEligible`
+(`coordinator/payments/baserewards/machine_candidates.go`) requires both
+`ServingAuthorized` and `AppAttestAuthorized`; `buildCandidatesWithBindings` and
+`candidateSessionAuthorized` use that same predicate. `settleCandidatePlan`
+(`coordinator/payments/baserewards/settlement_plan.go`) rechecks it before planning
+and in the `SettleProviderFloorDrawBatch` authorization callback. Pure memory
+and ranking calculations remain under `coordinator/internal/payments/rewardpolicy`.
+These boundaries neither revoke grandfathered serving nor change inference
+credits or finalized historical rewards; [billing](../billing.md) owns the
+economics guards.
 
 Application assembly creates the registry, store, ledger and read cache and passes
 them in `api.RuntimeDependencies` (`coordinator/app/app.go`, `app.Run`;
@@ -288,7 +328,7 @@ flowchart TD
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Process exits before binding the port | A `Check` failure, store connect/migration error, missing release inventory, or an unusable trust-reuse journal | The first `Error` log line; [`../storage.md#failure-modes`](../storage.md#failure-modes) |
+| Process exits before binding the port | A `Check` failure, store connect/migration error, missing release inventory, or an unusable trust-reuse journal | The first `Error` log line; [`../storage.md#failure-modes`](../storage.md#failure-modes), [`../schema-lifecycle.md#failure-modes`](../schema-lifecycle.md#failure-modes) |
 | Fleet 429s for minutes after a deploy | Empty registry until providers reconnect and re-attest; release-policy enforcement bites only after its boot grace ([`EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE`](../../reference/configuration.md#release-policy-version-floor-and-binary-hashes)) | [`../../operations/release-policy-rollout.md`](../../operations/release-policy-rollout.md) |
 | CPU saturation under retry storms | Routing scans per dispatch attempt; bounded by `EIGENINFERENCE_ROUTING_CONCURRENCY` | [`../scheduling.md`](../scheduling.md) |
 | Streams cut during a restart | Drain grace shorter than the longest generation | `EIGENINFERENCE_DRAIN_GRACE` in [`../../reference/configuration.md`](../../reference/configuration.md) |

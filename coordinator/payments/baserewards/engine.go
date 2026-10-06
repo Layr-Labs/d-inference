@@ -145,30 +145,6 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID rewardpolicy.EpochID) 
 	return res, nil
 }
 
-// latestAccountByProviderKey returns, per provider key, the account from the
-// session with the latest connected_at (the current payout linkage).
-func latestAccountByProviderKey(sessions []store.ProviderSession) map[string]string {
-	type pick struct {
-		account string
-		when    time.Time
-	}
-	best := make(map[string]pick)
-	for _, ps := range sessions {
-		if ps.ProviderKey == "" || ps.AccountID == "" {
-			continue
-		}
-		cur, ok := best[ps.ProviderKey]
-		if !ok || ps.ConnectedAt.After(cur.when) {
-			best[ps.ProviderKey] = pick{account: ps.AccountID, when: ps.ConnectedAt}
-		}
-	}
-	out := make(map[string]string, len(best))
-	for k, v := range best {
-		out[k] = v.account
-	}
-	return out
-}
-
 // Run drives settlement of the previous (closed) 5-minute period. Idempotency
 // absorbs duplicate ticks, restarts, and blue-green double-runs. It returns when
 // ctx is cancelled; launch it via saferun.Go so a panic never crashes the

@@ -23,7 +23,7 @@ func TestModelTokenPromotionZeroUsageRejectsChargeAndPayout(t *testing.T) {
 						continue
 					}
 					earning := &store.ModelTokenEarning{ProviderEarning: store.ProviderEarning{AccountID: "provider", JobID: "zero-usage-job", AmountMicroUSD: payout}}
-					_, err := b.SettleModelTokenReservation(r.ID, 0, quote, earning)
+					_, err := b.SettleModelTokenReservation(r.ID, 0, quote, earning, true)
 					if !errors.Is(err, store.ErrPromotionInvalidSettlement) {
 						t.Fatalf("gross=%d payout=%d: %v", gross, payout, err)
 					}
@@ -33,7 +33,7 @@ func TestModelTokenPromotionZeroUsageRejectsChargeAndPayout(t *testing.T) {
 				t.Fatal("zero-usage provider was credited")
 			}
 			// A zero-cost owned request is still allowed to return its holds.
-			result, err := b.SettleModelTokenReservation(r.ID, 0, tokenPrice(0), nil)
+			result, err := b.SettleModelTokenReservation(r.ID, 0, tokenPrice(0), nil, true)
 			if err != nil || !result.Applied {
 				t.Fatalf("zero-cost settlement: %+v %v", result, err)
 			}

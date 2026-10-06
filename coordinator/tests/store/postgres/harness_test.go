@@ -53,6 +53,7 @@ func testPostgresStore(t testing.TB) *postgresFixture {
 		"balances",
 		"ledger_entries",
 		"billing_sessions",
+		"small_models_interest",
 		"users",
 		"device_codes",
 		"provider_tokens",
@@ -87,6 +88,9 @@ func testPostgresStore(t testing.TB) *postgresFixture {
 		"app_attest_shadow_events",
 		"request_profiles",
 		"fleet_snapshots",
+		"erasure_se_owners",
+		"erasure_outbox",
+		"erasure_requests",
 	} {
 		if _, err := cleanupPool.Exec(ctx, "TRUNCATE "+table+" CASCADE"); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)

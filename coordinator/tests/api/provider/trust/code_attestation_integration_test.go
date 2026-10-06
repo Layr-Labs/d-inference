@@ -352,7 +352,7 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	current, currentPriv = copiedPublic, kPrivNew
 	if srv.SendCodeIdentityResumeChallenge(
 		context.Background(), "p1", copiedPublic, kPubB64, sePubB64,
-		copiedPublic.APNsDeviceToken,
+		copiedPublic.APNsDeviceToken, srv.codeAttestThrottle.PublicationGeneration(),
 	) || copiedPublic.GetFreshCodeAttested() {
 		t.Fatal("copied public key without old X25519 private key passed resume PoP")
 	}

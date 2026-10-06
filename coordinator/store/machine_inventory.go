@@ -32,6 +32,7 @@ type MachineObservation struct {
 	SEKey                string    `json:"-"` // authenticated legacy key; not proof of physical uniqueness
 	VerifiedSerial       string    `json:"-"` // only fresh, SE-bound Apple MDA evidence
 	VerifiedAppAttestKey string    `json:"-"` // set only after a fresh endpoint-bound assertion commits
+	RegisteredAt         time.Time `json:"registered_at,omitzero"`
 	At                   time.Time `json:"observed_at"`
 	Disconnected         bool      `json:"disconnected"`
 	DisconnectReason     string    `json:"disconnect_reason,omitempty"`

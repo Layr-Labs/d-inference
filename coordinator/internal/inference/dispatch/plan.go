@@ -27,6 +27,7 @@ type Input struct {
 	Traits                 registry.RequestTraits
 	AllowedProviderSerials []string
 	IsResponsesAPI         bool
+	Stream                 bool
 	Scope                  Scope
 	Timing                 *registry.RequestTiming
 	ServiceReservation     bool
@@ -87,6 +88,7 @@ func (p *Plan) Dispatch(in Input, reserve Reserver, fullScan bool) (out Result) 
 		in.IsResponsesAPI, in.Scope, in.Timing, in.ServiceReservation, in.CachePlan,
 		in.Exclusions, in.Attempt, in.Profile, in.BackupOf, in.RecordRoute, in.OnDispatched, fullScan,
 		func(pr *registry.PendingRequest, ids []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
+			pr.NonStreamingResponseBudget = p.dispatcher.responseLimits.NewBudget(in.Stream)
 			in.Forecast.Configure(pr, in.Model, in.EstimatedPromptTokens, in.Deadline, in.BackupOf != "")
 			return reserve(pr, ids)
 		},

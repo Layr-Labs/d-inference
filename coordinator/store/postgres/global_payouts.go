@@ -13,23 +13,6 @@ import (
 
 var _ store.GlobalPayoutStore = (*PostgresStore)(nil)
 
-const globalPayoutSchema = `
-CREATE TABLE IF NOT EXISTS global_payout_recipients (
- account_id TEXT PRIMARY KEY, country TEXT NOT NULL, data JSONB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS global_payout_withdrawals (
- id TEXT PRIMARY KEY, account_id TEXT NOT NULL, status TEXT NOT NULL,
- external_id TEXT NOT NULL DEFAULT '', submitted_at TIMESTAMPTZ NOT NULL,
- checked_at TIMESTAMPTZ NOT NULL, lease_until TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL
-);
-ALTER TABLE global_payout_withdrawals ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT 'infinity';
-UPDATE global_payout_withdrawals SET expires_at=(data->>'expires_at')::timestamptz WHERE status='quoted' AND expires_at='infinity';
-CREATE INDEX IF NOT EXISTS global_payout_quote_expiry ON global_payout_withdrawals(expires_at) WHERE status='quoted';
-CREATE UNIQUE INDEX IF NOT EXISTS global_payout_external_id ON global_payout_withdrawals(external_id) WHERE external_id <> '';
-CREATE INDEX IF NOT EXISTS global_payout_account ON global_payout_withdrawals(account_id, submitted_at DESC);
-CREATE INDEX IF NOT EXISTS global_payout_reconcile ON global_payout_withdrawals(checked_at) WHERE status IN ('pending','processing','posted');
-`
-
 func payoutContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
 }
@@ -55,8 +38,19 @@ func (s *PostgresStore) CreateGlobalPayoutQuote(p store.GlobalPayout) error {
 	}
 	ctx, cancel := payoutContext()
 	defer cancel()
-	_, err = s.pool.Exec(ctx, `INSERT INTO global_payout_withdrawals(id,account_id,status,submitted_at,checked_at,lease_until,expires_at,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.ID, p.AccountID, p.Status, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, p.ExpiresAt, data)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, p.AccountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO global_payout_withdrawals(id,account_id,status,submitted_at,checked_at,lease_until,expires_at,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.ID, p.AccountID, p.Status, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, p.ExpiresAt, data)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetGlobalPayout(id string) (*store.GlobalPayout, error) {
@@ -106,6 +100,9 @@ func (s *PostgresStore) BeginGlobalPayout(accountID, id string, now time.Time) (
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockAccountAdmission(ctx, tx, accountID); err != nil {
+		return nil, err
+	}
 	var p store.GlobalPayout
 	if err = readPayoutJSON(tx.QueryRow(ctx, `SELECT data FROM global_payout_withdrawals WHERE id=$1 AND account_id=$2 FOR UPDATE`, id, accountID), &p); err != nil {
 		return nil, err

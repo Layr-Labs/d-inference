@@ -32,7 +32,7 @@ func TestModelTokenPromotionFractionalEarningsAtomicAndDurable(t *testing.T) {
 					defer wg.Done()
 					id := fmt.Sprint(i)
 					for range 2 { // Replay must not accumulate the fraction again.
-						if _, err := b.SettleModelTokenReservation(id, 1, quote, earning(id)); err != nil {
+						if _, err := b.SettleModelTokenReservation(id, 1, quote, earning(id), true); err != nil {
 							t.Error(err)
 						}
 					}
@@ -56,7 +56,7 @@ func TestModelTokenPromotionFractionalEarningsAtomicAndDurable(t *testing.T) {
 			}
 			bad := earning("rejected")
 			bad.FractionalMicroUSD = store.ModelTokenPayoutScale
-			if _, err := b.SettleModelTokenReservation("rejected", 1, quote, bad); err == nil {
+			if _, err := b.SettleModelTokenReservation("rejected", 1, quote, bad, true); err == nil {
 				t.Fatal("invalid fraction accepted")
 			}
 			if _, err := b.ReleaseModelTokenReservation("rejected"); err != nil {
@@ -70,13 +70,13 @@ func TestModelTokenPromotionFractionalEarningsAtomicAndDurable(t *testing.T) {
 			if err := s.Credit("provider", math.MaxInt64-1, store.LedgerAdminCredit, "overflow-fixture"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := b.SettleModelTokenReservation("last", 1, quote, earning("last")); err == nil {
+			if _, err := b.SettleModelTokenReservation("last", 1, quote, earning("last"), true); err == nil {
 				t.Fatal("overflowing provider credit accepted")
 			}
 			if err := s.Debit("provider", math.MaxInt64-1, store.LedgerCharge, "restore-fixture"); err != nil {
 				t.Fatal(err)
 			}
-			result, err := b.SettleModelTokenReservation("last", 1, quote, earning("last"))
+			result, err := b.SettleModelTokenReservation("last", 1, quote, earning("last"), true)
 			if err != nil || result.Reservation.ProviderPayoutMicroUSD != 1 {
 				t.Fatalf("carry payout: %+v %v", result, err)
 			}

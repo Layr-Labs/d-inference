@@ -17,6 +17,12 @@ func (s *MemoryStore) ObserveMachine(ctx context.Context, o store.MachineObserva
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(o.AccountID); err != nil {
+		return store.MachineIdentity{}, err
+	}
+	if s.erasedProviderLocked(o.SessionID) {
+		return store.MachineIdentity{}, store.ErrErasureConflict
+	}
 	if s.machineInventory == nil {
 		s.machineInventory = inventory.New(s.history)
 	}

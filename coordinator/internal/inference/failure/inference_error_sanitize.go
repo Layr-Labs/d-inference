@@ -242,10 +242,17 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 	}
 }
 
+// NonStreamingResponseLimitError is the fixed text of the coordinator-only
+// response_limit terminal. It contains no provider-authored prose.
+const NonStreamingResponseLimitError = "provider response exceeds non-streaming response limit"
+
 // ClientSafeMessage also protects response helpers invoked with
 // coordinator-synthetic or directly-constructed messages that did not traverse
 // the provider read-loop sanitizer.
 func ClientSafeMessage(msg protocol.InferenceErrorMessage) string {
+	if msg.CoordinatorCause == protocol.CoordinatorCauseResponseLimit {
+		return NonStreamingResponseLimitError
+	}
 	if msg.CoordinatorCause.IsProviderDisconnect() {
 		return "provider disconnected"
 	}
@@ -257,9 +264,16 @@ func ClientSafeMessage(msg protocol.InferenceErrorMessage) string {
 
 // NormalizeInternalError hardens helpers that are also called by
 // tests and coordinator-synthetic paths rather than only by provider read-loop
-// delivery. It preserves the one non-wire coordinator cause and otherwise
+// delivery. It preserves non-wire coordinator causes and otherwise
 // applies the same provider ingress boundary.
 func NormalizeInternalError(msg protocol.InferenceErrorMessage) protocol.InferenceErrorMessage {
+	if msg.CoordinatorCause == protocol.CoordinatorCauseResponseLimit {
+		return protocol.InferenceErrorMessage{Type: protocol.TypeInferenceError, RequestID: msg.RequestID,
+			FailureCode: protocol.FailureCodeGenerationFailure, Error: NonStreamingResponseLimitError,
+			StatusCode: http.StatusBadGateway, ErrorReason: ErrorReasonProviderError,
+			CoordinatorCause: protocol.CoordinatorCauseResponseLimit}
+	}
+
 	if msg.CoordinatorCause.IsProviderDisconnect() {
 		// The abrupt flush carries no reason and stays provider_error; the
 		// graceful restart flush keeps its coordinator-internal

@@ -25,6 +25,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/access/device"
 	"github.com/eigeninference/d-inference/coordinator/api/access/keys"
 	"github.com/eigeninference/d-inference/coordinator/api/accounts"
+	erasureapi "github.com/eigeninference/d-inference/coordinator/api/accounts/erasure"
 	billinghttp "github.com/eigeninference/d-inference/coordinator/api/billing"
 	"github.com/eigeninference/d-inference/coordinator/api/billing/payouts"
 	"github.com/eigeninference/d-inference/coordinator/api/catalog"
@@ -89,6 +90,7 @@ type Server struct {
 	keys        *keys.Handler
 	device      *device.Handler
 	accounts    *accounts.Owner
+	erasure     *erasureapi.Owner
 	billingHTTP *billinghttp.Owner
 	payouts     *payouts.Owner
 	catalog     *catalog.Owner
@@ -187,6 +189,8 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		ServiceReservations:      cfg.ServiceReservations,
 		FirstContentDeadlineBase: cfg.FirstContentDeadlineBase,
 		FirstContentSLAAccounts:  cfg.FirstContentSLAAccounts, MediaFetch: cfg.MediaFetch,
+		NonStreamingResponseMaxBytes:  cfg.NonStreamingResponseMaxBytes,
+		NonStreamingResponseMaxChunks: cfg.NonStreamingResponseMaxChunks,
 	})
 	s.access.SetRateObservation(s.observation.Incr, observation.StampRateLimit)
 	s.reporting = reporting.New(reporting.Dependencies{
@@ -210,6 +214,16 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		LatestReleasedVersion: s.releases.LatestReleasedVersion,
 		MinProviderVersion:    strings.TrimSpace(cfg.MinProviderVersion),
 		SelfRouteModelEntries: s.catalog.SelfRouteModelEntries,
+	})
+	s.erasure = erasureapi.New(erasureapi.Dependencies{
+		Store: st, Access: s.access, Logger: logger, MaxBodyBytes: maxControlPlaneBodyBytes,
+		Datadog: s.observation.Datadog,
+		Hooks: erasureapi.Hooks{
+			DisconnectAccount:  reg.DisconnectAccount,
+			ForgetSEKeys:       s.trust.ForgetErasedKeys,
+			ForgetAccountTrust: s.trust.LegacyMDM.ForgetAccount,
+			ForgetConsumer:     s.ledger.ForgetConsumer,
+		},
 	})
 	s.billingHTTP = billinghttp.New(billinghttp.Dependencies{
 		Store: st, Ledger: s.ledger, Access: s.access, Logger: logger,

@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-06
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -42,7 +42,9 @@
 - [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts, encrypted SSD checkpoint streaming, exact prefix reuse by model family, and explicit resident-cache modes.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
-- [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres schema, memory store, retention.
+- [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres tables, memory store, retention.
+- [`architecture/schema-lifecycle.md`](architecture/schema-lifecycle.md): how the Postgres schema changes — goose versions, migration kinds, locks and timeouts, failure modes.
+- [`architecture/account-erasure.md`](architecture/account-erasure.md): GDPR account erasure — plan, soft delete, the checked scrub transaction, refused credits, what is kept.
 - [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards.
 - [`architecture/telemetry.md`](architecture/telemetry.md): what telemetry exists, how the Go/Swift/TS mirrors stay symmetric, where it goes.
 - [`architecture/request-accounting.md`](architecture/request-accounting.md): unsampled incoming-request evidence, coverage, revision semantics, and normalized codes.
@@ -69,9 +71,12 @@
 - [`reference/configuration.md`](reference/configuration.md): every environment variable with type, default, reading file and effect — coordinator `EIGENINFERENCE_*` (routing, admission, TTFT, warm pool, cache routing, billing, MDM, telemetry), provider `DARKBLOOM_*`, console-ui and admin-ui — plus where each process gets its environment.
 - [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types and symmetry rules.
 - [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file.
+- [`reference/personal-data-rules.md`](reference/personal-data-rules.md): every personal column the erasure scrub changes and how, retained data, erasure tables, constants.
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
 - [`reference/qwen4-next-support.md`](reference/qwen4-next-support.md): native Flash-Next private identity, serving/state policy and explicitly incomplete qualification.
+- [`reference/soft-delete.md`](reference/soft-delete.md): the tables with `deleted_at`, every store read that hides a soft-deleted row, the paths that do not filter, the indexes, and what a soft delete changes.
+- [`reference/sqlc-type-mapping.md`](reference/sqlc-type-mapping.md): Postgres type and nullability → generated Go type in `storedb`, the `sqlc.yaml` flag behind it, and the store conversion.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.
 
@@ -81,6 +86,7 @@
 - [`consumer/authentication.md`](consumer/authentication.md): create and manage API keys, sign in with Privy, run the device-code flow for the CLI; auth failures and fixes.
 - [`consumer/models.md`](consumer/models.md): the model catalog, aliases, capabilities, and how to query it.
 - [`consumer/billing.md`](consumer/billing.md): funding a balance, reading usage, what a 402 means.
+- [`consumer/referrals.md`](consumer/referrals.md): Open Sales Program: share a referral code, check earnings, and withdraw rewards.
 - [`consumer/verification.md`](consumer/verification.md): verify the provider that served you.
 - [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
 - [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider machine.
@@ -104,6 +110,10 @@
 - [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
+- [`developer/pull-requests.md`](developer/pull-requests.md): linear PR stacks, signed parent updates, and ancestry repair after each squash.
+- [`developer/database-migrations.md`](developer/database-migrations.md): choose the migration kind, add a numbered goose migration, change a column while preserving rollback compatibility, regenerate the checked-in schema.
+- [`developer/sqlc.md`](developer/sqlc.md): add a store query with sqlc, convert a hand-written store domain, `make sqlc-generate` and `make sqlc-check`.
+- [`developer/personal-data.md`](developer/personal-data.md): add a personal column, table or writer so account erasure still removes it; marker and parity tests.
 - [`developer/threat-model-review.md`](developer/threat-model-review.md): configure full PR text scans against the threat model and non-blocking author feedback.
 - [`developer/serving-performance-qualification.md`](developer/serving-performance-qualification.md): measure and review exact serving profiles before promoting concurrency limits or prefill policy.
 
@@ -111,6 +121,7 @@
 
 - [`operations/README.md`](operations/README.md): index and the two rules that apply to every runbook.
 - [`operations/coordinator-deploy.md`](operations/coordinator-deploy.md): swap the production coordinator to a reviewed build, verify, roll back.
+- [`operations/schema-migration.md`](operations/schema-migration.md): back up, check, apply and verify goose migrations in production; the first goose cut-over; rollback rules.
 - [`operations/dev-environment.md`](operations/dev-environment.md): the GCP dev environment.
 - [`operations/provider-release.md`](operations/provider-release.md): cut a provider release — version bump, signing, notarization, hashing, registration, `latest/` publish, rollback.
 - [`operations/cache-routing-rollout.md`](operations/cache-routing-rollout.md): turn cache-aware routing on in production — percent ramp, verification, kill switch back to `off`.
@@ -119,6 +130,7 @@
 - [`operations/release-policy-rollout.md`](operations/release-policy-rollout.md): shadow-then-enforce rollout of the release-policy routing gate.
 - [`operations/routing-v2-rollout.md`](operations/routing-v2-rollout.md): kill switches for the shipped routing-v2 behaviours.
 - [`operations/state-export.md`](operations/state-export.md): extract and rehydrate sealed coordinator state.
+- [`operations/account-erasure.md`](operations/account-erasure.md): erase an account's personal data — plan, confirm, grace period, Stripe deletions and `manual_action` decisions, refused credits, restore replay, cancel.
 
 ## Records (frozen)
 

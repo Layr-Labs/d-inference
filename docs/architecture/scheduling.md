@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -12,6 +12,12 @@ eligible provider gets a request is the subject of
 Provider-local weekly availability separately controls when a Mac joins that
 fleet, as described under [Provider availability windows](#provider-availability-windows).
 
+The immutable connection origin also supplies inventory registration order via
+`Provider.RegisteredAt` in `coordinator/registry/connection_origin.go`. This
+read-only projection leaves connection-age calculations, duplicate arbitration
+and admission unchanged. [Email campaign selection](storage.md#inventory-registration-timestamps)
+uses it outside the scheduler and does not change serving eligibility.
+
 For automatic same-ID weight updates, desired state includes a revision and
 aggregate hash for providers advertising `model_revisions_v1`. The provider
 stages the update without occupying a GPU slot. If an alias target is ineligible,
@@ -21,6 +27,45 @@ then closes admission for that
 model and drains accepted work before activation. Other resident models remain
 available; new cold loads wait through the activation boundary. See
 [model revisions](model-revisions.md) for backoff, snapshot selection and rollback.
+
+## Shared-host memory admission
+
+`SystemMemory.availableBytes` in
+`provider-swift/Sources/ProviderCore/Inference/Memory/SystemMemory.swift`
+selects one process-start policy through `DARKBLOOM_MEMORY_AVAILABILITY`:
+
+- `reclaimable` (default) counts Mach free + inactive pages. Inactive pages can
+  contain a neighbouring process's anonymous memory; reclaiming them may require
+  compression and swap. They are not guaranteed physical slack.
+- `free-only` counts only Mach `free_count`, which already includes speculative
+  pages. It does not credit inactive pages or provider RSS. A failed sample
+  returns zero; an invalid explicit policy also selects this stricter mode.
+
+The model-load gate subtracts the larger of the configured `memory_reserve_gb`
+and the unified-cap reserve, then outstanding unmaterialized commitments, from
+the smaller of OS availability and the MLX-free view. Required load memory still
+includes weights and activation/minimum-KV headroom (`ModelLoadAdmission` in
+`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`).
+GiB are used despite the configuration's historical `gb` spelling.
+
+The common sampler also feeds runtime KV accounting, post-load serviceability,
+doctor and coordinator capacity. Cold-load capacity may still anticipate eviction
+of the provider's own eligible MLX allocations; actual admission rechecks the
+sample after reclamation. It cannot credit a foreign resident set in free-only
+mode. No wire or catalog changes are required.
+
+Free-only mode can reject a load that would fit after file-cache reclamation.
+It is an opt-in tradeoff for co-tenanted machines, not an OS memory reservation:
+another process can allocate after the sample, and already admitted work is not
+cancelled merely because the mode is stricter. Neither mode guarantees prevention
+of jetsam or low-swap kills. For background serving, stop and start with
+`DARKBLOOM_MEMORY_AVAILABILITY=free-only darkbloom start` to persist the setting
+in the provider's launchd plist (`LaunchAgent.passthroughEnvironment` in
+`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`). Foreground and
+background starts resolve empty or invalid explicit values identically.
+Watchdog/manual restarts reuse the installed plist. To roll back, stop and start
+with `DARKBLOOM_MEMORY_AVAILABILITY=reclaimable`; a plain restart intentionally
+preserves the installed policy.
 
 ## Draining providers
 

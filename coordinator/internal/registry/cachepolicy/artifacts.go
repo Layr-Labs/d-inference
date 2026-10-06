@@ -90,7 +90,10 @@ func ReadArtifacts() ([]Artifact, error) {
 
 // ArtifactAllowlist is immutable after construction. Nil is unrestricted;
 // an explicitly empty list constructs a non-nil set that denies everything.
-type ArtifactAllowlist struct{ allowed map[Artifact]struct{} }
+type ArtifactAllowlist struct {
+	allowed map[Artifact]struct{}
+	models  map[string]struct{}
+}
 
 func NewArtifactAllowlist(artifacts []Artifact) (*ArtifactAllowlist, error) {
 	if artifacts == nil {
@@ -100,6 +103,7 @@ func NewArtifactAllowlist(artifacts []Artifact) (*ArtifactAllowlist, error) {
 		return nil, fmt.Errorf("artifact allowlist exceeds %d entries", MaxArtifacts)
 	}
 	allowed := make(map[Artifact]struct{}, len(artifacts))
+	models := make(map[string]struct{}, len(artifacts))
 	for i, artifact := range artifacts {
 		if artifact.ModelID == "" || len(artifact.ModelID) > 512 ||
 			strings.TrimSpace(artifact.ModelID) != artifact.ModelID || strings.ContainsAny(artifact.ModelID, "\x00\r\n\t*") ||
@@ -110,8 +114,9 @@ func NewArtifactAllowlist(artifacts []Artifact) (*ArtifactAllowlist, error) {
 			return nil, fmt.Errorf("artifact %d duplicates an earlier tuple", i)
 		}
 		allowed[artifact] = struct{}{}
+		models[artifact.ModelID] = struct{}{}
 	}
-	return &ArtifactAllowlist{allowed: allowed}, nil
+	return &ArtifactAllowlist{allowed: allowed, models: models}, nil
 }
 
 func (a *ArtifactAllowlist) Allows(artifact Artifact) bool {
@@ -120,6 +125,18 @@ func (a *ArtifactAllowlist) Allows(artifact Artifact) bool {
 	}
 	_, ok := a.allowed[artifact]
 	return ok
+}
+
+// StaleFor reports that the list names live's model only under other
+// identities. A weight or template revision changes the tuple, so the model
+// stays out of cache routing until an operator appends the live one. A model
+// the list never named is excluded on purpose and is not stale.
+func (a *ArtifactAllowlist) StaleFor(live Artifact) bool {
+	if a == nil {
+		return false
+	}
+	_, named := a.models[live.ModelID]
+	return named && !a.Allows(live)
 }
 
 // Snapshot detaches the canonical configuration for public status/configuration.

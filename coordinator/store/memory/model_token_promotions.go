@@ -42,7 +42,7 @@ func (s *MemoryStore) ClaimModelTokenPromotion(account, model string, now time.T
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u := s.usersByAccountID[account]
-	if u == nil || u.PrivyUserID == "" || u.Role == store.RoleService {
+	if u == nil || u.DeletedAt != nil || u.PrivyUserID == "" || u.Role == store.RoleService {
 		return nil, store.ErrPromotionIneligible
 	}
 	if _, exists := s.modelTokenGrants[account][model]; exists {
@@ -175,15 +175,16 @@ func (s *MemoryStore) releaseModelTokenLocked(id string, before time.Time) (bool
 	g.ReservedTokens -= r.FreeTokens
 	s.modelTokenGrants[r.AccountID][r.ModelID] = g
 	if r.ReservedMicroUSD > 0 {
-		s.creditLocked(r.AccountID, r.ReservedMicroUSD, store.LedgerRefund, "promotion-release:"+id, time.Now())
-		s.withdrawable[r.AccountID] += r.ReservedWithdrawableMicroUSD
+		if s.creditLocked(r.AccountID, r.ReservedMicroUSD, store.LedgerRefund, "promotion-release:"+id, time.Now()) {
+			s.withdrawable[r.AccountID] += r.ReservedWithdrawableMicroUSD
+		}
 	}
 	r.State = "released"
 	s.modelTokenReservations[id] = r
 	return true, nil
 }
 
-func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
+func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning, referralEligible bool) (store.ModelTokenSettlement, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.modelTokenReservations[id]
@@ -221,12 +222,17 @@ func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote
 			return store.ModelTokenSettlement{}, errors.New("provider balance overflow")
 		}
 	}
+	referral, err := s.preparePromotionReferralLocked(next, credited, referralEligible)
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
 	if delta > 0 {
 		_ = s.debitLocked(r.AccountID, delta, store.LedgerCharge, "promotion-settle:"+id)
 	}
 	if delta < 0 {
-		s.creditLocked(r.AccountID, -delta, store.LedgerRefund, "promotion-settle:"+id, time.Now())
-		s.withdrawable[r.AccountID] += min(-delta, r.ReservedWithdrawableMicroUSD)
+		if s.creditLocked(r.AccountID, -delta, store.LedgerRefund, "promotion-settle:"+id, time.Now()) {
+			s.withdrawable[r.AccountID] += min(-delta, r.ReservedWithdrawableMicroUSD)
+		}
 	}
 	g := s.modelTokenGrants[r.AccountID][r.ModelID]
 	g.ReservedTokens -= r.FreeTokens
@@ -242,6 +248,7 @@ func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote
 			_ = s.creditProviderAccountLocked(credited)
 		}
 	}
+	s.recordPromotionReferralLocked(referral)
 	s.modelTokenReservations[id] = next
 	return store.ModelTokenSettlement{Reservation: next, Applied: true}, nil
 }

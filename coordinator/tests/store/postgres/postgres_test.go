@@ -162,10 +162,8 @@ func TestPostgresMigrateNeverDeletesModelPrices(t *testing.T) {
 		}
 	}
 
-	// Simulated restart.
-	if err := s.reopen(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	// Simulated first goose boot, which replays the baseline.
+	replayMigrations(t, s)
 
 	for _, p := range prices {
 		if mp, ok := s.GetModelPrice(p.account, p.model); !ok || mp.InputPrice != 50_000 || mp.OutputPrice != 200_000 {

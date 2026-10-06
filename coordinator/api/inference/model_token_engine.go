@@ -17,10 +17,18 @@ func modelTokenReservation(r *http.Request) *store.ModelTokenReservation {
 }
 
 func (s *Owner) releaseModelTokenRequest(r *http.Request) bool { return s.promotions.ReleaseRequest(r) }
-func (s *Owner) settleModelTokenPromotion(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, rates payments.Rates, feePercent *int64, freeSelf bool, onSettled func(int64)) (bool, int64, int64, error) {
-	return s.promotions.Settle(pr, provider, usage, rates, feePercent, freeSelf, onSettled)
+func (s *Owner) settleModelTokenPromotion(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, rates payments.Rates, feePercent *int64, freeSelf, referralEnabled bool, onSettled func(int64)) (bool, int64, int64, error) {
+	return s.promotions.Settle(pr, provider, usage, rates, feePercent, freeSelf, referralEnabled, onSettled)
 }
 func promotionAdmission(p balanceReservationParams) promotions.Admission {
 	return promotions.Admission{Model: p.model, PublicModel: p.publicModel, BillingPromptTokens: p.billingPromptTokens, EstimatedPromptTokens: p.estimatedPromptTokens, RequestedMaxTokens: p.requestedMaxTokens}
 }
-func (s *Owner) RunModelTokenMaintenance(ctx context.Context) { s.promotions.Run(ctx) }
+func (s *Owner) RunModelTokenMaintenance(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.consumerCharges.Run(ctx, s.logger)
+	}()
+	s.promotions.Run(ctx)
+	<-done
+}

@@ -37,6 +37,9 @@ func (s *Service,
 		seKey == "" || serial == "" {
 		return false
 	}
+	if s.legacyMDMAllowed != nil && !s.legacyMDMAllowed(provider) {
+		return false
+	}
 	if blocked, _ := s.TrustSafetyStatus(); blocked || s.DeniesIdentity(seKey) {
 		return false
 	}
@@ -53,6 +56,7 @@ func (s *Service,
 	if err != nil {
 		return false
 	}
+	publication := s.trustReuseCache.PublicationGeneration()
 	expectedRevocationGeneration, revocationEventID := s.trustReuseCache.RevocationState(seKey)
 	now := s.trustReuseCache.Now()
 	var applicationVerifiedAt *time.Time
@@ -110,10 +114,14 @@ func (s *Service,
 		rec.EvidenceGeneration = 1
 	}
 
+	var published bool
 	if allowRecovery {
-		s.trustReuseCache.RecoverTrust(rec, rec.RevocationGeneration)
+		published = s.trustReuseCache.RecoverTrust(publication, rec, rec.RevocationGeneration)
 	} else {
-		s.trustReuseCache.RecordTrust(rec)
+		published = s.trustReuseCache.RecordTrust(publication, rec)
+	}
+	if !published {
+		return false
 	}
 	granted := provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(
 		registry.DeviceEvidence{
@@ -173,7 +181,7 @@ func (s *Service,
 	)
 	if granted {
 		s.logger.Info("trust-reuse: hardware trust granted without reuse record (no self-reported binary hash)",
-			"serial", serial)
+			"provider_id", provider.ID)
 	}
 	return granted
 }

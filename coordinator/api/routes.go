@@ -94,6 +94,12 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.access.RequireAuth(s.billingHTTP.HandleAccountEarnings))
 
+	// Earn-page hardware interest — registration and own readback require an
+	// interactive Privy session; the admin export is authorized in its handler.
+	s.mux.HandleFunc("POST /v1/interest/small-models", s.access.RequirePrivyAuth(s.access.RateLimitFinancial(s.accounts.HandleRegisterSmallModelsInterest)))
+	s.mux.HandleFunc("GET /v1/interest/small-models", s.access.RequirePrivyAuth(s.accounts.HandleGetSmallModelsInterest))
+	s.mux.HandleFunc("GET /v1/admin/interest/small-models", s.access.RequireAuth(s.accounts.HandleAdminSmallModelsInterest))
+
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.access.RequirePrivyAuth(s.accounts.HandleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/token-promotions", s.access.RequirePrivyAuth(s.inference.HandleMyModelTokenPromotions))
@@ -185,6 +191,11 @@ func (s *Server) routes() {
 
 	// Admin account management (service-role + per-account platform fee)
 	s.mux.HandleFunc("PUT /v1/admin/users/role", s.access.RequireAuth(s.accounts.HandleAdminSetUserRole))
+	// Account erasure (GDPR): plan, confirm, status, cancel. Admin only.
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure/plan", s.access.RequireAuth(s.erasure.HandlePlan))
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure", s.access.RequireAuth(s.erasure.HandleRequest))
+	s.mux.HandleFunc("GET /v1/admin/accounts/{account_id}/erasure", s.access.RequireAuth(s.erasure.HandleStatus))
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure/cancel", s.access.RequireAuth(s.erasure.HandleCancel))
 	s.mux.HandleFunc("PUT /v1/admin/users/platform-fee", s.access.RequireAuth(s.accounts.HandleAdminSetUserPlatformFee))
 
 	// Admin model registry (manifest-backed). The legacy supported_models CRUD
@@ -231,10 +242,10 @@ func (s *Server) routes() {
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.billingHTTP.HandleBillingMethods) // no auth needed
 
-	// Referral system — register/apply mutate referral graph (financial
-	// limiter); stats/info are read-only.
-	s.mux.HandleFunc("POST /v1/referral/register", s.access.RequireAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralRegister)))
-	s.mux.HandleFunc("POST /v1/referral/apply", s.access.RequireAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralApply)))
+	// Referral mutations require an interactive session, not a linked API key.
+	// The financial limiter runs after authentication; stats/info are read-only.
+	s.mux.HandleFunc("POST /v1/referral/register", s.access.RequirePrivyAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralRegister)))
+	s.mux.HandleFunc("POST /v1/referral/apply", s.access.RequirePrivyAuth(s.access.RateLimitFinancial(s.billingHTTP.HandleReferralApply)))
 	s.mux.HandleFunc("GET /v1/referral/stats", s.access.RequireAuth(s.billingHTTP.HandleReferralStats))
 	s.mux.HandleFunc("GET /v1/referral/info", s.access.RequireAuth(s.billingHTTP.HandleReferralInfo))
 

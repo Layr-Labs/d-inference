@@ -183,7 +183,6 @@ func (s *Owner) VerifyProviderAttestation(ctx context.Context, providerID string
 		"provider_id", providerID,
 		"hardware_model", result.HardwareModel,
 		"chip_name", result.ChipName,
-		"serial_number", result.SerialNumber,
 		"secure_enclave", result.SecureEnclaveAvailable,
 		"sip_enabled", result.SIPEnabled,
 		"secure_boot", result.SecureBootEnabled,

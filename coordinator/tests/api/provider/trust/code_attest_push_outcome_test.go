@@ -190,11 +190,11 @@ func TestCodeAttestFinalizationIsGenerationScopedAndPreservesLateReplies(t *test
 	logger := quietLogger()
 	srv := newTrustFixture(t, production.Dependencies{Registry: registry.New(logger), Store: memory.NewMemory(store.Config{}), Logger: logger}, production.Config{})
 	throttle := srv.codeAttestThrottle
-	throttle.RecordChallengeForIdentity("device", "old", "token", "node")
+	throttle.RecordChallengeForIdentity(throttle.PublicationGeneration(), "device", "old", "token", "node")
 	throttle.MarkChallengeAccepted("device", "old", 1)
-	throttle.RecordChallengeForIdentity("device", "new", "token", "node")
+	throttle.RecordChallengeForIdentity(throttle.PublicationGeneration(), "device", "new", "token", "node")
 	throttle.MarkChallengeAccepted("device", "new", 2)
-	throttle.RecordChallengeForIdentity("device", "rejected", "token", "node")
+	throttle.RecordChallengeForIdentity(throttle.PublicationGeneration(), "device", "rejected", "token", "node")
 	srv.RecordUnansweredCodeAttestPushes("provider", "device", 1)
 	srv.RecordUnansweredCodeAttestPushes("provider", "device", 1)
 	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 1 {
@@ -261,7 +261,7 @@ func TestCodeAttestLateOutstandingReplyCountsWithoutRefreshingAuthorization(t *t
 	pub, _, signer, sePub := providerKeyMaterial(t)
 	provider := newCodeAttestProvider(pub, sePub)
 	for _, nonce := range []string{"first", "second"} {
-		srv.codeAttestThrottle.RecordChallengeForIdentity(sePub, nonce, provider.APNsDeviceToken, pub)
+		srv.codeAttestThrottle.RecordChallengeForIdentity(srv.codeAttestThrottle.PublicationGeneration(), sePub, nonce, provider.APNsDeviceToken, pub)
 		srv.codeAttestThrottle.MarkChallengeAccepted(sePub, nonce, 1)
 	}
 	reply := func(nonce, signature string) {

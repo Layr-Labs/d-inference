@@ -200,7 +200,9 @@ struct LifecycleRecoveryRollbackTests {
         let beginWriter = DispatchSemaphore(value: 0)
         let attemptedLock = DispatchSemaphore(value: 0)
         let (writer, completion) = AsyncThrowingStream<(Int32, Int32), Error>.makeStream()
-        DispatchQueue.global().async {
+        // The test thread blocks until the writer runs. A global-queue writer
+        // may not get a thread while parallel tests fill the cooperative pool.
+        DispatchQueue(label: "concurrent-config-writer").async {
             do {
                 try #require(beginWriter.wait(timeout: .now() + 5) == .success)
                 let fd = open(fixture.configPath.path + ".lock", O_RDWR)

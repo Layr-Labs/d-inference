@@ -24,6 +24,10 @@ const (
 // MDMFailureReason and returns a fixed outcome to the scheduler. Transient
 // transport/enrollment failures never hard-untrust; proven posture mismatch does.
 func (s *Verifier) VerifyProviderViaMDM(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) Outcome {
+	if s.legacyMDMAllowed != nil && !s.legacyMDMAllowed(provider) {
+		provider.SetMDMFailureReason("app-attest-required")
+		return Terminal
+	}
 	// Never let MDM promote a provider whose Secure Enclave attestation is not
 	// valid. VerifyProviderAttestation stores an AttestationResult even for an
 	// invalid attestation (and, in Open Mode, leaves the provider connected), so
@@ -210,6 +214,9 @@ func (s *Verifier) ApplyLateSecurityInfo(
 			udid, commandUUID, securityOK,
 		)
 	if binding == nil {
+		return
+	}
+	if s.legacyMDMAllowed != nil && !s.legacyMDMAllowed(binding.Provider) {
 		return
 	}
 	if !securityOK {

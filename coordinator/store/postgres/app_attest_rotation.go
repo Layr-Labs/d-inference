@@ -9,14 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const appAttestKeyRotationDDL = `
-CREATE TABLE IF NOT EXISTS app_attest_key_rotations (
- key_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, account_id TEXT NOT NULL,
- requested_at TIMESTAMPTZ NOT NULL, failures INTEGER NOT NULL, reason TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS app_attest_key_rotations_machine ON app_attest_key_rotations(machine_id,requested_at DESC);
-`
-
 // appAttestRotationWindowCount counts rotations for a scope ($1) since $2,
 // including rows stored under machines merged into it, directly or through a
 // chain: a row keeps the machine that was canonical when it was recorded, and a

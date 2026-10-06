@@ -245,7 +245,7 @@ JSON-encoded on the sink worker.
 
 ### Tables
 
-`request_profiles` (DDL `requestProfilesTableDDL`, `coordinator/store/postgres/`;
+`request_profiles` (DDL in `coordinator/store/postgres/schema/migrations/00001_baseline.sql`;
 column order pinned by `requestProfileColumns`, `coordinator/store/profile_records.go`):
 
 | Group | Columns |
@@ -266,7 +266,7 @@ nullable, everything else `NOT NULL DEFAULT` zero. `id BIGSERIAL PRIMARY KEY`,
 `idx_request_profiles_provider (provider_id, created_at DESC)`. Both tables use
 `autovacuum_vacuum_scale_factor = 0.02`, `autovacuum_analyze_scale_factor = 0.01`.
 
-`fleet_snapshots` (`fleetSnapshotsTableDDL`; `fleetSnapshotColumns`):
+`fleet_snapshots` (DDL in the same baseline; `fleetSnapshotColumns`):
 
 | Group | Columns |
 |---|---|

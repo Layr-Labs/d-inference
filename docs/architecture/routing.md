@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -952,6 +952,15 @@ Run it with the package tests, for example
 and friends in `routingsim_test.go`). Tests that change process-wide tunables
 such as `SetPrefillToDecodeRatio` restore them afterwards, so the harness
 must not run in parallel with other scheduler tests in the same process.
+
+## Reuse loss funnel hook
+
+Cache planning reports its decision to the request's reuse loss funnel
+(`routeplan.CachePlanner.PlanResult`, beside `EmitDecision`; see
+[`cache-aware-routing.md`](cache-aware-routing.md#reuse-loss-funnel)). The
+hook observes only: it changes no eligibility gate, price or selection, and a
+request outside the funnel's population carries a nil account that every hook
+accepts.
 
 ## Invariants
 

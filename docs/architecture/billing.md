@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -631,6 +631,17 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | `billing.session_complete_failed` | incr | — | `coordinator/api/billing/stripe_checkout_webhook.go` `HandleStripeWebhook` |
 | `billing.referral_apply_failed` | incr | — | `HandleStripeWebhook` |
 | `store.debit.latency_ms`, `store.credit.latency_ms` | histogram | `op:reserve\|charge\|settlement_refund\|reservation_refund\|provider_account_credit\|platform_fee` | `coordinator/api/inference/reservations.go`; `HandleCompleteAt` |
+
+## Reuse loss funnel hooks in the consumer handlers
+
+The chat and generic consumer handlers enter a text request into the reuse
+loss funnel after the prompt-plan memo is built and close it when the handler
+returns (`enterCacheFunnel`, `closeCacheFunnel` in
+`coordinator/api/inference/consumer.go`); the provider completion path records
+the attempt's cache usage (`provider_inference.go`). None of this touches the
+reservation, settlement or ledger: the funnel reads the same usage report
+billing settles from and writes nothing back. Its reasons are documented in
+[`cache-aware-routing.md`](cache-aware-routing.md#reuse-loss-funnel).
 
 ## Code map
 

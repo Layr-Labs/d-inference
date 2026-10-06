@@ -434,6 +434,18 @@ applies once routing is `on` and the coordinator binary includes first sight
 (`.activation.first_sight` is present in `GET /v1/cache/status`). Use this
 procedure to raise the minimum or to turn first sight off with `0`.
 
+What it costs, measured on one provider (Gemma 26B, three six-turn
+conversations with a unique 2,500-token prompt after every request): with the
+SSD write budget not binding, one more request hits per conversation and the
+provider writes about 2.5 times the bytes (12.7 GB against 5.1 GB), and each
+novel request waits for its own checkpoint write (about 160 ms more at this
+size). With a write cap that binds, first-sight writes took the share before
+the conversations' deeper checkpoints were written: one more request hit, but
+prompt tokens reused fell from 69% to 60% and 17 writes were refused. After
+enabling, watch `donation_outcomes.write_priority_limited` against
+`donated`: if the refused share grows, raise the minimum before anything
+else.
+
 The cost is provider writes, charged to each provider's daily write budget
 ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)). A
 gpt-oss-20b checkpoint file holds 49,152 B per token plus 6.03 MB of fixed

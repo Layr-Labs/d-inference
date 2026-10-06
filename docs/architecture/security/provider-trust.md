@@ -115,6 +115,13 @@ Platform security, signed-artifact qualification and physical SIP/boot transitio
 
 ## Account erasure cleanup
 
+Queued App Attest archive completions and APNs proof writes serialize with the
+scrub and recheck durable ownership. Session-specific evidence cannot return
+after its account is scrubbed; key-scoped receipts and APNs proofs remain usable
+only while another owner is live. The frozen legacy-MDM runtime policy removes
+the erased account's membership through `Policy.ForgetAccount`, preserving other
+members on a shared device (`coordinator/internal/provider/legacymdm/erasure.go`).
+
 After durable scrub succeeds, `ForgetErasedKeys`
 (`coordinator/api/provider/trust/erasure.go`) removes the erased account's
 unshared keys from the trust-reuse cache and verification scheduler. Shared

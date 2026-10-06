@@ -28,3 +28,17 @@ func (s *MemoryStore) accountAdmissionLocked(accountID string) error {
 	}
 	return nil
 }
+
+func (s *MemoryStore) erasedCodeAttestationLocked(key, account string) bool {
+	erased, live := s.erasedAccounts[account], account != "" && !s.erasedAccounts[account]
+	for _, p := range s.providerRecords {
+		if p.SEPublicKey == key {
+			if s.erasedAccounts[p.AccountID] {
+				erased = true
+			} else {
+				live = true
+			}
+		}
+	}
+	return erased && !live
+}

@@ -164,7 +164,9 @@ basis and eligibility rules are defined in
 [pricing formulas](../reference/pricing-model.md#formulas).
 
 A `referral_code` on a Checkout session (step 1) still applies after a successful
-deposit. For attribution before the first request, apply the code in Open Sales Program
+deposit using the saved local attribution. If the referrer is erased while
+Checkout is being created, the deposit remains usable and the obsolete referral
+code is omitted. For attribution before the first request, apply the code in Open Sales Program
 before using the API.
 
 ### 7. Redeem an invite code

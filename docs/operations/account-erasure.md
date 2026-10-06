@@ -16,7 +16,10 @@ scrub changes and keeps is in [personal-data rules](../reference/personal-data-r
 - An admin closes an account and its personal data must go.
 
 Do not use it to block an account for abuse; revoke its keys instead. The
-scrub forfeits the balance and cannot be undone.
+scrub forfeits the balance and cannot be undone. The request reason is retained
+audit text: use a ticket reference, never an email, name, serial number or other
+personal detail. Account and financial identifiers remain pseudonymous, and
+backups and external records retain their separate retention boundaries.
 
 ```mermaid
 flowchart TD

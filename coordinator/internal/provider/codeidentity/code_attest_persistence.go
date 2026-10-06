@@ -39,7 +39,7 @@ func (s *Controller,
 // challengeValidity window; live-connection resume proofs do not.
 func (s *Controller,
 
-) persistCodeAttestation(seKey, version, token, nodeKey, binaryHash string) {
+) persistCodeAttestation(accountID, seKey, version, token, nodeKey, binaryHash string) {
 	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
 		return
 	}
@@ -51,6 +51,7 @@ func (s *Controller,
 	if !ok {
 		return
 	}
+	proof.AccountID = accountID
 	proof.ContinuousCoverageUntil = nil // only a verified observation can advance coverage
 	saferun.Go(s.logger, "persistCodeAttest", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

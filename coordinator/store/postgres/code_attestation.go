@@ -44,7 +44,15 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec store.Cod
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err = checkCodeAttestationOwner(ctx, tx, rec.SEPubKey, rec.AccountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO code_attestations (
 			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until
 		 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -63,7 +71,7 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec store.Cod
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) DeleteCodeAttestation(ctx context.Context, seKey string) error {

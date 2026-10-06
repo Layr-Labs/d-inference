@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -41,6 +41,10 @@ current authorization and dispatch snapshot described below. In particular, a
 local diagnostic `sip_enabled` observation is distinct from the legacy attestation
 fields and method verdict exposed by the public endpoint. See the [diagnostic field contract](../reference/app-attest-shadow.md#provider-diagnostics)
 and [attestation boundary](../architecture/security/attestation.md).
+
+A scrubbed account cannot restore raw proofs through a delayed verification
+callback. Another live account on a shared device keeps its own verification
+evidence; see [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys).
 
 ## Read verification in chat and network stats
 

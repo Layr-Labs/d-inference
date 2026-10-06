@@ -31,6 +31,7 @@ type AppAttestAssertionDiagnostics struct {
 }
 
 type AppAttestEvidence struct {
+	AccountID  string // originating account; admission persists the session ownership link
 	ID         string
 	SessionID  string
 	KeyID      string

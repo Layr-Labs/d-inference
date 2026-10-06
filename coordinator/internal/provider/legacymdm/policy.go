@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +23,7 @@ type cohort struct{ machines map[identity]string }
 
 // Policy owns the immutable legacy membership shared by registration and trust grants.
 type Policy struct {
+	mu     sync.Mutex // snapshot writers; readers retain immutable maps
 	store  store.Store
 	cohort atomic.Pointer[cohort]
 }
@@ -34,6 +36,8 @@ func (s *Policy) Initialized() bool { return s.cohort.Load() != nil }
 // freezes membership once, including an empty cohort; restarts only reload it.
 // Membership is eligibility, never a substitute for current trust verification.
 func (s *Policy) Initialize(ctx context.Context, cfg attestservice.Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cohort.Store(&cohort{machines: map[identity]string{}})
 	if !cfg.ServingEnabled || cfg.Environment != "production" || cfg.RolloutPercent != 100 {
 		return fmt.Errorf("legacy MDM freeze requires production App Attest serving enabled with a 100%% account rollout")

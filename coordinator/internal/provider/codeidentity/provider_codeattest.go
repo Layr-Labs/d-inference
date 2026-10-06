@@ -432,8 +432,11 @@ func (s *Controller,
 			sePubKey, version, apnsToken, nodeKey, attestedBinaryHash)
 		// Persist the SE+token+process-key+binary binding. Reuse still requires
 		// a live encrypted nonce PoP before protected capabilities are restored.
+		provider.Mu().Lock()
+		accountID := provider.AccountID
+		provider.Mu().Unlock()
 		s.persistCodeAttestation(
-			sePubKey, version, apnsToken, nodeKey, attestedBinaryHash)
+			accountID, sePubKey, version, apnsToken, nodeKey, attestedBinaryHash)
 		// The APNs challenge was atomically consumed after signature verification.
 	}
 	s.CodeAttestMetric("attested")

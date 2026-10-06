@@ -76,6 +76,8 @@ func testPostgresStore(t testing.TB) *postgres.PostgresStore {
 		"model_demand_requests",
 		"model_demand_hourly",
 		"provider_trust_reuse",
+		"legacy_mdm_cohort",
+		"legacy_mdm_cohort_freeze",
 		"provider_floor_draws",
 		"code_attestations",
 		"code_attest_push_budgets",

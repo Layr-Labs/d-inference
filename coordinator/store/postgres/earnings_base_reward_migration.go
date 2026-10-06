@@ -21,11 +21,6 @@ const (
 	earningsSummaryBaseRewardBatch = 1000
 )
 
-const earningsSummaryBaseRewardPendingDDL = `CREATE TABLE IF NOT EXISTS earnings_summary_base_reward_pending (
- account_id TEXT PRIMARY KEY,
- amount_micro_usd BIGINT NOT NULL
-)`
-
 // provider_floor_draws is the settlement record behind every model =
 // 'base_reward' earnings row (SettleProviderFloorDraw writes both in one
 // statement) and is an order of magnitude smaller than provider_earnings.

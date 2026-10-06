@@ -480,6 +480,8 @@ type DeviceAuthStore interface {
 	CreateProviderToken(token *ProviderToken) error
 
 	// GetProviderToken validates a provider token and returns it.
+	// Missing or revoked tokens match ErrProviderTokenInvalid via errors.Is;
+	// other errors indicate a storage failure, not an invalid credential.
 	GetProviderToken(token string) (*ProviderToken, error)
 
 	// RevokeProviderToken deactivates a provider token.

@@ -126,7 +126,7 @@ outcomes.
 
 `coordinator/store/postgres/request_outcomes.go` (`RecordRequestOutcomes`)
 projects the winning revision into `model_demand_requests` in the same
-transaction. Its trigger in `coordinator/store/postgres/model_demand_migration.go`
+transaction. Its trigger `model_demand_rollup` (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`)
 applies old/new deltas to `model_demand_hourly`; duplicate snapshots, late
 terminals and stale writes cannot create additional requests. Sticky evidence
 conflicts become unknown. The compact projection keeps revisions for 31 days,

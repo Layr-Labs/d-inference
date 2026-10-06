@@ -394,18 +394,19 @@ The provider consumes the local packages through immutable Git submodule pins:
 
 | Package | Revision | Included update |
 |---|---|---|
-| `libs/mlx-swift` | `8eac3b04e18383404ddc61b6410d57c712af5c4b` | [PR #26](https://github.com/Layr-Labs/mlx-swift/pull/26) head: per-kernel Metal math modes, merged with the [PR #27](https://github.com/Layr-Labs/mlx-swift/pull/27) Hadamard layers. It does not contain [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) (`0f4fe403`), exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `bcd6f520d5ed52dcac248153aed64753fb6a6692` | [PR #138](https://github.com/Layr-Labs/mlx-swift-lm/pull/138) head: Gemma 4 MLXFast kernels and cache fast paths, merged with SDK `main` `94dc1976` ([PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290)) |
+| `libs/mlx` | `725859207e4bc0db16e447b198e1c171574321e4` | [mlx PR #13](https://github.com/Layr-Labs/mlx/pull/13) head: Gemma 4 Metal kernel work. It is the same revision as the `libs/mlx-swift` nested `Source/Cmlx/mlx` pin |
+| `libs/mlx-swift` | `9fb219219738ed2203f900b21ce3b52b9c1e9439` | [PR #19](https://github.com/Layr-Labs/mlx-swift/pull/19) head: Gemma 4 kernel pins, merged with the [PR #26](https://github.com/Layr-Labs/mlx-swift/pull/26) per-kernel Metal math modes. It contains the [PR #27](https://github.com/Layr-Labs/mlx-swift/pull/27) Hadamard layers and [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) (`0f4fe403`), exact constant reuse for eligible Bonsai packed projections |
+| `libs/mlx-swift-lm` | `ccea27406e2fb449636b6323e4d5faddcbf392a1` | [PR #138](https://github.com/Layr-Labs/mlx-swift-lm/pull/138) head: Gemma 4 MLXFast kernels and cache fast paths, merged with SDK `main` `94dc1976` ([PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290)) |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
 procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
-Swift gitlink. The MLX core pin is unchanged. The `libs/mlx-swift` revision
+Swift gitlink. The `libs/mlx-swift` revision
 pins the C wrapper at `ad3799cb`, the `codex/gemma4-kernel-math-mode` head that
 adds explicit math modes for custom Metal kernels on top of `02cf6f4d`.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
-Both pins are open pull-request heads, not merged `main` history. The SDK
+All three pins are open pull-request heads, not merged `main` history. The SDK
 package manifest pins the same Swift revision as the `libs/mlx-swift` gitlink.
 
 ### Native Flash-Next candidate

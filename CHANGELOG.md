@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased - third-party acknowledgements
-
-- Add a README-linked acknowledgements page for direct third-party libraries, the core inference stack, and explicitly credited adaptations.
-
 ## Unreleased — coordinator schema migrations
 
 - Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.

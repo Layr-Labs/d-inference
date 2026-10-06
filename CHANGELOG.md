@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — watchdog re-armed after a failed relaunch
+
+- `darkbloom update` and `darkbloom restart` re-arm the watchdog when relaunching the drained provider fails, not only when it succeeds. The drain stops and disables the watchdog, so a relaunch that threw (for example a launchd removal or bootstrap failure) left crash recovery off until the next manual start. The error is still reported.
+
 ## Unreleased — coordinator schema migrations
 
 - Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.

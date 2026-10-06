@@ -145,6 +145,9 @@ func outboxResult(row store.ErasureOutboxWork, out outboxOutcome, now time.Time)
 }
 
 func (s *Owner) deliverOutbox(ctx context.Context, row store.ErasureOutboxWork) outboxOutcome {
+	if row.Target == store.ErasureTargetResendContact {
+		return outboxOutcome{kind: outboxManual, err: "Resend contact removal requires operator confirmation"}
+	}
 	if row.Target != store.ErasureTargetErasureLog && s.billing != nil && s.billing.MockMode() {
 		return outboxOutcome{kind: outboxDone}
 	}

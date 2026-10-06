@@ -12,6 +12,7 @@ import (
 func (s *MemoryStore) collectErasureKeysLocked(u *store.User, wallets []string) *erasure.Keys {
 	account := u.AccountID
 	k := erasure.NewKeys(account, wallets)
+	k.ResendEmail = u.Email
 	var seKeys, serials []string
 	for _, p := range s.providerRecords {
 		if p.AccountID == account {

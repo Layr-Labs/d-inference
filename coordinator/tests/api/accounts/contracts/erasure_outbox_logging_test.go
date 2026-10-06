@@ -37,15 +37,17 @@ func TestErasureOutboxManualActionLogExcludesUpstreamError(t *testing.T) {
 			fx.pass(t, account)
 			row := fx.row(t, account, store.ErasureTargetStripeAccount)
 			wantManual(t, row, message)
+			contact := fx.row(t, account, store.ErasureTargetResendContact)
+			pendingLogs := map[string]store.ErasureOutboxItem{row.ID: row, contact.ID: contact}
 			if fx.stripe.count("DELETE /v1/accounts/"+stripeID) != 1 {
 				t.Fatal("expected one local Stripe HTTP request")
 			}
 			timer := time.NewTimer(5 * time.Second)
 			defer timer.Stop()
-			for {
+			for len(pendingLogs) > 0 {
 				select {
 				case line := <-lines:
-					if strings.Contains(line, stripeID) || strings.Contains(line, email) || strings.Contains(line, message) {
+					if strings.Contains(line, stripeID) || strings.Contains(line, email) || strings.Contains(line, message) || strings.Contains(line, contact.ExternalID) {
 						t.Fatalf("upstream error leaked into operational log: %s", line)
 					}
 					var entry map[string]any
@@ -55,9 +57,14 @@ func TestErasureOutboxManualActionLogExcludesUpstreamError(t *testing.T) {
 					if entry["msg"] != "erasure outbox: manual action required" {
 						continue
 					}
+					id, _ := entry["outbox_id"].(string)
+					loggedRow, ok := pendingLogs[id]
+					if !ok {
+						continue
+					}
 					for key, want := range map[string]any{
-						"outbox_id": row.ID, "request_id": row.RequestID, "target": string(row.Target),
-						"state": string(row.State), "attempts": float64(row.Attempts),
+						"outbox_id": loggedRow.ID, "request_id": loggedRow.RequestID, "target": string(loggedRow.Target),
+						"state": string(loggedRow.State), "attempts": float64(loggedRow.Attempts),
 					} {
 						if entry[key] != want {
 							t.Errorf("log %s = %v, want %v", key, entry[key], want)
@@ -66,7 +73,7 @@ func TestErasureOutboxManualActionLogExcludesUpstreamError(t *testing.T) {
 					if _, ok := entry["error"]; ok {
 						t.Error("manual-action log must not include upstream error text")
 					}
-					return
+					delete(pendingLogs, id)
 				case <-timer.C:
 					t.Fatal("manual-action log was not emitted")
 				}

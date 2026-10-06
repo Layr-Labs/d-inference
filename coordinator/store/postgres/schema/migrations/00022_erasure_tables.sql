@@ -4,7 +4,7 @@
 -- Confirmed wallet_addresses remain raw during grace and are cleared on scrub
 -- or cancellation. Reasons must not contain personal details.
 -- erasure_outbox holds the external deletions that the scrub
--- leaves for a worker; external_id carries a Stripe ID until that deletion
+-- leaves for a worker; external_id carries a Stripe ID or Resend contact email until cleanup
 -- is confirmed and is then cleared. New tables take no lock on existing ones;
 -- the file runs in one transaction, and IF NOT EXISTS keeps a replay a no-op.
 -- +goose Up
@@ -36,7 +36,7 @@ CREATE INDEX IF NOT EXISTS erasure_requests_erased ON erasure_requests (account_
 CREATE TABLE IF NOT EXISTS erasure_outbox (
     id          TEXT PRIMARY KEY,
     request_id  TEXT NOT NULL REFERENCES erasure_requests (id),
-    target      TEXT NOT NULL CHECK (target IN ('stripe_account', 'global_recipient', 'checkout_sessions', 'erasure_log')),
+    target      TEXT NOT NULL CHECK (target IN ('stripe_account', 'global_recipient', 'checkout_sessions', 'erasure_log', 'resend_contact')),
     external_id TEXT NOT NULL DEFAULT '',
     state       TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'done', 'manual_action')),
     attempts    INTEGER NOT NULL DEFAULT 0,

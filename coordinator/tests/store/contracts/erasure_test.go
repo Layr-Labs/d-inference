@@ -152,7 +152,7 @@ func TestAccountErasureLifecycle(t *testing.T) {
 				}
 				targets[o.Target] = o.ExternalID
 			}
-			if targets[store.ErasureTargetStripeAccount] != a.Stripe || targets[store.ErasureTargetCheckoutSessions] != a.Checkout || len(targets) != 3 {
+			if targets[store.ErasureTargetStripeAccount] != a.Stripe || targets[store.ErasureTargetCheckoutSessions] != a.Checkout || targets[store.ErasureTargetResendContact] != erasure.NormalizeEmail(a.Email) || len(targets) != 4 {
 				t.Fatalf("outbox targets = %+v", targets)
 			}
 			if _, ok := targets[store.ErasureTargetErasureLog]; !ok {

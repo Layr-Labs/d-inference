@@ -255,7 +255,12 @@ the image by these rules:
    ownership metadata. Goose support and read filters alone are insufficient:
    a schema-only soft-delete build can recreate credentials or personal fields.
    Before enabling erasure, retain an image meeting this stricter floor
-   ([account-erasure prerequisites](account-erasure.md#prerequisites)).
+    ([account-erasure prerequisites](account-erasure.md#prerequisites)).
+   Keep Resend-aware scrub and provider-email filtering in
+   the fallback too: the expanded outbox check is schema-compatible with older
+   readers, but an older scrub loses the contact email before creating a
+   cleanup obligation. Do not narrow the target check while `resend_contact`
+   rows remain.
 5. **Never start a coordinator built before the
    `backfill_withdrawable_balance_v1` marker existed**; the deploy runbook
    states this rule.

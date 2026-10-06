@@ -1306,10 +1306,10 @@ All in `coordinator/store/erasure_types.go`. Times are RFC 3339. Fields marked
 | `ErasureWalletCount` | `address` | string | A named wallet address |
 | | `payments_consumer_rows`, `payments_provider_rows`, `provider_payouts_rows` | integer | Rows that hold it; all 0 means the address is wrong |
 | `ErasureOutboxItem` | `id`, `request_id` | string | Row and request |
-| | `target` | string | `stripe_account`, `global_recipient`, `checkout_sessions`, `erasure_log` |
+| | `target` | string | `stripe_account`, `global_recipient`, `checkout_sessions`, `erasure_log`, `resend_contact` (manual cleanup; contact email is not exposed) |
 | | `state` | string | `pending`, `done`, `manual_action` |
 | | `attempts`, `next_at`, `last_error`, `done_at`, `created_at` | | Delivery bookkeeping; `last_error` and `done_at` omitted when empty |
-| | `has_external_id` | bool | The row still holds a Stripe ID (false once `done`); the ID itself is never returned |
+| | `has_external_id` | bool | The row still holds an external cleanup identifier (Stripe ID or Resend contact email; false once `done`); the identifier itself is never returned |
 | | `has_stripe_job` | bool | A Stripe redaction job is in progress for a `checkout_sessions` row; the job ID is never returned |
 | `ErasureRefusedCredit` | `id`, `account_id`, `entry_type`, `amount_micro_usd`, `reference`, `created_at` | | A credit kept out of an erased account ([schema](personal-data-rules.md#erasure_refused_credits)) |
 

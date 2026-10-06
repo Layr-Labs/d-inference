@@ -3,8 +3,8 @@
 > Last updated: 2026-10-06
 
 Runbook for erasing the personal data of one consumer or provider account:
-plan, confirm, grace period, scrub, the Stripe deletions and their
-`manual_action` cases, review of refused credits, replay after a database
+plan, confirm, grace period, scrub, automated Stripe deletions, manual Resend
+cleanup, other `manual_action` cases, review of refused credits, replay after a database
 restore, and cancel. How erasure works is in
 [account erasure](../architecture/account-erasure.md); the route shapes are
 in [API contracts](../reference/api-contracts.md#account-erasure); what the
@@ -40,10 +40,12 @@ flowchart TD
   F -- "yes" --> L
   L --> T["Step 5: status<br/>GET .../erasure"]:::step
   T -- "pending with last_error" --> L
-  T -- "erased" --> X["Step 6: outbox worker<br/>deletes Stripe objects"]:::ext
+  T -- "erased" --> X["Step 6: outbox worker<br/>Stripe and Datadog delivery"]:::ext
+  X -- "resend_contact" --> M
   X -- "manual_action" --> M["Resolve manual_action<br/>(decision tree)"]:::stop
   M -- "re-queue" --> X
   X -- "all done" --> V["Verification: SQL checks"]:::done
+  M -- "cleanup verified and row closed" --> V
 ```
 
 Blue: an API call or wait. Yellow: a check you make. Red: stop, roll back,
@@ -84,6 +86,8 @@ done.
   longer than the database backups. It holds the list of completed erasures
   that you replay after a restore. Without `DD_API_KEY` the record is only a
   process log line.
+- Resend dashboard access to every organization used for provider email
+  campaigns, plus approval to cancel affected broadcasts and remove contacts.
 
 ## Steps
 
@@ -157,8 +161,8 @@ done.
    | `request.last_error` | Why the last scrub failed; the loop retries one hour later |
    | `request.wallet_address_count` | Addresses stored at confirm; 0 after the scrub |
    | `request.summary.planned`, `request.summary.applied` | Row counts per rule at plan and at scrub; `applied.balance_micro_usd` is the forfeited balance |
-   | `outbox[].target`, `outbox[].state` | One row per Stripe object and one `erasure_log` row; see step 6 |
-   | `outbox[].has_external_id` | The row still holds a Stripe ID |
+   | `outbox[].target`, `outbox[].state` | External cleanup obligations and one `erasure_log` row; see step 6 |
+   | `outbox[].has_external_id` | The row still holds an external identifier, including a Resend contact email |
    | `refused_credits[]` | Money that arrived after the scrub; see [refused credits](#refused-credits) |
 
    If the state is still `pending` after `scrub_after`, read `last_error`.
@@ -176,6 +180,7 @@ done.
    | `global_recipient` | Closes the Global Payouts recipient (`POST /v2/core/accounts/{id}/close`) |
    | `checkout_sessions` | Redacts up to 10 sessions with a Stripe Redaction Job; `has_stripe_job` is true while the job runs |
    | `erasure_log` | Sends one Datadog event with tag `erasure_log:true` (request ID, account ID, `erased_at`) |
+   | `resend_contact` | Moves the row to `manual_action`, even in mock billing mode; requires [Resend contact cleanup](#resend-contact-cleanup), not automated deletion |
 
    | `outbox[].state` | Meaning |
    |---|---|
@@ -188,12 +193,14 @@ done.
    of sessions under 90 days old stays `pending` and tries again every 7
    days, up to 105 days after the scrub. The worker also logs
    `erasure outbox: manual action required` with `outbox_id`, `request_id`,
-   `target` and the error. The exact rules are in
+   `target`, state and attempt count, but never raw upstream error text.
+   Details stay in restricted outbox records. The exact rules are in
    [outbox delivery](../architecture/account-erasure.md#outbox-delivery).
 
 ### Resolve manual_action rows
 
-1. Read the rows and their Stripe IDs (the API does not return the IDs):
+1. Read the rows and their external cleanup identifiers only in an approved
+   private database session (the API does not return Stripe IDs or Resend emails):
 
    ```sql
    SELECT o.id, r.account_id, o.target, o.external_id, o.attempts, o.stripe_job_id, o.last_error
@@ -202,7 +209,9 @@ done.
    ORDER BY o.created_at, o.id;
    ```
 
-2. Find the reason from `last_error`:
+2. For `resend_contact`, complete [Resend contact cleanup](#resend-contact-cleanup)
+   before clearing the retained email; re-queuing does not automate deletion.
+   For other targets, find the reason from `last_error`:
 
    ```mermaid
    flowchart LR
@@ -241,7 +250,7 @@ done.
    ```
 
 4. Or close a row that you finished by hand (with approval). This removes
-   the Stripe ID:
+   the external cleanup identifier (Stripe ID or Resend email):
 
    ```sql
    UPDATE erasure_outbox
@@ -249,6 +258,44 @@ done.
        last_error = 'resolved by hand: ticket <number>'
    WHERE id = '<outbox_id>' AND state = 'manual_action';
    ```
+
+### Resend contact cleanup
+
+The `resend_contact` row retains the trimmed, lowercased email captured before
+scrub. This is a cleanup obligation, not evidence that a Resend contact exists.
+The coordinator has no complete export history and creates one for every
+nonblank account email. There is no automated Resend deletion client; the
+outbox worker moves the row to `manual_action`, even in mock billing mode.
+Neither `pending` nor `manual_action` means external deletion succeeded.
+
+1. Stop or wait for in-flight provider-email sync/import jobs before removal.
+   Quarantine stale CSV/audience exports so a retry cannot recreate the contact.
+   New snapshots omit deleted users' emails, but earlier snapshots cannot be
+   recalled. If an export uses a read replica, verify it has caught up before
+   resuming jobs.
+2. In each Resend organization used for campaigns, find the retained email.
+   Inspect all matching contacts and segment memberships, not just the current
+   campaign's managed segment. Also check historical addresses known from the
+   approved request: only the current local email is captured automatically.
+3. Cancel or unschedule broadcasts that could still target the contact before
+   editing their segments. Inspect scheduled, queued, sending and unknown-status
+   broadcasts; do not assume deleting a contact retracts a queued delivery.
+   Escalate to Resend support if delivery cannot be stopped or verified.
+4. Remove every matching contact and verify all segment memberships are gone.
+   Unsubscribing alone or running the ordinary segment sync is not erasure:
+   `coordinator/provideremail/sync.go` (`Sync`) never deletes global contacts.
+   Review historical delivery records under the external retention policy;
+   contact deletion does not prove those records are erased.
+5. Verify no affected scheduled broadcast retains the recipient and no stale
+   import can re-add it. Only then mark the row `done` with the SQL in
+   [resolve manual_action rows](#resolve-manual_action-rows),
+   clearing `external_id`. An absent contact is complete only after these same
+   checks. Keep unresolved work in `manual_action` with a ticket reference.
+
+Never copy the email into `last_error`, the request reason, logs, public status,
+or an ordinary ticket. Record only request/outbox IDs and a nonpersonal outcome.
+During the grace period, use the same campaign controls if sends must stop
+immediately; the durable cleanup row is created at scrub, not at confirmation.
 
 ### Refused credits
 

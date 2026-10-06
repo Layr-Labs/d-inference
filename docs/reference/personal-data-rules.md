@@ -106,7 +106,7 @@ The scrub keeps these on purpose. The marker tests allow only
 | `erasure_se_owners`: domain-separated SE-key digests and account IDs | Retained pseudonymous ownership rejects delayed trust/job/proof writes after aliases are deleted; these hashes are not anonymous | `RetainErasureSEOwners`, `checkPersonalSEOwner` |
 | `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token or wallet address after the scrub | `MarkErasureErased` |
 | `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00025_erasure_refuse_credits.sql` |
-| `erasure_outbox.external_id` | The Stripe ID waits here until the worker confirms the deletion; a `manual_action` row keeps it until an operator clears it | `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
+| `erasure_outbox.external_id` | The Stripe ID or normalized Resend contact email needed for external cleanup; cleared only after verified completion. A `manual_action` row retains it until an operator clears it | `Keys.OutboxRows`; `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
 | The Datadog `erasure_log` record | Request ID, account ID and `erased_at`: the list to replay after a restore | `writeErasureLog` |
 
 The plan and the applied summary list the three shared kinds in `retained`
@@ -119,7 +119,7 @@ The plan and the applied summary list the three shared kinds in `retained`
 `ErasureTarget` (`coordinator/store/erasure_types.go`). The scrub writes the rows
 (`Keys.OutboxRows`, `coordinator/internal/store/erasure/keys.go`) with `state`
 `pending` and `next_at` = the scrub time; the worker in
-`coordinator/api/accounts/erasure/outbox.go` delivers them
+`coordinator/api/accounts/erasure/outbox.go` delivers Stripe and Datadog rows
 ([outbox delivery](../architecture/account-erasure.md#outbox-delivery)).
 
 | `target` | One row per | `external_id` holds | Calls (key) |
@@ -128,6 +128,7 @@ The plan and the applied summary list the three shared kinds in `retained`
 | `global_recipient` | Global Payouts recipient in `global_payout_recipients.data` or any `global_payout_withdrawals.data.recipient_id` | the recipient account ID | `POST /v2/core/accounts/{id}/close`, body `{"applied_configurations": ["recipient"]}`, `Stripe-Version: 2026-08-26.preview` (Global Payouts key; `globalpayouts.Client.CloseRecipient`) |
 | `checkout_sessions` | Batch of up to `ErasureCheckoutBatch` (10) Checkout Session IDs from `billing_sessions.external_id` (`payment_method = 'stripe'`) | comma-separated `cs_…` IDs | `POST /v1/privacy/redaction_jobs` (`validation_behavior=fix`, `objects[checkout_sessions][]`, `Idempotency-Key: erasure-redaction-<row id>-<generation>`); `GET /v1/privacy/redaction_jobs/{id}`; `POST /v1/privacy/redaction_jobs/{id}/run`; `GET /v1/privacy/redaction_jobs/{id}/validation_errors?limit=100`; `GET /v1/checkout/sessions/{id}` when a batch must be split (Checkout key; `coordinator/billing/stripe_redaction.go`) |
 | `erasure_log` | Erasure (always one) | `''` | Datadog Logs API, one unbatched event (`DD_API_KEY`; `datadog.Client.SendLog`) |
+| `resend_contact` | Account with a nonblank email at scrub, regardless of current provider status or known export history | Trimmed, lowercased email captured before the users rule clears it | No automated deletion; worker moves it to `manual_action`, even in mock billing mode. An operator removes the contact, segment memberships and scheduled-broadcast exposure |
 
 A split adds a `checkout_sessions` row in `manual_action` with the sessions
 Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
@@ -181,7 +182,7 @@ ownership links before deleting aliases; it stores no serial, UDID or APNs token
 | `id` | `TEXT` PK | Row ID (UUID) |
 | `request_id` | `TEXT` FK `erasure_requests(id)` | The request |
 | `target` | `TEXT` | [Outbox target](#outbox-targets) (`CHECK`) |
-| `external_id` | `TEXT` | Stripe IDs, see [outbox targets](#outbox-targets) |
+| `external_id` | `TEXT` | Stripe IDs or Resend contact email, never serialized by the status API; see [outbox targets](#outbox-targets) |
 | `state` | `TEXT` | `pending`, `done`, `manual_action` (`CHECK`, default `pending`) |
 | `attempts` | `INTEGER` | Delivery attempts |
 | `next_at` | `TIMESTAMPTZ` | When the row is due |

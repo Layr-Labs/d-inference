@@ -58,7 +58,7 @@ func (s *Owner) SetMDMWebhookSecret(secret string) {
 
 func (s *Owner) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 	if s.mdmWebhookSecret != "" && !s.mdmWebhookTokenValid(r) {
-		s.logger.Warn("mdm webhook rejected: missing/invalid shared secret", "remote_addr", r.RemoteAddr)
+		s.logger.Warn("mdm webhook rejected: missing/invalid shared secret")
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -68,7 +68,7 @@ func (s *Owner) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	s.logger.Debug("mdm webhook received", "body_size", len(body), "body_preview", string(body[:min(len(body), 500)]))
+	s.logger.Debug("mdm webhook received", "body_size", len(body))
 	if s.verificationBackend.
 		Client !=
 		nil {

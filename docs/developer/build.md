@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -26,6 +26,8 @@ Homebrew and `zstd` are installed before any integration cache restore, includin
 Go's cache. Restore and save must use the same compression format, which is part
 of the Actions cache version; installing it between those steps produces misses
 even when the visible cache key matches.
+For offline validation of integration cache wiring and E2E commands with or
+without coverage instrumentation, run the [workflow regression tests](test.md#component-ci-routing).
 The test-bundle staging helper uses APFS-capable clone copies on Darwin and ordinary
 copies on other platforms, so its offline Linux tests exercise the same atomic
 copy, byte-comparison and rename path (`scripts/stage-test-metallib.sh`).

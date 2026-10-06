@@ -12,6 +12,15 @@ CHECK = ROOT / "scripts" / "docs-impact-check.py"
 
 
 class DocsImpactCheckTests(unittest.TestCase):
+    def test_ci_checks_pr_head_instead_of_synthetic_merge(self) -> None:
+        workflow = (ROOT / ".github/workflows/docs-impact.yml").read_text()
+        self.assertIn(
+            "          ref: ${{ github.event.pull_request.head.sha }}\n"
+            "          fetch-depth: 0\n",
+            workflow,
+        )
+        self.assertIn("DOCS_IMPACT_BASE: ${{ github.event.pull_request.base.sha }}", workflow)
+
     def run_check(self, *paths: str, labels: list[str] | None = None) -> subprocess.CompletedProcess[str]:
         command = ["python3", str(CHECK)]
         for path in paths:

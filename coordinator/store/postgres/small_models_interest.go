@@ -45,7 +45,7 @@ func (s *PostgresStore) GetSmallModelsInterest(ctx context.Context, accountID st
 func (s *PostgresStore) ListSmallModelsInterest(ctx context.Context, after string, limit int) ([]store.SmallModelsInterestContact, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.account_id,i.mac_type,i.chip,i.ram_gb,i.created_at,i.updated_at,u.email
  FROM small_models_interest i JOIN users u ON u.account_id=i.account_id
- WHERE i.account_id > $1 ORDER BY i.account_id LIMIT $2`, after, shared.SmallModelsInterestPageLimit(limit))
+ WHERE i.account_id > $1 AND u.deleted_at IS NULL ORDER BY i.account_id LIMIT $2`, after, shared.SmallModelsInterestPageLimit(limit))
 	if err != nil {
 		return nil, err
 	}

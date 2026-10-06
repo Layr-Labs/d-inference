@@ -517,6 +517,8 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
+Documentation-impact checks also cover the contact-export and legacy-cohort
+store owners; see the [soft-delete reference](../reference/soft-delete.md#documentation-coverage).
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

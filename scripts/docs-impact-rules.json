@@ -247,7 +247,11 @@
         "coordinator/store/postgres/model_token_promotions.go",
         "coordinator/store/postgres/analytics_flows.go",
         "coordinator/store/postgres/queries/api_keys.sql",
-        "coordinator/store/postgres/storedb/api_keys.sql.go"
+        "coordinator/store/postgres/storedb/api_keys.sql.go",
+        "coordinator/store/memory/small_models_interest.go",
+        "coordinator/store/memory/legacy_mdm_cohort.go",
+        "coordinator/store/postgres/small_models_interest.go",
+        "coordinator/store/postgres/legacy_mdm_cohort.go"
       ],
       "docs_any_of": [
         "docs/reference/soft-delete.md"
@@ -360,7 +364,9 @@
         "coordinator/internal/appattest/**",
         "coordinator/mdm/**",
         "coordinator/internal/mdm/**",
-        "coordinator/apns/**"
+        "coordinator/apns/**",
+        "coordinator/store/memory/legacy_mdm_cohort.go",
+        "coordinator/store/postgres/legacy_mdm_cohort.go"
       ],
       "docs_any_of": [
         "docs/architecture/security/attestation.md",

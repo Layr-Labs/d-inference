@@ -34,6 +34,9 @@ sets `deleted_at` directly and covers each PostgresStore read.
 `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go` soft
 deletes an account through `RequestAccountErasure` on both backends and checks
 that the reads hide its rows and still return the rows of another account.
+`coordinator/tests/store/contracts/soft_delete_domain_reads_test.go` covers
+contact pagination and initial legacy MDM cohort qualification on both backends,
+using real erasure transitions and isolated user/provider tombstones.
 
 ### `users`
 
@@ -44,6 +47,8 @@ that the reads hide its rows and still return the rows of another account.
 | `GetUserByStripeAccount` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | not found |
 | `GetUserByEmail` | `coordinator/store/postgres/users.go` | `coordinator/store/memory/users.go` | not found |
 | `ClaimModelTokenPromotion` | `coordinator/store/postgres/model_token_promotions.go` | `coordinator/store/memory/model_token_promotions.go` | `ErrPromotionIneligible` |
+| `ListSmallModelsInterest` | `coordinator/store/postgres/small_models_interest.go` | `coordinator/store/memory/small_models_interest.go` | omitted before pagination; the admin contact export excludes the email |
+| `FreezeLegacyMDMCohort` (initial qualification) | `coordinator/store/postgres/legacy_mdm_cohort.go` | `coordinator/store/memory/legacy_mdm_cohort.go` | cannot qualify for the initial frozen cohort |
 | `CreateUser` (Privy ID check) | `idx_users_privy_live` | `coordinator/store/memory/users.go` | The Privy ID is free; a new live user may take it |
 
 ### `api_keys`
@@ -77,7 +82,12 @@ methods are in `coordinator/store/memory/apikey.go`.
 | `GetProviderForRestore` | `coordinator/store/postgres/provider_restore.go` | `coordinator/store/memory/provider_restore.go` | not a restore candidate; an older live row can be |
 | `ResolveMachineContinuity` | `coordinator/store/postgres/machine_continuity.go` | `coordinator/store/memory/machine_continuity.go` | not continuity history |
 | `UsageFlowBuckets` (provider location) | `coordinator/store/postgres/analytics_flows.go` (`usageFlowBucketsSQL`) | `coordinator/store/memory/analytics.go` | its location is not used |
+| `FreezeLegacyMDMCohort` (initial qualification) | `coordinator/store/postgres/legacy_mdm_cohort.go` | `coordinator/store/memory/legacy_mdm_cohort.go` | cannot qualify for the initial frozen cohort |
 | `BackfillMachineInventory` | `coordinator/store/postgres/machine_inventory_backfill.go` | — (Postgres only) | not backfilled |
+
+`FreezeLegacyMDMCohort` applies these filters only when it first constructs the
+cohort. Later calls read the persisted snapshot without recomputing membership;
+see [frozen legacy authorization](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 
 ## Writers of `deleted_at`
 

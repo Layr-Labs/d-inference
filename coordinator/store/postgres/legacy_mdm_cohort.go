@@ -41,6 +41,7 @@ func (s *PostgresStore) FreezeLegacyMDMCohort(ctx context.Context) ([]store.Lega
 		 AND a.digest=encode(sha256(convert_to('legacy_se','UTF8') || '\x00'::bytea || convert_to(p.se_public_key,'UTF8')), 'hex')
 		 LEFT JOIN provider_trust_reuse r ON r.se_pubkey=p.se_public_key AND r.serial=p.serial_number
 		 WHERE p.account_id<>'' AND p.se_public_key<>'' AND p.serial_number<>''
+			 AND u.deleted_at IS NULL AND p.deleted_at IS NULL
 			 AND u.created_at<f.cutoff AND p.registered_at<f.cutoff
 			 AND ((r.mda_udid<>'' AND r.sip_enabled AND r.secure_boot_full
 			 AND r.hardware_proof_verified_at>'0001-01-01T00:00:00Z'::timestamptz AND r.hardware_proof_verified_at<f.cutoff)

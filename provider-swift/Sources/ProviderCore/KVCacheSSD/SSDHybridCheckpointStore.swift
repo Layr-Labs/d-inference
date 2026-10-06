@@ -26,6 +26,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         // Monotonic, stage-local deadline clock. Default preserves first-attempt
         // timing; injected clocks keep retry boundary tests deterministic.
         var stageNow: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// How `diskBudgetBytes` moves as bytes land, for speculative
+        /// admission. nil means the budget does not move with writes.
+        var diskBudgetBasis: (@Sendable () -> SSDDiskBudgetBasis)? = nil
     }
 
     public let identity: CBv2CompleteCheckpointIdentity
@@ -35,6 +38,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     let lookupKeys: SSDLookupKeys
     let kvBudget: GlobalKVCacheBudget?
     let diskBudget: SSDDiskBudget
+    /// This store's keys on the disk budget's ledger, resolved once.
+    let modelRootKey: String
+    let wholeRootKey: String
     let rateLimiter: SSDWriteRateLimiter
     let writeDemand: SSDCheckpointDemand
     /// Coordinator demand hints for in-flight receipts; see
@@ -52,6 +58,14 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     /// Test-only: runs after a fresh checkpoint file is published and before
     /// it is indexed, to reproduce a maintenance removal in that window.
     var afterPublishBeforeIndexForTesting: (@Sendable () -> Void)?
+    /// Test-only: runs once a fresh write holds its disk-budget claim and
+    /// before its first byte, to reproduce another writer arriving, or the
+    /// budget moving, while the write is in flight. The argument is the
+    /// file the write will publish.
+    var afterDiskClaimForTesting: (@Sendable (URL) -> Void)?
+    /// Test-only: runs in a speculative write before each chunk is handed to
+    /// the writer, after the revocation check, with the chunk's index.
+    var beforeSpeculativeChunkForTesting: (@Sendable (Int) -> Void)?
     #endif
     let statsBox = SSDHybridCheckpointStatsBox()
     let activity = SSDCheckpointActivity()
@@ -63,6 +77,11 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var stageReservations: [CBv2RequestID: SSDCheckpointStageReservation] = [:]
     var reading: [CBv2RequestID: SSDCheckpointFileCoordinator.Access] = [:]
     var writing: Set<Data> = []
+    /// Stored-size bounds of proven jobs that were accepted here and have
+    /// not yet recorded their bytes on the disk budget's ledger, by tag. A
+    /// speculative write anywhere on the budget must leave them room
+    /// (`queuedWriteBytes`).
+    var provenWriteBytes: [Data: Int] = [:]
     var readyReceipts: [CBv2RequestID: ReadyReceipt] = [:]
     var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
     var pipeline: BoundedSingleConsumerPipeline<WriteJob>!
@@ -97,6 +116,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         self.lookupKeys = SSDLookupKeys(kek: kekKey)
         self.kvBudget = kvBudget
         self.diskBudget = diskBudget
+        self.modelRootKey = SSDDiskBudget.rootKey(config.root)
+        self.wholeRootKey = SSDDiskBudget.rootKey(config.dedicatedRoot)
         self.donationRecorder = donationRecorder
         // A speculative checkpoint is useful for at most one cache lifetime,
         // so speculation may hold back no more budget than the total refills

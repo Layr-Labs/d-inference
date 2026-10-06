@@ -298,6 +298,119 @@ struct SSDPrefixCacheFactoryRefusalTests {
 @Suite("SSD prefix cache factory: construction")
 struct SSDPrefixCacheFactoryConstructionTests {
 
+    @Test("the complete-checkpoint factory gives its store the disk budget's basis: fixed for an operator override, half of the free bytes otherwise",
+          arguments: [true, false])
+    func hybridStoreReceivesDiskBudgetBasis(override: Bool) async throws {
+        let parent = try factoryParent("basis")
+        let root = parent.appendingPathComponent("kv3", isDirectory: true)
+        let environment = isolatedEnvironment(
+            root: root, extra: override ? [PrefixCachePolicy.diskBudgetEnvironmentFlag: "2"] : [:])
+        let wholeRoot = SSDPrefixCacheFactory.cacheRootDirectory(environment: environment)
+        defer {
+            SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: wholeRoot)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let store = try #require(await SSDHybridCheckpointStoreFactory.make(
+            modelId: "basis-model",
+            identity: .init(modelAggregateHash: "w", promptContractID: "c", buildID: "b", numericsFingerprint: "n"),
+            kvBudget: nil, environment: environment))
+        defer { store.close() }
+        // The pass the store runs after every write is the production one,
+        // which resolves the budget inside the pass.
+        let passes = SSDPrefixCacheFactory.wholeRootPasses
+        let before = passes.count(root: wholeRoot)
+        #expect(before >= 1, "the factory's own pass, after its scan")
+        store.config.maintainWholeRoot()
+        #expect(passes.count(root: wholeRoot) == before + 1)
+        #expect(passes.lastVolumeProbe(root: wholeRoot) == wholeRoot.standardizedFileURL.path)
+        // Without this wiring the store treats its budget as fixed, and a
+        // first-sight file admitted at half of free lowers the budget under itself.
+        let resolve = try #require(store.config.diskBudgetBasis)
+        let basis = resolve()
+        if override {
+            #expect(basis == .fixed(2 << 30))
+        } else if PrefixCachePolicy.volumeFreeBytes(at: wholeRoot) != nil {
+            guard case .halfOfFree(let free) = basis else {
+                Issue.record("expected half of the free bytes, got \(basis)")
+                return
+            }
+            #expect(free > 0)
+        } else {
+            #expect(basis == .fixed(PrefixCachePolicy.fallbackSSDDiskBudgetBytes))
+        }
+    }
+
+    @Test("the block-tier factory gives its writer the disk budget's basis and its owning cache, and starts the periodic pass with the basis")
+    func blockCacheReceivesDiskBudgetBasis() async throws {
+        let parent = try factoryParent("block-basis")
+        let root = parent.appendingPathComponent("kv3", isDirectory: true)
+        let environment = isolatedEnvironment(root: root)
+        let wholeRoot = SSDPrefixCacheFactory.cacheRootDirectory(environment: environment)
+        defer {
+            SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: wholeRoot)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let capability = PrefixCachePolicy.prefixReuseCapability(layerKinds: fullLayers, backendSelection: .paged)
+        let cache = try #require(await SSDPrefixCacheFactory.make(
+            modelId: "block-basis-model", promptContractID: "test-contract", weightHash: "test-weights",
+            layerKinds: fullLayers, prefixReuseCapability: capability, kvBudget: nil, environment: environment))
+        defer { cache.close() }
+        // Both closures read the process environment and the live volume,
+        // as the budget itself does.
+        let expected = PrefixCachePolicy.ssdDiskBudgetBasis(
+            freeBytes: PrefixCachePolicy.volumeFreeBytes(at: wholeRoot))
+        func sameKind(_ basis: SSDDiskBudgetBasis) -> Bool {
+            switch (basis, expected) {
+            case (.fixed(let a), .fixed(let b)): return a == b
+            case (.halfOfFree, .halfOfFree): return true
+            default: return false
+            }
+        }
+        // Without it a block that no longer fits beside a first-sight
+        // write in flight does not tell that write to give way.
+        let writerBasis = try #require(cache.writer.config.diskBudgetBasis)
+        #expect(sameKind(writerBasis()))
+        #expect(cache.writer.ownerStore === cache, "a block indexed after the cache closed is counted as unowned")
+        // The pass after every block-tier donation is the production one.
+        let passes = SSDPrefixCacheFactory.wholeRootPasses
+        let before = passes.count(root: wholeRoot)
+        let pass = try #require(cache.writer.config.maintainWholeRoot)
+        pass()
+        #expect(passes.count(root: wholeRoot) == before + 1)
+        #expect(passes.lastVolumeProbe(root: wholeRoot) == cache.config.root.standardizedFileURL.path)
+        // A donation waiting in the writer's queue is reported by the cache
+        // itself, which is what the disk budget reads.
+        func job(_ byte: UInt8) -> (SSDDonationJob, URL) {
+            let tag = Data(repeating: byte, count: 16)
+            let write = SSDBlockWrite(
+                tag16: tag, tag16Hex: SSDLookupKeys.hex(tag),
+                metadata: SSDBlockMetadata(
+                    lookupTag: String(repeating: "ab", count: 32), weightHash: "w", layoutEpoch: "layout",
+                    blockSize: 8, layerCount: 1, chunks: [], chunkPlaintextSizes: [], createdAt: 10_000),
+                chunks: [], plaintextBytes: 1)
+            return (.init(blocks: [write], totalBytes: 1),
+                    SSDBlockStore.fileURL(root: cache.config.root, tag16Hex: write.tag16Hex))
+        }
+        let (running, runningFile) = job(1)
+        let (waiting, _) = job(2)
+        let lease = try #require(SSDCheckpointFileCoordinator.shared.tryAcquire(to: runningFile))
+        defer { lease.release() }
+        #expect(cache.queuedWriteBytes == 0)
+        #expect(cache.writer.submit(running))
+        try await SSDCheckpointCoordinationTestSupport.waitUntil {
+            SSDCheckpointFileCoordinator.shared.pendingCount(for: runningFile) == 1
+        }
+        #expect(cache.writer.submit(waiting))
+        #expect(cache.queuedWriteBytes == 1 + (1 << 20))
+        lease.release()
+        await cache.writer.waitUntilDrained()
+        #expect(cache.queuedWriteBytes == 0)
+        // Without it the 60-second pass evicts against a limit that a
+        // first-sight write's own bytes have lowered.
+        let periodic = try #require(SSDWholeRootMaintainer.shared.periodicBudgetBasis(root: wholeRoot))
+        #expect(sameKind(periodic()))
+    }
+
     @Test("isolated root builds a cache with the environment knobs applied")
     func buildsCacheUnderIsolatedRoot() async throws {
         let parent = try factoryParent("build")

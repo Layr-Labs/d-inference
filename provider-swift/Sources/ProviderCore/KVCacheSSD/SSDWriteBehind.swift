@@ -88,9 +88,16 @@ final class SSDWriteBehind: @unchecked Sendable {
         let maintainWholeRoot: (@Sendable () -> Void)?
         /// Failure-injection seam. nil uses the real encrypted DBK3 writer.
         let writeBlock: (@Sendable (SSDBlockWrite, URL) throws -> Int)?
+        /// How `diskBudgetBytes` moves as bytes land, used only to tell an
+        /// in-flight speculative checkpoint elsewhere to give way. nil means
+        /// the budget does not move with writes.
+        var diskBudgetBasis: (@Sendable () -> SSDDiskBudgetBasis)? = nil
     }
 
-    private let config: Config
+    let config: Config
+    /// This writer's keys on the disk budget's ledger, resolved once.
+    private let modelRootKey: String
+    private let wholeRootKey: String
     private let rateLimiter: SSDWriteRateLimiter
     private let index: SSDBlockIndex
     private let diskBudget: SSDDiskBudget
@@ -104,6 +111,15 @@ final class SSDWriteBehind: @unchecked Sendable {
 
     private let queuedBytesLock = NSLock()
     private var queuedBytes = 0
+    /// Upper bound of the stored bytes of the jobs still queued: each
+    /// block's file is its plaintext plus at most the megabyte of framing
+    /// the read path allows for. A job leaves it when its exact bytes are
+    /// recorded on the disk budget's ledger.
+    private var queuedStoredBound = 0
+    /// The registered store whose index this writer fills. Set once by that
+    /// store; nil in tests that drive the writer alone.
+    private weak var owner: (any SSDEvictableStore)?
+    private var hasOwner = false
     /// Jobs admitted but not yet picked up by the consumer (see `submit`).
     private var queuedJobs = 0
     private var closed = false
@@ -125,6 +141,8 @@ final class SSDWriteBehind: @unchecked Sendable {
         sweepExpired: @escaping @Sendable () -> Void
     ) {
         self.config = config
+        self.modelRootKey = SSDDiskBudget.rootKey(config.root)
+        self.wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: config.root)
         self.rateLimiter = rateLimiter
         self.index = index
         self.diskBudget = diskBudget
@@ -147,6 +165,22 @@ final class SSDWriteBehind: @unchecked Sendable {
             }
             await self.consume(job)
         }
+    }
+
+    func setOwner(_ store: any SSDEvictableStore) {
+        queuedBytesLock.withLock { owner = store; hasOwner = true }
+    }
+
+    var ownerStore: (any SSDEvictableStore)? { queuedBytesLock.withLock { owner } }
+
+    /// What a speculative checkpoint elsewhere on the budget must leave
+    /// room for on account of the jobs queued here.
+    var queuedStoredBytes: Int { queuedBytesLock.withLock { max(0, queuedStoredBound) } }
+
+    private static func storedBound(_ job: SSDDonationJob) -> Int {
+        let (framing, framingOverflow) = job.blocks.count.multipliedReportingOverflow(by: 1 << 20)
+        let (bound, overflow) = job.totalBytes.addingReportingOverflow(framing)
+        return framingOverflow || overflow ? Int.max / 4 : bound
     }
 
     /// Cheap endurance pre-check (no consumption): false when the daily
@@ -178,6 +212,7 @@ final class SSDWriteBehind: @unchecked Sendable {
             else { return .queueFull }
             queuedJobs += 1
             queuedBytes += job.totalBytes
+            queuedStoredBound += Self.storedBound(job)
             return .accepted
         }
         guard admission == .accepted else { return admission }
@@ -186,6 +221,7 @@ final class SSDWriteBehind: @unchecked Sendable {
             let result: SSDDonationSubmitResult = queuedBytesLock.withLock {
                 queuedJobs -= 1
                 queuedBytes -= job.totalBytes
+                queuedStoredBound -= Self.storedBound(job)
                 return closed ? .closed : .queueFull
             }
             return result
@@ -210,10 +246,30 @@ final class SSDWriteBehind: @unchecked Sendable {
     // MARK: - Consumer (serial)
 
     private func consume(_ job: SSDDonationJob) async {
-        queuedBytesLock.withLock {
-            queuedJobs -= 1
-            queuedBytes -= job.totalBytes
+        // These blocks share the box-wide disk budget with the complete-
+        // checkpoint stores. The donation's exact stored bytes go on the
+        // ledger here, before it leaves the queue's bound, and stay there
+        // until each block is indexed or dropped: one record for the blocks
+        // still to come, which revokes nothing, and one per block while it is
+        // written. A speculative checkpoint in another store is therefore
+        // never granted, published into or indexed into room this donation
+        // is about to take. Never refused.
+        let storedBytes = job.blocks.map {
+            (try? SSDBlockStore.streamedFileBytes(for: $0.metadata)) ?? $0.plaintextBytes
         }
+        let remainder = diskBudget.registerProven(
+            bytes: storedBytes.reduce(0) {
+                let (sum, overflow) = $0.addingReportingOverflow($1)
+                return overflow ? Int.max / 4 : sum
+            },
+            keys: [], wholeRootKey: wholeRootKey, basis: nil,
+            replacingQueued: {
+                self.queuedBytesLock.withLock {
+                    self.queuedJobs -= 1
+                    self.queuedBytes -= job.totalBytes
+                    self.queuedStoredBound -= Self.storedBound(job)
+                }
+            })
         // Empty jobs represent all-deduped, already-durable donations. For a
         // real job, at least one successful write allows settlement to reprobe
         // a shorter leading contiguous run after all attempts complete.
@@ -221,6 +277,7 @@ final class SSDWriteBehind: @unchecked Sendable {
         var rateLimited = false
         var diskUnavailable = false
         defer {
+            diskBudget.release(remainder, as: .discarded)
             // Opportunistic maintenance on the serial consumer: TTL sweep +
             // box-wide LRU budget enforcement (unlink-only, spec §4.1).
             sweepExpired()
@@ -269,8 +326,13 @@ final class SSDWriteBehind: @unchecked Sendable {
             }
         }
 
-        for block in job.blocks {
-            defer { onBlockSettled(block.tag16) }
+        for (position, block) in job.blocks.enumerated() {
+            var recorded = false
+            defer {
+                // A block that is skipped leaves the donation's record too.
+                if !recorded { diskBudget.dropBlock(from: remainder, bytes: storedBytes[position]) }
+                onBlockSettled(block.tag16)
+            }
             guard rateLimiter.tryConsume(bytes: block.plaintextBytes) else {
                 rateLimited = true
                 stats.add(donationsDropped: 1, writeRateLimited: 1)
@@ -295,6 +357,17 @@ final class SSDWriteBehind: @unchecked Sendable {
                 stats.add(donationsDropped: 1)
                 continue
             }
+            // The block moves from the donation's record to one of its own,
+            // named so the whole-root pass knows its temp file. A speculative
+            // checkpoint in flight elsewhere is told to give way if the room
+            // is now short: after this block's write-cap charge, so a block
+            // that is rate-limited revokes nothing.
+            let record = diskBudget.claimBlock(
+                from: remainder, bytes: storedBytes[position],
+                keys: [SSDDiskBudget.reservationKey(modelRootKey: modelRootKey, tag16Hex: block.tag16Hex)],
+                basis: diskBudget.hasSpeculativeReservations
+                    ? (config.diskBudgetBasis?() ?? .fixed(config.diskBudgetBytes())) : nil)
+            recorded = true
             let fileBytes: Int
             let sidecar = block.metadata.windowKind == nil ? 0 : 1
             do {
@@ -306,6 +379,7 @@ final class SSDWriteBehind: @unchecked Sendable {
                         kekKey: config.kekKey, strictFsync: config.strictFsync)
                 }
             } catch {
+                diskBudget.release(record, as: .discarded)
                 stats.add(donationsDropped: 1)
                 if isENOSPC(error) {
                     diskUnavailable = true
@@ -319,8 +393,13 @@ final class SSDWriteBehind: @unchecked Sendable {
                 }
                 continue
             }
-            // Index LAST, after the durable rename (spec §3.2 step 7).
-            index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
+            // Index LAST, after the durable rename (spec §3.2 step 7), in one
+            // step with the release of the block's record on the ledger.
+            let (store, known) = queuedBytesLock.withLock { (owner, hasOwner) }
+            _ = diskBudget.commitProven(record, store: store, storeIsKnown: known) {
+                index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
+                return true
+            }
             stats.add(
                 blocksWritten: 1, bytesWritten: fileBytes, windowSidecarsWritten: sidecar)
             durableWriteSucceeded = true
@@ -336,6 +415,7 @@ final class SSDWriteBehind: @unchecked Sendable {
         queuedBytesLock.withLock {
             queuedJobs = max(0, queuedJobs - 1)
             queuedBytes = max(0, queuedBytes - job.totalBytes)
+            queuedStoredBound = max(0, queuedStoredBound - Self.storedBound(job))
         }
         settleAll(job, dropped: job.blocks.count)
         job.onOutcome(.cacheClosed)

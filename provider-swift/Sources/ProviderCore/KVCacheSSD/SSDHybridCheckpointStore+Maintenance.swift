@@ -8,6 +8,14 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             && (config.epochStore == nil || config.epochStore?.current != nil)
     }
     var diskBytesOnDisk: Int { index.totalBytes }
+    var queuedWriteBytes: Int {
+        lock.withLock {
+            provenWriteBytes.values.reduce(0) {
+                let (sum, overflow) = $0.addingReportingOverflow($1)
+                return overflow ? Int.max : sum
+            }
+        }
+    }
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
     func evictOldestEntry() -> Int {

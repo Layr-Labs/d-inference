@@ -289,7 +289,8 @@ public final class SSDPrefixCache:
         diskBudgetBytes: @escaping @Sendable () -> Int,
         maintainWholeRoot: (@Sendable () -> Void)? = nil,
         cacheInstanceNamespace: String = UUID().uuidString,
-        donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared
+        donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
+        diskBudgetBasis: (@Sendable () -> SSDDiskBudgetBasis)? = nil
     ) {
         self.config = config
         self.kekKey = kekKey
@@ -318,7 +319,8 @@ public final class SSDPrefixCache:
                 volumeSpace: { Self.volumeSpace(at: root) },
                 nowSeconds: config.nowSeconds,
                 maintainWholeRoot: maintainWholeRoot,
-                writeBlock: nil),
+                writeBlock: nil,
+                diskBudgetBasis: diskBudgetBasis),
             rateLimiter: SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay),
             index: index,
             diskBudget: diskBudget,
@@ -330,8 +332,14 @@ public final class SSDPrefixCache:
             sweepExpired: { [weak self] in
                 self?.sweepExpiredEntries()
             })
+        writeBehind.setOwner(self)
         diskBudget.register(self)
     }
+
+    /// The writer's configuration, for tests of the factory's wiring.
+    /// The write-behind this cache fills its index through. For tests
+    /// that pin its wiring.
+    var writer: SSDWriteBehind { writeBehind }
 
     // MARK: - Lifecycle
 
@@ -1756,6 +1764,8 @@ public final class SSDPrefixCache:
     }
 
     var diskBytesOnDisk: Int { index.totalBytes }
+
+    var queuedWriteBytes: Int { writeBehind.queuedStoredBytes }
 
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 

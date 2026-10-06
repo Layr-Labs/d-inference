@@ -46,10 +46,19 @@ extension SSDHybridCheckpointStore {
     }
 
     /// A speculative write may fill free disk budget but must not displace an
-    /// entry: true only while the box-wide cache bytes plus this write stay
-    /// within the budget, leaving enforcement after the write nothing to evict.
-    func hasDiskRoomForSpeculativeWrite(bytes: Int) -> Bool {
-        let (total, overflow) = diskBudget.totalBytes.addingReportingOverflow(bytes)
-        return !overflow && total <= config.diskBudgetBytes()
+    /// entry. Advisory answer for the publication path, in complete stored
+    /// bytes against everything the budget's ledger counts; the writer makes
+    /// the binding reservation (`SSDDiskBudget.reserveSpeculative`).
+    func hasDiskRoomForSpeculativeWrite(storedBytes: Int) -> Bool {
+        diskBudget.hasSpeculativeRoom(bytes: storedBytes, wholeRootKey: wholeRootKey, basis: diskBudgetBasis())
     }
+
+    func diskBudgetBasis() -> SSDDiskBudgetBasis {
+        config.diskBudgetBasis?() ?? .fixed(config.diskBudgetBytes())
+    }
+
+    func reservationKey(_ tag16: Data) -> String {
+        SSDDiskBudget.reservationKey(modelRootKey: modelRootKey, tag16Hex: tag16.hexString)
+    }
+
 }

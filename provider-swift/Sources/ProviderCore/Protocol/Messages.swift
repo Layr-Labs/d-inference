@@ -100,10 +100,30 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     /// coordinator's `cache_repeated_prefix_tokens` nor the local tag history
     /// showed repeat demand. No bytes and no write budget were spent.
     case skippedNovel = "skipped_novel"
-    /// A first-sight checkpoint yielded to pressure: the write would have
-    /// left the write budget below the speculative headroom, found another
-    /// checkpoint write in flight, or needed an eviction to fit the disk
-    /// budget. No bytes and no write budget were spent.
+    /// A first-sight (speculative) checkpoint yielded to pressure. Two cases
+    /// share the outcome and the counter does not separate them.
+    ///
+    /// Declined with nothing spent: no byte written and no write budget
+    /// charged. At the offer, the write would have left the write budget
+    /// below the speculative headroom, its complete stored file did not fit
+    /// the free disk budget, or another checkpoint write was registered on
+    /// its store. On the writer, before the charge, a regular file was
+    /// already at its path, the disk budget's ledger refused the reservation
+    /// (indexed bytes, bytes no registered index counts, every other write
+    /// in flight or queued and its own stored bytes, against the budget
+    /// after those bytes land), or the write budget refused on the recheck.
+    ///
+    /// Gave way after the charge and after its I/O began, with the write
+    /// budget not refunded and no entry kept. Its reservation was revoked,
+    /// for a proven write or by a whole-root pass that found the root over
+    /// its limit, and it stopped at its next chunk; or, when about to publish
+    /// its finished file or to index its published one, it was revoked or
+    /// its room no longer held, counting the proven writes queued in every
+    /// store on the budget. `SSDHybridCheckpointStats.speculativeWritesYielded`
+    /// counts these. A store that closed or changed epoch at that point
+    /// settles `cache_closed` or `cache_epoch_changed` instead, and a
+    /// published file already gone at the index step settles
+    /// `cache_entry_evicted`.
     case writeSpeculativeLimited = "write_speculative_limited"
 }
 

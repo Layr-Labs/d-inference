@@ -47,13 +47,13 @@ enum SSDHybridCheckpointStoreFactory {
                 layoutEpoch: SSDHybridCheckpointEnvelope.layoutEpoch(
                     identity: identity, backendLayout: backendLayout), keyFingerprint: fingerprint))
             let ttl = SSDPrefixCachePolicy.ttlSeconds(environment: environment)
-            let budget: @Sendable () -> Int = {
-                PrefixCachePolicy.ssdDiskBudgetBytes(environment: environment,
+            let basis: @Sendable () -> SSDDiskBudgetBasis = {
+                PrefixCachePolicy.ssdDiskBudgetBasis(environment: environment,
                     freeBytes: PrefixCachePolicy.volumeFreeBytes(at: wholeRoot))
             }
+            let budget: @Sendable () -> Int = { basis().bytes() }
             let maintain: @Sendable () -> Void = {
-                _ = SSDWholeRootMaintainer.shared.maintain(root: wholeRoot, ttlSeconds: ttl,
-                    nowSeconds: Int64(Date().timeIntervalSince1970), budgetBytes: budget())
+                SSDPrefixCacheFactory.maintainWholeRoot(root: wholeRoot, environment: environment)
             }
             let cache = SSDHybridCheckpointStore(config: .init(
                 modelId: modelId, identity: identity, backendLayout: backendLayout,
@@ -64,7 +64,8 @@ enum SSDHybridCheckpointStoreFactory {
                 minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: environment),
                 ttlSeconds: ttl, strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
                 nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: budget,
-                maintainWholeRoot: maintain), kekKey: material.key, kvBudget: kvBudget,
+                maintainWholeRoot: maintain, diskBudgetBasis: basis),
+                kekKey: material.key, kvBudget: kvBudget,
                 maxWriteBytesPerDay: SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment),
                 usesEphemeralKey: material.ephemeral)
             await Task.detached(priority: .utility) {

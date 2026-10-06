@@ -96,12 +96,23 @@ enum PrefixCachePolicy {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         freeBytes: Int?
     ) -> Int {
+        ssdDiskBudgetBasis(environment: environment, freeBytes: freeBytes).bytes()
+    }
+
+    /// The same budget with how it was resolved, so a speculative write can
+    /// be held to the budget as it will be once its bytes have landed: an
+    /// override or the fallback does not move, `free/2` drops by half of
+    /// every byte written.
+    static func ssdDiskBudgetBasis(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        freeBytes: Int?
+    ) -> SSDDiskBudgetBasis {
         let envGB = environment[diskBudgetEnvironmentFlag].flatMap(Double.init)
         if let gb = envGB, gb > 0, gb.isFinite, gb < gbToBytesCeiling {
-            return Int(gb * 1_073_741_824)
+            return .fixed(Int(gb * 1_073_741_824))
         }
-        guard let free = freeBytes else { return fallbackSSDDiskBudgetBytes }
-        return max(1, free / 2)
+        guard let free = freeBytes else { return .fixed(fallbackSSDDiskBudgetBytes) }
+        return .halfOfFree(freeBytes: free)
     }
 
     /// Best-effort free capacity (bytes) of the volume containing `url`

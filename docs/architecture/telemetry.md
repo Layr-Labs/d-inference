@@ -176,7 +176,17 @@ The complete-checkpoint writer also distinguishes novel-share exhaustion
 (`write_priority_limited`) from total-budget exhaustion (`write_rate_limited`)
 through `SSDWriteRateLimiter.decision`, and settles
 `write_speculative_limited` for a first-sight checkpoint classed speculative
-that yielded to write-budget, writer or disk pressure. Ahead of all three, the
+that yielded to write-budget, writer or disk pressure, or that found a file
+already at its path. That outcome has two cases the counter does not
+separate: a write declined before I/O, which spends no bytes and no write
+budget, and an admitted write that gave way after its I/O began because its
+disk room was needed by a proven write or was gone, which keeps its daily
+write-cap charge and leaves no entry
+(`SSDHybridCheckpointStore.performWrite`).
+The store counts the second case in `speculativeWritesYielded`
+(`SSDHybridCheckpointStats`), which `PrefixCacheTelemetry.init(complete:)`
+does not copy, so it is on no heartbeat, metric or status endpoint. Ahead of
+all three, the
 demand gate settles `skipped_novel` for a checkpoint with no
 coordinator-observed repeat, no first-sight count and no local repeat demand,
 spending no bytes or budget (`SSDCheckpointDemand.writeClass`). All four
@@ -193,7 +203,12 @@ publish no receipt and do not revoke a newer epoch's evidence
 retained failed tensor job.
 The complete-store `donation_drops_total` counter covers queued-write
 `writesDropped` only; prequeue refusals are counted by the donation outcome
-snapshot. Maintenance publishes its cumulative result under a separate short
+snapshot. A queued first-sight write that the writer declines for disk room
+or for a file already at its path, or that gives way after its I/O began,
+settles without a position and so counts in `writesDropped` like any other
+dropped write. One that gave way adds nothing to `bytesWritten`, so
+`written_bytes_total` does not show the write cap it was charged.
+Maintenance publishes its cumulative result under a separate short
 stats lock, so heartbeat reads cannot wait behind filesystem traversal.
 The write-job settlement releases its source before the callback. The engine's
 later donor-release fence still governs READY; telemetry never manufactures a

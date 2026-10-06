@@ -460,7 +460,7 @@ in the
 
 How a provider treats a first-sight request. Its checkpoints are speculative:
 nothing was observed twice, so they are last in line for the provider's SSD
-write budget. A speculative write is admitted only when all three hold
+write budget. A speculative write is admitted only when all four hold
 ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)):
 
 - it leaves both write buckets (the whole daily cap and the 90% novel share)
@@ -471,13 +471,40 @@ write budget. A speculative write is admitted only when all three hold
   the defaults, and a speculative write needs both buckets;
 - no other checkpoint write is registered on that store (it is never queued
   behind a registered write);
-- the box-wide cache bytes plus the write stay within the cache's disk
-  budget. Once written, the file counts toward that budget like any other, so
-  a later proven write can evict an older checkpoint, including a proven one.
+- its complete stored file (the plaintext plus the file header, metadata and
+  per-chunk framing) fits the free part of the cache's disk budget. Counted
+  against the budget are the cache bytes already indexed, every other cache
+  write in flight or queued in the provider process, the files of unloaded
+  or closed models and leftover temp files; the budget is taken as it will
+  be after the bytes land (the default, half of free disk, falls as bytes
+  are written). The
+  room is reserved for the write until its file is indexed or gone;
+- no regular file is already at the checkpoint's path. A first-sight write
+  does not replace a file; a proven write does.
 
 Otherwise it is refused before a byte is written, charges nothing and is
 counted as `donation_outcomes.write_speculative_limited`; the request
-completes normally and its follow-up is offered as a proven repeat. Proven
+completes normally and its follow-up is offered as a proven repeat.
+
+An admitted first-sight write can still end as `write_speculative_limited`.
+A proven write is never refused room by this accounting and never waits for
+room; the low-disk write stop still refuses any fresh write, as before. If it
+needs the room a first-sight write was granted, or that room is gone when the
+write rechecks it (the disk budget fell, or the maintenance pass found the
+root over its limit), the first-sight write gives way: it stops at its next
+chunk, or its finished file is not published, or its published file is
+removed. Proven work that a store has accepted and not started, in the same
+store or another, has no room reserved yet; it is counted when a first-sight
+write is admitted, when it is about to publish and again when it is about to
+be indexed, and the first-sight write gives way there if the room does not
+hold both. A re-offer of a checkpoint that is already stored writes nothing
+and is not counted. Whenever a first-sight write gives way, I/O happened
+and the bytes were charged to the provider's daily write cap, with no refund,
+and no checkpoint is kept. The provider counts these in the stat
+`speculativeWritesYielded`, which
+is process-local: it is not in the heartbeat, in `GET /v1/cache/status` or in
+a metric, so the fleet reading cannot separate a write that gave way from one
+declined before I/O. Proven
 writes (a prefix the coordinator saw repeated, a tag the store saw before, or
 a request that restored a checkpoint from that store) keep the budget rules
 they had before first sight. `write_priority_limited`, `write_rate_limited`
@@ -487,7 +514,7 @@ that are proven (a tag the store saw before, or a request that restored from
 the store).
 
 What speculation can cost proven writes
-([limits 6 and 7](../architecture/cache-aware-routing.md#first-sight)):
+([limits 6, 7 and 10](../architecture/cache-aware-routing.md#first-sight)):
 
 - **Write budget.** At any instant speculative writes hold at most H of each
   bucket, and a refused speculative write charges nothing. The limiter admits
@@ -502,21 +529,81 @@ What speculation can cost proven writes
   can happen while the writer is still finishing the previous job's
   completion callback. A proven offer for a checkpoint whose speculative write is
   already registered is absorbed by that write and settles `already_queued`;
-  if the speculative job then refuses itself or fails, nothing is written.
+  if the speculative job then refuses itself, gives way or fails, no
+  checkpoint is kept.
 - **Ready receipts.** A first-sight offer for a checkpoint that is already
   durable on the store, arriving while another write is registered, settles
   `write_speculative_limited` instead of `already_durable`, so the request's
   ready receipt does not name that checkpoint.
 - **Volume.** H does not cap how much speculation writes in a day: a store
   with little proven traffic can spend its spare refill on first-sight files.
+  A first-sight write that gave way spent write cap and left no checkpoint.
+- **Disk.** While a first-sight write is in flight it does not cost an
+  existing checkpoint its place: it was granted only free room, a proven
+  write that needs that room takes it, and, within the limits stated in this
+  paragraph and in limit 10, no eviction, by the maintenance
+  pass (after a checkpoint write that stored its file or found it already
+  stored, after a block-tier job and every 60 seconds) or after a
+  checkpoint write,
+  removes a committed entry on account of the in-flight write's bytes. Under
+  the default budget those bytes also lower the free figure while they are
+  on the volume, so both evictions take their limit without them. The pass
+  reads the volume once it has started, and the eviction after a checkpoint
+  write reads it again if a first-sight write was withdrawn since its
+  reading; after three readings it evicts nothing and leaves the root to
+  the next pass. Once the
+  file is committed it is an ordinary entry: a proven write that arrives
+  later and needs room evicts the least recently used entry whatever its
+  class, which can be an older proven checkpoint while the newer first-sight
+  file stays. While first-sight writes are being told to stop, the cache
+  root can be over the disk budget it would have without their bytes by at
+  most the sum of those bytes on disk; against the default budget read
+  while they are on the volume, which is lower by half of them, that is up
+  to one and a half times their bytes. The bytes are
+  at most one file per loaded complete-checkpoint store, each at most
+  the stage cap of plaintext (1 GiB unless
+  `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` sets it) plus the file's framing.
+  That lasts until each writer has finished the chunk it is on (one read of
+  at most 4 MiB; with strict fsync on, also the file sync) and removed its
+  file, with no time bound. The accounting is inside the provider process:
+  it does not see another process writing under the same cache root, a temp
+  file whose unlink failed, or a crash leftover before the next maintenance
+  pass counts it. Free disk taken by other disk users between a first-sight
+  write's commit check and the eviction that follows the commit can still
+  evict an older entry; that span includes a whole maintenance pass, which
+  walks the cache tree, and is not microseconds. What a proven write pays
+  is a wait for the cache's disk-budget lock before its first byte and
+  again at its index step (the file is published but not yet indexed while
+  it waits); a block-tier write pays the same for each block. An eviction
+  loop, a whole-root retirement or a reconcile in another store can hold
+  that lock. The
+  remaining limits (a budget reading that is out of date, an unowned-bytes
+  figure that is too high or too low, the free figure) are in limit 10.
 
-No measurement of this policy exists yet.
+No measurement of this policy exists yet, including of how often a
+first-sight write gives way.
 
 Operational couplings: a shorter cache TTL shrinks the headroom in proportion;
 a write cap of `0` (unlimited) removes the budget condition and leaves the
-idle-writer and disk conditions. The buckets are per store and start full, so
+idle-writer, disk and path conditions. The buckets are per store and start full, so
 a provider restart or store rebuild forgets pressure and grants a fresh
-headroom.
+headroom. The disk budget is half of the volume's free bytes unless
+`DARKBLOOM_PREFIX_CACHE_DISK_GB` sets it, or 20 GiB when the free bytes
+cannot be measured
+([SSD environment variables](../reference/ssd-kv-cache.md#environment-variables)):
+under the default a first-sight write must fit the budget its own bytes
+leave, and under an override or that fallback the budget does not move as
+bytes land. The
+default relies on the volume's free figure falling by the bytes written as
+they are written. That was measured after a write, not during one, on one
+machine, on its internal volume and one external volume, and on no other
+([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules),
+limit 7); on a volume where the figure lags, a first-sight write can be
+admitted against a budget that is too high and a later pass can evict. The
+disk reservations live in the provider process and are gone at restart; the
+files of models that are not loaded and leftover temp files are counted again
+by the maintenance pass that runs when a complete-checkpoint store is built
+or when the 60-second task first starts.
 
 Small caps. Under a write cap other than `0`, a speculative write larger than
 H is never admitted, whatever the buckets hold. On a store whose daily write
@@ -534,16 +621,26 @@ ones.
 
 After enabling, read `donation_outcomes.write_speculative_limited` as a
 change over equal windows. It counts write-budget, busy-writer and disk-room
-refusals without separating them, and a refusal spends no bytes or budget, so
-its growth shows first-sight checkpoints going unwritten (a conversation none
-of whose first-sight checkpoints was written gets its first hit on the third
-request, as with first sight off), not a write-budget problem. Refused proven
+refusals, a write declined because a file was already at its path, and
+first-sight writes that gave way after their I/O began because their disk
+room was needed by a proven write or was gone, without separating them. A
+refusal before I/O spends no bytes and no write budget, whichever of those
+caused it. A write that gave way was charged to the daily write cap
+with no refund and left no checkpoint. The counter no longer always means "no
+bytes and no write budget were spent": it means that for the refusals, and
+the fleet reading cannot tell how many of its counts are the other kind (the
+provider's `speculativeWritesYielded` stat can, in process only). Its growth
+shows first-sight checkpoints going unwritten (a conversation none of whose
+first-sight checkpoints was kept gets its first hit on the third request, as
+with first sight off). It does not show a refused proven write. Refused proven
 writes show in `write_priority_limited`,
 `write_rate_limited` and `write_queue_full`. Raising the minimum lowers the
 number of first-sight requests; the prompts it keeps are longer, and their
 larger checkpoints need more of H.
 
 The cost is provider writes, charged to each provider's daily write budget
+in plaintext bytes, including a first-sight write that gave way after its
+I/O began
 ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)). A
 gpt-oss-20b checkpoint file holds 49,152 B per token plus 6.03 MB of fixed
 state, 308.0 MB at 6,144 tokens
@@ -557,7 +654,7 @@ Watch three readings of `GET /v1/cache/status`, as changes over equal windows:
 |---|---|---|
 | `.activation.first_sight` | Requests that were asked to keep a prefix; a subset of `.activation.planned` | It does not show that the provider wrote the prefix. `.lifecycle.donation_outcomes` shows what was written or skipped; a provider whose own minimum is above the kept boundary skips it, and so does a provider release that does not understand `cache_first_sight_tokens` (`skipped_novel`) |
 | `.lifecycle.ssd_hits` per `.lifecycle.ssd_lookups` | Share of lookups that hit | First sight applies only to a prompt with no earlier shared boundary. A new conversation that begins with an already-seen opening of at least 1,024 tokens is a repeat: its provider still writes its deepest boundary, but its affinity key is the shared opening's |
-| `.lifecycle.donation_outcomes.write_speculative_limited` | Speculative first-sight offers a provider declined because the store was more than the headroom below full, another checkpoint write was registered, or the disk budget had no room; no bytes or budget were spent | It does not say which of the three refused, so growth alone does not show a write-budget problem; on a store with a non-zero write cap whose headroom is smaller than the checkpoint every such offer lands here (small caps, above). It is reported only by a provider release that understands `cache_first_sight_tokens`, for requests that carry that field |
+| `.lifecycle.donation_outcomes.write_speculative_limited` | Speculative first-sight offers a provider declined before I/O because the store was more than the headroom below full, another checkpoint write was registered, the complete stored file did not fit the free disk budget, or a file was already at the checkpoint's path (no bytes or write budget spent); and admitted first-sight writes that gave way after I/O began because their disk room was needed by a proven write, including one queued in any store, or was gone (daily write cap charged, no refund, no checkpoint kept) | It does not say which cause applied or whether I/O happened, so growth alone does not show a refused proven write and cannot size the write cap spent on writes that gave way; on a store with a non-zero write cap whose headroom is smaller than the checkpoint every such offer lands here (small caps, above). It is reported only by a provider release that understands `cache_first_sight_tokens`, for requests that carry that field |
 
 Three more limits
 ([details](../architecture/cache-aware-routing.md#first-sight)):
@@ -642,7 +739,7 @@ Three more limits
    | `first_sight` | Lower than the baseline but above zero: one count per planned novel prompt of at least the new minimum | Zero |
    | `hits_per_lookup` | At or slightly below the baseline; a clear fall means the minimum now excludes prompts whose follow-ups were hitting | Lower than the baseline: a new conversation's second request runs cold again |
    | `skipped_novel` | Higher than the baseline, because fewer novel requests are written | Higher than the baseline |
-   | `write_speculative_limited` | Fewer prompts qualify, so fewer speculative offers are made. Faster growth than the baseline is not by itself a reason to raise the minimum again: a refusal spends no bytes or budget, and the counter does not separate its three causes | Not growing |
+   | `write_speculative_limited` | Fewer prompts qualify, so fewer speculative offers are made. Faster growth than the baseline is not by itself a reason to raise the minimum again: a refusal before I/O spends no bytes or write budget, and the counter separates neither its causes nor the writes that gave way after I/O began, which were charged to the daily write cap | Not growing |
    | `write_priority_limited` | Not growing faster than the baseline | Not growing faster than the baseline |
    | `write_rate_limited` | Not growing faster than the baseline | Not growing faster than the baseline; if it still grows, providers' whole daily budget is exhausted by other writes |
 

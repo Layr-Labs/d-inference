@@ -4,12 +4,42 @@ import CryptoKit
 import Foundation
 
 extension SSDBlockStore {
+    /// AES.GCM combined box of the 32-byte DEK: nonce, key, tag.
+    static let wrappedDEKBytes = nonceLength + 32 + gcmTagLength
+    /// Magic 4, version 2, flags 2, file IV, wrapped-DEK length 4, wrapped
+    /// DEK, metadata length 4, chunk count 4.
+    static let streamedFixedBytes = 4 + 2 + 2 + fileIVLength + 4 + wrappedDEKBytes + 4 + 4
+    /// Ciphertext length 4 and GCM tag per chunk; the nonce is derived.
+    static let streamedChunkFramingBytes = 4 + gcmTagLength
+
+    /// Exact length of the file `writeStreaming` publishes for `metadata`:
+    /// the fixed header, the canonical metadata, and each chunk's plaintext
+    /// plus framing. No I/O and no key, so a writer can claim disk budget for
+    /// the complete stored size before its first byte.
+    static func streamedFileBytes(for metadata: SSDBlockMetadata) throws -> Int {
+        guard metadata.chunkPlaintextSizes.count == metadata.chunks.count else {
+            throw SSDBlockStoreError.malformedHeader("invalid streamed chunk limits/count")
+        }
+        var total = streamedFixedBytes
+        let parts = [try canonicalEncode(metadata).count]
+            + metadata.chunkPlaintextSizes.flatMap { [$0, streamedChunkFramingBytes] }
+        for part in parts {
+            let (next, overflow) = total.addingReportingOverflow(part)
+            guard part >= 0, !overflow else { throw SSDBlockStoreError.sizeOverflow("stored file size") }
+            total = next
+        }
+        return total
+    }
+
     /// DBK3 wire format with one plaintext chunk alive at a time. The producer
     /// may export a tensor segment directly; it need not retain a whole file.
+    /// `beforePublish` receives the finished file's length while it is still a
+    /// temp file; a throw there removes it and nothing is published.
     static func writeStreaming(
         to url: URL, metadata: SSDBlockMetadata, kekKey: SymmetricKey,
         maximumChunkBytes: Int, strictFsync: Bool = false,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
+        beforePublish: ((Int) throws -> Void)? = nil,
         chunk: (Int) throws -> Data
     ) throws -> Int {
         guard isSafeBlockURL(url) else {
@@ -24,7 +54,8 @@ extension SSDBlockStore {
         let header = try assembleHeader(
             fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
         return try SSDNoFollowIO.writeAtomically(
-            to: url, strictFsync: strictFsync, beforeOperation: beforeOperation
+            to: url, strictFsync: strictFsync, beforeOperation: beforeOperation,
+            beforePublish: beforePublish
         ) { handle in
             try handle.write(contentsOf: header)
             try handle.write(contentsOf: uint32LE(UInt32(metadata.chunkPlaintextSizes.count)))

@@ -1939,7 +1939,7 @@ struct SSDReadyWriteBarrierTests {
 
     private enum InjectedWriteError: Error { case failed }
 
-    private func block(_ byte: UInt8) -> SSDBlockWrite {
+    private func block(_ byte: UInt8, plaintextBytes: Int = 1) -> SSDBlockWrite {
         let tag = Data(repeating: byte, count: 16)
         return SSDBlockWrite(
             tag16: tag,
@@ -1954,7 +1954,7 @@ struct SSDReadyWriteBarrierTests {
                 chunkPlaintextSizes: [],
                 createdAt: 10_000),
             chunks: [],
-            plaintextBytes: 1)
+            plaintextBytes: plaintextBytes)
     }
 
     private func pipeline(
@@ -1962,6 +1962,10 @@ struct SSDReadyWriteBarrierTests {
         maxJobs: Int = 2,
         volumeSpace: @escaping @Sendable () -> (free: Int, capacity: Int)? = { nil },
         writeBlock: (@Sendable (SSDBlockWrite, URL) throws -> Int)? = nil,
+        diskBudget: SSDDiskBudget = SSDDiskBudget(),
+        diskBudgetBasis: (@Sendable () -> SSDDiskBudgetBasis)? = nil,
+        capBytesPerDay: Int = 0,
+        index: SSDBlockIndex = SSDBlockIndex(),
         onBlockSettled: @escaping @Sendable (Data) -> Void = { _ in }
     ) -> SSDWriteBehind {
         SSDWriteBehind(
@@ -1976,13 +1980,323 @@ struct SSDReadyWriteBarrierTests {
                 volumeSpace: volumeSpace,
                 nowSeconds: { 10_000 },
                 maintainWholeRoot: nil,
-                writeBlock: writeBlock),
-            rateLimiter: SSDWriteRateLimiter(capBytesPerDay: 0),
-            index: SSDBlockIndex(),
-            diskBudget: SSDDiskBudget(),
+                writeBlock: writeBlock,
+                diskBudgetBasis: diskBudgetBasis),
+            rateLimiter: SSDWriteRateLimiter(capBytesPerDay: capBytesPerDay),
+            index: index,
+            diskBudget: diskBudget,
             stats: SSDPrefixCacheStatsBox(),
             onBlockSettled: onBlockSettled,
             sweepExpired: {})
+    }
+
+    /// The store a write-behind fills, as the disk budget sees it.
+    private final class IndexOwner: SSDEvictableStore, @unchecked Sendable {
+        let index: SSDBlockIndex
+        let evictionRoot: URL
+        private let lock = NSLock()
+        private var queued: @Sendable () -> Int = { 0 }
+        init(index: SSDBlockIndex, root: URL) { self.index = index; evictionRoot = root }
+        func follow(_ writer: SSDWriteBehind) { lock.withLock { queued = { writer.queuedStoredBytes } } }
+        var ownsEvictionRoot: Bool { true }
+        var diskBytesOnDisk: Int { index.totalBytes }
+        var queuedWriteBytes: Int { lock.withLock { queued }() }
+        func oldestEntryAccess() -> Int64? { nil }
+        func evictOldestEntry() -> Int { 0 }
+        func reconcileExternalRemovals() {}
+        func performExternalDestructiveChange(_ body: () -> Void) -> Bool { false }
+        func retireOwnedEntries(_ urls: [URL]) -> Set<String> { [] }
+    }
+
+    @Test("each block of a block-tier donation is on the shared disk budget's ledger while it is written, with the blocks still to come, so a first-sight checkpoint elsewhere is not granted the same room")
+    func blockTierWritesAreVisibleToSpeculativeAdmission() async throws {
+        let dir = tempDir("block-tier-reservation")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = SSDDiskBudget()
+        let blocks = [block(1), block(2)]
+        let stored = try SSDBlockStore.streamedFileBytes(for: blocks[0].metadata)
+        #expect(try SSDBlockStore.streamedFileBytes(for: blocks[1].metadata) == stored)
+        let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let duringFirst = Counter()
+        let duringLast = Counter()
+        let roomDuringWrite = Counter()
+        let writer = pipeline(
+            dir: dir,
+            writeBlock: { block, _ in
+                // No store is registered here, so a written block leaves
+                // the ledger: both blocks, then the last one.
+                let reserved = budget.reservedBytesSnapshot
+                if block.tag16 == blocks[0].tag16, reserved == 2 * stored { duringFirst.increment() }
+                if block.tag16 == blocks[1].tag16, reserved == stored { duringLast.increment() }
+                // Room for what is reserved and nothing more.
+                if budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRoot, basis: .fixed(reserved)) {
+                    roomDuringWrite.increment()
+                }
+                return 1
+            },
+            diskBudget: budget)
+        let outcome = OutcomeBox()
+        #expect(writer.submit(.init(
+            blocks: blocks, totalBytes: 2, onDurable: { true }, onOutcome: outcome.set)))
+        await writer.waitUntilDrained()
+        writer.close()
+        #expect(outcome.outcome == .donated)
+        #expect(duringFirst.count == 1)
+        #expect(duringLast.count == 1)
+        #expect(roomDuringWrite.count == 0)
+        #expect(budget.reservedBytesSnapshot == 0)
+        #expect(budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRoot, basis: .fixed(stored)))
+    }
+
+    @Test("from its first block to its last, a block-tier donation holds room for every block it has still to write: a first-sight checkpoint elsewhere sees the same occupancy at every block")
+    func blockTierDonationHoldsRoomForItsLaterBlocks() async throws {
+        let dir = tempDir("block-tier-donation")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = SSDDiskBudget()
+        let index = SSDBlockIndex()
+        let owner = IndexOwner(index: index, root: dir)
+        budget.register(owner)
+        defer { budget.deregister(owner) }
+        let blocks = [block(1), block(2), block(3)]
+        let stored = try SSDBlockStore.streamedFileBytes(for: blocks[0].metadata)
+        let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let writes = Counter()
+        let roomForMore = Counter()
+        let roomBeside = Counter()
+        let writer = pipeline(
+            dir: dir,
+            writeBlock: { _, _ in
+                writes.increment()
+                // The donation fills a budget of three blocks at every block.
+                if budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRoot, basis: .fixed(3 * stored)) {
+                    roomForMore.increment()
+                }
+                // A budget of four always has room for one more file.
+                if budget.hasSpeculativeRoom(bytes: stored, wholeRootKey: wholeRoot, basis: .fixed(4 * stored)) {
+                    roomBeside.increment()
+                }
+                return stored
+            },
+            diskBudget: budget, index: index)
+        writer.setOwner(owner)
+        #expect(writer.submit(.init(blocks: blocks, totalBytes: 3)))
+        await writer.waitUntilDrained()
+        writer.close()
+        #expect(writes.count == 3)
+        #expect(roomForMore.count == 0, "a later block's room was never offered to a first-sight write")
+        #expect(roomBeside.count == 3)
+        #expect(budget.reservedBytesSnapshot == 0)
+        #expect(budget.totalBytes == 3 * stored)
+        #expect(budget.unownedBytesSnapshot(wholeRootKey: wholeRoot) == 0)
+    }
+
+    @Test("a donation waiting in the block tier's queue is counted, by an upper bound, against a first-sight checkpoint anywhere on the budget")
+    func blockTierQueuedDonationsCount() async throws {
+        let dir = tempDir("block-tier-queued")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = SSDDiskBudget()
+        let index = SSDBlockIndex()
+        let owner = IndexOwner(index: index, root: dir)
+        budget.register(owner)
+        defer { budget.deregister(owner) }
+        let stored = try SSDBlockStore.streamedFileBytes(for: block(1).metadata)
+        let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let held = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { held.release() }
+        let writer = pipeline(
+            dir: dir,
+            writeBlock: { block, _ in
+                if block.tag16 == Data(repeating: 1, count: 16) {
+                    do { try held.block() } catch { Issue.record("writer barrier timed out: \(error)") }
+                }
+                return stored
+            },
+            diskBudget: budget, index: index)
+        writer.setOwner(owner)
+        owner.follow(writer)
+        #expect(writer.submit(.init(blocks: [block(1)], totalBytes: 1)))
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { held.isEntered }
+        #expect(writer.queuedStoredBytes == 0, "the running donation is on the ledger with its exact bytes")
+        #expect(writer.submit(.init(blocks: [block(2), block(3)], totalBytes: 2)))
+        // Each queued block: its plaintext and at most a megabyte of framing.
+        let bound = 2 + 2 * (1 << 20)
+        #expect(writer.queuedStoredBytes == bound)
+        #expect(!budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRoot, basis: .fixed(stored + bound)))
+        #expect(budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRoot, basis: .fixed(stored + bound + 1)))
+        held.release()
+        await writer.waitUntilDrained()
+        writer.close()
+        #expect(writer.queuedStoredBytes == 0)
+        #expect(budget.reservedBytesSnapshot == 0)
+        #expect(budget.totalBytes == 3 * stored)
+    }
+
+    @Test("every exit of a block-tier donation leaves nothing on the ledger: low disk, out of space and the pause after it, a close while a block is written; a block the write cap refuses gives its room back at once")
+    func blockTierExitsLeaveNoRecord() async throws {
+        let dir = tempDir("block-tier-exits")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let stored = try SSDBlockStore.streamedFileBytes(for: block(1).metadata)
+        func isFree(_ budget: SSDDiskBudget) -> Bool {
+            budget.reservedBytesSnapshot == 0
+                && budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: wholeRoot, basis: .fixed(1))
+        }
+
+        // Low disk: refused before any block.
+        let low = SSDDiskBudget()
+        let lowOutcome = OutcomeBox()
+        let lowDisk = pipeline(dir: dir, volumeSpace: { (free: 0, capacity: 1) }, diskBudget: low)
+        #expect(lowDisk.submit(.init(blocks: [block(1), block(2)], totalBytes: 2, onOutcome: lowOutcome.set)))
+        await lowDisk.waitUntilDrained()
+        lowDisk.close()
+        #expect(lowOutcome.outcome == .diskUnavailable)
+        #expect(isFree(low))
+
+        // Out of space, then a donation that arrives during the pause.
+        let full = SSDDiskBudget()
+        let paused = OutcomeBox()
+        let outOfSpace = pipeline(dir: dir, writeBlock: { _, _ in throw POSIXError(.ENOSPC) }, diskBudget: full)
+        #expect(outOfSpace.submit(.init(blocks: [block(1), block(2)], totalBytes: 2)))
+        await outOfSpace.waitUntilDrained()
+        #expect(isFree(full))
+        #expect(outOfSpace.submit(.init(blocks: [block(3), block(4)], totalBytes: 2, onOutcome: paused.set)))
+        await outOfSpace.waitUntilDrained()
+        outOfSpace.close()
+        #expect(paused.outcome == .diskUnavailable)
+        #expect(isFree(full))
+
+        // Closed while its first block is written: the second is skipped.
+        let closing = SSDDiskBudget()
+        let held = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { held.release() }
+        let writes = Counter()
+        let closed = pipeline(
+            dir: dir,
+            writeBlock: { _, _ in
+                writes.increment()
+                do { try held.block() } catch { Issue.record("writer barrier timed out: \(error)") }
+                return stored
+            },
+            diskBudget: closing)
+        let closedOutcome = OutcomeBox()
+        #expect(closed.submit(.init(blocks: [block(5), block(6)], totalBytes: 2, onOutcome: closedOutcome.set)))
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { held.isEntered }
+        #expect(closing.reservedBytesSnapshot == 2 * stored)
+        closed.close()
+        held.release()
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { closedOutcome.count == 1 }
+        #expect(writes.count == 1)
+        #expect(isFree(closing))
+
+        // The write cap refuses the first block and takes the second: while
+        // the second is written the donation holds that block and no more.
+        let capped = SSDDiskBudget()
+        let second = Counter()
+        let exact = Counter()
+        let limited = pipeline(
+            dir: dir,
+            writeBlock: { _, _ in
+                second.increment()
+                if capped.reservedBytesSnapshot == stored { exact.increment() }
+                return stored
+            },
+            diskBudget: capped, capBytesPerDay: 5)
+        #expect(limited.submit(.init(blocks: [block(7, plaintextBytes: 10), block(8)], totalBytes: 11)))
+        await limited.waitUntilDrained()
+        limited.close()
+        #expect(second.count == 1)
+        #expect(exact.count == 1)
+        #expect(isFree(capped))
+    }
+
+    @Test("a block that is indexed after its cache left the budget is counted as bytes no index owns")
+    func blockTierBlockAfterItsStoreIsGone() async throws {
+        let dir = tempDir("block-tier-orphan")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = SSDDiskBudget()
+        let index = SSDBlockIndex()
+        let owner = IndexOwner(index: index, root: dir)
+        budget.register(owner)
+        let stored = try SSDBlockStore.streamedFileBytes(for: block(1).metadata)
+        let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let writer = pipeline(
+            dir: dir,
+            // The model is unloaded while the block is being written.
+            writeBlock: { _, _ in budget.deregister(owner); return stored },
+            diskBudget: budget, index: index)
+        writer.setOwner(owner)
+        #expect(writer.submit(.init(blocks: [block(1)], totalBytes: 1)))
+        await writer.waitUntilDrained()
+        writer.close()
+        #expect(budget.totalBytes == 0)
+        #expect(budget.reservedBytesSnapshot == 0)
+        #expect(budget.unownedBytesSnapshot(wholeRootKey: wholeRoot) == stored)
+    }
+
+    @Test("a block that fails to write, or that the write cap refuses, leaves nothing on the ledger; a refused block revokes no first-sight write")
+    func blockTierFailuresLeaveNoRecord() async throws {
+        let dir = tempDir("block-tier-failure")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = SSDDiskBudget()
+        let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let inFlight = try #require(budget.reserveSpeculative(
+            bytes: 1, keys: ["first-sight"], wholeRootKey: wholeRoot, basis: .fixed(1)))
+        // The budget holds the first-sight byte and nothing else.
+        let failing = pipeline(
+            dir: dir, writeBlock: { _, _ in throw InjectedWriteError.failed },
+            diskBudget: budget, diskBudgetBasis: { .fixed(1) })
+        let failed = OutcomeBox()
+        #expect(failing.submit(.init(blocks: [block(1)], totalBytes: 1, onOutcome: failed.set)))
+        await failing.waitUntilDrained()
+        failing.close()
+        #expect(failed.outcome == .writeFailed)
+        #expect(budget.reservedBytesSnapshot == 1, "only the first-sight write's own byte")
+        #expect(inFlight.isRevoked, "a block that is about to be written takes the room")
+
+        let other = SSDDiskBudget()
+        let writes = Counter()
+        let limited = pipeline(
+            dir: dir, writeBlock: { _, _ in writes.increment(); return 1 },
+            diskBudget: other, diskBudgetBasis: { .fixed(1) }, capBytesPerDay: 1)
+        // One block takes the whole daily write cap.
+        #expect(limited.submit(.init(blocks: [block(1)], totalBytes: 1)))
+        await limited.waitUntilDrained()
+        #expect(writes.count == 1)
+        let untouched = try #require(other.reserveSpeculative(
+            bytes: 1, keys: ["first-sight"], wholeRootKey: wholeRoot, basis: .fixed(1)))
+        let refused = OutcomeBox()
+        #expect(limited.submit(.init(blocks: [block(2)], totalBytes: 1, onOutcome: refused.set)))
+        await limited.waitUntilDrained()
+        limited.close()
+        #expect(refused.outcome == .writeRateLimited)
+        #expect(writes.count == 1)
+        #expect(!untouched.isRevoked, "a block the write cap refuses is never recorded")
+        #expect(other.reservedBytesSnapshot == 1)
+        other.release(untouched, as: .discarded)
+        #expect(other.reservedBytesSnapshot == 0)
+    }
+
+    @Test("under a budget of half the free bytes, a block-tier write that no longer fits beside an in-flight first-sight write tells it to give way")
+    func blockTierProjectsHalfOfFree() async throws {
+        let dir = tempDir("block-tier-half-of-free")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = SSDDiskBudget()
+        let wholeRoot = SSDDiskBudget.wholeRootKey(ofModelRoot: dir)
+        let stored = try SSDBlockStore.streamedFileBytes(for: block(1).metadata)
+        // Free space of 4 blocks: the budget is 2 blocks now, and falls by
+        // half of whatever is still to land. One first-sight block fits
+        // (1 <= 1.5); with a block-tier block registered, 2 > (4 - 2) / 2.
+        let free = 4 * stored
+        let inFlight = try #require(budget.reserveSpeculative(
+            bytes: stored, keys: ["first-sight"], wholeRootKey: wholeRoot, basis: .halfOfFree(freeBytes: free)))
+        let writer = pipeline(
+            dir: dir, writeBlock: { _, _ in 1 }, diskBudget: budget,
+            diskBudgetBasis: { .halfOfFree(freeBytes: free) })
+        #expect(writer.submit(.init(blocks: [block(1)], totalBytes: 1)))
+        await writer.waitUntilDrained()
+        writer.close()
+        #expect(inFlight.isRevoked)
+        budget.release(inFlight, as: .discarded)
     }
 
     @Test("a large disk with 95 GB free can donate below five percent free")

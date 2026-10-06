@@ -84,8 +84,51 @@ enum SSDPrefixCacheFactory {
                 PrefixCachePolicy.ssdDiskBudgetBytes(
                     environment: ProcessInfo.processInfo.environment,
                     freeBytes: PrefixCachePolicy.volumeFreeBytes(at: root))
+            },
+            budgetBasis: {
+                PrefixCachePolicy.ssdDiskBudgetBasis(
+                    environment: ProcessInfo.processInfo.environment,
+                    freeBytes: PrefixCachePolicy.volumeFreeBytes(at: root))
             })
     }
+
+    /// One whole-root pass as every production caller runs it: the budget,
+    /// and how it moves with the volume, are resolved inside the pass from
+    /// the environment and the free bytes of `volumeProbe` (default `root`).
+    @discardableResult
+    static func maintainWholeRoot(
+        root: URL, environment: [String: String], volumeProbe: URL? = nil,
+        maintainer: SSDWholeRootMaintainer = .shared, budget: SSDDiskBudget = .shared,
+        freeBytes: (URL) -> Int? = { PrefixCachePolicy.volumeFreeBytes(at: $0) }
+    ) -> SSDWholeRootMaintainer.Result {
+        wholeRootPasses.record(root: root, volumeProbe: volumeProbe ?? root)
+        return maintainer.maintain(
+            root: root, ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(environment: environment),
+            nowSeconds: Int64(Date().timeIntervalSince1970), budget: budget,
+            basis: {
+                PrefixCachePolicy.ssdDiskBudgetBasis(
+                    environment: environment, freeBytes: freeBytes(volumeProbe ?? root))
+            })
+    }
+
+    /// The passes run through `maintainWholeRoot`, by whole root: how many,
+    /// and the volume probe of the last. Tests read it to pin that each
+    /// factory's own pass is that one.
+    final class WholeRootPassLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var passes: [String: (count: Int, volumeProbe: String)] = [:]
+        fileprivate func record(root: URL, volumeProbe: URL) {
+            lock.withLock {
+                let key = root.standardizedFileURL.path
+                passes[key] = ((passes[key]?.count ?? 0) + 1, volumeProbe.standardizedFileURL.path)
+            }
+        }
+        func count(root: URL) -> Int { lock.withLock { passes[root.standardizedFileURL.path]?.count ?? 0 } }
+        func lastVolumeProbe(root: URL) -> String? {
+            lock.withLock { passes[root.standardizedFileURL.path]?.volumeProbe }
+        }
+    }
+    static let wholeRootPasses = WholeRootPassLog()
 
     static func stopWholeRootMaintenance() {
         SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: cacheRootDirectory())
@@ -292,14 +335,13 @@ enum SSDPrefixCacheFactory {
                     freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir))
             },
             maintainWholeRoot: { [wholeRoot, dir] in
-                _ = SSDWholeRootMaintainer.shared.maintain(
-                    root: wholeRoot,
-                    ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(
-                        environment: ProcessInfo.processInfo.environment),
-                    nowSeconds: Int64(Date().timeIntervalSince1970),
-                    budgetBytes: PrefixCachePolicy.ssdDiskBudgetBytes(
-                        environment: ProcessInfo.processInfo.environment,
-                        freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir)))
+                maintainWholeRoot(
+                    root: wholeRoot, environment: ProcessInfo.processInfo.environment, volumeProbe: dir)
+            },
+            diskBudgetBasis: { [dir] in
+                PrefixCachePolicy.ssdDiskBudgetBasis(
+                    environment: ProcessInfo.processInfo.environment,
+                    freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir))
             })
         cache.startBackgroundTasks()
         startWholeRootMaintenance(environment: environment)

@@ -33,9 +33,17 @@ budget was charged because neither the coordinator's
 `write_speculative_limited` identifies a first-sight checkpoint classed
 speculative (the request carried `cache_first_sight_tokens` and no observed
 repeat, the store had not seen the tag and the request restored nothing from
-it) that yielded to write-budget, writer or disk pressure before any budget
-was charged. It is counted per offered checkpoint and published as a
-fleet-wide total. The three limited outcomes (`write_queue_full` and the two
+it) that yielded to write-budget, writer or disk pressure, or that found a
+file already at its path. A write declined before I/O spends no bytes and no
+write budget. An admitted write that gives
+way after its I/O began, because its disk room is needed by a proven write or
+is gone, settles the same outcome with the daily write cap charged, not
+refunded, and no entry kept; the outcome does not separate the two, and the provider stat
+that does (`speculativeWritesYielded`, `SSDHybridCheckpointStats`) is
+process-local and not in any wire type
+([SSD write policy](ssd-kv-cache.md#size-and-eviction-rules)). It is counted
+per offered checkpoint and published as a fleet-wide total. The three limited
+outcomes (`write_queue_full` and the two
 below) are not emitted for a speculative offer; they still count a
 first-sight request's offers of the other two classes.
 `write_priority_limited` identifies exhaustion of the novel-checkpoint write

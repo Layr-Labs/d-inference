@@ -5,6 +5,7 @@ import Testing
 /// Pauses a real sweep at the existing active-store mutation barrier, without
 /// adding a production hook or requiring a large/slow filesystem fixture.
 private final class PausedMaintenanceStore: SSDEvictableStore, @unchecked Sendable {
+    var queuedWriteBytes: Int { 0 }
     let evictionRoot: URL
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)

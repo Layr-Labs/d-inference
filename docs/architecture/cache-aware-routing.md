@@ -1204,19 +1204,150 @@ store saw, or after a restore from the store, gets a proven class. A
 speculative write is admitted only while it leaves both write buckets (the
 whole daily cap and the 90% novel share) within the headroom H of full, only
 while no other checkpoint write is registered on that store, and only while
-the box-wide cache bytes plus its own stay within the disk budget.
+its complete stored file fits the free disk budget and no file is already at
+its path.
 H is what the whole-cap bucket refills in one cache lifetime
 (`cap x TTL / 86,400`, 2.08% of the daily cap at the 30-minute TTL and never
 more than the novel share). The novel share refills at 90% of that rate, so it
 needs `TTL / 0.9`, 33 minutes 20 seconds at the defaults, to refill H. Any of
-the three pressures refuses the write before a byte is written, charges
-nothing and settles `write_speculative_limited`
+these refuses the write before a byte is written, charges nothing and settles
+`write_speculative_limited`
 ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)).
-The disk condition is a check before the write, not a reservation: once
-written, a speculative file counts toward the disk budget like any other
-entry, and enforcement after a later write evicts the oldest entry by last hit
-whatever its class (`SSDDiskBudget.enforce`), so a later proven write can evict
-an older checkpoint, including a proven one.
+
+The disk condition is a reservation, held from before the write's first byte
+until its file is indexed or gone. Its purpose: an admitted first-sight write
+must not force the eviction of an existing checkpoint, either through the
+bytes the file format adds to the plaintext or through another writer taking
+the same room. The rule, with its constants, is in the
+[SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)
+(speculative disk admission); the mechanism is:
+
+- **The size is the stored file's.** The file is longer than its plaintext by
+  a 92-byte header, the metadata JSON and 20 bytes of framing per chunk.
+  `SSDBlockStore.streamedFileBytes` computes that exact length before any
+  I/O, and a first-sight write is held to it. The daily write cap is still
+  charged in plaintext bytes.
+- **The room is reserved across writers.** `SSDDiskBudget` keeps a
+  process-wide ledger. Every fresh write on the budget, of any class and in
+  any model's store, holds an `SSDDiskReservation` for its complete stored
+  size from before its first byte until its file is indexed or gone. A
+  block-tier donation is recorded whole: when its job starts, before it
+  leaves the queue's bound, one record takes the exact stored bytes of all
+  its blocks. Each block is moved out of that record into one of its own
+  after that block's write-budget charge and file lease, a skipped block is
+  dropped from it, and what is left is released when the job ends
+  (`SSDWriteBehind.consume`, `claimBlock`, `dropBlock`). The
+  ledger also keeps, per whole cache root, the bytes on disk that no
+  registered store's index counts: files of unloaded or closed models, temp
+  files that belong to no in-flight write, files published and never indexed.
+  A first-sight write is granted room on the writer, before its write-budget
+  charge and before a byte is written, only if the indexed bytes of every
+  registered store, those unowned bytes, every other reservation, the proven
+  work every registered store has accepted and not yet recorded, and its own
+  stored bytes fit the budget as it will be once the reserved and queued
+  bytes and its own are on the volume (`reserveSpeculative`,
+  `SSDDiskBudgetBasis`). Queued work is counted box-wide at an estimate meant
+  as an upper bound
+  (`SSDEvictableStore.queuedWriteBytes`): a fresh proven checkpoint write at
+  its plaintext plus 1 MiB, a queued block-tier donation at its bytes plus
+  1 MiB per block. The code does not check that the header, metadata and
+  chunk framing stay within that 1 MiB; a job whose overhead is larger is
+  under-counted until it records its exact size. A re-offer of a checkpoint that is already indexed writes
+  nothing and is not counted. The
+  default budget is half of free disk and so falls by half of every byte
+  written; an operator override (`DARKBLOOM_PREFIX_CACHE_DISK_GB`) or the
+  fallback does not move. A write that does not fit is declined with nothing
+  written and nothing charged and settles `write_speculative_limited`.
+- **It does not replace a file.** A first-sight write is declined in the same
+  way when a regular file is already at its path. Its store's index does not
+  have that file, but another instance on the same model root may, and a
+  first-sight write that lost its room would delete it. A proven write still
+  replaces such a file.
+- **A proven write is never refused room by the ledger and never waits for
+  room.** The low-disk write stop, unchanged, still refuses any fresh write.
+  A proven checkpoint write
+  records its stored bytes in the same ledger after its write-budget charge
+  (`registerProven`), and each block of the block tier is tested as it takes
+  its own record (`claimBlock`), against the
+  same projected budget. If the sum then no longer fits, the room in-flight
+  first-sight writes were granted is what gives: their reservations are
+  revoked. A first-sight write granted between the proven write's look for
+  one in flight and its registration is not revoked then; the proven record
+  counts against it from then on, and it gives way at its publish or index
+  check if the room no longer holds both. A proven file is indexed in one step with the
+  release of its record (`commitProven`); if its store deregistered
+  meanwhile, the file's bytes are counted as unowned. What a proven write
+  does wait for is the budget lock, before its first byte and again at its
+  index step (the file is published but not yet indexed while it waits); a
+  block-tier job takes it for each block. An eviction loop, a whole-root
+  retirement or a reconcile in another store can hold that lock. The
+  registration asks the volume for its free bytes only while a first-sight
+  write is in flight; the low-disk check before the write reads the volume
+  as before. The pass after the write now reads it inside the pass, and the
+  enforcement after that reads it once, or again (up to three readings) when
+  a first-sight write was withdrawn since the reading.
+- **A first-sight write gives way instead of evicting.** One whose
+  reservation is revoked stops at its next chunk (it finishes the chunk in
+  hand; a chunk is at most 4 MiB) and its temp file is removed. One that is
+  revoked, or whose room is gone, when its finished file is still a temp
+  file does not publish it (`checkSpeculativePublish`). One that has
+  published is indexed only while it is not revoked, its room still holds
+  and its store is still open on the same epoch, in one step with the
+  release of its reservation under the budget lock (`commitSpeculative`);
+  otherwise it removes its own published file (if that unlink fails, the
+  file stays on disk unindexed and its bytes are counted as unowned). Both
+  checks read the volume outside the budget lock and take off that reading
+  the bytes other writers settled on disk before the lock was taken, so a
+  proven write that lands and is indexed in between cannot make them pass. At the
+  last two points, as at the grant, the room must also hold the proven work
+  queued in every store on the budget, which has no reservation yet. Each of
+  the three settles `write_speculative_limited`, except that a published
+  file already gone at the index step settles `cache_entry_evicted`. I/O
+  happened and the daily write cap, charged
+  before the first byte, is not refunded; the store counts them in the stat
+  `speculativeWritesYielded` (`SSDHybridCheckpointStats`), which is
+  process-local and not on the heartbeat. A store that is closed or has
+  changed epoch at that point settles `cache_closed` or `cache_epoch_changed`
+  as for any write, and a first-sight file published in that window is
+  removed instead of being left unindexed on disk.
+- **No enforcement evicts for it.** `SSDWholeRootMaintainer.maintain` keeps
+  the temp file and the published, not yet indexed file of an in-flight
+  first-sight write out of its total and never picks them as TTL or budget
+  victims (the one-hour crash-temp cleanup still applies to a temp file). If
+  the rest of what it counts plus those bytes exceeds its limit, the
+  pass revokes every in-flight first-sight write on the budget, whatever
+  its root. Under the default budget,
+  half of free disk, those bytes have also lowered the limit for as long as
+  they are on the volume, so both enforcers take the limit without them
+  (`SSDDiskBudgetBasis.bytes(afterRemoving:)`). The pass resolves its budget
+  inside the pass, once it holds the maintenance lock and has opened the
+  window that records the reservations outstanding during its walk, so a
+  first-sight write whose bytes are in that reading of the volume is known
+  to it even if the write is gone before the walk reaches its directory. It
+  adds back the larger of the first-sight bytes the walk found and the bytes
+  the first-sight writes of that window reported as landed, leaving out the
+  writes indexed in the window. The enforcement after a checkpoint write
+  (`SSDDiskBudget.enforce(basis:)`) adds back the bytes in-flight first-sight
+  writes report as landed. It reads the volume outside the budget lock; if a
+  first-sight write ended without an entry between that reading and the
+  lock, it reads the volume again, and after three such readings it evicts
+  nothing in that call and leaves the root to the next pass. Under an
+  override or the fallback the limit does not
+  move. A pass started by another store, by the block tier or by the
+  60-second timer therefore does not evict a committed entry on account of
+  an in-flight first-sight write's bytes, within the assumptions of limit 10.
+
+The reservation is provider-local write admission. It adds no frame field and
+no outcome, and the coordinator does not take part in it:
+`write_speculative_limited` now also covers a write that gave way after its
+I/O began. The defaults (first sight on, the disk budget, the daily write cap,
+H, the TTL, the low-disk floor) are as they were without it, and so are the
+outcomes, order of side effects and charges of proven writes. Their evictions
+are not: the enforcement that follows a proven write no longer evicts on
+account of another store's in-flight first-sight bytes. For the same reading
+of the volume it evicts the same entries or fewer, never more (the reading
+itself is now taken inside the pass and can be repeated). What the reservation does not cover is limit
+10 below.
 
 The scheduler treats a first-sight key as it treats a repeat's key: a tie-break
 among candidates equal in the first-content band and in whole-Mac service work,
@@ -1297,8 +1428,9 @@ Limits:
    - **Absorbed.** The duplicate check runs before the class check, so a
      proven offer for a checkpoint whose speculative write is registered
      settles `already_queued`. If that speculative job then refuses itself
-     (disk room gone, low disk space, an epoch change) or fails, nothing is
-     written for either offer.
+     (no disk room, a file already at its path, low disk space, an epoch
+     change), gives way after its I/O began (limit 10) or fails, no
+     checkpoint is indexed for either offer.
    - **Already durable.** A first-sight offer classed speculative for a
      checkpoint that is already durable on the store is held to the same
      rule. With another write registered it settles
@@ -1311,18 +1443,99 @@ Limits:
    repeat for every checkpoint, exactly as with first sight off.
 9. **Per store, forgotten at restart.** The buckets start full when a store is
    built, so a restart or rebuild grants a fresh headroom. A shorter TTL
-   shrinks H in proportion and a write cap of 0 leaves only the idle-writer
-   and disk conditions. Under any other cap a checkpoint larger than H is
+   shrinks H in proportion and a write cap of 0 leaves only the idle-writer,
+   disk and path conditions. Under any other cap a checkpoint larger than H is
    never admitted as speculative: below a cap of
    `checkpoint size x 86,400 / TTL` (48 times its size at the 30-minute TTL)
    no first-sight write of that size is admitted, and first sight then only
    chooses the provider
    ([rollout runbook](../operations/cache-routing-rollout.md#first-sight-minimum)).
+10. **Disk room is protected while a first-sight write is in flight, not
+    after it commits, and only inside the provider process.**
+    - **Committed files are ordinary entries.** The index does not record the
+      write class. A proven write that arrives later and needs room evicts
+      the least recently used entry whatever its class
+      (`SSDDiskBudget.enforce`), which can be an older proven checkpoint while
+      the newer first-sight file stays. Only proven work already accepted,
+      in any store on the budget, when the first-sight write reaches publish
+      or commit is counted.
+    - **Bounded transient overshoot.** While first-sight writes are being
+      told to stop, the root can be over the disk budget it would have
+      without their bytes by at most the sum of those bytes on disk; against
+      the half-of-free figure read while they are on the volume, that is up
+      to one and a half times their bytes. The bytes are at most one file
+      per loaded complete-checkpoint
+      store, each at most the stage cap of plaintext (1 GiB by default) plus
+      its header, metadata and chunk framing. It lasts until each writer
+      reaches its next chunk or its publish check. The chunk in hand is
+      finished first, which is one segment read of at most 4 MiB, and with
+      strict fsync on the file is synced first; then comes the unlink. None
+      of these has a time bound.
+    - **No refund.** A first-sight write that gives way after its I/O began
+      was charged to the daily write cap, and the charge stays. The charge
+      was admitted under the headroom rule like any other first-sight charge
+      (limit 6); no entry is kept for it.
+    - **What an in-process ledger cannot see.** Another process writing under
+      the same cache root; a temp file whose unlink failed; and a crash
+      leftover, which is counted as unowned from the next whole-root pass
+      until its one-hour temp TTL.
+    - **A budget is a reading, taken before the work that uses it.** A fall
+      in free disk caused by other disk users after a first-sight write's
+      commit check and before the enforcement that follows the commit can
+      still evict an older entry while the new first-sight file stays. That
+      span is the wait for the maintenance lock plus a whole-root pass, which
+      walks the cache tree and reads a header per file: not microseconds, and
+      not measured. The discount of a first-sight write's bytes can also be
+      larger than what the reading held: a write's landed bytes stay in the
+      discount after its file is unlinked, until its reservation is
+      released, and the pass also discounts a write that started after its
+      reading. That limit is too high by half of those bytes, so entries can
+      stay over the budget by that much until the next pass, and nothing is
+      evicted on that account. An `enforce` call whose three readings were
+      each overtaken by a withdrawal evicts nothing in that call.
+    - **Unowned bytes are as fresh as the last whole-root pass** (after a
+      checkpoint write that was indexed or was already durable, after a
+      block-tier job, when a complete-checkpoint store is built, when the
+      60-second task first starts and every 60 seconds after), plus what a deregistering store adds. A pass that walked
+      while bytes changed sides between an index and the unowned figure, or
+      that could not list a directory, may
+      raise the figure and not lower it (it is zero for a
+      root no pass has published yet). The figure errs high after a store
+      registers or a pass is disturbed, which declines a first-sight write
+      that would have fitted. It can also be too low: zero before a root's
+      first pass, without the files that arrived since the last pass, and
+      never counting a block file whose header cannot be read or a file
+      whose attributes cannot be read. A first-sight write admitted against
+      a figure that is too low can be followed by a pass that counts the
+      missing bytes and evicts.
+    - **The half-of-free arithmetic trusts the volume's free figure.** It
+      assumes the figure falls by the bytes written as they are written and
+      rises again when they are removed. That was measured once, on one
+      machine and two volumes, at the first reading after a write and not
+      during one, through a probe that drops cached values before each
+      reading as the provider's reader does not, and not elsewhere
+      ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules),
+      limit 7). Where the figure lags, a first-sight write can be admitted or
+      committed against a budget that is too high, and a later pass can
+      evict.
+
+    `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDSpeculativeDiskAdmissionTests.swift`
+    and
+    `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDDiskBudgetReservationTests.swift`
+    are the tests of the reservation, with block-tier cases in
+    `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`
+    and the basis wiring in
+    `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheFactoryTests.swift`.
+    They run on fixture checkpoints with injected disk budgets; only the
+    factory test resolves a budget from its volume's free bytes. The
+    complete-checkpoint fixture writes still pass the real low-disk stop;
+    the block-tier cases inject no volume probe and skip it.
 
 `activation.first_sight` keeps its meaning, requests asked to keep a prefix.
 `lifecycle.donation_outcomes.write_speculative_limited` counts the speculative
-offers that yielded to pressure, one per offered checkpoint (a donor retains
-at most three, `CBv2CheckpointRetention.maximumRetained`).
+offers that yielded to pressure, before I/O or after it began, one per offered
+checkpoint (a donor retains at most three,
+`CBv2CheckpointRetention.maximumRetained`).
 `write_priority_limited`, `write_rate_limited` and `write_queue_full` are not
 reported for an offer classed speculative, so together they show refused
 writes of the two proven classes. Those include a first-sight request's
@@ -1339,9 +1552,20 @@ charged to the provider's existing daily write budget
 ([SSD write policy](../reference/ssd-kv-cache.md#size-and-eviction-rules)). A
 first-sight write is speculative, so a provider under write-budget, writer or
 disk pressure declines it before spending bytes or budget and reports donation
-outcome `write_speculative_limited`. That outcome counts the three refusals
-without separating them and a refusal costs no bytes or budget, so its growth
-shows first-sight checkpoints going unwritten, not a write-budget problem.
+outcome `write_speculative_limited`. The same outcome is reported for a
+first-sight write that was admitted and then gave way because its disk room
+was needed by a proven write or was gone: that one did I/O and was charged to
+the daily write cap with no refund, and no entry is kept. The outcome
+therefore means "no bytes and no write budget were spent" only for a write
+declined before I/O (write budget below H, another write registered, no free
+disk budget for the complete stored file, or a file already at its path),
+not for one that gave way at a chunk, before publish or at the index step.
+The counter does not separate the causes or the two kinds; the
+provider's process-local stat `speculativeWritesYielded` counts the second
+kind and is not reported to the coordinator. Its growth shows first-sight
+checkpoints going unwritten. It does not show a refused proven write, and it
+shows write-cap spend only for the writes that gave way, which the counter
+alone cannot size.
 Raising the minimum token count lowers the number of first-sight requests; the
 prompts it keeps are longer, and their larger checkpoints need more of H. How
 to read the outcome and change the minimum is in the
@@ -1522,8 +1746,8 @@ back are operator procedures, kept in the runbook
 | Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, a hit below a recorded boundary, TTL, cap eviction | Removal counted under one of the eight `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `MaxStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `cachepolicy.SanitizeStatuses` and `ReconcileStatuses` sanitize optional status (`coordinator/internal/registry/cachepolicy/eligibility.go`); `CacheSnapshotUpdater.Apply` publishes it without weakening routing capability (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | First-content band and whole-Mac service work decide; there is no hard affinity |
-| A new conversation's second request misses | [First sight](#first-sight) is set to `0`, the first prompt was shorter than the configured minimum or had no more than 1,024 tokens, the conversation opened with an already-seen prefix of at least 1,024 tokens (a repeat, routed by the shared opening's key), the provider release does not understand `cache_first_sight_tokens`, the provider refused the write (`write_speculative_limited`, `write_priority_limited`, `write_rate_limited`), or the follow-up ran on another machine because affinity only breaks ties | The second request runs cold, reports the repeat and is written; the third can hit |
-| `donation_outcomes.write_speculative_limited` grows with first sight on | Speculative offers found the store more than H below full, another checkpoint write registered, or no room in the disk budget; the counter does not say which. On a store with a non-zero write cap whose H is smaller than the checkpoint every such offer is refused ([first sight](#first-sight), limit 9) | The provider skips those writes before spending bytes or budget and requests complete normally; a conversation none of whose first-sight checkpoints was written has its second request run cold, as with first sight off. Growth alone shows no write-budget problem and no refused proven write |
+| A new conversation's second request misses | [First sight](#first-sight) is set to `0`, the first prompt was shorter than the configured minimum or had no more than 1,024 tokens, the conversation opened with an already-seen prefix of at least 1,024 tokens (a repeat, routed by the shared opening's key), the provider release does not understand `cache_first_sight_tokens`, the provider refused the write or an admitted first-sight write gave way (`write_speculative_limited`, `write_priority_limited`, `write_rate_limited`), or the follow-up ran on another machine because affinity only breaks ties | The second request runs cold, reports the repeat and is written; the third can hit |
+| `donation_outcomes.write_speculative_limited` grows with first sight on | Speculative offers found the store more than H below full, another checkpoint write registered, no free disk budget for the complete stored file, or a file already at the write's path; or an admitted first-sight write gave way after its I/O began because its disk room was needed by a proven write, including one queued in any store on the budget, or was gone. The counter does not say which. On a store with a non-zero write cap whose H is smaller than the checkpoint every such offer is refused ([first sight](#first-sight), limit 9) | Requests complete normally; a conversation none of whose first-sight checkpoints was kept has its second request run cold, as with first sight off. A write declined before I/O spent no bytes and no write budget. One that gave way was charged to the daily write cap with no refund and left no entry; only the provider's process-local stat `speculativeWritesYielded` counts those ([first sight](#first-sight), limit 10). Growth shows no refused proven write |
 
 Receipt rejection telemetry distinguishes invalid shape, missing/expired attempt,
 request/connection/capability changes, prior rejection fencing, duplicate or stale
@@ -1562,6 +1786,7 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 | Per-tier holders, lifetime and lookup | `coordinator/registry/cache_tiers.go` (`cacheTierBoundaryKey`, `receiptTTL`); `coordinator/registry/cache_routing_hints.go` (`CacheHintQuery.Query`, `MatchBoundaries`, `CacheHintsForMatches`); `coordinator/internal/registry/cachetracker/matching.go` (`Tracker.MatchBoundaries`) |
 | Observed demand | `coordinator/registry/cache_demand.go` (`observeCacheDemand`); `coordinator/internal/registry/cachedemand/tracker.go` (`Tracker.Observe`, `Tracker.Restore`); `coordinator/internal/registry/cachedemand/anchors.go` (`Anchors`, `AffinityRung`); `coordinator/internal/registry/cachehistory/index.go` (`Index`) |
 | First sight | `coordinator/registry/config.go` (`CacheRoutingConfig.FirstSightMinTokens`, `cacheRoutingFirstSightMinTokensFromEnv`, `Check`); `coordinator/registry/cache_routing.go` (`defaultCacheRoutingFirstSightMinTokens`); `coordinator/internal/registry/cachedemand/first_sight.go` (`FirstSight`); `coordinator/internal/registry/cacheplan/demand.go` (`ObserveRouteDemand`); `coordinator/internal/registry/cacheplan/value.go` (`FirstSightTokens`); `coordinator/internal/registry/cacheattempt/owner.go` (`Metadata.FirstSightTokens`, `Snapshot.MetadataMessage`, `Owner.ApplyTo`); `coordinator/protocol/messages.go` (`InferenceRequestMessage.CacheFirstSightTokens`); `coordinator/internal/registry/cacheactivation/gate.go` (`RecordPlanned`) |
+| First-sight write class, write budget and disk room (provider) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift` (`SSDCheckpointDemand.writeClass`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteRateLimiter.swift` (`decision`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` (`SSDDiskBudget.reserveSpeculative`, `registerProven`, `claimBlock`, `dropBlock`, `commitProven`, `mayPublishSpeculative`, `commitSpeculative`, `enforce`, `publishWholeRoot`, `SSDDiskBudgetBasis`, `SSDDiskReservation`, `SSDEvictableStore.queuedWriteBytes`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore+Streaming.swift` (`streamedFileBytes`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift` (`prepareWriteJob`, `performWrite`, `checkSpeculativePublish`, `abandonPublishedFile`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+DemandAdmission.swift` (`hasDiskRoomForSpeculativeWrite`, `diskBudgetBasis`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift` (`queuedWriteBytes`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift` (`maintain`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`maintainWholeRoot`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift` (`consume`); `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStats.swift` (`speculativeWritesYielded`) |
 | Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
 | Receipts, v2 proof acceptance, legacy cache-bust key | `coordinator/registry/cache_receipts.go` (`PrepareCacheAttempt`); `coordinator/registry/cache_receipts_v2.go` (`ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`); `coordinator/registry/cache_quarantine.go` (`CacheQuarantine.Apply`, `CacheQuarantineCommit.Apply`); `coordinator/internal/registry/cachetracker/receipt_lookup.go` (`ApplyLookupV2`), `coordinator/internal/registry/cachetracker/receipt_ready.go` (`ApplyReadyV2`) |
 | Bounded proof fence and plan-scoped invalidation | `coordinator/registry/cache_proof_fence.go` (`capabilityRejected`, `rejectCapability`, `invalidateProviderPlan`); `coordinator/registry/cache_model_changes.go` (`reconcileFences`); `coordinator/internal/registry/cachetracker/proofs.go` (`Proofs`); `coordinator/internal/registry/cachetracker/lifecycle.go` (`InvalidateProviderPlan`) |

@@ -67,7 +67,9 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
                    diskBudgetBytes: @escaping @Sendable () -> Int = { 1 << 30 },
                    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
                    keyFingerprint: String = "fixture-key",
-                   writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) throws -> SSDHybridCheckpointStore {
+                   writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
+                   maintainWholeRoot: @escaping @Sendable () -> Void = {},
+                   diskBudgetBasis: (@Sendable () -> SSDDiskBudgetBasis)? = nil) throws -> SSDHybridCheckpointStore {
         let epochStore: SSDCacheEpochStore? = epoch ? try .init(root: modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: identity.modelAggregateHash,
             promptContractId: identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
@@ -78,7 +80,8 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
             backendLayout: backendLayout,
             root: modelRoot, dedicatedRoot: root, epochStore: epochStore, maxReadBytes: readCap,
             maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, strictFsync: false,
-            nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes, maintainWholeRoot: {}),
+            nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes,
+            maintainWholeRoot: maintainWholeRoot, diskBudgetBasis: diskBudgetBasis),
             kekKey: key, kvBudget: useGlobalBudget ? budget : nil, diskBudget: diskBudget, maxWriteBytesPerDay: maxWriteBytesPerDay, donationRecorder: donationRecorder, writeNowSeconds: writeNowSeconds)
         store.scanOnDisk()
         return store

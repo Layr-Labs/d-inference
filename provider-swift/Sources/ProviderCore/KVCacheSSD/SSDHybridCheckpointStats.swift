@@ -20,6 +20,11 @@ public struct SSDHybridCheckpointStats: Sendable {
     public var filesWritten = 0
     public var bytesWritten = 0
     public var writesDropped = 0
+    /// Speculative writes that gave their disk room back after I/O began:
+    /// revoked for a proven write, or refused at publish or commit because
+    /// the room was gone. Their bytes are not on disk; the write budget
+    /// they were charged is not refunded.
+    public var speculativeWritesYielded = 0
     public var corruptDropped = 0
     /// Successful removals by the active-store disk-budget enforcer.
     /// Whole-root sweep removals are reported separately, process-wide.

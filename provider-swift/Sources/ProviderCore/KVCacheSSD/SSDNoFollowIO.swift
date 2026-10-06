@@ -114,6 +114,7 @@ enum SSDNoFollowIO {
         to url: URL,
         strictFsync: Bool,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
+        beforePublish: ((Int) throws -> Void)? = nil,
         writer: (FileHandle) throws -> Void
     ) throws -> Int {
         let (parentFD, name) = try openVerifiedBlockParentForWrite(of: url)
@@ -157,6 +158,9 @@ enum SSDNoFollowIO {
             }
             let fileBytes = info.st_size > off_t(Int.max) ? Int.max : Int(info.st_size)
             try handle.close()
+            // Last point at which the file is not yet visible under its
+            // final name: a throw unlinks the temp like any write failure.
+            try beforePublish?(max(0, fileBytes))
             let renameResult = tempName.withCString { tempPtr in
                 name.withCString { namePtr in
                     renameat(parentFD, tempPtr, parentFD, namePtr)
@@ -477,6 +481,7 @@ enum SSDNoFollowIO {
         to url: URL,
         strictFsync: Bool,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
+        beforePublish: ((Int) throws -> Void)? = nil,
         writer: (FileHandle) throws -> Void
     ) throws -> Int {
         beforeOperation?(.write)
@@ -494,6 +499,7 @@ enum SSDNoFollowIO {
             try writer(handle)
             if strictFsync { try handle.synchronize() }
             try handle.close()
+            try beforePublish?((try? temp.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
             if FileManager.default.fileExists(atPath: url.path) {
                 _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
             } else {

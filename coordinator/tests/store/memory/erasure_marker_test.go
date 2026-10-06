@@ -97,6 +97,9 @@ func seedMemoryMarkers(t *testing.T, s *memory.MemoryStore, account, marker stri
 	if err := s.CreateUser(&store.User{AccountID: account, PrivyUserID: "did:privy:" + m("privy"), Email: m("email")}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.UpsertSmallModelsInterest(ctx, store.SmallModelsInterest{AccountID: account, MacType: m("hardware"), Chip: m("chip"), RAMGB: 16}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.SetUserStripeAccount(account, "acct_"+m("stripe"), m("status"), m("country"), m("dest"), m("last4"), true); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +129,7 @@ func seedMemoryMarkers(t *testing.T, s *memory.MemoryStore, account, marker stri
 	if _, err := s.StoreLogReport(account, []byte(m("log"))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpsertProviderTrustReuse(ctx, store.ProviderTrustReuse{SEPubKey: seKey, Serial: serial, MDAUDID: m("udid"), TrustLevel: "hardware", HardwareProofVerifiedAt: now}, 0); err != nil {
+	if _, err := s.UpsertProviderTrustReuse(ctx, store.ProviderTrustReuse{SEPubKey: seKey, Serial: serial, MDAUDID: m("udid"), TrustLevel: "hardware", SIPEnabled: true, SecureBootFull: true, HardwareProofVerifiedAt: now}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.UpsertVerificationJob(ctx, store.VerificationJob{SEPubKey: seKey, Serial: serial, UDID: m("udid"), Kind: store.VerificationTaskSecurityInfo, State: store.VerificationStatePending}); err != nil {
@@ -204,6 +207,10 @@ func TestErasureMarkerMemory(t *testing.T) {
 	}
 	if _, err := s.UpsertProviderTrustReuse(context.Background(), store.ProviderTrustReuse{SEPubKey: "se-shared", Serial: keepMarker + "-shared", TrustLevel: "hardware", HardwareProofVerifiedAt: time.Now()}, 0); err != nil {
 		t.Fatal(err)
+	}
+	cohort, err := s.FreezeLegacyMDMCohort(ctx)
+	if err != nil || len(cohort) != 2 {
+		t.Fatalf("marker cohort = %+v, %v; want both accounts", cohort, err)
 	}
 	keepBefore := len(findMemoryMarker(s, keepMarker))
 

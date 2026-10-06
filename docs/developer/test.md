@@ -3371,3 +3371,12 @@ Checkout regression pauses a local fake Stripe server across erasure.
 The marker fixture in `coordinator/tests/store/postgres/erasure_marker_test.go`
 seeds every personal-data rule, including frozen legacy MDM cohort and saved
 hardware interest, and verifies another account's markers survive.
+
+The route batching tracer in
+`coordinator/tests/store/postgres/route_telemetry_batch_test.go` distinguishes
+bulk inserts from the account-erasure lock and ownership lookup. It requires
+one insert, one lock and one lookup per chunk, with at most two transaction
+boundary statements; duplicates still split into ordered chunks. Outcome
+updates retain their single pipelined batch. The memory marker fixture also
+freezes real MDM eligibility and stores hardware-interest markers before
+scrubbing, so every memory-backed personal-data rule has observed coverage.

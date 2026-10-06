@@ -144,12 +144,16 @@ type statementCounter struct {
 	queries      int
 	batches      int
 	batchQueries int
+	routeInserts int
+	erasureLocks int
+	erasureReads int
 }
 
 func (c *statementCounter) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.queries, c.batches, c.batchQueries = 0, 0, 0
+	c.routeInserts, c.erasureLocks, c.erasureReads = 0, 0, 0
 }
 
 func (c *statementCounter) snapshot() (queries, batches, batchQueries int) {
@@ -158,11 +162,31 @@ func (c *statementCounter) snapshot() (queries, batches, batchQueries int) {
 	return c.queries, c.batches, c.batchQueries
 }
 
-func (c *statementCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+func (c *statementCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	c.mu.Lock()
 	c.queries++
+	sql := strings.ToLower(strings.Join(strings.Fields(data.SQL), " "))
+	switch {
+	case strings.HasPrefix(sql, "insert into inference_routes"):
+		c.routeInserts++
+	case strings.Contains(sql, "pg_advisory_xact_lock_shared"):
+		c.erasureLocks++
+	case strings.Contains(sql, "from erasure_requests"):
+		c.erasureReads++
+	}
 	c.mu.Unlock()
 	return ctx
+}
+
+// Each route chunk keeps one bulk INSERT, one privacy fence, and one bounded
+// ownership lookup. BEGIN/COMMIT may add two queries, never work per row.
+func assertRouteInsertChunks(t *testing.T, c *statementCounter, chunks int) {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.routeInserts != chunks || c.erasureLocks != chunks || c.erasureReads != chunks || c.queries > 5*chunks || c.batches != 0 {
+		t.Fatalf("route chunks=%d: inserts=%d privacy locks=%d ownership reads=%d total queries=%d batches=%d; want one insert/lock/read and at most five queries per chunk", chunks, c.routeInserts, c.erasureLocks, c.erasureReads, c.queries, c.batches)
+	}
 }
 
 func (c *statementCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
@@ -206,8 +230,9 @@ func tracedPostgresStore(t *testing.T, counter *statementCounter) *postgresFixtu
 }
 
 // TestPostgresInferenceRouteBatchStatementCount is the measured effect of the
-// batch paths: N single-row writes cost N statements; the same N rows through
-// the batch methods cost ONE multi-row INSERT and ONE pipelined batch.
+// batch paths: N single-row writes each incur an INSERT and privacy fence;
+// the same N rows through the batch methods need one fenced multi-row INSERT
+// and one pipelined outcome batch.
 func TestPostgresInferenceRouteBatchStatementCount(t *testing.T) {
 	counter := &statementCounter{}
 	s := tracedPostgresStore(t, counter)
@@ -220,20 +245,22 @@ func TestPostgresInferenceRouteBatchStatementCount(t *testing.T) {
 		return store.InferenceRouteOutcomeUpdate{RequestID: fmt.Sprintf("%s-%s-%d", prefix, tag, i), Attempt: 1, Outcome: &store.InferenceRouteOutcome{FinalStatus: "success", CompletionTokens: 3, CompletionTokensSet: true}}
 	}
 
-	// Before: one statement per record / per update.
+	// Single writes: one fenced INSERT per record, one statement per outcome.
 	counter.reset()
 	for i := 0; i < n; i++ {
 		if err := s.RecordInferenceRoute(rec("single", i)); err != nil {
 			t.Fatalf("RecordInferenceRoute: %v", err)
 		}
 	}
+	assertRouteInsertChunks(t, counter, n)
+	counter.reset()
 	for i := 0; i < n; i++ {
 		if err := s.UpdateInferenceRouteOutcome(fmt.Sprintf("%s-single-%d", prefix, i), 1, upd("single", i).Outcome); err != nil {
 			t.Fatalf("UpdateInferenceRouteOutcome: %v", err)
 		}
 	}
-	if q, b, _ := counter.snapshot(); q != 2*n || b != 0 {
-		t.Fatalf("single-row path: queries=%d batches=%d, want %d/0", q, b, 2*n)
+	if q, b, _ := counter.snapshot(); q != n || b != 0 {
+		t.Fatalf("single outcome updates: queries=%d batches=%d, want %d/0", q, b, n)
 	}
 
 	// After: one multi-row INSERT for all records, one pipeline for all updates.
@@ -247,9 +274,7 @@ func TestPostgresInferenceRouteBatchStatementCount(t *testing.T) {
 	if err := s.RecordInferenceRoutes(records); err != nil {
 		t.Fatalf("RecordInferenceRoutes: %v", err)
 	}
-	if q, b, _ := counter.snapshot(); q != 1 || b != 0 {
-		t.Fatalf("batch insert: queries=%d batches=%d, want 1/0", q, b)
-	}
+	assertRouteInsertChunks(t, counter, 1)
 	counter.reset()
 	if err := s.UpdateInferenceRouteOutcomes(updates); err != nil {
 		t.Fatalf("UpdateInferenceRouteOutcomes: %v", err)
@@ -291,9 +316,7 @@ func TestPostgresInferenceRouteBatchDuplicateKeysSplit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordInferenceRoutes with duplicates: %v", err)
 	}
-	if q, _, _ := counter.snapshot(); q != 3 {
-		t.Fatalf("three same-key records need three statements, got %d", q)
-	}
+	assertRouteInsertChunks(t, counter, 3)
 	for _, r := range s.InferenceRouteRecordsSince(time.Time{}) {
 		if r.RequestID == id {
 			if r.ProviderID != "p-final" || r.Outcome != "selected" {

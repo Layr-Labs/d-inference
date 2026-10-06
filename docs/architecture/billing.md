@@ -11,7 +11,7 @@ routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
 how-to is [`consumer/billing.md`](../consumer/billing.md).
 
-Qualified App Attest-only providers can receive base rewards through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards). `coordinator/payments/baserewards/machine_candidates.go` unions known-machine uptime, aggregates account-matching organic earnings and rechecks current serving authorization before credit. Historical balances and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
+Base rewards require macOS 27 or later and current qualified App Attest authorization for every provider, old or new, through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards), whether or not the machine also has legacy MDM. `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`) checks this when building candidates and immediately before credit. Grandfathered legacy-MDM-only machines may still serve and earn completed-inference work payments, but cannot receive new base rewards. Expired, revoked or unqualified App Attest authorization cannot use legacy serving eligibility as a reward fallback. Historical balances, finalized base rewards, reserved withdrawals and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
 
 The remaining epoch allocation commits as one transaction in `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`) and `coordinator/store/floor_draw_batch.go` (`FloorDrawBatchStore`). If authorization or canonical identity changes before commit, the pending plan rolls back and the engine reallocates its unspent budget. This includes partial and zero-value waitlisted rows, so a rejected provider cannot permanently reduce another provider's payment. Previously finalized rows remain unchanged.
 
@@ -84,6 +84,18 @@ sequenceDiagram
 | 5. Record usage | `coordinator/api/inference/completion_accounting.go` `completionAccounting` (called from `HandleCompleteAt`) | In-memory `payments.Ledger.RecordUsage` always (bounded recent history, lazily allocated to the [usage history limit](../reference/pricing-model.md#constants)); a persistent `usage` row (`store.RecordUsage`) unless the request was free self-route. Both carry `cached_tokens` so a cache hit's cost can be reconciled against the published rates; a model-token promotion records `0`, because that path bills cached tokens at the input rate. |
 | 6. Pay out | `HandleCompleteAt` | Normally use the collected amount returned by settlement for fee and provider-payout arithmetic. If an unreserved, non-service request not marked free self-route is uncollected, retain the quoted cost and platform-covered payout (`coordinator/api/inference/consumer_settlement.go`, `settleCompletedConsumer`, `platformCovered` / `settledCost`). Uncollected service requests and requests that lose free-self-route eligibility instead have zero cost and payout; no uncollected charge earns a referral reward. `feePercent` is the consumer override, else the global default (invariant 4). `CreditProviderAccount` credits `totalCost − platformFee` to a linked provider account as withdrawable earnings; `Credit("platform", …)` credits the full platform fee. The referral reward is already credited by settlement and reduces neither amount. |
 | 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
+
+### Rejected Stripe withdrawal refunds
+
+`RefundRejectedStripeWithdrawal` in `coordinator/store/postgres/stripe_settlement.go`
+locks the withdrawal and shares the refund advisory lock with
+`CreditWithdrawableOnce`. It sums debit and refund rows for the account and
+`stripe_withdraw:<id>` reference without comparing coordinator and database
+timestamps. The net debit must equal the negative gross withdrawal amount; the net
+refund must be zero or equal that amount. A legacy full refund only repairs the flag;
+otherwise the credit, ledger row and flag commit together. Repeated recovery does
+not pay again. The [storage contract](storage.md#stripe-migration-settlement)
+describes the concurrent account/reference index that bounds this lookup.
 
 ### PostgreSQL debit cancellation
 
@@ -337,7 +349,8 @@ per-epoch base income on top of organic earnings. It is wired in
 `Engine.Run`. Per closed `SettlementPeriod = 5 * time.Minute` epoch
 (`epoch.go`), for each machine that passes every gate in
 `machine_candidates.go` `buildCandidates` — current complete public serving
-authorization through legacy verification or qualified App Attest; online with the
+authorization through qualified App Attest with a macOS 27-or-later OS claim
+bound to that same authorization (legacy verification alone is insufficient); online with the
 model loaded; `MemoryPressure < 0.8` and thermal state not `critical`; a
 provider key; uptime from `provider_sessions` ≥ `MinUptimeFrac` (`0.90`, open
 sessions accrue to `last_seen + defaultGraceSeconds = 90`); hardware model in
@@ -373,9 +386,15 @@ by a per-epoch lock (an advisory lock in PostgreSQL).
 the design record is [`design/base-rewards.md`](../design/base-rewards.md).
 
 The base-reward model memory ceiling lives in `coordinator/hardware/mac_models.go`
-(`ModelMaxMemoryGB`). Moving that static catalog out of MDM does not change any
-cap, eligibility rule, serial/accounting key, or payout. App Attest hardware claims are observational in
-this release; they do not replace the existing reward inputs or eligibility gates.
+(`ModelMaxMemoryGB`). The current App Attest authorization binds the model and
+memory inputs used by `coordinator/registry/provider_snapshot.go`
+(`providerRewardSnapshotLocked`); the static catalog still caps those inputs.
+The reward OS claim also comes from that current authorization, carried in
+`ProviderSnapshot.AppAttestOSVersion`; an unsigned registration or inventory
+version cannot replace it. Missing, malformed or below-27 versions fail the
+reward gate. The App Attest assertion and qualified executable authenticate this
+claim; it is not an independently Apple-certified OS measurement. This
+reward-only gate does not change temporary frozen legacy serving eligibility.
 The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max Mac
 Studio. The M5 Ultra Studio identifier remains excluded because Apple's model
 pages also assign it to the lower-memory M5 Pro mini; see the

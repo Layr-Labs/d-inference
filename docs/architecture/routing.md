@@ -312,6 +312,21 @@ Two request policies relax the gate for the caller's **own** machines only:
 Every other gate — runtime verification, private-text attestation, challenge
 freshness, slot state, memory — still applies to owned machines.
 
+Under the upcoming [frozen legacy MDM policy](security/enrollment.md#frozen-legacy-authorization-cohort),
+noncohort connections set `Provider.RequireAppAttestServingAuthorization` before
+attestation attachment. They require current qualified App Attest authorization
+even for owner `SelfRouteOnly` or `PreferOwner` routing. A relaxed `TrustNone`
+floor cannot substitute for that authorization; shared routing checks and the
+final writer enforce it (`coordinator/registry/provider.go`,
+`coordinator/registry/owner_authorization.go`,
+`coordinator/registry/inference_authorization.go`). Frozen cohort membership
+itself is not a serving grant and does not waive existing legacy evidence gates.
+
+Serving and base-reward eligibility are separate: a grandfathered MDM-only
+machine may serve but cannot qualify for base rewards without current qualified
+App Attest authorization. Inference/work earnings are unchanged and historical
+rewards are not clawed back; [billing](billing.md) owns the economics guards.
+
 ### Challenge freshness
 
 `challengeFreshnessMaxAge = 16 * time.Minute`

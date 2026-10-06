@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — start picker demand ranking
+
+- Rank the `darkbloom start` and `darkbloom switch` picker (interactive and non-TTY) by a live demand signal from the coordinator's `/v1/models/capacity` and `/v1/pricing`: live requests in flight per holding Mac, times output price (`active_requests / max(1, warm_providers + cold_providers) * output_price`), relative to the highest signal among the shown models. Each row gets a `demand: high`, `demand: medium`, `demand: low`, `no traffic right now`, or `demand: unknown` label. Within each section (downloaded, then not downloaded), rows now sort by signal descending, then size descending; a model missing from capacity sorts after every known model in its section. A slow or unreachable coordinator falls back to the size-only order with no labels.
+
 ## Unreleased — coordinator schema migrations
 
 - Apply the coordinator's Postgres schema as numbered goose migrations instead of re-running every DDL statement at each boot. The first boot applies and records the existing schema as version 1; later boots apply only new versions. SQL migration statements stop waiting for a lock after 3 seconds and make up to three attempts, and coordinators that start together take turns on an advisory lock.

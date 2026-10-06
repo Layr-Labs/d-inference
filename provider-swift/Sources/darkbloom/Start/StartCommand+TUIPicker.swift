@@ -110,7 +110,8 @@ extension Start {
                     // A downloaded model that exceeds this box's budget is shown
                     // (it IS on disk) but flagged "won't fit" — never hidden.
                     let warn = canFitIndividually(entry) ? "" : " \u{26A0} won't fit"
-                    output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (~\(formattedGB(entry.sizeGb)) GiB load)\(warn)\(reset)\r\n"
+                    let demandLabel = entry.demandTier.map { " \u{00B7} \(Start.pickerDemandLabel($0))" } ?? ""
+                    output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (~\(formattedGB(entry.sizeGb)) GiB load)\(warn)\(demandLabel)\(reset)\r\n"
                     lines += 1
                     idx += 1
                 }
@@ -142,7 +143,8 @@ extension Start {
                     } else {
                         note = tooLargeForMachine ? " \u{26A0} exceeds RAM" : ""
                     }
-                    output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(formattedGB(entry.catalogModel.sizeGb)) GB download; ~\(formattedGB(entry.sizeGb)) GiB load)\(note)\u{1B}[0m\r\n"
+                    let demandLabel = entry.demandTier.map { " \u{00B7} \(Start.pickerDemandLabel($0))" } ?? ""
+                    output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(formattedGB(entry.catalogModel.sizeGb)) GB download; ~\(formattedGB(entry.sizeGb)) GiB load)\(note)\(demandLabel)\u{1B}[0m\r\n"
                     lines += 1
                     idx += 1
                 }

@@ -1,6 +1,6 @@
 # Candidate 5 HTTP rollout and capabilities: independent review
 
-> Last updated: 2026-09-08 · commit `4ae34f033`
+> Last updated: 2026-09-08
 
 Reviewed all 47 text answers (45 unique texts), both vision answers against the supplied image, and the tool-call stream against its request. Independently reconstructed all 50 SSE responses and checked finish events, usage arithmetic, content/tool chunk counts, monotonic timestamps, first-content TTFT, one terminal DONE, empty reasoning, and absence of raw special-token markers. No stream-integrity discrepancy was found. Compact per-request checks and provenance are in `independent-evidence.json`.
 

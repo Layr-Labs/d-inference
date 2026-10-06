@@ -1,6 +1,6 @@
 # SSD cache heartbeat telemetry validation
 
-> Last updated: 2026-09-05 · commit `ac1dc301c`
+> Last updated: 2026-09-05
 
 This milestone adds typed SSD observations to the live provider heartbeat and
 coordinator metrics path. It does not enable paged attention or change cache

@@ -1,6 +1,6 @@
 # Exact-prefix holder index check
 
-> Last updated: 2026-09-05 · commit `363588e64`
+> Last updated: 2026-09-05
 
 This coordinator change makes the holder limit apply across independent provider
 epochs and removes the fleet-sized capability/hash walk before scheduling.

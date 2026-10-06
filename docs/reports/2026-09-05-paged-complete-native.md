@@ -1,6 +1,6 @@
 # Complete paged checkpoint codec and historical windows
 
-> Last updated: 2026-09-05 · commit `566d5e549`
+> Last updated: 2026-09-05
 
 The native engine can export and restore complete paged checkpoints for Qwen
 recurrent state and exact historical attention windows. Private imported pages,

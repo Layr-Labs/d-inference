@@ -6,7 +6,7 @@ import MLXLMCommon
 
 /// Durable complete checkpoints. Idle state is an opaque index; imported
 /// tensors exist only while a matching request owns a charged stage ticket.
-public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2NativeBlockPrefixCache, @unchecked Sendable {
+public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2NativeBlockPrefixCache, @unchecked Sendable {
     struct Config: Sendable {
         let modelId: String
         let identity: CBv2CompleteCheckpointIdentity
@@ -209,7 +209,7 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
         diskBudget.deregister(self)
     }
 
-    func closeAndWait() async {
+    public func closeAndWait() async {
         close()
         await pipeline.waitUntilDrained()
         await activity.waitUntilDrained()

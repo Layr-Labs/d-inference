@@ -1,6 +1,6 @@
 # Gemma QAT: retained B2/B4 continuation
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 Gemma4 26B QAT passes the four remaining retained concurrency cells: contiguous and paged at B2 and B4, with MTP and SSD disabled. All actual forward-width, production-grant, request completion, tenant isolation, cancellation, accounting and retirement gates pass. This completes the bounded retained width coverage started in the [earlier model matrix](2026-09-06-retained-model-validation.md); it does not establish release-wide acceptance.
 

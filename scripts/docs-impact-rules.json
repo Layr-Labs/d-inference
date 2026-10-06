@@ -13,8 +13,53 @@
       "name": "HTTP and API contracts",
       "source_patterns": [
         "coordinator/api/server.go",
+        "coordinator/api/server_handler.go",
+        "coordinator/api/routes.go",
         "coordinator/api/types/**",
-        "coordinator/api/*handler*.go"
+        "coordinator/api/*handler*.go",
+        "coordinator/api/middleware.go",
+        "coordinator/api/access/**",
+        "coordinator/api/accounts/**",
+        "coordinator/api/billing/**",
+        "coordinator/api/catalog/**",
+        "coordinator/api/httpx/**",
+        "coordinator/api/modelprice/**",
+        "coordinator/api/inference/consumer*.go",
+        "coordinator/api/inference/generic_endpoint*.go",
+        "coordinator/api/inference/inference_admission.go",
+        "coordinator/api/inference/request/**",
+        "coordinator/api/inference/response/**",
+        "coordinator/api/inference/exact_cache_status.go",
+        "coordinator/api/inference/sender_encryption.go",
+        "coordinator/api/inference/model_token_promotions.go",
+        "coordinator/api/observation/admin_telemetry.go",
+        "coordinator/api/observation/profiler_admin.go",
+        "coordinator/api/observation/request_outcome_admin.go",
+        "coordinator/api/operations/**",
+        "coordinator/api/provider/provider.go",
+        "coordinator/api/provider/trust/enroll.go",
+        "coordinator/api/provider/trust/status.go",
+        "coordinator/api/provider/trust/settings.go",
+        "coordinator/api/provider/trust/app_attest_revocation.go",
+        "coordinator/api/releases/download.go",
+        "coordinator/api/releases/app_attest_builds.go",
+        "coordinator/api/releases/artifact_metadata.go",
+        "coordinator/api/reporting/**",
+        "coordinator/internal/api/middleware/**",
+        "coordinator/internal/api/access/**",
+        "coordinator/internal/api/accounts/**",
+        "coordinator/internal/api/catalog/**",
+        "coordinator/internal/api/operations/**",
+        "coordinator/internal/api/releases/**",
+        "coordinator/internal/api/reporting/**",
+        "coordinator/internal/inference/relay/**",
+        "coordinator/internal/inference/sse/**",
+        "coordinator/internal/inference/responsepolicy/**",
+        "coordinator/internal/inference/media/**",
+        "coordinator/internal/inference/rejection/**",
+        "coordinator/internal/inference/promotions/model_token_admission.go",
+        "coordinator/internal/inference/reservations/admission.go",
+        "coordinator/internal/promptcontract/endpoint/**"
       ],
       "docs_any_of": [
         "docs/reference/api-contracts.md"
@@ -27,6 +72,17 @@
         "coordinator/datadog/**",
         "coordinator/api/*telemetry*.go",
         "coordinator/api/*metrics*.go",
+        "coordinator/api/observation/**",
+        "coordinator/api/inference/first_wait_failure.go",
+        "coordinator/internal/observation/**",
+        "coordinator/internal/datadog/**",
+        "coordinator/internal/inference/metrics/**",
+        "coordinator/internal/inference/outcome/**",
+        "coordinator/internal/inference/profile/**",
+        "coordinator/internal/provider/heartbeat/*telemetry*.go",
+        "coordinator/internal/provider/verification/metrics.go",
+        "coordinator/internal/registry/capacityvalue/*telemetry*.go",
+        "coordinator/internal/registry/identitygate/gate_lock.go",
         "provider-swift/Sources/ProviderCore/Telemetry/**",
         "console-ui/src/lib/telemetry*"
       ],
@@ -40,6 +96,13 @@
       "name": "protocol messages",
       "source_patterns": [
         "coordinator/protocol/**",
+        "coordinator/tests/protocol/testdata/**",
+        "coordinator/internal/wire/**",
+        "coordinator/internal/provider/session/provider_drain_ack.go",
+        "coordinator/internal/provider/session/provider_completion_barrier.go",
+        "coordinator/internal/provider/inventory/provider_models_replace.go",
+        "coordinator/internal/provider/heartbeat/**",
+        "coordinator/internal/registry/providerdrain/**",
         "provider-swift/Sources/ProviderCore/Protocol/**"
       ],
       "docs_any_of": [
@@ -53,6 +116,63 @@
         "coordinator/registry/scheduler.go",
         "coordinator/registry/model_loading.go",
         "coordinator/registry/model_commands.go",
+        "coordinator/registry/admission/**",
+        "coordinator/registry/selection/**",
+        "coordinator/internal/registry/residency/**",
+        "coordinator/internal/registry/kvbudget/**",
+        "coordinator/internal/registry/memorypolicy/**",
+        "coordinator/internal/registry/capacityvalue/**",
+        "coordinator/internal/registry/demandwindow/**",
+        "coordinator/internal/registry/deadline/**",
+        "coordinator/internal/registry/forecast/**",
+        "coordinator/internal/registry/ttftforecast/**",
+        "coordinator/internal/registry/ttftcalibration/**",
+        "coordinator/internal/registry/shortlist/**",
+        "coordinator/internal/registry/eviction/**",
+        "coordinator/internal/registry/modelindex/counts.go",
+        "coordinator/internal/registry/connectiontime/**",
+        "coordinator/internal/registry/capacityquote/**",
+        "coordinator/internal/registry/performance/**",
+        "coordinator/internal/registry/warmplan/**",
+        "coordinator/internal/registry/swapplan/**",
+        "coordinator/internal/registry/pendingload/**",
+        "coordinator/internal/registry/reservation/**",
+        "coordinator/internal/registry/serviceretirement/**",
+        "coordinator/internal/registry/queuewait/**",
+        "coordinator/internal/registry/providerwrite/**",
+        "coordinator/internal/registry/writertransport/**",
+        "coordinator/internal/registry/writedeadline/**",
+        "coordinator/internal/registry/queuedrain/**",
+        "coordinator/internal/registry/identitygate/**",
+        "coordinator/internal/registry/providerdrain/**",
+        "coordinator/registry/model_load_preparation.go",
+        "coordinator/registry/model_load_planner.go",
+        "coordinator/registry/model_load_warm.go",
+        "coordinator/registry/connection_lifecycle.go",
+        "coordinator/registry/provider_directory.go",
+        "coordinator/registry/connection_disconnect.go",
+        "coordinator/registry/connection_origin.go",
+        "coordinator/registry/connection_trust.go",
+        "coordinator/registry/provider_lifecycle.go",
+        "coordinator/registry/service_reservations.go",
+        "coordinator/registry/provider_eligibility*.go",
+        "coordinator/registry/routing_eligibility.go",
+        "coordinator/registry/gate_evaluation.go",
+        "coordinator/registry/gate_preparation.go",
+        "coordinator/registry/queue_assignment.go",
+        "coordinator/registry/queue_drain.go",
+        "coordinator/registry/reservation_candidates.go",
+        "coordinator/registry/candidate_*.go",
+        "coordinator/registry/quote_plan*.go",
+        "coordinator/registry/dispatch_plan*.go",
+        "coordinator/registry/capacity_quotes.go",
+        "coordinator/api/inference/first_wait_failure.go",
+        "coordinator/internal/inference/scangate/**",
+        "coordinator/internal/inference/backoff/**",
+        "coordinator/internal/inference/firstcontent/**",
+        "coordinator/internal/inference/hedge/**",
+        "coordinator/internal/inference/routeplan/**",
+        "coordinator/internal/inference/tokenadmission/**",
         "coordinator/api/warm_pool*.go"
       ],
       "docs_any_of": [
@@ -64,9 +184,18 @@
       "name": "configuration",
       "source_patterns": [
         "coordinator/config/**",
+        "coordinator/app/*config*.go",
+        "coordinator/internal/startup/startup_config.go",
+        "coordinator/internal/registry/ttftcalibration/calibrator.go",
+        "coordinator/internal/mediafetch/policy/config.go",
+        "coordinator/app/routing.go",
+        "coordinator/app/runtime_policy.go",
+        "coordinator/app/release_policy.go",
         "coordinator/env/**",
         "coordinator/registry/config.go",
-        "provider-swift/Sources/ProviderCore/Config/**"
+        "coordinator/registry/autopilot_config.go",
+        "provider-swift/Sources/ProviderCore/Config/**",
+        "coordinator/registry/autopilot/config.go"
       ],
       "docs_any_of": [
         "docs/reference/configuration.md"
@@ -75,23 +204,225 @@
     {
       "name": "storage schema",
       "source_patterns": [
+        "coordinator/registry/provider_persistence.go",
+        "coordinator/registry/persistence.go",
         "coordinator/store/postgres.go",
         "coordinator/store/*migration*.go",
-        "coordinator/store/migrations/**"
+        "coordinator/store/migrations/**",
+        "coordinator/store/postgres/migrations.go",
+        "coordinator/store/postgres/migrations/**",
+        "coordinator/store/postgres/schema/**",
+        "coordinator/store/*schema*.go",
+        "coordinator/store/postgres/startup.go",
+        "coordinator/store/postgres/retired_backfills.go",
+        "coordinator/store/postgres/provider_earnings_index.go",
+        "coordinator/store/postgres/earnings_window_index.go"
       ],
       "docs_any_of": [
-        "docs/architecture/storage.md"
+        "docs/architecture/storage.md",
+        "docs/architecture/schema-lifecycle.md"
       ]
     },
     {
       "name": "provider release",
       "source_patterns": [
         ".github/workflows/release-swift.yml",
+        "coordinator/api/releases/**",
+        "coordinator/internal/api/releases/**",
         "scripts/install.sh",
         "provider-swift/Sources/ProviderCore/ProviderCore.swift"
       ],
       "docs_any_of": [
         "docs/operations/provider-release.md"
+      ]
+    },
+    {
+      "name": "model autopilot",
+      "source_patterns": [
+        "coordinator/registry/autopilot/**",
+        "coordinator/registry/autopilot*.go",
+        "coordinator/internal/registry/autopilotstate/**",
+        "coordinator/internal/registry/autopilotcontrol/**",
+        "coordinator/internal/registry/autopilotledger/**",
+        "coordinator/internal/registry/demandwindow/**",
+        "coordinator/api/autopilot*.go",
+        "coordinator/api/autopilot/**",
+        "coordinator/api/inference/autopilot_demand.go",
+        "coordinator/internal/inference/demand/**",
+        "provider-swift/Sources/ProviderCore/Autopilot/**",
+        "provider-swift/Sources/darkbloom/Autopilot/**",
+        "provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift"
+      ],
+      "docs_any_of": [
+        "docs/architecture/model-autopilot.md",
+        "docs/operations/model-autopilot.md"
+      ]
+    },
+    {
+      "name": "coordinator ownership",
+      "source_patterns": [
+        "coordinator/api/*/owner.go",
+        "coordinator/api/*/*/owner.go",
+        "coordinator/app/app.go",
+        "coordinator/app/lifecycle.go",
+        "coordinator/app/services.go",
+        "coordinator/api/server.go",
+        "coordinator/internal/**",
+        "coordinator/registry/dependencies.go",
+        "coordinator/registry/provider_directory.go",
+        "coordinator/registry/model_load_preparation.go",
+        "coordinator/registry/model_load_planner.go",
+        "coordinator/registry/connection_lifecycle.go",
+        "coordinator/registry/connection_disconnect.go",
+        "coordinator/registry/connection_origin.go",
+        "coordinator/registry/connection_trust.go",
+        "coordinator/registry/provider_lifecycle.go",
+        "coordinator/registry/provider_persistence.go",
+        "coordinator/registry/persistence.go",
+        "coordinator/registry/service_reservations.go",
+        "coordinator/registry/cache_restoration.go",
+        "coordinator/registry/cache_maintenance.go",
+        "coordinator/registry/cache_snapshot_result.go",
+        "coordinator/registry/cache_snapshot.go",
+        "coordinator/api/inference/first_wait_failure.go",
+        "coordinator/store/memory/memory.go",
+        "coordinator/store/postgres/postgres.go"
+      ],
+      "docs_any_of": [
+        "docs/developer/navigation.md",
+        "docs/architecture/components/coordinator.md"
+      ]
+    },
+    {
+      "name": "trust and attestation",
+      "source_patterns": [
+        "coordinator/registry/connection_lifecycle.go",
+        "coordinator/registry/connection_trust.go",
+        "coordinator/registry/persistence.go",
+        "coordinator/api/provider/trust/**",
+        "coordinator/internal/provider/challenge/**",
+        "coordinator/internal/provider/identity/**",
+        "coordinator/internal/provider/codeidentity/**",
+        "coordinator/internal/provider/authority/**",
+        "coordinator/internal/provider/reuse/**",
+        "coordinator/internal/provider/journal/**",
+        "coordinator/internal/provider/trustguard/**",
+        "coordinator/internal/provider/coverage/**",
+        "coordinator/internal/provider/verification/**",
+        "coordinator/internal/provider/deviceverification/**",
+        "coordinator/internal/provider/enrollment/**",
+        "coordinator/internal/provider/application/**",
+        "coordinator/attestation/**",
+        "coordinator/internal/attestation/**",
+        "coordinator/appattest/**",
+        "coordinator/internal/appattest/**",
+        "coordinator/mdm/**",
+        "coordinator/internal/mdm/**",
+        "coordinator/apns/**"
+      ],
+      "docs_any_of": [
+        "docs/architecture/security/attestation.md",
+        "docs/architecture/security/enrollment.md",
+        "docs/architecture/security/identity-binding.md",
+        "docs/architecture/security/provider-trust.md"
+      ]
+    },
+    {
+      "name": "request privacy",
+      "source_patterns": [
+        "coordinator/api/inference/sender_encryption.go",
+        "coordinator/api/inference/media_bridge.go",
+        "coordinator/internal/inference/chunkkeys/**",
+        "coordinator/internal/inference/failure/**",
+        "coordinator/internal/inference/media/**",
+        "coordinator/internal/e2e/**",
+        "coordinator/mediafetch/**",
+        "coordinator/internal/mediafetch/**"
+      ],
+      "docs_any_of": [
+        "docs/architecture/security/encryption.md"
+      ]
+    },
+    {
+      "name": "billing and accounting",
+      "source_patterns": [
+        "coordinator/api/billing/**",
+        "coordinator/api/inference/provider_inference.go",
+        "coordinator/api/inference/completion_accounting.go",
+        "coordinator/api/inference/consumer.go",
+        "coordinator/api/inference/dispatch.go",
+        "coordinator/api/inference/reservations.go",
+        "coordinator/api/inference/settlement.go",
+        "coordinator/api/inference/inference_balance.go",
+        "coordinator/api/inference/first_wait_failure.go",
+        "coordinator/payments/**",
+        "coordinator/billing/**",
+        "coordinator/internal/payments/**",
+        "coordinator/internal/billing/**",
+        "coordinator/internal/inference/cacheusage/**",
+        "coordinator/internal/inference/promotions/**",
+        "coordinator/internal/inference/reservations/**",
+        "coordinator/internal/inference/settlement/**"
+      ],
+      "docs_any_of": [
+        "docs/architecture/billing.md",
+        "docs/reference/pricing-model.md",
+        "docs/consumer/billing.md"
+      ]
+    },
+    {
+      "name": "cache routing",
+      "source_patterns": [
+        "coordinator/registry/cachepersist/**",
+        "coordinator/internal/registry/cachepersist/**",
+        "coordinator/internal/registry/cachequeue/**",
+        "coordinator/internal/registry/cacheactivation/**",
+        "coordinator/internal/registry/cachetracker/**",
+        "coordinator/internal/registry/cacheindex/**",
+        "coordinator/internal/registry/cacheplan/**",
+        "coordinator/internal/registry/cachepeer/**",
+        "coordinator/internal/registry/cachehistory/**",
+        "coordinator/internal/registry/cachedemand/**",
+        "coordinator/internal/registry/cacheattempt/**",
+        "coordinator/internal/registry/cachepolicy/**",
+        "coordinator/registry/cache_restoration.go",
+        "coordinator/registry/cache_maintenance.go",
+        "coordinator/registry/cache_snapshot_result.go",
+        "coordinator/registry/cache_snapshot.go",
+        "coordinator/internal/inference/providerwire/**"
+      ],
+      "docs_any_of": [
+        "docs/architecture/cache-aware-routing.md"
+      ]
+    },
+    {
+      "name": "component CI routing",
+      "source_patterns": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/component-changes.yml",
+        ".github/workflows/integration.yml",
+        ".github/workflows/benchmarks.yml",
+        "scripts/ci-component-paths.py",
+        "scripts/test-ci-component-paths.py"
+      ],
+      "docs_any_of": [
+        "docs/developer/build.md",
+        "docs/developer/test.md"
+      ]
+    },
+    {
+      "name": "coordinator test tooling",
+      "source_patterns": [
+        "scripts/coordinator-tests.sh",
+        "scripts/coordinator_tests/**",
+        "scripts/verify-prompt-parity.sh",
+        "scripts/docs-impact-rules.json",
+        "scripts/docs-impact-check.py",
+        "coordinator/tests/internal/**"
+      ],
+      "docs_any_of": [
+        "docs/developer/build.md",
+        "docs/developer/test.md"
       ]
     },
     {

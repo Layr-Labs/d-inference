@@ -18,23 +18,65 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/autopilotcontrol"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/autopilotledger"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/autopilotstate"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityquote"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/connectiontime"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/deadline"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/eviction"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/identitygate"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/kvbackend"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/measurements"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/modelindex"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/pendingload"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/providerdrain"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/providerwrite"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/quality"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/queuedrain"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/serviceretirement"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/shortlist"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/transport"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/versionmemo"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/warmplan"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
+
+	cacheactivation "github.com/eigeninference/d-inference/coordinator/internal/registry/cacheactivation"
+	"github.com/eigeninference/d-inference/coordinator/registry/cachepersist"
+
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Registry holds all connected providers and provides routing.
 type Registry struct {
-	mu        sync.RWMutex
-	providers map[string]*Provider
+	autopilotEvents         *autopilotledger.Events
+	mu                      sync.RWMutex
+	providers               map[string]*Provider
+	providerDirectory       *ProviderDirectory
+	heartbeatNow            func() time.Time
+	connectionOriginFactory func(string, time.Time) *connectiontime.Origin
 
-	queue *RequestQueue
+	queue                      *RequestQueue
+	queueClaims                QueueClaims
+	queueClaimsFactory         func(*RequestQueue) QueueClaims
+	connections                providerwrite.Factory
+	providerDrainFactory       func(string) *providerdrain.Authority
+	serviceRetirementFactory   func(string) *serviceretirement.Ledger
+	serviceReservationsFactory func(string) *ServiceReservations
+	reservations               ReservationPreparation
+	reservationPlanner         *ReservationPlanner
+	reservationStorage         sync.Pool
+	planOrderFactory           func() *shortlist.Order
 	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
 	// after a saturated pass (queue_drain_suppress.go). Zero value ready.
-	drainSuppress queueDrainSuppressor
+	drainSuppress *queuedrain.Suppressor
 	// drainPasses runs one queue-drain pass per model at a time and reruns it
 	// for triggers that landed mid-pass (queue_drain_coalesce.go). Zero value
 	// ready.
-	drainPasses queueDrainCoalescer
+	drainPasses queuedrain.Coalescer
 
 	MinTrustLevel TrustLevel
 
@@ -87,6 +129,7 @@ type Registry struct {
 	// the API also consults the durable revocation store before each grant.
 	appAttestServingEnabled          bool
 	appAttestQualificationGeneration uint64
+	appAttestClock                   func() time.Time
 
 	appAttestPolicyGeneration   uint64
 	appAttestRevokedCredentials map[string]struct{}
@@ -122,41 +165,43 @@ type Registry struct {
 
 	store store.Store
 
-	tpsRegistry *TPSRegistry
+	tpsRegistry            *TPSRegistry
+	performanceProfiles    *performance.Catalog
+	deadlineProfiles       *deadline.Catalog
+	deadlinePostureFactory func(string, *deadline.Posture) deadline.PosturePolicy
+	measurementsFactory    func(string) *measurements.History
+	kvBackendsFactory      func(string) *kvbackend.History
+	transportFactory       func(string) *transport.History
+	qualityPolicy          *quality.Policy
+	versionMemo            *versionmemo.Memo[[]int]
 
 	logger *slog.Logger
-	// reservationAfterScan is a test-only barrier invoked with r.mu held for
-	// shared reading after winner selection and before the serialized commit.
-	// Production leaves it nil; tests set it before starting concurrent scans.
-	reservationAfterScan func(model string)
-	// drainBeforePop is a test-only barrier invoked with no locks held before
-	// every pop of a queue-drain pass, so a test can interleave a trigger at a
-	// chosen point of the pass. Production leaves it nil.
-	drainBeforePop func(model string)
 
 	// modelIndex maps advertised model id → providers advertising it, so the
 	// per-request fleet walks visit only providers that can pass the first
 	// gate (model_index.go). Leaf lock — see that file for the contract.
-	modelIndex providerModelIndex
+	modelIndex             providerModelIndex
+	modelCandidates        ModelCandidates
+	modelCommandFactory    func(string, ModelCommandTransport) ModelCommandTransport
+	modelMembershipFactory func(string) *modelindex.Membership
 	// modelIndexDisabled (tests only) makes providersForModelLocked return the
 	// whole fleet so a walk can be proven identical with and without the index.
 	modelIndexDisabled bool
 
 	// swapPlanGate coalesces heartbeat-triggered model-swap planning to at
-	// most one plan per modelSwapPlanInterval fleet-wide (model_swap_coalesce.go).
-	swapPlanGate modelSwapPlanGate
+	// most one plan per swapplan.Interval fleet-wide (model_swap_coalesce.go).
+	swapPlanGate *modelSwapPlanGate
 
-	onlineCount      atomic.Int64
-	modelProviders   map[string]*atomic.Int64
-	modelProvidersMu sync.Mutex
+	onlineCount atomic.Int64
+	modelCounts *modelindex.Counts
 
-	// pendingModelLoads tracks provider-model pairs that have been sent a
+	// pendingLoads tracks provider-model pairs that have been sent a
 	// load_model command and are awaiting completion, or are cooling down
-	// after a failed one. The value is the entry's expiry time. While an
+	// after a failed one. Each reservation retains expiry and start times. While an
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
 	//
-	// SCOPE: this map is consulted ONLY by warm-pool / model-swap PLANNING. It
+	// SCOPE: this ledger is consulted ONLY by warm-pool / model-swap PLANNING. It
 	// does NOT participate in request routing or admission — the dispatch hot
 	// path (snapshotProviderLockedEx, buildCandidateWithReason) and the capacity
 	// preflight (QuickCapacityCheck) never read it. A pending load neither makes
@@ -164,8 +209,7 @@ type Registry struct {
 	// is derived entirely from BackendCapacity.Slots (with WarmModels as the
 	// legacy fallback). Do not add routing reads of this field — see the
 	// "Coordinator State Model" section in AGENTS.md.
-	pendingModelLoads       map[modelLoadKey]time.Time // value: expiry (see pair_keys.go)
-	pendingModelLoadStarted map[modelLoadKey]time.Time
+	pendingLoads *pendingload.Ledger
 
 	// Per-identity routing-gate state (gate_state.go). Every fault tracker —
 	// the dispatch-load cooldown, the shape-keyed inference-error breaker
@@ -188,46 +232,54 @@ type Registry struct {
 	// identity and NOT cleared on Disconnect — it re-attaches on reconnect
 	// (the prod zombie exploit: median 18 sessions/machine/week reset every
 	// session-keyed breaker before it could trip).
-	gatesMu               sync.RWMutex
-	gates                 map[string]*gateState
-	sessions              map[string]*Provider
-	disconnectedStableIDs map[string]disconnectedStableID
-	gateSweepAt           time.Time
-	// gateWaitObserver, when set, is told about gate.mu acquisition waits above
-	// gateWaitReportThreshold, tagged by recorder site (SetGateWaitObserver).
-	gateWaitObserver atomic.Pointer[func(site string, wait time.Duration)]
+	gates *identitygate.Directory
+	// Provider projections are published and removed with their directory binding.
+	// Recorders release this lock before taking a provider or identity lock.
+	sessionsMu sync.RWMutex
+	sessions   map[string]*Provider
 
 	// reserveCommitMode selects whether the reservation commit holds r.mu for
 	// reading (shared, default) or writing (global — the kill switch). Read
 	// once from EIGENINFERENCE_RESERVE_COMMIT_MODE at construction.
 	reserveCommitMode reserveCommitMode
 
-	// Env-tunable tracker configs, read once at construction.
-	capacityCooldownCfg capacityCooldownConfig
-	budgetClampCfg      budgetClampConfig
-	capacityRateCfg     capacityRateConfig
-
-	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
+	// evictionGrace counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
 	// transient coordinator stall (which ages many LastHeartbeat values at once)
 	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
 	// rebuilt each sweep so disconnected providers drop out automatically.
-	evictStrikes map[string]int
+	evictionGrace              *eviction.Grace
+	connectionLifecycle        ConnectionMaintenance
+	providerPersistenceFactory func(string, *ProviderPersistence) ProviderPersistenceOperations
 
 	// capacityQuotes correlates outstanding capacity probes with their quotes
-	// by quote_id (routing v2 W2). Value field with an internal LEAF mutex and
-	// a lazily-created map, so bare &Registry{} test constructions work
-	// without New(). See capacity_quotes.go.
-	capacityQuotes quoteTracker
+	// by quote_id (routing v2 W2), independently of registry/provider locks.
+	// Initialized by newRegistry or replaced through Dependencies.
+	capacityQuotes *capacityquote.Tracker
 
-	cacheRouting                 *cacheRoutingTracker
-	cacheActivation              *cacheActivationGate
-	cacheRoutingMode             string
+	cacheRouting      *cacheRoutingTracker
+	cacheDependencies CacheDependencies
+	cacheActivation   *cacheactivation.Gate
+	cacheRoutingMode  string
+	cachePersister    *cachepersist.Persister
+	// cachePersistDone closes when the persistence loop has exited, so
+	// shutdown can join it before the final flush decides on readiness.
+	cachePersistDone             chan struct{}
 	cacheRoutingAllowedArtifacts cacheArtifactAllowlist
 	cacheRouteKeys               cacheRouteKeys
 	cacheRoutingMaxDiscountMs    *float64
 	cacheRoutingMaxCostFraction  *float64
 	warmPool                     *warmPoolController
+	warmPlanningFactory          WarmPlanningFactory
+	warmHistoryFactory           func(string) *warmplan.WorkHistory
+	warmLifecycleFactory         func(string) warmplan.LoadLifecycle
+	modelLoadPlanner             ModelLoadPlanning
+	autopilot                    *modelAutopilotController
+	autopilotControlFactory      autopilotcontrol.Factory[*Provider]
+	autopilotDemand              *autopilot.DemandTracker
+	capacitySamplesFactory       func(string) *capacityvalue.SampleHistory
+	autopilotSender              func(providerID string, command protocol.ModelAutopilotMessage) error
+	autopilotStateFactory        func(string) *autopilotstate.State
 	// Provider-control sender seams let focused tests prove eligibility failures
 	// stop before any command invocation. Nil uses the provider WebSocket.
 	loadModelSender               func(providerID, modelID string) error
@@ -249,26 +301,34 @@ type Registry struct {
 
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
+	return NewWithDependencies(logger, Dependencies{})
+}
+
+func newRegistry(logger *slog.Logger) *Registry {
+	gateOptions := identitygate.DefaultOptions()
+	gateOptions.HealthEjectionEnabled = healthEjectionEnabled
 	return &Registry{
-		providers:               make(map[string]*Provider),
-		queue:                   NewRequestQueueFromEnv(),
-		MinTrustLevel:           TrustHardware,
-		tpsRegistry:             NewTPSRegistry(),
-		modelProviders:          make(map[string]*atomic.Int64),
-		pendingModelLoads:       make(map[modelLoadKey]time.Time),
-		pendingModelLoadStarted: make(map[modelLoadKey]time.Time),
-		gates:                   make(map[string]*gateState),
-		sessions:                make(map[string]*Provider),
-		disconnectedStableIDs:   make(map[string]disconnectedStableID),
-		reserveCommitMode:       loadReserveCommitMode(logger),
-		capacityCooldownCfg:     loadCapacityCooldownConfig(),
-		budgetClampCfg:          loadBudgetClampConfig(),
-		capacityRateCfg:         loadCapacityRateConfig(),
-		evictStrikes:            make(map[string]int),
-		cacheRouting:            newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
-		cacheActivation:         newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
-		cacheRoutingMode:        CacheRoutingOff,
-		logger:                  logger,
+		autopilotEvents:     &autopilotledger.Events{},
+		heartbeatNow:        time.Now,
+		capacityQuotes:      capacityquote.New(nil, nil),
+		queue:               NewRequestQueueFromEnv(),
+		drainSuppress:       queuedrain.NewSuppressor(nil, nil),
+		MinTrustLevel:       TrustHardware,
+		tpsRegistry:         NewTPSRegistry(),
+		performanceProfiles: performance.NewCatalog(),
+		deadlineProfiles:    deadline.NewCatalog(deadline.DecodeProfiles(deadline.CompiledProfilesJSON)...),
+		qualityPolicy:       &quality.Policy{},
+		versionMemo:         &versionmemo.Memo[[]int]{},
+		modelCounts:         &modelindex.Counts{},
+		pendingLoads:        &pendingload.Ledger{},
+		gates:               identitygate.New(logger, &gateOptions),
+		sessions:            make(map[string]*Provider),
+		reserveCommitMode:   loadReserveCommitMode(logger),
+		evictionGrace:       &eviction.Grace{},
+		cacheRouting:        newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
+		cacheActivation:     cacheactivation.New(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
+		cacheRoutingMode:    CacheRoutingOff,
+		logger:              logger,
 	}
 }
 
@@ -285,26 +345,16 @@ func (r *Registry) Queue() *RequestQueue {
 // SetQueue replaces the registry's request queue. This is useful for tests
 // that need a larger queue capacity than the default.
 func (r *Registry) SetQueue(q *RequestQueue) {
+	claims := r.claimsForQueue(q)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.queue = q
+	r.queueClaims = claims
 }
 
 // GetProvider returns a provider by ID, or nil if not found.
 func (r *Registry) GetProvider(id string) *Provider {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.providers[id]
-}
-
-// HoldWriteLockForTest acquires the registry write lock and returns the
-// function that releases it. Test-only, in the spirit of reservationAfterScan:
-// it lets api-package tests prove that a request-path step no longer waits on
-// r.mu (for example that the first client byte is written while a writer holds
-// the lock). Production code never calls it.
-func (r *Registry) HoldWriteLockForTest() (release func()) {
-	r.mu.Lock()
-	return r.mu.Unlock
+	return r.providerDirectory.Load(id)
 }
 
 // ForEachProvider iterates over all registered providers (read lock held).

@@ -93,7 +93,10 @@ extension ProviderLoop {
                 // longer-than-default timeout keeps evidence just as long.
                 failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
                     idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins)),
-            appAttest: appAttestLocalStatus
+            appAttest: appAttestLocalStatus,
+            autopilot: state.modelAutopilot,
+            autopilotPhase: autopilotPhase,
+            autopilotOperation: autopilotOperationView
         )
     }
 

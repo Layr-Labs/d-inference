@@ -20,6 +20,10 @@
 //   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
 //                       automatic paging/cache policy is separately scoped
 //
+//   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
+//                       artifact/sidecar validity and per-request bounds remain
+//                       mandatory; this does not activate automatic MTP.
+//
 // Everything else (gemma3, dense/other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
 // (WARN log), so the coordinator never routes to it. A load request for an
@@ -43,11 +47,18 @@ public enum EngineV2SupportedModels {
     public static let nemotron35LightningMTPModelID =
         "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
     public static let nemotron35LightningRegistryModelID = "nvidia-nemotron-3.5-lightning"
+    /// Concrete build ids behind the public `nvidia-nemotron-3.5-lightning`
+    /// name during the mixed-precision rollout (takeover alias): the
+    /// Mamba/attention-Q8 build and the pre-positioned rollback copy of the
+    /// 4-bit build. Both carry the same checkpoint contract as the listing.
+    public static let nemotron35LightningHybrid8BuildID = "nvidia-nemotron-3.5-lightning-hybrid8"
+    public static let nemotron35LightningRollback4bitBuildID = "nvidia-nemotron-3.5-lightning-4bit-r1"
 
     public static func isNemotron35ListingModelID(_ modelID: String?) -> Bool {
         switch modelID {
         case nemotron35LightningModelID, nemotron35LightningMTPModelID,
-            nemotron35LightningRegistryModelID:
+            nemotron35LightningRegistryModelID,
+            nemotron35LightningHybrid8BuildID, nemotron35LightningRollback4bitBuildID:
             return true
         default:
             return false
@@ -82,6 +93,9 @@ public enum EngineV2SupportedModels {
     /// nil/unknown types are unsupported — fail closed.
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType) else { return false }
+        // MiMo has an explicit strict native loader, not generic registry
+        // fallback. Its dispatch requires the exact canonical declaration.
+        if raw == "mimo_v2" { return modelType == "mimo_v2" }
         if raw == "gpt_oss" { return true }
         if raw == "diffusion_gemma" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }

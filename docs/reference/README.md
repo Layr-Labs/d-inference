@@ -1,6 +1,6 @@
 # Reference — exact shapes and values
 
-> Last updated: 2026-09-27 · commit `c2fa18e02`
+> Last updated: 2026-09-27
 
 Tables and schemas for Darkbloom's public interfaces, wire protocol,
 configuration, and formats. Consult these; do not read them front to back.

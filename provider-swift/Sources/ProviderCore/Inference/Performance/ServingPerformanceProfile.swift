@@ -34,6 +34,7 @@ public struct ServingPerformanceProfile: Codable, Sendable, Equatable {
     public var mixedPrefillTokenCap: Int?
     public var qualificationReportSha256: String
     public var batchCurve: [BatchPoint]
+    public var mtp: ServingMTPConfiguration? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -51,6 +52,7 @@ public struct ServingPerformanceProfile: Codable, Sendable, Equatable {
         case mixedPrefillTokenCap = "mixed_prefill_token_cap"
         case qualificationReportSha256 = "qualification_report_sha256"
         case batchCurve = "batch_curve"
+        case mtp
     }
 
     /// Qualification cells remain in the content-addressed report, rather than
@@ -71,6 +73,7 @@ public struct ServingPerformanceProfile: Codable, Sendable, Equatable {
             batchCurve.first?.width == 1,
             batchCurve.last?.width == maxConcurrency
         else { return false }
+        guard mtp?.isValid ?? true else { return false }
         var previousWidth = 0
         var previousThroughput = 0.0
         for point in batchCurve {
@@ -91,7 +94,7 @@ public struct ServingPerformanceProfile: Codable, Sendable, Equatable {
 
 public enum ServingPerformanceProfiles {
     /// Changes whenever scheduler/backend semantics affecting qualification do.
-    public static let runtimeRevision = "cbv2-first-content-v1"
+    public static let runtimeRevision = "cbv2-first-content-v2"
     public static let legacyMaximumConcurrency = 8
     public static let maximumQualifiedConcurrency = 16
     public static let legacyWholeMacConcurrency = 24
@@ -112,6 +115,7 @@ public enum ServingPerformanceProfiles {
         modelID: String, artifactSHA256: String?, kvBackend: String,
         contextTokens: Int?, hardware: HardwareInfo?,
         environment: [String: String] = [:],
+        mtp: ServingMTPConfiguration? = nil,
         providerVersion: String = ProviderCore.version,
         profiles: [ServingPerformanceProfile] = reviewed
     ) -> ServingPerformanceProfile? {
@@ -127,6 +131,7 @@ public enum ServingPerformanceProfiles {
                 && profile.chipName == hardware.chipName
                 && profile.gpuCores == hardware.gpuCores
                 && profile.memoryGb == hardware.memoryGb
+                && profile.mtp == mtp
                 && contextTokens <= profile.contextTokensMax
         }
     }
@@ -138,13 +143,17 @@ public enum ServingPerformanceProfiles {
         Int(min(max(1, configured), UInt64(maximumQualifiedConcurrency)))
     }
 
-    /// This initial revision qualifies the plain target. Tuning an engine knob
-    /// or enabling an assistant changes the measured runtime; do not borrow its
-    /// default curve. A future revision can name and qualify those variants.
+    /// Engine overrides change the measured runtime. MTP is matched separately
+    /// against its exact verified assistant/configuration; arbitrary process
+    /// tuning still cannot borrow a reviewed default curve.
     static func runtimeOverridesAreAbsent(_ environment: [String: String]) -> Bool {
         !environment.keys.contains {
             $0.hasPrefix("DARKBLOOM_CBV2_") || $0.hasPrefix("DARKBLOOM_QWEN4_")
         }
+    }
+
+    static func validDigest(_ value: String) -> Bool {
+        value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     static var postureAllowsExpansion: Bool {

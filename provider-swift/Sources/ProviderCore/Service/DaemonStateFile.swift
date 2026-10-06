@@ -85,6 +85,19 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// The daemon's last local App Attest observation (launch session, boot
     /// time, key state, stalled Apple call). Diagnostic only; optional so
     /// older daemons' files keep decoding.
+    public var autopilot: ModelAutopilotSnapshot?
+    public var autopilotPhase: String?
+    public var autopilotOperation: AutopilotOperation?
+
+    public struct AutopilotOperation: Codable, Sendable, Equatable {
+        public var reason: String
+        public var target: String?
+        public var releasing: [String]
+        public var elapsedMs: Int64?
+        public init(reason: String, target: String?, releasing: [String], elapsedMs: Int64?) {
+            self.reason=reason; self.target=target; self.releasing=releasing; self.elapsedMs=elapsedMs
+        }
+    }
     public var appAttest: AppAttestLocalStatus?
 
     public struct Trust: Codable, Sendable, Equatable {
@@ -285,7 +298,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
         connectivity: Connectivity? = nil,
-        appAttest: AppAttestLocalStatus? = nil
+        appAttest: AppAttestLocalStatus? = nil,
+        autopilot: ModelAutopilotSnapshot? = nil,
+        autopilotPhase: String? = nil,
+        autopilotOperation: AutopilotOperation? = nil
     ) {
         self.schema = schema
         self.pid = pid
@@ -314,6 +330,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.autopilot = autopilot
+        self.autopilotPhase = autopilotPhase
+        self.autopilotOperation = autopilotOperation
         self.appAttest = appAttest
     }
 

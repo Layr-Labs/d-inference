@@ -1,6 +1,6 @@
 # W5 — Code-attestation churn: root cause & fix plan
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-03
 
 Status: **Implemented (PR #383)** — 2026-06-16 — Fix 4 landed as `challengeFreshnessMaxAge` (`coordinator/registry/scheduler.go`), Fix 1/5 as `CodeAttestResponseTimeout` (`coordinator/api/provider.go`) and `challengeExpirySeconds` (`coordinator/apns/attestor.go`), and Fix 0's `APNS_MODE=alert` remains an operator choice; the figures below are historical — current values in [`../architecture/routing.md`](../architecture/routing.md#challenge-freshness) and [`../architecture/security/attestation.md`](../architecture/security/attestation.md#flag--apns-code-identity).
 

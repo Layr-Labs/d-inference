@@ -1,221 +1,51 @@
 package registry
 
 import (
-	"container/list"
-	"slices"
-	"sync"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/promptcontract"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachedemand"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachehistory"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
-// Demand is advisory, never cache evidence. Only keyed, tenant/build-scoped
-// boundary digests live here, for at most the routing TTL and a fixed entry cap.
-// It carries no prompt payload, token IDs, provider claims or durable state.
+// Demand is advisory, never cache evidence. The retained component owns bounded
+// keyed arrival history; this adapter binds it to authenticated routing plans.
 type cacheDemandTracker struct {
-	mu      sync.Mutex
+	index   *cachehistory.Index
+	history *cachedemand.Tracker
 	limit   int
 	ttl     time.Duration
-	order   list.List
-	entries map[string]*list.Element
-	// capEvictions counts entries the cap removed while they were still
-	// inside the TTL. Each one is a repeat that may now read as novel.
-	capEvictions uint64
 }
 
-type cacheDemandEntry struct {
-	key  string
-	seen time.Time
-}
-
-type cacheDemandBoundary struct {
-	key    string
-	tokens int
-}
-
-// cacheDemandMaxExpiryPerObserve bounds the synchronous TTL sweep that runs
-// under d.mu on the plan path. After a lull longer than the TTL the whole index
-// (up to cacheDemandMaxEntries) is stale; draining it in one locked pass would
-// stall planning, so each observe expires at most this many head entries and
-// later calls finish the job. Correctness never depends on the sweep: every
-// match is validated against its own timestamp, so a stale entry that is still
-// present cannot match, and the entry cap still evicts from the same head.
-const cacheDemandMaxExpiryPerObserve = 1_024
-
-func newCacheDemandTracker(limit int, ttl time.Duration) *cacheDemandTracker {
-	return &cacheDemandTracker{limit: max(1, limit), ttl: ttl, entries: make(map[string]*list.Element)}
-}
-
-func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.Time) (int, string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for expired := 0; expired < cacheDemandMaxExpiryPerObserve; expired++ {
-		first := d.order.Front()
-		if first == nil || now.Sub(first.Value.(cacheDemandEntry).seen) < d.ttl {
-			break
-		}
-		delete(d.entries, first.Value.(cacheDemandEntry).key)
-		d.order.Remove(first)
+func newCacheDemandTrackerWithDependencies(limit int, ttl time.Duration, deps CacheDependencies) *cacheDemandTracker {
+	if deps.DemandLimit > 0 {
+		limit = deps.DemandLimit
 	}
-	// The repeat is the deepest boundary that matched. Affinity is keyed by
-	// the deepest matched rung instead (cacheDemandAffinityRung), so a growing
-	// conversation keeps one key until it doubles, and falls back to the
-	// deepest match when no rung matched, which is how a prompt under 1,024
-	// tokens matches on its final boundary.
-	longest, deepest, rung, affinity := 0, "", 0, ""
-	// Read the old set before inserting: a request cannot match itself.
-	for _, boundary := range boundaries {
-		entry := d.entries[boundary.key]
-		if entry == nil {
-			continue
-		}
-		// Concurrent callers can acquire the lock in a different order from
-		// their timestamp samples. Validate each match independently of the
-		// eviction list's insertion order.
-		if age := now.Sub(entry.Value.(cacheDemandEntry).seen); age < 0 || age >= d.ttl {
-			continue
-		}
-		if boundary.tokens > longest {
-			longest, deepest = boundary.tokens, boundary.key
-		}
-		if boundary.tokens > rung && cacheDemandAffinityRung(boundary.tokens) {
-			rung, affinity = boundary.tokens, boundary.key
-		}
+	index := cachehistory.New()
+	var history *cachedemand.Tracker
+	if deps.Demand != nil {
+		history = deps.Demand(limit, ttl, index)
 	}
-	if affinity == "" {
-		affinity = deepest
+	if history == nil {
+		history = cachedemand.New(limit, ttl, index)
 	}
-	for _, boundary := range boundaries {
-		if boundary.key == "" {
-			continue
-		}
-		if entry := d.entries[boundary.key]; entry != nil {
-			previous := entry.Value.(cacheDemandEntry)
-			if now.Before(previous.seen) {
-				continue
-			}
-			entry.Value = cacheDemandEntry{boundary.key, now}
-			d.order.MoveToBack(entry)
-		} else {
-			d.entries[boundary.key] = d.order.PushBack(cacheDemandEntry{boundary.key, now})
-		}
-		for len(d.entries) > d.limit {
-			first := d.order.Front()
-			evicted := first.Value.(cacheDemandEntry)
-			// A head past its TTL that the bounded sweep has not reached is
-			// an expiry, not a cap eviction.
-			if now.Sub(evicted.seen) < d.ttl {
-				d.capEvictions++
-			}
-			delete(d.entries, evicted.key)
-			d.order.Remove(first)
-		}
-	}
-	return longest, affinity
+	return &cacheDemandTracker{index: index, history: history, limit: max(1, limit), ttl: ttl}
 }
 
-// stats reports the entries held, including expired ones the bounded sweep
-// has not reached, and the cap evictions so far.
-// clear drops every entry. A retired tracker (ConfigureCacheRouting replaced
-// it) can stay reachable through a prepared attempt's owner until that request
-// finishes; without this the retired generation would pin up to
-// cacheDemandMaxEntries entries. observe already refuses a revoked generation.
-func (d *cacheDemandTracker) clear() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.order.Init()
-	d.entries = make(map[string]*list.Element)
+func (d *cacheDemandTracker) setOnTouched(fn func([]string, time.Time)) { d.history.SetOnTouched(fn) }
+func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) []crs.DemandRecord {
+	return d.history.Restore(records, now)
 }
-
-func (d *cacheDemandTracker) stats() (entries int, capEvictions uint64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.entries), d.capEvictions
-}
-
-const (
-	// cacheDemandStrideTokens spaces the observed boundaries to match the two
-	// provider consumers of the reported repeat. The engine's historical
-	// checkpoint retention keeps the 1,024-aligned boundary at or below it
-	// (CBv2Request.prefixCheckpointTargetTokens, which the provider bridge
-	// sets from RemotePrefixCacheContext.repeatedPrefixTokens; it lands with
-	// the checkpoint-geometry change), and SSDCheckpointDemand.admitsWrite
-	// gates the write on repeatedPrefixTokens >= minEffectiveTokens, which is
-	// 1,024. A boundary between two multiples, or below the first, names a
-	// prefix that can be neither written nor restored.
-	cacheDemandStrideTokens = 4 * int(promptcontract.BlockSize)
-	// cacheDemandMaxStrideBoundaries is the window: one plan observes its
-	// deepest 64 boundaries on the stride, which are the ones worth restoring.
-	cacheDemandMaxStrideBoundaries = 64
-	// cacheDemandMaxLadderBoundaries bounds the rungs a plan longer than the
-	// window observes below it: 1,024 × 2^0 … 2^9 are the rungs a plan of
-	// cacheRoutingMaxReceiptTokens can have. A prompt under 131,072 tokens
-	// has at most six below its window (1,024 … 32,768).
-	cacheDemandMaxLadderBoundaries = 10
-	// cacheDemandMaxPlanBoundaries is what one plan reads and records at
-	// most, whatever its length: the window, the final boundary and the
-	// ladder. It is 71 for a prompt under 131,072 tokens and 65 up to 65,536.
-	cacheDemandMaxPlanBoundaries = cacheDemandMaxStrideBoundaries + 1 + cacheDemandMaxLadderBoundaries
-)
-
-// cacheDemandAffinityRung reports a power-of-two multiple of 1,024 tokens:
-// 1,024, 2,048, 4,096, 8,192 and so on.
-func cacheDemandAffinityRung(tokens int) bool {
-	strides := tokens / cacheDemandStrideTokens
-	return tokens > 0 && tokens%cacheDemandStrideTokens == 0 && strides&(strides-1) == 0
-}
-
-// cacheDemandAnchors selects what a plan observes, shallowest first:
-//
-//   - the window: its deepest cacheDemandMaxStrideBoundaries boundaries on
-//     the 1,024-token stride;
-//   - its final boundary, which need not be on the stride;
-//   - the ladder, for a plan longer than the window only: the rungs
-//     (cacheDemandAffinityRung) below the window. Without it a plan over
-//     65,536 tokens reports no repeat for a shallow shared prefix, such as a
-//     system prompt and tool block, and the provider skips the write as
-//     skipped_novel.
-//
-// Selection is by token count, so it does not depend on the plan listing
-// every block.
-func cacheDemandAnchors(boundaries []protocol.PrefixCacheAnchor) []protocol.PrefixCacheAnchor {
-	last := len(boundaries) - 1
-	selected := make([]protocol.PrefixCacheAnchor, 0,
-		min(len(boundaries), cacheDemandMaxPlanBoundaries))
-	i, strides := last, 0
-	for ; i >= 0 && strides < cacheDemandMaxStrideBoundaries; i-- {
-		onStride := boundaries[i].TokenCount%cacheDemandStrideTokens == 0
-		if onStride {
-			strides++
-		}
-		if onStride || i == last {
-			selected = append(selected, boundaries[i])
-		}
-	}
-	for ; i >= 0; i-- {
-		if cacheDemandAffinityRung(boundaries[i].TokenCount) {
-			selected = append(selected, boundaries[i])
-		}
-	}
-	slices.Reverse(selected)
-	return selected
-}
+func (d *cacheDemandTracker) clear()                                    { d.history.Clear() }
+func (d *cacheDemandTracker) stats() (entries int, capEvictions uint64) { return d.history.Stats() }
 
 func (t *cacheRoutingTracker) observeCacheDemand(plan *CachePlan, routeKey []byte, now time.Time) {
-	if t == nil || plan == nil || plan.generation != t.generation || t.generation.revoked.Load() || !plan.present() {
+	if t == nil {
 		return
 	}
-	// The same anchors are read and then recorded, so one plan costs at most
-	// cacheDemandMaxPlanBoundaries = 75 keyed digests and index entries
-	// whatever its length. Full holder lookup still checks EVERY boundary.
-	anchors := cacheDemandAnchors(plan.Boundaries)
-	boundaries := make([]cacheDemandBoundary, 0, len(anchors))
-	for _, anchor := range anchors {
-		key := cacheBoundaryKey(routeKey, *plan, anchor)
-		if key != "" {
-			boundaries = append(boundaries, cacheDemandBoundary{key, anchor.TokenCount})
-		}
+	var history *cachedemand.Tracker
+	if t.demand != nil {
+		history = t.demand.history
 	}
-	plan.RepeatedPrefixTokens, plan.affinityKey = t.demand.observe(boundaries, now)
+	plan.ObserveRouteDemand(t.generation, history, routeKey, now)
 }

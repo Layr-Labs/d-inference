@@ -25,6 +25,10 @@ struct Status: AsyncParsableCommand {
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
         print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
+        if config.backend.modelAutopilot.hasConsent && !config.coordinator.privateOnly {
+            print("Autopilot enrollment: Experimental (not live activation; run `darkbloom autopilot status` for the current mode)")
+            print("  The saved idle policy applies in shadow mode or while waiting for control.")
+        }
         let preloadSource = config.backend.preloadModels.isEmpty
             ? "selected models" : "explicit preload_models (\(config.backend.preloadModels.count))"
         print("Startup preload: \(config.backend.startupPreload ? "on" : "off") "
@@ -123,6 +127,14 @@ struct Status: AsyncParsableCommand {
             state: state,
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
+        if state.autopilotPhase != nil {
+            let fresh = Autopilot.Status.snapshotIsFresh(state,
+                heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs, now: now)
+            print("Autopilot - Experimental: \(Autopilot.Status.phaseDescription(fresh ? state.autopilotPhase : nil))")
+            if fresh && state.autopilot?.revision != config.backend.modelAutopilot.revision {
+                print("  Configuration change waiting to apply")
+            }
+        }
         if let status = state.modelSwitch {
             let stale = state.isStale(now: now) ? " (stale)" : ""
             print("Model switch: \(status.outcome.rawValue)\(stale); \(status.remaining) unfinished request(s)")

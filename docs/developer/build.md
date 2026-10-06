@@ -1,11 +1,114 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `e1441c2e8`
+> Last updated: 2026-10-05
+
+The provider test runner isolates daemon-state and loaded-model snapshots in a
+temporary directory for each run. Unit-test providers must not overwrite the
+operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+CI and Integration Tests cancel an older run only when a newer revision of the
+same pull request starts in that workflow. Concurrency groups include the
+workflow and event names; non-PR runs use a unique run ID, so default-branch pushes
+remain independent. Provider unit, SDK, parity and integration jobs remain
+parallel, without a shared-build dependency between workflows.
+
+Integration Tests reuse their own compatible Swift debug and Rust build caches
+through `scripts/provider-ci-cache.py` (`keys --lane integration`). The restore
+prefix binds the lane, toolchain, SDK, OS, checkout path, dependency pins and build
+recipe; the exact key also binds the source commit. Restored source timestamps
+are checked by content, cached runtime resources are discarded, and Swift and
+sidecar build commands still execute. Metal uses an exact source/toolchain key
+shared with compatible provider lanes, followed by the existing source-matched
+validation and staging. Cache misses build normally; caches never skip E2E tests
+or enter the separate release-build namespace. Compare cache transfer plus build
+time and whole-job runtime on real runners before claiming a saving.
+Homebrew and `zstd` are installed before any integration cache restore, including
+Go's cache. Restore and save must use the same compression format, which is part
+of the Actions cache version; installing it between those steps produces misses
+even when the visible cache key matches.
+The test-bundle staging helper uses APFS-capable clone copies on Darwin and ordinary
+copies on other platforms, so its offline Linux tests exercise the same atomic
+copy, byte-comparison and rename path (`scripts/stage-test-metallib.sh`).
+
+Pull-request CI selects expensive component jobs through
+`scripts/ci-component-paths.py`, called by `.github/workflows/component-changes.yml`.
+The detector checks out full history without persisted credentials and compares
+the PR head with its merge base against the event's base SHA. It uses a local,
+NUL-delimited Git diff, including both sides of renames and deleted paths, not
+the truncated GitHub changed-files API. Docs and `AGENTS.md` changes alone do
+not build Swift, Go, Rust or the console, or schedule E2E integration/benchmarks.
+Release Integrity and Docs Lint remain unconditional. Default-branch pushes
+retain full coverage; a new-branch push or manual invocation selects all lanes.
+Other pushes compare the event's before/after SHAs. Missing revisions fail
+detection rather than producing skip outputs.
+
+Component source, pinned SDK submodules, build actions and explicitly selected
+tooling activate their consumers. Protocol fixtures, prompt-contract producers,
+Rust sidecar dependencies and Go module pins also activate provider parity.
+Each CI workflow change exercises that workflow's lanes; changes to the shared
+detector exercise all callers. The existing push-only Swift cache job is unchanged.
+The separate release preparation workflow retains its existing triggers.
+
+Registry performance comparisons use the same pinned Go toolchain for both
+revisions. Build each `coordinator/tests/registry` test binary with `go test -c`
+before timing, then run the prebuilt binaries without concurrent compilation.
+The [reservation benchmark procedure](test.md#reservation-storage-and-scan-benchmarks)
+describes fixtures, interleaving and the distinction between local routing cost
+and production latency.
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
 `make build` builds those components; the admin UI is built separately below.
+
+The SDK test product copies its `MiMoOpenRouter` media fixture directory as a
+test-only resource (`libs/mlx-swift-lm/Package.swift`). Those files are not
+provider product resources. Build SDK tests separately from provider tests
+when validating the media working-set change; see [test gates](test.md).
+
+The macOS integration and benchmark workflows run
+`scripts/setup-macos-homebrew.sh` before they install `postgresql@16`. The
+script uses `brew` if it is on `PATH`, at `/opt/homebrew/bin/brew` or at
+`/usr/local/bin/brew`. If it finds no `brew`, it downloads the official
+Homebrew installer from a pinned commit, checks its SHA-256, and runs it with
+`NONINTERACTIVE=1`. In both cases it writes the `brew shellenv` values to
+`$GITHUB_ENV` and `$GITHUB_PATH` for later steps. The workflows do not use the
+`Homebrew/actions/setup-homebrew` action, because the organization Actions
+policy does not allow it. To move the installer pin, change the commit and the
+SHA-256 in the script together.
+
+macOS jobs that download artifacts, verify source signatures through the
+GitHub API, or post benchmark results run `scripts/install-macos-github-cli.sh`
+first. It installs the pinned official Apple Silicon CLI archive into a fresh
+runner-temporary directory, verifies its SHA-256 before extraction, and exports
+its binary path. It does not depend on Homebrew or the runner's preinstalled CLI.
+The signing job also checks the system signing/archive tools and Xcode's
+`notarytool`/`stapler` before handling the artifact. A tooling-only recovery can
+reuse an already qualified unsigned build through the
+[retained unsigned recovery procedure](../operations/provider-release.md#resume-signing-from-a-retained-unsigned-build).
+
+Coordinator CI builds the adversarial-number test once without instrumentation
+for its enforced performance budget, then builds the full suite with race
+detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)
+for the separate commands and their timing limits.
+
+The coordinator executable still builds from `coordinator/cmd/coordinator`.
+Its command entrypoint validates configuration and delegates service assembly
+to `coordinator/app`. Memory and PostgreSQL constructors now live in
+`coordinator/store/memory` and `coordinator/store/postgres`; root `store` keeps
+contracts and the read-through decorator. The application selects and wraps the
+backend before binding the registry and HTTP domain owners. See the
+[owner map](navigation.md) before changing an import or moving a fixture.
+
+Coordinator Go tests live in `coordinator/tests/`, mirroring the production
+owners. `go build ./coordinator/...` builds production code and ordinary
+`go test ./coordinator/...` discovers the mirrored suites. `make coordinator-test`
+adds checked shard discovery; coverage explicitly instruments the imported
+production packages, excluding all test helpers. See the
+[test-boundary map](test.md#2-coordinator-go) for focused commands.
+Routing snapshot-age regressions run against the ordinary coordinator build;
+the [test guide](test.md#2-coordinator-go) includes a race-enabled repetition
+command using the existing reservation-preparation fixture.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6
@@ -15,6 +118,51 @@ merged native SDK pin and does not require new model weights. See
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+Freshness stamps contain only dates. The checker recovers legacy verification
+commits from document history, or the particular link's introduction commit for
+new date-only records; it never selects a commit by date. A format-only migration
+uses `scripts/docs-stamp.sh --from-git` to preserve existing dates and evidence.
+The job also initializes the exact pinned `libs/mlx-swift-lm` submodule so
+model-support documentation links are checked against real SDK files.
+
+The MiMo Rust parser/planner and provider prompt regressions require public
+metadata, not model weights. The sidecar, provider-unit and prompt-parity jobs run
+`scripts/prepare-mimo-prompt-fixtures.py`; follow the
+[pinned fixture procedure](mimo-prompt-fixtures.md) for local runs. Missing
+inputs fail rather than silently skipping assertions.
+
+The prompt-parity lane also runs `scripts/verify-nemotron-prompt-parity.sh`
+after the provider test product has been built. The existing Go artifact
+provisioner fetches only hash-verified prompt metadata from the committed
+Nemotron manifest; the gate uses no model weights or GPU generation. See the
+[parity test procedure](test.md#9-prompt-contract-parity-fixtures-and-vectors).
+
+Provider CI also runs `scripts/prepare-mimo-provider-fixtures.py` offline. It
+writes a deterministic, bounded synthetic BF16 target/vision/audio-patch/three-head
+inventory, not the selected model or its audio codec. Routine metadata tests use
+the symmetric 128-context fixture; the separate complete-prefix process uses
+`--asymmetric` for K64/V128 and 1,024-context geometry. No Python MLX installation,
+native evaluation, model download, private corpus or verification receipt is
+needed to provision these files. See [MiMo provider CI tests](test.md#mimo-provider-ci-fixtures)
+for environment bindings and the isolated native selections.
+The provider-unit job retains all three native selections after its general
+suite. Each selection requires the successful shared build/Metal preparation
+and synthetic fixtures, and still runs if an earlier test fails.
+The SDK qualification lane in the shared release-build action provisions the
+same routine fixtures before its watchdog-driven provider tests. Release-only
+builds do not provision test fixtures or enable native qualification.
+
+`scripts/prepare-mimo-audio-fixtures.py` separately downloads hash-pinned public
+metadata, the genuine 1.87 GB MiMo input codec, and the public OpenRouter AAC video fixture. It feeds
+`prepare-mimo-provider-fixtures.py --audio-source` to build a small synthetic
+target with the selected tokenizer/audio IDs. The codec is never synthesized or
+relabelled, and normal native loading verifies it again. CI and SDK release
+qualification cache those immutable inputs and run an isolated authenticated
+PCM8 and AAC-video inference gate. This proves the route with a small target, not the
+full model's output quality or production peak memory.
+
+Production prompt parity compares the generated corpus byte-for-byte with its
+checked-in fixture, including its EOF format with no extra newline.
 
 Changes to native loading estimates and retirement require a rebuilt provider
 test product, not only a new CLI. Bind both products and the SDK/metallib to the
@@ -22,9 +170,23 @@ same checkout before running the [memory and lifecycle gates](test.md).
 See [historical source references](historical-references.md) for local setup.
 
 Native CI test isolation reuses these built test products and their staged
+metallib, including the MiMo memory-admission heartbeat and pending-request gates.
+The provider media gate and nested SDK native-media deadline suite also reuse
+these products to check guarded learning and target-only rate admission.
+Their shared test wrapper uses bounded temporary filenames independently of
+filter length; selecting more cases does not require rebuilding the products.
+Those gates use bounded synthetic weights and production memory reserves; their
+2 GiB logical contiguous grants do not preallocate 2 GiB of KV storage. See the
+[memory regression procedure](test.md) for the scope of this evidence.
+
+Other native CI test isolation also reuses the built test products and staged
 metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.
+
+The exact-cache E2E fixture uses the built provider and pinned Gemma checkpoint
+with an explicit SSD-cache opt-in. Its ephemeral storage setting alone does not
+enable caching; see the [E2E prerequisites](test.md#prerequisites).
 
 The [Bonsai performance qualification](test.md#bonsai-performance-qualification)
 uses a separate optimized test build with `-enable-testing` and `-DDEBUG` for
@@ -45,23 +207,78 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
+The provider email operator command builds separately with
+`go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
+part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
+
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
 
+## Nightly Linear workflow
+
+The [nightly Linear package](../../automations/nightly-linear/README.md) needs
+Git, Python 3, local Codex desktop, and the teammate's own Linear connection.
+The [one-time setup prompt](../../automations/nightly-linear/teammate-prompt.md)
+creates a dedicated managed clone and links its two skills into the user's skill
+directory. Personal configuration and recovery state stay outside that clone.
+Claude Code and Pi supply saved work histories; they need no plugin installation.
+
+Each trigger runs `automations/nightly-linear/refresh.py` (`refresh`) to fetch
+one revision of the shared skills and playbook before any Linear updates.
+The [test procedure](test.md#nightly-linear-package) covers the updater's failure
+and preservation guarantees. The package's CI workflow runs these offline tests;
+it does not schedule anyone's nightly task or require Linear credentials.
+
 ## SDK 27 release builds and caches
+
+All checked-in `d-inference` workflow jobs use Blacksmith runners. macOS build,
+unit/SDK/parity, integration, benchmark, cache, signing and validation jobs pin
+`blacksmith-12vcpu-macos-27` (M4, 12 vCPU, 48 GB); the signed-artifact older-OS
+smoke pins `blacksmith-12vcpu-macos-26`. Coordinator Tests uses
+`blacksmith-16vcpu-ubuntu-2404`; other Linux jobs retain
+`blacksmith-4vcpu-ubuntu-2404`. The macOS 27 image is currently a public beta;
+see [Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview).
+This migration is limited to this repository; SDK repository workflows are separate.
+
+`prepare-provider-release-toolchain.sh` resolves the image-selected Xcode via
+`xcode-select`/`xcrun` after checkout and refuses any SDK other than 27.0 or Apple
+Swift other than 6.4. Its repository wrapper forces native SwiftPM and the same
+SDK for build/test invocations. CI fingerprints the selected compiler, SDK and
+wrapper so it cannot reuse incompatible prior-image products. Pinned Python
+3.12.10, checksum-verified Rustup 1.28.2/Rust 1.88.0 (where needed), and CMake
+3.31.12 supply tools missing from the image. Metal caches include the CMake
+recipe/identity; changing generators cannot reuse a stale metallib.
+
+GitHub Actions remains the orchestrator and artifact store. Protected signing
+and publication jobs retain their existing approvals, credential scopes and
+same-run artifact checks. Existing runs keep the workflow from their source
+commit: merging runner changes does not move an already-started release.
+
 
 Serving performance work changes the pinned CBv2 library as well as the
 provider. Initialize the recorded submodules before building, and retain
 source-matched Metal libraries for benchmarks. The
 [profile qualification procedure](serving-performance-qualification.md)
 records the exact model/runtime/backend/hardware identity; a successful build
-alone does not qualify a wider serving limit.
+alone does not qualify a wider serving limit. Use
+`python3 scripts/build-serving-qualification.py --output /tmp/qualification-build`
+after committing the candidate. This cleans prior products, selects the dedicated
+`ServingQualificationTests` target with release optimization and `-enable-testing`,
+stages its source-matched Metal library, and runs the actual executable-identity
+test. The ordinary package graph still includes all unit tests. Pass the generated
+`build-receipt.json` to `scripts/run-serving-qualification.py --build-receipt`;
+the runner verifies the source, binary and metallib binding before collecting
+model/runtime evidence. Neither command installs a provider. Release Integrity
+CI runs the offline `scripts/serving_performance/` tests without building Swift
+or downloading weights; hardware qualification still requires the managed build.
+Archived raw-corpus replay is opt-in; see the
+[local evidence checks](serving-performance-qualification.md#verify-local-evidence).
 
 The release pipeline runs optimized products and SDK qualification on separate
-`xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;
+`blacksmith-12vcpu-macos-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
 only the optimized lane transfers an unsigned app and its file inventory to
 signing. All binaries, SwiftPM resource bundles and the source-matched Metal
 library travel together. Signing verifies the same-run artifact's source commit,
@@ -102,6 +319,45 @@ keys or notarized bundles.
 See the [release cache procedure](../operations/provider-release.md#prepare-and-check-release-caches)
 for first-run costs and rerun behavior.
 
+## Parallel Provider CI Builds
+
+When provider dependencies change, the CI workflow runs provider tests, nested SDK correctness gates, and
+production prompt parity as three independent macOS jobs. Each job owns a
+separate checkout, build directory, GPU, and unified-memory allocator. No job
+waits for another job's test outcome. The nested SDK job still builds all of its
+test products; a provider test build does not compile a dependency's tests.
+The existing required `Provider Tests` check is a small aggregate gate with
+[verified intentional-skip handling](test.md#component-ci-routing). Selected
+unit, SDK, and parity lanes must all succeed; unexpected skips or cancellation
+fail. It does not serialize their work or change branch-protection settings.
+
+`.github/actions/provider-ci-build/action.yml` builds each lane using
+`scripts/provider-ci-cache.py` (`keys`). Provider debug tests, SDK debug tests,
+and Swift/Rust parity have separate cache prefixes bound to the actual compiler,
+SDK, architecture, checkout path, recursive dependency pins, and CI build recipe.
+Each source commit names a generation. Content-verified timestamp restoration
+reuses only unchanged tracked source files; changed files retain fresh timestamps.
+Every cache hit still runs the full build and runtime-resource staging commands.
+
+The source-matched Metal cache is separate and shared only across compatible
+lanes. Its key binds the native MLX pin, Xcode/SDK identity, the independently
+downloaded Metal compiler version and bytes, helper contract, and
+deployment target. Restored runtime bundles and metallibs are discarded before
+building; `scripts/stage-test-metallib.sh` invokes the validating source builder
+and stages the library beside the actual test runner and inside its resource
+bundle. A cache hit is not permission to skip these checks.
+
+Successful build jobs save their debug objects before assertions run, so an
+unrelated test failure does not force a complete rebuild on the next attempt.
+The parity job cleans local Rust products and saves its Cargo cache only after
+the real tokenizer/vector/load-proof script succeeds. The push-only release
+cache job no longer duplicates the SDK debug-test build. These caches contain
+unsigned build products, not release artifacts or signing material.
+
+Parallel speedup requires capacity for three concurrent macOS runners. More
+jobs queued behind a provider quota do not shorten the critical path. See
+[provider CI tests](test.md#parallel-provider-ci) for execution gates and validation.
+
 ## Prerequisites
 
 - Start commands from the repository root. Component examples that use
@@ -112,7 +368,7 @@ for first-run costs and rerun behavior.
 
   | Tool | Pin | Used by |
   |---|---|---|
-  | `go` | `1.25.0` | coordinator, e2e (matches `go 1.25.0` in [`go.mod`](../../go.mod)) |
+  | `go` | `1.25.7` | coordinator, e2e (matches `go 1.25.7` in [`go.mod`](../../go.mod)) |
   | `rust` | `1.88.0` | `coordinator/promptsidecar` (matches `rust-version = "1.88"` in `coordinator/promptsidecar/Cargo.toml` and the `rust:1.88.0-alpine` builder in `coordinator/Dockerfile`) |
   | `node` | `22` | `console-ui`, `admin-ui` |
   | `swift` | `6.3` | `provider-swift` (the local `libs/mlx-swift` package declares `swift-tools-version: 6.3`; `provider-swift/Package.swift` itself is `6.1`) |
@@ -270,7 +526,7 @@ make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → co
 The host build writes `./coordinator/coordinator`. Version identity is injected
 only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildDate`
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
-`GET /health` (`coordinator/api/consumer.go`, `handleHealth`).
+`GET /health` (`coordinator/api/inference/consumer.go`, `HandleHealth`).
 
 ### 4. Prompt-contract sidecar (Rust)
 
@@ -312,6 +568,25 @@ To compile all test targets without executing fixtures:
 ```bash
 (cd provider-swift && swift build --build-tests)
 ```
+
+The test products include the provider/standalone lifecycle, CLI/service/fan,
+SSD-cache and benchmark harness groups described in the
+[provider test-group map](test.md#provider-lifecycle-cli-and-benchmark-groups).
+Most use scripted dependencies and isolated files; the generated tiny-model
+load tests execute actual MLX kernels without downloading a checkpoint. A
+successful compile alone does not run either group, and neither substitutes
+for full-checkpoint qualification. Stage the matched metallib before execution
+and use the runner's serial/fresh-process isolation rather than parallelizing
+tests that share MLX or model-cache state.
+
+For coverage, the provider CI lane builds tests and the fan-helper product with
+`--enable-code-coverage`; its cache key distinguishes instrumented builds from
+the SDK and parity lanes (`.github/actions/provider-ci-build/action.yml`). Follow
+the [isolated local coverage recipe](test.md#provider-coverage-report-only) for
+fresh profiles, state paths, all reported executable objects and retained test
+exit status. Product, CLI and benchmark rows are report-only, not a release or
+performance gate. Keep these instrumented debug products separate from the
+optimized binaries used for performance measurements.
 
 ```bash
 make provider-build
@@ -611,7 +886,7 @@ The normal coordinator build also supports `coordinator --migrate-only`. It
 requires `EIGENINFERENCE_DATABASE_URL`, runs store migrations, and exits without
 starting the server or seeding an admin key. Container execution must override
 the default MicroMDM entrypoint script; see the
-[deployment procedure](../operations/coordinator-deploy.md#optional-prepare-compatible-migrations-before-draining).
+[schema migration runbook](../operations/schema-migration.md#4-apply-the-migrations).
 
 The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
@@ -622,7 +897,7 @@ local stub servers; its default observation mode sends only public GETs.
 | Target | What it runs |
 |---|---|
 | `help` | List targets (default goal) |
-| `coordinator-test` | `cd coordinator && go test ./...` |
+| `coordinator-test` | Runner self-tests, then `python3 scripts/run-coordinator-tests.py` (complete coordinator suite; process-isolated API shards, also registry under `--race`, see [test](test.md)) |
 | `coordinator-build` | `go build ./cmd/coordinator` → `./coordinator/coordinator` |
 | `coordinator-build-linux` | `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator` |
 | `coordinator` | `coordinator-test` + `coordinator-build` |
@@ -632,9 +907,9 @@ local stub servers; its default observation mode sends only public GETs.
 | `prompt-sidecar-build` | `cargo build --locked --release --bin promptsidecar` |
 | `prompt-sidecar` | format + check + test + build |
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
-| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
+| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*.xctest` test bundle, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
-| `benchmark-wrapper-test` | `cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .` |
+| `benchmark-wrapper-test` | Python unittest discovery for `gemma_contbatch/tests` and `serving_performance` from `scripts/` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
@@ -657,7 +932,7 @@ components that changed.
 | [`.githooks/pre-commit`](../../.githooks/pre-commit) | staged `coordinator/**.go` | `gofmt -l` on the staged files (fix: `gofmt -w <file>`) |
 | | staged `console-ui/**.ts{,x}` | `cd console-ui && npx eslint src/` (fix: `npx eslint --fix src/`) |
 | | Swift | skipped — no enforced formatter |
-| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` over `coordinator/`, then `go test $(go list ./... \| grep -v /internal/api)` from `coordinator/` (the slow WebSocket integration tests run in CI only) |
+| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` over `coordinator/`, then `go test ./coordinator/...` from the repository root: ordinary discovery includes every mirrored package and production package, with no package exclusion. Use `make coordinator-test` for runner guards, isolated shards and production coverage |
 | | any `console-ui/` change | `npx eslint --quiet src/` and `npm run build` |
 
 CI runs the fuller set (`gofmt`, `golangci-lint`, `-race` tests, Swift, Rust,
@@ -688,7 +963,7 @@ ls console-ui/.next
 
 Use the macOS 27 SDK for a candidate that needs Apple code-measurement extensions. The release workflow explicitly selects Command Line Tools 27.0 / Swift 6.4, then runs provider tests under that same SDK; ordinary development retains the Swift 6.3 minimum. Set `SDKROOT` to that SDK for both compilation and linking: a CLT 27 beta 6 Swift probe compiled with `--sdk` alone embedded the deployment target as its SDK; setting `SDKROOT` produced the correct linked SDK. Verify `LC_BUILD_VERSION` with `xcrun vtool -show-build` on the final executable. Confirm the final signed executable produces the current launch category and full CodeDirectory digest on physical macOS 27; SDK 26 builds can collect ordinary shadow proofs but cannot qualify replacement readiness. See the [observed SDK and measurement contract](../reference/app-attest-shadow.md#macos-sdk-and-signed-code-measurements).
 
-Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`
+Run `go test ./tests/appattest/... ./tests/api/... ./tests/store/... -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`
 from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
@@ -735,9 +1010,45 @@ Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on mac
 
 After `swift build --build-tests`, run `scripts/stage-test-metallib.sh` with the
 package's `swift build --show-bin-path` directory. The helper builds or verifies
-the matching MLX library and stages it beside each test executable and in the
-nested resource bundle used by native checkpoint identity tests. `make provider-test`
+the matching MLX library. Then it copies the library into every `*.xctest`
+bundle in that directory: beside the test executable and in the nested resource
+bundle that native checkpoint identity tests use. The native build system makes
+one `<Package>PackageTests.xctest`. CI uses the native build system through
+`scripts/provider-release-swift.sh`. A local Swift 6.4 `swift build` uses Swift
+Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Staging prefers `cp -c` on Darwin to retain APFS cloning, falling back to ordinary
+`cp` if cloning fails or is unsupported. Other hosts, including Linux fixture
+runners, use ordinary `cp` directly. Copy or byte-verification failures leave
+the destination unchanged; verified copies replace it atomically.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
+
+## Advisory review tooling
+
+The [threat-model PR review](threat-model-review.md) uses Python 3.9+ standard-library
+HTTP/JSON modules and requires no package installation. CI runs its regression
+tests against local HTTP fixtures; the live workflow uses a repository Actions
+secret and the trusted base checkout. Full PR scans read immutable Git blobs as
+data and batch complete changed-file text; they never build or execute PR code.
+Set the activation variable before merge after verifying the state writer with
+the manual, zero-spend `preflight` option. Repositories that restrict branch
+updates can configure a dedicated App writer with short-lived tokens.
+Sonnet 5.5 handles the first pass; selected Opus 5.5 and GPT-6.1 Sol reviews use
+the same OpenRouter key. Atomic budget reservations, cached analysis and durable
+reports live on a dedicated state branch. Paid scanning defaults to disabled;
+follow the linked setup instructions to verify writer permissions and pilot caps.
+
+## Stripe migration maintenance
+
+Build the audit/repair binary with `go build -o /tmp/payout-audit ./coordinator/cmd/payout-audit`.
+It uses the configured database without running migrations and defaults to read-only
+bounded output. Applying a refund requires an exact withdrawal ID, expected amount
+and an operator-verified Stripe request. See [the cutover runbook](../operations/stripe-migration.md).
+
+Exercise the API, funding and settlement contracts with
+`go test ./coordinator/tests/api/... ./coordinator/tests/billing/... ./coordinator/tests/store/... ./coordinator/tests/cmd/payout-audit`.
+Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
+concurrency and rollback coverage. Never point tests at production. Console
+migration coverage runs with `npm test` in `console-ui`.

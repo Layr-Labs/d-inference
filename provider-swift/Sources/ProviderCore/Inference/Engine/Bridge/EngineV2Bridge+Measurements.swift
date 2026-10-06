@@ -13,29 +13,73 @@ extension EngineV2Bridge {
     /// publish a second observation.
     func consumePrefillReceipt(id: String, receipt: EnginePrefillReceipt) {
         guard let sample = receipt.take() else { return }
+        if prefillEvidenceRecovery.owner == id {
+            // The SDK callback proves prompt completion even if cache reuse or
+            // contention prevents a new cold rate. Keep the ordinary lease and
+            // all KV/cache resources through generation-bound retirement.
+            serviceBudget?.reduceExclusiveAllowance(ownerID: serviceOwnerPrefix + ":" + id,
+                concurrency: prefillEvidenceRecovery.servingConcurrency)
+        }
+        let calibration = mimoCalibration.requests[id]
+        guard calibration?.warmup != true else { return }
         let usage = sample.usage
         let saved = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens)
         guard usage.promptTokens > 0, saved >= 0, saved <= usage.promptTokens,
             usage.prefixCacheOutcome != .hit || saved > 0,
             usage.timing.promptComputedNanos > 0 else { return }
         let work = usage.promptTokens - saved
-        prefillTokensTotal = Self.saturatingCounter(prefillTokensTotal, adding: work)
-        prefillRequestsTotal = Self.saturatingCounter(prefillRequestsTotal, adding: 1)
+        if calibration == nil {
+            prefillTokensTotal = Self.saturatingCounter(prefillTokensTotal, adding: work)
+            prefillRequestsTotal = Self.saturatingCounter(prefillRequestsTotal, adding: 1)
+        }
         // Valid computed work is useful even when vision/reuse or the timing
         // window excludes the rate. Publish after all counters and EWMAs agree.
         defer { performanceUpdates?.notify() }
-        guard usage.timing.visionChunks == 0,
+        guard usage.timing.visionChunks == 0 || receipt.nativeCausalMedia,
             saved > 0 ? usage.prefixCacheOutcome == .hit : Self.isColdPrefillSample(usage: usage),
             let seconds = EngineV2NativeBlockTiming.prefillSeconds(usage.timing),
             let tps = Self.classifyPrefillSample(prefilledTokens: work, prefillSeconds: seconds)
         else { return }
+        if receipt.nativeCausalMedia {
+            // Native media features are fully prepared before submission.
+            // This interval measures only the target decoder's computed
+            // suffix. Keep the sample's size, reuse and overlap separate;
+            // a text-only rate must not erase the evidence needed to calibrate
+            // media. These diagnostic buckets do not change admission rates.
+            performanceMeasurements.observe("native_media_prefill", tps: tps,
+                prompt: work, context: usage.promptTokens,
+                cache: saved > 0 ? "reused" : "cold",
+                overlap: sample.overlap, at: sample.at)
+            if saved == 0, !sample.overlap.contended,
+                usage.timing.preemptions == 0, usage.timing.readmissions == 0,
+                usage.timing.packedPrefillChunks == 0,
+                let epoch = sample.nativeMediaRateEpoch,
+                serviceBudget?.currentDeadlineRateEpoch() == epoch {
+                if nativeMediaPrefillRates.observe(tokens: work, rate: tps, epoch: epoch, at: sample.at) {
+                    // An ordinary/exempt request can supply eligible evidence
+                    // after a failed bootstrap. Its own retirement owns the reset.
+                    nativeMediaLearnedRequestIDs.insert(id)
+                }
+            }
+            return
+        }
         let name = saved > 0 ? "reuse_prefill"
             : sample.overlap.contended ? "contended_prefill" : "isolated_prefill"
+        let resetIsolated = name == "isolated_prefill" && isolatedPrefillEvidenceExpired(at: sample.at)
+        let resetPrefill = saved == 0
+            && performanceMeasurements.freshRate("isolated_prefill", now: sample.at) == nil
+            && performanceMeasurements.freshRate("contended_prefill", now: sample.at) == nil
+        let aggregate = calibration == nil || (calibration?.width == 1 && !sample.overlap.contended)
         performanceMeasurements.observe(name, tps: tps, prompt: work,
             context: usage.promptTokens, cache: saved > 0 ? "reused" : "cold",
-            overlap: sample.overlap, at: sample.at)
-        guard saved == 0 else { return }
+            overlap: sample.overlap, at: sample.at,
+            deadlinePostureEpoch: sample.deadlineRateEvidence?.currentEpoch(), recordAggregate: aggregate,
+            restartEstimate: calibration != nil && aggregate)
+        guard aggregate, saved == 0 else { return }
+        if resetIsolated || calibration != nil { isolatedPrefillEwmaInitialized = false }
+        if resetPrefill || calibration != nil { prefillEwmaInitialized = false }
         updatePrefillTpsEwma(tps, isolated: !sample.overlap.contended)
+        if name == "isolated_prefill" { prefillEvidenceRecovery.observe(id) }
     }
 
     func updatePrefillTpsEwma(_ tps: Double, isolated: Bool) {
@@ -80,19 +124,28 @@ extension EngineV2Bridge {
     }
 
     func recordPerformanceFinish(
-        state: ActiveRequestState, usage: CBv2Usage, completion: Int,
+        id: String, state: ActiveRequestState, usage: CBv2Usage, completion: Int,
         deliveredTps: Double, now: ContinuousClock.Instant
     ) {
+        let calibration = mimoCalibration.requests[id]
+        guard calibration?.warmup != true else { return }
         let overlap = state.prefillReceipt?.overlap
             ?? EngineMeasurementActivity.Overlap(contended: true, otherModel: true)
         let cached = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens) > 0
         if let tps = Self.engineDecodeRate(usage: usage, nativeBlock: usesNativeBlockTiming),
             let observedAt = Self.engineObservationInstant(timing: usage.timing, now: now) {
-            updateDecodeTpsEwma(tps)
+            let aggregate = calibration == nil || (calibration?.width == 1 && !overlap.contended)
+            if aggregate && (calibration != nil || performanceMeasurements.rateExpiration("decode").map { observedAt > $0 } == true) {
+                ewmaInitialized = false
+            }
+            if aggregate { updateDecodeTpsEwma(tps) }
             performanceMeasurements.observe("decode", tps: tps, prompt: state.promptTokens,
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",
-                overlap: overlap, at: observedAt)
+                overlap: overlap, at: observedAt,
+                deadlinePostureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(), recordAggregate: aggregate,
+                restartEstimate: calibration != nil && aggregate)
         }
+        if calibration != nil { performanceUpdates?.notify(); return }
         performanceMeasurements.observe("delivered_decode", tps: deliveredTps,
             prompt: state.promptTokens, context: state.promptTokens + completion,
             cache: cached ? "reused" : "cold", overlap: overlap, at: now)
@@ -105,10 +158,17 @@ extension EngineV2Bridge {
         recordGenerationWork(completion: completion)
     }
 
-    func recordGenerationWork(completion: Int) {
+    func recordGenerationWork(completion: Int, requestID: String? = nil) {
+        if let requestID, mimoCalibration.requests[requestID] != nil { return }
         generatedTokensTotal = Self.saturatingCounter(generatedTokensTotal, adding: completion)
         generationRequestsTotal = Self.saturatingCounter(generationRequestsTotal, adding: 1)
         performanceUpdates?.notify()
+    }
+
+    func performanceMeasurementSnapshot(now: ContinuousClock.Instant) -> PerformanceMeasurements {
+        guard deadlineProfile != nil else { return performanceMeasurements.snapshot(now: now) }
+        return performanceMeasurements.deadlineSnapshot(now: now,
+            postureEpoch: serviceBudget?.currentDeadlineRateEpoch(at: now))
     }
 
     /// A committed admission torn down before active state has no event pump.

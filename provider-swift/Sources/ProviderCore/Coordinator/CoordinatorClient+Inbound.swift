@@ -105,7 +105,8 @@ extension CoordinatorClient {
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,
                 profile: profile,
-                serviceReservationID: request.serviceReservationID
+                serviceReservationID: request.serviceReservationID,
+                promptWork: request.promptWork
             ))
 
         case .cancel(let cancel):
@@ -171,6 +172,11 @@ extension CoordinatorClient {
                 }
                 eventContinuation?.yield(.runtimeOutdated(mismatches: status.mismatches))
             }
+
+        case .modelAutopilotControl(let control):
+            eventContinuation?.yield(.modelAutopilotControl(control))
+        case .modelAutopilot(let command):
+            eventContinuation?.yield(.modelAutopilot(command))
 
         case .loadModel(let load):
             logger.info("Received coordinator-driven preload for: \(load.modelId)")

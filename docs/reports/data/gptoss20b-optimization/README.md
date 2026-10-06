@@ -1,6 +1,6 @@
 # GPT-OSS optimization evidence
 
-> Last updated: 2026-09-05 · commit `0df59f51a`
+> Last updated: 2026-09-05
 
 Evidence for the [implementation report](../../2026-09-05-gptoss20b-optimization-results.md).
 

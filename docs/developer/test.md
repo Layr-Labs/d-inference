@@ -1198,6 +1198,13 @@ index applicability, MDA trust caps, and a migration-only subprocess that exits
 without HTTP startup or admin-key seeding. They do not measure production startup
 latency or validate an overlapping coordinator handoff.
 
+Goose startup, upgrade and advisory-lock tests live in
+`coordinator/tests/store/postgres/migrations_test.go`. Concurrent-index snapshot
+waits, invalid-leftover recovery and failed-version recording live in
+`coordinator/tests/store/postgres/migration_index_test.go`. Run the
+[migration verification commands](database-migrations.md#verify) with the same
+disposable database.
+
 Startup recovery regressions also cover catalog-verified index definitions and isolated
 planner applicability, transient provider/reputation retries, a shared deadline,
 1013 registration teardown before duplicate eviction, and routing/capacity/load

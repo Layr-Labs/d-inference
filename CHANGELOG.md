@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - MLX gather row tiles
+
+- Backport row-tile selection for `gather_mm` and `gather_qmm` in the provider's pinned MLX dependencies, with matching regenerated Swift kernel sources. Rebuild with a source-matched metallib; earlier full-model measurements do not qualify performance on these pins.
+
 ## Unreleased — account erasure
 
 - Keep upstream error text out of erasure-outbox manual-action logs; retain safe correlation IDs, target, state and attempt count, with details available in restricted outbox records.

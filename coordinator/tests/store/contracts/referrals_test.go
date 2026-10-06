@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -48,8 +49,20 @@ func TestReferralLifecycleBackends(t *testing.T) {
 					t.Fatalf("RecordReferral(%s): %v", acct, err)
 				}
 			}
-			if err := s.RecordReferral(code, first); err == nil {
-				t.Fatal("an account was referred twice")
+			// A repeat of the same referral is a no-op. A second referrer for
+			// the account and a self-referral are conflicts.
+			if err := s.RecordReferral(code, first); err != nil {
+				t.Fatalf("repeat RecordReferral(%s): %v", first, err)
+			}
+			otherCode := uniqueID("REF")
+			if err := s.CreateReferrer(uniqueID("other-referrer"), otherCode); err != nil {
+				t.Fatalf("CreateReferrer(other): %v", err)
+			}
+			if err := s.RecordReferral(otherCode, first); !errors.Is(err, store.ErrReferralConflict) {
+				t.Fatalf("an account was referred twice: err = %v; want ErrReferralConflict", err)
+			}
+			if err := s.RecordReferral(code, referrer); !errors.Is(err, store.ErrReferralConflict) {
+				t.Fatalf("self-referral: err = %v; want ErrReferralConflict", err)
 			}
 
 			if got, err := s.GetReferrerForAccount(first); err != nil || got != code {

@@ -52,6 +52,10 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts store.APIKeyCreate) (s
 		CreatedAt:      time.Now().UTC(),
 	}
 	s.mu.Lock()
+	if err := s.accountAdmissionLocked(accountID); err != nil {
+		s.mu.Unlock()
+		return "", nil, err
+	}
 	s.keyRecords[raw] = rec
 	s.keysByID[id] = raw
 	s.mu.Unlock()

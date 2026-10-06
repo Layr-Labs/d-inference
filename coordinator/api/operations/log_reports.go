@@ -8,12 +8,14 @@ package operations
 // provider subsystem.
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const maxLogReportBodySize = 10 << 20 // 10 MB
@@ -43,6 +45,10 @@ func (s *Handler) HandleUploadLogReport(w http.ResponseWriter, r *http.Request) 
 
 	accountID := access.ResolveAccountID(r)
 	reportID, err := s.store.StoreLogReport(accountID, body)
+	if errors.Is(err, store.ErrErasureConflict) {
+		httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("account_deleted", "Log uploads are unavailable for an erased account"))
+		return
+	}
 	if err != nil {
 		s.logger.Error("log report: store failed", "account_id", accountID, "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "failed to store log report"))

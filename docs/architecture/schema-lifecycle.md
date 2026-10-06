@@ -80,11 +80,15 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 19 | `coordinator/store/postgres/schema/migrations/00019_users_privy_drop_unique_constraint.sql` | One transaction: drops `users_privy_user_id_key`. |
 | 20 | `coordinator/store/postgres/schema/migrations/00020_users_privy_drop_old_index.sql` | `NO TRANSACTION`: `SET lock_timeout = '1min'`, then `DROP INDEX CONCURRENTLY IF EXISTS idx_users_privy`. |
 | 21 | `coordinator/store/postgres/schema/migrations/00021_referrals_referrer_code_cascade.sql` | `NO TRANSACTION`: adds `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`) `NOT VALID`, validates it, then drops `referrals_referrer_code_fkey`. |
+| 22 | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql` | Creates account-erasure requests, external cleanup outbox (including `resend_contact`), and hashed SE/account ownership with primary-key and account indexes in one transaction. |
+| 23 | `indexMigrations` | Builds `idx_billing_sessions_referral_code` concurrently for referrer-code scrubbing. |
+| 24 | `indexMigrations` | Builds `idx_users_privy_deleted` concurrently for pending-erasure login checks. |
+| 25 | `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql` | Creates refused-credit audit records, including a reference hash for once-credit identity, and balance/ledger triggers in one transaction. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They are the
 startup steps that ran after the old DDL loop, with their code unchanged.
 Versions 6 to 9 preserve later pre-goose schema additions; version 9 is also
-a Go migration. Versions 10 to 16 and 18 are Go migrations in `indexMigrations`;
+a Go migration. Versions 10 to 16, 18, 23 and 24 are Go migrations in `indexMigrations`;
 `allGoMigrations` passes both lists to goose. Goose runs SQL and Go versions
 in one sequence, so version 17 adds `deleted_at` before version 18 indexes it.
 Goose reads SQL files from the embedded `migrationFiles` and refuses two
@@ -188,11 +192,16 @@ and verifies those rows are preserved. The
 ### Generated queries (sqlc)
 
 The api_keys queries of `PostgresStore` are SQL in
-`coordinator/store/postgres/queries/api_keys.sql`. [sqlc](https://sqlc.dev) v1.31.1
-reads that file and `schema.sql` and writes typed Go into
+`coordinator/store/postgres/queries/api_keys.sql`; the account erasure queries
+are in `coordinator/store/postgres/queries/erasure.sql`. [sqlc](https://sqlc.dev) v1.31.1
+reads those files and `schema.sql` and writes typed Go into
 `coordinator/store/postgres/storedb/` (`coordinator/store/postgres/sqlc.yaml`). The store
 methods in `coordinator/store/postgres/apikey.go` call the generated
-`storedb.Queries` and convert each row to the public store type.
+`storedb.Queries` and convert each row to the public store type. The erasure
+methods in `coordinator/store/postgres/erasure.go`,
+`coordinator/store/postgres/erasure_rules.go` and
+`coordinator/store/postgres/erasure_keys.go` run the generated queries on
+`storedb.New(tx)` inside `erasureTx`.
 
 ```mermaid
 flowchart TB
@@ -201,10 +210,10 @@ flowchart TB
   classDef gen fill:#dcfce7,stroke:#15803d,color:#052e16
   classDef check fill:#fef3c7,stroke:#b45309,color:#1f1300
   M["schema/migrations/*.sql<br/>and goMigrations"]:::src -- "goose on an empty DB,<br/>then pg_dump" --> S["schema/schema.sql"]:::src
-  Q["queries/api_keys.sql"]:::src --> G["make<br/>sqlc-generate<br/>(sqlc.yaml)"]:::step
+  Q["queries/api_keys.sql,<br/>queries/erasure.sql"]:::src --> G["make<br/>sqlc-generate<br/>(sqlc.yaml)"]:::step
   S --> G
   G --> D["storedb/*.go<br/>Queries, ApiKey, *Params"]:::gen
-  D --> P["PostgresStore methods<br/>postgres/apikey.go"]:::step
+  D --> P["PostgresStore methods<br/>postgres/apikey.go,<br/>postgres/erasure*.go"]:::step
   P --> T["store.APIKey"]:::step
   C["CI check:<br/>make sqlc-check"]:::check -. "schema test" .-> S
   C -. "sqlc diff" .-> D
@@ -217,7 +226,7 @@ green = generated code, amber = CI check.
 |---|---|---|
 | Schema input | `schema: schema/schema.sql`. sqlc reads the dump, not the migrations: the baseline adds many columns inside `DO` blocks, which sqlc cannot see, so a query on such a column fails with `column "..." does not exist`. | `coordinator/store/postgres/sqlc.yaml` |
 | Code generation | `sql_package: pgx/v5`, `emit_pointers_for_null_types: true`, `omit_unused_structs: true`, and `timestamptz` overrides to `time.Time` and `*time.Time` ([type mapping](../reference/sqlc-type-mapping.md)) | `coordinator/store/postgres/sqlc.yaml` |
-| Database handle | `storedb.New(db DBTX)` takes the pool or a `pgx.Tx`; `PostgresStore.queries()` wraps the pool, and `RotateAPIKey` uses `storedb.New(tx)` | `coordinator/store/postgres/storedb/db.go`, `coordinator/store/postgres/apikey.go` |
+| Database handle | `storedb.New(db DBTX)` takes the pool or a `pgx.Tx`; `PostgresStore.queries()` wraps the pool, and `RotateAPIKey` and `erasureTx` use `storedb.New(tx)` | `coordinator/store/postgres/storedb/db.go`, `coordinator/store/postgres/apikey.go`, `coordinator/store/postgres/erasure.go` |
 | Row conversion | `apiKeyFromRow` maps `storedb.ApiKey` to `APIKey`; `insertAPIKeyParams` maps back | `coordinator/store/postgres/apikey.go` |
 | Tool pin | `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1`: sqlc v1.31.1 needs Go 1.26, newer than `go.mod`, so it is not a `go.mod` tool | `Makefile` (`SQLC`) |
 | CI check | `make sqlc-check` runs `TestMigrationsBuildCheckedInSchema`, then `sqlc diff`; the Coordinator Tests job runs it against its Postgres service | `Makefile`, `.github/workflows/ci.yml` |
@@ -231,8 +240,8 @@ not use sqlc. Adding a query is [Write store queries with sqlc](../developer/sql
 
 Account erasure must hide an account's rows at once and must let the same
 person sign up again. Four tables carry a nullable `deleted_at TIMESTAMPTZ`
-(version 17). A row with `deleted_at` set belongs to an erased account. No
-code sets the column yet; the erasure writer will. Every store read that
+(version 17). `RequestAccountErasure` sets the column when the grace period
+begins, before the irreversible scrub. Every store read that
 returns a live user, key, provider record or provider token filters
 `deleted_at IS NULL` in `PostgresStore` and checks `DeletedAt` in
 `MemoryStore`. The full list of reads is in the
@@ -244,8 +253,7 @@ flowchart LR
   classDef data fill:#ede9fe,stroke:#6d28d9,color:#1e1035
   classDef ok fill:#dcfce7,stroke:#15803d,color:#052e16
   classDef hidden fill:#fee2e2,stroke:#b91c1c,color:#450a0a
-  classDef future fill:#f1f5f9,stroke:#475569,color:#0f172a,stroke-dasharray: 4 3
-  E["erasure writer<br/>(not built yet)"]:::future -. "SET deleted_at = now()" .-> R[("users, api_keys,<br/>providers, provider_tokens")]:::data
+  E["RequestAccountErasure"]:::step -- "SET deleted_at = now()" --> R[("users, api_keys,<br/>providers, provider_tokens")]:::data
   R --> F{"read filters<br/>deleted_at IS NULL"}:::step
   F -- "deleted_at set" --> H["absent: not found,<br/>omitted, not authenticated"]:::hidden
   F -- "deleted_at NULL" --> L["returned as live"]:::ok
@@ -255,14 +263,22 @@ flowchart LR
   U --> S["CreateUser with the same<br/>Privy ID succeeds"]:::ok
 ```
 
-Legend: purple = table, blue = read path or index, green = live result,
-red = hidden, grey dashed = not built yet.
+Legend: purple = table, blue = writer, read path or index, green = live
+result, red = hidden.
 
 - **Read filters.** User lookups, key authentication and listing, provider
   token lookup, provider record, MDA chain and account listing, usage-flow
   provider locations, and the machine-inventory backfill skip soft-deleted
   rows. `UpdateAPIKey` and `RotateAPIKey` also filter, so they cannot change a
-  soft-deleted key. Writes and hard deletes do not filter.
+  soft-deleted key.
+- **Write fences.** New credential, provider and payout admissions refuse a
+  deleted account under the same user lock as erasure. Late external creation
+  results retain cleanup IDs in the outbox; delayed usage and route writes
+  omit personal locations after the scrub. Historical accounting, revocation
+  and ordinary provider removal remain available. Provider removal keeps hidden
+  SE/account ownership rows for later erasure and discards reputation. The
+  [soft-delete reference](../reference/soft-delete.md#late-writes) lists the
+  affected methods and the paths that do not filter.
 - **Partial unique index.** `idx_users_privy_live` (version 18) keeps one
   live user per Privy ID and ignores soft-deleted users. Versions 19 and 20
   then drop the full-table key `users_privy_user_id_key` and the index
@@ -271,11 +287,13 @@ red = hidden, grey dashed = not built yet.
 - **Restore paths.** Provider history restore (`GetProviderForRestore`) and
   machine continuity (`ResolveMachineContinuity`) skip soft-deleted provider
   records, so an erased account's history is never attached to a new session.
-  Nothing restores a soft-deleted row: no code clears `deleted_at`.
-- **Caches and other readers.** `CachedStore` caches users for
-  `UserTTL = 30 * time.Second` (`coordinator/store/cached.go`); the erasure
-  writer must invalidate it. `admin-ui` reads the replica with its own SQL and
-  does not filter.
+  Only `CancelAccountErasure` clears `deleted_at`, on the user and provider rows
+  stamped by that request before `scrub_after`; earlier ordinary removals remain
+  hidden, and nothing restores a row after the scrub.
+- **Caches and other readers.** `CachedStore` caches users for `UserTTL`
+  (`30 * time.Second`) and drops them after `RequestAccountErasure`,
+  `CancelAccountErasure` and `ScrubAccount` (`coordinator/store/cached.go`).
+  `admin-ui` reads the replica with its own SQL and does not filter.
 
 ### Tables and files that are not goose versions
 
@@ -339,7 +357,9 @@ Logs carry bounded labels only, never SQL or parameters
 9. **A soft-deleted row is never returned as live.** Every read in the
    [soft-delete reference](../reference/soft-delete.md) filters it, on both
    backends (`coordinator/tests/store/postgres/soft_delete_reads_test.go`
-   covers the Postgres reads).
+   covers the Postgres reads;
+   `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go`
+   covers both backends after `RequestAccountErasure`).
 10. **An older goose image applies nothing on a newer database.** Every version
    it knows is recorded, and goose ignores recorded versions it does not
    know. A pre-goose image ignores `goose_db_version` and replays its own boot
@@ -378,9 +398,19 @@ Logs carry bounded labels only, never SQL or parameters
 | Database-only command | `coordinator/internal/command/coordinator/maintenance.go` (`Maintenance`) |
 | sqlc config, queries, generated code | `coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`, `coordinator/store/postgres/storedb/` |
 | api_keys store methods | `coordinator/store/postgres/apikey.go` (`queries`, `apiKeyFromRow`, `insertAPIKeyParams`) |
+| Account erasure store methods | `coordinator/store/postgres/erasure.go` (`erasureTx`), `coordinator/store/postgres/erasure_rules.go`, `coordinator/store/postgres/erasure_keys.go`; queries in `coordinator/store/postgres/queries/erasure.sql` |
 | sqlc targets | `Makefile` (`sqlc-generate`, `sqlc-check`) |
 | Tests | `coordinator/tests/store/postgres/migrations_test.go`, `coordinator/tests/store/postgres/migration_index_test.go`, `coordinator/tests/store/postgres/migration_harness_test.go` |
 | Manual SQL | `coordinator/store/postgres/migrations/` |
+
+### Erasure transaction bounds
+
+Version 25's new refused-credit table retains a non-null `reference_hash`
+computed before reference sanitization by `erasure_refuse_ledger_credit`.
+This changes no existing large-table layout. `erasureTx` passes its two-minute
+context to all transaction queries and commit; rollback uses a separate
+five-second cleanup context (`coordinator/store/postgres/erasure.go`,
+`coordinator/store/postgres/erasure_fences.go`).
 
 ## Related
 

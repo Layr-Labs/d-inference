@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -143,6 +143,7 @@ and which balance column moves:
 | `admin_reward` | `HandleAdminReward` → `handleAdminBalanceAdjustment` → `CreditWithdrawable` | both |
 | `provider_floor_draw` | `coordinator/store/postgres/floor_draw_batch.go` `SettleProviderFloorDrawBatch` → `settleProviderFloorDraw` (`coordinator/store/postgres/base_rewards.go`) | both |
 | `migration` | `coordinator/store/postgres/` `MigrateAccountBalance` (balance moved between account identities) | both |
+| `erasure_forfeit` | `ScrubAccount` → `forfeitBalance` (`coordinator/store/postgres/erasure.go`); one entry for the whole balance, see [account erasure](account-erasure.md#the-scrub-transaction) | both set to 0 |
 | `deposit`, `withdrawal` | declared for legacy (pre-Stripe) deposit and on-chain withdrawal paths; no current handler writes them | — |
 
 `RewardLedgerTypes = {referral_reward, admin_reward}` is the set the
@@ -182,7 +183,8 @@ The platform fee follows the same per-user override as everyone else.
 1. `POST /v1/billing/stripe/create-session` (`HandleStripeCreateSession`;
    auth + financial limiter) requires `amount_usd` at or above the [Stripe deposit minimum](../reference/pricing-model.md#constants), validates an
    optional `referral_code`, creates a Checkout Session whose metadata carries
-   `billing_session_id`, `consumer_key`, and `referral_code`
+   `billing_session_id` and `consumer_key`; the personal referral code stays
+   in the local session
    (`coordinator/billing/stripe.go` `CreateCheckoutSession`), stores a
    `billing_sessions` row with `status = pending`, and returns
    `{session_id, stripe_session, url, amount_usd, amount_micro_usd}`.
@@ -195,7 +197,8 @@ The platform fee follows the same per-user override as everyone else.
    non-withdrawable funds and completes the session under a row lock. Duplicate
    events from either the current or retained legacy signing secret cannot credit
    twice. A pre-existing matching ledger credit is recognized without adding it
-   again. Referral attribution retries independently; the same normalized code is idempotent, and inapplicable codes (different pre-existing attribution, self-referral or a missing code) are acknowledged without retrying the settled payment. Database failures remain retryable.
+   again. Referral attribution reads the canonical local session, not historical
+   Stripe metadata, and retries independently; the same normalized code is idempotent, and inapplicable codes (different pre-existing attribution, self-referral or a missing code) are acknowledged without retrying the settled payment. Database failures remain retryable.
 4. `GET /v1/billing/stripe/session?id=<session_id>` polls the row;
    `GET /v1/billing/methods` (public) lists configured methods — Stripe only
    (`coordinator/billing/billing.go` `SupportedMethods`).
@@ -669,6 +672,22 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Base rewards | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`); `coordinator/payments/baserewards/` (`floor.go`, `alloc.go`, `epoch.go`, `engine.go`); `coordinator/store/postgres/floor_draw_batch.go` (`SettleProviderFloorDrawBatch`); `coordinator/store/postgres/base_rewards.go` (`settleProviderFloorDraw`, `SumProviderEarningsByKey`); `coordinator/api/billing/base_rewards_handlers.go` (`HandleAdminBaseRewards`); `coordinator/api/server_services.go` (`BaseRewards`) | `GET /v1/admin/base-rewards` |
 | Admin auth | `coordinator/api/access/authorize.go` (`IsAdminAuthorized`); `coordinator/api/access/authorize.go` (`RequireAdminKey`); `coordinator/api/access/publishing.go` (`RequirePublishingAPIKey`) | — |
 | Rate limits | `coordinator/ratelimit/config.go` (`Financial`, `Service`) | — |
+
+### Account erasure during billing work
+
+Checkout revalidates the captured referrer account after Stripe responds, under
+the personal-data scrub fence. If that referrer was erased, the live payer's
+session keeps its payment details and drops the obsolete code
+(`coordinator/store/postgres/billing_erasure.go`, `fenceBillingSession`).
+
+Account deletion fences new withdrawal admission before balances are changed.
+Scrub locks existing payment rows before balances, allowing settlement callbacks
+to finish without reversing their lock order. Late Stripe account, recipient
+and Checkout creation results become durable cleanup work; they cannot restore
+local personal fields or return a usable Checkout URL. Once-only credits retain
+a hashed reference identity in the refused-credit audit, while ordinary repeatable
+credits keep their existing semantics. Mechanism and code ownership:
+[concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
 
 ## Related
 

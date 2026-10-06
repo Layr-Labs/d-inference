@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — account erasure
+
+- Exclude pending-erasure users from provider-email exports after machine-owner ranking, and retain a private `resend_contact` cleanup obligation before clearing the account email. Resend contact, segment and scheduled-broadcast cleanup remains manual.
+- Route late memory-store referral settlement credits through the erasure-aware credit path, matching PostgreSQL: erased referrers stay at zero balance and receive a refused-credit audit record instead.
+
+- Preserve successful account-erasure results when the caller cancels after commit, so confirmation and scrub still disconnect providers and clear runtime caches.
+
+- Clear unshared APNs token proofs, pending challenges and push bookkeeping from runtime memory after erasure; fence delayed cache publication while preserving live shared keys and fresh ownership.
+
+- Fence delayed App Attest proof and receipt writes, APNs token persistence, session backfills and admitted log uploads against completed erasure. Preserve shared live device ownership, clear the frozen runtime MDM cohort by account, and keep late Checkout referral codes local and tied to their original owner.
+
+- Fence in-flight credential creation, provider persistence, financial admission and delayed Stripe responses against deletion. Preserve late external IDs for cleanup, strip late telemetry locations while retaining accounting, and remove frozen MDM cohort/hardware-interest records. Shared identities are removed after the last owner is erased; replayed refused refunds remain idempotent.
+
+- Add admin account erasure (GDPR): `POST /v1/admin/accounts/{account_id}/erasure/plan` (dry run and a 15-minute confirm token), `POST …/erasure` (soft delete; `force` scrubs at once), `GET …/erasure` and `POST …/erasure/cancel`. The confirm call must repeat the token and the account email, and refuses while a withdrawal is in flight.
+- The soft delete revokes the account's API keys and provider tokens, disconnects its providers and starts a grace period (`EIGENINFERENCE_ERASURE_GRACE`, default 30 days). A Privy login during the grace period gets 403 `account_pending_deletion`; after the scrub the same login creates a new account.
+- The scrub removes emails, labels, serial numbers, MDA chains, locations, raw logs, App Attest proofs, referrer codes, Stripe IDs and the named wallet addresses in one checked transaction, forfeits the balance with an `erasure_forfeit` ledger entry, and queues the deletion of every Stripe account and recipient the account used. Rows of a Secure Enclave or App Attest key another account shares are kept. IDs and financial records stay.
+- The confirm call repeats the account ID and the planned wallet list. A Stripe payout paid within 30 days still blocks erasure. After the scrub, any late credit is kept out of the balance and listed for review as `refused_credits`. Stripe deletions stay manual until the outbox worker ships.
+
 ## Unreleased - pull-request stack tooling
 
 - Add a checked, signed same-tree ancestry repair for dependent PRs after each parent squash, with atomic non-force pushes and optional retargeting. Document linear bases, manual reconciliation on content differences, and renewed signature, CI and approval checks; the tool does not merge PRs or automate conflict resolution.

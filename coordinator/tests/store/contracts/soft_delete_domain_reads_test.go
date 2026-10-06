@@ -11,11 +11,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/eigeninference/d-inference/coordinator/store/postgres"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/erasurefixture"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// The erasure writer is introduced separately. Seed tombstones through memory
-// records and SQL in the isolated PostgreSQL fixture to exercise these readers.
+// Initial cohort qualification needs independent user-only and provider-only
+// tombstones. Historical linked evidence is seeded before installing a deleted
+// user, so the fixture does not ask current admission to write through deletion.
+// Contact pagination and later frozen reads use the real erasure transition.
 func createUserWithDeletion(t *testing.T, s store.Store, id string, deletedAt *time.Time) {
 	t.Helper()
 	if err := s.CreateUser(&store.User{AccountID: id, PrivyUserID: id, Email: id + "@example.test", DeletedAt: deletedAt}); err != nil {
@@ -96,9 +99,12 @@ func TestSmallModelsInterestOmitsDeletedUsersBeforePagination(t *testing.T) {
 				if id != "b-live" && id != "d-live" {
 					deletedAt = &now
 				}
-				createUserWithDeletion(t, s, id, deletedAt)
+				createUserWithDeletion(t, s, id, nil)
 				if err := s.UpsertSmallModelsInterest(ctx, store.SmallModelsInterest{AccountID: id, MacType: "Mac Mini", Chip: "M4", RAMGB: 16}); err != nil {
 					t.Fatal(err)
+				}
+				if deletedAt != nil {
+					erasurefixture.PlanAndConfirm(t, s, erasurefixture.Account{AccountID: id, Email: id + "@example.test"}, now, time.Hour)
 				}
 			}
 			// Deleted contacts at the start and between live rows must not consume
@@ -143,7 +149,9 @@ func TestLegacyMDMCohortOmitsDeletedInitialEvidence(t *testing.T) {
 						if id == "deleted-user" {
 							deletedAt = &now
 						}
-						createUserWithDeletion(t, s, id, deletedAt)
+						if deletedAt == nil {
+							createUserWithDeletion(t, s, id, nil)
+						}
 						p := store.ProviderRecord{ID: id, AccountID: id, SEPublicKey: "se-" + id, SerialNumber: "serial-" + id, RegisteredAt: now.Add(-time.Hour), LastSeen: now, Hardware: json.RawMessage(`{}`), Models: json.RawMessage(`[]`)}
 						if id == "deleted-provider" {
 							p.DeletedAt = &now
@@ -163,6 +171,9 @@ func TestLegacyMDMCohortOmitsDeletedInitialEvidence(t *testing.T) {
 						if _, err := inventory.ObserveMachine(ctx, store.MachineObservation{SessionID: id, AccountID: id, SEKey: p.SEPublicKey, At: now.Add(-time.Minute)}); err != nil {
 							t.Fatal(err)
 						}
+						if deletedAt != nil {
+							createUserWithDeletion(t, s, id, deletedAt)
+						}
 						if id == "live" {
 							live = p
 						}
@@ -178,13 +189,7 @@ func TestLegacyMDMCohortOmitsDeletedInitialEvidence(t *testing.T) {
 					}
 					// The filter governs initial qualification, not later reads of the
 					// durable snapshot. Deleting a provider does not recompute the cohort.
-					live.DeletedAt = &now
-					if err := s.UpsertProvider(ctx, live); err != nil {
-						t.Fatal(err)
-					}
-					if _, ok := s.(*postgres.PostgresStore); ok {
-						softDeleteFixtureExec(t, `UPDATE providers SET deleted_at=$1 WHERE id=$2`, live.DeletedAt, live.ID)
-					}
+					erasurefixture.PlanAndConfirm(t, s, erasurefixture.Account{AccountID: live.AccountID, Email: live.AccountID + "@example.test"}, now, time.Hour)
 					rows, err = freeze.FreezeLegacyMDMCohort(ctx)
 					if err != nil || !reflect.DeepEqual(rows, want) {
 						t.Fatalf("repeat freeze = %+v, %v; want retained snapshot %+v", rows, err, want)

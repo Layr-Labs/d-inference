@@ -38,6 +38,13 @@ func (s *PostgresStore) indexMigrations() []*goose.Migration {
 		// can sign up again after an erased account. Versions 19 and 20 drop
 		// the old full-table unique constraint and index.
 		index(18, "idx_users_privy_live", `CREATE UNIQUE INDEX CONCURRENTLY idx_users_privy_live ON users (privy_user_id) WHERE deleted_at IS NULL`),
+		// The erasure scrub replaces a referrer code in the billing sessions
+		// that copied it.
+		index(23, "idx_billing_sessions_referral_code", `CREATE INDEX CONCURRENTLY idx_billing_sessions_referral_code ON billing_sessions (referral_code) WHERE referral_code <> ''`),
+		// A Privy login checks whether a soft-deleted user holds the Privy ID
+		// (PrivyUserPendingErasure); idx_users_privy_live does not cover
+		// deleted rows.
+		index(24, "idx_users_privy_deleted", `CREATE INDEX CONCURRENTLY idx_users_privy_deleted ON users (privy_user_id) WHERE deleted_at IS NOT NULL`),
 	}
 }
 

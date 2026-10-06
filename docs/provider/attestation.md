@@ -16,6 +16,12 @@ Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in th
 
 A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
 
+Account erasure also clears delayed account-specific proof writes and frozen
+legacy-MDM membership; [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys)
+retains another live account's device evidence. Unshared APNs tokens and pending
+challenges are removed from the coordinator's runtime cache too; stale replies
+cannot restore them ([identity cleanup](../architecture/security/identity-binding.md#account-erasure-and-apns-runtime-state)).
+
 ## Read current verification in the dashboard
 
 Open a machine's verification panel to inspect the coordinator's separate App

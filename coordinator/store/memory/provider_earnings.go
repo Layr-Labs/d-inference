@@ -108,8 +108,9 @@ func (s *MemoryStore) creditProviderAccountLocked(earning *store.ProviderEarning
 		cp.CreatedAt = time.Now()
 	}
 
-	s.creditLocked(cp.AccountID, cp.AmountMicroUSD, store.LedgerPayout, cp.JobID, cp.CreatedAt)
-	s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
+	if s.creditLocked(cp.AccountID, cp.AmountMicroUSD, store.LedgerPayout, cp.JobID, cp.CreatedAt) {
+		s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
+	}
 	s.providerEarningsSeq++
 	cp.ID = s.providerEarningsSeq
 	s.history.ProviderEarnings = append(s.history.ProviderEarnings, cp)

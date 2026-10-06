@@ -192,8 +192,10 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 	var exists bool
 	if err := tx.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM ledger_entries
-		  WHERE account_id = $1 AND entry_type = $2 AND reference = $3)`,
-		accountID, string(entryType), reference).Scan(&exists); err != nil {
+		  WHERE account_id = $1 AND entry_type = $2 AND reference = $3
+		  UNION ALL SELECT 1 FROM erasure_refused_credits
+		  WHERE account_id = $1 AND entry_type = $2 AND reference_hash = $4)`,
+		accountID, string(entryType), reference, store.HashKey(reference)).Scan(&exists); err != nil {
 		return false, fmt.Errorf("store: check ledger reference: %w", err)
 	}
 	if exists {

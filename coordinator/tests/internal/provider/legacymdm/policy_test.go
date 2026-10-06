@@ -135,3 +135,34 @@ func TestConfigurationValidatedBeforeFreeze(t *testing.T) {
 		}
 	}
 }
+
+func TestForgetAccountPreservesOtherFrozenMembers(t *testing.T) {
+	st := memory.NewMemory(store.Config{})
+	seedMachine(t, st, "first", "shared-key", "shared-serial")
+	seedMachine(t, st, "second", "shared-key", "shared-serial")
+	policy := legacymdm.New(st)
+	if err := policy.Initialize(context.Background(), attestservice.Config{ServingEnabled: true, Environment: "production", RolloutPercent: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if !policy.IdentityAllowed("first", "shared-key", "shared-serial") || !policy.IdentityAllowed("second", "shared-key", "shared-serial") {
+		t.Fatal("shared memberships not seeded")
+	}
+	policy.ForgetAccount("first")
+	if policy.IdentityAllowed("first", "shared-key", "shared-serial") || !policy.IdentityAllowed("second", "shared-key", "shared-serial") {
+		t.Fatal("account cleanup changed another account's shared machine")
+	}
+	// Concurrent snapshot readers and removals never mutate the published map.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			policy.IdentityAllowed("second", "shared-key", "shared-serial")
+		}
+	}()
+	policy.ForgetAccount("first")
+	policy.ForgetAccount("second")
+	<-done
+	if policy.IdentityAllowed("second", "shared-key", "shared-serial") {
+		t.Fatal("last membership retained")
+	}
+}

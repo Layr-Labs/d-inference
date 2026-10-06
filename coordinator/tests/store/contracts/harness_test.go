@@ -92,6 +92,8 @@ func testPostgresStore(t testing.TB) *postgres.PostgresStore {
 		"app_attest_shadow_events",
 		"request_profiles",
 		"fleet_snapshots",
+		"erasure_outbox",
+		"erasure_requests",
 	} {
 		if _, err := cleanupPool.Exec(ctx, "TRUNCATE "+table+" CASCADE"); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)

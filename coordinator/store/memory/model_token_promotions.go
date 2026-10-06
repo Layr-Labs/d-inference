@@ -175,8 +175,9 @@ func (s *MemoryStore) releaseModelTokenLocked(id string, before time.Time) (bool
 	g.ReservedTokens -= r.FreeTokens
 	s.modelTokenGrants[r.AccountID][r.ModelID] = g
 	if r.ReservedMicroUSD > 0 {
-		s.creditLocked(r.AccountID, r.ReservedMicroUSD, store.LedgerRefund, "promotion-release:"+id, time.Now())
-		s.withdrawable[r.AccountID] += r.ReservedWithdrawableMicroUSD
+		if s.creditLocked(r.AccountID, r.ReservedMicroUSD, store.LedgerRefund, "promotion-release:"+id, time.Now()) {
+			s.withdrawable[r.AccountID] += r.ReservedWithdrawableMicroUSD
+		}
 	}
 	r.State = "released"
 	s.modelTokenReservations[id] = r
@@ -229,8 +230,9 @@ func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote
 		_ = s.debitLocked(r.AccountID, delta, store.LedgerCharge, "promotion-settle:"+id)
 	}
 	if delta < 0 {
-		s.creditLocked(r.AccountID, -delta, store.LedgerRefund, "promotion-settle:"+id, time.Now())
-		s.withdrawable[r.AccountID] += min(-delta, r.ReservedWithdrawableMicroUSD)
+		if s.creditLocked(r.AccountID, -delta, store.LedgerRefund, "promotion-settle:"+id, time.Now()) {
+			s.withdrawable[r.AccountID] += min(-delta, r.ReservedWithdrawableMicroUSD)
+		}
 	}
 	g := s.modelTokenGrants[r.AccountID][r.ModelID]
 	g.ReservedTokens -= r.FreeTokens

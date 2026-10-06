@@ -9,9 +9,11 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// No writer sets deleted_at yet; account erasure will. These tests set it
-// the way that writer will (deleted_at only, nothing else changed) and prove
-// that every live read hides the row.
+// Account erasure (RequestAccountErasure) is the writer of deleted_at. These
+// tests set deleted_at alone, with nothing else changed, and prove that every
+// live read hides the row. erasure_soft_delete_reads_test.go in
+// coordinator/tests/store/contracts runs the same reads after the real writer
+// on both backends.
 
 // softDelete marks one row of table deleted. key matches account_id for
 // users, id for api_keys and providers, and token_hash for provider_tokens.

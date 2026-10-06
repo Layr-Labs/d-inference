@@ -5,15 +5,19 @@ import (
 )
 
 func (t *Throttle) RecordResumeChallenge(
+	generation uint64,
 	nonce, providerID, nodeKey, seKey, token string,
 ) <-chan struct{} {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.publicationCurrentLocked(seKey, generation) {
+		return nil
+	}
 	done := make(chan struct{})
 	t.resumeChallenges[nonce] = resumeChallenge{
 		ProviderID: providerID, NodeKey: nodeKey, SeKey: seKey,
 		Token: token, ExpiresAt: t.Now().Add(t.ResumeTimeout), Done: done,
 	}
-	t.mu.Unlock()
 	return done
 }
 

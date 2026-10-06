@@ -203,7 +203,7 @@ the only connection-level knob; there is no separate host/user/password set.
 coordinator serves only after they all succeed. Each version runs once and is
 recorded in `goose_db_version`. `coordinator/store/postgres/schema/schema.sql` is the
 checked-in `pg_dump` of the schema that the migrations build; sqlc generates
-the api_keys queries from it. The versions,
+the api_keys and account erasure queries from it. The versions,
 locks, timeouts, sqlc and failure modes are in
 [schema lifecycle](schema-lifecycle.md); adding a migration is
 [Add a database migration](../developer/database-migrations.md).
@@ -223,6 +223,17 @@ flowchart LR
 ```
 
 Legend: blue = step, amber = decision, green = serving, red = exit 1.
+
+### Soft-deleted rows
+
+A row in `users`, `api_keys`, `providers` or `provider_tokens` whose
+`deleted_at` is set is hidden from live reads. [Account erasure](#account-erasure)
+sets the column when the grace period begins. New credentials, provider records
+and payout admissions acquire the account fence and refuse a deleted account;
+late external creation results retain cleanup IDs in the erasure outbox.
+Historical accounting and revocation paths remain available. The model is in
+[schema lifecycle](schema-lifecycle.md#soft-delete); the exact read and write
+behavior is in the [soft-delete reference](../reference/soft-delete.md).
 
 ### Provider earnings and history
 
@@ -259,6 +270,36 @@ chain re-verification remain in force.
 Store errors are logged and do not grant hardware trust. Reputation is still
 loaded by the selected historical record ID. No store operation lists every
 historical provider record.
+
+### Account erasure
+
+Account erasure removes the personal data of one account in three steps:
+plan (a read-only dry run), confirm (a soft delete that sets `deleted_at` and
+revokes keys and tokens), and, after the grace period, one scrub transaction
+that applies every rule in `erasure.Rules` (`coordinator/internal/store/erasure/rules.go`)
+with each statement's affected rows checked against a count. It uses four
+tables: `erasure_requests` (state, counts, and retained audit
+metadata), `erasure_outbox` (worker-delivered Stripe deletions and the Datadog
+`erasure_log` record, plus private manual Resend contact cleanup), `erasure_refused_credits`
+(credits that triggers keep out of an erased account), and `erasure_se_owners`
+(pseudonymous key digests and account IDs that fence delayed device writes). Goose versions 22 to 26
+add them and their indexes:
+
+| Version | Source | What it does |
+|---|---|---|
+| 22 | `00022_erasure_tables.sql` | Creates `erasure_requests`, `erasure_outbox` (including the `resend_contact` target), and indexed `erasure_se_owners`. |
+| 23–24 | Go: `indexMigrations` | `CONCURRENTLY` indexes `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
+| 25 | `00025_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
+| 26 | `00026_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows, plus the independent `lease_generation BIGINT` that fences delivery result commits. |
+
+`CachedStore` overrides the three erasure writers (`RequestAccountErasure`,
+`CancelAccountErasure`, `ScrubAccount`) to drop cached users.
+
+- Mechanism, invariants and failure modes:
+  [account erasure](account-erasure.md).
+- Rule table, retained data, table schemas and constants:
+  [personal-data rules](../reference/personal-data-rules.md).
+- Procedure: [account erasure runbook](../operations/account-erasure.md).
 
 ### Table families
 
@@ -322,6 +363,8 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Memory-store pruner, every 15 minutes | `coordinator/app/store.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/app/store.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
+| Account erasure outbox, every minute | `coordinator/api/accounts/erasure/outbox.go` (`Owner.StartOutboxLoop`, started by `StartErasureOutboxLoop` from `coordinator/app/lifecycle.go`) | Delivers Stripe and Datadog rows; moves `resend_contact` to `manual_action`. A `done` row loses its external cleanup identifier ([outbox delivery](account-erasure.md#outbox-delivery)). |
+| Account erasure scrub, every hour | `coordinator/api/accounts/erasure/loop.go` (`Owner.StartLoop`, started by `StartAccountErasureLoop` from `coordinator/app/lifecycle.go`) | Scrubs the personal data of each `pending` erasure request whose `scrub_after` has passed ([account erasure](account-erasure.md#grace-loop)). The user row, IDs and financial records stay ([retained data](../reference/personal-data-rules.md#retained-data)). |
 
 The existing nullable `request_rejections.could_have_served` column stores NULL
 when counterfactual servability is not evaluated. Go reads it as `*bool`
@@ -365,7 +408,12 @@ KV blocks under a per-model key, not tokens.
 3. **One-shot data migrations in the baseline commit their
    `schema_migrations` marker in the same statement or transaction as their
    update** (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`).
-4. **Boot never holds a long lock on a hot table.** The
+4. **A soft-deleted row is never returned as live.** Reads of `users`,
+   `api_keys`, `providers` and `provider_tokens` filter `deleted_at IS NULL`
+   ([soft-delete reference](../reference/soft-delete.md);
+   `coordinator/tests/store/postgres/soft_delete_reads_test.go` covers each
+   Postgres read).
+5. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
    this lives in `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` and
@@ -376,24 +424,34 @@ KV blocks under a per-model key, not tokens.
    `autovacuum_analyze_scale_factor` is `0.005` so planner statistics track
    ingestion (`ensureProviderEarningsWindowIndex`,
    `coordinator/store/postgres/earnings_window_index.go`).
-5. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
+6. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
    and `balances` never store floats; see
    [`billing.md#invariants`](billing.md#invariants).
-6. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
+7. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
    counts, timings and outcomes only; the `serial_number` column of
    `provider_log_reports` and the legacy `cache_affinity_key` column are kept
    empty by the triggers `clear_provider_log_report_serial` and
    `clear_legacy_cache_affinity_key`
    (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`).
-7. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
+8. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
    wrapped by a Secure Enclave key and the SSD cache is unreadable without it
    (`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`).
+9. **An erasure scrub changes exactly the rows it counted, or nothing.**
+   Each rule statement runs after a count with the same predicate in one
+   transaction, and a difference rolls the whole scrub back
+   (`applyRules`, `coordinator/store/postgres/erasure_rules.go`).
+10. **An erased account's balance stays zero.** The triggers in
+   `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`
+   refuse every credit after the scrub and record it for review
+   (`TestErasedAccountRefusesCredits`).
 
 ## Failure modes
 
 | Symptom | Cause | Where to look |
 |---|---|---|
 | Coordinator exits 1 at boot with `store: run migrations` | A goose migration failed: a lock timeout, the advisory-lock wait, an invalid index, an out-of-order or duplicate version, or the retired-backfill guard | [Schema lifecycle failure modes](schema-lifecycle.md#failure-modes) and the [schema migration runbook](../operations/schema-migration.md#troubleshooting). |
+| A coordinator built before goose fails to boot with a unique-violation on `idx_users_privy` | It replays its boot DDL, whose non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails once a soft-deleted and a live user share a Privy ID | Roll back only to images built with goose; see the [schema migration rollback rules](../operations/schema-migration.md#rollback). |
+| An account erasure stays `pending` after `scrub_after` | The scrub refused (a withdrawal still open) or aborted (`ErrErasureCountMismatch`: rows changed between count and statement); the loop retries hourly | `last_error` in `GET /v1/admin/accounts/{account_id}/erasure`; [account erasure failure modes](account-erasure.md#failure-modes). |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
 | `/v1/stats` slow and pool saturated | Full scans on `usage` holding connections; the 80-connection floor is the mitigation, not a fix | `pg_stat_activity`; the read cache. |
@@ -414,9 +472,21 @@ KV blocks under a per-model key, not tokens.
 | Provider identity and usage reads | `coordinator/store/postgres/provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres/usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres/row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres/model_registry.go`, `coordinator/store/postgres/base_rewards.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/`, `coordinator/store/`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory/`, `coordinator/store/memory/base_rewards.go` |
+| Account erasure | `coordinator/store/erasure_types.go` (types, `AccountErasureStore`), `coordinator/internal/store/erasure/` (`Rules`, `Keys`, confirm hashes), `coordinator/store/postgres/erasure.go`, `erasure_rules.go` (`erasureStatements`), `erasure_keys.go` and `erasure_outbox.go`, `coordinator/store/memory/erasure.go`, `erasure_rules.go` and `erasure_outbox.go`, `coordinator/store/postgres/queries/erasure.sql`, `coordinator/api/accounts/erasure/` (handlers, loop and outbox worker); full map in [account erasure](account-erasure.md#code-map) |
 | Manual SQL | `coordinator/store/postgres/migrations/` |
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/internal/provider/journal/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |
+
+### Erasure persistence boundaries
+
+Refused credits include `reference_hash`, a SHA-256 identity that preserves
+once-only callback deduplication after the public reference is scrubbed.
+Account-owned credential/provider/hardware-interest writes and payout admissions
+synchronize with deletion using the user row. Late external creation results
+are staged in `erasure_outbox`, including during grace; only erased requests
+may deliver them. The scrub also deletes the account's frozen legacy MDM
+cohort and saved hardware interest. Code and synchronization:
+[concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
 
 ## Related
 

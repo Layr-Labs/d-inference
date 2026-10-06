@@ -30,7 +30,7 @@ func TestCodeAttestResumeTimeoutUsesConfiguredClock(t *testing.T) {
 	provider := newCodeAttestProvider(key, seKey)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if !manager.SendCodeIdentityResumeChallenge(ctx, provider.ID, provider, key, seKey, provider.APNsDeviceToken) {
+	if !manager.SendCodeIdentityResumeChallenge(ctx, provider.ID, provider, key, seKey, provider.APNsDeviceToken, throttle.PublicationGeneration()) {
 		t.Fatal("resume challenge was not handed to the transport")
 	}
 	select {

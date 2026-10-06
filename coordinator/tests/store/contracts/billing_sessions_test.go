@@ -9,14 +9,22 @@ import (
 func TestBillingSessionLifecycleBackends(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
+			referrerAccountID, referralCode := uniqueID("referrer"), uniqueID("REF")
+			if err := s.CreateUser(&store.User{AccountID: referrerAccountID, PrivyUserID: "did:privy:" + referrerAccountID}); err != nil {
+				t.Fatalf("CreateUser(referrer): %v", err)
+			}
+			if err := s.CreateReferrer(referrerAccountID, referralCode); err != nil {
+				t.Fatalf("CreateReferrer: %v", err)
+			}
 			session := &store.BillingSession{
-				ID:             uniqueID("bs"),
-				AccountID:      uniqueID("acct"),
-				PaymentMethod:  "stripe",
-				AmountMicroUSD: 25_000_000,
-				ExternalID:     uniqueID("ext"),
-				Status:         "pending",
-				ReferralCode:   "REF-1",
+				ID:                uniqueID("bs"),
+				AccountID:         uniqueID("acct"),
+				PaymentMethod:     "stripe",
+				AmountMicroUSD:    25_000_000,
+				ExternalID:        uniqueID("ext"),
+				Status:            "pending",
+				ReferralCode:      referralCode,
+				ReferrerAccountID: referrerAccountID,
 			}
 			if err := s.CreateBillingSession(session); err != nil {
 				t.Fatalf("CreateBillingSession: %v", err)
@@ -31,7 +39,7 @@ func TestBillingSessionLifecycleBackends(t *testing.T) {
 			}
 			if got.AccountID != session.AccountID || got.PaymentMethod != "stripe" ||
 				got.AmountMicroUSD != 25_000_000 || got.ExternalID != session.ExternalID ||
-				got.Status != "pending" || got.ReferralCode != "REF-1" || got.CompletedAt != nil {
+				got.Status != "pending" || got.ReferralCode != referralCode || got.ReferrerAccountID != "" || got.CompletedAt != nil {
 				t.Fatalf("stored session = %+v", got)
 			}
 

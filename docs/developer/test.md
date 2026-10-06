@@ -2,6 +2,14 @@
 
 > Last updated: 2026-10-06
 
+## Pull-request restacking
+
+Run `python3 scripts/test-restack-after-squash.py` for the regression suite of
+`scripts/restack-after-squash.py`. Follow the [stacking guide](pull-requests.md)
+for the live `--check` before an authorized `--push`; local tests do not replace
+checking the actual squash, current remote refs, Verified signatures, CI,
+mergeability, and approvals after an update.
+
 ## Nightly Linear package
 
 Run from the repository root:
@@ -98,6 +106,16 @@ requires API-contract documentation as well as the release runbook. The guards
 supply every unrelated canonical document to ensure ownership or API-contract
 updates cannot satisfy another domain's requirement, then verify each permitted
 domain document satisfies it. Go test files remain excluded from these rules.
+The soft-delete rule separately requires `docs/reference/soft-delete.md` for
+the current live-row readers and writers, including small-model contact exports
+and initial legacy MDM cohort qualification; the cohort owners also retain their
+trust-documentation requirement. sqlc sources still require their
+canonical generation/type docs too. New reader/writer paths must extend the
+rule. The tests cover both backends, generated queries, unrelated history
+files, test exclusions and the maintainer override.
+`coordinator/tests/store/contracts/soft_delete_domain_reads_test.go` exercises
+contact filtering before pagination and cohort evidence filtering in memory and
+isolated PostgreSQL, including repeated reads of a frozen cohort.
 Shared fixtures in `coordinator/tests/protocol/testdata/` retain the protocol
 documentation requirement because they define cross-language wire examples.
 
@@ -1213,6 +1231,13 @@ identity lookup through CachedStore,
 index applicability, MDA trust caps, and a migration-only subprocess that exits
 without HTTP startup or admin-key seeding. They do not measure production startup
 latency or validate an overlapping coordinator handoff.
+
+Goose startup, upgrade and advisory-lock tests live in
+`coordinator/tests/store/postgres/migrations_test.go`. Concurrent-index snapshot
+waits, invalid-leftover recovery and failed-version recording live in
+`coordinator/tests/store/postgres/migration_index_test.go`. Run the
+[migration verification commands](database-migrations.md#verify) with the same
+disposable database.
 
 Startup recovery regressions also cover catalog-verified index definitions and isolated
 planner applicability, transient provider/reputation retries, a shared deadline,
@@ -3407,3 +3432,32 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Account erasure regressions
+
+`coordinator/tests/internal/erasurefixture/account.go` seeds an account's
+credentials, provider, balances and Stripe session for mirrored store tests.
+`coordinator/tests/store/contracts/erasure_late_writes_test.go` checks late
+external results, location suppression without lost accounting and refused
+credit replay. PostgreSQL tests use real row/advisory-lock barriers for
+withdrawal admission and simultaneous shared-owner scrubs; the composed HTTP
+Checkout regression pauses a local fake Stripe server across erasure.
+`coordinator/tests/internal/erasurefixture/commit.go` cancels the caller through
+pgx tracing after PostgreSQL confirms `COMMIT`. Store regressions cover plan
+creation/replacement, confirmation, cancellation and scrubbing, plus rollback
+when a returned summary cannot be decoded. Composed API regressions verify
+provider disconnects and auth/usage cache cleanup. The account API contract
+package uses `testdb.Main` to isolate this PostgreSQL coverage in a disposable
+database, just like the store suites.
+The marker fixture in `coordinator/tests/store/postgres/erasure_marker_test.go`
+seeds every personal-data rule, including frozen legacy MDM cohort and saved
+hardware interest, and verifies another account's markers survive.
+
+The route batching tracer in
+`coordinator/tests/store/postgres/route_telemetry_batch_test.go` distinguishes
+bulk inserts from the account-erasure lock and ownership lookup. It requires
+one insert, one lock and one lookup per chunk, with at most two transaction
+boundary statements; duplicates still split into ordered chunks. Outcome
+updates retain their single pipelined batch. The memory marker fixture also
+freezes real MDM eligibility and stores hardware-interest markers before
+scrubbing, so every memory-backed personal-data rule has observed coverage.

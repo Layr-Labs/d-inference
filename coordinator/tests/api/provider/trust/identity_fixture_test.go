@@ -63,11 +63,11 @@ func (t *throttleFixture) ClearPushBudget(ctx context.Context, seKey string) boo
 }
 
 func (t *throttleFixture) recordAttested(seKey, version, token string) {
-	t.Seed([]store.CodeAttestation{{SEPubKey: seKey, Version: version, APNsToken: token, AttestedAt: t.Now()}})
+	t.Seed(t.PublicationGeneration(), []store.CodeAttestation{{SEPubKey: seKey, Version: version, APNsToken: token, AttestedAt: t.Now()}})
 }
 
 func (t *throttleFixture) recordChallenge(seKey, nonce string) {
-	t.RecordChallengeForIdentity(seKey, nonce, "", "")
+	t.RecordChallengeForIdentity(t.PublicationGeneration(), seKey, nonce, "", "")
 }
 
 func (t *throttleFixture) matchChallenge(seKey, nonce string) bool {

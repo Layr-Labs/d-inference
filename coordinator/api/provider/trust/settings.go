@@ -30,13 +30,11 @@ func (s *Owner) SetAllowDuplicateProviderSerialsForTesting(allow bool) {
 }
 
 func (s *Owner) SetMDMClient(client *mdm.Client) {
-	s.verificationBackend.
-		Client = client
-	if client != nil && s.verificationBackend.
-		Scheduler ==
-		nil {
-		s.verificationBackend.
-			Scheduler = s.NewVerificationScheduler(s.mdmSchedulerConfig, verification.Dependencies{})
+	s.verificationBackend.Client = client
+	if client != nil && s.verificationBackend.Scheduler == nil {
+		s.verificationBackend.Scheduler = s.NewVerificationScheduler(s.mdmSchedulerConfig, verification.Dependencies{
+			LegacyMDMAllowed: s.LegacyMDM.ProviderAllowed,
+		})
 	}
 }
 

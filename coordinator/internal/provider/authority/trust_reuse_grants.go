@@ -37,6 +37,9 @@ func (s *Service,
 		seKey == "" || serial == "" {
 		return false
 	}
+	if s.legacyMDMAllowed != nil && !s.legacyMDMAllowed(provider) {
+		return false
+	}
 	if blocked, _ := s.TrustSafetyStatus(); blocked || s.DeniesIdentity(seKey) {
 		return false
 	}

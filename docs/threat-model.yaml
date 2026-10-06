@@ -1,5 +1,8 @@
 version: "1.1"
 created: "2026-05-14"
+# Upcoming frozen legacy MDM policy documented 2026-10-04, not a production
+# activation claim or a revalidation of the older threat entries. Cohort gates
+# restrict coordinator authorization; generic profiles remain directly copyable.
 # T-036 ARV claim corrected 2026-09-28 against 2b714c427: Verify records
 # AuthenticatedRootEnabled as informational; it is not a security requirement.
 # T-051 references the defined malicious-provider adversary (ADV-001), replacing
@@ -974,6 +977,42 @@ trust_boundaries:
         string could theoretically produce the same signed bytes as a different
         (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
         timestamps are statistically non-overlapping."
+      - "Upcoming legacy MDM policy freezes authenticated account/SE-key/serial
+        membership for already successfully MDM-verified devices on first upgraded
+        startup after revocation replay. FreezeLegacyMDMCohort persists the cutoff
+        and cohort across restarts, including an empty cohort. New accounts,
+        devices, keys and associations are excluded. Lost or hashless historical
+        evidence may be conservatively omitted; retained hardware snapshots plus
+        authenticated inventory may supplement it. Membership never replaces
+        revocation, posture, freshness or code-identity checks. No grace period is
+        chosen and no expiry is implemented. Code: coordinator/internal/provider/legacymdm/policy.go
+        (Policy.Initialize, Policy.RegistrationAllowed, Policy.ProviderAllowed),
+        coordinator/store/legacy_mdm_cohort.go (LegacyMDMCohortStore)."
+      - "The upcoming /v1/enroll gate requires a linked provider Bearer token and
+        an SE-key signature over darkbloom-mdm-enroll-v1, the lowercase SHA-256
+        token hash, the SE public key and Unix timestamp separated by LF. Proofs
+        are bounded to five minutes of coordinator time; reenrollment requires
+        the existing key under its frozen account. Identity recovery, scheduler
+        submission, live MDM, late callbacks and cached trust reuse apply cohort
+        gates. New identities require qualified App Attest; unsupported OS
+        versions do not create a fallback."
+      - "Noncohort connections require qualified App Attest on owner self/prefer
+        routes too; a TrustNone floor cannot bypass the per-connection
+        RequireAppAttestServingAuthorization gate at shared routing and final
+        handoff. Initialization validates enabled production App Attest serving
+        with full rollout before freezing; invalid configuration fails startup
+        without silently freezing membership. Configuration does not qualify a
+        build or replace verified proofs."
+      - "Grandfathered MDM-only serving does not qualify for base rewards: current
+        qualified App Attest authorization is required, including for machines
+        with both evidence paths. Existing economics guards and inference/work
+        earnings are unchanged; historical rewards are not clawed back."
+      - "The generic MDM profile remains inherently copyable. MicroMDM SCEP and
+        check-in bypass coordinator enrollment authorization, so a copied profile
+        can enroll another Mac directly in MicroMDM. Cohort restrictions guarantee
+        coordinator MDM authorization, not literal inability to enroll through
+        those direct endpoints. Profile possession or MicroMDM enrollment does
+        not add a new identity to the cohort or grant legacy serving permission."
       - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
         visible for public connections in GET /v1/providers/attestation and can link
         successive sessions. Private-only providers are excluded before shared caching.

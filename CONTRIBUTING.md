@@ -39,7 +39,7 @@ The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md)
 ### Prerequisites
 
 - macOS on Apple Silicon for anything under `provider-swift/`; the coordinator, sidecar, e2e suite, and UIs build on macOS or Linux.
-- Toolchains are pinned in [`mise.toml`](mise.toml) and installed with `mise install`: Go `1.25.0`, Rust `1.88.0`, Node `22`, Swift `6.3`, Python `3.12`, plus `jq`, `gh`, `awscli`, `gcloud`. Xcode Command Line Tools and `cmake` are needed for the provider's metallib.
+- Toolchains are pinned in [`mise.toml`](mise.toml) and installed with `mise install`: Go `1.25.7`, Rust `1.88.0`, Node `22`, Swift `6.3`, Python `3.12`, plus `jq`, `gh`, `awscli`, `gcloud`. Xcode Command Line Tools and `cmake` are needed for the provider's metallib.
 - A working `git` config with `user.name` and `user.email`.
 
 ### First-time clone

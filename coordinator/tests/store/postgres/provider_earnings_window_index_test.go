@@ -56,12 +56,11 @@ func TestProviderEarningsWindowIndexBootSafe(t *testing.T) {
 	}
 	assertWindowIndex("after startup")
 
-	// A restart re-runs migrate(): the valid-index fast path and the
-	// already-set reloption make both steps no-ops rather than errors.
-	if err := s.reopen(ctx); err != nil {
-		t.Fatalf("re-running migrate (restart): %v", err)
-	}
-	assertWindowIndex("after re-running migrate")
+	// Replaying the migrations (the first goose boot of a database that
+	// already has the index): the valid-index fast path and the already-set
+	// reloption make both steps no-ops rather than errors.
+	replayMigrations(t, s)
+	assertWindowIndex("after replaying migrations")
 
 	// The index is on created_at and is a working BRIN index: summarising a
 	// freshly inserted row's block range must succeed. (Which index the planner

@@ -33,31 +33,38 @@ type CachePlanner struct {
 	PreloadPlanning PreloadPlanning
 }
 
+// CachePlanDecision is one planning call's registry result together with the
+// decision reason emitted for it.
+type CachePlanDecision struct {
+	registry.CachePlanResult
+	Reason CachePlanningDecisionReason
+}
+
 // PlanResult is the cache planning adapter. Production request memoization
 // shares the result, including prompt counts, with preflight and dispatch.
-func (p CachePlanner) PlanResult(ctx context.Context, input CachePlanningInput) registry.CachePlanResult {
+func (p CachePlanner) PlanResult(ctx context.Context, input CachePlanningInput) (decision CachePlanDecision) {
 	started := time.Now()
 	modelLabel := p.ModelLabel(input.Model)
-	reason := CachePlanningUnknownOutcome
-	defer func() { p.EmitDecision(modelLabel, reason, time.Since(started)) }()
+	decision.Reason = CachePlanningUnknownOutcome
+	defer func() { p.EmitDecision(modelLabel, decision.Reason, time.Since(started)) }()
 
 	if input.LoweringFailed {
-		reason = CachePlanningLoweringUnsupported
-		return registry.CachePlanResult{}
+		decision.Reason = CachePlanningLoweringUnsupported
+		return decision
 	}
 	if p.Artifacts == nil || p.Contract == nil || p.Preloader == nil {
-		reason = CachePlanningDependenciesUnavailable
-		return registry.CachePlanResult{}
+		decision.Reason = CachePlanningDependenciesUnavailable
+		return decision
 	}
 	status, ok := p.Artifacts.Status(input.Model)
 	if artifactReason := CachePlanningArtifactReason(status, ok); artifactReason != "" {
-		reason = artifactReason
-		return registry.CachePlanResult{}
+		decision.Reason = artifactReason
+		return decision
 	}
 	identity, verified := p.cachePreloadIdentity(input.Model, status)
 	if !verified {
-		reason = CachePlanningPreloadNotReady
-		return registry.CachePlanResult{}
+		decision.Reason = CachePlanningPreloadNotReady
+		return decision
 	}
 	planInput := registry.CachePlanInput{
 		Account:              input.Account,
@@ -77,14 +84,14 @@ func (p CachePlanner) PlanResult(ctx context.Context, input CachePlanningInput) 
 	state := preload.PlanningState(identity)
 	result, decided := p.commitCachePlanning(ctx, input, planInput, identity, rejected, state)
 	if !decided {
-		reason = CachePlanningPreloadNotReady
-		return registry.CachePlanResult{}
+		decision.Reason = CachePlanningPreloadNotReady
+		return decision
 	}
 	// Registry still owns eligibility, sampling and outcome precedence. Keep
 	// legacy accounting distinct from the broader API decision population.
 	p.Observation.EmitExactCachePlan(result)
-	reason = CachePlanningResultReason(result.Outcome)
-	return result
+	decision.CachePlanResult, decision.Reason = result, CachePlanningResultReason(result.Outcome)
+	return decision
 }
 
 // ModelLabel is the existing catalog-bounded model label. A caller alias or an

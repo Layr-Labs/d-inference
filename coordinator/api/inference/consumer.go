@@ -21,6 +21,7 @@ import (
 	providerwire "github.com/eigeninference/d-inference/coordinator/internal/inference/providerwire"
 	retry "github.com/eigeninference/d-inference/coordinator/internal/inference/retry"
 	routeplan "github.com/eigeninference/d-inference/coordinator/internal/inference/routeplan"
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/cachefunnel"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -933,6 +934,9 @@ func (s *Owner) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return s.planPromptRoute(ctx, access.ConsumerKeyFromContext(r.Context()), candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
 		},
 		requiresVision, parsed)
+	cacheFunnel := s.enterCacheFunnel(model, inreq.CachePlanHasMedia(requiresVision, parsed))
+	cachePlans.ObserveCacheFunnel(cacheFunnel)
+	defer func() { closeCacheFunnel(r.Context(), cacheFunnel) }()
 	r = r.WithContext(cachePlans.WithContext(r.Context()))
 	preflightStart := time.Now()
 	admission := s.NewAdmission().Run(w, r, parsed, AdmissionRequest{
@@ -999,7 +1003,9 @@ func (s *Owner) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		modelMaxContext = rec.MaxContextLength
 	}
 	observation.ProfileDBCall(rp, registryReadStart2)
-	cachePlan := cachePlans.ForBody(model, providerBody)
+	dispatchedPlanning := cachePlans.ResultForBody(model, providerBody)
+	cachePlan := dispatchedPlanning.Cache
+	noteDispatchedCachePlanning(cacheFunnel, dispatchedPlanning)
 	rp.Mark(registry.StampReqPlanDone)
 	if rp != nil {
 		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
@@ -1335,6 +1341,9 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 			return s.planPromptRoute(ctx, consumerKey, candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
 		},
 		requiresVision, parsed)
+	cacheFunnel := s.enterCacheFunnel(model, inreq.CachePlanHasMedia(requiresVision, parsed))
+	cachePlans.ObserveCacheFunnel(cacheFunnel)
+	defer func() { closeCacheFunnel(r.Context(), cacheFunnel) }()
 	r = r.WithContext(cachePlans.WithContext(r.Context()))
 	preflightStart := time.Now()
 	admission := s.NewAdmission().Run(w, r, parsed, AdmissionRequest{
@@ -1376,7 +1385,9 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 	consumerEndpoint, requestedStopSequences := inreq.GenericResponseMetadata(endpoint, parsed)
 	var cachePlan registry.CachePlan
 	if loweringErr == nil {
-		cachePlan = cachePlans.ForBody(model, inferenceBody)
+		dispatchedPlanning := cachePlans.ResultForBody(model, inferenceBody)
+		cachePlan = dispatchedPlanning.Cache
+		noteDispatchedCachePlanning(cacheFunnel, dispatchedPlanning)
 	} else {
 		// Endpoint lowering is a cache-routing eligibility boundary, not a new
 		// inference rejection. Preserve the existing generic endpoint behavior
@@ -1384,6 +1395,7 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 		inferenceBody = endpointBody
 		cachePlanner := s.NewCachePlanner()
 		cachePlanner.EmitDecision(cachePlanner.ModelLabel(model), routeplan.CachePlanningLoweringUnsupported, 0)
+		cacheFunnel.NotePlanning(routeplan.FunnelPlanning(routeplan.CachePlanningLoweringUnsupported), cachefunnel.Tokens{})
 	}
 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps

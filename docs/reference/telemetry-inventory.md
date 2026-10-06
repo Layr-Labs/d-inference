@@ -249,6 +249,40 @@ when this instrumentation is deployed. Historical aggregate hits cannot be
 backfilled into models. Provider usage, receipt counts and selection counts
 have different populations and must not be summed together.
 
+### Cache reuse loss funnel (status endpoint and admin metrics)
+
+The `funnel` field of `GET /v1/cache/status` is an in-process aggregate
+(`coordinator/internal/observation/cachefunnel/`); it emits no Datadog metric
+and resets on coordinator restart. The endpoint is unauthenticated, so the
+field holds counts of requests and attempts only and no token sum. Its population is every text request for a
+catalog model while cache routing is on, counted once per request regardless
+of retries and hedges. It is a different population from every counter above
+and must not be summed with them.
+
+| Field | Meaning |
+|---|---|
+| `entered`, `closed`, `in_flight` | Requests admitted to the population, classified, and still open. `entered = closed + in_flight`. |
+| `reasons[]` | One entry per terminal reason, always present, in lifecycle order; `requests` over all entries sums to `closed`. Reasons are defined in [the cache routing architecture page](../architecture/cache-aware-routing.md#reuse-loss-funnel). |
+| `total` | The same counters summed over all reasons. |
+| `requests`, `attempts` | Requests in the reason, and the provider attempts they used. |
+| `dispatched_without_scope` | Requests whose classifying attempt went to a provider that received no cache scope. |
+| `lookup_outcome_reported` | Requests whose completing provider reported a lookup outcome in its usage. |
+| `prompt_tokens_unknown`, `repeated_prefix_tokens_unknown`, `predicted_tokens_unknown`, `reused_tokens_unknown` | Requests where that token quantity was not observed. Unknown is never folded into a sum as zero. |
+| `unobserved[]` | Stages the coordinator does not feed into the funnel, each with the reason. |
+
+The token sums are in-process counters on the admin-authenticated
+`GET /v1/admin/metrics` only (`ObserveCacheFunnelRecord` in
+`coordinator/api/observation/cache_funnel_telemetry.go`). Each is labelled by
+terminal `reason` and adds a closed request's count only when that quantity
+was observed.
+
+| Counter | Meaning |
+|---|---|
+| `exact_cache_funnel_prompt_tokens_total{reason}` | Exact prompt tokens counted by the planning decision for the dispatched body. |
+| `exact_cache_funnel_repeated_prefix_tokens_total{reason}` | Repeated-prefix tokens (demand evidence) of the dispatched plan. |
+| `exact_cache_funnel_predicted_tokens_total{reason}` | Tokens the coordinator expected the chosen provider to restore. Not fed today, so always absent. |
+| `exact_cache_funnel_reused_tokens_total{reason}` | Provider-reported cached tokens of the completing attempt. |
+
 ### Telemetry pipeline and platform gauges
 
 | Metric | Type | Tags | Emitted |

@@ -5,6 +5,7 @@ import (
 
 	inreq "github.com/eigeninference/d-inference/coordinator/api/inference/request"
 	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/cachefunnel"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -14,6 +15,11 @@ type Memo struct {
 	body     func(string) ([]byte, error)
 	planWork func(string, []byte) promptwork.Result
 	memo     promptwork.Memo
+}
+
+// ObserveCacheFunnel must precede WithContext; see promptwork.Memo.
+func (m *Memo) ObserveCacheFunnel(request *cachefunnel.Request) {
+	m.memo.ObserveCacheFunnel(request)
 }
 
 // WithContext shares the memo with later dispatch and retry accounting.
@@ -46,9 +52,15 @@ func (m *Memo) ForModel(model string) registry.CachePlan {
 }
 
 func (m *Memo) ForBody(model string, body []byte) registry.CachePlan {
+	return m.ResultForBody(model, body).Cache
+}
+
+// ResultForBody is the memoized prompt-work result for one model and body,
+// including the planning decision that produced it.
+func (m *Memo) ResultForBody(model string, body []byte) promptwork.Result {
 	return m.memo.Plan(model, body, func() promptwork.Result {
 		return m.planWork(model, body)
-	}).Cache
+	})
 }
 
 func (m *Memo) WorkForModel(model string) *protocol.PromptWork {

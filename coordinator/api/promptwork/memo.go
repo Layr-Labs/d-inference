@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"sync"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/cachefunnel"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -14,10 +15,19 @@ import (
 type Result struct {
 	Cache registry.CachePlan
 	Work  *protocol.PromptWork
+	// CachePlanning and CountedPromptTokens are the reuse-funnel evidence of
+	// the cache planning decision behind this result. They are memoized with
+	// it, so a decision stays attached to the model and body it was made for.
+	CachePlanning       cachefunnel.Planning
+	CountedPromptTokens cachefunnel.Tokens
 	// retryPlanning distinguishes a temporary accounting-permit miss from a
 	// completed plan. It remains local to this request and is never serialized.
 	retryPlanning bool
 }
+
+// PlanningDeferred reports that the work gate had no free slot, so this
+// result carries no plan and planning may run again later in the request.
+func (r Result) PlanningDeferred() bool { return r.retryPlanning }
 
 type entry struct {
 	digest [32]byte
@@ -31,6 +41,25 @@ type entry struct {
 type Memo struct {
 	mu      sync.Mutex
 	entries map[string]entry
+	// cacheFunnel is set once, before the memo is shared through a context.
+	cacheFunnel *cachefunnel.Request
+}
+
+// ObserveCacheFunnel attaches the request's reuse-funnel account so every
+// dispatched attempt reaches it through the context that already carries the
+// memo. Call it before WithMemo.
+func (m *Memo) ObserveCacheFunnel(request *cachefunnel.Request) {
+	m.cacheFunnel = request
+}
+
+// CacheFunnelFromContext returns nil for a request outside the funnel
+// population; every cachefunnel.Request method accepts that.
+func CacheFunnelFromContext(ctx context.Context) *cachefunnel.Request {
+	memo, _ := ctx.Value(contextKey{}).(*Memo)
+	if memo == nil {
+		return nil
+	}
+	return memo.cacheFunnel
 }
 
 func (m *Memo) Plan(model string, body []byte, plan func() Result) Result {

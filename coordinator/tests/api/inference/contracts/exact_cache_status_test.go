@@ -108,6 +108,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	if !status.Sidecar.Enabled || status.Sidecar.Running || status.Sidecar.Ready {
 		t.Fatalf("sidecar status=%+v", status.Sidecar)
 	}
+	requireEmptyFunnelShape(t, response.Body.Bytes())
 	for _, sensitive := range []string{
 		"private-provider", "private-model", strings.Repeat("a", 64),
 		strings.Repeat("b", 64), "11111111-1111-1111-1111-111111111111",
@@ -197,5 +198,94 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		if _, ok := gauges[key]; !ok {
 			t.Fatalf("missing exact-cache gauge %q", key)
 		}
+	}
+}
+
+// requireEmptyFunnelShape pins the funnel section's wire names: the three
+// conservation counters, every terminal reason in lifecycle order with the
+// same request-level counters as the total and no token sum, and the stages
+// declared unobserved.
+func requireEmptyFunnelShape(t *testing.T, body []byte) {
+	t.Helper()
+	var decoded struct {
+		Funnel struct {
+			Entered    *uint64             `json:"entered"`
+			Closed     *uint64             `json:"closed"`
+			InFlight   *uint64             `json:"in_flight"`
+			Total      map[string]uint64   `json:"total"`
+			Reasons    []map[string]any    `json:"reasons"`
+			Unobserved []map[string]string `json:"unobserved"`
+		} `json:"funnel"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	funnel := decoded.Funnel
+	if funnel.Entered == nil || funnel.Closed == nil || funnel.InFlight == nil ||
+		*funnel.Entered != 0 || *funnel.Closed != 0 || *funnel.InFlight != 0 {
+		t.Fatalf("funnel counters = %v %v %v, want entered, closed and in_flight present and zero",
+			funnel.Entered, funnel.Closed, funnel.InFlight)
+	}
+	// Counts of requests and attempts only. A token sum on this unauthenticated
+	// endpoint would give away one request's exact prompt-derived counts to
+	// anyone differencing two snapshots around its close.
+	counters := []string{
+		"requests", "attempts", "dispatched_without_scope", "lookup_outcome_reported",
+		"prompt_tokens_unknown", "repeated_prefix_tokens_unknown", "predicted_tokens_unknown", "reused_tokens_unknown",
+	}
+	tokenSums := []string{"prompt_tokens", "repeated_prefix_tokens", "predicted_tokens", "reused_tokens"}
+	if len(funnel.Total) != len(counters) {
+		t.Fatalf("funnel total = %v, want exactly %v", funnel.Total, counters)
+	}
+	for _, sum := range tokenSums {
+		if _, exposed := funnel.Total[sum]; exposed {
+			t.Fatalf("public funnel total exposes token sum %q", sum)
+		}
+	}
+	for _, counter := range counters {
+		if _, ok := funnel.Total[counter]; !ok {
+			t.Fatalf("funnel total is missing %q: %v", counter, funnel.Total)
+		}
+	}
+	reasons := []string{
+		"not_eligible", "planner_unavailable", "gate_refused", "sampled_out", "rate_limited",
+		"plan_failed", "plan_empty", "planning_unobserved",
+		"cancelled_before_dispatch", "errored_before_dispatch",
+		"routing_unobserved", "no_repeat_observed", "repeat_without_holder",
+		"holder_unusable_or_unavailable", "holder_not_selected",
+		"selected_without_scope", "cancelled_after_dispatch", "errored_after_dispatch",
+		"selected_outcome_unknown", "selected_skip", "selected_miss", "hit_without_selection", "hit",
+	}
+	if len(funnel.Reasons) != len(reasons) {
+		t.Fatalf("funnel lists %d reasons, want %d: %v", len(funnel.Reasons), len(reasons), funnel.Reasons)
+	}
+	for i, reason := range reasons {
+		entry := funnel.Reasons[i]
+		if entry["reason"] != reason {
+			t.Fatalf("funnel reason %d = %v, want %q", i, entry["reason"], reason)
+		}
+		if len(entry) != len(counters)+1 {
+			t.Fatalf("funnel reason %q = %v, want the reason name and %v", reason, entry, counters)
+		}
+		for _, sum := range tokenSums {
+			if _, exposed := entry[sum]; exposed {
+				t.Fatalf("public funnel reason %q exposes token sum %q", reason, sum)
+			}
+		}
+		for _, counter := range counters {
+			if value, ok := entry[counter]; !ok || value != float64(0) {
+				t.Fatalf("funnel reason %q counter %q = %v, want present and zero", reason, counter, value)
+			}
+		}
+	}
+	unobserved := make(map[string]bool)
+	for _, stage := range funnel.Unobserved {
+		if stage["reason"] == "" {
+			t.Fatalf("unobserved stage %q gives no reason", stage["stage"])
+		}
+		unobserved[stage["stage"]] = true
+	}
+	if len(unobserved) != 2 || !unobserved["predicted_tokens"] || !unobserved["lookup_receipt"] {
+		t.Fatalf("funnel unobserved = %v, want predicted_tokens and lookup_receipt", funnel.Unobserved)
 	}
 }

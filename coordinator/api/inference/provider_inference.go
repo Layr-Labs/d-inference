@@ -509,6 +509,9 @@ func (s *Owner) HandleCompleteAt(
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
 	s.observation.EmitModelCacheUsage(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
+	if pr.CacheFunnel != nil {
+		pr.CacheFunnel.NoteAttemptCompleted(pr.CacheFunnelAttempt(), cacheFunnelCompletion(msg.Usage, cacheUsageValid))
+	}
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 

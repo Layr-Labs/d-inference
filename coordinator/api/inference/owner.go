@@ -26,6 +26,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/scangate"
 	latesettlement "github.com/eigeninference/d-inference/coordinator/internal/inference/settlement"
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/cachefunnel"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
@@ -106,6 +107,7 @@ type Owner struct {
 	promptArtifacts              *promptcontract.Provisioner
 	promptContract               *promptcontract.Client
 	promptWorkGate               *promptwork.Gate
+	cacheFunnel                  *cachefunnel.Ledger
 	promptSupervisor             *promptcontract.Supervisor
 	promptPreloader              *promptcontract.PreloadController
 	exactCacheGaugeMu            sync.RWMutex
@@ -177,7 +179,7 @@ func New(d Dependencies, cfg Config) *Owner {
 		late: late, cancels: cancels, promotions: promos,
 		responseLimits: responselimit.Limits{MaxBytes: cfg.NonStreamingResponseMaxBytes, MaxChunks: cfg.NonStreamingResponseMaxChunks},
 
-		hedgeGov: hedgeGov, reservations: holds,
+		hedgeGov: hedgeGov, reservations: holds, cacheFunnel: cachefunnel.NewLedger(d.Observation),
 		scanGate: scans, backoff: retryBackoff, chunkKeys: keys,
 	}
 	accountPolicy.Bind(d.Store, cfg.FirstContentSLAAccounts, s.FirstContentDeadline)

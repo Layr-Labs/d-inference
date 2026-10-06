@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/cachefunnel"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheattempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -188,7 +189,10 @@ type PendingRequest struct {
 	CacheSelectionEstimatedTTFTSavedMs float64
 	CacheSelectionSelected             bool
 	CacheOpportunity                   CacheOpportunity
-	cacheRoutingHints                  map[string]cacheRoutingHint
+	// CacheFunnel is the owning request's reuse-funnel account, shared by all
+	// of its attempts. Nil when the request is outside the funnel population.
+	CacheFunnel       *cachefunnel.Request
+	cacheRoutingHints map[string]cacheRoutingHint
 	// TokenAdmission records the output-token charge admitted at request time so
 	// successful completion can reconcile any positive actual-output delta.
 	TokenAdmission TokenAdmission

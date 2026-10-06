@@ -871,6 +871,110 @@ identifier as a metric tag (`PendingRequest` in
 `coordinator/internal/observation/cachemetrics/cache_terminal_policy.go`, called by
 `EmitCacheSelectionTerminal` in `coordinator/api/observation/cache_terminal.go`).
 
+### Reuse loss funnel
+
+The counters above each describe a different population (plans, attempt
+terminals, receipts, provider usage), so they cannot be subtracted from each
+other to say where reuse was lost. The `funnel` object in
+`GET /v1/cache/status` answers that for one population, one request at a time
+(`coordinator/internal/observation/cachefunnel/`).
+
+**Population.** A request enters when it is a text request (no image, audio or
+video part) for a catalog model while cache routing is `on`
+(`Owner.enterCacheFunnel` in `coordinator/api/inference/cache_funnel.go`,
+`Registry.CacheRoutingCoversModel` in `coordinator/registry/cache_funnel.go`).
+Membership is decided once, before planning, on the model resolved before
+admission, and is never revised. The artifact allowlist is not part of the
+test: an excluded model's requests enter and end as `not_eligible`. Requests
+rejected before the planning seam (validation, authentication, balance) never
+enter.
+
+**Terminal reason.** Every request ends in exactly one reason, charged to the
+first lifecycle stage that ruled reuse out. A provider-reported hit overrides
+every loss reason, including a missing plan: a completed hit always ends as
+`hit` or `hit_without_selection`. Cancellation and failure claim only requests
+that no earlier stage had already ruled out.
+
+The planning stage is read once, from the request's memoized prompt-work
+result for the model and body it is dispatched with
+(`noteDispatchedCachePlanning`). Decisions made for other candidate models or
+rewritten bodies during admission never reach the funnel, and the prompt token
+count always belongs to that same decision. A request that ends before a body
+is chosen for dispatch (admission rejection, client gone during planning) has
+no such result and is charged to the dispatch stage, whatever planning
+concluded for its candidates. The one path that records a planning stage
+without a memoized result is a generic endpoint body that could not be lowered
+(`not_eligible`).
+
+| Stage | Reason | Counts requests that |
+|---|---|---|
+| Planning | `not_eligible` | were refused by policy: mode switched off mid-request, artifact not allowed or catalog hash mismatch, unsupported endpoint shape, dynamic prompt contract |
+| Planning | `planner_unavailable` | found the tokenizer resources missing, pending, failed or not preloaded |
+| Planning | `gate_refused` | were turned away by the 16-slot prompt-work gate and served without a plan; no other cache counter sees these |
+| Planning | `sampled_out` | fell outside the activation sample |
+| Planning | `rate_limited` | exceeded the plan rate limit |
+| Planning | `plan_failed` | got a tokenizer-service error or an invalid plan |
+| Planning | `plan_empty` | were too short to carry a boundary |
+| Planning | `planning_unobserved` | were dispatched with no plan and no recorded planning decision (planning clock already spent, or body over the planner limit) |
+| Dispatch | `cancelled_before_dispatch` | the client abandoned before any provider received them |
+| Dispatch | `errored_before_dispatch` | ended without any provider receiving them (no capacity, deadline, rejection) |
+| Routing | `routing_unobserved` | were dispatched without a cache opportunity evaluation |
+| Routing | `no_repeat_observed` | carried a prefix no recent plan shared |
+| Routing | `repeat_without_holder` | repeated a prefix that no provider is recorded as holding |
+| Routing | `holder_unusable_or_unavailable` | had a holder whose evidence was unusable, which was not a usable candidate, or which earned no positive credit |
+| Routing | `holder_not_selected` | had a credited holder that lost selection |
+| Provider | `selected_without_scope` | were sent to a selected holder that received no cache scope |
+| Provider | `cancelled_after_dispatch` | the client abandoned after a selected holder received them, before completion |
+| Provider | `errored_after_dispatch` | failed on a selected holder with no completing attempt |
+| Provider | `selected_outcome_unknown` | completed on a selected holder with no valid cache usage reported |
+| Provider | `selected_skip` | completed on a selected holder that skipped the lookup |
+| Provider | `selected_miss` | completed on a selected holder that missed |
+| Provider | `hit_without_selection` | reused a cached prefix although routing had not selected a holder |
+| Provider | `hit` | reused a cached prefix on the selected holder |
+
+**Attempts.** Retries, hedges and queued handoffs add to the request's
+`attempts` annotation, counted where a frame is committed to a provider
+(`providerwire.WriteDeferred`). The request is classified by the attempt that
+completed (`HandleCompleteAt`); when none completed, by the attempt dispatched
+last. A recorded completion is itself proof of dispatch: the attempt is counted
+after its frame is on the wire, on another goroutine, so a request whose
+completion was recorded first is still a dispatched request with at least one
+attempt. A completion that arrives after the handler has closed the request
+changes nothing.
+
+**Tokens.** Each closed record carries prompt tokens, repeated-prefix tokens
+(demand evidence), predicted tokens and reused tokens (provider-reported
+cached tokens). A quantity that was not observed, or a negative count, is
+unknown: it adds nothing to any sum and increments the matching `*_unknown`
+request count; it is never reported as zero. `funnel.unobserved` lists the
+stages the coordinator does not feed at all: today the predicted token count
+and the provider's lookup receipt message, so `predicted_tokens_unknown`
+equals the request count and the lookup outcome comes from the completing
+usage report only.
+
+**What the public status shows.** `GET /v1/cache/status` is unauthenticated,
+so its `funnel` object holds counts of requests and attempts only
+(`cachefunnel.PublicStatus`): `entered`, `closed`, `in_flight`, and per reason
+`requests`, `attempts`, `dispatched_without_scope`, `lookup_outcome_reported`
+and the four `*_unknown` request counts. It carries no token sum, because the
+difference between two snapshots around a single closing request would be
+that request's exact prompt, repeated-prefix and reused token counts. The
+token sums are exported per reason to the admin-authenticated
+`GET /v1/admin/metrics` registry as
+`exact_cache_funnel_{prompt,repeated_prefix,predicted,reused}_tokens_total{reason}`
+(`observation.Owner.ObserveCacheFunnelRecord`), next to the existing per-model
+cache token counters. They are not sent to Datadog.
+
+**Conservation.** `entered = closed + in_flight`, and `closed` equals the sum
+of `requests` over `reasons`. The ledger keeps aggregates only. The
+`cachefunnel.Sink` bound when the ledger is built (the observation owner in
+production) receives each closed record, holding counts and no prompt text,
+hash, scope, account, model or provider identifier; summing those records
+reproduces every aggregate exactly
+(`coordinator/tests/api/observation/cachefunnel/reconciliation_test.go`).
+The request-path hooks are exercised with real HTTP requests in
+`coordinator/tests/api/inference/cache_funnel_request_path_test.go`.
+
 ### Observed demand and soft prefix affinity
 
 After a successful exact plan, `coordinator/registry/cache_demand.go` connects
@@ -1263,6 +1367,7 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 | Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` (`applyCacheRoutingCost`); `coordinator/registry/cache_service_cost.go` (`PriceForProviderLocked`); `coordinator/internal/registry/cachepolicy/service_cost.go` (`ApplyServiceCost`); `coordinator/registry/candidate_selection.go` (`selectRoutingCandidate`); `coordinator/registry/first_content_selection.go` (`selectFirstContentCandidate`); `coordinator/registry/gate_reason.go` (`SelectionCacheCredit`) |
 | Plan construction and sealed body | `coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`), bound by `coordinator/api/inference/cache_planner.go` (`NewCachePlanner`) and called from `coordinator/api/inference/prompt_work.go` (`planPromptRoute`); `coordinator/internal/inference/routeplan/cache_plan_memo.go` (`Memo.ForBody`, `Memo.ForModel`); `coordinator/internal/inference/providerwire/body.go` (`BodyForCacheAttempt`) |
 | Status endpoint and gauges | `coordinator/api/inference/exact_cache_status.go`, `coordinator/api/inference/exact_cache_metrics.go` |
+| Reuse loss funnel | `coordinator/internal/observation/cachefunnel/` (`Ledger`, `Request`, `Reason`, `Sink`, `PublicStatus`); entry, dispatched planning and close in `coordinator/api/inference/cache_funnel.go`; planning stage mapping in `coordinator/internal/inference/routeplan/cache_planning_funnel.go` (`FunnelPlanning`); attempt evidence in `coordinator/registry/cache_funnel.go` (`CacheFunnelAttempt`); admin token counters in `coordinator/api/observation/cache_funnel_telemetry.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/internal/observation/cachemetrics/cache_terminal_policy.go` (`TerminalTags`), emitted by `coordinator/api/observation/cache_terminal.go` (`EmitCacheSelectionTerminal`); `coordinator/internal/inference/metrics/calibration.go` (`Reporter.ObserveTTFTCalibration`); `coordinator/internal/inference/profile/reputation_latency.go` (`ShouldRecordReputationLatency`) |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
 | Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |

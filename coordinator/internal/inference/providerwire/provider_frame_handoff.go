@@ -32,8 +32,15 @@ func WriteDeferred(
 		if pending != nil && pending.Timing != nil {
 			pending.Timing.DispatchedAt = time.Time{}
 		}
-	} else if onCommitted != nil {
-		onCommitted(metadata)
+	} else {
+		// A committed frame is the one point every dispatch path shares, so
+		// retries, hedges and queued handoffs are each counted once here.
+		if pending != nil && pending.CacheFunnel != nil {
+			pending.CacheFunnel.NoteAttemptDispatched(pending.CacheFunnelAttempt())
+		}
+		if onCommitted != nil {
+			onCommitted(metadata)
+		}
 	}
 	return metadata, err
 }

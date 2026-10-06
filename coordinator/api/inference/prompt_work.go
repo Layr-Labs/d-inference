@@ -16,15 +16,13 @@ func (s *Owner) planPromptRoute(ctx context.Context, account, model string, body
 	cachePlanner := s.NewCachePlanner()
 	cacheInput := routeplan.CachePlanningInput{Account: account, Model: model, Body: body, HasMedia: hasMedia}
 	// The two early returns call the planner only to record why this request
-	// has no cache plan; they do not use its result.
+	// has no cache plan; they keep the decision and no plan.
 	if hasMedia || s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
-		cachePlanner.PlanResult(ctx, cacheInput)
-		return result
+		return withCachePlanning(result, cachePlanner.PlanResult(ctx, cacheInput))
 	}
 	status, ok := s.promptArtifacts.Status(model)
 	if !ok || !status.ArtifactReady || status.PromptContractID == "" {
-		cachePlanner.PlanResult(ctx, cacheInput)
-		return result
+		return withCachePlanning(result, cachePlanner.PlanResult(ctx, cacheInput))
 	}
 	return promptwork.Account(ctx, s.promptWorkGate, len(body), result, func(ctx context.Context) promptwork.Result {
 		if promptwork.HasCalibrations() {
@@ -36,15 +34,23 @@ func (s *Owner) planPromptRoute(ctx context.Context, account, model string, body
 		}
 		planned := cachePlanner.PlanResult(ctx, cacheInput)
 		if !planned.SidecarCalled && !s.promptPreloader.ReadyFor(status.PromptContractID) {
-			return result
+			return withCachePlanning(result, planned)
 		}
 		input := registry.CachePlanInput{
 			Account: account, Model: model, PromptContractID: status.PromptContractID,
 			ModelAggregateSHA256: status.ModelAggregateSHA256, Body: body, HasMedia: hasMedia,
 		}
-		return promptwork.Plan(ctx, s.promptContract, input, result.Work,
+		return withCachePlanning(promptwork.Plan(ctx, s.promptContract, input, result.Work,
 			func(ctx context.Context) registry.CachePlanResult {
-				return planned
-			})
+				return planned.CachePlanResult
+			}), planned)
 	})
+}
+
+// withCachePlanning keeps the planning decision with the prompt-work result
+// it produced, so the request memo holds one decision per model and body.
+func withCachePlanning(result promptwork.Result, decision routeplan.CachePlanDecision) promptwork.Result {
+	result.CachePlanning = routeplan.FunnelPlanning(decision.Reason)
+	result.CountedPromptTokens = decision.CountedPromptTokens()
+	return result
 }

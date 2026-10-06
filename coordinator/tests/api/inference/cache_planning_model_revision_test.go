@@ -251,7 +251,7 @@ func (f *modelRevisionFixture) plan(model string) registry.CachePlanResult {
 	return f.srv.NewCachePlanner().PlanResult(context.Background(), routeplan.CachePlanningInput{
 		Account: "planning-account", Model: model,
 		Body: []byte(`{"messages":[{"role":"user","content":"synthetic planning fixture"}]}`),
-	})
+	}).CachePlanResult
 }
 
 // waitAcknowledged waits for the running sidecar to have loaded the artifact's

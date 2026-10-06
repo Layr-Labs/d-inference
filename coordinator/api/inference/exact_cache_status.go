@@ -5,6 +5,7 @@ import (
 	"time"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	"github.com/eigeninference/d-inference/coordinator/internal/observation/cachefunnel"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -20,6 +21,7 @@ type ExactCacheStatus struct {
 	PromptArtifacts   ExactCachePromptArtifactStatus        `json:"prompt_artifacts"`
 	Providers         registry.PrefixCacheProtocolStatus    `json:"providers"`
 	Lifecycle         registry.CacheRoutingLifecycleStatus  `json:"lifecycle"`
+	Funnel            cachefunnel.PublicStatus              `json:"funnel"`
 	Holders           int                                   `json:"holders"`
 	Attempts          int                                   `json:"attempts"`
 }
@@ -72,8 +74,8 @@ func (s *Owner) SetPromptSupervisor(supervisor *promptcontract.Supervisor) {
 }
 
 // ExactCacheStatusSnapshot exposes aggregate optimizer health only. It never
-// includes models, providers, accounts, scopes, route keys, prompt material, or
-// token-chain hashes.
+// includes models, providers, accounts, scopes, route keys, prompt material,
+// token-chain hashes, or sums of prompt-derived token counts.
 func (s *Owner) ExactCacheStatusSnapshot() ExactCacheStatus {
 	config := s.registry.CacheRoutingConfigSnapshot()
 	routingMode := config.Mode
@@ -94,6 +96,7 @@ func (s *Owner) ExactCacheStatusSnapshot() ExactCacheStatus {
 		Activation:  s.registry.CacheRoutingActivationStatus(),
 		Providers:   s.registry.PrefixCacheProtocolStatus(),
 		Lifecycle:   s.registry.CacheRoutingLifecycleStatus(),
+		Funnel:      s.cacheFunnel.Snapshot().Public(),
 	}
 	if s.promptSupervisor != nil {
 		supervisor := s.promptSupervisor.Status()

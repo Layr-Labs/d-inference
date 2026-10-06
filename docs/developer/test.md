@@ -2,6 +2,27 @@
 
 > Last updated: 2026-10-05
 
+## Nightly Linear package
+
+Run from the repository root:
+
+```bash
+python3 -B -m unittest discover -s automations/nightly-linear/tests -p 'test_*.py'
+```
+
+`automations/nightly-linear/tests/test_refresh.py` (`RefreshTests`) exercises the
+same updater command used by the launcher against temporary local Git repos.
+It checks fetching one consistent revision, repeat runs, real package loading,
+document links, and preservation after dirty or divergent checkouts, wrong
+origins, unmanaged clones, failed fetches, or missing required skills.
+The tests make no GitHub or Linear requests. The scoped
+`.github/workflows/nightly-linear-package.yml` runs the same command.
+
+Live onboarding, connector permissions, unattended execution, and duplicate-free
+Linear updates require the teammate pilot described in the
+[package rollout procedure](../../automations/nightly-linear/README.md#verification-and-rollout).
+Offline updater tests do not verify those outcomes.
+
 ## Reservation storage and scan benchmarks
 
 Registry regression tests in `coordinator/tests/registry/candidate_storage_test.go`
@@ -650,6 +671,11 @@ It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
+
+`provider-swift/Tests/ProviderCoreTests/Coordinator/CoordinatorIntegrationTests.swift`
+exercises enrollment over real local HTTP with a linked test token and P-256
+signer. The fixture verifies the canonical token-bound signature rather than
+accepting anonymous profile downloads; no production credentials are used.
 
 Build qualification regressions run in `coordinator/tests/store/postgres/app_attest_builds_test.go`, `coordinator/tests/appattest/service/authorization/build_qualifications_test.go`, `coordinator/tests/api/releases/contracts/app_attest_builds_test.go`, and `coordinator/tests/api/releases/contracts/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 
@@ -1912,6 +1938,14 @@ removes the former 30-second allowance for unrelated suite load, not a productio
 deadline. The shell runner sets `DARKBLOOM_ISOLATED_DEADLINE_TEST=1` only for that
 isolated invocation. Direct/IDE runs retain the original 30-second setup margin.
 It remains subject to the isolated nonempty/no-skips gate.
+
+`libs/mlx-swift-lm/Tests/MLXLMTests/NativeBlockEngineTests.swift`
+(`concurrentWaitingCancellationRetiresEveryGeneration`) stress-tests concurrent
+cancellation across 2,048 submissions and requires every reservation to retire.
+It does not deterministically schedule the cancellation race.
+Separate cancellation reads for filtering and removal can orphan a queued
+request; the regression protects the single-decision retirement/removal in
+`CBv2NativeBlockEngine.pump`, not a larger timeout or an early reservation release.
 
 ### Parallel Provider CI
 

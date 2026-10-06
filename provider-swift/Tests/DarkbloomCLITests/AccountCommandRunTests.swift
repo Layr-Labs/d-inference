@@ -56,6 +56,7 @@ struct AccountCommandRunTests {
             Coordinator: https://coordinator.invalid
 
               \(ProviderOnboardingPolicy.retirementNotice)
+              \(Enroll.eligibilityNotice)
 
               \(ProviderOnboardingPolicy.appAttestGuidance)
 

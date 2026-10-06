@@ -167,13 +167,24 @@ func (s *Owner) deleteStripeAccount(id string) outboxOutcome {
 	}
 	err := s.billing.StripeConnect().DeleteAccount(id)
 	switch {
-	case err == nil, billing.IsAccountGoneErr(err), billing.IsNotFoundAPIErr(err):
+	case err == nil, stripeAccountNotFound(err):
 		return outboxOutcome{kind: outboxDone}
 	case stripeDefinitive(err):
 		// For example a live account whose balances are not zero.
 		return outboxOutcome{kind: outboxManual, err: err.Error()}
 	}
 	return outboxOutcome{kind: outboxRetry, err: err.Error()}
+}
+
+// stripeAccountNotFound accepts only structured missing-resource responses.
+// The onboarding helper IsAccountGoneErr also accepts permission failures:
+// an unusable account is not proof of deletion and must remain in the outbox.
+func stripeAccountNotFound(err error) bool {
+	var apiErr *billing.APIError
+	if !errors.As(err, &apiErr) || (apiErr.StatusCode != http.StatusBadRequest && apiErr.StatusCode != http.StatusNotFound) {
+		return false
+	}
+	return apiErr.Code == "resource_missing" || (apiErr.StatusCode == http.StatusNotFound && apiErr.Code == "")
 }
 
 func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutcome {

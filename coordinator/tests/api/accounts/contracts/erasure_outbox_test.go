@@ -34,9 +34,22 @@ func TestErasureOutboxStripeAccount(t *testing.T) {
 	}{
 		{"success", 200, `{"id":"acct_x","deleted":true}`, wantDone},
 		{"not found", 404, `{"error":{"type":"invalid_request_error","code":"resource_missing","message":"No such account"}}`, wantDone},
+		{"not found without code", 404, `{"error":{"type":"invalid_request_error","message":"No such account"}}`, wantDone},
+		{"resource missing", 400, `{"error":{"type":"invalid_request_error","code":"resource_missing","message":"No such account"}}`, wantDone},
+		{"access denied", 403, `{"error":{"type":"invalid_request_error","message":"The provided key does not have access to account acct_existing."}}`,
+			func(t *testing.T, it store.ErasureOutboxItem) { wantManual(t, it, "does not have access") }},
+		{"account invalid", 400, `{"error":{"type":"invalid_request_error","code":"account_invalid","message":"The account is not connected to this platform."}}`,
+			func(t *testing.T, it store.ErasureOutboxItem) { wantManual(t, it, "account_invalid") }},
+		{"account invalid with not found status", 404, `{"error":{"type":"invalid_request_error","code":"account_invalid","message":"The account is not connected to this platform."}}`,
+			func(t *testing.T, it store.ErasureOutboxItem) { wantManual(t, it, "account_invalid") }},
+		{"missing message alone", 400, `{"error":{"type":"invalid_request_error","message":"No such account, or this platform does not have access to account acct_existing."}}`,
+			func(t *testing.T, it store.ErasureOutboxItem) { wantManual(t, it, "No such account") }},
+		{"permission failure with missing code", 403, `{"error":{"type":"invalid_request_error","code":"resource_missing","message":"Access denied."}}`,
+			func(t *testing.T, it store.ErasureOutboxItem) { wantManual(t, it, "Access denied") }},
 		{"balance not zero", 400, `{"error":{"type":"invalid_request_error","message":"This account cannot be deleted because it has a non-zero balance."}}`,
 			func(t *testing.T, it store.ErasureOutboxItem) { wantManual(t, it, "non-zero balance") }},
 		{"server error", 500, `{"error":{"type":"api_error","message":"try again"}}`, func(t *testing.T, it store.ErasureOutboxItem) { wantRetry(t, it, 1) }},
+		{"transient missing message", 503, `{"error":{"type":"api_error","message":"No such account in upstream cache; try again."}}`, func(t *testing.T, it store.ErasureOutboxItem) { wantRetry(t, it, 1) }},
 		{"rate limited", 429, `{"error":{"type":"rate_limit_error","message":"slow down"}}`, func(t *testing.T, it store.ErasureOutboxItem) { wantRetry(t, it, 1) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,7 +57,11 @@ func TestErasureOutboxStripeAccount(t *testing.T) {
 			account := fx.scrub(t, outboxSeed{stripeAccount: id})
 			fx.stripe.on(http.MethodDelete, "/v1/accounts/"+id, tc.status, tc.body)
 			fx.pass(t, account)
-			tc.check(t, fx.row(t, account, store.ErasureTargetStripeAccount))
+			row := fx.row(t, account, store.ErasureTargetStripeAccount)
+			tc.check(t, row)
+			if row.State != store.ErasureOutboxDone && (row.ExternalID != id || !row.HasExternalID || row.DoneAt != nil) {
+				t.Fatalf("unconfirmed deletion lost its account ID or set done_at: %+v", row)
+			}
 			if got := fx.stripe.header("DELETE /v1/accounts/"+id, "Authorization"); got != "Bearer sk_test_connect" {
 				t.Fatalf("Connect key not used: %q", got)
 			}

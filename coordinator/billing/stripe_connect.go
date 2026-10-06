@@ -402,7 +402,8 @@ func (c *StripeConnect) GetAccount(accountID string) (*ExpressAccount, error) {
 
 // DeleteAccount deletes a connected Express account (account erasure).
 // Stripe deletes a live account only when all its balances are zero; that
-// refusal is a definitive *APIError. A gone account is IsAccountGoneErr.
+// refusal is a definitive *APIError. Callers must distinguish a missing
+// account from a permission failure before recording erasure as complete.
 func (c *StripeConnect) DeleteAccount(accountID string) error {
 	if c.secretKey == "" && !c.mockMode {
 		return errors.New("stripe connect: not configured")

@@ -19,7 +19,7 @@ func (r *Registry) QuickFirstContentCapacityForRequest(model string, pr *Pending
 		FirstContentDeadline: pr.FirstContentDeadline, MinDecodeTPS: pr.MinDecodeTPS,
 		SelfRouteOnly: pr.SelfRouteOnly, PreferOwner: pr.PreferOwner, OwnerAccountID: pr.OwnerAccountID,
 		AllowedProviderSerials: pr.AllowedProviderSerials, ExcludedProviderIDs: pr.ExcludedProviderIDs,
-		CachePlan: pr.CachePlan}
+		CachePlan: pr.CachePlan, PromptWork: pr.PromptWork}
 	if query.RequestedMaxTokens <= 0 {
 		query.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
@@ -27,8 +27,8 @@ func (r *Registry) QuickFirstContentCapacityForRequest(model string, pr *Pending
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	_, scan := r.selectBestCandidateLockedFull(model, query)
-	candidateCount, capacityRejections, modelTooLarge = scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections
-	for _, c := range scan.pool {
+	candidateCount, capacityRejections, modelTooLarge = scan.CandidateCount, scan.CapacityRejections, scan.ModelTooLargeRejections
+	for _, c := range scan.Candidates {
 		if c.firstContent.Status == FirstContentUnknown {
 			return candidateCount, capacityRejections, modelTooLarge, 0, false
 		}

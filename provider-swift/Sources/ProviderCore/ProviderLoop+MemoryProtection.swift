@@ -21,6 +21,7 @@ extension ProviderLoop {
     /// telemetry) and watch live memory pressure (reclaim cache + drop a marker
     /// on critical so a kill before we can report it is attributed next launch).
     internal func startMemoryProtection() {
+        do { try requireNativeMiMoProcessWorkAllowed() } catch { return }
         // Pin the MLX memory ceiling BEFORE any model weights are loaded (the
         // first big allocation happens in ensureModelLoaded → loadModelContainer,
         // which runs after this). Idempotent; StandaloneServer invokes the same
@@ -47,7 +48,12 @@ extension ProviderLoop {
         OOMDetector.saveLastScan(now)
 
         let monitor = MemoryPressureMonitor(
-            clearCache: { MLX.Memory.clearCache() },
+            clearCache: { [nativeMiMoRegistry] in
+                guard ProviderLoop.nativeProcessAllowsReclamation(),
+                    !nativeMiMoRegistry.hasRetainedFault,
+                    !nativeMiMoRegistry.hasUnretiredClosingTransactions else { return }
+                MLX.Memory.clearCache()
+            },
             writeMarker: { _ in
                 let marker = OOMDetector.Marker(
                     pid: ProcessInfo.processInfo.processIdentifier,

@@ -12,6 +12,7 @@
 ///
 /// They run locally with `swift test --filter CoordinatorIntegrationTests`.
 
+import CryptoKit
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -159,7 +160,7 @@ struct CoordinatorIntegrationTests {
                 switch event {
                 case .inferenceRequest(
                     let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
-                    let firstContentDeadline, _, _, let reservationID
+                    let firstContentDeadline, _, _, let reservationID, _
                 ):
                     #expect(rid == requestId)
                     #expect(nonce == "nonce-int-1")
@@ -457,55 +458,44 @@ struct CoordinatorIntegrationTests {
 
     // MARK: 4. EnrollmentService round-trip
 
-    @Test("EnrollmentService either fetches the mocked profile or short-circuits as already-enrolled")
+    @Test("EnrollmentService authenticates and fetches the profile through HTTP")
     func enrollmentRoundTripAgainstMockCoordinator() async throws {
         let mockBytes = Data("MOCK_PROFILE_<integration>".utf8)
         let mock = MockCoordinator(mobileConfig: mockBytes)
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        let service = EnrollmentService()
-        let result: EnrollmentResult
-        do {
-            result = try await service.enroll(
-                coordinatorURL: baseURL.absoluteString,
-                openSystemSettings: false,
-                macOSMajorVersion: 26
-            )
-        } catch EnrollmentError.managedByOtherMDM {
-            // Host machine is managed by a corporate MDM (e.g. Kandji on dev
-            // workstations): macOS allows one MDM per device, so enroll now
-            // correctly refuses before touching the network. The mock's wire
-            // shape is still covered by the alreadyEnrolled branch on other
-            // hosts; nothing more to verify here.
-            return
-        }
+        let signer = EnrollmentIntegrationSigner(key: P256.Signing.PrivateKey())
+        let token = "integration-linked-account"
+        let service = EnrollmentService(
+            checkEnrollment: { _ in .notEnrolled },
+            loadToken: { token }, loadSigner: { signer })
+        let result = try await service.enroll(
+            coordinatorURL: baseURL.absoluteString,
+            openSystemSettings: false,
+            macOSMajorVersion: 26
+        )
 
         guard case .mdm(let profilePath, let alreadyEnrolled) = result else {
             Issue.record("Legacy setup unexpectedly selected App Attest")
             return
         }
-        if alreadyEnrolled {
-            // Production short-circuits when an MDM profile is already
-            // installed (true on most darkbloom dev workstations and CI
-            // runners with the profile pre-loaded). The function never hit
-            // our mock, so verify the mock's `/v1/enroll` independently to
-            // ensure the wire shape matches what the production path would
-            // consume on a fresh machine.
-            let endpoint = baseURL.appendingPathComponent("v1/enroll")
-            var post = URLRequest(url: endpoint)
-            post.httpMethod = "POST"
-            post.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            post.httpBody = Data("{}".utf8)
-            let (data, _) = try await URLSession.shared.data(for: post)
-            #expect(data == mockBytes)
-        } else {
-            // Fresh machine: profile written to disk should match the mock.
-            let written = try Data(contentsOf: profilePath)
-            #expect(written == mockBytes)
-            #expect(profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
-            try? FileManager.default.removeItem(at: profilePath)
-        }
+        defer { try? FileManager.default.removeItem(at: profilePath) }
+        #expect(!alreadyEnrolled)
+        #expect(try Data(contentsOf: profilePath) == mockBytes)
+        #expect(profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
+        let snapshot = mock.snapshot()
+        #expect(snapshot.enrollmentAuthorizations == ["Bearer \(token)"])
+        try #require(snapshot.enrollmentPosts.count == 1)
+        let proof = try #require(JSONSerialization.jsonObject(with: snapshot.enrollmentPosts[0]) as? [String: Any])
+        #expect(proof["se_public_key"] as? String == signer.publicKeyBase64)
+        let timestamp = try #require(proof["timestamp"] as? Int64)
+        let signature = try #require(proof["signature"] as? String)
+        let signatureData = try #require(Data(base64Encoded: signature))
+        let tokenHash = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+        let transcript = Data("darkbloom-mdm-enroll-v1\n\(tokenHash)\n\(signer.publicKeyBase64)\n\(timestamp)".utf8)
+        #expect(signer.key.publicKey.isValidSignature(
+            try P256.Signing.ECDSASignature(derRepresentation: signatureData), for: transcript))
     }
 
     // MARK: 5. ModelCatalogClient
@@ -611,6 +601,12 @@ struct CoordinatorIntegrationTests {
         #expect(captured.contains("99.0.0"))
         #expect(captured.contains("darkbloom update"))
     }
+}
+
+private struct EnrollmentIntegrationSigner: AttestationSigner {
+    let key: P256.Signing.PrivateKey
+    var publicKeyBase64: String { key.publicKey.rawRepresentation.base64EncodedString() }
+    func sign(_ data: Data) throws -> Data { try key.signature(for: data).derRepresentation }
 }
 
 // MARK: - Helpers

@@ -14,6 +14,8 @@ struct PromptContractIdentityTests {
         let legacyV3PromptContractId: String
         let legacyV4PromptContractId: String
         let legacyV5PromptContractId: String
+        let legacyV6PromptContractId: String
+        let legacyV7PromptContractId: String
 
         enum CodingKeys: String, CodingKey {
             case artifacts
@@ -21,6 +23,8 @@ struct PromptContractIdentityTests {
             case legacyV3PromptContractId = "legacy_v3_prompt_contract_id"
             case legacyV4PromptContractId = "legacy_v4_prompt_contract_id"
             case legacyV5PromptContractId = "legacy_v5_prompt_contract_id"
+            case legacyV6PromptContractId = "legacy_v6_prompt_contract_id"
+            case legacyV7PromptContractId = "legacy_v7_prompt_contract_id"
         }
     }
 
@@ -38,7 +42,10 @@ struct PromptContractIdentityTests {
             #expect(vector.expectedPromptContractId != vector.legacyV3PromptContractId)
             #expect(vector.expectedPromptContractId != vector.legacyV4PromptContractId)
             #expect(vector.expectedPromptContractId != vector.legacyV5PromptContractId)
-            #expect(PromptContractIdentity.normalizationVersion == "darkbloom-request-normalization-v6")
+            #expect(vector.expectedPromptContractId != vector.legacyV6PromptContractId)
+            #expect(vector.expectedPromptContractId != vector.legacyV7PromptContractId)
+            #expect(PromptContractIdentity.normalizationVersion == "darkbloom-request-normalization-v8")
+            #expect(PromptContractIdentity.rendererVersion == "swift-jinja-request-date-compatible-v4")
         }
     }
 

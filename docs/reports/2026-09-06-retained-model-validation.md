@@ -1,6 +1,6 @@
 # Current candidate: Qwen3.8, GPT-OSS and Gemma QAT retained checks
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 Qwen3.8 passes B1/B2/B4 backend and SSD comparisons on the combined candidate. GPT-OSS passes all three cache-off backend comparisons. Gemma QAT completes both ordinary B1 runs with intact request state, but their strict token comparison fails; its B2/B4 cells remain unrun in this stopped plan. This is bounded model evidence, not release-wide acceptance.
 

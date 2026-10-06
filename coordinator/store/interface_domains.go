@@ -1,13 +1,7 @@
 package store
 
-// Domain sub-interfaces composed into Store (see interface.go).
-//
-// Store was a ~150-method god-interface that forced parallel memory.go /
-// postgres.go implementations and gave callers no way to depend on a narrow
-// slice of the persistence surface. It is split here into cohesive,
-// single-domain sub-interfaces; Store embeds all of them, so the full method
-// set — and both implementations — are unchanged. The split is purely
-// organizational: every method keeps its exact signature and semantics.
+// Domain sub-interfaces are composed into Store (see interface.go), allowing
+// callers to depend on a narrow persistence contract without choosing a backend.
 
 import (
 	"context"
@@ -125,8 +119,10 @@ type UsageStore interface {
 	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
-	// over the given time window. Zero `since` means all-time.
-	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
+	// over the given time window. Zero `since` means all-time. A query that
+	// cannot run (most often the store timeout) is returned as an error, never
+	// as an empty board, so callers can refuse to publish or cache it.
+	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) ([]LeaderboardRow, error)
 
 	// NetworkTotals returns aggregated metrics across the network for the
 	// given window. Zero `since` means all-time. It returns an error (never a
@@ -253,6 +249,9 @@ type LedgerStore interface {
 // BillingStore covers referrals, billing (deposit) sessions, custom per-account
 // model pricing, and Stripe Connect withdrawals.
 type BillingStore interface {
+	// FinalizeConsumerCharge atomically settles a job and its 5% consumer referral reward.
+	FinalizeConsumerCharge(ConsumerChargeSettlement) (ConsumerChargeResult, error)
+
 	// --- Referral System ---
 
 	// CreateReferrer registers an account as a referrer with the given code.
@@ -481,6 +480,8 @@ type DeviceAuthStore interface {
 	CreateProviderToken(token *ProviderToken) error
 
 	// GetProviderToken validates a provider token and returns it.
+	// Missing or revoked tokens match ErrProviderTokenInvalid via errors.Is;
+	// other errors indicate a storage failure, not an invalid credential.
 	GetProviderToken(token string) (*ProviderToken, error)
 
 	// RevokeProviderToken deactivates a provider token.

@@ -78,6 +78,9 @@ public enum CapacityHeartbeatMateriality {
             // Publish both directions and the full qualification identity.
             if before.maxConcurrency != slot.maxConcurrency { return true }
             if before.performanceProfile != slot.performanceProfile { return true }
+            if before.deadlineProfile != slot.deadlineProfile { return true }
+            if before.promptWorkIdentity != slot.promptWorkIdentity { return true }
+            if before.deadlineWork != slot.deadlineWork { return true }
             if performanceChanged(before, slot) { return true }
             // Token budget drifting without an admission-count change
             // (re-slice, queued work retiring, KV reclaim) is compared PER

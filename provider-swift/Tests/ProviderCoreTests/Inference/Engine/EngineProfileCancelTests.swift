@@ -25,7 +25,7 @@ private final class ControlledEngine: CBv2Engine, @unchecked Sendable {
     private var acceptedReturnTiming: (
         admittedAt: ContinuousClock.Instant, returnedAt: ContinuousClock.Instant
     )?
-    private var projectedWork: CBv2FirstTokenProjectedWork = .unbounded
+    private var projectedWork: CBv2FirstTokenProjectedWork = .unbounded()
 
     func setProjectedWork(_ work: CBv2FirstTokenProjectedWork) {
         lock.withLock { projectedWork = work }
@@ -654,7 +654,8 @@ struct DeadlineDecisionBridgeTests {
         #expect(decision.projectedDecodeTokens == (bounded ? 8 : nil))
         #expect(decision.projectedServiceUs == (bounded ? 7_000_000 : nil))
         #expect(decision.projectionReason == nil)
-        #expect(decision.prefillTps == 500)
+        #expect(decision.unboundedReason == nil)
+        #expect(decision.prefillTps == 1_000)
         #expect(decision.decodeTps == nil)
         #expect(try #require(decision.submitRemainingUs) >= #require(decision.remainingUs))
         #expect(try #require(decision.observedUs) >= #require(wire.engineSubmitUs))
@@ -662,6 +663,32 @@ struct DeadlineDecisionBridgeTests {
         #expect(wire.engineAdmittedUs == nil)
         #expect(wire.projectedServiceUs == nil)
         #expect(wire.budgetRemainingAtAdmitUs == nil)
+        #expect(await bridge._testLivePumpCount() == 0)
+    }
+
+    @Test("engine unbounded reasons reach terminal profiles without changing refusal",
+          arguments: CBv2FirstTokenUnboundedReason.allCases)
+    func unboundedReasonPreserved(reason: CBv2FirstTokenUnboundedReason) async throws {
+        let engine = ControlledEngine()
+        let bridge = await makeDeadlineBridge(engine: engine)
+        let gate = AsyncGate()
+        gate.open()
+        engine.armDeadlineSubmit(gate: gate, verdict: .unreachable)
+        engine.setProjectedWork(.unbounded(reason: reason))
+        let profile = RequestProfileBuilder()
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await submitControlled(
+                bridge: bridge, requestId: "reason-\(reason.rawValue)", profile: profile,
+                deadline: FirstContentDeadline(relativeBudgetMilliseconds: 5_000))
+        }
+        let decision = try #require(profile.wireObject().deadlineDecision)
+        #expect(decision.verdict == .deadlineUnreachable)
+        #expect(decision.projection == .unbounded)
+        #expect(decision.unboundedReason?.rawValue == reason.rawValue)
+        #expect(decision.projectionReason == nil)
+        #expect(decision.projectedServiceUs == nil)
+        #expect(decision.projectedPrefillTokens == nil)
+        #expect(decision.projectedDecodeTokens == nil)
         #expect(await bridge._testLivePumpCount() == 0)
     }
 
@@ -678,11 +705,11 @@ struct DeadlineDecisionBridgeTests {
                 prefillTokens: 3, decodeTokens: 0, scheduledSteps: 1, mixedSteps: 0),
             serviceDuration: .milliseconds(1)))
         let profile = RequestProfileBuilder()
-        // Leave setup time for the full provider suite's concurrent GPU/model
-        // work. The engine fixture itself waits until this real deadline has
-        // expired; no separate submit task or fixed-count yield loop competes
-        // to observe entry during a one-second window.
-        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 30_000)
+        // The shell runner isolates this case and explicitly authorizes its
+        // short setup margin. Direct/IDE runners retain the original allowance
+        // for unrelated suite work; both arms wait for the real expiry.
+        let isolated = ProcessInfo.processInfo.environment["DARKBLOOM_ISOLATED_DEADLINE_TEST"] == "1"
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: isolated ? 2_000 : 30_000)
         await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
             _ = try await submitControlled(
                 bridge: bridge, requestId: "accepted-expired", profile: profile, deadline: deadline)

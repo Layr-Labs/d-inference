@@ -104,7 +104,7 @@ type APNsPushAttestor struct {
 	backoffMu    sync.Mutex
 	backoffUntil map[string]time.Time // per device token (honor Retry-After / 429)
 
-	now func() time.Time // injectable clock (tests)
+	now func() time.Time
 }
 
 // Config configures an APNsPushAttestor.
@@ -120,6 +120,8 @@ type Config struct {
 	HTTPClient *http.Client
 	// HostOverride replaces the APNs host for both environments (tests only).
 	HostOverride string
+	// Now supplies the clock for token expiry and delivery backoff. Nil uses time.Now.
+	Now func() time.Time `json:"-"`
 }
 
 // NewAPNsPushAttestor parses the .p8 and returns a ready attestor.
@@ -142,6 +144,10 @@ func NewAPNsPushAttestor(cfg Config) (*APNsPushAttestor, error) {
 			Transport: &http.Transport{ForceAttemptHTTP2: true},
 		}
 	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &APNsPushAttestor{
 		teamID:       cfg.TeamID,
 		keyID:        cfg.KeyID,
@@ -151,7 +157,7 @@ func NewAPNsPushAttestor(cfg Config) (*APNsPushAttestor, error) {
 		client:       client,
 		hostOverride: cfg.HostOverride,
 		backoffUntil: make(map[string]time.Time),
-		now:          time.Now,
+		now:          now,
 	}, nil
 }
 

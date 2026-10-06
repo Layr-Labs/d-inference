@@ -1,6 +1,6 @@
 # Qwen3.6 B2 repeatability: failure tracks prefill geometry
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-06
 
 The Qwen3.6 concurrency attempt stops on a strict per-request repeatability failure with SSD disabled. Both paged batches finish correctly and produce the same two answers, but those answers exchange request indices. The observed swap tracks 512- versus 2,048-token prefill chunks; this evidence does not isolate an SSD or numerical-kernel defect.
 

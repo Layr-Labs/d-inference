@@ -2,9 +2,20 @@ package registry
 
 import (
 	"strings"
+	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/serviceretirement"
 	"github.com/google/uuid"
 )
+
+func (r *Registry) newServiceRetirement(id string) *serviceretirement.Ledger {
+	if r.serviceRetirementFactory != nil {
+		if ledger := r.serviceRetirementFactory(id); ledger != nil {
+			return ledger
+		}
+	}
+	return &serviceretirement.Ledger{}
+}
 
 // The terminal shadow owns only a frozen UUID/fraction, never the mutable
 // PendingRequest reused by a retry. It is still part of admission's service
@@ -18,24 +29,31 @@ func (p *Provider) retainServiceRetirementShadowLocked(pr *PendingRequest) {
 	if id == "" {
 		return
 	}
-	if p.serviceRetirementShadows == nil {
-		p.serviceRetirementShadows = make(map[string]float64)
+	if p.serviceRetirement == nil {
+		p.serviceRetirement = &serviceretirement.Ledger{}
 	}
-	p.serviceRetirementShadows[id] = pr.reservedServiceCharge
+	p.serviceRetirement.Retain(id, pr.reservedServiceCharge)
 }
 
-// The writer alone can prove an authorized frame was never handed to the
+// Abort applies the writer's proof that an authorized frame was never handed to the
 // socket. Terminal cleanup may already have moved it to a shadow by this point.
-func (p *Provider) abortServiceReservationHandoff(id string) {
+func (h InferenceHandoff) Abort() {
+	p, id := h.provider, h.reservationID
+	if p == nil {
+		return
+	}
 	p.mu.Lock()
-	_, released := p.serviceRetirementShadows[id]
-	delete(p.serviceRetirementShadows, id)
+	released := p.serviceRetirement.Release(id)
+	if released {
+		p.recordDeadlineActivityLocked(time.Now())
+	}
 	for _, pr := range p.pendingReqs {
 		if pr.ServiceReservationID() == id {
 			pr.serviceHandoffAuthorized = false
 			// The writer may return cancellation while its final authorization
 			// callback is still waiting for this lock. Fence that later callback.
 			pr.serviceHandoffAborted = true
+			p.recordDeadlineActivityLocked(time.Now())
 			break
 		}
 	}
@@ -73,15 +91,9 @@ func (p *Provider) releaseServiceReservationLocked(id string) bool {
 	if !p.serviceRetirementProtocol {
 		return false
 	}
-	if _, ok := p.serviceRetirementShadows[id]; ok {
-		delete(p.serviceRetirementShadows, id)
+	if p.serviceRetirement.Release(id) {
+		p.recordDeadlineActivityLocked(time.Now())
 		return true
 	}
-	for _, pr := range p.pendingReqs {
-		if pr.serviceRetirementTracked && !pr.serviceReservationReleased && pr.ServiceReservationID() == id {
-			pr.serviceReservationReleased = true
-			return true
-		}
-	}
-	return false
+	return p.serviceReservationsLocked().ReleasePending(id)
 }

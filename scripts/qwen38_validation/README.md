@@ -1,6 +1,8 @@
 # Qwen 3.8 Next (Flash-Next) reproducible validation
 
-> Last updated: 2026-09-15 · reproduction guide; bind each run to its exact source and binary
+> Last updated: 2026-09-15
+
+This is a reproduction guide; bind each run to its exact source and binary.
 
 The HTTP harnesses send synthetic requests to an **existing healthy**, explicitly
 configured release CLI. No workstation address, port or credential is embedded.

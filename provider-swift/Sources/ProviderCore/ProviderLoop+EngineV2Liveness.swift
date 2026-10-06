@@ -78,6 +78,7 @@ extension ProviderLoop {
     /// capacity-refresh tick; `now` is injectable so tests can drive the
     /// 120s thresholds without waiting.
     internal func recoverWedgedEngineV2Slots(now: ContinuousClock.Instant = .now) async {
+        guard autopilotCommand == nil else { return }
         guard hasEngineV2Slots, !isShuttingDown else { return }
         for modelId in modelSlots.keys.sorted() {
             await recoverEngineV2SlotIfWedged(modelId: modelId, now: now)
@@ -89,6 +90,22 @@ extension ProviderLoop {
     internal func recoverEngineV2SlotIfWedged(
         modelId: String, now: ContinuousClock.Instant
     ) async {
+        guard autopilotCommand == nil, !engineV2RecoveryInProgress.contains(modelId) else { return }
+        // Native construction is one-shot. Refuse before binding a whole slot,
+        // moving/releasing its assistant or attempting a warm replacement.
+        if nativeMiMoLoads[modelId] != nil
+            || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
+            guard !modelsLoading.contains(modelId), !modelsUnloading.contains(modelId),
+                let bridge = modelSlots[modelId]?.engineV2,
+                await bridge.confirmedWedgeForRecovery(now: now),
+                modelSlots[modelId]?.engineV2 === bridge,
+                autopilotCommand == nil else { return }
+            recordModelLoadError(model: modelId,
+                                 message: "Native MiMo slot failed; confirmed retirement or process restart required")
+            _ = await retireNativeMiMoOwner(modelID: modelId)
+            return
+        }
+        guard nativeMiMoAllowsReclamation() else { return }
         guard let slot = modelSlots[modelId],
             !modelsUnloading.contains(modelId),
             !modelsLoading.contains(modelId)
@@ -98,11 +115,14 @@ extension ProviderLoop {
         guard await bridge.confirmedWedgeForRecovery(now: now) else { return }
         // Re-validate after the verdict's suspension: an unload/reload may
         // have swapped the slot while we awaited the bridge actor.
-        guard modelSlots[modelId]?.engineV2 === bridge,
+        guard autopilotCommand == nil, !engineV2RecoveryInProgress.contains(modelId), modelSlots[modelId]?.engineV2 === bridge,
             !modelsUnloading.contains(modelId),
             !modelsLoading.contains(modelId),
             !isShuttingDown
         else { return }
+
+        engineV2RecoveryInProgress.insert(modelId)
+        defer { engineV2RecoveryInProgress.remove(modelId) }
 
         // Cooldown: a second confirmed wedge within 120s of the last
         // recovery ATTEMPT means the rebuild did not stick — stop
@@ -111,6 +131,11 @@ extension ProviderLoop {
         // load path until a later lazy reload gets a fresh chance).
         if let last = engineV2LastRecoveryAt[modelId],
             now - last < Self.engineV2RecoveryCooldown {
+            // Own this emergency unload before telemetry suspends, so a new
+            // autopilot plan cannot mistake the slot for an idle resident.
+            let recoveryPin = Self.engineV2RecoveryPinPrefix + modelId
+            requestToModel[recoveryPin] = modelId
+            defer { requestToModel.removeValue(forKey: recoveryPin) }
             logger.error(
                 "engine_v2 liveness: \(modelId) wedged again inside the recovery cooldown — unloading (fail loud)")
             await bridge.emitSelfRestartTelemetry(
@@ -155,6 +180,8 @@ extension ProviderLoop {
 
         // Heartbeats report "reloading" from here until the swap (the old
         // bridge stays registered in the runtime for exactly that reason).
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         await bridge.beginRecoveryReload()
 
         // An unchanged posture keeps the slot's CURRENT TOTAL grant
@@ -178,7 +205,7 @@ extension ProviderLoop {
         // engine — BOUNDED by the engine's shutdown timeout (a wedged
         // queue force-finishes streams instead of hanging forever).
         await bridge.shutdown()
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
 
         let rebuildStartedAt = ContinuousClock.now
         do {
@@ -222,7 +249,7 @@ extension ProviderLoop {
             // makeEngineV2BundleForSlot re-registered `newBridge` in
             // engineV2Runtime (replacing the old bridge's entry).
 
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             var postBuildServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: newBridge.kvBackendKind,
                 pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
@@ -247,7 +274,7 @@ extension ProviderLoop {
                 await engineV2Runtime.unregister(modelId: modelId)
                 await newBridge.shutdown()
                 newBundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 rebuildPreparation = rebuildPreparation.fallingBack(reason)
                 prepared = prepared.fallingBack(reason)
                 rebuiltSizing = slot.sizing.replacingAuxiliaryWeightBytes(0)
@@ -265,7 +292,7 @@ extension ProviderLoop {
                     modelArtifactSHA256: slot.modelArtifactSHA256,
                     cacheEligibleWeightHash: slot.cacheEligibleWeightHash)
                 newBridge = newBundle.bridge
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 postBuildServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: newBridge.kvBackendKind,
                     pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
@@ -276,7 +303,7 @@ extension ProviderLoop {
                 await engineV2Runtime.unregister(modelId: modelId)
                 await newBridge.shutdown()
                 newBundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 throw InferenceError.modelLoadFailed(
                     "engine_v2 self-restart of '\(modelId)' left insufficient KV headroom")
             }
@@ -298,7 +325,7 @@ extension ProviderLoop {
                 await engineV2Runtime.unregister(modelId: modelId)
                 await newBridge.shutdown()
                 newBundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 releaseResliceGate()
                 logger.warning(
                     "engine_v2 liveness: \(modelId) was unloaded mid-recovery — rebuilt engine discarded")

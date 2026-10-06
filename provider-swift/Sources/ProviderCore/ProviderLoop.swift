@@ -210,6 +210,9 @@ public actor ProviderLoop {
     /// new process has no stalled call).
     internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
+    internal var ordinaryServingModelIDs: Set<String>
+    internal var autopilotSuccessorNeedsInventoryRefresh = false
+    internal var autopilotInventoryModels: [String: ModelInfo]
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
@@ -217,6 +220,30 @@ public actor ProviderLoop {
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
+    /// One lifecycle belongs to this real loop owner, not to each load. The
+    /// process registry retains native resources independently on failed drain.
+    internal let nativeMiMoRegistry: MiMoV26NativeLoadRegistry
+    internal var nativeMiMoLifecycle: MiMoV26NativeLifecycle?
+    internal var nativeMiMoLifecycleClosed = false
+    internal var nativeMiMoLoads: [String: MiMoV26ServingLoad] = [:]
+    internal var nativeMiMoCandidates: [String: ModelSlot] = [:]
+    internal var nativeMiMoRetiringSizing: [String: SlotSizingSnapshot] = [:]
+    internal var nativeMiMoResliceOwners: Set<UUID> = []
+    internal var nativeMiMoRetiring: Set<String> = []
+    internal var nativeMiMoPendingRetirements: [String: NativeMiMoRetirementProgress] = [:]
+    internal var nativeMiMoRetirementTasks: [String: Task<Void, Never>] = [:]
+    internal var nativeMiMoRetirementReady: Set<String> = []
+    internal var nativeMiMoHostConsumers: [String: [UUID: Task<Void, Never>]] = [:]
+    internal var nativeMiMoHostConsumerWatchers: [UUID: Task<Void, Never>] = [:]
+    internal var nativeMiMoJoinedServingOwners: Set<UUID> = []
+    internal var nativeMiMoJoinedBridgeProgress: [UUID: [Int]] = [:]
+    internal var nativeMiMoShutdownIdentities: [UUID: NativeMiMoShutdownIdentity] = [:]
+    internal var nativeMiMoConsumerLeases: [String: [UUID: NativeLocalConsumerLease]] = [:]
+    internal var nativeMiMoJoinedLeaseRevisions: [UUID: [UUID: UInt64]] = [:]
+    internal var nativeMiMoClosedConsumerLeaseIDs: Set<UUID> = []
+    /// Refusal/hold-only fixture boundary; never supplies a successful native
+    /// result, memory estimate, retirement receipt, or replacement model.
+    internal var nativeMiMoBoundaryForTesting: (@Sendable (String) async throws -> Void)?
     var processMemoryTelemetrySampler = ProcessMemoryTelemetrySampler()
     /// Phase 3: global disk accountant (process-wide, shared across models).
     internal let powerAssertion: InferencePowerAssertion
@@ -261,6 +288,13 @@ public actor ProviderLoop {
         return max(1, min(configuredMaxModelSlots, live))
     }
 
+    /// Counterfactual slot limit for planning; observing more cached models
+    /// never changes the ordinary runtime's effective `maxModelSlots`.
+    internal var autopilotPlanningMaxModelSlots: Int {
+        min(configuredMaxModelSlots, max(maxModelSlots,
+            Set(autopilotInventoryModels.keys).union(advertisedModels.keys).count))
+    }
+
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
     internal var requestToModel: [String: String] = [:]
@@ -269,6 +303,33 @@ public actor ProviderLoop {
     /// (unified mode), used to keep eviction and the idle monitor from pulling a
     /// model out from under a local stream. See `LocalReservationCounter`.
     internal var localReservations = LocalReservationCounter()
+
+    // Residency operations outlive WebSocket reconnects; never clear uncertain
+    // ownership on a transport timeout. Fresh heartbeats reconcile completion.
+    internal var autopilotTimingHistory = ModelAutopilotHistory()
+    internal var autopilotTimingLoaded = false
+    internal var autopilotLastElapsedMs: Int64 = 0
+    internal var autopilotLastReleaseMs: Int64 = 0
+    internal var autopilotLastLoadMs: Int64 = 0
+    internal var autopilotSettingsOverride: ModelAutopilotSettings?
+    internal var autopilotControl: ModelAutopilotControl?
+    internal var autopilotCommand: ModelAutopilotCommand?
+    internal var autopilotTask: Task<Void, Never>?
+    internal var autopilotMutationStarted = false
+    internal var autopilotGeneration: UInt64 = 0
+    internal var autopilotHistory: [String: (ModelAutopilotCommand, ModelAutopilotStatus.State, String?)] = [:]
+    internal var autopilotHistoryOrder: [String] = []
+    internal var autopilotLastCommandId: String?
+    internal var autopilotLastCommandStatus: ModelAutopilotStatus.State?
+    internal var autopilotResidentSince: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotLeaseUntil: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotFreeNoEvictGb: Double?
+    internal var autopilotDeferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
+    internal var autopilotDeferredDrops: Set<String> = []
+    /// Explicit desired-build retirements, never inferred from missing catalog
+    /// entries. Release cleanup is distinct from network placement authority.
+    internal var autopilotSupersededModels: Set<String> = []
+
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
     internal var localServerTask: Task<Void, Never>?
@@ -437,6 +498,8 @@ public actor ProviderLoop {
     /// inside `engineV2RecoveryCooldown` unloads the slot instead of
     /// thrashing rebuilds).
     internal var engineV2LastRecoveryAt: [String: ContinuousClock.Instant] = [:]
+    /// Unlike network request pins, maintenance ownership survives disconnect.
+    internal var engineV2RecoveryInProgress: Set<String> = []
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
@@ -549,7 +612,7 @@ public actor ProviderLoop {
     internal var startupPreloadGateWaiter: OneShotBoolContinuation?
     /// Coalesces pre-registration teardown requested by the serve task and a
     /// concurrent signal handler. Detached from a cancelled schedule task.
-    internal var preRegistrationCleanupTask: Task<Void, Never>?
+    internal var preRegistrationCleanupTask: Task<Bool, Never>?
     /// Set once the coordinator event reader owns the normal shutdown path.
     internal var coordinatorEventLoopStarted = false
     /// Suffix of the startup plan not yet completed by the driver. Exposed in
@@ -567,6 +630,12 @@ public actor ProviderLoop {
     /// other's temp files (swift-testing runs suites in parallel;
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
+
+    /// Test seam: false keeps `run()` away from state this Mac shares with a
+    /// real provider: the OOM marker and scan watermark in `~/.darkbloom`,
+    /// the whole SSD prefix-cache root, and the process-wide APNs bridge
+    /// (its startup token wait is 10 seconds). Always true in production.
+    internal var serveUsesHostServices = true
 
     /// APNs code-identity push receipt/reply history beside the state file.
     internal var apnsPushHistory: APNsPushHistoryStore {
@@ -642,7 +711,7 @@ public actor ProviderLoop {
 
     /// Background task that periodically checks idle state and unloads
     /// the model when the timeout has elapsed. nil when disabled
-    /// (`idleTimeoutMins == 0`) or before `run()` starts it.
+    /// (`idleTimeoutMins == 0` or model autopilot) or before `run()` starts it.
     internal var idleMonitorTask: Task<Void, Never>?
 
     /// Periodically refreshes provider-reported backend capacity so heartbeats
@@ -687,9 +756,16 @@ public actor ProviderLoop {
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         // Scripted slot fixtures must not inherit the test host's RAM.
-        kvBudgetForTesting: GlobalKVCacheBudget? = nil
+        kvBudgetForTesting: GlobalKVCacheBudget? = nil,
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
     ) throws {
         self.loopConfig = config
+        self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
+            $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
+                && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)
+        }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.nativeMiMoRegistry = nativeMiMoRegistryForTesting ?? .shared
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))

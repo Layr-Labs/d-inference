@@ -1,6 +1,6 @@
 # App Attest authorization after the 0.9.9 coordinator swap
 
-> Last updated: 2026-09-22 · commit `cb9418cad`
+> Last updated: 2026-09-22
 
 This report separates verified Apple proof, complete archival, account and
 machine binding, and a live permission to serve. It uses bounded read-only

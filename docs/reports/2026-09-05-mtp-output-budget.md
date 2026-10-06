@@ -1,6 +1,6 @@
 # Useful output budgets for speculative decoding
 
-> Last updated: 2026-09-05 · commit `089d9ade3`
+> Last updated: 2026-09-05
 
 The common MTP planner now prevents draft work that cannot produce additional
 output before the request limit. All 126 selected native tests pass. This is

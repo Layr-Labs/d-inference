@@ -52,7 +52,8 @@ enum ToolChoiceEnforcementPolicy {
         }
 
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
-        if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext) {
+        if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
+            || modelContext.modelType == "mimo_v2" {
             return .structuredPostValidation
         }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
@@ -92,6 +93,18 @@ enum ToolChoiceEnforcementPolicy {
             && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
     }
 
+    /// Consumer routing is not a public qualification/catalog advertisement.
+    static func usesNativeTextChannels(_ context: ChatTemplateFixContext) -> Bool {
+        context.modelType == "mimo_v2" || nativeStructuredTarget(context)
+    }
+
+    /// Only the qualified Nemotron parser absorbs a close already in content.
+    /// Other native-channel families retain their existing literal handling.
+    static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {
+        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+            && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+    }
+
     /// Nested examples inside native XML-family reasoning stay reasoning.
     /// Admission is family-specific; this is a wire policy, not an architecture
     /// alias, and must not change legacy Nemotron or other model behavior.
@@ -117,6 +130,13 @@ enum ToolChoiceEnforcementPolicy {
                     "inference-enforced Gemma tool_choice requires the gemma tool parser")
             }
         case .structuredPostValidation:
+            if modelContext?.modelType == "mimo_v2" {
+                guard format == .mimoV2 else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "native MiMo tool_choice requires the native MiMo parser")
+                }
+                return
+            }
             let type = modelContext?.modelType?
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if type == "diffusion_gemma" {

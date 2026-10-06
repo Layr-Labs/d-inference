@@ -65,27 +65,26 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` enables embedded Qwen 3.5-family and Nemotron Lightning heads, plus the separately published
+/// `auto` enables embedded Qwen-family, Nemotron Lightning and native MiMo heads, plus the separately published
 /// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
 ///
 /// The declaration alone never activates anything: full artifact inspection
-/// and the process-wide kill switch remain enforced by
-/// `SpecDecArtifactFunnel`, so a declared-but-invalid head falls back to
-/// target-only with a recorded reason.
+/// and the process-wide kill switch remain enforced by the generic funnel
+/// or strict native MiMo loader. Metadata intent alone never proves activation.
 public enum MTPMode: String, Sendable, Equatable, Codable {
     case auto
     case on
     case off
 
     /// `model_type` values whose embedded heads self-activate under `auto`.
-    /// Kept in sync with `SpecDecArtifactFunnel.isInlineTarget` — the
-    /// funnel stays the single authority on which models it will *resolve*;
-    /// this set only decides which ones `auto` is willing to *ask about*.
+    /// The generic funnel and native MiMo loader remain the authorities on
+    /// genuine artifact eligibility. This set only selects automatic intent;
+    /// it cannot create an assistant or bypass native head/owner validation.
     static let automaticEmbeddedModelTypes: Set<String> = [
-        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h",
+        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2",
     ]
 
     private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
@@ -117,7 +116,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     }
 
     /// Startup warms metadata only for eligible external assistants. Embedded
-    /// Qwen and Nemotron heads resolve from their checkpoint and need no catalog request.
+    /// Qwen, Nemotron and native MiMo heads resolve from their checkpoint and need no catalog request.
     func requiresCatalogPrewarm(forModelType modelType: String?, modelID: String) -> Bool {
         switch self {
         case .off:
@@ -147,6 +146,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// coordinator-driven preloads so advertised model count cannot become a
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
+    /// Explicit network residency control; advertising all cached models is not consent.
+    public var modelAutopilot: ModelAutopilotSettings
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
     /// ``defaultEngineV2MaxConcurrent`` — 4, the knee of the measured
@@ -233,6 +234,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
     /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
     /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
+    /// Native `mimo_v2` also requests its inspected embedded heads automatically.
     /// The retired boolean `mtp` key is ignored (and warned about, see
     /// ``retiredKeysPresent``); only `mtp_mode` is read or written.
     ///
@@ -289,7 +291,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         startupSelftestFailClosed: Bool = false,
         mtpMode: MTPMode = .auto,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtpDrafterPath: String? = nil
+        mtpDrafterPath: String? = nil,
+        modelAutopilot: ModelAutopilotSettings = .init()
     ) {
         self.port = port
         self.model = model
@@ -310,6 +313,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpMode = mtpMode
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.modelAutopilot = modelAutopilot
     }
 
     enum CodingKeys: String, CodingKey {
@@ -319,6 +323,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
+        case modelAutopilot = "model_autopilot"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
@@ -355,6 +360,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
+        self.modelAutopilot = try container.decodeIfPresent(ModelAutopilotSettings.self, forKey: .modelAutopilot) ?? .init()
         self.engineV2MaxConcurrentIsExplicit = container.contains(.engineV2MaxConcurrent)
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
@@ -396,6 +402,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(enabledModels, forKey: .enabledModels)
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
+        try container.encode(modelAutopilot, forKey: .modelAutopilot)
         if engineV2MaxConcurrentIsExplicit {
             try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
         }

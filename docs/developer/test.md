@@ -78,6 +78,13 @@ pins the watchdog wiring; `scripts/test-integration-ci-workflow.py` checks cache
 wiring while retaining all E2E gates, and `scripts/test-provider-ci-cache.py`
 checks integration/provider/release cache isolation and compatibility boundaries.
 
+Run `python3 scripts/test-integration-ci-workflow.py` to check those integration
+invariants offline. The command assertion accepts the original E2E commands or
+the exact additive `-cover -covermode=set -coverpkg="$E2E_COVER_PKG"` bundle with
+`-args -test.gocoverdir="$covdir"`. Negative cases reject missing or changed test
+selectors, skip patterns, counts, timeouts and parallelism; the workflow checks
+still require all three unconditional gates and their backend environment values.
+
 Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
 regressions. It creates real temporary Git repositories to check PR merge-base
 comparison, multiple commits, more than 300 changed files, additions, deletions,
@@ -94,6 +101,11 @@ independent suite/build prerequisite checks. Release Integrity runs both offline
 suites even for docs-only PRs. See [build routing](build.md) for dependencies and
 default-branch behavior. Relevant E2E benchmarks still require the existing
 `benchmarks` environment approval; irrelevant PRs do not request that approval.
+
+Docs Impact checks out the PR head and compares it with the merge base of the
+event's base SHA, not GitHub's synthetic merge commit. Upstream changes present
+only in that merge therefore do not create documentation requirements for the PR;
+the canonical source-to-document rules still apply to every changed PR path.
 
 The documentation-impact guards (`scripts/test-docs-impact-check.py`) exercise
 both production components and their adapters after package moves. Billing API

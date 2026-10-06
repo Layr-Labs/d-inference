@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - MLX gather row tiles
+
+- Backport row-tile selection for `gather_mm` and `gather_qmm` in the provider's pinned MLX dependencies, with matching regenerated Swift kernel sources. Rebuild with a source-matched metallib; earlier full-model measurements do not qualify performance on these pins.
+
 ## Unreleased — account erasure
 
 - Keep upstream error text out of erasure-outbox manual-action logs; retain safe correlation IDs, target, state and attempt count, with details available in restricted outbox records.
@@ -125,6 +129,8 @@
 - Share one top-200 ranking fill across caller limits and equivalent window aliases. Coalesce concurrent misses, pause failed fills for 10 seconds, and include the remaining retry delay in leaderboard 503 responses.
 
 ## Unreleased — provider 0.9.17
+
+- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere.
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
 - Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.

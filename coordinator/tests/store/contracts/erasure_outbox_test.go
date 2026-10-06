@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,8 +23,8 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 			}
 
 			rows, err := s.LeaseDueErasureOutbox(ctx, now, now, time.Minute, 10)
-			if err != nil || len(rows) != 3 {
-				t.Fatalf("lease = %d rows, %v; want 3", len(rows), err)
+			if err != nil || len(rows) != 4 {
+				t.Fatalf("lease = %d rows, %v; want 4", len(rows), err)
 			}
 			byTarget := map[store.ErasureTarget]store.ErasureOutboxWork{}
 			for _, r := range rows {
@@ -34,6 +35,14 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 			}
 			if again, _ := s.LeaseDueErasureOutbox(ctx, now, now, time.Minute, 10); len(again) != 0 {
 				t.Fatalf("leased rows leased again: %d", len(again))
+			}
+
+			contact := byTarget[store.ErasureTargetResendContact]
+			if contact.ExternalID != strings.ToLower(a.Email) {
+				t.Fatalf("resend_contact external id = %q", contact.ExternalID)
+			}
+			if err := s.SaveErasureOutboxResult(ctx, contact.ID, store.ErasureOutboxResult{LeaseGeneration: contact.LeaseGeneration, State: store.ErasureOutboxDone, NextAt: now}); err != nil {
+				t.Fatal(err)
 			}
 
 			acct := byTarget[store.ErasureTargetStripeAccount]
@@ -67,6 +76,10 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 			}
 			for _, it := range items {
 				switch it.Target {
+				case store.ErasureTargetResendContact:
+					if it.State != store.ErasureOutboxDone || it.HasExternalID || it.ExternalID != "" || it.DoneAt == nil {
+						t.Errorf("done contact row = %+v; the email must be cleared", it)
+					}
 				case store.ErasureTargetStripeAccount:
 					if it.State != store.ErasureOutboxDone || it.HasExternalID || it.ExternalID != "" || it.DoneAt == nil {
 						t.Errorf("done row = %+v; the Stripe ID must be cleared", it)

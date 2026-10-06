@@ -209,7 +209,9 @@ protocol SSDEvictableStore: AnyObject, Sendable {
 /// total is back under budget.
 ///
 /// Enforcement runs only on the (serial, utility-QoS) write-behind
-/// consumers, so the lock never sits on a request path.
+/// consumers. The byte total is read under the same lock when a speculative
+/// checkpoint is offered (`hasDiskRoomForSpeculativeWrite`), on the engine's
+/// publication path, so such an offer can wait for an enforcement pass.
 final class SSDDiskBudget: @unchecked Sendable {
 
     static let shared = SSDDiskBudget()

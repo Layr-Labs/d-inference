@@ -18,8 +18,13 @@ enum SSDWriteClass: Sendable {
 /// Speculative writes are the deliberate exception and do wait for a floor:
 /// one is accepted only while it leaves both buckets within the speculative
 /// headroom of full. Below that, every byte and all refill belong to the other
-/// classes, so speculation never costs them more than the headroom. The
-/// headroom bounds that cost, not how much speculation writes in a day.
+/// classes. The guarantee is about balances: with the same other writes
+/// accepted, each bucket holds at most the headroom less than it would hold
+/// with no speculative write. It is not a bound on refused bytes. A write is
+/// refused whole, so a shortfall of at most the headroom can refuse one file
+/// that is larger than the headroom, once each time a bucket has refilled to
+/// its floor and is drained again. Nor does the headroom bound how much
+/// speculation writes in a day.
 final class SSDWriteRateLimiter: @unchecked Sendable {
     enum Decision { case accepted, rateLimited, priorityLimited, speculativeLimited }
     private let capBytesPerDay: Double
@@ -33,7 +38,7 @@ final class SSDWriteRateLimiter: @unchecked Sendable {
 
     /// `speculativeHeadroomSeconds` is the speculative headroom expressed as
     /// that many seconds of refill at the cap's rate. The default of 0 accepts
-    /// no speculative write.
+    /// no speculative write of one byte or more.
     init(capBytesPerDay: Int, repeatReserveFraction: Double = 0, speculativeHeadroomSeconds: Double = 0,
          nowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
         let cap = Double(max(0, capBytesPerDay))

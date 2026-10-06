@@ -179,8 +179,12 @@ extension SSDHybridCheckpointStore {
             guard !closed else { return .cacheClosed }
             guard !writing.contains(short) else { return .alreadyQueued }
             // One write runs while one waits. A speculative write is admitted
-            // only into an idle writer, so it never takes the waiting slot and
-            // a proven write waits behind at most one speculative file.
+            // only while no write is registered here, so it never takes the
+            // waiting slot behind a registered write. `writing` is not the
+            // writer, though: `settle` clears it before the finished job's
+            // completion returns, so a speculative job admitted in that span
+            // sits in the pipeline's one buffered slot, and a proven write
+            // arriving before the consumer takes it settles `write_queue_full`.
             if writeClass == .speculative {
                 guard writing.isEmpty else { return .writeSpeculativeLimited }
             } else {

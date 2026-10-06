@@ -41,7 +41,8 @@ final class SSDCheckpointDemand: @unchecked Sendable {
 /// The coordinator's demand observation for one remote request: a fleet-wide
 /// repeat forwarded as `cache_repeated_prefix_tokens`, or first sight forwarded
 /// as `cache_first_sight_tokens`. Both are token counts only; they carry no
-/// key, hash, boundary or prompt-derived identifier.
+/// key, hash or content-derived value. First sight is a boundary position
+/// derived from the prompt's length alone.
 public struct SSDCheckpointDonationDemand: Sendable, Equatable {
     /// Deepest boundary another plan shared within the coordinator's routing
     /// TTL, among the multiples of 1,024 tokens and final boundaries the

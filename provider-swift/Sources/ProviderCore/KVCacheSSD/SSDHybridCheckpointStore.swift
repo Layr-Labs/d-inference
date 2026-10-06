@@ -99,7 +99,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         self.diskBudget = diskBudget
         self.donationRecorder = donationRecorder
         // A speculative checkpoint is useful for at most one cache lifetime,
-        // so speculation may hold back no more budget than refills in that time.
+        // so speculation may hold back no more budget than the total refills
+        // in that time (the novel share, at 90% of that rate, takes a ninth longer).
         self.rateLimiter = SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay,
             repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
             speculativeHeadroomSeconds: Double(config.ttlSeconds), nowSeconds: writeNowSeconds)

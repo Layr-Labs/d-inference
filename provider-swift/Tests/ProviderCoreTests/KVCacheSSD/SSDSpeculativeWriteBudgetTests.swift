@@ -101,13 +101,18 @@ struct SSDSpeculativeWriteBudgetTests {
         #expect(speculated.consume(bytes: 43_200, writeClass: .repeated) == .accepted)
     }
 
-    /// The bound: at every instant each bucket holds at least what it would
-    /// hold had no speculative write ever been charged, minus the headroom
-    /// (1,800 bytes). So a proven write that the speculation-free history
-    /// admits with 1,800 bytes to spare is always admitted here, and all
-    /// speculative writes together spend at most the headroom plus what
-    /// refilled meanwhile.
-    @Test("a sustained stream of speculative offers never costs a proven write more than the headroom")
+    /// The balance bound: at every instant each bucket holds at least what it
+    /// would hold had the same proven writes been accepted and no speculative
+    /// write ever charged, minus the headroom (1,800 bytes). So a proven write
+    /// that this reference admits with 1,800 bytes to spare is always admitted
+    /// here, and all speculative writes together spend at most the headroom
+    /// plus what refilled meanwhile.
+    ///
+    /// The reference is charged only with what the limiter under test
+    /// accepts, so this says nothing about a limiter that was never offered
+    /// speculation and so accepts a different set of writes. The two tests
+    /// after this one compare against that.
+    @Test("with the same proven writes accepted, a sustained stream of speculative offers never leaves a bucket more than the headroom short")
     func speculationCostIsBounded() {
         let clock = Clock()
         let limiter = makeLimiter(clock: clock)
@@ -163,6 +168,111 @@ struct SSDSpeculativeWriteBudgetTests {
         #expect(speculativeRefusals > 0)
         #expect(provenWithHeadroomToSpare > 0)
         #expect(provenRefusals > 0)
+    }
+
+    /// The balance bound is not a bound on refused bytes. A proven write is
+    /// refused whole, so a shortfall smaller than the headroom refuses a file
+    /// larger than the headroom. Novel share 43,200, headroom 1,800, proven
+    /// files of 2,100 bytes: a full share holds 20 of them, a share that is
+    /// 1,700 bytes short holds 19.
+    @Test("against an independent first-sight-off limiter one speculative file costs one whole proven file, more than the headroom, in every refill cycle")
+    func speculationCostsOneProvenFilePerRefillCycle() {
+        let clock = Clock()
+        let limiter = makeLimiter(clock: clock)
+        // Offered every proven write `limiter` is offered and no speculative
+        // one. What it accepts is its own decision.
+        let firstSightOff = makeLimiter(headroomSeconds: 0, clock: clock)
+        let provenFile = 2_100
+        var accepted = 0, acceptedWithoutSpeculation = 0
+        for _ in 0 ..< 10 {
+            // A day refills both buckets of both limiters completely.
+            clock.now += 86_400
+            #expect(limiter.consume(bytes: 1_700, writeClass: .speculative) == .accepted)
+            var inCycle = 0, inCycleWithoutSpeculation = 0
+            for _ in 0 ..< 25 {
+                if limiter.consume(bytes: provenFile, writeClass: .novel) == .accepted { inCycle += 1 }
+                if firstSightOff.consume(bytes: provenFile, writeClass: .novel) == .accepted {
+                    inCycleWithoutSpeculation += 1
+                }
+            }
+            #expect(inCycleWithoutSpeculation == 20)
+            #expect(inCycle == 19)
+            // Once drained below the floor, speculation takes nothing more
+            // until the next refill.
+            #expect(limiter.consume(bytes: 1, writeClass: .speculative) == .speculativeLimited)
+            accepted += inCycle
+            acceptedWithoutSpeculation += inCycleWithoutSpeculation
+        }
+        // One 2,100-byte file per cycle for 1,700 speculative bytes: more
+        // than the headroom, less than the headroom plus one file, and it
+        // recurs with every refill. Ten cycles cost ten files.
+        let costPerCycle = (acceptedWithoutSpeculation - accepted) * provenFile / 10
+        #expect(costPerCycle == provenFile)
+        #expect(costPerCycle > Self.headroom)
+        #expect(costPerCycle < Self.headroom + provenFile)
+        // Which offer is refused differs between the two histories, so the
+        // cost is a net figure: the limiter that refused the larger file has
+        // 1,600 bytes left and takes a 1,300-byte file the other, with 1,200
+        // left, refuses.
+        #expect(limiter.consume(bytes: 1_300, writeClass: .novel) == .accepted)
+        #expect(firstSightOff.consume(bytes: 1_300, writeClass: .novel) == .priorityLimited)
+    }
+
+    /// The bound that does hold against an independent limiter. Start from
+    /// full buckets and let no time pass. If speculation accepts S bytes
+    /// (S is at most the headroom) and the proven offers are then of one
+    /// class, the limiter that speculated accepts S fewer proven bytes than
+    /// the other, give or take what each has left when the offers end. It
+    /// never has a whole file more left than the other (it refuses a file the
+    /// other accepts only while it holds less), so the extra refused bytes
+    /// are less than S plus one file. A refill starts the next cycle, and
+    /// the cost can recur there.
+    @Test("against an independent first-sight-off limiter speculation costs proven writes less than the headroom plus one file per refill cycle")
+    func independentHistoryCostIsBoundedPerRefillCycle() {
+        let clock = Clock()
+        let limiter = makeLimiter(clock: clock)
+        let firstSightOff = makeLimiter(headroomSeconds: 0, clock: clock)
+        var seed: UInt64 = 0xF1857
+        func next(below bound: Int) -> Int {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Int((seed >> 33) % UInt64(bound))
+        }
+        // Proven files of 1,201 to 2,400 bytes: none is small enough to use
+        // up whatever a refusal leaves, as a deep checkpoint is not.
+        let smallestProvenFile = 1_201, largestProvenFile = 2_400
+        var cyclesCostingMoreThanHeadroom = 0, cyclesCostingNothing = 0
+        for cycle in 0 ..< 400 {
+            clock.now += 86_400
+            #expect(limiter.mightAccept(bytes: Self.cap) && firstSightOff.mightAccept(bytes: Self.cap))
+            #expect(limiter.mightAccept(bytes: Self.cap / 2, repeated: false)
+                && firstSightOff.mightAccept(bytes: Self.cap / 2, repeated: false))
+            let writeClass: SSDWriteClass = cycle.isMultiple(of: 4) ? .repeated : .novel
+            var speculated = 0, refused = 0, refusedWithoutSpeculation = 0
+            func offerSpeculative() {
+                let bytes = 1 + next(below: 900)
+                if limiter.consume(bytes: bytes, writeClass: .speculative) == .accepted { speculated += bytes }
+            }
+            for _ in 0 ..< 4 { offerSpeculative() }
+            // 120 offers of at least 1,201 bytes exceed either bucket.
+            for _ in 0 ..< 120 {
+                let bytes = smallestProvenFile + next(below: largestProvenFile - smallestProvenFile + 1)
+                if limiter.consume(bytes: bytes, writeClass: writeClass) != .accepted { refused += bytes }
+                if firstSightOff.consume(bytes: bytes, writeClass: writeClass) != .accepted {
+                    refusedWithoutSpeculation += bytes
+                }
+                offerSpeculative()
+            }
+            let cost = refused - refusedWithoutSpeculation
+            #expect(speculated <= Self.headroom)
+            #expect(cost < speculated + largestProvenFile)
+            #expect(refusedWithoutSpeculation > 0)
+            if cost > Self.headroom { cyclesCostingMoreThanHeadroom += 1 }
+            if cost == 0 { cyclesCostingNothing += 1 }
+        }
+        // Both regimes occur: cycles in which speculation cost no proven
+        // byte, and cycles in which it cost more than the headroom.
+        #expect(cyclesCostingMoreThanHeadroom > 0)
+        #expect(cyclesCostingNothing > 0)
     }
 
     @Test("a limiter built without speculative headroom accepts no speculative write")

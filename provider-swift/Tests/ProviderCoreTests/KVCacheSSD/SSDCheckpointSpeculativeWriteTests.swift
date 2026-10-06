@@ -19,6 +19,24 @@ struct SSDCheckpointSpeculativeWriteTests {
     private static let firstSight = SSDCheckpointDonationDemand(repeatedPrefixTokens: 0, firstSightTokens: 512)
     private static let coordinatorRepeat = SSDCheckpointDonationDemand(repeatedPrefixTokens: 512)
 
+    /// The injected disk budget, changeable while a store is running.
+    private final class DiskBudget: @unchecked Sendable {
+        private let lock = NSLock()
+        private var limit = 1 << 30
+        var bytes: Int {
+            get { lock.withLock { limit } }
+            set { lock.withLock { limit = newValue } }
+        }
+    }
+
+    /// What a donation's completion was called with; nil until it is called.
+    private final class Settlement: @unchecked Sendable {
+        private let lock = NSLock()
+        private var settled: [Int]?
+        var positions: [Int]? { lock.withLock { settled } }
+        func settle(_ positions: [Int]) { lock.withLock { settled = positions } }
+    }
+
     private func count(_ recorder: PrefixCacheDonationTelemetry, _ outcome: PrefixCacheDonationOutcome) -> UInt64 {
         recorder.snapshot().first { $0.outcome == outcome }?.count ?? 0
     }
@@ -263,14 +281,6 @@ struct SSDCheckpointSpeculativeWriteTests {
 
     @Test("a speculative write that would exceed the disk budget is refused before I/O and evicts nothing")
     func speculativeWritesNeverEvict() async throws {
-        final class DiskBudget: @unchecked Sendable {
-            private let lock = NSLock()
-            private var limit = 1 << 30
-            var bytes: Int {
-                get { lock.withLock { limit } }
-                set { lock.withLock { limit = newValue } }
-            }
-        }
         let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 1025)
         defer { fixture.remove() }
         let outcomes = PrefixCacheDonationTelemetry()
@@ -302,6 +312,94 @@ struct SSDCheckpointSpeculativeWriteTests {
         _ = try await fixture.donate(store, receipt: 60, position: 1024)
         #expect(store.stats().filesWritten == 3)
         #expect(count(outcomes, .writeSpeculativeLimited) == 1)
+        await store.closeAndWait()
+    }
+
+    /// The refusals of `prepareWriteJob`, each on its own: a speculative offer
+    /// that cannot be written is turned away on the offering thread. It never
+    /// becomes a job, so it does not occupy the idle writer while it waits
+    /// for the file. The test holds the file's lease: an offer that had been
+    /// queued would still be waiting on it when `donate` returns.
+    @Test("a first-sight offer refused for write budget or for disk room is settled at admission and never takes the writer",
+          arguments: [true, false])
+    func admissionRefusalsNeverTakeTheWriter(diskRoomRefuses: Bool) async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let diskBudget = DiskBudget()
+        let store = try fixture.makeStore(
+            maxWriteBytesPerDay: Self.cap, diskBudgetBytes: { diskBudget.bytes },
+            donationRecorder: outcomes, writeNowSeconds: { 0 })
+        defer { store.close() }
+        // Exactly one of the two admission checks can refuse.
+        if diskRoomRefuses { diskBudget.bytes = 0 } else { applyWritePressure(store) }
+        let file = fixture.file(store)
+        let lease = store.fileCoordinator.makeAccess(to: file)
+        try await lease.acquire()
+        defer { lease.release() }
+        store.registerDonationDemand(Self.firstSight, requestID: .init(63))
+        let source = try fixture.source()
+        let settlement = Settlement()
+        store.donate(source, requestID: .init(63), tokens: fixture.tokens, cacheSalt: "tenant-a") {
+            settlement.settle($0)
+        }
+        #expect(settlement.positions == [])
+        #expect(store.fileCoordinator.pendingCount(for: file) == 0)
+        #expect(store.lock.withLock { store.writing.isEmpty })
+        #expect(count(outcomes, .writeSpeculativeLimited) == 1)
+        #expect(store.stats().filesWritten == 0)
+        // Nothing was charged for the refused offer.
+        #expect(store.rateLimiter.mightAccept(bytes: diskRoomRefuses ? Self.cap : Self.cap - Self.cap / 20))
+        #expect(store.rateLimiter.mightAccept(bytes: Self.novelShare, repeated: false))
+        lease.release()
+        await store.closeAndWait()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// The writer's own disk-room check, the one before the charge. Admission
+    /// found room, so only that check can refuse.
+    @Test("a first-sight write admitted with disk room is refused before the charge when the room is gone by the time the writer runs")
+    func diskRoomIsRecheckedBeforeTheCharge() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let earlier = try fixture.makeStore()
+        earlier.registerDonationDemand(Self.coordinatorRepeat, requestID: .init(64))
+        #expect(try await fixture.donate(earlier, receipt: 64, position: 256) == [256])
+        await earlier.closeAndWait()
+
+        // A restarted store: one entry on disk, both write buckets full.
+        let outcomes = PrefixCacheDonationTelemetry()
+        let diskBudget = DiskBudget()
+        let store = try fixture.makeStore(
+            maxWriteBytesPerDay: Self.cap, diskBudgetBytes: { diskBudget.bytes },
+            donationRecorder: outcomes, writeNowSeconds: { 0 })
+        defer { store.close() }
+        #expect(store.stats().entries == 1)
+        let file = fixture.file(store, position: 512)
+        // Hold the new file's lease so the admitted job waits before the
+        // writer reaches its checks.
+        let lease = store.fileCoordinator.makeAccess(to: file)
+        try await lease.acquire()
+        defer { lease.release() }
+        store.registerDonationDemand(Self.firstSight, requestID: .init(65))
+        let offer = Task { try await fixture.donate(store, receipt: 65, position: 512) }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil {
+            store.fileCoordinator.pendingCount(for: file) == 1
+        }
+        // Another store's write has meanwhile filled the shared disk budget:
+        // any new file would now need an eviction.
+        diskBudget.bytes = store.stats().bytesOnDisk
+        lease.release()
+        #expect(try await offer.value.isEmpty)
+        #expect(count(outcomes, .writeSpeculativeLimited) == 1)
+        #expect(count(outcomes, .donated) == 0)
+        #expect(store.stats().filesWritten == 0)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        // Nothing was evicted for it and nothing was charged.
+        #expect(store.stats().entries == 1)
+        #expect(FileManager.default.fileExists(atPath: fixture.file(store, position: 256).path))
+        #expect(store.rateLimiter.mightAccept(bytes: Self.cap))
+        #expect(store.rateLimiter.mightAccept(bytes: Self.novelShare, repeated: false))
         await store.closeAndWait()
     }
 
@@ -343,6 +441,50 @@ struct SSDCheckpointSpeculativeWriteTests {
         #expect(count(outcomes, .writeSpeculativeLimited) == 1)
         #expect(store.stats().filesWritten == 0)
         #expect(!FileManager.default.fileExists(atPath: file.path))
+        await store.closeAndWait()
+    }
+
+    /// A durable duplicate skips every admission check, so when its entry is
+    /// gone by the time the writer runs, the writer's disk-room check is the
+    /// only one between a first-sight file and a full disk budget.
+    @Test("a first-sight offer whose durable entry is evicted before the write is refused at a full disk budget with ample write budget")
+    func evictedDurableDuplicateIsHeldToDiskRoom() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let earlier = try fixture.makeStore()
+        earlier.registerDonationDemand(Self.coordinatorRepeat, requestID: .init(66))
+        #expect(try await fixture.donate(earlier, receipt: 66) == [256])
+        await earlier.closeAndWait()
+
+        let outcomes = PrefixCacheDonationTelemetry()
+        let diskBudget = DiskBudget()
+        let store = try fixture.makeStore(
+            maxWriteBytesPerDay: Self.cap, diskBudgetBytes: { diskBudget.bytes },
+            donationRecorder: outcomes, writeNowSeconds: { 0 })
+        defer { store.close() }
+        #expect(store.stats().entries == 1)
+        let file = fixture.file(store)
+        let tag16 = try #require(SSDPrefixCache.hexDecode(file.deletingPathExtension().lastPathComponent))
+        let lease = store.fileCoordinator.makeAccess(to: file)
+        try await lease.acquire()
+        defer { lease.release() }
+        store.registerDonationDemand(Self.firstSight, requestID: .init(67))
+        let offer = Task { try await fixture.donate(store, receipt: 67) }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil {
+            store.fileCoordinator.pendingCount(for: file) == 1
+        }
+        try FileManager.default.removeItem(at: file)
+        store.forgetMissing(tag16)
+        #expect(store.stats().entries == 0)
+        // The write budget is whole; the disk budget has no room at all.
+        diskBudget.bytes = 0
+        lease.release()
+        #expect(try await offer.value.isEmpty)
+        #expect(count(outcomes, .writeSpeculativeLimited) == 1)
+        #expect(store.stats().filesWritten == 0)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(store.rateLimiter.mightAccept(bytes: Self.cap))
+        #expect(store.rateLimiter.mightAccept(bytes: Self.novelShare, repeated: false))
         await store.closeAndWait()
     }
 

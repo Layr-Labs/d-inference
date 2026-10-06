@@ -128,7 +128,7 @@ func (s *PostgresStore) newMigrationProvider(db *sql.DB) (*goose.Provider, error
 		goose.WithSessionLocker(locker),
 		goose.WithTableName(migrationVersionTable),
 		goose.WithDisableGlobalRegistry(true),
-		goose.WithGoMigrations(s.goMigrations()...),
+		goose.WithGoMigrations(s.allGoMigrations()...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: create migration provider: %w", err)
@@ -153,4 +153,10 @@ func (s *PostgresStore) goMigrations() []*goose.Migration {
 		step(5, s.ensureProviderEarningsWindowIndex),
 		step(9, s.ensureStripeRefundIndex),
 	}
+}
+
+// allGoMigrations are the pre-goose startup steps, then the
+// CONCURRENTLY index builds.
+func (s *PostgresStore) allGoMigrations() []*goose.Migration {
+	return append(s.goMigrations(), s.indexMigrations()...)
 }

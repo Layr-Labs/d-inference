@@ -36,6 +36,7 @@ func (s *Dispatcher,
 	if s.codeAttestor == nil || provider == nil {
 		return false
 	}
+	generation := s.codeAttestThrottle.PublicationGeneration()
 	provider.Mu().Lock()
 	currentToken := provider.APNsDeviceToken
 	env := provider.APNsEnvironment
@@ -66,8 +67,11 @@ func (s *Dispatcher,
 
 	// Record the token + process key used for E_K(nonce). A reply landing on a
 	// later connection is accepted only when both identities still match.
-	s.codeAttestThrottle.RecordChallengeForIdentity(
-		sePubKey, nonceB64, deviceToken, pubKey)
+	if !s.codeAttestThrottle.RecordChallengeForIdentity(
+		generation,
+		sePubKey, nonceB64, deviceToken, pubKey) {
+		return false
+	}
 
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	err := s.sendCodeChallengeRecorded(sendCtx, provider.ID, deviceToken, env, pubKey, nonceB64)

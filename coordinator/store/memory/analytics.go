@@ -227,12 +227,16 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 		pCoordCnt int
 	}
 
-	// Resolve provider location: prefer live registry, fall back to stored records.
+	// Tombstones override registry snapshots captured before deletion.
 	resolveProviderLoc := func(providerID string) *store.ProviderLocation {
+		rec := s.providerRecords[providerID]
+		if rec != nil && rec.DeletedAt != nil {
+			return nil
+		}
 		if loc, ok := providerLocs[providerID]; ok && loc != nil {
 			return loc
 		}
-		if rec, ok := s.providerRecords[providerID]; ok {
+		if rec != nil {
 			return rec.Location
 		}
 		return nil

@@ -26,12 +26,12 @@ func (s *Owner) HandleAdminAuthInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.privyAuth.InitEmailOTP(req.Email); err != nil {
-		s.logger.Error("admin auth: OTP init failed", "email", req.Email, "error", err)
+		s.logger.Error("admin auth: OTP init failed", "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("otp_error", "failed to send OTP: "+err.Error()))
 		return
 	}
 
-	s.logger.Info("admin auth: OTP sent", "email", req.Email)
+	s.logger.Info("admin auth: OTP sent")
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "otp_sent",
 		"email":  req.Email,
@@ -60,12 +60,12 @@ func (s *Owner) HandleAdminAuthVerify(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.privyAuth.VerifyEmailOTP(req.Email, req.Code)
 	if err != nil {
-		s.logger.Warn("admin auth: OTP verification failed", "email", req.Email, "error", err)
+		s.logger.Warn("admin auth: OTP verification failed", "error", err)
 		httpx.WriteJSON(w, http.StatusUnauthorized, httpx.ErrorResponse("auth_error", "OTP verification failed: "+err.Error()))
 		return
 	}
 
-	s.logger.Info("admin auth: login successful", "email", req.Email)
+	s.logger.Info("admin auth: login successful")
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"email": req.Email,

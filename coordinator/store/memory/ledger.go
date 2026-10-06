@@ -41,8 +41,9 @@ func (s *MemoryStore) Credit(accountID string, amountMicroUSD int64, entryType s
 func (s *MemoryStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
-	s.withdrawable[accountID] += amountMicroUSD
+	if s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now()) {
+		s.withdrawable[accountID] += amountMicroUSD
+	}
 	return nil
 }
 
@@ -58,8 +59,12 @@ func (s *MemoryStore) CreditWithdrawableOnce(accountID string, amountMicroUSD in
 			return false, nil
 		}
 	}
-	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
-	s.withdrawable[accountID] += amountMicroUSD
+	if s.erasureRefusedIdentities[refusedCreditIdentity{accountID, entryType, store.HashKey(reference)}] {
+		return false, nil
+	}
+	if s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now()) {
+		s.withdrawable[accountID] += amountMicroUSD
+	}
 	return true, nil
 }
 
@@ -125,6 +130,9 @@ func (s *MemoryStore) MigrateAccountBalance(from, to string) (bool, error) {
 		CreatedAt:      now,
 	})
 
+	if s.refuseErasedCreditLocked(to, bal, store.LedgerMigration, "migrate:in", now) {
+		return true, nil
+	}
 	s.balances[to] += bal
 	s.withdrawable[to] += wdr
 	s.ledgerSeq++
@@ -157,7 +165,12 @@ func (s *MemoryStore) LedgerHistory(accountID string) []store.LedgerEntry {
 	return entries
 }
 
-func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string, createdAt time.Time) {
+// creditLocked credits the balance and records the ledger entry. It returns
+// false, changing nothing, when an erased account refuses the credit.
+func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string, createdAt time.Time) bool {
+	if s.refuseErasedCreditLocked(accountID, amountMicroUSD, entryType, reference, createdAt) {
+		return false
+	}
 	s.balances[accountID] += amountMicroUSD
 	s.ledgerSeq++
 	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{
@@ -169,4 +182,5 @@ func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entry
 		Reference:      reference,
 		CreatedAt:      createdAt,
 	})
+	return true
 }

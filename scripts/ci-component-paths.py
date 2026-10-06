@@ -41,6 +41,7 @@ GO = (
     "coordinator/**", "e2e/**", "go.mod", "go.sum", ".golangci.yml",
     "scripts/run-coordinator-tests.py", "scripts/coordinator_tests/**",
     "scripts/test-coordinator-tests.py", "scripts/coordinator-tests.sh",
+    "scripts/coordinator-statement-coverage.sh",
     "scripts/sync-install-embed.sh", "scripts/install.sh", "fixtures/**",
     "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
     "scripts/verify-prompt-sidecar-linux.sh",

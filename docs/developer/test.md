@@ -1,6 +1,14 @@
 # Test
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
+
+## Pull-request restacking
+
+Run `python3 scripts/test-restack-after-squash.py` for the regression suite of
+`scripts/restack-after-squash.py`. Follow the [stacking guide](pull-requests.md)
+for the live `--check` before an authorized `--push`; local tests do not replace
+checking the actual squash, current remote refs, Verified signatures, CI,
+mergeability, and approvals after an update.
 
 ## Nightly Linear package
 
@@ -70,6 +78,13 @@ pins the watchdog wiring; `scripts/test-integration-ci-workflow.py` checks cache
 wiring while retaining all E2E gates, and `scripts/test-provider-ci-cache.py`
 checks integration/provider/release cache isolation and compatibility boundaries.
 
+Run `python3 scripts/test-integration-ci-workflow.py` to check those integration
+invariants offline. The command assertion accepts the original E2E commands or
+the exact additive `-cover -covermode=set -coverpkg="$E2E_COVER_PKG"` bundle with
+`-args -test.gocoverdir="$covdir"`. Negative cases reject missing or changed test
+selectors, skip patterns, counts, timeouts and parallelism; the workflow checks
+still require all three unconditional gates and their backend environment values.
+
 Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
 regressions. It creates real temporary Git repositories to check PR merge-base
 comparison, multiple commits, more than 300 changed files, additions, deletions,
@@ -87,6 +102,11 @@ suites even for docs-only PRs. See [build routing](build.md) for dependencies an
 default-branch behavior. Relevant E2E benchmarks still require the existing
 `benchmarks` environment approval; irrelevant PRs do not request that approval.
 
+Docs Impact checks out the PR head and compares it with the merge base of the
+event's base SHA, not GitHub's synthetic merge commit. Upstream changes present
+only in that merge therefore do not create documentation requirements for the PR;
+the canonical source-to-document rules still apply to every changed PR path.
+
 The documentation-impact guards (`scripts/test-docs-impact-check.py`) exercise
 both production components and their adapters after package moves. Billing API
 and inference settlement owners require billing documentation; inference demand
@@ -98,6 +118,16 @@ requires API-contract documentation as well as the release runbook. The guards
 supply every unrelated canonical document to ensure ownership or API-contract
 updates cannot satisfy another domain's requirement, then verify each permitted
 domain document satisfies it. Go test files remain excluded from these rules.
+The soft-delete rule separately requires `docs/reference/soft-delete.md` for
+the current live-row readers and writers, including small-model contact exports
+and initial legacy MDM cohort qualification; the cohort owners also retain their
+trust-documentation requirement. sqlc sources still require their
+canonical generation/type docs too. New reader/writer paths must extend the
+rule. The tests cover both backends, generated queries, unrelated history
+files, test exclusions and the maintainer override.
+`coordinator/tests/store/contracts/soft_delete_domain_reads_test.go` exercises
+contact filtering before pagination and cohort evidence filtering in memory and
+isolated PostgreSQL, including repeated reads of a frozen cohort.
 Shared fixtures in `coordinator/tests/protocol/testdata/` retain the protocol
 documentation requirement because they define cross-language wire examples.
 
@@ -491,6 +521,20 @@ It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
+It also invokes `scripts/test-install-coordinator-binding.py`, which runs the
+installer's `--bind-coordinator-test` hook (with `COORD_URL` set) against
+temporary `provider.toml` files: production removes only the
+`[coordinator] url` line and creates no file, and other coordinators replace or
+add only that line. `InstallerCoordinatorBindingTests`
+(`provider-swift/Tests/DarkbloomCLITests/`) loads the result through the CLI
+config loaders, and `TestServedInstallerBindsProviderToServingCoordinator`
+(`coordinator/tests/api/releases/contracts/install_test.go`) runs the installer
+as the coordinator serves it.
+
+`go test ./coordinator/tests/cmd/devnet-seed` seeds a throwaway database on a
+**disposable** `DATABASE_URL` through `devnetseed.Run`
+(`coordinator/internal/command/devnetseed`), checks row counts and balances,
+and checks that a database with users is refused before migrations run.
 
 `provider-swift/Tests/ProviderCoreTests/Coordinator/CoordinatorIntegrationTests.swift`
 exercises enrollment over real local HTTP with a linked test token and P-256
@@ -999,8 +1043,7 @@ DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable'
   python3 scripts/run-coordinator-tests.py --race --coverprofile coverage.out \
     $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
 # coordinator packages only, as CI reports it:
-{ head -n 1 coverage.out; grep '^github.com/eigeninference/d-inference/coordinator/' coverage.out; } > coverage-coordinator.out
-go tool cover -func=coverage-coordinator.out | tail -n 1   # total statement coverage
+scripts/coordinator-statement-coverage.sh coverage.out coverage-coordinator.out   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
 ```
@@ -1077,6 +1120,11 @@ seed users before authentication. They run the real verifier with a local public
 key, without remote Privy user or JWKS calls. A package move must preserve every
 assertion and must not substitute direct handler calls for a public router test.
 
+Tests that run the coordinator in the test process (`app.Run` or the command
+`Main`) get their listen port from `coordinator/tests/internal/testkit/listen_port.go`
+(`FreeListenPort`). The coordinator exits the process on a bind error, so the
+helper picks a free port below the macOS and Linux ephemeral port ranges.
+
 `coordinator/tests/layout_test.go` (`TestCoordinatorTestsAreIsolated`) rejects
 test files outside the mirror and production imports of `testing` or test helpers.
 The offline runner/hook guards in `scripts/test-coordinator-tests.py` also run
@@ -1150,7 +1198,8 @@ maintenance tests use the same per-process disposable database and server-budget
 admission through `coordinator/tests/cmd/coordinator/main_test.go` (`TestMain`,
 `testdb.Main`); inheriting `DATABASE_URL` does not authorize those tests to mutate
 the configured database. CI provides a
-`postgres:16` service with user/password/db `testbed`. The pre-push hook is not
+`postgres:16` service with user/password/db `testbed`, and runs
+`make sqlc-check` against it after the tests. The pre-push hook is not
 a substitute for the complete coordinator runner and explicit race/database
 validation; run the full set before merging.
 
@@ -1276,6 +1325,13 @@ identity lookup through CachedStore,
 index applicability, MDA trust caps, and a migration-only subprocess that exits
 without HTTP startup or admin-key seeding. They do not measure production startup
 latency or validate an overlapping coordinator handoff.
+
+Goose startup, upgrade and advisory-lock tests live in
+`coordinator/tests/store/postgres/migrations_test.go`. Concurrent-index snapshot
+waits, invalid-leftover recovery and failed-version recording live in
+`coordinator/tests/store/postgres/migration_index_test.go`. Run the
+[migration verification commands](database-migrations.md#verify) with the same
+disposable database.
 
 Startup recovery regressions also cover catalog-verified index definitions and isolated
 planner applicability, transient provider/reputation retries, a shared deadline,
@@ -2663,6 +2719,51 @@ make e2e-integration     # go test ./e2e/... -run TestIntegration -v   (no postu
 make e2e-benchmark       # go test ./e2e/... -run TestBenchmark -v
 ```
 
+#### E2E coverage in CI
+
+The testbed runs the coordinator inside the test process
+(`e2e/testbed/suite.go`, `startCoordinator` calls `api.NewServer`). There is no
+coordinator binary to build with `go build -cover`. So CI adds coverage flags to
+the `go test ./e2e/` command of each of the three lanes:
+`-cover -covermode=set -coverpkg="$E2E_COVER_PKG"` and
+`-args -test.gocoverdir=<dir>`, one directory per lane. The "Select e2e coverage
+packages" step sets `E2E_COVER_PKG` to the `coordinator/...` packages without a
+`tests`, `testkit` or `testdb` path segment, the same production set that
+`scripts/run-coordinator-tests.py` instruments. `set` mode stores 1 per block
+and is the cheapest mode, so the latency checks in the `TestProfile` tests see
+the least extra work. The `-run`, `-skip`, `-timeout` and `-p` flags do not
+change.
+
+The "Report e2e coverage" step merges the lane directories with
+`go tool covdata textfmt`, keeps the `coordinator/...` rows with
+`scripts/coordinator-statement-coverage.sh` (the script that the Coordinator
+Tests report also uses) and writes one row to the job summary:
+`Coordinator (Go), e2e`, statements only, no target. The denominator is the
+statements in the selected production packages that the e2e test binary links;
+packages it does not link, such as `cmd/...`, are not counted. A lane that
+fails or is skipped is left out, and the summary names the lanes that it
+merged. A low number never fails the job. The step fails when a lane passed but
+wrote no data, or when the merged data has no coordinator rows or no total.
+The raw lane directories and the merged `e2e-coverage.out` are kept for 14 days
+as the `coordinator-e2e-coverage` artifact.
+
+The row is not merged with the unit number from the Coordinator Tests job. That
+job runs in another workflow (`ci.yml`) on Linux, and both workflows start on
+the same push with no order between them. To get a combined figure, download
+both artifacts and take the union of covered blocks. To measure one lane
+locally:
+
+```bash
+mkdir -p /tmp/e2e-cov
+E2E_COVER_PKG=$(go list ./coordinator/... | grep -Ev '/(tests|testkit|testdb)(/|$)' | paste -sd, -)
+go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
+  -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
+  -run '^TestIntegration_(NonStreaming|Streaming)Inference$' \
+  -args -test.gocoverdir=/tmp/e2e-cov
+go tool covdata textfmt -i=/tmp/e2e-cov -o e2e-coverage.out
+scripts/coordinator-statement-coverage.sh e2e-coverage.out e2e-coverage-coordinator.out
+```
+
 The harness builds the provider itself (`e2e/testbed/provider.go`,
 `BuildProvider`): `swift build -c release` (or `TESTBED_PROVIDER_CONFIG=debug`)
 and stages `mlx.metallib`, unless `DARKBLOOM_PROVIDER_BINARY` points at a
@@ -2851,8 +2952,8 @@ intentional skips for irrelevant PRs, rather than requiring unselected macOS job
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build with `--enable-code-coverage`, matched Metal, serial/fresh-process provider tests and installer checks, then a job-summary coverage table (lines, regions and functions over Swift code in `provider-swift/Sources`, with product, CLI, benchmark and total rows, 80% report-only target, no branch counters; the SDK and prompt parity lanes are not counted), full report kept 14 days as the `provider-coverage` artifact · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service, `make sqlc-check` + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build with `--enable-code-coverage`, matched Metal, serial/fresh-process provider tests and installer checks, then a job-summary coverage table (lines, regions and functions over Swift code in `provider-swift/Sources`, with product, CLI, benchmark and total rows, 80% report-only target, no branch counters; the SDK and prompt parity lanes are not counted), full report kept 14 days as the `provider-coverage` artifact · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`); each lane runs with `-coverpkg` over the production `coordinator/...` packages and `-test.gocoverdir`, then a job-summary row of e2e statement coverage (report-only), lane data kept 14 days as the `coordinator-e2e-coverage` artifact |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
@@ -3425,3 +3526,32 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Account erasure regressions
+
+`coordinator/tests/internal/erasurefixture/account.go` seeds an account's
+credentials, provider, balances and Stripe session for mirrored store tests.
+`coordinator/tests/store/contracts/erasure_late_writes_test.go` checks late
+external results, location suppression without lost accounting and refused
+credit replay. PostgreSQL tests use real row/advisory-lock barriers for
+withdrawal admission and simultaneous shared-owner scrubs; the composed HTTP
+Checkout regression pauses a local fake Stripe server across erasure.
+`coordinator/tests/internal/erasurefixture/commit.go` cancels the caller through
+pgx tracing after PostgreSQL confirms `COMMIT`. Store regressions cover plan
+creation/replacement, confirmation, cancellation and scrubbing, plus rollback
+when a returned summary cannot be decoded. Composed API regressions verify
+provider disconnects and auth/usage cache cleanup. The account API contract
+package uses `testdb.Main` to isolate this PostgreSQL coverage in a disposable
+database, just like the store suites.
+The marker fixture in `coordinator/tests/store/postgres/erasure_marker_test.go`
+seeds every personal-data rule, including frozen legacy MDM cohort and saved
+hardware interest, and verifies another account's markers survive.
+
+The route batching tracer in
+`coordinator/tests/store/postgres/route_telemetry_batch_test.go` distinguishes
+bulk inserts from the account-erasure lock and ownership lookup. It requires
+one insert, one lock and one lookup per chunk, with at most two transaction
+boundary statements; duplicates still split into ordered chunks. Outcome
+updates retain their single pipelined batch. The memory marker fixture also
+freezes real MDM eligibility and stores hardware-interest markers before
+scrubbing, so every memory-backed personal-data rule has observed coverage.

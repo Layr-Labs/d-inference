@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,23 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	return &logs
+}
+
+// migrationSourceCount returns the number of migration versions: the
+// versions goose records on an empty database, without its version 0 row.
+func migrationSourceCount(t *testing.T) int {
+	t.Helper()
+	ctx := context.Background()
+	s, err := openPostgresFixture(ctx, store.Config{DatabaseURL: newThrowawayTestDatabase(t)})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	defer s.Close()
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) - 1 FROM `+gooseVersionTable).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 // A fresh database built by goose matches the current checked-in schema.
@@ -115,8 +133,13 @@ func testMigrationsUpgradeLegacyDatabase(t *testing.T, gooseBaseline bool) {
 		}
 	}
 	versions := queryLines(t, pool, `SELECT version_id::text FROM `+gooseVersionTable+` ORDER BY id`)
-	if got := strings.Join(versions, " "); got != "0 1 2 3 4 5 6 7 8 9" {
-		t.Fatalf("goose versions = %q, want 0 through 9", got)
+	want := migrationSourceCount(t)
+	var expected []string
+	for version := 0; version <= want; version++ {
+		expected = append(expected, strconv.Itoa(version))
+	}
+	if got := strings.Join(versions, " "); got != strings.Join(expected, " ") {
+		t.Fatalf("goose versions = %q, want 0 through %d", got, want)
 	}
 }
 
@@ -176,15 +199,20 @@ func TestConcurrentMigrationsApplyOnce(t *testing.T) {
 	for _, m := range applied {
 		got = append(got, m[1]+":"+m[2])
 	}
-	if want := "1:applied 2:applied 3:applied 4:applied 5:applied 6:applied 7:applied 8:applied 9:applied"; strings.Join(got, " ") != want {
-		t.Fatalf("migration results = %q, want each of the 9 versions applied once; logs:\n%s", got, logs.String())
+	want := migrationSourceCount(t)
+	var expected []string
+	for version := 1; version <= want; version++ {
+		expected = append(expected, strconv.Itoa(version)+":applied")
+	}
+	if strings.Join(got, " ") != strings.Join(expected, " ") {
+		t.Fatalf("migration results = %q, want each of the %d versions applied once; logs:\n%s", got, want, logs.String())
 	}
 	var rows, distinct int
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT version_id) FROM `+gooseVersionTable).Scan(&rows, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 10 || distinct != 10 {
-		t.Fatalf("goose version rows = %d (%d distinct), want 10", rows, distinct)
+	if rows != want+1 || distinct != want+1 {
+		t.Fatalf("goose version rows = %d (%d distinct), want %d", rows, distinct, want+1)
 	}
 }
 

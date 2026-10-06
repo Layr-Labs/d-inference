@@ -60,11 +60,14 @@ func (s *PostgresStore) ClaimAppAttestReceipt(ctx context.Context, now time.Time
 }
 
 func (s *PostgresStore) SaveAppAttestReceiptRefresh(ctx context.Context, r store.AppAttestReceipt) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := beginErasureObservation(ctx, s.pool)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackErasureTx(tx)
+	if err = checkReceiptOwner(ctx, tx, r.KeyID); err != nil {
+		return err
+	}
 	if err = insertAppAttestReceipt(ctx, tx, r); err != nil {
 		return err
 	}

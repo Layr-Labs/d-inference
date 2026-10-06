@@ -13,7 +13,18 @@ func (s *PostgresStore) CreateBillingSession(session *store.BillingSession) erro
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	copy := *session
+	rejected, err := fenceBillingSession(ctx, tx, &copy)
+	if err != nil {
+		return err
+	}
+	session = &copy
+	_, err = tx.Exec(ctx,
 		`INSERT INTO billing_sessions (id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		session.ID, session.AccountID, session.PaymentMethod,
@@ -21,6 +32,12 @@ func (s *PostgresStore) CreateBillingSession(session *store.BillingSession) erro
 	)
 	if err != nil {
 		return fmt.Errorf("store: create billing session: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if rejected {
+		return store.ErrErasureConflict
 	}
 	return nil
 }

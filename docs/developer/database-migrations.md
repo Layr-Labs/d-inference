@@ -1,6 +1,6 @@
 # Add a database migration
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How to change the coordinator's Postgres schema: choose the migration kind,
 write it as a numbered goose version, regenerate the checked-in schema, and
@@ -128,7 +128,11 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    `coordinator/tests/store/postgres/testdata/legacy_schema.sql` unchanged;
    the upgrade test compares it to the newly generated current schema.
 
-6. **Update the rest of the store.** Make `MemoryStore`
+6. **Regenerate the sqlc code** if a query in `coordinator/store/postgres/queries/`
+   reads the changed table: `make sqlc-generate`
+   ([Write store queries with sqlc](sqlc.md)).
+
+7. **Update the rest of the store.** Make `MemoryStore`
    (`coordinator/store/memory/`) match, and update the docs that describe
    the changed tables ([storage](../architecture/storage.md)).
 
@@ -147,7 +151,13 @@ go test ./coordinator/tests/store/postgres -count=1 \
 | `TestConcurrentMigrationsApplyOnce` | Two runs at once apply a version twice, or a run changes the schema while another session holds the goose advisory lock |
 | `TestSQLMigrationsDoNotBuildIndexesConcurrently` | An SQL file contains `CREATE [UNIQUE] INDEX CONCURRENTLY` |
 
-Then run the store tests for the tables you changed, on both backends.
+Then run the store tests for the tables you changed, on both backends. CI
+also runs `make sqlc-check`, which runs `TestMigrationsBuildCheckedInSchema`
+and fails when the generated sqlc code is stale:
+
+```bash
+make sqlc-check
+```
 
 ## Change a column while preserving rollback compatibility
 
@@ -241,5 +251,6 @@ safe.
 
 - [Schema lifecycle](../architecture/schema-lifecycle.md) — how goose runs, locks, timeouts, failure modes
 - [Apply schema migrations in production](../operations/schema-migration.md) — backup, checks, rollback
+- [Write store queries with sqlc](sqlc.md) — queries generated from `schema.sql`
 - [Storage](../architecture/storage.md) — what the tables hold
 - [Test](test.md) — running the Postgres tests

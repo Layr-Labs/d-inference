@@ -119,6 +119,10 @@ jobs:
             --coverprofile "$RUNNER_TEMP/coverage.out" \
             --output-dir "$RUNNER_TEMP/coordinator-tests" \
             $packages
+      - name: Check sqlc code and schema file
+        env:
+          DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
+        run: make sqlc-check
       - name: Upload coordinator test timings
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

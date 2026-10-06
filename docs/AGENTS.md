@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -176,6 +176,7 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
 | Store schema / migration | `architecture/schema-lifecycle.md` (versions, kinds, locks); `architecture/storage.md` (tables); `operations/schema-migration.md` if the change affects the production procedure or rollback rules |
+| sqlc config, query file or generated type (`coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`) | `reference/sqlc-type-mapping.md` for a new type or override; `developer/sqlc.md` for a workflow or convention change |
 | Coordinator package ownership, application assembly, or backend boundaries | `developer/navigation.md`, `architecture/components/coordinator.md`; retain the relevant API, configuration, storage, and telemetry rows for behavioral surfaces |
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |

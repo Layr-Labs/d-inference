@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 What the coordinator persists, through which interface and in which backend;
 then what a provider keeps on its own disk and in its Keychain. How the schema
@@ -202,8 +202,9 @@ the only connection-level knob; there is no separate host/user/password set.
 `NewPostgres` applies every pending goose migration before it returns; the
 coordinator serves only after they all succeed. Each version runs once and is
 recorded in `goose_db_version`. `coordinator/store/postgres/schema/schema.sql` is the
-checked-in `pg_dump` of the schema that the migrations build. The versions,
-locks, timeouts and failure modes are in
+checked-in `pg_dump` of the schema that the migrations build; sqlc generates
+the api_keys queries from it. The versions,
+locks, timeouts, sqlc and failure modes are in
 [schema lifecycle](schema-lifecycle.md); adding a migration is
 [Add a database migration](../developer/database-migrations.md).
 
@@ -409,6 +410,7 @@ KV blocks under a per-model key, not tokens.
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/app/store.go` |
 | Postgres pool | `coordinator/store/postgres/postgres.go` |
 | Migrations | `coordinator/store/postgres/migrations.go`, `coordinator/store/postgres/schema/migrations/`, `coordinator/store/postgres/schema/schema.sql`; full map in [schema lifecycle](schema-lifecycle.md#code-map) |
+| Generated queries (sqlc) | `coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`, `coordinator/store/postgres/storedb/`; api_keys in `coordinator/store/postgres/apikey.go` |
 | Provider identity and usage reads | `coordinator/store/postgres/provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres/usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres/row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres/model_registry.go`, `coordinator/store/postgres/base_rewards.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/`, `coordinator/store/`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory/`, `coordinator/store/memory/base_rewards.go` |

@@ -71,6 +71,39 @@ func LookupFromUsageOutcome(outcome string) Lookup {
 	}
 }
 
+// Tier is the cache tier a reported hit was restored from.
+type Tier uint8
+
+const (
+	TierNotReported Tier = iota
+	TierMemory
+	TierSSD
+)
+
+// TierFromUsage maps a validated provider usage cache tier.
+func TierFromUsage(tier string) Tier {
+	switch tier {
+	case "memory":
+		return TierMemory
+	case "ssd":
+		return TierSSD
+	default:
+		return TierNotReported
+	}
+}
+
+// String is the tier's metric label; a request with no hit tier reads "none".
+func (t Tier) String() string {
+	switch t {
+	case TierMemory:
+		return "memory"
+	case TierSSD:
+		return "ssd"
+	default:
+		return "none"
+	}
+}
+
 // Tokens is a token quantity that may not have been observed.
 type Tokens struct {
 	Count int
@@ -93,13 +126,33 @@ type Attempt struct {
 	Routing Routing
 	// Scoped: the provider received a cache scope, so it could look up and save.
 	Scoped bool
-	// Predicted is what the coordinator expected the chosen provider to restore.
+	// Predicted is the cached-token count the coordinator expected the chosen
+	// provider to restore: the credited holder's anchor depth, comparable with
+	// Completion.Reused. Unknown when no holder was selected.
 	Predicted Tokens
 }
 
 // Completion is what the completing attempt's provider reported.
 type Completion struct {
 	Lookup Lookup
-	// Reused is the provider-reported cached-token count.
+	// Tier is the cache tier of a reported hit.
+	Tier Tier
+	// Reused is the provider-reported cached-token count: the prompt tokens
+	// billed at the cache-read rate.
 	Reused Tokens
+	// PrefillSaved is the provider-reported prefill the hit skipped. It never
+	// exceeds Reused; the difference was restored and then recomputed.
+	PrefillSaved Tokens
+	// ProviderPrompt is the provider-reported prompt-token count, the same
+	// source as Reused and PrefillSaved.
+	ProviderPrompt Tokens
+}
+
+// hitTier is the tier of a reported hit, and TierNotReported for every other
+// outcome, so a tier never counts for a request that reused nothing.
+func (c Completion) hitTier() Tier {
+	if c.Lookup != LookupHit {
+		return TierNotReported
+	}
+	return c.Tier
 }

@@ -109,6 +109,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		}))
 
 	lifecycleBefore := suite.Coordinator.Registry.CacheRoutingLifecycleStatus()
+	reconciliation := beginCacheReconciliation(suite)
 	prompt := longExactCachePrompt()
 	first := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
 	require.Zero(t, first.cachedTokens, "first request must prefill cold before donation")
@@ -237,6 +238,13 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		"a protocol-v2 provider with no currently ready cache model failed to reconnect cold")
 	fallback := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt+" diverged")
 	require.NotEmpty(t, fallback.content)
+
+	// Every request above was a text request for the catalog model with routing
+	// on, read to completion, so the reuse funnel must account for each of them
+	// and agree with what the clients were told they reused.
+	reconciliation.check(t, []exactCacheResponse{
+		first, donor, mixedV1, second, isolated, outage, restored, fallback,
+	})
 }
 
 func exactCacheRoutingTestModelID() string {
@@ -251,6 +259,7 @@ func exactCacheRoutingTestModelID() string {
 
 type exactCacheResponse struct {
 	content      string
+	promptTokens int
 	cachedTokens int
 	providerID   string
 }
@@ -291,6 +300,7 @@ func postExactCacheChat(
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
+			PromptTokens        int `json:"prompt_tokens"`
 			PromptTokensDetails struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
@@ -300,6 +310,7 @@ func postExactCacheChat(
 	require.NotEmpty(t, decoded.Choices)
 	return exactCacheResponse{
 		content:      decoded.Choices[0].Message.Content,
+		promptTokens: decoded.Usage.PromptTokens,
 		cachedTokens: decoded.Usage.PromptTokensDetails.CachedTokens,
 		providerID:   response.Header.Get("X-Provider-Id"),
 	}

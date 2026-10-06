@@ -188,7 +188,10 @@ type PendingRequest struct {
 	// aggregate numeric telemetry only and contains no cache identity.
 	CacheSelectionEstimatedTTFTSavedMs float64
 	CacheSelectionSelected             bool
-	CacheOpportunity                   CacheOpportunity
+	// cacheSelectionPredictedTokens is the credited holder's anchor depth: the
+	// cached-token count routing expected the selected provider to restore.
+	cacheSelectionPredictedTokens int
+	CacheOpportunity              CacheOpportunity
 	// CacheFunnel is the owning request's reuse-funnel account, shared by all
 	// of its attempts. Nil when the request is outside the funnel population.
 	CacheFunnel       *cachefunnel.Request

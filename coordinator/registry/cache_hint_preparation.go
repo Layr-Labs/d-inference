@@ -44,4 +44,5 @@ func (result CacheHintResult) Apply(pr *PendingRequest) {
 	pr.CacheSelectionDiscountMs = 0
 	pr.CacheSelectionEstimatedTTFTSavedMs = 0
 	pr.CacheSelectionSelected = false
+	pr.cacheSelectionPredictedTokens = 0
 }

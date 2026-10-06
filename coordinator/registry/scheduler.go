@@ -836,6 +836,8 @@ func (s ReservationSelection) commit(
 		pr.CacheSelectionDiscountMs = candidate.breakdown.CacheDiscountMs
 		pr.CacheSelectionEstimatedTTFTSavedMs = candidate.cacheEstimatedTTFTSavedMs
 		pr.CacheSelectionSelected = true
+		// The discount and the prediction come from the same provider hint.
+		pr.cacheSelectionPredictedTokens = pr.cacheRoutingHints[p.ID].CachedTokens
 	}
 	return p, candidate, reservationCommitted, RoutingDecision{}
 }

@@ -156,16 +156,19 @@ func TestNegativeCountIsUnknownInTheRecordAndTheAggregate(t *testing.T) {
 	request.NotePlan(-1, -2)
 	attempt := cachefunnel.Attempt{Routing: cachefunnel.RoutingSelected, Scoped: true, Predicted: cachefunnel.KnownTokens(-3)}
 	request.NoteAttemptDispatched(attempt)
-	request.NoteAttemptCompleted(attempt, completedWith(cachefunnel.LookupMiss, cachefunnel.KnownTokens(-4)))
+	request.NoteAttemptCompleted(attempt, cachefunnel.Completion{Lookup: cachefunnel.LookupMiss, Reused: cachefunnel.KnownTokens(-4),
+		PrefillSaved: cachefunnel.KnownTokens(-5), ProviderPrompt: cachefunnel.KnownTokens(-6)})
 	request.Close(false)
 
 	record := collector.snapshot()[0]
-	if record.PromptTokens.Known || record.RepeatedPrefixTokens.Known || record.PredictedTokens.Known || record.ReusedTokens.Known {
+	if record.PromptTokens.Known || record.RepeatedPrefixTokens.Known || record.PredictedTokens.Known || record.ReusedTokens.Known ||
+		record.PrefillSavedTokens.Known || record.ProviderPromptTokens.Known {
 		t.Fatalf("record = %+v, want every negative count delivered as unknown", record)
 	}
 	status := ledger.Snapshot()
-	want := cachefunnel.Totals{Requests: 1, Attempts: 1, LookupOutcomeReported: 1,
-		PromptTokensUnknown: 1, RepeatedPrefixTokensUnknown: 1, PredictedTokensUnknown: 1, ReusedTokensUnknown: 1}
+	want := cachefunnel.Totals{Requests: 1, Planned: 1, Dispatched: 1, Attempts: 1, LookupOutcomeReported: 1,
+		PromptTokensUnknown: 1, RepeatedPrefixTokensUnknown: 1, PredictedTokensUnknown: 1, ReusedTokensUnknown: 1,
+		PrefillSavedTokensUnknown: 1, ProviderPromptTokensUnknown: 1}
 	if status.Total != want {
 		t.Fatalf("total = %+v, want %+v", status.Total, want)
 	}
@@ -245,13 +248,17 @@ func TestCloseIsFinal(t *testing.T) {
 	planned(request)
 	request.NoteAttemptDispatched(selectedScoped)
 	request.Close(true)
-	// A parked completion that lands after the client left changes nothing.
+	// A parked completion that lands after the client left changes no reason
+	// and no total.
 	request.NoteAttemptCompleted(selectedScoped, completedWith(cachefunnel.LookupHit, cachefunnel.KnownTokens(2048)))
 	request.Close(false)
 
 	status := ledger.Snapshot()
 	if got := requestsFor(status, cachefunnel.CancelledAfterDispatch); got.Requests != 1 || status.Closed != 1 {
 		t.Fatalf("cancelled_after_dispatch = %+v closed = %d, want one request closed once", got, status.Closed)
+	}
+	if status.Total.ReusedTokens != 0 || requestsFor(status, cachefunnel.Hit).Requests != 0 {
+		t.Fatalf("total = %+v, want the late hit kept out of every reason and token sum", status.Total)
 	}
 	requireReconciled(t, status, collector.snapshot())
 }

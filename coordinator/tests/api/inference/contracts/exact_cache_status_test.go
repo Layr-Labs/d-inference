@@ -255,8 +255,8 @@ func TestExactCacheStatusExportsSpeculativeLimitedUnderItsOwnName(t *testing.T) 
 
 // requireEmptyFunnelShape pins the funnel section's wire names: the three
 // conservation counters, every terminal reason in lifecycle order with the
-// same request-level counters as the total and no token sum, and the stages
-// declared unobserved.
+// same request-level counters as the total and no token sum, the late
+// evidence counts, and the stage declared unobserved.
 func requireEmptyFunnelShape(t *testing.T, body []byte) {
 	t.Helper()
 	var decoded struct {
@@ -266,6 +266,7 @@ func requireEmptyFunnelShape(t *testing.T, body []byte) {
 			InFlight   *uint64             `json:"in_flight"`
 			Total      map[string]uint64   `json:"total"`
 			Reasons    []map[string]any    `json:"reasons"`
+			Late       map[string]uint64   `json:"late"`
 			Unobserved []map[string]string `json:"unobserved"`
 		} `json:"funnel"`
 	}
@@ -282,10 +283,13 @@ func requireEmptyFunnelShape(t *testing.T, body []byte) {
 	// endpoint would give away one request's exact prompt-derived counts to
 	// anyone differencing two snapshots around its close.
 	counters := []string{
-		"requests", "attempts", "dispatched_without_scope", "lookup_outcome_reported",
+		"requests", "planned", "dispatched", "attempts", "dispatched_without_scope", "lookup_outcome_reported",
+		"memory_hit_requests", "ssd_hit_requests",
 		"prompt_tokens_unknown", "repeated_prefix_tokens_unknown", "predicted_tokens_unknown", "reused_tokens_unknown",
+		"prefill_saved_tokens_unknown", "provider_prompt_tokens_unknown",
 	}
-	tokenSums := []string{"prompt_tokens", "repeated_prefix_tokens", "predicted_tokens", "reused_tokens"}
+	tokenSums := []string{"prompt_tokens", "repeated_prefix_tokens", "predicted_tokens", "reused_tokens",
+		"prefill_saved_tokens", "provider_prompt_tokens"}
 	if len(funnel.Total) != len(counters) {
 		t.Fatalf("funnel total = %v, want exactly %v", funnel.Total, counters)
 	}
@@ -330,6 +334,17 @@ func requireEmptyFunnelShape(t *testing.T, body []byte) {
 			}
 		}
 	}
+	// Evidence that arrived too late for its request's record is counted,
+	// never summed: the reuse of a late completion is a token sum too.
+	lateCounters := []string{"completions", "memory_hit_completions", "ssd_hit_completions", "attempt_dispatches"}
+	if len(funnel.Late) != len(lateCounters) {
+		t.Fatalf("funnel late = %v, want exactly %v", funnel.Late, lateCounters)
+	}
+	for _, counter := range lateCounters {
+		if value, ok := funnel.Late[counter]; !ok || value != 0 {
+			t.Fatalf("funnel late counter %q = %v, want present and zero", counter, funnel.Late)
+		}
+	}
 	unobserved := make(map[string]bool)
 	for _, stage := range funnel.Unobserved {
 		if stage["reason"] == "" {
@@ -337,7 +352,7 @@ func requireEmptyFunnelShape(t *testing.T, body []byte) {
 		}
 		unobserved[stage["stage"]] = true
 	}
-	if len(unobserved) != 2 || !unobserved["predicted_tokens"] || !unobserved["lookup_receipt"] {
-		t.Fatalf("funnel unobserved = %v, want predicted_tokens and lookup_receipt", funnel.Unobserved)
+	if len(unobserved) != 1 || !unobserved["lookup_receipt"] {
+		t.Fatalf("funnel unobserved = %v, want lookup_receipt only", funnel.Unobserved)
 	}
 }

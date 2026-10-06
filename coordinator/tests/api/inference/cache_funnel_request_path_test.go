@@ -34,6 +34,10 @@ type cacheFunnelFixture struct {
 	transport *httptest.Server
 	planning  *cachePlanningUDSFixture
 	serve     atomic.Pointer[inferenceScript]
+	// capabilities is each provider's published cache capability by registry
+	// ID: what a receipt from that provider must carry.
+	capabilities map[string]protocol.PrefixCacheV2Capability
+	receiptSeq   atomic.Uint64
 }
 
 func newCacheFunnelFixture(t *testing.T) *cacheFunnelFixture {
@@ -44,7 +48,8 @@ func newCacheFunnelFixture(t *testing.T) *cacheFunnelFixture {
 	t.Cleanup(server.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	f := &cacheFunnelFixture{ctx: ctx, reg: reg, server: server, transport: transport}
+	f := &cacheFunnelFixture{ctx: ctx, reg: reg, server: server, transport: transport,
+		capabilities: make(map[string]protocol.PrefixCacheV2Capability)}
 	f.serveWith(fullServeScript(cacheFunnelModel))
 	var ids []string
 	providers := make([]*failoverProvider, 0, 2)
@@ -68,6 +73,7 @@ func newCacheFunnelFixture(t *testing.T) *cacheFunnelFixture {
 		if err := reg.UpdatePrefixCacheCapabilities(fp.registryID, 2, []protocol.PrefixCacheV2Capability{capability}); err != nil {
 			t.Fatal(err)
 		}
+		f.capabilities[fp.registryID] = capability
 	}
 	return f
 }
@@ -91,7 +97,25 @@ func (f *cacheFunnelFixture) settled(t *testing.T) cachefunnel.PublicStatus {
 		funnel := f.server.ExactCacheStatusSnapshot().Funnel
 		return funnel.InFlight == 0 && funnel.Entered == funnel.Closed
 	}, "every funnel request closed")
-	return f.server.ExactCacheStatusSnapshot().Funnel
+	funnel := f.server.ExactCacheStatusSnapshot().Funnel
+	// Usage reaches the funnel only after validation, which rejects a hit that
+	// names no tier, so on the request path the tier split sums to the hits.
+	hits := cacheFunnelReason(funnel, cachefunnel.Hit).Requests + cacheFunnelReason(funnel, cachefunnel.HitWithoutSelection).Requests
+	if funnel.Total.MemoryHitRequests+funnel.Total.SSDHitRequests != hits {
+		t.Fatalf("memory %d + ssd %d hit requests != %d requests under the hit reasons",
+			funnel.Total.MemoryHitRequests, funnel.Total.SSDHitRequests, hits)
+	}
+	return funnel
+}
+
+// awaitCounter waits for an admin metrics counter. The ledger hands a closed
+// record to its sink after the public counts already show the request, so a
+// token sum can trail them.
+func (f *cacheFunnelFixture) awaitCounter(t *testing.T, key string, want int64) {
+	t.Helper()
+	awaitCondition(t, 5*time.Second, func() bool {
+		return f.server.observation.Metrics().Snapshot().Counters[key] == want
+	}, fmt.Sprintf("%s = %d", key, want))
 }
 
 func cacheFunnelReason(funnel cachefunnel.PublicStatus, reason cachefunnel.Reason) cachefunnel.PublicTotals {
@@ -237,10 +261,16 @@ func TestCacheFunnelFollowsRealRequests(t *testing.T) {
 		}
 		// The exact token counts are held back from the public status and
 		// reach the admin metrics registry only.
-		counters := f.server.observation.Metrics().Snapshot().Counters
-		if counters["exact_cache_funnel_prompt_tokens_total{reason=hit_without_selection}"] != 257 ||
-			counters["exact_cache_funnel_reused_tokens_total{reason=hit_without_selection}"] != 256 {
-			t.Fatalf("admin funnel token counters = %v", cacheFunnelCounters(counters))
+		for key, want := range map[string]int64{
+			"exact_cache_funnel_prompt_tokens_total{reason=hit_without_selection}":                    257,
+			"exact_cache_funnel_provider_prompt_tokens_total{reason=hit_without_selection}":           257,
+			"exact_cache_funnel_reused_tokens_total{reason=hit_without_selection,tier=memory}":        256,
+			"exact_cache_funnel_prefill_saved_tokens_total{reason=hit_without_selection,tier=memory}": 256,
+		} {
+			f.awaitCounter(t, key, want)
+		}
+		if hit.MemoryHitRequests != 1 || hit.SSDHitRequests != 0 || hit.Planned != 1 || hit.Dispatched != 1 {
+			t.Fatalf("hit_without_selection = %+v, want one planned, dispatched memory-tier hit", hit)
 		}
 		requireNoTokenSums(t, f.transport.URL)
 	})
@@ -407,16 +437,6 @@ func planningAndDispatchStageRequests(funnel cachefunnel.PublicStatus) uint64 {
 	return requests
 }
 
-func cacheFunnelCounters(counters map[string]int64) map[string]int64 {
-	funnel := make(map[string]int64)
-	for name, value := range counters {
-		if strings.HasPrefix(name, "exact_cache_funnel_") {
-			funnel[name] = value
-		}
-	}
-	return funnel
-}
-
 // requireNoTokenSums reads the public status over HTTP, as an unauthenticated
 // caller would, and fails if any funnel object carries a token sum.
 func requireNoTokenSums(t *testing.T, baseURL string) {
@@ -439,10 +459,50 @@ func requireNoTokenSums(t *testing.T, baseURL string) {
 		t.Fatalf("public funnel = %+v, want the one closed request counted", decoded.Funnel)
 	}
 	for _, object := range append(decoded.Funnel.Reasons, decoded.Funnel.Total) {
-		for _, sum := range []string{"prompt_tokens", "repeated_prefix_tokens", "predicted_tokens", "reused_tokens"} {
+		for _, sum := range []string{"prompt_tokens", "repeated_prefix_tokens", "predicted_tokens", "reused_tokens",
+			"prefill_saved_tokens", "provider_prompt_tokens"} {
 			if _, present := object[sum]; present {
 				t.Fatalf("public funnel exposes token sum %q: %v", sum, object)
 			}
 		}
+	}
+}
+
+// What a provider did not report stays unknown at the request seam: a
+// completion with no prompt-token count is not a prompt of zero tokens, and a
+// hit that names no tier is rejected before it can count under neither tier.
+func TestCacheFunnelKeepsUnreportedProviderUsageUnknown(t *testing.T) {
+	f := newCacheFunnelFixture(t)
+	chat := cachePlanningEndpointBody(cacheFunnelModel, "/v1/chat/completions", false)
+	for _, tc := range []struct {
+		name                              string
+		usage                             protocol.UsageInfo
+		promptUnknown, reusedUnknown, hit uint64
+	}{
+		{name: "no prompt-token count", usage: protocol.UsageInfo{CompletionTokens: 3, CacheOutcome: "miss_absent", CacheTier: "memory"},
+			promptUnknown: 1},
+		{name: "a hit that names no tier", usage: protocol.UsageInfo{PromptTokens: 257, CompletionTokens: 3,
+			CacheOutcome: "hit", CachedTokens: 256, PrefillTokensSaved: 256}, reusedUnknown: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f.serveWith(func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
+				fp.sendRoleChunk(ctx, req, cacheFunnelModel)
+				fp.sendContentChunk(ctx, req, cacheFunnelModel, markerFor(fp.name))
+				fp.sendComplete(ctx, req, tc.usage)
+			})
+			defer f.serveWith(fullServeScript(cacheFunnelModel))
+			before := f.settled(t)
+			if status := f.post(t, "/v1/chat/completions", chat); status != http.StatusOK {
+				t.Fatalf("status = %d", status)
+			}
+			after := f.settled(t)
+			if after.Closed != before.Closed+1 ||
+				after.Total.ProviderPromptTokensUnknown != before.Total.ProviderPromptTokensUnknown+tc.promptUnknown ||
+				after.Total.ReusedTokensUnknown != before.Total.ReusedTokensUnknown+tc.reusedUnknown ||
+				after.Total.MemoryHitRequests+after.Total.SSDHitRequests != before.Total.MemoryHitRequests+before.Total.SSDHitRequests+tc.hit {
+				t.Fatalf("before %+v after %+v, want %d more unknown provider prompt, %d more unknown reuse, %d more hits",
+					before.Total, after.Total, tc.promptUnknown, tc.reusedUnknown, tc.hit)
+			}
+		})
 	}
 }

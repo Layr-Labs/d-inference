@@ -101,6 +101,15 @@ func TestEvidenceRacingCloseStillReconciles(t *testing.T) {
 	if seen != requests {
 		t.Fatalf("status = %+v, want every request under one of the three reasons the race allows", status)
 	}
+	// Evidence that lost the race to Close is counted as late, never dropped.
+	if got := requestsFor(status, cachefunnel.Hit).Requests + status.Late.Completions; got != requests {
+		t.Fatalf("hits %d + late completions %d = %d, want all %d completions accounted for",
+			requestsFor(status, cachefunnel.Hit).Requests, status.Late.Completions, got, requests)
+	}
+	if got := status.Total.Attempts + status.Late.AttemptDispatches; got != requests {
+		t.Fatalf("attempts %d + late attempt dispatches %d = %d, want all %d dispatch notes accounted for",
+			status.Total.Attempts, status.Late.AttemptDispatches, got, requests)
+	}
 	requireReconciled(t, status, collector.snapshot())
 }
 
@@ -138,7 +147,7 @@ func TestStatusNamesWhatItCannotObserve(t *testing.T) {
 		}
 		stages[stage["stage"]] = true
 	}
-	if !stages["predicted_tokens"] || !stages["lookup_receipt"] {
-		t.Fatalf("unobserved = %v, want predicted_tokens and lookup_receipt declared", decoded.Unobserved)
+	if len(stages) != 1 || !stages["lookup_receipt"] {
+		t.Fatalf("unobserved = %v, want lookup_receipt and nothing else declared", decoded.Unobserved)
 	}
 }

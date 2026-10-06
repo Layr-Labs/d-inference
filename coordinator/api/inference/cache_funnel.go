@@ -44,13 +44,20 @@ func noteDispatchedCachePlanning(request *cachefunnel.Request, planned promptwor
 }
 
 // cacheFunnelCompletion reads reuse from validated provider usage only.
-// Absent or rejected cache usage stays unknown instead of becoming zero.
+// Absent or rejected cache usage stays unknown instead of becoming zero. The
+// provider's prompt-token count does not depend on its cache usage, but a
+// count of zero is a provider that reported none: no prompt is empty.
 func cacheFunnelCompletion(usage protocol.UsageInfo, usageValid bool) cachefunnel.Completion {
+	var completion cachefunnel.Completion
+	if usage.PromptTokens > 0 {
+		completion.ProviderPrompt = cachefunnel.KnownTokens(usage.PromptTokens)
+	}
 	if !usageValid {
-		return cachefunnel.Completion{}
+		return completion
 	}
-	return cachefunnel.Completion{
-		Lookup: cachefunnel.LookupFromUsageOutcome(usage.CacheOutcome),
-		Reused: cachefunnel.KnownTokens(usage.CachedTokens),
-	}
+	completion.Lookup = cachefunnel.LookupFromUsageOutcome(usage.CacheOutcome)
+	completion.Tier = cachefunnel.TierFromUsage(usage.CacheTier)
+	completion.Reused = cachefunnel.KnownTokens(usage.CachedTokens)
+	completion.PrefillSaved = cachefunnel.KnownTokens(usage.PrefillTokensSaved)
+	return completion
 }

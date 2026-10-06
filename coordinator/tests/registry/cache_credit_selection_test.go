@@ -429,7 +429,8 @@ func TestCacheCreditPlanRetryClearsCacheSelection(t *testing.T) {
 	pr := f.request("retried")
 	primary, decision, plan := f.r.ReserveProviderWithPlan("model", pr)
 	if primary != holder || plan == nil || decision.SelectionPath != SelectionUniqueMin ||
-		!pr.CacheSelectionSelected || pr.CacheOpportunity.CreditWonNearTie || pr.CacheOpportunityReason() != "selected" {
+		!pr.CacheSelectionSelected || pr.CacheFunnelAttempt().Predicted.Count != f.checkpoint.TokenCount ||
+		pr.CacheOpportunity.CreditWonNearTie || pr.CacheOpportunityReason() != "selected" {
 		t.Fatalf("primary reservation did not select the credited holder: %v %+v %+v", primary, decision, pr.CacheOpportunity)
 	}
 	// Pre-content failure on the holder: the dispatcher releases it and takes
@@ -443,6 +444,7 @@ func TestCacheCreditPlanRetryClearsCacheSelection(t *testing.T) {
 	defer func() { cold.RemovePending(pr.RequestID); f.r.SetProviderIdle(cold.ID) }()
 	if pr.CacheSelectionSelected || pr.CacheOpportunity.CreditWonNearTie || pr.CacheSelectionTier != "" ||
 		pr.CacheSelectionDiscountMs != 0 || pr.CacheSelectionEstimatedTTFTSavedMs != 0 ||
+		pr.CacheFunnelAttempt().Predicted.Known ||
 		retry.CacheDiscountMs != 0 || retry.CacheTier != "" {
 		t.Fatalf("plan alternate inherited the primary cache selection: %+v %+v", retry, pr.CacheOpportunity)
 	}

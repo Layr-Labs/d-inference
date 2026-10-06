@@ -820,7 +820,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `Coordinator` (the `--coordinator` value, else `[coordinator] url`) and
 `Model CDN` (`DARKBLOOM_R2_CDN_URL` from the shell, else the build default).
-`Model CDN` reads the shell environment, not the LaunchAgent plist.
+`Model CDN` does not read the LaunchAgent plist.
 
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action

@@ -20,12 +20,12 @@ public struct ModelDownloader: Sendable {
         public let bytesTotal: Int64?
     }
 
-    /// CDN root for model artifacts, fixed by the build environment. Override
-    /// with `DARKBLOOM_R2_CDN_URL` for transition/testing against alternate buckets.
+    /// Build-default CDN root for model artifacts (`BuildEnvironment.current`).
     public static let defaultR2CDNURL = BuildEnvironment.current.modelCDNURL
 
-    /// The CDN this process downloads from: explicit value, then
-    /// DARKBLOOM_R2_CDN_URL, then the build default.
+    /// The CDN this process downloads from: the explicit value, then a
+    /// non-empty `DARKBLOOM_R2_CDN_URL`, then `defaultR2CDNURL`. Trailing
+    /// slashes are trimmed from the overrides.
     public static func resolveCDNURL(
         explicit: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment

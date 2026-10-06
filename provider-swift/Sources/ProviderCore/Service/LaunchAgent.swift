@@ -253,6 +253,8 @@ public enum LaunchAgent: Sendable {
     /// export that did not reach launchd would silently no-op in the normal
     /// `darkbloom start` deployment, leaving the advertised recovery lever
     /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
+    /// `DARKBLOOM_R2_CDN_URL`: the model CDN override. The daemon downloads and
+    /// prefetches models, so the override must reach the launchd job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
@@ -270,7 +272,6 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` and
     /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
     /// verification is the MiMo default; each rollback must reach the job.
-    /// `DARKBLOOM_R2_CDN_URL`: model CDN override; the daemon downloads and prefetches models.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,

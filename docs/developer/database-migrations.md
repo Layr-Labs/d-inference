@@ -77,7 +77,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    `context.Context` and returns an error, and add it to `goMigrations`:
 
    ```go
-   step(26, s.checkExampleRows),
+   step(27, s.checkExampleRows),
    ```
 
    It runs on the store pool with no session timeouts unless the database URL
@@ -90,7 +90,7 @@ in production is the [schema migration runbook](../operations/schema-migration.m
    instead:
 
    ```go
-   index(26, "idx_example_account", `CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id)`),
+   index(27, "idx_example_account", `CREATE INDEX CONCURRENTLY idx_example_account ON example (account_id)`),
    ```
 
    `buildConcurrentIndex` returns at once when a valid index exists, drops an

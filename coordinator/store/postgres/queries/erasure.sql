@@ -484,3 +484,49 @@ SELECT COUNT(*) FROM small_models_interest WHERE account_id = $1;
 
 -- name: DeleteSmallModelsInterestRows :execrows
 DELETE FROM small_models_interest WHERE account_id = $1;
+
+-- Outbox delivery.
+
+-- name: LeaseDueErasureOutbox :many
+WITH due AS (
+    SELECT o.id FROM erasure_outbox o
+    JOIN erasure_requests r ON r.id = o.request_id
+    WHERE r.state = 'erased' AND o.state = 'pending' AND o.next_at <= sqlc.arg('due_before')::timestamptz
+      AND (o.lease_until IS NULL OR o.lease_until <= sqlc.arg('now')::timestamptz)
+    ORDER BY o.next_at
+    LIMIT sqlc.arg('max_rows')::int
+    FOR UPDATE OF o SKIP LOCKED
+), leased AS (
+    UPDATE erasure_outbox o SET lease_until = sqlc.arg('lease_until')::timestamptz,
+        lease_generation = o.lease_generation + 1
+    FROM due WHERE o.id = due.id
+    RETURNING o.*
+)
+SELECT l.id, l.request_id, l.target, l.external_id, l.state, l.attempts, l.next_at,
+       l.last_error, l.stripe_job_id, l.stripe_job_status, l.stripe_job_status_since,
+       l.stripe_job_generation, l.lease_generation, l.created_at, r.account_id, r.erased_at
+FROM leased l JOIN erasure_requests r ON r.id = l.request_id;
+
+-- name: LockErasureOutbox :exec
+SELECT id FROM erasure_outbox WHERE id = $1 FOR UPDATE;
+
+-- name: SaveErasureOutboxResult :execrows
+UPDATE erasure_outbox
+SET state = sqlc.arg('state'),
+    attempts = sqlc.arg('attempts'),
+    next_at = sqlc.arg('next_at')::timestamptz,
+    last_error = sqlc.arg('last_error'),
+    external_id = CASE WHEN sqlc.arg('state') = 'done' THEN '' ELSE sqlc.arg('external_id')::text END,
+    stripe_job_id = CASE WHEN sqlc.arg('state') = 'done' THEN '' ELSE sqlc.arg('stripe_job_id')::text END,
+    stripe_job_status = sqlc.arg('stripe_job_status'),
+    stripe_job_status_since = sqlc.narg('stripe_job_status_since')::timestamptz,
+    stripe_job_generation = sqlc.arg('stripe_job_generation'),
+    done_at = CASE WHEN sqlc.arg('state') = 'done' THEN sqlc.arg('next_at')::timestamptz ELSE NULL END,
+    lease_until = NULL
+WHERE id = sqlc.arg('id') AND state = 'pending'
+  AND lease_generation = sqlc.arg('lease_generation')
+  AND lease_until > clock_timestamp();
+
+-- name: InsertManualErasureOutbox :exec
+INSERT INTO erasure_outbox (id, request_id, target, external_id, state, attempts, next_at, last_error)
+VALUES ($1, $2, $3, $4, 'manual_action', 1, $5, $6);

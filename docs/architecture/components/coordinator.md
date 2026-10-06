@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -145,7 +145,9 @@ failure in any step marked *fatal* exits the process before it listens.
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
    reconciler; the account erasure scrub loop (`StartAccountErasureLoop`, which
-   runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`;
+   runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`) and
+   outbox worker (`StartErasureOutboxLoop`, which runs `Owner.StartOutboxLoop`
+   in `coordinator/api/accounts/erasure/outbox.go`;
    [account erasure](../account-erasure.md)); the prompt sidecar supervisor
    and preloader.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header

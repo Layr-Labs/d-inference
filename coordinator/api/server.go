@@ -217,6 +217,7 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 	})
 	s.erasure = erasureapi.New(erasureapi.Dependencies{
 		Store: st, Access: s.access, Logger: logger, MaxBodyBytes: maxControlPlaneBodyBytes,
+		Datadog: s.observation.Datadog,
 		Hooks: erasureapi.Hooks{
 			DisconnectAccount:  reg.DisconnectAccount,
 			ForgetSEKeys:       s.trust.ForgetErasedKeys,

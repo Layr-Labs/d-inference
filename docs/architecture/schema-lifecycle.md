@@ -84,6 +84,7 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 23 | `indexMigrations` | Builds `idx_billing_sessions_referral_code` concurrently for referrer-code scrubbing. |
 | 24 | `indexMigrations` | Builds `idx_users_privy_deleted` concurrently for pending-erasure login checks. |
 | 25 | `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql` | Creates refused-credit audit records, including a reference hash for once-credit identity, and balance/ledger triggers in one transaction. |
+| 26 | `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql` | One transaction: adds the Stripe redaction-job fields and independent `lease_generation BIGINT NOT NULL DEFAULT 0` to `erasure_outbox`. Constant defaults change only the catalog; `ALTER TABLE` takes a brief exclusive table lock. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They are the
 startup steps that ran after the old DDL loop, with their code unchanged.

@@ -3482,6 +3482,9 @@ threats:
       - coordinator/api/accounts/erasure/handlers.go
       - coordinator/api/accounts/erasure/loop.go
       - coordinator/auth/privy.go
+      - coordinator/api/accounts/erasure/outbox.go
+      - coordinator/api/accounts/erasure/outbox_redaction.go
+      - coordinator/billing/stripe_redaction.go
     mitigations:
       - description: >
           The plan returns the account email and a 15-minute confirm token; the token
@@ -3519,10 +3522,13 @@ threats:
           erasures. Until PR 1327 merges, some process log lines hold emails, IP
           addresses or serial numbers. Financial records, shared mda_serial machine
           aliases and rows of shared keys are kept on purpose. Stripe-side data stays
-          until an operator deletes it from the outbox list. Old referral metadata
-          on another live payer's Stripe session is outside this account's local
-          scrub. Audit actor identifiers and the reason are retained; operators
-          must use non-personal ticket references in the reason.
+          until the outbox worker deletes or redacts it; rows that end in
+          manual_action (a balance, Redaction Jobs access, sessions of the earlier
+          Stripe account, a stuck job) keep it until an operator resolves them. The
+          erasure_log record survives a restore only in a Datadog log archive.
+          Old referral metadata on another live payer's Stripe session is outside
+          this account's local scrub. Audit actor identifiers and the reason are
+          retained; operators must use non-personal ticket references in the reason.
         status: accepted
     open_findings: []
     severity: medium

@@ -1201,7 +1201,7 @@ Handler `HandleStatus`. No side effects.
 | Field | Type | Meaning |
 |---|---|---|
 | `request` | [`ErasureRequest`](#erasure-shapes) | The newest request (`GetLatestErasureRequest`, by `created_at`) |
-| `outbox` | array of [`ErasureOutboxItem`](#erasure-shapes) | Outbox rows of that request; empty until the scrub |
+| `outbox` | array of [`ErasureOutboxItem`](#erasure-shapes) | Outbox rows of that request; late external results can be staged during the grace period, and the worker delivers only after scrub |
 | `refused_credits` | array of [`ErasureRefusedCredit`](#erasure-shapes) | Credits refused after the erasure, oldest first, at most 500 |
 
 | Status | `type` | When |
@@ -1238,7 +1238,25 @@ Example after a forced scrub and one late 9 µUSD refund
 ```
 
 `summary.applied.balance_micro_usd` is the balance the scrub forfeited, not
-the balance after it.
+the balance after it. In this example the account had no Stripe objects and
+the outbox worker had not run yet.
+
+After the [outbox worker](../architecture/account-erasure.md#outbox-delivery)
+runs, rows move to `done` or `manual_action`. Outbox rows of an account with
+an Express account and one Checkout Session, after one worker pass with the
+Stripe fake answering the delete and the job create
+(`TestErasureOutboxLoopDeliversScrubRows`, `coordinator/tests/api/accounts/contracts/erasure_outbox_test.go`):
+
+```json
+[
+  {"id": "07c25b2b-041a-4498-bcd2-a99d918d8680", "request_id": "5ce002e2-1f7e-4cb8-b7d7-ee81386e5e70", "target": "stripe_account", "state": "done", "attempts": 0, "next_at": "2026-10-04T17:50:49.453053Z", "done_at": "2026-10-04T17:50:49.453053Z", "has_external_id": false, "has_stripe_job": false, "created_at": "2026-10-04T17:50:49.452161Z"},
+  {"id": "102b9fb9-4aaa-4550-9c6b-55c5c700d249", "request_id": "5ce002e2-1f7e-4cb8-b7d7-ee81386e5e70", "target": "checkout_sessions", "state": "pending", "attempts": 0, "next_at": "2026-10-04T17:55:49.453053Z", "has_external_id": true, "has_stripe_job": true, "created_at": "2026-10-04T17:50:49.452161Z"},
+  {"id": "28f5c1ab-ee86-4434-98bb-91600ec7da0d", "request_id": "5ce002e2-1f7e-4cb8-b7d7-ee81386e5e70", "target": "erasure_log", "state": "done", "attempts": 0, "next_at": "2026-10-04T17:50:49.453373Z", "done_at": "2026-10-04T17:50:49.453373Z", "has_external_id": false, "has_stripe_job": false, "created_at": "2026-10-04T17:50:49.452161Z"}
+]
+```
+
+The `checkout_sessions` row waits for its redaction job; its `next_at` is
+the next poll, `erasureRedactionPoll` later.
 
 ### Erasure cancel
 
@@ -1291,7 +1309,8 @@ All in `coordinator/store/erasure_types.go`. Times are RFC 3339. Fields marked
 | | `target` | string | `stripe_account`, `global_recipient`, `checkout_sessions`, `erasure_log`, `resend_contact` (manual cleanup; contact email is not exposed) |
 | | `state` | string | `pending`, `done`, `manual_action` |
 | | `attempts`, `next_at`, `last_error`, `done_at`, `created_at` | | Delivery bookkeeping; `last_error` and `done_at` omitted when empty |
-| | `has_external_id` | bool | The row still holds an external cleanup identifier (Stripe ID or Resend contact email); the identifier itself is never returned |
+| | `has_external_id` | bool | The row still holds an external cleanup identifier (Stripe ID or Resend contact email; false once `done`); the identifier itself is never returned |
+| | `has_stripe_job` | bool | A Stripe redaction job is in progress for a `checkout_sessions` row; the job ID is never returned |
 | `ErasureRefusedCredit` | `id`, `account_id`, `entry_type`, `amount_micro_usd`, `reference`, `created_at` | | A credit kept out of an erased account ([schema](personal-data-rules.md#erasure_refused_credits)) |
 
 ### Erasure effects on other routes
@@ -1325,7 +1344,7 @@ All in `coordinator/store/erasure_types.go`. Times are RFC 3339. Fields marked
 | Billing, Stripe, referral, invites | `coordinator/api/billing/`, `coordinator/api/billing/referrals.go`, `coordinator/api/billing/payouts/`, `coordinator/api/billing/payouts/stripe_withdraw.go`, `coordinator/api/billing/payouts/stripe_payouts_webhooks.go`, `coordinator/api/accounts/invite_handlers.go`, `coordinator/api/billing/base_rewards_handlers.go` |
 | Stats | `coordinator/api/reporting/stats_handler.go`, `coordinator/api/reporting/refresh_start.go`, `coordinator/api/reporting/totals_handler.go`, `coordinator/api/reporting/leaderboard.go`, `coordinator/api/reporting/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/releases/release_handlers.go`, `coordinator/api/provider/trust/enroll.go`, `coordinator/api/provider/`, `coordinator/api/operations/log_reports.go` |
-| Account erasure | `coordinator/api/accounts/erasure/` (handlers, loop), `coordinator/api/routes.go`, `coordinator/store/erasure_types.go`; tests `coordinator/tests/api/accounts/contracts/erasure_test.go` |
+| Account erasure | `coordinator/api/accounts/erasure/` (handlers, loop, outbox worker), `coordinator/api/routes.go`, `coordinator/store/erasure_types.go`; tests `coordinator/tests/api/accounts/contracts/erasure_test.go`, `coordinator/tests/api/accounts/contracts/erasure_outbox_test.go` |
 | Drain, admin telemetry, profiler, state export | `coordinator/api/operations/drain.go`, `coordinator/api/observation/admin_telemetry.go`, `coordinator/api/reporting/admin_utilization.go`, `coordinator/api/observation/profiler_admin.go`, `coordinator/api/operations/state_export.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httpx/json.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |

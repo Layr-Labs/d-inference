@@ -278,17 +278,19 @@ plan (a read-only dry run), confirm (a soft delete that sets `deleted_at` and
 revokes keys and tokens), and, after the grace period, one scrub transaction
 that applies every rule in `erasure.Rules` (`coordinator/internal/store/erasure/rules.go`)
 with each statement's affected rows checked against a count. It uses four
-tables: `erasure_requests` (state, counts, and retained audit metadata),
-`erasure_outbox` (Stripe deletions and private Resend contact cleanup), `erasure_refused_credits`
+tables: `erasure_requests` (state, counts, and retained audit
+metadata), `erasure_outbox` (worker-delivered Stripe deletions and the Datadog
+`erasure_log` record, plus private manual Resend contact cleanup), `erasure_refused_credits`
 (credits that triggers keep out of an erased account), and `erasure_se_owners`
-(pseudonymous key digests and account IDs that fence delayed device writes). Goose versions 22 to 25
+(pseudonymous key digests and account IDs that fence delayed device writes). Goose versions 22 to 26
 add them and their indexes:
 
 | Version | Source | What it does |
 |---|---|---|
-| 22 | `00022_erasure_tables.sql` | Creates `erasure_requests`, `erasure_outbox`, and indexed `erasure_se_owners`. |
+| 22 | `00022_erasure_tables.sql` | Creates `erasure_requests`, `erasure_outbox` (including the `resend_contact` target), and indexed `erasure_se_owners`. |
 | 23–24 | Go: `indexMigrations` | `CONCURRENTLY` indexes `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
 | 25 | `00025_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
+| 26 | `00026_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows, plus the independent `lease_generation BIGINT` that fences delivery result commits. |
 
 `CachedStore` overrides the three erasure writers (`RequestAccountErasure`,
 `CancelAccountErasure`, `ScrubAccount`) to drop cached users.
@@ -361,6 +363,7 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Memory-store pruner, every 15 minutes | `coordinator/app/store.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/app/store.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
+| Account erasure outbox, every minute | `coordinator/api/accounts/erasure/outbox.go` (`Owner.StartOutboxLoop`, started by `StartErasureOutboxLoop` from `coordinator/app/lifecycle.go`) | Delivers Stripe and Datadog rows; moves `resend_contact` to `manual_action`. A `done` row loses its external cleanup identifier ([outbox delivery](account-erasure.md#outbox-delivery)). |
 | Account erasure scrub, every hour | `coordinator/api/accounts/erasure/loop.go` (`Owner.StartLoop`, started by `StartAccountErasureLoop` from `coordinator/app/lifecycle.go`) | Scrubs the personal data of each `pending` erasure request whose `scrub_after` has passed ([account erasure](account-erasure.md#grace-loop)). The user row, IDs and financial records stay ([retained data](../reference/personal-data-rules.md#retained-data)). |
 
 The existing nullable `request_rejections.could_have_served` column stores NULL
@@ -469,7 +472,7 @@ KV blocks under a per-model key, not tokens.
 | Provider identity and usage reads | `coordinator/store/postgres/provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres/usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres/row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres/model_registry.go`, `coordinator/store/postgres/base_rewards.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/`, `coordinator/store/`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory/`, `coordinator/store/memory/base_rewards.go` |
-| Account erasure | `coordinator/store/erasure_types.go` (types, `AccountErasureStore`), `coordinator/internal/store/erasure/` (`Rules`, `Keys`, confirm hashes), `coordinator/store/postgres/erasure.go`, `erasure_rules.go` (`erasureStatements`) and `erasure_keys.go`, `coordinator/store/memory/erasure.go` and `erasure_rules.go`, `coordinator/store/postgres/queries/erasure.sql`, `coordinator/api/accounts/erasure/` (handlers and loop); full map in [account erasure](account-erasure.md#code-map) |
+| Account erasure | `coordinator/store/erasure_types.go` (types, `AccountErasureStore`), `coordinator/internal/store/erasure/` (`Rules`, `Keys`, confirm hashes), `coordinator/store/postgres/erasure.go`, `erasure_rules.go` (`erasureStatements`), `erasure_keys.go` and `erasure_outbox.go`, `coordinator/store/memory/erasure.go`, `erasure_rules.go` and `erasure_outbox.go`, `coordinator/store/postgres/queries/erasure.sql`, `coordinator/api/accounts/erasure/` (handlers, loop and outbox worker); full map in [account erasure](account-erasure.md#code-map) |
 | Manual SQL | `coordinator/store/postgres/migrations/` |
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/internal/provider/journal/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |

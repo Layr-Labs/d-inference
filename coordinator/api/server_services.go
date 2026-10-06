@@ -94,6 +94,7 @@ func (s *Server) SetBilling(svc *billing.Service) {
 	s.inference.SetBilling(svc)
 	s.billingHTTP.SetService(svc)
 	s.payouts.SetService(svc)
+	s.erasure.SetBilling(svc)
 }
 
 func (s *Server) Billing() *billing.Service {

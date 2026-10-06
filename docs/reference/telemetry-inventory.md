@@ -265,23 +265,36 @@ and must not be summed with them.
 | `reasons[]` | One entry per terminal reason, always present, in lifecycle order; `requests` over all entries sums to `closed`. Reasons are defined in [the cache routing architecture page](../architecture/cache-aware-routing.md#reuse-loss-funnel). |
 | `total` | The same counters summed over all reasons. |
 | `requests`, `attempts` | Requests in the reason, and the provider attempts they used. |
+| `planned`, `dispatched` | Requests whose dispatch body had a cache plan (they may still have ended before dispatch, so this is not a subset of `dispatched`, and it is not `activation.planned`, which counts plan calls), and requests handed to a provider at least once. `attempts - dispatched` is the attempts beyond each request's first. `dispatched` can be short by up to `late.attempt_dispatches`. |
+| `memory_hit_requests`, `ssd_hit_requests` | Requests that ended in a reported hit, by the tier it was restored from. They sum to the requests under `hit` and `hit_without_selection` because usage validation rejects a hit without a tier. Per request, since process start; `lifecycle.ssd_hits` is per accepted receipt, since the last routing reconfiguration. |
 | `dispatched_without_scope` | Requests whose classifying attempt went to a provider that received no cache scope. |
 | `lookup_outcome_reported` | Requests whose completing provider reported a lookup outcome in its usage. |
-| `prompt_tokens_unknown`, `repeated_prefix_tokens_unknown`, `predicted_tokens_unknown`, `reused_tokens_unknown` | Requests where that token quantity was not observed. Unknown is never folded into a sum as zero. |
-| `unobserved[]` | Stages the coordinator does not feed into the funnel, each with the reason. |
+| `prompt_tokens_unknown`, `repeated_prefix_tokens_unknown`, `predicted_tokens_unknown`, `reused_tokens_unknown`, `prefill_saved_tokens_unknown`, `provider_prompt_tokens_unknown` | Requests where that token quantity was not observed. Unknown is never folded into a sum as zero. `predicted_tokens_unknown` is every request routing made no prediction for (not routed to a selected holder); `provider_prompt_tokens_unknown` includes a completion that reported no prompt-token count. |
+| `late.completions`, `late.memory_hit_completions`, `late.ssd_hit_completions`, `late.attempt_dispatches` | Evidence that arrived too late for its request's record: provider completions that classified no request (the client had left, or a hedged twin completed first), those of them that reported a hit by tier, and frames handed to a provider that `attempts` missed. Counted here and in no reason or total. For traffic inside the population, per-completion hits by tier equal the funnel's hit requests plus the late hit completions. |
+| `unobserved[]` | Stages the coordinator does not feed into the funnel, each with the reason. Today: `lookup_receipt`. |
 
 The token sums are in-process counters on the admin-authenticated
 `GET /v1/admin/metrics` only (`ObserveCacheFunnelRecord` in
 `coordinator/api/observation/cache_funnel_telemetry.go`). Each is labelled by
 terminal `reason` and adds a closed request's count only when that quantity
-was observed.
+was observed. The two provider-reported reuse quantities also carry `tier`:
+`memory` or `ssd` for a hit, `none` otherwise.
 
 | Counter | Meaning |
 |---|---|
+| `exact_cache_funnel_late_reused_tokens_total{tier}`, `exact_cache_funnel_late_prefill_saved_tokens_total{tier}` | Reuse reported by late completions, by hit tier (`ObserveLateCacheFunnelCompletion`). Added to the funnel's sums for a tier they give `exact_cache_cached_tokens_total{tier}` and `exact_cache_prefill_tokens_saved_total{tier}` for traffic inside the population. |
 | `exact_cache_funnel_prompt_tokens_total{reason}` | Exact prompt tokens counted by the planning decision for the dispatched body. |
 | `exact_cache_funnel_repeated_prefix_tokens_total{reason}` | Repeated-prefix tokens (demand evidence) of the dispatched plan. |
-| `exact_cache_funnel_predicted_tokens_total{reason}` | Tokens the coordinator expected the chosen provider to restore. Not fed today, so always absent. |
-| `exact_cache_funnel_reused_tokens_total{reason}` | Provider-reported cached tokens of the completing attempt. |
+| `exact_cache_funnel_predicted_tokens_total{reason}` | Cached tokens routing expected the selected holder to restore (the credited holder's anchor depth). Present only for requests whose classifying attempt was routed to a selected holder. |
+| `exact_cache_funnel_reused_tokens_total{reason,tier}` | Provider-reported cached tokens of the completing attempt: the prompt tokens billed at the cache-read rate. |
+| `exact_cache_funnel_prefill_saved_tokens_total{reason,tier}` | Provider-reported prefill tokens the completing attempt skipped. Never more than reused. |
+| `exact_cache_funnel_provider_prompt_tokens_total{reason}` | Provider-reported prompt tokens of the completing attempt. |
+
+Reused-token share, single source: numerator
+`exact_cache_funnel_reused_tokens_total` summed over `reason` and `tier`,
+denominator `exact_cache_funnel_provider_prompt_tokens_total` summed over
+`reason`. Recomputed tokens: `provider_prompt_tokens - prefill_saved_tokens`.
+The architecture page lists every share with its numerator and denominator.
 
 ### Telemetry pipeline and platform gauges
 

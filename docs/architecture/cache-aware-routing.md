@@ -941,31 +941,104 @@ completed (`HandleCompleteAt`); when none completed, by the attempt dispatched
 last. A recorded completion is itself proof of dispatch: the attempt is counted
 after its frame is on the wire, on another goroutine, so a request whose
 completion was recorded first is still a dispatched request with at least one
-attempt. A completion that arrives after the handler has closed the request
-changes nothing.
+attempt. `planned` and `dispatched` count requests, not attempts. `planned` is
+a request whose dispatch body had a cache plan; it may still have ended before
+any provider was handed it, so `planned` is not a subset of `dispatched`. It
+is also not the activation gate's `planned`, which counts plan calls,
+including those for candidate models a request was never served on.
+`dispatched` is a request handed to a provider at least once, so
+`attempts - dispatched` is the attempts beyond each request's first (a retry,
+a hedge, or a queued handoff that followed an earlier attempt).
 
-**Tokens.** Each closed record carries prompt tokens, repeated-prefix tokens
-(demand evidence), predicted tokens and reused tokens (provider-reported
-cached tokens). A quantity that was not observed, or a negative count, is
-unknown: it adds nothing to any sum and increments the matching `*_unknown`
-request count; it is never reported as zero. `funnel.unobserved` lists the
-stages the coordinator does not feed at all: today the predicted token count
-and the provider's lookup receipt message, so `predicted_tokens_unknown`
-equals the request count and the lookup outcome comes from the completing
-usage report only.
+**Late evidence.** Evidence that arrives too late to be part of its request's
+record changes no reason and no total. It is counted in `funnel.late` instead:
+
+- `completions`: a provider completion that classified no request, because
+  the handler had closed it (the client had left) or a hedged twin had
+  completed first. It is still billed and still feeds the per-completion
+  usage counters. `memory_hit_completions` and `ssd_hit_completions` are the
+  ones that reported a hit, by tier, and their reuse is summed by tier on the
+  admin metrics (`exact_cache_funnel_late_{reused,prefill_saved}_tokens_total{tier}`).
+- `attempt_dispatches`: frames handed to a provider that `attempts` missed.
+
+For traffic that is all inside the funnel population, once no request is in
+flight: `exact_cache_usage_total{outcome=hit,tier=T}` equals the funnel's
+tier-T hit requests plus the late tier-T hit completions;
+`exact_cache_cached_tokens_total{tier=T}` equals the funnel's reused tokens
+plus the late reused tokens for that tier; and
+`attempts + late.attempt_dispatches` is every frame handed to a provider. A
+request outside the population feeds the per-completion counters and neither
+side of the funnel. Two limits: a late dispatch note that was its request's
+first leaves that request out of `dispatched` and under a before-dispatch
+reason, so `dispatched` can be short by up to `late.attempt_dispatches`; and
+while a request is still open, a scrape can show its late evidence before its
+record. The admin token sums are added after the public counts, one counter at
+a time, so a live admin scrape can trail the public status by one record.
+
+**Tier.** A reported hit carries the tier it was restored from.
+`memory_hit_requests` and `ssd_hit_requests` split the requests under `hit`
+and `hit_without_selection`. They sum to them because usage validation rejects
+a hit that names no tier before the funnel sees it (`cacheusage.Valid`); the
+ledger itself does not enforce it. `ssd_hit_requests` counts requests since
+the process started; `lifecycle.ssd_hits` counts accepted SSD lookup receipts,
+one per attempt, since the last routing reconfiguration. The two agree only
+when no attempt was retried, abandoned after its lookup, completed late, or
+had its receipt rejected.
+
+**Tokens.** Each closed record carries six token quantities from three sources:
+
+| Quantity | Source | Known when |
+|---|---|---|
+| prompt tokens | the planner's count for the dispatched body | the tokenizer counted the prompt |
+| repeated-prefix tokens (demand evidence) | the dispatched plan | the request was planned |
+| predicted tokens | routing: the credited holder's anchor depth, from the same provider hint that priced the discount | the classifying attempt was routed to a selected holder. For every other request routing made no prediction, so `predicted_tokens_unknown` means "no prediction was made", not an observation gap |
+| reused tokens | the completing provider's `cached_tokens`: the prompt tokens billed at the cache-read rate | a provider completed with valid cache usage |
+| prefill saved tokens | the completing provider's `prefill_tokens_saved`: the prefill actually skipped, never more than reused | same as reused |
+| provider prompt tokens | the completing provider's `prompt_tokens` | a provider completed and reported a count above zero; a completion that reports none is unknown, not a prompt of zero tokens |
+
+A quantity that was not observed, or a negative count, is unknown: it adds
+nothing to any sum and increments the matching `*_unknown` request count; it
+is never reported as zero. `funnel.unobserved` lists the stages the
+coordinator does not feed at all: today the provider's lookup receipt message,
+so the lookup outcome comes from the completing usage report only.
+
+**Shares.** Each ratio below is a different statement. Quote the numerator and
+denominator with it. All sums are the admin counters, over closed requests.
+
+| Share | Numerator | Denominator |
+|---|---|---|
+| Reused-token share (single source) | `reused_tokens`, all reasons | `provider_prompt_tokens`, all reasons. Both provider-reported. Completed requests whose cache usage was absent or rejected are in the denominator with unknown reuse; there are `reused_tokens_unknown - provider_prompt_tokens_unknown` of them |
+| Work skipped | `prefill_saved_tokens` | `provider_prompt_tokens` |
+| Recomputed tokens (a count, not a share) | `provider_prompt_tokens - prefill_saved_tokens` | none |
+| Depth on hits | `reused_tokens` under `hit` and `hit_without_selection` | `provider_prompt_tokens` under the same two reasons |
+| Prediction kept | `reused_tokens` under `hit` | `predicted_tokens` under `hit` |
+| Customer-bill share (not a funnel quantity) | `usage.prompt_tokens_details.cached_tokens` summed over the response rows of all traffic | `usage.prompt_tokens` over the same rows, including requests outside the funnel population |
+
+`reused_tokens / prompt_tokens` mixes the provider's count with the planner's
+and drops every request the tokenizer never counted from the denominator; do
+not quote it. The share a customer's bill reflects is over all traffic,
+including requests outside the funnel population, and comes from the response
+`usage` rows, not from the funnel.
 
 **What the public status shows.** `GET /v1/cache/status` is unauthenticated,
 so its `funnel` object holds counts of requests and attempts only
-(`cachefunnel.PublicStatus`): `entered`, `closed`, `in_flight`, and per reason
-`requests`, `attempts`, `dispatched_without_scope`, `lookup_outcome_reported`
-and the four `*_unknown` request counts. It carries no token sum, because the
-difference between two snapshots around a single closing request would be
-that request's exact prompt, repeated-prefix and reused token counts. The
-token sums are exported per reason to the admin-authenticated
-`GET /v1/admin/metrics` registry as
-`exact_cache_funnel_{prompt,repeated_prefix,predicted,reused}_tokens_total{reason}`
-(`observation.Owner.ObserveCacheFunnelRecord`), next to the existing per-model
-cache token counters. They are not sent to Datadog.
+(`cachefunnel.PublicStatus`): `entered`, `closed`, `in_flight`, the
+`late` object (`completions`, `memory_hit_completions`, `ssd_hit_completions`,
+`attempt_dispatches`), and per reason `requests`, `planned`, `dispatched`,
+`attempts`, `dispatched_without_scope`, `lookup_outcome_reported`,
+`memory_hit_requests`, `ssd_hit_requests` and the six `*_unknown` request
+counts. It carries no token sum,
+because the difference between two snapshots around a single closing request
+would be that request's exact prompt-derived token counts. The token sums are
+exported per reason to the admin-authenticated `GET /v1/admin/metrics`
+registry as
+`exact_cache_funnel_{prompt,repeated_prefix,predicted,provider_prompt}_tokens_total{reason}`
+and `exact_cache_funnel_{reused,prefill_saved}_tokens_total{reason,tier}`
+(`observation.Owner.ObserveCacheFunnelRecord`), and the reuse of late
+completions as `exact_cache_funnel_late_{reused,prefill_saved}_tokens_total{tier}`
+(`ObserveLateCacheFunnelCompletion`), next to the existing per-model
+cache token counters. `tier` is `memory` or `ssd` for a hit and `none` for
+every other request. They are not sent to Datadog.
 
 **Conservation.** `entered = closed + in_flight`, and `closed` equals the sum
 of `requests` over `reasons`. The ledger keeps aggregates only. The
@@ -975,7 +1048,13 @@ hash, scope, account, model or provider identifier; summing those records
 reproduces every aggregate exactly
 (`coordinator/tests/api/observation/cachefunnel/reconciliation_test.go`).
 The request-path hooks are exercised with real HTTP requests in
-`coordinator/tests/api/inference/cache_funnel_request_path_test.go`.
+`coordinator/tests/api/inference/cache_funnel_request_path_test.go`, and the
+two outcomes that need routing to select a holder (`hit` and
+`cancelled_after_dispatch`) in
+`coordinator/tests/api/inference/cache_funnel_selected_holder_test.go`. The
+real-model test `e2e/exact_cache_routing_test.go` ends by reconciling the
+funnel with the lifecycle counters, the activation gate and the usage rows its
+clients received (`e2e/cache_funnel_reconciliation_test.go`).
 
 ### Observed demand and soft prefix affinity
 

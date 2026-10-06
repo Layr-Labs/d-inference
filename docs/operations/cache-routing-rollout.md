@@ -575,7 +575,7 @@ What speculation can cost proven writes
   is a wait for the cache's disk-budget lock before its first byte and
   again at its index step (the file is published but not yet indexed while
   it waits); a block-tier write pays the same for each block. An eviction
-  loop, a whole-root retirement, a reconcile or a block-tier TTL sweep in another store can hold
+  loop, a whole-root retirement, a reconcile or a block-tier TTL sweep in any store can hold
   that lock. The
   remaining limits (a budget reading that is out of date, an unowned-bytes
   figure that is too high or too low, the free figure) are in limit 10.

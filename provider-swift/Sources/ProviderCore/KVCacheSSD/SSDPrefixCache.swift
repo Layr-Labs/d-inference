@@ -1906,6 +1906,7 @@ public final class SSDPrefixCache:
         // waited for it is kept.
         let removed = diskBudget.performStoreRetirement {
             let expired = index.expired(now: config.nowSeconds(), ttlSeconds: config.ttlSeconds)
+            guard !expired.isEmpty else { return 0 }
             let urls = expired.map { SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex($0)) }
             return retireIndexedEntries(urls).removed.count
         }

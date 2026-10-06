@@ -487,7 +487,7 @@ struct SSDBlockStoreTests {
         ledger.release(inFlight, as: .discarded)
     }
 
-    @Test("a block-tier TTL sweep unlinks and drops only while it holds the disk budget's lock, and decides what is expired once it has it")
+    @Test("a block-tier TTL sweep unlinks and drops only while it holds the disk budget's lock, decides what is expired once it has it, and does not take the lock when nothing is expired")
     func blockTierSweepRetiresUnderTheBudgetLock() throws {
         let parent = tempDir("block-tier-sweep-lock")
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -497,24 +497,14 @@ struct SSDBlockStoreTests {
         let wholeRootKey = SSDDiskBudget.wholeRootKey(ofModelRoot: modelRoot)
         let kek = SymmetricKey(size: .bits256)
         let cache = makeCache(dir: modelRoot, kek: kek, clock: ClockBox(10_000), diskBudget: ledger)
-        // Two expired entries, each with its file.
-        func expiredBlock(_ byte: UInt8) throws -> (tag: Data, url: URL) {
-            let tag = Data(repeating: byte, count: 16)
-            let url = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: SSDLookupKeys.hex(tag))
-            try SSDBlockStore.write(
-                to: url, metadata: fixtureMetadata(sizes: [32]), chunks: [Data(repeating: 1, count: 32)], kekKey: kek)
-            cache.index.insert(tag16: tag, fileBytes: 64, lastAccess: 0)
-            return (tag, url)
-        }
-        let swept = try expiredBlock(0xc1)
-        let used = try expiredBlock(0xc2)
         ledger.declareOccupancyKnown(wholeRootKey: wholeRootKey)
         // Another caller holds the budget's lock, as a pass that is
         // publishing or an eviction loop does.
         let held = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         let holderDone = DispatchSemaphore(value: 0)
-        let sweepDone = DispatchSemaphore(value: 0)
+        // Whatever happens below, the holder is let go: an extra signal is harmless.
+        defer { release.signal() }
         DispatchQueue.global().async {
             ledger.invalidateOccupancy(wholeRootKey: "another-root") {
                 held.signal()
@@ -527,9 +517,38 @@ struct SSDBlockStoreTests {
             Issue.record("the holder never got the budget lock")
             return
         }
+        // Nothing is expired yet: a sweep returns without the lock.
+        let idleDone = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             cache.sweepExpiredEntries()
+            idleDone.signal()
+        }
+        guard idleDone.wait(timeout: .now() + 10) == .success else {
+            Issue.record("a sweep with nothing to expire waited for the budget lock")
+            return
+        }
+        // Two expired entries, each with its file. (The index and the files
+        // need no ledger call.)
+        func expiredBlock(_ byte: UInt8) throws -> (tag: Data, url: URL) {
+            let tag = Data(repeating: byte, count: 16)
+            let url = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: SSDLookupKeys.hex(tag))
+            try SSDBlockStore.write(
+                to: url, metadata: fixtureMetadata(sizes: [32]), chunks: [Data(repeating: 1, count: 32)], kekKey: kek)
+            cache.index.insert(tag16: tag, fileBytes: 64, lastAccess: 0)
+            return (tag, url)
+        }
+        let swept = try expiredBlock(0xc1)
+        let used = try expiredBlock(0xc2)
+        let sweepStarted = DispatchSemaphore(value: 0)
+        let sweepDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            sweepStarted.signal()
+            cache.sweepExpiredEntries()
             sweepDone.signal()
+        }
+        guard sweepStarted.wait(timeout: .now() + 10) == .success else {
+            Issue.record("the sweep thread never started")
+            return
         }
         // The sweep waits: nothing is unlinked and nothing leaves the index
         // while the lock is held elsewhere.

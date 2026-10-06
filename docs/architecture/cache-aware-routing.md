@@ -1281,7 +1281,7 @@ the same room. The rule, with its constants, is in the
   does wait for is the budget lock, before its first byte and again at its
   index step (the file is published but not yet indexed while it waits); a
   block-tier job takes it for each block. An eviction loop, a whole-root
-  retirement, a reconcile or a block-tier TTL sweep in another store can hold that lock. The
+  retirement, a reconcile or a block-tier TTL sweep in any store can hold that lock. The
   registration asks the volume for its free bytes only while a first-sight
   write is in flight; the low-disk check before the write reads the volume
   as before. The pass after the write now reads it inside the pass, and the
@@ -1306,7 +1306,8 @@ the same room. The rule, with its constants, is in the
   last two points, as at the grant, the room must also hold the proven work
   queued in every store on the budget, which has no reservation yet. Each of
   the three settles `write_speculative_limited`, except that a published
-  file already gone at the index step settles `cache_entry_evicted`. I/O
+  file that is not a plain file at the index step (gone, or at a path
+  that cannot be classified) settles `cache_entry_evicted`. I/O
   happened and the daily write cap, charged
   before the first byte, is not refunded; the store counts them in the stat
   `speculativeWritesYielded` (`SSDHybridCheckpointStats`), which is

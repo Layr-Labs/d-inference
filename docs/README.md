@@ -73,6 +73,7 @@
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
 - [`reference/qwen4-next-support.md`](reference/qwen4-next-support.md): native Flash-Next private identity, serving/state policy and explicitly incomplete qualification.
+- [`reference/soft-delete.md`](reference/soft-delete.md): the tables with `deleted_at`, every store read that hides a soft-deleted row, the paths that do not filter, the indexes, and what a soft delete changes.
 - [`reference/sqlc-type-mapping.md`](reference/sqlc-type-mapping.md): Postgres type and nullability → generated Go type in `storedb`, the `sqlc.yaml` flag behind it, and the store conversion.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.
@@ -107,6 +108,7 @@
 - [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
+- [`developer/pull-requests.md`](developer/pull-requests.md): linear PR stacks, signed parent updates, and ancestry repair after each squash.
 - [`developer/database-migrations.md`](developer/database-migrations.md): choose the migration kind, add a numbered goose migration, change a column while preserving rollback compatibility, regenerate the checked-in schema.
 - [`developer/sqlc.md`](developer/sqlc.md): add a store query with sqlc, convert a hand-written store domain, `make sqlc-generate` and `make sqlc-check`.
 - [`developer/threat-model-review.md`](developer/threat-model-review.md): configure full PR text scans against the threat model and non-blocking author feedback.

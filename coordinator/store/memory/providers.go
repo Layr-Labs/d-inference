@@ -31,7 +31,7 @@ func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*store.Pr
 	defer s.mu.RUnlock()
 
 	p, ok := s.providerRecords[id]
-	if !ok {
+	if !ok || p.DeletedAt != nil {
 		return nil, fmt.Errorf("provider %q not found", id)
 	}
 	cp := *p
@@ -54,7 +54,7 @@ func (s *MemoryStore) GetMDAChainBySerial(_ context.Context, serial string) (jso
 	// recently seen non-empty chain.
 	var best *store.ProviderRecord
 	for _, p := range s.providerRecords {
-		if p.SerialNumber != serial || len(p.MDACertChain) == 0 {
+		if p.SerialNumber != serial || len(p.MDACertChain) == 0 || p.DeletedAt != nil {
 			continue
 		}
 		if best == nil || p.LastSeen.After(best.LastSeen) {
@@ -79,7 +79,7 @@ func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string
 
 	records := make([]store.ProviderRecord, 0)
 	for _, p := range s.providerRecords {
-		if p.AccountID == accountID {
+		if p.AccountID == accountID && p.DeletedAt == nil {
 			cp := *p
 			if p.Location != nil {
 				loc := *p.Location

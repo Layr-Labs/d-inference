@@ -224,6 +224,14 @@ flowchart LR
 
 Legend: blue = step, amber = decision, green = serving, red = exit 1.
 
+### Soft-deleted rows
+
+A row in `users`, `api_keys`, `providers` or `provider_tokens` whose
+`deleted_at` is set belongs to an erased account, and every live read hides
+it. No code sets `deleted_at` yet. The model is in
+[schema lifecycle](schema-lifecycle.md#soft-delete); every filtered read,
+index and effect is in the [soft-delete reference](../reference/soft-delete.md).
+
 ### Provider earnings and history
 
 `RecordProviderEarning` and `CreditProviderAccount` maintain new summaries from
@@ -365,7 +373,12 @@ KV blocks under a per-model key, not tokens.
 3. **One-shot data migrations in the baseline commit their
    `schema_migrations` marker in the same statement or transaction as their
    update** (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`).
-4. **Boot never holds a long lock on a hot table.** The
+4. **A soft-deleted row is never returned as live.** Reads of `users`,
+   `api_keys`, `providers` and `provider_tokens` filter `deleted_at IS NULL`
+   ([soft-delete reference](../reference/soft-delete.md);
+   `coordinator/tests/store/postgres/soft_delete_reads_test.go` covers each
+   Postgres read).
+5. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
    this lives in `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` and
@@ -376,16 +389,16 @@ KV blocks under a per-model key, not tokens.
    `autovacuum_analyze_scale_factor` is `0.005` so planner statistics track
    ingestion (`ensureProviderEarningsWindowIndex`,
    `coordinator/store/postgres/earnings_window_index.go`).
-5. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
+6. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
    and `balances` never store floats; see
    [`billing.md#invariants`](billing.md#invariants).
-6. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
+7. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
    counts, timings and outcomes only; the `serial_number` column of
    `provider_log_reports` and the legacy `cache_affinity_key` column are kept
    empty by the triggers `clear_provider_log_report_serial` and
    `clear_legacy_cache_affinity_key`
    (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`).
-7. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
+8. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
    wrapped by a Secure Enclave key and the SSD cache is unreadable without it
    (`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`).
 
@@ -394,6 +407,7 @@ KV blocks under a per-model key, not tokens.
 | Symptom | Cause | Where to look |
 |---|---|---|
 | Coordinator exits 1 at boot with `store: run migrations` | A goose migration failed: a lock timeout, the advisory-lock wait, an invalid index, an out-of-order or duplicate version, or the retired-backfill guard | [Schema lifecycle failure modes](schema-lifecycle.md#failure-modes) and the [schema migration runbook](../operations/schema-migration.md#troubleshooting). |
+| A coordinator built before goose fails to boot with a unique-violation on `idx_users_privy` | It replays its boot DDL, whose non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails once a soft-deleted and a live user share a Privy ID | Roll back only to images built with goose; see the [schema migration rollback rules](../operations/schema-migration.md#rollback). |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
 | `/v1/stats` slow and pool saturated | Full scans on `usage` holding connections; the 80-connection floor is the mitigation, not a fix | `pg_stat_activity`; the read cache. |

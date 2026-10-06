@@ -107,7 +107,7 @@ func (s *PostgresStore) GetProviderToken(token string) (*store.ProviderToken, er
 	var pt store.ProviderToken
 	err := s.pool.QueryRow(ctx,
 		`SELECT token_hash, account_id, label, active, created_at
-		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
+		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE AND deleted_at IS NULL`, h,
 	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("store: %w: %w", store.ErrProviderTokenInvalid, err)

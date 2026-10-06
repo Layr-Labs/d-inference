@@ -111,6 +111,7 @@ func (s *PostgresStore) GetMDAChainBySerial(ctx context.Context, serial string) 
 	err := s.pool.QueryRow(ctx,
 		`SELECT mda_cert_chain FROM providers
 		 WHERE serial_number = $1 AND serial_number != '' AND mda_cert_chain IS NOT NULL
+		   AND deleted_at IS NULL
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
 	).Scan(&chain)
 	if err != nil {
@@ -150,7 +151,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
 		 FROM providers
-		 WHERE account_id = $1
+		 WHERE account_id = $1 AND deleted_at IS NULL
 		 ORDER BY COALESCE(NULLIF(serial_number, ''),
 		                   NULLIF(se_public_key, ''),
 		                   id),

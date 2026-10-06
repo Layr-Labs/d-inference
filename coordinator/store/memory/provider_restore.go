@@ -15,7 +15,7 @@ func (s *MemoryStore) GetProviderForRestore(ctx context.Context, serial, seKey s
 	defer s.mu.RUnlock()
 	var serialMatch, keyMatch *store.ProviderRecord
 	for _, p := range s.providerRecords {
-		if slices.Contains(excludeIDs, p.ID) {
+		if slices.Contains(excludeIDs, p.ID) || p.DeletedAt != nil {
 			continue
 		}
 		if serial != "" && p.SerialNumber == serial && newerProviderRecord(p, serialMatch) {

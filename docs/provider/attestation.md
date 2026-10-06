@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -86,7 +86,8 @@ Under the upcoming [frozen legacy policy](../architecture/security/enrollment.md
 devices whose stored account, SE key and serial enter the durable cohort
 continue through legacy verification. The first upgraded production coordinator
 startup drains eligible historical inventory after revocation replay before
-freezing; restart, a new account, a new device or a new
+freezing. Soft-deleted accounts and provider records cannot qualify for that
+initial snapshot; see the [cohort qualification rules](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort). A restart, a new account, a new device or a new
 account association does not reopen eligibility. Reenrollment requires the
 existing key under its frozen account and the [authenticated signed enrollment
 request](../reference/api-contracts.md#legacy-mdm-enrollment-proof). Preserve your

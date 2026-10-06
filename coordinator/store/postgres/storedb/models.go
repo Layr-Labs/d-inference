@@ -25,4 +25,5 @@ type ApiKey struct {
 	ExpiresAt      *time.Time
 	LastUsedAt     *time.Time
 	SelfRouteOnly  bool
+	DeletedAt      *time.Time
 }

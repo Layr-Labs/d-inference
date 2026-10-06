@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -14,7 +14,7 @@ An App Attest grant also depends on a fresh [durable build qualification](../ref
 
 Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
 
-Under the upcoming [frozen legacy MDM policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), legacy MDM authorization is restricted to already successfully verified devices with a durable frozen authenticated account/key/serial association. New accounts, devices and associations cannot join it after the first upgraded startup, and restarts do not reopen it. Membership alone is not verification: current posture, freshness, revocation and code-identity gates still apply. New identities require qualified App Attest; unsupported OS versions do not create a legacy fallback. No grace period has been chosen and no cohort expiry is implemented.
+Under the upcoming [frozen legacy MDM policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), legacy MDM authorization is restricted to already successfully verified devices with a durable frozen authenticated account/key/serial association. Soft-deleted accounts and provider records cannot qualify for its initial snapshot. New accounts, devices and associations cannot join it after the first upgraded startup, and restarts do not reopen it. Membership alone is not verification: current posture, freshness, revocation and code-identity gates still apply. New identities require qualified App Attest; unsupported OS versions do not create a legacy fallback. No grace period has been chosen and no cohort expiry is implemented.
 
 New providers require macOS 27 or later and current qualified App Attest
 authorization; consumers do not need macOS 27 to use the API or console.

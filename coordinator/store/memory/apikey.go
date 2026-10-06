@@ -63,7 +63,7 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts store.APIKeyCreate) (s
 func (s *MemoryStore) GetKeyAccount(key string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if rec, ok := s.keyRecords[key]; ok {
+	if rec, ok := s.keyRecords[key]; ok && rec.DeletedAt == nil {
 		return rec.OwnerAccountID
 	}
 	return ""
@@ -74,7 +74,7 @@ func (s *MemoryStore) AuthenticateKey(rawKey string) (*store.APIKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rec, ok := s.keyRecords[rawKey]
-	if !ok {
+	if !ok || rec.DeletedAt != nil {
 		return nil, fmt.Errorf("key not found")
 	}
 	if rec.Disabled {
@@ -109,7 +109,7 @@ func (s *MemoryStore) ListAPIKeys(accountID string) ([]store.APIKey, error) {
 	defer s.mu.RUnlock()
 	out := make([]store.APIKey, 0)
 	for _, rec := range s.keyRecords {
-		if rec.OwnerAccountID != accountID || rec.ID == "" {
+		if rec.OwnerAccountID != accountID || rec.ID == "" || rec.DeletedAt != nil {
 			continue
 		}
 		out = append(out, *cloneAPIKey(rec))
@@ -127,7 +127,7 @@ func (s *MemoryStore) GetAPIKeyByID(accountID, id string) (*store.APIKey, error)
 		return nil, fmt.Errorf("key not found")
 	}
 	rec, ok := s.keyRecords[raw]
-	if !ok || rec.OwnerAccountID != accountID {
+	if !ok || rec.OwnerAccountID != accountID || rec.DeletedAt != nil {
 		return nil, fmt.Errorf("key not found")
 	}
 	return cloneAPIKey(rec), nil
@@ -142,7 +142,7 @@ func (s *MemoryStore) UpdateAPIKey(accountID, id string, mutable store.APIKey) (
 		return nil, fmt.Errorf("key not found")
 	}
 	rec, ok := s.keyRecords[raw]
-	if !ok || rec.OwnerAccountID != accountID {
+	if !ok || rec.OwnerAccountID != accountID || rec.DeletedAt != nil {
 		return nil, fmt.Errorf("key not found")
 	}
 	rec.Name = mutable.Name
@@ -192,7 +192,7 @@ func (s *MemoryStore) RotateAPIKey(accountID, id string) (string, *store.APIKey,
 		return "", nil, fmt.Errorf("key not found")
 	}
 	old, ok := s.keyRecords[oldRaw]
-	if !ok || old.OwnerAccountID != accountID {
+	if !ok || old.OwnerAccountID != accountID || old.DeletedAt != nil {
 		return "", nil, fmt.Errorf("key not found")
 	}
 	rec := &store.APIKey{

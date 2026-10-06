@@ -45,7 +45,7 @@ func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*store.User, error
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE privy_user_id = $1`, privyUserID,
+		`SELECT `+userSelectColumns+` FROM users WHERE privy_user_id = $1 AND deleted_at IS NULL`, privyUserID,
 	)
 	u, err := scanUser(row)
 	if err != nil {
@@ -60,7 +60,7 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*store.User, error
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE account_id = $1`, accountID,
+		`SELECT `+userSelectColumns+` FROM users WHERE account_id = $1 AND deleted_at IS NULL`, accountID,
 	)
 	u, err := scanUser(row)
 	if err != nil {
@@ -114,7 +114,7 @@ func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*store.U
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE stripe_account_id = $1`, stripeAccountID,
+		`SELECT `+userSelectColumns+` FROM users WHERE stripe_account_id = $1 AND deleted_at IS NULL`, stripeAccountID,
 	)
 	u, err := scanUser(row)
 	if err != nil {
@@ -166,7 +166,7 @@ func (s *PostgresStore) GetUserByEmail(email string) (*store.User, error) {
 	defer cancel()
 
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+userSelectColumns+` FROM users WHERE LOWER(email) = LOWER($1)`, email,
+		`SELECT `+userSelectColumns+` FROM users WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL`, email,
 	)
 	u, err := scanUser(row)
 	if err != nil {

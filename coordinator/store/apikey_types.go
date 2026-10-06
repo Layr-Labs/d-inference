@@ -48,6 +48,9 @@ type APIKey struct {
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+
+	// DeletedAt marks a soft-deleted key; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }
 
 // APIKeyCreate carries the create-time options for a new API key. All limit

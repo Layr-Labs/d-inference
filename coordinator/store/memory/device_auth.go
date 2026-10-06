@@ -97,7 +97,7 @@ func (s *MemoryStore) GetProviderToken(token string) (*store.ProviderToken, erro
 
 	h := store.HashKey(token)
 	pt, ok := s.providerTokens[h]
-	if !ok || !pt.Active {
+	if !ok || !pt.Active || pt.DeletedAt != nil {
 		return nil, store.ErrProviderTokenInvalid
 	}
 	copy := *pt

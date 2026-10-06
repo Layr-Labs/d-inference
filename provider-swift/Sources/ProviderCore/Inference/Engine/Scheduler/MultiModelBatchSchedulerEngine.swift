@@ -103,9 +103,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// False only for remote requests from a legacy/malformed coordinator
     /// that did not provide an authenticated outer cache scope.
     private let cacheEnabled: Bool
-    /// Coordinator repeat-demand hint for the complete-checkpoint write gate
-    /// (`cache_repeated_prefix_tokens`). Nil for local HTTP, tests and older
-    /// coordinators: the store then writes every captured checkpoint.
+    /// Coordinator demand hint for the complete-checkpoint write gate
+    /// (`cache_repeated_prefix_tokens`, `cache_first_sight_tokens`). Nil for
+    /// local HTTP, tests and older coordinators: the store then writes every
+    /// captured checkpoint.
     private let donationDemand: SSDCheckpointDonationDemand?
     /// Per-request usage-detail signal: the bridge
     /// records the engine's terminal matched/saved token detail here so the

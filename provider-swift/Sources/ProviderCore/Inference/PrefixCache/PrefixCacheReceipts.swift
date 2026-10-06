@@ -171,22 +171,30 @@ struct RemotePrefixCacheContext: Sendable, Equatable {
     /// count, never an identifier). Nil when the coordinator predates the
     /// `cache_repeated_prefix_tokens` field; 0 means novel fleet-wide.
     let repeatedPrefixTokens: Int?
+    /// Coordinator first-sight count from `cache_first_sight_tokens`; 0 when
+    /// the frame carried none.
+    let firstSightTokens: Int
 
-    init(cacheScope: String?, cacheReceiptNonce: String?, repeatedPrefixTokens: Int? = nil) {
+    init(cacheScope: String?, cacheReceiptNonce: String?, repeatedPrefixTokens: Int? = nil,
+         firstSightTokens: Int? = nil) {
         self.scope = Self.nonEmpty(cacheScope)
         self.receiptNonce = Self.nonEmpty(cacheReceiptNonce)
         self.repeatedPrefixTokens = repeatedPrefixTokens.map { max(0, $0) }
+        self.firstSightTokens = max(0, firstSightTokens ?? 0)
     }
 
     var cacheEnabled: Bool { scope != nil }
 
     /// The complete-checkpoint donation gate input. Present only for a remote
-    /// request whose coordinator supplied the field; an older coordinator or
-    /// a standalone/local request yields nil and the store keeps writing every
-    /// captured checkpoint (`SSDCheckpointDemand.admitsWrite`).
+    /// request whose coordinator supplied a demand count; an older coordinator
+    /// or a standalone/local request yields nil and the store keeps writing
+    /// every captured checkpoint (`SSDCheckpointDemand.writeClass`). First
+    /// sight sent without the repeat count is still a hint, so that request
+    /// is speculative rather than a legacy write.
     var donationDemand: SSDCheckpointDonationDemand? {
-        guard cacheEnabled, let repeatedPrefixTokens else { return nil }
-        return SSDCheckpointDonationDemand(repeatedPrefixTokens: repeatedPrefixTokens)
+        guard cacheEnabled, repeatedPrefixTokens != nil || firstSightTokens > 0 else { return nil }
+        return SSDCheckpointDonationDemand(
+            repeatedPrefixTokens: repeatedPrefixTokens ?? 0, firstSightTokens: firstSightTokens)
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

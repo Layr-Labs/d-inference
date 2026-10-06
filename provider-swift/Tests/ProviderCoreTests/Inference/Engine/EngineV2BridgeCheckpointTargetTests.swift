@@ -3,9 +3,10 @@ import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
-/// The coordinator's repeated-prefix hint has two consumers: the store's
-/// write gate (by receipt) and the engine's checkpoint retention (on the
-/// request). These tests pin the second path end to end through the bridge.
+/// The coordinator's demand hint (a repeated prefix or first sight) has two
+/// consumers: the store's write gate (by receipt) and the engine's checkpoint
+/// retention (on the request). These tests pin the second path end to end
+/// through the bridge.
 @Suite("EngineV2Bridge checkpoint retention hint")
 struct EngineV2BridgeCheckpointTargetTests {
     private final class RecordingEngine: CBv2Engine, @unchecked Sendable {
@@ -65,6 +66,34 @@ struct EngineV2BridgeCheckpointTargetTests {
         let request = try await submit(demand: context.donationDemand, scope: try #require(context.scope))
         #expect(request.prefixCheckpointTargetTokens == tokens)
         #expect(request.prefixCacheEnabled)
+    }
+
+    @Test("the larger of the repeat and first-sight counts reaches the engine as the checkpoint target")
+    func firstSightReachesRequest() async throws {
+        for (repeated, firstSight, target) in [
+            (0, 2_048, 2_048), (4_096, 0, 4_096), (1_024, 3_072, 3_072), (3_072, 1_024, 3_072),
+        ] {
+            let context = RemotePrefixCacheContext(
+                cacheScope: "tenant-a", cacheReceiptNonce: "nonce", repeatedPrefixTokens: repeated,
+                firstSightTokens: firstSight)
+            #expect(context.donationDemand == SSDCheckpointDonationDemand(
+                repeatedPrefixTokens: repeated, firstSightTokens: firstSight))
+            let request = try await submit(demand: context.donationDemand, scope: try #require(context.scope))
+            #expect(request.prefixCheckpointTargetTokens == target)
+        }
+    }
+
+    @Test("a frame without first sight hands the store and the engine exactly the repeat count")
+    func absentFirstSight() async throws {
+        let context = RemotePrefixCacheContext(
+            cacheScope: "tenant-a", cacheReceiptNonce: "nonce", repeatedPrefixTokens: 2_304)
+        #expect(context.firstSightTokens == 0)
+        #expect(context.donationDemand == SSDCheckpointDonationDemand(repeatedPrefixTokens: 2_304))
+        let request = try await submit(demand: context.donationDemand, scope: "tenant-a")
+        #expect(request.prefixCheckpointTargetTokens == 2_304)
+        #expect(RemotePrefixCacheContext(
+            cacheScope: "tenant-a", cacheReceiptNonce: "nonce", repeatedPrefixTokens: 0,
+            firstSightTokens: -5).firstSightTokens == 0)
     }
 
     @Test("no hint, or a request outside any cache scope, carries no retention target")

@@ -100,6 +100,11 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     /// coordinator's `cache_repeated_prefix_tokens` nor the local tag history
     /// showed repeat demand. No bytes and no write budget were spent.
     case skippedNovel = "skipped_novel"
+    /// A first-sight checkpoint yielded to pressure: the write would have
+    /// left the write budget below the speculative headroom, found another
+    /// checkpoint write in flight, or needed an eviction to fit the disk
+    /// budget. No bytes and no write budget were spent.
+    case writeSpeculativeLimited = "write_speculative_limited"
 }
 
 public struct PrefixCacheDonationOutcomeCount: Codable, Sendable, Equatable {
@@ -1578,6 +1583,14 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// Nil means an older coordinator (or no granted scope); 0 is a real
         /// value, so it is NOT normalised away like `firstContentBudgetMs`.
         public var cacheRepeatedPrefixTokens: Int?
+        /// First sight: the depth of this prompt's own deepest 1,024-token
+        /// boundary, sent only with a granted scope and only while the repeat
+        /// count is 0. A token count derived from the prompt's length only:
+        /// it carries no content-derived value and is coarser than
+        /// `prompt_work.prompt_tokens`. The provider treats it as speculative
+        /// demand and may decline the write. Nil means no first sight (or a
+        /// coordinator that predates the field).
+        public var cacheFirstSightTokens: Int?
         public var toolSchemaMetadataProtocol: Int?
         /// Opaque coordinator reservation identity, independent of requestId.
         /// Nil preserves compatibility with coordinators without service leases.
@@ -1592,6 +1605,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             prefixCacheProtocol: Int? = nil,
             cacheReceiptBoundaryMode: String? = nil,
             cacheRepeatedPrefixTokens: Int? = nil,
+            cacheFirstSightTokens: Int? = nil,
             toolSchemaMetadataProtocol: Int? = nil,
             serviceReservationID: String? = nil,
             promptWork: PromptWork? = nil
@@ -1604,6 +1618,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.prefixCacheProtocol = prefixCacheProtocol
             self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
             self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
+            self.cacheFirstSightTokens = cacheFirstSightTokens.map { max(0, $0) }
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
             self.serviceReservationID = serviceReservationID
             self.promptWork = promptWork
@@ -1792,6 +1807,7 @@ extension CoordinatorMessage: Codable {
         case prefixCacheProtocol = "prefix_cache_protocol"
         case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
         case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
+        case cacheFirstSightTokens = "cache_first_sight_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
@@ -1837,6 +1853,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
             try container.encodeIfPresent(r.cacheReceiptBoundaryMode, forKey: .cacheReceiptBoundaryMode)
             try container.encodeIfPresent(r.cacheRepeatedPrefixTokens, forKey: .cacheRepeatedPrefixTokens)
+            try container.encodeIfPresent(r.cacheFirstSightTokens, forKey: .cacheFirstSightTokens)
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
@@ -1942,6 +1959,8 @@ extension CoordinatorMessage: Codable {
                     String.self, forKey: .cacheReceiptBoundaryMode),
                 cacheRepeatedPrefixTokens: try container.decodeIfPresent(
                     Int.self, forKey: .cacheRepeatedPrefixTokens),
+                cacheFirstSightTokens: try container.decodeIfPresent(
+                    Int.self, forKey: .cacheFirstSightTokens),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolSchemaMetadataProtocol),
                 serviceReservationID: try container.decodeIfPresent(

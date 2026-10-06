@@ -51,9 +51,11 @@ enum EngineV2Translation {
     ///   the request omits. `.legacy` reproduces the historical greedy
     ///   defaults exactly.
     /// * `prefixCheckpointTargetTokens` is the coordinator's repeated-prefix
-    ///   length (`cache_repeated_prefix_tokens`): nil without a hint, 0 for a
-    ///   fleet-novel prompt. The engine keeps the historical checkpoint at
-    ///   the stride boundary at or below it as the donor's fork target.
+    ///   length (`cache_repeated_prefix_tokens`) or, for a prompt nobody has
+    ///   repeated, its first-sight depth (`cache_first_sight_tokens`): nil
+    ///   without a hint, 0 when neither was sent. The engine keeps the
+    ///   historical checkpoint at the stride boundary at or below it as the
+    ///   donor's fork target.
     static func cbv2Request(
         id: CBv2RequestID,
         promptTokens: [Int],

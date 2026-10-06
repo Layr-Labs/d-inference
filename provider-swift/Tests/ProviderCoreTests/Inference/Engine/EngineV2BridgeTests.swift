@@ -427,6 +427,91 @@ private struct EngineV2BridgePumpReceiptTests {
         #expect(store.donationDemandHints.count == 0)
         await bridge.shutdown()
     }
+
+    @Test("a first-sight request with spare budget writes and publishes its ready receipt")
+    func firstSightDemandDonatesWithSpareBudget() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let store = try fixture.makeStore(useGlobalBudget: false, donationRecorder: outcomes)
+        let model = PumpReceiptModel()
+        defer { model.allowForward() }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store)
+        let received = ReceiptNonceBox()
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "receipt-pump-first-sight", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "durable", result: $0)
+            }),
+            donationDemand: .init(repeatedPrefixTokens: 0, firstSightTokens: 256))
+        model.allowForward()
+        _ = await record(stream)
+        #expect(store.stats().filesWritten > 0)
+        #expect(await received.waitForCount(1))
+        #expect(received.snapshot == ["durable:512"])
+        let settled = outcomes.snapshot()
+        #expect(settled.contains { $0.outcome == .donated }, "outcomes: \(settled)")
+        #expect(!settled.contains { $0.outcome == .writeSpeculativeLimited }, "outcomes: \(settled)")
+        #expect(!settled.contains { $0.outcome == .skippedNovel }, "outcomes: \(settled)")
+        #expect(store.donationDemandHints.count == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("a first-sight request under pressure completes without a write or receipt, and a proven request then writes")
+    func firstSightDemandYieldsUnderPressure() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let cap = 1 << 30
+        let store = try fixture.makeStore(
+            useGlobalBudget: false, maxWriteBytesPerDay: cap, donationRecorder: outcomes,
+            writeNowSeconds: { 0 })
+        // Other writes have taken the total below the speculative floor (the
+        // headroom is one twenty-fourth of the cap at the fixture's one-hour TTL).
+        #expect(store.rateLimiter.tryConsume(bytes: cap / 20))
+        let model = PumpReceiptModel()
+        defer { model.allowForward() }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store)
+        let received = ReceiptNonceBox()
+        let firstSight = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "receipt-pump-first-sight-pressure", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "first-sight", result: $0)
+            }),
+            donationDemand: .init(repeatedPrefixTokens: 0, firstSightTokens: 256))
+        model.allowForward()
+        _ = await record(firstSight)
+        await store.waitForWritesForTesting()
+        #expect(store.stats().filesWritten == 0)
+        let yielded = outcomes.snapshot()
+        #expect(yielded.contains { $0.outcome == .writeSpeculativeLimited && $0.count >= 1 }, "outcomes: \(yielded)")
+        #expect(!yielded.contains { $0.outcome == .donated }, "outcomes: \(yielded)")
+        #expect(received.snapshot.isEmpty)
+        #expect(store.donationDemandHints.count == 0)
+        #expect(store.lock.withLock { store.readyReceipts.isEmpty })
+
+        // The same store, still below the speculative floor, writes for a
+        // request the coordinator saw repeated.
+        let proven = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "receipt-pump-proven-after-pressure", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "proven", result: $0)
+            }),
+            donationDemand: .init(repeatedPrefixTokens: 256))
+        _ = await record(proven)
+        #expect(store.stats().filesWritten > 0)
+        #expect(await received.waitForCount(1))
+        #expect(received.snapshot == ["proven:512"])
+        #expect(outcomes.snapshot().contains { $0.outcome == .donated })
+        await bridge.shutdown()
+    }
 }
 
 private func makeBridge(

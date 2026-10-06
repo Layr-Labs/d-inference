@@ -312,6 +312,7 @@ extension ProviderLoop {
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
                     let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
+                    let cacheFirstSightTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork
@@ -325,6 +326,7 @@ extension ProviderLoop {
                         prefixCacheProtocol: prefixCacheProtocol,
                         cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
                         cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+                        cacheFirstSightTokens: cacheFirstSightTokens,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,

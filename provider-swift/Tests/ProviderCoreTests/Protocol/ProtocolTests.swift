@@ -115,6 +115,7 @@ import Testing
         "host_memory_unavailable", "cache_epoch_changed", "cache_maintenance_busy",
         "disk_space_insufficient", "unsafe_cache_root", "write_io_failed",
         "existing_cache_unreadable", "cache_entry_evicted", "skipped_novel",
+        "write_speculative_limited",
     ])
 }
 
@@ -1272,14 +1273,56 @@ import Testing
     #expect(decoded.prefixCacheProtocol == nil)
     #expect(decoded.cacheReceiptBoundaryMode == nil)
     #expect(decoded.cacheRepeatedPrefixTokens == nil)
+    #expect(decoded.cacheFirstSightTokens == nil)
     #expect(decoded.toolSchemaMetadataProtocol == nil)
 }
 
-@Test func donationOutcomeVocabularyIncludesSkippedNovel() {
-    // Mirrors coordinator/registry/cache_eligibility.go (23 known buckets).
-    #expect(PrefixCacheDonationOutcome.allCases.count == 23)
+@Test func inferenceRequestFirstSightTokensRoundTripClampAndRemainOptional() throws {
+    let firstSight = CoordinatorMessage.inferenceRequest(.init(
+        requestId: "req-first-sight",
+        cacheScope: "account-route-key",
+        cacheRepeatedPrefixTokens: 0,
+        cacheFirstSightTokens: 2048))
+    let data = try ProviderProtocolCodec.encodeCoordinatorMessage(firstSight)
+    let object = try jsonObject(data)
+    #expect(object["cache_first_sight_tokens"] as? Int == 2048)
+    #expect(object["cache_repeated_prefix_tokens"] as? Int == 0)
+    #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == firstSight)
+
+    // An unknown key beside it is ignored, as it is by a provider that
+    // predates `cache_first_sight_tokens`.
+    let frame = #"{"type":"inference_request","request_id":"r","body":null,"cache_scope":"s","cache_repeated_prefix_tokens":0,"cache_first_sight_tokens":1024,"future_outer_field":1}"#
+    guard case .inferenceRequest(let decoded) = try ProviderProtocolCodec.decodeCoordinatorMessage(
+        from: Data(frame.utf8))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(decoded.cacheFirstSightTokens == 1024)
+    #expect(decoded.cacheRepeatedPrefixTokens == 0)
+    #expect(CoordinatorMessage.InferenceRequest(requestId: "neg", cacheFirstSightTokens: -3)
+        .cacheFirstSightTokens == 0)
+
+    // A frame without the field decodes and re-encodes exactly as before.
+    let withoutFirstSight = CoordinatorMessage.inferenceRequest(.init(
+        requestId: "req-repeat", cacheScope: "account-route-key", cacheRepeatedPrefixTokens: 4096))
+    let encoded = try jsonObject(ProviderProtocolCodec.encodeCoordinatorMessage(withoutFirstSight))
+    #expect(encoded["cache_first_sight_tokens"] == nil)
+    guard case .inferenceRequest(let repeatOnly) = try ProviderProtocolCodec.decodeCoordinatorMessage(
+        from: ProviderProtocolCodec.encodeCoordinatorMessage(withoutFirstSight))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(repeatOnly.cacheFirstSightTokens == nil)
+    #expect(repeatOnly.cacheRepeatedPrefixTokens == 4096)
+}
+
+@Test func donationOutcomeVocabularyIncludesSkippedNovelAndSpeculativeLimited() throws {
+    // Mirrors coordinator/internal/registry/cachepolicy/eligibility.go (24 known buckets).
+    #expect(PrefixCacheDonationOutcome.allCases.count == 24)
     #expect(PrefixCacheDonationOutcome.skippedNovel.rawValue == "skipped_novel")
     #expect(PrefixCacheDonationOutcome(rawValue: "skipped_novel") == .skippedNovel)
+    #expect(PrefixCacheDonationOutcome.writeSpeculativeLimited.rawValue == "write_speculative_limited")
+    #expect(PrefixCacheDonationOutcome(rawValue: "write_speculative_limited") == .writeSpeculativeLimited)
+    let count = PrefixCacheDonationOutcomeCount(outcome: .writeSpeculativeLimited, count: 3)
+    let wire = try JSONEncoder().encode(count)
+    #expect(try jsonObject(wire)["outcome"] as? String == "write_speculative_limited")
+    #expect(try JSONDecoder().decode(PrefixCacheDonationOutcomeCount.self, from: wire) == count)
 }
 
 @Test func checkpointCapabilityModeIsOptionalAndRoundTrips() throws {

@@ -101,6 +101,7 @@ extension CoordinatorClient {
                 prefixCacheProtocol: request.prefixCacheProtocol,
                 cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
                 cacheRepeatedPrefixTokens: request.cacheRepeatedPrefixTokens,
+                cacheFirstSightTokens: request.cacheFirstSightTokens,
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,

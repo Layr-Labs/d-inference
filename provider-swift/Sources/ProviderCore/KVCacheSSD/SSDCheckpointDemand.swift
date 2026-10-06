@@ -38,18 +38,28 @@ final class SSDCheckpointDemand: @unchecked Sendable {
     var count: Int { lock.withLock { lastSeen.count } }
 }
 
-/// The coordinator's fleet-wide repeat observation for one remote request,
-/// forwarded as `cache_repeated_prefix_tokens`. It is a token count only; it
-/// carries no key, hash, boundary or prompt-derived identifier.
+/// The coordinator's demand observation for one remote request: a fleet-wide
+/// repeat forwarded as `cache_repeated_prefix_tokens`, or first sight forwarded
+/// as `cache_first_sight_tokens`. Both are token counts only; they carry no
+/// key, hash, boundary or prompt-derived identifier.
 public struct SSDCheckpointDonationDemand: Sendable, Equatable {
     /// Deepest boundary another plan shared within the coordinator's routing
     /// TTL, among the multiples of 1,024 tokens and final boundaries the
     /// coordinator observes; 0 when none did.
     public let repeatedPrefixTokens: Int
+    /// Depth of the prompt's own deepest 1,024-token boundary, sent only
+    /// while no plan has repeated it; 0 otherwise. Nobody has asked for this
+    /// prefix twice yet, so a checkpoint written for it is speculative.
+    public let firstSightTokens: Int
 
-    public init(repeatedPrefixTokens: Int) {
+    public init(repeatedPrefixTokens: Int, firstSightTokens: Int = 0) {
         self.repeatedPrefixTokens = max(0, repeatedPrefixTokens)
+        self.firstSightTokens = max(0, firstSightTokens)
     }
+
+    /// The depth the engine keeps as the donor's fork target. The coordinator
+    /// sends at most one positive count, so this is whichever it sent.
+    var checkpointTargetTokens: Int { max(repeatedPrefixTokens, firstSightTokens) }
 }
 
 extension SSDCheckpointDemand {
@@ -58,17 +68,30 @@ extension SSDCheckpointDemand {
     /// providers load spreading sends it to, so provider-local history alone
     /// cannot see fleet-wide repeats and novel writes drained the daily budget.
     ///
-    /// Rule: with a coordinator demand hint, write only when the observed
-    /// repeated prefix reaches the store's effective-token floor OR this
-    /// provider's own tag history has seen the tag before (within the cache
-    /// TTL). Without a hint (older coordinator, standalone/local serving) the
-    /// legacy behaviour is kept: write. Durable duplicates never reach this
-    /// gate; they revalidate and settle `already_durable` as before.
-    static func admitsWrite(
-        demand: SSDCheckpointDonationDemand?, localRepeat: Bool, minEffectiveTokens: Int
-    ) -> Bool {
-        guard let demand else { return true }
-        return localRepeat || demand.repeatedPrefixTokens >= max(1, minEffectiveTokens)
+    /// Rule, per request; nil skips the write of a checkpoint that is not yet
+    /// durable (`skipped_novel`):
+    /// - this provider's own tag history has seen the tag before (within the
+    ///   cache TTL): `repeated`;
+    /// - no hint (older coordinator, standalone/local serving): the legacy
+    ///   behaviour is kept, a `novel` write;
+    /// - the observed repeated prefix reaches the store's effective-token
+    ///   floor: `novel`;
+    /// - only first sight reaches the floor: `speculative`, unless the request
+    ///   `restored` a checkpoint from this store, which proves the prefix was
+    ///   written here for an earlier request and makes the write `novel`;
+    /// - otherwise skip.
+    ///
+    /// A durable duplicate is not skipped; it revalidates and settles
+    /// `already_durable` as before.
+    static func writeClass(
+        demand: SSDCheckpointDonationDemand?, localRepeat: Bool, restored: Bool, minEffectiveTokens: Int
+    ) -> SSDWriteClass? {
+        if localRepeat { return .repeated }
+        guard let demand else { return .novel }
+        let floor = max(1, minEffectiveTokens)
+        if demand.repeatedPrefixTokens >= floor { return .novel }
+        guard demand.firstSightTokens >= floor else { return nil }
+        return restored ? .novel : .speculative
     }
 }
 
@@ -93,8 +116,10 @@ final class SSDCheckpointDemandHints: @unchecked Sendable {
                 order.append(requestID)
                 // Terminal cleanup normally keeps this far below the bound. An
                 // evicted or leaked hint fails OPEN: `demand(for:)` returns nil
-                // and `admitsWrite` falls back to the legacy write, so the cost
-                // is one extra checkpoint write, never a lost one.
+                // and `writeClass` falls back to the legacy `novel` write. A
+                // checkpoint is never lost that way, but a fleet-novel request
+                // then writes and a first-sight request leaves the
+                // speculative class.
                 while order.count > limit, let oldest = order.first {
                     order.removeFirst()
                     hints.removeValue(forKey: oldest)

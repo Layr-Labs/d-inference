@@ -9,14 +9,15 @@ extension SSDHybridCheckpointStore {
         private let stats: SSDHybridCheckpointStatsBox
         let tag: Data
         let epoch: String?
-        let repeated: Bool
+        let writeClass: SSDWriteClass
         let authenticatedFile: SSDAuthenticatedFileIdentity?
         private let settlement: PrefixCacheDonationSettlement
         private let lock = NSLock()
         private var completion: (@Sendable ([Int]) -> Void)?
 
         init(source: CBv2CompleteCheckpointExport, envelope: SSDHybridCheckpointEnvelope,
-             tag: Data, epoch: String?, repeated: Bool, authenticatedFile: SSDAuthenticatedFileIdentity?,
+             tag: Data, epoch: String?, writeClass: SSDWriteClass,
+             authenticatedFile: SSDAuthenticatedFileIdentity?,
              settlement: PrefixCacheDonationSettlement,
              hostReservation: ProcessHostBufferReservation?, stats: SSDHybridCheckpointStatsBox,
              completion: @escaping @Sendable ([Int]) -> Void) {
@@ -26,7 +27,7 @@ extension SSDHybridCheckpointStore {
             self.stats = stats
             self.tag = tag
             self.epoch = epoch
-            self.repeated = repeated
+            self.writeClass = writeClass
             self.authenticatedFile = authenticatedFile
             self.completion = completion
             self.settlement = settlement
@@ -150,25 +151,41 @@ extension SSDHybridCheckpointStore {
         }
         let tag = lookupKeys.checkpointTag(chainHash: digest, cacheSalt: cacheSalt ?? "")
         let short = Data(tag.prefix(16))
-        let repeated = writeDemand.observe(short, now: config.nowSeconds())
+        let localRepeat = writeDemand.observe(short, now: config.nowSeconds())
+        let offered = offeredWriteClass(requestID: requestID, localRepeat: localRepeat)
         if !index.contains(tag16: short) {
             // Demand gate first: a fleet-novel checkpoint is skipped before any
             // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
             // The tag was recorded above, so a local second sighting qualifies.
-            if let refusal = demandRefusal(requestID: requestID, localRepeat: repeated) {
-                return .refused(refusal)
+            guard let offered else { return .refused(.skippedNovel) }
+            if offered == .speculative, !hasDiskRoomForSpeculativeWrite(bytes: envelope.plaintextBytes) {
+                return .refused(.writeSpeculativeLimited)
             }
             // Novel writes use a 90% sub-budget, leaving capacity for known
-            // repeat demand. Durable duplicates consume no write budget. The
-            // writer rechecks after queueing, since this admission is advisory.
-            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
+            // repeat demand, and speculative writes only the headroom above
+            // both. Durable duplicates consume no write budget. The writer
+            // rechecks after queueing, since this admission is advisory.
+            if let refusal = Self.writeRefusal(
+                rateLimiter.admission(bytes: envelope.plaintextBytes, writeClass: offered)) {
                 return .refused(refusal)
             }
         }
+        // The job keeps its class, so a duplicate whose durable entry is gone
+        // by the time the writer runs is charged as what it is. Only a durable
+        // duplicate of a request without demand has no class; it bypasses the
+        // gate as before and revalidates as a novel write.
+        let writeClass = offered ?? .novel
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {
             guard !closed else { return .cacheClosed }
             guard !writing.contains(short) else { return .alreadyQueued }
-            guard writing.count < 2 else { return .writeQueueFull }
+            // One write runs while one waits. A speculative write is admitted
+            // only into an idle writer, so it never takes the waiting slot and
+            // a proven write waits behind at most one speculative file.
+            if writeClass == .speculative {
+                guard writing.isEmpty else { return .writeSpeculativeLimited }
+            } else {
+                guard writing.count < 2 else { return .writeQueueFull }
+            }
             writing.insert(short)
             return nil
         }
@@ -179,7 +196,7 @@ extension SSDHybridCheckpointStore {
             return proof.files[short]
         }
         return .ready(WriteJob(
-            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: repeated,
+            source: source, envelope: envelope, tag: tag, epoch: epoch, writeClass: writeClass,
             authenticatedFile: alreadyAuthenticated, settlement: settlement,
             hostReservation: hostReservation, stats: statsBox, completion: completion))
     }
@@ -189,6 +206,7 @@ extension SSDHybridCheckpointStore {
         case .accepted: nil
         case .rateLimited: .writeRateLimited
         case .priorityLimited: .writePriorityLimited
+        case .speculativeLimited: .writeSpeculativeLimited
         }
     }
 
@@ -250,7 +268,12 @@ extension SSDHybridCheckpointStore {
                         result.outcome = .diskSpaceInsufficient; return
                     }
                 }
-                if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: envelope.plaintextBytes, repeated: job.repeated)) {
+                if job.writeClass == .speculative,
+                    !hasDiskRoomForSpeculativeWrite(bytes: envelope.plaintextBytes) {
+                    result.outcome = .writeSpeculativeLimited; return
+                }
+                if let refusal = Self.writeRefusal(
+                    rateLimiter.consume(bytes: envelope.plaintextBytes, writeClass: job.writeClass)) {
                     result.outcome = refusal; return
                 }
                 let written = try SSDBlockStore.writeStreaming(

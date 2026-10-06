@@ -4,26 +4,52 @@ import Testing
 @testable import ProviderCore
 
 /// Demand-gated complete-checkpoint admission: with a coordinator hint the
-/// store writes only for observed fleet-wide repeat demand or a local repeat;
-/// without one it keeps writing every captured checkpoint.
+/// store writes only for observed fleet-wide repeat demand, a local repeat or
+/// first sight; without one it keeps writing every captured checkpoint.
 @Suite("Checkpoint demand-gated admission", .serialized)
 struct SSDCheckpointDemandAdmissionTests {
     private func outcome(_ recorder: PrefixCacheDonationTelemetry, _ outcome: PrefixCacheDonationOutcome) -> UInt64 {
         recorder.snapshot().first { $0.outcome == outcome }?.count ?? 0
     }
 
-    @Test("admission rule matrix")
-    func rule() {
+    @Test("write class matrix")
+    func writeClassMatrix() {
         typealias D = SSDCheckpointDonationDemand
-        #expect(SSDCheckpointDemand.admitsWrite(demand: nil, localRepeat: false, minEffectiveTokens: 256))
-        #expect(!SSDCheckpointDemand.admitsWrite(demand: D(repeatedPrefixTokens: 0), localRepeat: false, minEffectiveTokens: 256))
-        #expect(!SSDCheckpointDemand.admitsWrite(demand: D(repeatedPrefixTokens: 255), localRepeat: false, minEffectiveTokens: 256))
-        #expect(SSDCheckpointDemand.admitsWrite(demand: D(repeatedPrefixTokens: 256), localRepeat: false, minEffectiveTokens: 256))
-        #expect(SSDCheckpointDemand.admitsWrite(demand: D(repeatedPrefixTokens: 0), localRepeat: true, minEffectiveTokens: 256))
+        func writeClass(
+            _ demand: D?, localRepeat: Bool = false, restored: Bool = false, floor: Int = 256
+        ) -> SSDWriteClass? {
+            SSDCheckpointDemand.writeClass(
+                demand: demand, localRepeat: localRepeat, restored: restored, minEffectiveTokens: floor)
+        }
+        // No hint keeps the legacy write, whatever else is known.
+        #expect(writeClass(nil) == .novel)
+        #expect(writeClass(nil, restored: true) == .novel)
+        // Fleet-novel: no repeat and no first sight.
+        #expect(writeClass(D(repeatedPrefixTokens: 0)) == nil)
+        #expect(writeClass(D(repeatedPrefixTokens: 255)) == nil)
+        // A restore alone never creates demand the coordinator did not send.
+        #expect(writeClass(D(repeatedPrefixTokens: 0), restored: true) == nil)
+        // A coordinator repeat at the floor keeps the novel-share class.
+        #expect(writeClass(D(repeatedPrefixTokens: 256)) == .novel)
+        #expect(writeClass(D(repeatedPrefixTokens: 256, firstSightTokens: 1024)) == .novel)
+        // First sight alone is speculative, and only from the floor up.
+        #expect(writeClass(D(repeatedPrefixTokens: 0, firstSightTokens: 256)) == .speculative)
+        #expect(writeClass(D(repeatedPrefixTokens: 255, firstSightTokens: 256)) == .speculative)
+        #expect(writeClass(D(repeatedPrefixTokens: 0, firstSightTokens: 255)) == nil)
+        // Restoring from this store proves the prefix was written here before.
+        #expect(writeClass(D(repeatedPrefixTokens: 0, firstSightTokens: 256), restored: true) == .novel)
+        #expect(writeClass(D(repeatedPrefixTokens: 0, firstSightTokens: 255), restored: true) == nil)
+        // A local repeat outranks every coordinator count.
+        #expect(writeClass(nil, localRepeat: true) == .repeated)
+        #expect(writeClass(D(repeatedPrefixTokens: 0), localRepeat: true) == .repeated)
+        #expect(writeClass(D(repeatedPrefixTokens: 0, firstSightTokens: 256), localRepeat: true) == .repeated)
         #expect(D(repeatedPrefixTokens: -1).repeatedPrefixTokens == 0)
-        // A zero floor still requires a positive repeat: 0 means "no repeat".
-        #expect(!SSDCheckpointDemand.admitsWrite(demand: D(repeatedPrefixTokens: 0), localRepeat: false, minEffectiveTokens: 0))
-        #expect(SSDCheckpointDemand.admitsWrite(demand: D(repeatedPrefixTokens: 1), localRepeat: false, minEffectiveTokens: 0))
+        #expect(D(repeatedPrefixTokens: 0, firstSightTokens: -1).firstSightTokens == 0)
+        #expect(D(repeatedPrefixTokens: 256).firstSightTokens == 0)
+        // A zero floor still requires a positive count: 0 means "none".
+        #expect(writeClass(D(repeatedPrefixTokens: 0), floor: 0) == nil)
+        #expect(writeClass(D(repeatedPrefixTokens: 1), floor: 0) == .novel)
+        #expect(writeClass(D(repeatedPrefixTokens: 0, firstSightTokens: 1), floor: 0) == .speculative)
     }
 
     @Test("a fleet-novel checkpoint is skipped without writing bytes or charging write budget")
@@ -72,6 +98,38 @@ struct SSDCheckpointDemandAdmissionTests {
         store.registerDonationDemand(.init(repeatedPrefixTokens: 128), requestID: .init(12))
         #expect(try await fixture.donate(store, receipt: 12).isEmpty)
         #expect(outcome(outcomes, .skippedNovel) == 1)
+        #expect(store.stats().filesWritten == 0)
+        await store.closeAndWait()
+    }
+
+    @Test("a frame with first sight and no repeat count is speculative, not legacy")
+    func firstSightWithoutRepeatCountIsSpeculative() {
+        let firstSightOnly = RemotePrefixCacheContext(
+            cacheScope: "tenant-a", cacheReceiptNonce: "nonce", firstSightTokens: 2_048)
+        #expect(firstSightOnly.donationDemand
+            == SSDCheckpointDonationDemand(repeatedPrefixTokens: 0, firstSightTokens: 2_048))
+        #expect(SSDCheckpointDemand.writeClass(
+            demand: firstSightOnly.donationDemand, localRepeat: false, restored: false,
+            minEffectiveTokens: 256) == .speculative)
+        // Neither count, or first sight outside any cache scope, is no hint.
+        #expect(RemotePrefixCacheContext(cacheScope: "tenant-a", cacheReceiptNonce: "nonce").donationDemand == nil)
+        #expect(RemotePrefixCacheContext(
+            cacheScope: "tenant-a", cacheReceiptNonce: "nonce", firstSightTokens: 0).donationDemand == nil)
+        #expect(RemotePrefixCacheContext(
+            cacheScope: nil, cacheReceiptNonce: "nonce", firstSightTokens: 2_048).donationDemand == nil)
+    }
+
+    @Test("first sight below the effective-token floor is skipped as novel")
+    func firstSightBelowFloorSkips() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let store = try fixture.makeStore(donationRecorder: outcomes)
+        defer { store.close() }
+        store.registerDonationDemand(.init(repeatedPrefixTokens: 0, firstSightTokens: 128), requestID: .init(26))
+        #expect(try await fixture.donate(store, receipt: 26).isEmpty)
+        #expect(outcome(outcomes, .skippedNovel) == 1)
+        #expect(outcome(outcomes, .writeSpeculativeLimited) == 0)
         #expect(store.stats().filesWritten == 0)
         await store.closeAndWait()
     }
@@ -163,7 +221,7 @@ struct SSDCheckpointDemandAdmissionTests {
         store.registerDonationDemand(.init(repeatedPrefixTokens: 0), requestID: .init(22))
         await store.abandonStaging(requestID: .init(22))
         #expect(store.donationDemandHints.demand(for: .init(22))?.repeatedPrefixTokens == 0)
-        #expect(store.demandRefusal(requestID: .init(22), localRepeat: false) == .skippedNovel)
+        #expect(store.offeredWriteClass(requestID: .init(22), localRepeat: false) == nil)
         store.completeStaging(requestID: .init(22))
         #expect(store.donationDemandHints.count == 0)
 

@@ -184,6 +184,7 @@ extension ProviderLoop {
         prefixCacheProtocol: Int? = nil,
         cacheReceiptBoundaryMode: String? = nil,
         cacheRepeatedPrefixTokens: Int? = nil,
+        cacheFirstSightTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
         receivedAt: ContinuousClock.Instant = .now,
@@ -223,7 +224,8 @@ extension ProviderLoop {
         let remoteCache = RemotePrefixCacheContext(
             cacheScope: authenticatedCacheScope,
             cacheReceiptNonce: cacheReceiptNonce,
-            repeatedPrefixTokens: cacheRepeatedPrefixTokens)
+            repeatedPrefixTokens: cacheRepeatedPrefixTokens,
+            firstSightTokens: cacheFirstSightTokens)
         var receiptCallbacks: PrefixCacheReceiptEmitter.Callbacks = (nil, nil)
         if prefixCacheProtocol != 2 {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(

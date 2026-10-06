@@ -37,7 +37,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     let diskBudget: SSDDiskBudget
     let rateLimiter: SSDWriteRateLimiter
     let writeDemand: SSDCheckpointDemand
-    /// Coordinator repeat-demand hints for in-flight receipts; see
+    /// Coordinator demand hints for in-flight receipts; see
     /// `SSDHybridCheckpointStore+DemandAdmission.swift`.
     let donationDemandHints = SSDCheckpointDemandHints()
     let donationRecorder: any PrefixCacheDonationRecording
@@ -98,8 +98,11 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         self.kvBudget = kvBudget
         self.diskBudget = diskBudget
         self.donationRecorder = donationRecorder
+        // A speculative checkpoint is useful for at most one cache lifetime,
+        // so speculation may hold back no more budget than refills in that time.
         self.rateLimiter = SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay,
-            repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction, nowSeconds: writeNowSeconds)
+            repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
+            speculativeHeadroomSeconds: Double(config.ttlSeconds), nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: 1,

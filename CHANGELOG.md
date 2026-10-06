@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — personal data in coordinator logs
+
+- Stop writing email addresses, IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.
+
+## Unreleased — system tool output readers
+
+- Fix a hang in provider code that runs a system tool and reads its output, such as hardware detection for `darkbloom beta`, `autoupdate` and `models location`. When every Swift concurrency thread waited for a tool at the same time, the output readers got no thread, so the wait did not end. With a timeout, the call failed as timed out. Each output reader now has its own serial queue.
+
 ## Unreleased — generated API-key queries
 
 - Generate the coordinator's API-key queries with sqlc from the checked-in schema; `make sqlc-check` fails CI when the generated code or the schema file is stale. API-key behaviour does not change.

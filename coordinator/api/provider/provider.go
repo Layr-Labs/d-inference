@@ -58,7 +58,7 @@ func (s *Owner) HandleProviderWS(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(10 * 1024 * 1024)
 
 	providerID := uuid.New().String()
-	s.logger.Info("provider websocket connected", "provider_id", providerID, "remote", r.RemoteAddr)
+	s.logger.Info("provider websocket connected", "provider_id", providerID)
 
 	// Run the read loop; on return the provider is disconnected.
 	s.providerReadLoop(r.Context(), conn, providerID, r)

@@ -142,6 +142,7 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 		eligible := p.AccountID == accountID &&
 			p.Status != StatusOffline &&
 			p.Status != StatusUntrusted &&
+			(!p.requireAppAttestServingAuthorization || r.providerHasAppAttestAuthorizationLocked(p, now)) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			r.providerChallengeFreshAtLocked(p, now)

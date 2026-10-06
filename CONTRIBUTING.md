@@ -39,7 +39,7 @@ The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md)
 ### Prerequisites
 
 - macOS on Apple Silicon for anything under `provider-swift/`; the coordinator, sidecar, e2e suite, and UIs build on macOS or Linux.
-- Toolchains are pinned in [`mise.toml`](mise.toml) and installed with `mise install`: Go `1.25.0`, Rust `1.88.0`, Node `22`, Swift `6.3`, Python `3.12`, plus `jq`, `gh`, `awscli`, `gcloud`. Xcode Command Line Tools and `cmake` are needed for the provider's metallib.
+- Toolchains are pinned in [`mise.toml`](mise.toml) and installed with `mise install`: Go `1.25.7`, Rust `1.88.0`, Node `22`, Swift `6.3`, Python `3.12`, plus `jq`, `gh`, `awscli`, `gcloud`. Xcode Command Line Tools and `cmake` are needed for the provider's metallib.
 - A working `git` config with `user.name` and `user.email`.
 
 ### First-time clone
@@ -56,7 +56,7 @@ git config core.hooksPath .githooks   # enables pre-commit + pre-push checks
 `make help` lists every target. The ones you will use most:
 
 ```bash
-make coordinator-test        # cd coordinator && go test ./...
+make coordinator-test        # runner guards + mirrored Go suites with isolated API shards
 make prompt-sidecar          # cargo fmt --check, clippy -D warnings, test, release build
 make provider-test           # swift build + swift test with a source-matched mlx.metallib (Apple Silicon)
 make ui-lint ui-test         # eslint + vitest for console-ui
@@ -87,6 +87,14 @@ Every non-trivial change ships with tests. How to run each suite is in [`docs/de
 - **Test the real HTTP path.** Use `httptest.NewServer` for new endpoints.
 - **Frontend features need frontend tests.** Vitest for components; for UI that can't be unit-tested, exercise it in a browser before declaring done.
 - **Every bug fix gets a regression test** that fails without the fix.
+- **Keep coordinator tests separate.** Every coordinator `_test.go` belongs in
+  `coordinator/tests/`, mirrored by production owner. Public HTTP/WS contracts
+  use `tests/api/<domain>/contracts/`; shared fixtures use `tests/internal/`.
+  Extract genuine production-consumed components or retain injected collaborators
+  when testing private invariants across packages; do not export maps/locks,
+  add test-only production facades, copy implementations or use overlays.
+  `go test ./coordinator/...` discovers all suites; a focused production package
+  selector does not substitute for its mirrored test selector.
 
 ## Code style
 

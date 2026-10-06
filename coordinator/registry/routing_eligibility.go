@@ -30,6 +30,7 @@ import "time"
 //   - verified identity's durable state restoration has completed
 //   - private-only admission (a private-only box is excluded unless allowPrivate)
 //   - legacy hardware-trust floor, or current qualified App Attest lease
+//     (App Attest-only connections require the lease even at TrustNone)
 //   - runtime verified
 //   - private-text (E2E) support
 //   - current legacy challenge, or current App Attest lease
@@ -38,7 +39,8 @@ import "time"
 // private-only machine. Callers relax BOTH (minTrust=TrustNone, allowPrivate=
 // true) for a caller's own self-route to a personal (un-enrolled) Mac; every
 // privacy-critical gate (runtime, private-text, challenge freshness) still
-// applies, so plaintext is never exposed and only the genuinely-signed provider
+// applies, as does an App Attest-only connection's lease requirement, so
+// plaintext is never exposed and only the genuinely-signed provider
 // binary serves. This is exactly the set of gates publiclyRoutableLocked
 // enforces. Caller holds r.mu and p.mu.
 func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) bool {
@@ -51,6 +53,11 @@ func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, 
 // The evaluation order is byte-for-byte the boolean gate's, so the two can
 // never disagree on the verdict. Allocation-free. Caller holds r.mu and p.mu.
 func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) (bool, GateReason) {
+	return (&ProviderEligibility{registry: r}).livenessLocked(p, minTrust, allowPrivate, now)
+}
+
+func (e *ProviderEligibility) livenessLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) (bool, GateReason) {
+	r := e.registry
 	if p.Status == StatusOffline {
 		return false, GateOffline
 	}
@@ -80,9 +87,9 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 
 // Only a verified identity can have durable history restored. Preserve Open
 // Mode's existing behavior for providers without verified SE evidence; they
-// cannot publish reusable serial/SE identity while stateRestorePending is set.
+// cannot publish reusable serial/SE identity while restoration is pending.
 func providerStateRestoreRequiredLocked(p *Provider) bool {
-	return p.stateRestorePending && p.AttestationResult != nil && p.AttestationResult.Valid
+	return !p.persistence.CanPublishLocked() && p.AttestationResult != nil && p.AttestationResult.Valid
 }
 
 // providerServesRoutableModelLocked reports whether the provider advertises a
@@ -104,11 +111,16 @@ func (r *Registry) providerServesRoutableModelLocked(p *Provider, model string, 
 // returning the failing gate (GateNotServingModel or GateDedicated; meaningful
 // only when ok is false). Caller holds r.mu and p.mu.
 func (r *Registry) providerServesRoutableModelReasonLocked(p *Provider, model string, allowDedicated bool) (bool, GateReason) {
+	return (&ProviderEligibility{registry: r}).catalogReasonLocked(p, model, allowDedicated)
+}
+
+func (e *ProviderEligibility) catalogReasonLocked(p *Provider, model string, allowDedicated bool) (bool, GateReason) {
+	r := e.registry
 	var serves bool
 	if allowDedicated {
-		serves = r.providerServesOwnedRoutableModelLocked(p, model)
+		serves = e.servesOwnedLocked(p, model)
 	} else {
-		serves = r.providerServesCatalogModelLocked(p, model)
+		serves = e.servesCatalogLocked(p, model)
 	}
 	if !serves {
 		return false, GateNotServingModel

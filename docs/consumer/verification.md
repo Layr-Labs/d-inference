@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-04
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -13,6 +13,23 @@ remain visible and can link successive public sessions.
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
 
 Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
+
+Under the upcoming [frozen legacy MDM policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), legacy MDM authorization is restricted to already successfully verified devices with a durable frozen authenticated account/key/serial association. New accounts, devices and associations cannot join it after the first upgraded startup, and restarts do not reopen it. Membership alone is not verification: current posture, freshness, revocation and code-identity gates still apply. New identities require qualified App Attest; unsupported OS versions do not create a legacy fallback. No grace period has been chosen and no cohort expiry is implemented.
+
+New providers require macOS 27 or later and current qualified App Attest
+authorization; consumers do not need macOS 27 to use the API or console.
+For [base rewards](../reference/pricing-model.md#base-rewards), every provider,
+old or new, needs macOS 27 or later and current qualified App Attest authorization.
+The OS claim is bound to that authorization by the App Attest assertion and
+qualified executable, not independently certified by Apple as an OS measurement.
+Unsigned registration or inventory OS fields cannot substitute for it. This
+reward-only requirement does not remove temporary frozen legacy serving or
+change completed-inference earnings.
+The provider CLI checks frozen eligibility with an authenticated signed request
+even when a legacy profile is already installed. Its "Already enrolled" result
+does not establish current serving authorization or publish the enrollment proof.
+
+A generic profile remains copyable, and direct SCEP/check-in can enroll another Mac in MicroMDM without passing the coordinator's profile-download checks. That enrollment is not coordinator MDM authorization or consumer verification; see the [copied-profile boundary](../architecture/security/enrollment.md#copied-profile-boundary).
 
 Provider troubleshooting diagnostics do not establish consumer verification.
 Optional App Attest process/boot history, local signing and security observations,
@@ -65,7 +82,7 @@ curl https://api.darkbloom.dev/v1/providers/attestation
 ```
 
 `GET /v1/providers/attestation` needs no authentication and returns
-`{"providers": [...]}` (`handleProviderAttestation`, `coordinator/api/provider.go`).
+`{"providers": [...]}` (`HandleProviderAttestation`, `coordinator/api/provider/trust/status.go`).
 Private-only connections are excluded before the response enters its shared
 cache; their owners still see them through authenticated `GET /v1/me/providers`.
 Each entry carries:
@@ -134,8 +151,8 @@ independent paths and their shared final handoff checks.
 ## Per-response signals
 
 Once a provider has been committed to your request, the coordinator writes
-these headers (`writeCommittedProviderHeaders`,
-`coordinator/api/response_metadata.go`):
+these headers (`WriteCommittedProviderHeaders`,
+`coordinator/api/inference/response/response_metadata.go`):
 
 | Header | Value |
 |---|---|

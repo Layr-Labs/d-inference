@@ -365,6 +365,7 @@ Full technical docs live in [`docs/`](docs/README.md). Starting points:
 | Run a provider node | [`docs/provider/installation.md`](docs/provider/installation.md) → [`docs/provider/quickstart.md`](docs/provider/quickstart.md) |
 | Verify a provider's attestation | [`docs/consumer/verification.md`](docs/consumer/verification.md) |
 | Build or contribute | [`docs/developer/build.md`](docs/developer/build.md) |
+| Find third-party library credits | [Third-party acknowledgements](ACKNOWLEDGEMENTS.md) |
 
 ## License & disclaimer
 

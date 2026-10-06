@@ -116,7 +116,8 @@ scripts/              build, signing, install, and deploy helpers
 ├── benchmarks/       attention, radix and cache benchmark harnesses
 └── entitlements.plist hardened runtime entitlements (network, keychain)
 
-deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environments/ (dev/prod env),
+deploy/               infra config: gcp/ (cloudbuild-prod.yaml, host-setup.sh, prod env contract in prod/,
+                      dev overlay and swap in dev/), environments/ (dev/prod env),
                       datadog/ (dashboard JSON), provider-fleet/ (fleet update helper)
 
 docs/                 how-tos, runbooks, reference, architecture, design records, dated reports
@@ -266,6 +267,8 @@ curl https://api.darkbloom.dev/health
 ```
 
 Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
+Dev runs the same swap steps with `deploy/gcp/dev/swap.sh`; a runbook change to a
+swap step also changes that script.
 
 ## Important Sync Points
 

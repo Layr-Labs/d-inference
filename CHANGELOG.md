@@ -86,7 +86,7 @@
 
 - An installer served by a coordinator other than production (for example dev) now writes that coordinator's `[coordinator] url` into `~/.config/darkbloom/provider.toml` and keeps the file's other settings, so `darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog connect to it instead of production. The production installer removes that `url` line (and creates no file), so a Mac bound to dev returns to the production default. A running provider changes coordinator at its next `darkbloom start`.
 - Add `coordinator/cmd/devnet-seed`, which fills an empty dev database with fake accounts, API keys, provider sessions, usage, ledger entries and balances. It refuses a database whose `users` table has rows.
-- The dev VM boot path now sets `EIGENINFERENCE_IPAPI_KEY`, as `deploy/gcp/refresh-env.sh` already did.
+- The dev coordinator uses the production env contract and the production swap steps. `deploy/gcp/dev/seed-env.sh` writes `/etc/d-inference/env` once from `deploy/gcp/dev/env-overrides`, Secret Manager and `deploy/environments/prod.env`. `deploy/gcp/dev/deploy.sh` swaps the `dev-build` image with `deploy/gcp/dev/swap.sh`. `deploy/gcp/host-setup.sh` and `deploy/gcp/dev/preflight.sh` set up and check the host. The old dev boot path (`vm-startup.sh`, `refresh-env.sh`, `cloudbuild.yaml`, `bootstrap.sh`) is removed. Dev does not set `EIGENINFERENCE_IPAPI_KEY`.
 
 ## Unreleased — leaderboard availability
 

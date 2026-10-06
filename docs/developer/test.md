@@ -2446,6 +2446,7 @@ make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contb
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
+python3 scripts/test-dev-deploy.py      # deploy/gcp/dev scripts and host-setup.sh with stubs
 ./scripts/test-setup-macos-homebrew.sh  # scripts/setup-macos-homebrew.sh with brew already installed
 ./scripts/test-publish-model.sh         # scripts/publish-model.sh dry-run contract
 ```
@@ -2454,6 +2455,13 @@ Version checks, release routing, installer parity and production environment ref
 run in CI job "Release Integrity". The production env refresh test checks automatic
 payout activation, preservation of an explicit off switch, and rejection of missing
 payout prerequisites before the live env is changed.
+
+`scripts/test-dev-deploy.py` also runs in Release Integrity. It fails when a key
+of `deploy/gcp/prod/required-env-keys.txt` has no dev source (overlay, release
+default or `prod.env`). It runs `deploy/gcp/dev/seed-env.sh` against stub `gcloud`
+and metadata commands, and proves that the `--check`, `--dry-run` and preflight
+paths, a paused deploy and a refused project make no state-changing call: every
+such command is a stub that records its arguments.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

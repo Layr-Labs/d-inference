@@ -2597,7 +2597,7 @@ threats:
           (http:// only for localhost/127.0.0.1) and prints the bound URL.
           Production lists EIGENINFERENCE_BASE_URL in
           deploy/gcp/prod/required-env-keys.txt and dev sets it in
-          deploy/gcp/refresh-env.sh, so neither serves a Host-derived installer.
+          deploy/gcp/dev/env-overrides, so neither serves a Host-derived installer.
         status: implemented
       - description: >
           enroll.go now generates SCEP/MDM URLs (the ACME payload was removed

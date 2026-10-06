@@ -96,15 +96,16 @@ if "-o" in args:
         log.write(json.dumps(path) + "\\n")
     print("500", end="")
 elif args[-1].endswith("/v1/stats"):
-    print('{"providers_online": 1}')
+    print('{"active_providers": 1}')
 elif args[-1].endswith("/v1/models/catalog"):
     print('{"models": [1]}')
 elif args[-1].endswith("/install.sh"):
-    print("https://api.dev.darkbloom.xyz")
+    print("https://dev.example.invalid")
 ''')
         for _ in range(2):
             result = subprocess.run(["bash", str(ROOT / "scripts/smoke-dev.sh")],
-                                    env={**self.env, "API_KEY": "fixture-only"}, capture_output=True, text=True)
+                                    env={**self.env, "API_KEY": "fixture-only",
+                                         "COORD": "https://dev.example.invalid"}, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn("fixture response", result.stdout)
         paths = self.calls()

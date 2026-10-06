@@ -1,228 +1,316 @@
 # Dev environment
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
-Runbook for the Darkbloom dev environment on Google Cloud (project
-`darkbloom-dev`): a GCE VM running the same coordinator container as production,
-plus a dev console on Vercel, a dev R2 bucket, and a small Mac fleet. Cloud
-Build deploys the VM on each push to `master` once the trigger in step 6
-exists; that trigger does not exist yet
-([#1067](https://github.com/Layr-Labs/d-inference/issues/1067)). The previous
-dev project, `sepolia-ai`, is retired. Dev exists so coordinator, provider
-bundle, console, MDM enrollment, and the release pipeline can be exercised
-end-to-end without touching production. Nothing here deploys to
-production (`darkbloom-mainnet`); that is
-[coordinator-deploy.md](coordinator-deploy.md).
+Runbook for the Darkbloom dev coordinator in the GCP project `darkbloom-dev`.
+Dev uses the production env contract, the production build file and the
+production swap steps of [coordinator-deploy.md](coordinator-deploy.md).
+Scripts do the steps that a human does in production. Nothing here touches
+production (`darkbloom-mainnet`).
 
 ## When to use
 
-- Standing up dev from scratch (steps 1–6) or re-bootstrapping after teardown.
-- Changing a dev secret or non-secret setting (step 7).
-- Publishing a dev provider release, onboarding a dev Mac, or rolling the dev
-  coordinator back to an older image.
-- Filling an empty dev database with synthetic data (step 10) to test
-  migrations and account erasure. The remaining human-only work is in the
-  [DevNet checklist](#devnet-checklist).
+- The first host setup and the first deploy of the dev coordinator (Linear
+  DBLM-559).
+- A manual deploy or rollback of the dev coordinator.
+- A change of a dev secret or a dev setting.
+- A dev provider release, a dev Mac, or synthetic data in the dev database.
 
 ## Prerequisites
 
-The dev templates set `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT=development`.
-This explicit classification skips the production App Attest cutover prerequisite
-and legacy-cohort freeze, including with dev Postgres; `DD_ENV=development`
-alone does not. Local startup using actual opted-in memory-store fallback also
-skips the freeze. A database subsequently started as production freezes its
-then-current eligible cohort, not a cutoff from dev startup. See the
-[deployment setting](../reference/configuration.md#deployment-environment).
+- The infrastructure exists. The Terraform in
+  [Layr-Labs/darkbloom-devnet-infra](https://github.com/Layr-Labs/darkbloom-devnet-infra)
+  makes the VM, the disks, the IP address, the firewall rules, Cloud SQL, the
+  Secret Manager containers, Artifact Registry, the trigger `dev-build` and the
+  deploy identity. Do not make dev resources by hand. Do not use a bootstrap
+  script.
+- `gcloud` logged in as a person with IAP tunnel access, OS Login admin and
+  `iam.serviceAccounts.actAs` on `d-inference-dev@darkbloom-dev.iam.gserviceaccount.com`.
+  A project owner has all three.
+- `git`, `dig`, `jq` and `gh` on your machine (`mise install`). `gh` must be
+  able to read the repository variable `DEV_DEPLOY_PAUSED`.
+- The secret values and DNS records of DBLM-558 (section "Secrets" below).
+- A clean, detached checkout of `origin/master`. Every script reads its files
+  from that checkout:
 
-- `gcloud` authenticated against `darkbloom-dev` with rights to Compute, Cloud
-  Build, Artifact Registry, Secret Manager, and Cloud SQL.
-- `mise install` locally (for `scripts/smoke-dev.sh`, `jq`, `gh`).
-- A dev Privy app, a dev Stripe account, and a Cloudflare R2 bucket
-  `d-inf-app-dev` with a bucket-scoped token (for the release workflow's
-  `DEV_R2_*` secrets; see [`provider-release.md`](provider-release.md)).
-- Optional: one or more Apple Silicon Macs to enrol as dev providers.
+  ```bash
+  git -C <d-inference clone> fetch origin
+  git -C <d-inference clone> worktree add --detach <path>/dev-deploy origin/master
+  cd <path>/dev-deploy && test -z "$(git status --porcelain)" && echo clean
+  ```
 
 ### What dev looks like
 
-| Component | Where | Identifier |
+| Item | Dev | Production |
 |---|---|---|
-| Coordinator | GCE VM `d-inference-dev`, zone `us-central1-a`, `e2-small` (default in [`deploy/gcp/bootstrap.sh`](../../deploy/gcp/bootstrap.sh)), Ubuntu + Docker + systemd | `https://api.dev.darkbloom.xyz` (static IP `d-inference-dev-ip`) |
-| Image | Artifact Registry `us-central1-docker.pkg.dev/darkbloom-dev/coordinator/coordinator:<SHORT_SHA>` (+ `:latest`), built by [`deploy/gcp/cloudbuild.yaml`](../../deploy/gcp/cloudbuild.yaml) with `BUILD_VERSION=dev`, `BUILD_COMMIT=$COMMIT_SHA` | `/health` reports `version: "dev"` and the full `build_commit` |
-| Container | `d-inference-coordinator`, `--network host`, `--env-file /etc/d-inference/env`, bind mount `/mnt/disks/userdata`; run by systemd unit `d-inference-coordinator.service` via `/usr/local/bin/d-inference-run.sh`, which reads the tag from VM metadata `DINF_IMAGE_TAG` (default `latest`) and `docker pull`s on every start | [`deploy/gcp/vm-startup.sh`](../../deploy/gcp/vm-startup.sh) |
-| Persistent disk | `d-inference-dev-data` mounted at `/mnt/disks/userdata` (MicroMDM BoltDB, prompt artifacts) — same path as prod so `start.sh` is unchanged | |
-| Database | Cloud SQL Postgres 16 `d-inference-dev-db` (`db-f1-micro`), reached via `cloud-sql-proxy.service` on `127.0.0.1:5432` | `EIGENINFERENCE_DATABASE_URL` |
-| Ingress | Host Caddy (systemd) terminates TLS and proxies to `:8080` | `DOMAIN=api.dev.darkbloom.xyz` |
-| Telemetry | Host Datadog Agent (`DD_ENV=development`, `DD_SERVICE=d-inference-coordinator`) | secrets `eigeninference-dd-api-key`, `eigeninference-dd-site` |
-| Console UI | Vercel project `darkbloom-console-dev` from `console-ui/` | `https://console.dev.darkbloom.xyz` |
-| Release bucket | Cloudflare R2 `d-inf-app-dev`; its public URL is secret `eigeninference-r2-cdn-url` → `EIGENINFERENCE_R2_CDN_URL` | |
-| Mac fleet | [`deploy/provider-fleet/dev-inventory.txt`](../../deploy/provider-fleet/dev-inventory.txt) | `deploy/provider-fleet/update-fleet.sh dev` |
-| Trust posture | Same as prod: MicroMDM inside the container, `EIGENINFERENCE_MIN_TRUST=hardware`, `EIGENINFERENCE_BILLING_MOCK=false` | |
+| VM | `d-inference-dev`, zone `us-east4-a`, `c3d-highcpu-4`, AMD SEV, Shielded VM, IAP SSH only | `darkbloom-coordinator`, `c3d-highcpu-30` |
+| Host names | API `api.dev.darkbloom.dev`; console `console.dev.darkbloom.dev` (pending confirmation). Change them in one place: `DOMAIN` and `EIGENINFERENCE_CONSOLE_URL` in [`deploy/gcp/dev/env-overrides`](../../deploy/gcp/dev/env-overrides). The other URLs, the Caddy site and the script defaults come from these two keys | `api.darkbloom.dev` |
+| Ingress | Host Caddy, certificate from ACME (HTTP-01). `/scep` and `/mdm/*` go to MicroMDM on `127.0.0.1:9002`, all other paths to `127.0.0.1:8080` | Host Caddy, static certificate |
+| Image | `us-east4-docker.pkg.dev/darkbloom-dev/coordinator/coordinator:<SHORT_SHA>`, built by the trigger `dev-build` with [`deploy/gcp/cloudbuild-prod.yaml`](../../deploy/gcp/cloudbuild-prod.yaml). Only `_IMAGE` is different | the same file, trigger `prod-build` |
+| `/health` | `version` = `LatestProviderVersion`, `build_commit` = the full commit | the same |
+| Container | `coordinator`, the production flags (`--stop-timeout 75`, `EIGENINFERENCE_DRAIN_GRACE=45s`) | the same |
+| Env file | `/etc/d-inference/env`, root `0600`, boot disk. Seeded once by [`deploy/gcp/dev/seed-env.sh`](../../deploy/gcp/dev/seed-env.sh), then kept by the production refresh | Written by hand, kept by the production refresh |
+| Boot refresh | [`deploy/gcp/prod/darkbloom-env-refresh.service`](../../deploy/gcp/prod/darkbloom-env-refresh.service) | the same |
+| Database | Cloud SQL `d-inference-dev-db` (PostgreSQL 17, private IP only, `sslmode=require`) | Cloud SQL, private IP |
+| Data disk | `/mnt/disks/userdata` (MicroMDM BoltDB, prompt artifacts) | the same |
+| Swap | [`deploy/gcp/dev/swap.sh`](../../deploy/gcp/dev/swap.sh), started by [`deploy/gcp/dev/deploy.sh`](../../deploy/gcp/dev/deploy.sh) | a human |
+| Approval | A reviewed merge to `master`. The repository variable `DEV_DEPLOY_PAUSED` stops deploys | a human, the deploy record |
+| Rollback target | `/var/lib/darkbloom-deploy/last-good-image`, written by the last verified swap | `APPROVED_PREVIOUS_IMAGE` in the deploy record |
+| Console UI | Vercel project `darkbloom-console-dev` | Vercel production project |
+| Release bucket | Cloudflare R2 `d-inf-app-dev`; its public URL is secret `eigeninference-r2-cdn-url` | R2 `d-inf-app` |
+| Model files | The production model CDN, read only (`MODEL_REGISTRY_CDN_BASE_URL` is not set) | the same |
 
-Why a VM and not Cloud Run: MicroMDM keeps BoltDB and the push certificate on
-local disk; Cloud Run's ephemeral filesystem does not survive revisions and
-gcsfuse is unsafe for BoltDB.
+### Dev settings
 
-## Steps
+The overlay [`deploy/gcp/dev/env-overrides`](../../deploy/gcp/dev/env-overrides)
+holds values only. A value `secret-manager:<name>` comes from Secret Manager.
+A literal can use `${KEY}` for an earlier literal key of the overlay. The seed
+takes the first value it finds: the overlay, then the `EIGENINFERENCE_*` lines
+of [`deploy/environments/prod.env`](../../deploy/environments/prod.env). The
+production refresh then adds the release defaults. The overlay is different
+from production at these keys:
 
-### 1. Bootstrap GCP
+| Key | Dev value | Reason |
+|---|---|---|
+| `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` | `development` | The default is `production`, which requires the App Attest cutover settings ([deployment setting](../reference/configuration.md#deployment-environment)) |
+| `EIGENINFERENCE_MIN_TRUST` | `self_signed` | Dev has no Apple credentials yet (DBLM-564) |
+| `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off` | `on` needs `EIGENINFERENCE_CACHE_MASTER_KEY` and an operator allowlist |
+| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` | `false` | `true` needs the Global Payouts account and webhook secret; the refresh check then fails |
+| `EIGENINFERENCE_WARM_POOL_MIN_WARM` | `Qwen3.5-9B=1` | The production value names models that dev does not have |
+| `APNS_KEY_ID`, `APNS_AUTH_KEY_P8_B64`, `APNS_ENFORCE_AFTER` | placeholders | The keys are required. The placeholder `.p8` does not parse, so APNs attestation is off. Expect the log line `failed to construct APNs attestor — attestation disabled` |
+| `APNS_MODE`, `APNS_TOPIC`, `EIGENINFERENCE_PORT`, the five `EIGENINFERENCE_SERVICE_*` keys | code defaults | Required keys that `prod.env` does not record |
+| `EIGENINFERENCE_TRUST_GEO_HEADERS` | `0` | Required key. Code default: off (`coordinator/api/geo/resolver.go`) |
+| `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `false` | Required key. Code default: off (`coordinator/api/operations/state_export.go`) |
+| `EIGENINFERENCE_DRAIN_GRACE` | `45s` | The production shutdown policy of [coordinator-deploy.md](coordinator-deploy.md#4-swap) |
 
-```bash
-deploy/gcp/bootstrap.sh          # PROJECT/REGION/ZONE/INSTANCE/MACHINE_TYPE/SQL_INSTANCE overridable via env
-```
+Dev does not set `EIGENINFERENCE_IPAPI_KEY`: its secret is not one that the VM
+account can read. Geo lookups use the free tier.
 
-Idempotent. Creates the Artifact Registry repo `coordinator`, the coordinator
-service account, Cloud SQL `d-inference-dev-db`, the data disk, the static IP,
-and the VM with `deploy/gcp/vm-startup.sh` as its startup script. It prints the
-static IP. It creates empty Secret Manager entries for 10 secrets only
-(`create_secret` in `deploy/gcp/bootstrap.sh`): the admin key, release key,
-mnemonic, three Privy secrets, database URL, MicroMDM API key, MDM push
-certificate and R2 CDN URL. Step 2 lists the secrets you must create yourself.
+### Secrets
 
-### 2. Populate secrets
+The overlay names 22 Secret Manager containers. The VM account
+`d-inference-dev@` can read exactly these 22 (`coordinator_secret_ids` in
+darkbloom-devnet-infra `terraform/secrets/locals.tf`). To use another secret,
+change that list and the overlay in the same change. Add a value:
 
 ```bash
 echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --project=darkbloom-dev
 ```
 
-Bootstrap does not create the profile-signing, Stripe, Datadog or ip-api
-secrets. Create each of them once before you add its first version:
+Rules for values:
+
+- Never copy a production value into dev.
+- Each value is one line. Store a PEM key with `\n` escapes.
+- `eigeninference-database-url`:
+  `postgres://coordinator:<password>@<private ip>:5432/eigeninference?sslmode=require`.
+- `eigeninference-release-key` equals the GitHub secret `DEV_RELEASE_KEY`.
+  `eigeninference-r2-cdn-url` equals `DEV_R2_PUBLIC_URL`
+  ([provider-release.md](provider-release.md)).
+- `eigeninference-mdm-push-p12-b64`: a throwaway self-signed RSA PKCS#12
+  (password `eigeninference`, base64url) until DBLM-564.
+
+### Deploy pause
+
+`deploy.sh` reads the repository variable `DEV_DEPLOY_PAUSED` before it
+changes anything. It uses the environment variable `DEV_DEPLOY_PAUSED` when it
+is set (a workflow passes `vars.DEV_DEPLOY_PAUSED`), else
+`gh variable get DEV_DEPLOY_PAUSED -R Layr-Labs/d-inference`. It continues only
+when the value is `false`. The value `true`, an empty value or a failed read
+stops it with exit code 3, and nothing changes. A rollback obeys the same rule.
+
+A human can pass `--override-pause "<reason>"`. The script then prints a
+`REPORT pause override by <account> (<user>@<host>): <reason>` line and
+continues. An automatic workflow must pass the variable and must not use the
+override. `--dry-run` reports the pause state and does not stop.
+
+Pause and resume (a repository admin):
 
 ```bash
-gcloud secrets create <secret-name> --replication-policy=automatic --project=darkbloom-dev
+gh variable set DEV_DEPLOY_PAUSED -R Layr-Labs/d-inference --body true
+gh variable set DEV_DEPLOY_PAUSED -R Layr-Labs/d-inference --body false
 ```
 
-| Secret | Value |
-|---|---|
-| `eigeninference-admin-key`, `eigeninference-release-key` | `openssl rand -hex 32` each. The release key must also be set as the GitHub secret `DEV_RELEASE_KEY` |
-| `eigeninference-solana-mnemonic` | Legacy name. A **new** BIP39 mnemonic for the coordinator's X25519 key derivation (`MNEMONIC`); never reuse production's |
-| `eigeninference-privy-app-id`, `eigeninference-privy-app-secret`, `eigeninference-privy-verification-key` | Dev Privy app dashboard |
-| `eigeninference-database-url` | Written by bootstrap when it creates Cloud SQL |
-| `eigeninference-micromdm-api-key` | `openssl rand -hex 32`; injected as both `MICROMDM_API_KEY` and `EIGENINFERENCE_MDM_API_KEY` |
-| `eigeninference-mdm-push-p12-b64` | Apple MDM push PKCS#12, base64url: `base64 < push.p12 \| tr '/+' '_-' \| tr -d '\n='` |
-| `eigeninference-profile-signing-p12-b64`, `eigeninference-profile-signing-p12-password` | Optional Developer ID identity used to CMS-sign the `/v1/enroll` profile; unset serves it unsigned |
-| `eigeninference-r2-cdn-url` | Public URL of `d-inf-app-dev`, e.g. `https://pub-<id>.r2.dev`; required by `POST /v1/releases`, which checks release URLs against it |
-| `eigeninference-stripe-secret-key`, `eigeninference-stripe-webhook-secret`, `eigeninference-stripe-connect-webhook-secret`, `eigeninference-stripe-success-url`, `eigeninference-stripe-cancel-url`, `eigeninference-stripe-connect-return-url`, `eigeninference-stripe-connect-refresh-url` | Dev Stripe account |
-| `eigeninference-dd-api-key`, `eigeninference-dd-site` | Datadog |
-| `eigeninference-ipapi-key` | Optional ip-api.com PRO key; empty falls back to the free tier |
+## Steps
 
-`deploy/gcp/refresh-env.sh` refuses to overwrite the env file when any of
-`EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_DATABASE_URL`,
-`EIGENINFERENCE_STRIPE_SECRET_KEY`, `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET`,
-`EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` resolves empty, so set those
-before the first deploy.
-
-### 3. DNS
-
-```
-api.dev.darkbloom.xyz      A      <VM static IP>
-console.dev.darkbloom.xyz  CNAME  <target Vercel shows after step 5>
-```
-
-### 4. First coordinator deploy
+### 1. Run the preflight
 
 ```bash
-gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=darkbloom-dev
+deploy/gcp/dev/preflight.sh
 ```
 
-The build tags `:$SHORT_SHA` and `:latest`, pushes both, then the `deploy`
-step: writes `DINF_IMAGE_TAG=$SHORT_SHA` to VM metadata, refreshes the
-`startup-script` metadata from `deploy/gcp/vm-startup.sh`, pipes
-`deploy/gcp/refresh-env.sh` over IAP SSH (`sudo bash -s`) to regenerate
-`/etc/d-inference/env` from Secret Manager, runs
-`sudo systemctl restart d-inference-coordinator`, and polls
-`https://api.dev.darkbloom.xyz/health` for up to 4 minutes. ~2–4 minutes
-end-to-end; the fleet sees a ~10 s blip and reconnects.
+It checks, in order: the `gcloud` login and the project; the VM is `RUNNING`;
+IAP SSH; DNS of `DOMAIN` points at the VM external IP; each secret of the
+overlay has an enabled version (names only); Cloud SQL is `RUNNABLE` with a
+private IP; a SUCCESS `dev-build` build and an image exist for the `master`
+head; and, on the VM, Cloud SQL accepts connections, `host-setup.sh --check`
+and `seed-env.sh --check`. Each line is `PASS`, `FAIL` with the fix, or `WARN`
+(optional secret). It changes nothing. On the VM it copies `deploy/` to a
+temporary directory and removes it.
 
-### 5. Console UI on Vercel
+Before the first host setup, the `host-setup --check` and `seed-env --check`
+lines fail. Fix every other `FAIL` line first.
 
-1. Import the repo as project `darkbloom-console-dev`, root directory
-   `console-ui/`.
-2. Env: `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`.
-3. Add domain `console.dev.darkbloom.xyz`; copy the CNAME target into step 3.
+### 2. Set up the host (once)
 
-Every push to `master` auto-builds; preview branches also talk to the dev
-coordinator.
+```bash
+SSH=(gcloud compute ssh d-inference-dev --zone=us-east4-a --project=darkbloom-dev --tunnel-through-iap --ssh-key-expire-after=1h)
+git archive --format=tar.gz HEAD deploy | "${SSH[@]}" --command='rm -rf ~/setup && mkdir ~/setup && tar -xz -C ~/setup'
+"${SSH[@]}" --command='sudo ~/setup/deploy/gcp/host-setup.sh --apply'
+```
+
+[`deploy/gcp/host-setup.sh`](../../deploy/gcp/host-setup.sh) installs Docker,
+Caddy, `google-cloud-cli`, `jq` and `postgresql-client`; sets the Docker
+credentials for `us-east4-docker.pkg.dev`; formats the data disk once and
+mounts it at `/mnt/disks/userdata`; installs the production refresh script,
+manifests and boot unit as in step 3 of the production runbook; writes the
+Caddyfile for `DOMAIN`. It writes no env value and starts no container.
+Without `--apply` it only checks. It refuses to run outside `darkbloom-dev`.
+Do not run `--apply` during a swap: a Caddy restart reconnects every provider.
+
+### 3. Seed the env file (once)
+
+```bash
+"${SSH[@]}" --command='sudo ~/setup/deploy/gcp/dev/seed-env.sh --seed'
+"${SSH[@]}" --command='sudo ~/setup/deploy/gcp/host-setup.sh --apply'
+```
+
+The seed reads the secrets with the VM account, runs the production
+`refresh-env.sh --check` on a temporary file in `/etc/d-inference`, then moves
+it into place and runs `--apply`. Expect `OK wrote /etc/d-inference/env`. If a
+required value is missing, the seed lists the key names and writes nothing.
+Add the values and run it again. The second `host-setup.sh --apply` installs
+the Datadog Agent when `DD_API_KEY` has a value.
+
+Run the preflight again. Every line must be `PASS` or `WARN`.
+
+### 4. First deploy
+
+The pause is on until the first deploys pass. Use the override for this step:
+
+```bash
+deploy/gcp/dev/deploy.sh --dry-run
+deploy/gcp/dev/deploy.sh --override-pause "first deploy DBLM-559"
+```
+
+[`deploy/gcp/dev/deploy.sh`](../../deploy/gcp/dev/deploy.sh) checks the pause,
+then does step 1 of the production runbook: the checkout is `origin/master`,
+`dev-build` builds `deploy/gcp/cloudbuild-prod.yaml`, a SUCCESS build of the
+commit exists (it waits up to 20 minutes), and it reads the image digest. Then
+it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the commit to
+`/usr/local/lib/darkbloom-deploy/<commit>` and runs `swap.sh` under
+`systemd-run`. [`deploy/gcp/dev/swap.sh`](../../deploy/gcp/dev/swap.sh) does
+steps 2 to 4, Verification and Rollback: the database lock checks, `docker
+pull` by digest, the label checks, `coordinator --migrate-only`, the refresh,
+the rollback state, the rename to `coordinator_fallback_<ts>`, `docker stop -t
+75`, `docker run`, and the `/health` and `/readyz` checks. A failed hard check
+rolls back by itself. The output has `REPORT` lines, one `OK` or `FAIL` line,
+and `deployed=true` or `deployed=false`.
+
+`--dry-run` does the read-only part of step 1 and prints what it would ship and
+run. `MIGRATE_ONLY=0` skips `--migrate-only`. `SSH_KEY_FILE` selects the SSH
+key.
+
+Expected last line from the VM: `OK <commit> drain_s=0 start_to_ready_s=<n>`.
+The first deploy has no fallback and no rollback target.
+
+### 5. Second deploy
+
+Run `deploy/gcp/dev/deploy.sh --override-pause "second deploy DBLM-559"`. It
+proves the drain, the fallback container and `last-good-image`. Expect
+`OK <commit> drain_s=<n> ...` and a stopped `coordinator_fallback_<ts>`.
+
+### 6. Rollback test and reboot test
+
+```bash
+deploy/gcp/dev/deploy.sh rollback --override-pause "rollback test DBLM-559"
+"${SSH[@]}" --command='sudo reboot' || true
+sleep 90
+curl -fsS "https://$(awk -F= '$1 == "DOMAIN" { print $2 }' deploy/gcp/dev/env-overrides)/health" | jq -r .build_commit
+```
+
+Expect `OK rolled back to sha256:...`, then the same commit after the reboot.
+Then set `DEV_DEPLOY_PAUSED` to `false` when automatic deploys may start.
+
+### 7. Automatic deploys
+
+A workflow `deploy-dev.yml` (DBLM-569, not in this repository yet) will run
+`deploy.sh` on each `master` push that changes the coordinator. It must pass
+`DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}` and must not use
+`--override-pause`. The sample workflow and its runbook (runbook 09) are in
+[darkbloom-devnet-infra](https://github.com/Layr-Labs/darkbloom-devnet-infra).
+
+### 8. Change a setting or a secret
+
+- The host file is authoritative, as in production. A change to the overlay or
+  a new secret version needs `seed-env.sh --reseed` on the host, then a deploy.
+  The reseed builds and checks a new file first. If that fails, the live file
+  does not change. If it passes, the old file stays as
+  `env.pre-reseed.<UTC>`.
+- Or edit `/etc/d-inference/env` by hand, as in production, then deploy.
+- `seed-env.sh --check` (and each swap) reports `DRIFT` for overlay keys whose
+  live value is different. It prints names, not values.
+- Variables are read once at process start. A new value needs a deploy.
+
+### 9. Console UI on Vercel
+
+1. Project `darkbloom-console-dev`, root directory `console-ui/`.
+2. Env: `NEXT_PUBLIC_COORDINATOR_URL` = `https://` + `DOMAIN` of the overlay.
+3. Add the console host name of the overlay as a domain, then set the CNAME
+   that Vercel shows.
 
 The repository-root `vercel.json` and `console-ui/vercel.json` both exclude
-exactly `release/0.9.0-validation` from Git deployments. These cover a project
-configured at the repository root or at the documented console UI root. Other
-branches retain Vercel's default behavior; no project-wide settings or deployment
-environments are changed by this branch-specific rule.
+exactly `release/0.9.0-validation` from Git deployments. Other branches keep
+the default behavior of Vercel.
 
-### 6. Connect GitHub → Cloud Build
-
-One-time in the Cloud Console: install the Cloud Build GitHub App on
-`Layr-Labs/d-inference`, then create a trigger on push to `master` using
-`deploy/gcp/cloudbuild.yaml` with the path filter `coordinator/**`,
-`deploy/gcp/**`. From then on every merge touching those paths redeploys dev
-with no approval step.
-
-### 7. Change a setting
-
-- **Secret:** add a new version in Secret Manager, then either redeploy (any
-  Cloud Build run re-runs `refresh-env.sh`) or on the VM run
-  `sudo bash deploy/gcp/refresh-env.sh && sudo systemctl restart d-inference-coordinator`.
-- **Non-secret value** (`EIGENINFERENCE_MIN_TRUST`, `EIGENINFERENCE_ADMIN_EMAILS`,
-  `EIGENINFERENCE_BASE_URL`, …): these are
-  literal lines in **both** `deploy/gcp/refresh-env.sh` and
-  `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, then redeploy
-  with step 4's `gcloud builds submit` until the step 6 trigger exists. There is
-  no `--set-env-vars`; the env file is the only source.
-- Variables are read once at process start; a restart is always required.
-
-### 8. Dev provider release
+### 10. Dev provider release
 
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev   # optional -f version_override=X.Y.Z
 ```
 
-Builds, signs, notarizes, uploads to R2 `d-inf-app-dev`, and registers with
-the dev coordinator using the `DEV_*` secrets. Dev tags (`-dev.*`) are
-rejected; only dispatch is supported. Details:
+The workflow builds, signs, notarizes, uploads to R2 `d-inf-app-dev` and
+registers the release with the dev coordinator with the `DEV_*` secrets. Dev
+tags (`-dev.*`) are refused; use a dispatch. Details:
 [`provider-release.md`](provider-release.md).
 
-### 9. Onboard a Mac
+### 11. Onboard a Mac
 
 ```bash
-curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash
+curl -fsSL "https://<API host>/install.sh" | bash
 ```
 
-The dev coordinator serves `install.sh` with its own URL templated in. Because
-that URL is not production, the installer writes
-`url = "wss://api.dev.darkbloom.xyz/ws/provider"` under `[coordinator]` in
-`~/.config/darkbloom/provider.toml` and keeps every other line of the file
-(`scripts/install.sh`, `bind_provider_coordinator`). `darkbloom start`,
-`login`, `update`, the LaunchAgent and the watchdog then use dev. A provider
-that is already running keeps its old coordinator until you run
-`darkbloom start` again.
+The dev coordinator serves `install.sh` with its own URL. Because that URL is
+not production, the installer writes `url = "wss://<API host>/ws/provider"`
+under `[coordinator]` in `~/.config/darkbloom/provider.toml` and keeps every
+other line of the file (`scripts/install.sh`, `bind_provider_coordinator`).
+`darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog then use
+dev. A running provider keeps its old coordinator until the next `darkbloom
+start`.
 
-The installer always binds the provider to the coordinator that served it. To
-move a dev Mac back to production, run the production installer
-(`curl -fsSL https://api.darkbloom.dev/install.sh | bash`): it removes the `url`
-line under `[coordinator]`, keeps every other line, and the provider then uses
-its built-in production default. Run `darkbloom start` afterwards. One Mac
-cannot serve dev and production at the same time.
+To move a dev Mac back to production, run the production installer
+(`curl -fsSL https://api.darkbloom.dev/install.sh | bash`). It removes the
+`url` line under `[coordinator]`. Then run `darkbloom start`. One Mac cannot
+serve dev and production at the same time.
 
-Add the host's SSH alias to `deploy/provider-fleet/dev-inventory.txt`;
-`deploy/provider-fleet/update-fleet.sh dev` re-runs the installer on every
+Add the SSH alias of the Mac to `deploy/provider-fleet/dev-inventory.txt`;
+`deploy/provider-fleet/update-fleet.sh dev` runs the installer again on each
 listed Mac.
 
-### 10. Seed synthetic data
+### 12. Seed synthetic data
 
 `coordinator/cmd/devnet-seed` fills an **empty** dev database with fake
 accounts (`seed-<n>@example.invalid`, `did:privy:seed-<n>`), API keys,
 provider machines (serials `SEED00000001`, …) with closed sessions, usage
 rows, provider earnings, ledger entries and balances. It writes through the
-`store` package methods the coordinator uses. It refuses to run when the
-`users` table has any row, and it checks this before it runs migrations. The
-command is a thin entry point to `coordinator/internal/command/devnetseed`.
+`store` methods that the coordinator uses. It refuses to run when the `users`
+table has a row, and it checks this before it runs migrations. The command is
+an entry point to `coordinator/internal/command/devnetseed`.
 
 ```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/devnet-seed ./coordinator/cmd/devnet-seed
 gcloud compute scp /tmp/devnet-seed d-inference-dev:/tmp/devnet-seed \
-  --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap
-gcloud compute ssh d-inference-dev --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap -- \
-  'EIGENINFERENCE_DATABASE_URL="$(sudo sed -n "s/^EIGENINFERENCE_DATABASE_URL=//p" /etc/d-inference/env)" /tmp/devnet-seed; rm -f /tmp/devnet-seed'
+  --zone=us-east4-a --project=darkbloom-dev --tunnel-through-iap
+"${SSH[@]}" --command='EIGENINFERENCE_DATABASE_URL="$(sudo sed -n "s/^EIGENINFERENCE_DATABASE_URL=//p" /etc/d-inference/env)" /tmp/devnet-seed; rm -f /tmp/devnet-seed'
 ```
 
 Add flags after `/tmp/devnet-seed` to change the scale:
@@ -237,91 +325,74 @@ Add flags after `/tmp/devnet-seed` to change the scale:
 | `--balance-micro-usd` | `5000000` | Balance each account keeps after its requests are charged |
 | `--workers` | `8` | Accounts or machines written in parallel |
 
-The defaults are small. For a production-like volume, raise the counts, for
-example `--accounts 50000 --providers 2000 --requests-per-account 100`. Every
-row is a separate store write, so a large run takes a long time on
-`db-f1-micro`; that instance also allows few connections, so keep `--workers`
-at its default while the coordinator is running.
+Each row is a separate store write, so a large run takes a long time. Keep
+`--workers` at its default while the coordinator runs.
 
 ## Verification
 
-The fleet updater visits every configured host and exits nonzero if any update
-fails. Authenticated smoke runs use a unique temporary response file and remove
-it when the process exits. Admin login and release-deactivation commands encode
-input as JSON values, preserving quotes and backslashes.
-
 ```bash
-scripts/smoke-dev.sh                              # /health, /v1/stats, /v1/models/catalog, install.sh templating
-API_KEY=<dev api key> scripts/smoke-dev.sh        # + an authenticated chat completion
-curl -fsS https://api.dev.darkbloom.xyz/health | jq .            # version "dev", build_commit = deployed SHA
-curl -fsS https://api.dev.darkbloom.xyz/v1/releases/latest | jq .
-gcloud builds list --project=darkbloom-dev --limit=5
-gcloud compute ssh d-inference-dev --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap -- \
-  'sudo systemctl status d-inference-coordinator --no-pager; sudo docker logs --tail 50 d-inference-coordinator'
+API=$(awk -F= '$1 == "DOMAIN" { print $2 }' deploy/gcp/dev/env-overrides)
+C=$(git rev-parse HEAD); V=$(awk -F'"' '/^var LatestProviderVersion =/ { print $2 }' coordinator/api/server.go)
+curl -fsS "https://$API/health" | jq -e --arg c "$C" --arg v "$V" '.status == "ok" and .version == $v and .build_commit == $c'
+"${SSH[@]}" --command='sudo systemctl is-active docker caddy darkbloom-env-refresh; sudo docker ps -a --format "{{.Names}} {{.Status}}"'
+scripts/smoke-dev.sh                       # /health, /v1/stats, /v1/models/catalog, install.sh
+API_KEY=<dev api key> scripts/smoke-dev.sh # and one chat completion with MODEL (default Qwen3.5-9B)
 ```
+
+Expected: `true`; three lines `active`; `coordinator` `Up` and one
+`coordinator_fallback_<ts>` `Exited`. `scripts/smoke-dev.sh` fails until a
+provider is attached and a model is registered. Its fixture checks are in
+[script validation](../developer/test.md#6-scripts-and-release-integrity).
 
 ## Rollback
 
-**Coordinator** — images stay in Artifact Registry by short SHA. Point the VM
-at an older one and restart (~1 minute):
+| Case | Action |
+|---|---|
+| A deploy failed a hard check | Nothing. `swap.sh` rolled back and printed `FAIL ...; rolled back to ...`. The container log is in `/var/lib/darkbloom-deploy/failed-coordinator-<UTC>.log` on the VM (root only) |
+| A deploy passed, but the commit is bad | `deploy/gcp/dev/deploy.sh rollback` from a clean `origin/master` checkout (add `--override-pause "<reason>"` while paused). It restores the image and env file of the last verified swap. Then revert the commit on `master` |
+| The first deploy is bad (no previous image) | `"${SSH[@]}" --command='sudo docker stop -t 75 coordinator && sudo docker rm coordinator'` |
+| A bad reseed | Copy `/etc/d-inference/env.pre-reseed.<UTC>` back to `/etc/d-inference/env`, then deploy |
+| A bad provider bundle | Deactivate the release (`scripts/admin.sh releases deactivate <version>`), then `deploy/provider-fleet/update-fleet.sh dev`; see [`provider-release.md`](provider-release.md) |
 
-```bash
-gcloud compute instances add-metadata d-inference-dev --zone=us-central1-a --project=darkbloom-dev \
-  --metadata=DINF_IMAGE_TAG=<older-short-sha>
-gcloud compute ssh d-inference-dev --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap -- \
-  'sudo systemctl restart d-inference-coordinator'
-```
+Rollback never reverts the schema; see the
+[schema migration rollback rules](schema-migration.md#rollback). A teardown is
+a Terraform change in darkbloom-devnet-infra.
 
-Once the step 6 trigger exists, the next `master` push moves `DINF_IMAGE_TAG`
-forward again. Until then, the next `gcloud builds submit` does.
+## Troubleshooting
 
-**Provider bundle** — deactivate the release on the dev coordinator
-(`DELETE /v1/admin/releases`, or `scripts/admin.sh releases deactivate <version>`)
-so `/v1/releases/latest` falls back to the previous version, then
-`deploy/provider-fleet/update-fleet.sh dev`. R2 objects are immutable per
-version; see [`provider-release.md`](provider-release.md) ("Rollback").
-
-**Full teardown** (destroys dev state; secrets survive unless deleted):
-
-```bash
-gcloud compute instances delete d-inference-dev --zone=us-central1-a --project=darkbloom-dev --quiet
-gcloud compute disks delete d-inference-dev-data --zone=us-central1-a --project=darkbloom-dev --quiet
-gcloud sql instances delete d-inference-dev-db --project=darkbloom-dev --quiet
-```
+| Line | Cause | Fix |
+|---|---|---|
+| `FAIL deploys are paused or the pause state is unknown ...` | `DEV_DEPLOY_PAUSED` is not `false`, or `gh` cannot read it | Read the variable. Resume, or pass `--override-pause "<reason>"` for a manual run |
+| `FAIL long queries, blocked locks or a goose lock holder; nothing changed` | A query or lock blocks migrations | Wait, then deploy again |
+| `FAIL --migrate-only failed; the current coordinator still serves` | A migration of the commit fails | Read the journal of the unit (`sudo journalctl -u 'darkbloom-dev-swap-*'`). Fix the migration on `master` |
+| `FAIL candidate not ready within 180 s; rolled back to ...` | The new coordinator did not start or did not report the commit | Read the saved container log on the VM |
+| `FAIL the running image is not the last verified image ...` | Someone changed the container by hand | Find out why. After review, write the running image ID to `/var/lib/darkbloom-deploy/last-good-image` |
+| `candidate ... is not origin/master` | `master` moved | Deploy the new head |
 
 ## DevNet checklist
 
-These steps need a person with the right access. Agents cannot do them.
+These steps need a person with the right access:
 
-1. Re-authenticate `gcloud` against `darkbloom-dev` (`gcloud auth login`).
-2. Make sure the dev VM is up. Check `gcloud compute instances describe
-   d-inference-dev --zone=us-central1-a --project=darkbloom-dev`, start it if
-   it is stopped, then run the [verification](#verification) commands.
-3. Add the Cloud Build trigger (step 6,
-   [#1067](https://github.com/Layr-Labs/d-inference/issues/1067)).
-4. Put Stripe **test-mode** keys and the Connect test setup into dev Secret
-   Manager (step 2). Global Payouts also needs the
-   `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_*` variables
-   (`coordinator/billing/config.go`); neither `deploy/gcp/refresh-env.sh` nor
-   `deploy/gcp/vm-startup.sh` writes them.
+1. DBLM-555: apply the darkbloom-devnet-infra roots.
+2. DBLM-558: the secret values and DNS. Confirm the console host name.
+3. DBLM-559: steps 1 to 6 of this page.
+4. DBLM-569: the workflow `deploy-dev.yml` for automatic deploys (step 7).
 5. Ask Stripe for Redaction Jobs access on the dev account, so that account
    erasure can be tested against Stripe.
-6. Enrol at least one dev Mac (step 9).
-7. Run `devnet-seed` against the empty dev database (step 10).
+6. Enrol at least one dev Mac (step 11). Run `devnet-seed` (step 12).
 
 ## What dev does not cover
 
-- Production's human-approved drain, fallback container, and env-refresh
-  contract (`deploy/gcp/prod/`). Dev restarts via systemd with a 30 s stop
-  timeout.
-- Real users: admin access is limited to `EIGENINFERENCE_ADMIN_EMAILS`
-  (`gajesh@eigenlabs.org`).
-- Cost realism: `e2-small` + `db-f1-micro` + 30 GB disk + static IP is roughly
-  \$25–30/month.
+- Human approval and the deploy record: the reviewed merge is the approval,
+  and the job summary and the swap journal are the record.
+- APNs attestation and MDM push: placeholders until DBLM-564.
+- Real users: admin access is limited to `EIGENINFERENCE_ADMIN_EMAILS`.
 
 ## Related
 
-- [coordinator-deploy.md](coordinator-deploy.md) — production.
-- [`provider-release.md`](provider-release.md) — release workflow, `DEV_*` secrets.
-- [`../developer/build.md`](../developer/build.md) — the Dockerfile Cloud Build builds.
-- [`../provider/installation.md`](../provider/installation.md) — what `install.sh` does on a Mac.
+- [coordinator-deploy.md](coordinator-deploy.md): production. A change to a
+  swap step there also changes `deploy/gcp/dev/swap.sh`.
+- [`provider-release.md`](provider-release.md): release workflow, `DEV_*` secrets.
+- [`../developer/build.md`](../developer/build.md): what the Dockerfile builds.
+- [`../reference/configuration.md`](../reference/configuration.md): every environment variable.
+- [`../provider/installation.md`](../provider/installation.md): what `install.sh` does on a Mac.

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -84,7 +84,7 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | Component | Where the process gets its environment |
 |---|---|
 | Coordinator, production | `/etc/d-inference/env` (root-only, boot disk) on the Confidential VM. Secrets are placed by hand; `deploy/gcp/prod/refresh-env.sh` runs before Docker at every boot, adds any key from `deploy/gcp/prod/release-env-defaults` that is absent, migrates a few exact historical values, never overwrites an operator-set value, and refuses to run when a required key is missing or empty. The list of keys production must have is maintained once in [`../operations/coordinator-deploy.md#environment-file`](../operations/coordinator-deploy.md#environment-file). The container entrypoint `coordinator/deploy/start.sh` reads `USER_PERSISTENT_DATA_PATH`, `MICROMDM_API_KEY`, `MDM_PUSH_P12_B64`, `DOMAIN` and `EIGENINFERENCE_MDM_WEBHOOK_SECRET` itself before it `exec`s the `coordinator` binary; everything else is read by Go code. |
-| Coordinator, dev | Same file layout on the dev VM, written by `deploy/gcp/refresh-env.sh`; see [`../operations/dev-environment.md`](../operations/dev-environment.md). |
+| Coordinator, dev | Same file layout on the dev VM. `deploy/gcp/dev/seed-env.sh` seeds it once from `deploy/gcp/dev/env-overrides`; after that the production refresh keeps it; see [`../operations/dev-environment.md`](../operations/dev-environment.md). |
 | Coordinator, local | Whatever shell exports `go run ./coordinator/cmd/coordinator` inherits. `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` is the only way to start without a database. |
 | Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
 | Provider CLI, installed LaunchAgent | `darkbloom start` writes a launchd plist whose `EnvironmentVariables` come from `LaunchAgent.passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`. The allow-list includes `DARKBLOOM_DRAIN_TIMEOUT_SECONDS`, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, and `DARKBLOOM_PREFILL_DEADLINE_MODE`; `MLX_GATHER_QMM_EXPERT_SLICES` is forwarded only when exactly `1`. `PATH` and the Hugging Face/XDG cache variables are not forwarded. Model-cache selection is config-backed. The watchdog (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. |

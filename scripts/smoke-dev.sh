@@ -4,16 +4,19 @@
 # so the calling job can alert.
 #
 # Usage:
-#   COORD=https://api.dev.darkbloom.xyz \
-#   API_KEY=$DEV_API_KEY \
-#   scripts/smoke-dev.sh
+#   [COORD=https://<host>] [MODEL=<model id>] API_KEY=$DEV_API_KEY scripts/smoke-dev.sh
 #
+# COORD defaults to https://<DOMAIN of deploy/gcp/dev/env-overrides>. MODEL
+# defaults to Qwen3.5-9B; only the authenticated chat test uses it.
 # API_KEY must be a test account's Darkbloom API key with non-zero credits.
 # No prod API keys. No real prompts — all test inputs are synthetic.
 
 set -euo pipefail
 
-COORD="${COORD:-https://api.dev.darkbloom.xyz}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+DEV_DOMAIN=$(awk -F= '$1 == "DOMAIN" { print substr($0, index($0, "=") + 1); exit }' "$ROOT/deploy/gcp/dev/env-overrides")
+COORD="${COORD:-https://$DEV_DOMAIN}"
+MODEL="${MODEL:-Qwen3.5-9B}"
 API_KEY="${API_KEY:-}"
 FAIL=0
 
@@ -42,7 +45,7 @@ else
 fi
 
 step "stats (public)"
-PROVIDER_COUNT=$(curl -fsS "$COORD/v1/stats" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("providers_online", d.get("providers", 0)))' 2>/dev/null || echo 0)
+PROVIDER_COUNT=$(curl -fsS "$COORD/v1/stats" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(int(d.get("active_providers", d.get("providers_online", 0))))' 2>/dev/null || echo 0)
 if [ "$PROVIDER_COUNT" -gt 0 ]; then
   green "providers online: $PROVIDER_COUNT"
 else
@@ -58,7 +61,7 @@ else
 fi
 
 step "install.sh templating"
-if curl -fsS "$COORD/install.sh" | grep -q 'https://api.dev.darkbloom.xyz'; then
+if curl -fsS "$COORD/install.sh" | grep -Fq "$COORD"; then
   green "install.sh references dev coordinator"
 else
   fail "install.sh does not reference dev coordinator (templating broken?)"
@@ -72,7 +75,7 @@ if [ -n "$API_KEY" ]; then
   HTTP_CODE=$(curl -sS -o "$smoke_result" -w '%{http_code}' \
     -H "Authorization: Bearer $API_KEY" \
     -H "Content-Type: application/json" \
-    -d '{"model":"auto","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' \
+    -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":8,\"stream\":false}" \
     "$COORD/v1/chat/completions" || echo 000)
   if [ "$HTTP_CODE" = "200" ]; then
     green "chat OK"

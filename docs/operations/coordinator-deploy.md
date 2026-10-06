@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -8,7 +8,8 @@ verifying it, and rolling back. Every VM mutation here is **human-only**; agents
 may read build metadata and health endpoints but must not pull, stop, start, or
 edit the env file. Provider CLI releases are a separate runbook:
 [`provider-release.md`](provider-release.md); the dev coordinator is
-[dev-environment.md](dev-environment.md).
+[dev-environment.md](dev-environment.md). Dev runs these steps without a human
+with `deploy/gcp/dev/swap.sh`; production stays human-only.
 
 For the 0.9.10 upgrade, complete the console compatibility, database migration,
 App Attest cohort, and mixed-version checks in the

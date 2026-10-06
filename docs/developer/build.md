@@ -877,8 +877,9 @@ Stages: `prompt-sidecar-builder` (`rust:1.88.0-alpine`, musl static build) →
 and `/usr/local/bin/promptsidecar`, OCI labels
 `org.opencontainers.image.{version,revision,created}`, `EXPOSE 8080`, entrypoint
 `start.sh` (`coordinator/deploy/start.sh`). Cloud Build wraps exactly this in
-`deploy/gcp/cloudbuild.yaml` (dev) and `deploy/gcp/cloudbuild-prod.yaml`
-(prod); see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md).
+`deploy/gcp/cloudbuild-prod.yaml` for prod and, through the trigger `dev-build`,
+for dev; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md)
+and [`../operations/dev-environment.md`](../operations/dev-environment.md).
 
 ### 10. Use the database-only coordinator command
 

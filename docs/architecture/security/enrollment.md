@@ -187,7 +187,7 @@ On older macOS:
 4. The operator clicks **Install** and authenticates. `mdmclient` performs
    SCEP against `/scep` and MDM check-in against `/mdm/checkin`; both are
    reverse-proxied by Caddy to MicroMDM on `127.0.0.1:9002`
-   (`coordinator/Caddyfile`, `deploy/gcp/vm-startup.sh`).
+   (`coordinator/Caddyfile`, `deploy/gcp/host-setup.sh`).
 5. `darkbloom unenroll` (`provider-swift/Sources/darkbloom/UnenrollCommand.swift`)
    opens System Settings → General → Device Management for removal; the
    coordinator has no remove-profile right.
@@ -258,7 +258,7 @@ anything under the unrequested `AccessRights` bits.
 | Webhook | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`, `maxMDMWebhookBodyBytes`) |
 | MicroMDM client | `coordinator/mdm/mdm.go` (`NewClient`, `LookupDevice`, `VerifyProviderWithUDIDObserver`, `RequestDeviceAttestation`, `HandleWebhook`, `assertReadOnlyCommand`, `parseSecurityInfoPlist`); `coordinator/mdm/config.go` |
 | Wiring and env | `coordinator/app/services.go` |
-| Reverse proxy | `coordinator/Caddyfile`; `deploy/gcp/vm-startup.sh` |
+| Reverse proxy | `coordinator/Caddyfile`; `deploy/gcp/host-setup.sh` |
 | Provider CLI | `provider-swift/Sources/darkbloom/EnrollCommand.swift`, `provider-swift/Sources/darkbloom/UnenrollCommand.swift`; `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` |
 
 ## Related

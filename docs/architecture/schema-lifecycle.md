@@ -335,7 +335,7 @@ Logs carry bounded labels only, never SQL or parameters
    `buildConcurrentIndexOnce` fails unless `indisvalid AND indisready`
    (`TestIndexMigrationRebuildsInvalidLeftover`,
    `TestIndexMigrationFailureIsNotRecorded` in
-   `coordinator/tests/store/postgres/migrations_test.go`).
+   `coordinator/tests/store/postgres/migration_index_test.go`).
 9. **A soft-deleted row is never returned as live.** Every read in the
    [soft-delete reference](../reference/soft-delete.md) filters it, on both
    backends (`coordinator/tests/store/postgres/soft_delete_reads_test.go`
@@ -379,7 +379,7 @@ Logs carry bounded labels only, never SQL or parameters
 | sqlc config, queries, generated code | `coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`, `coordinator/store/postgres/storedb/` |
 | api_keys store methods | `coordinator/store/postgres/apikey.go` (`queries`, `apiKeyFromRow`, `insertAPIKeyParams`) |
 | sqlc targets | `Makefile` (`sqlc-generate`, `sqlc-check`) |
-| Tests | `coordinator/tests/store/postgres/migrations_test.go`, `coordinator/tests/store/postgres/migration_harness_test.go` |
+| Tests | `coordinator/tests/store/postgres/migrations_test.go`, `coordinator/tests/store/postgres/migration_index_test.go`, `coordinator/tests/store/postgres/migration_harness_test.go` |
 | Manual SQL | `coordinator/store/postgres/migrations/` |
 
 ## Related

@@ -369,7 +369,7 @@ Outside the live database:
 | Keys, outbox rows, hashes | `coordinator/internal/store/erasure/keys.go` (`Keys`, `NewKeys`, `Keys.OutboxRows`, `Keys.Retained`, `WithoutKeys`); `coordinator/internal/store/erasure/confirm.go` (`TokenHash`, `WalletHash`, `TokenValid`, `NormalizeEmail`) |
 | Postgres steps | `coordinator/store/postgres/erasure.go` (`PlanAccountErasure`, `RequestAccountErasure`, `ScrubAccount`, `forfeitBalance`); `coordinator/store/postgres/erasure_rules.go` (`erasureStatements`, `applyRules`); `coordinator/store/postgres/erasure_keys.go` (`collectErasureKeys`) |
 | SQL | `coordinator/store/postgres/queries/erasure.sql` (sqlc input), `coordinator/store/postgres/storedb/erasure.sql.go` (generated) |
-| Memory steps | `coordinator/store/memory/erasure.go` (`collectErasureKeysLocked`, `refuseErasedCreditLocked`), `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`, `runMemoryRulesLocked`) |
+| Memory steps | `coordinator/store/memory/erasure.go` (`PlanAccountErasure`, `ScrubAccount`, `refuseErasedCreditLocked`), `coordinator/store/memory/erasure_keys.go` (`collectErasureKeysLocked`), `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`, `runMemoryRulesLocked`) |
 | Schema | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 19, 20) |
 | Cache invalidation | `coordinator/store/cached.go` |
 | HTTP | `coordinator/api/accounts/erasure/handlers.go`; owner built in `coordinator/api/server.go` (`NewRuntime`); routes in `coordinator/api/routes.go` |

@@ -92,19 +92,17 @@ deleted after the scrub. How erasure works is in
 
 ## Paths that do not filter
 
-Writes and hard deletes act on a soft-deleted row as on any other row, with
-one exception: `UpsertProvider` and `UpsertProviderWithReputation` leave a
-soft-deleted `providers` row unchanged, so a late heartbeat persist cannot
-rewrite it (`upsertProviderRecord`, `WHERE providers.deleted_at IS NULL`,
-`coordinator/store/postgres/providers.go`; `upsertProviderRecordLocked`,
-`coordinator/store/memory/providers.go`; `TestSoftDeletedProviderIgnoresLatePersist`).
+The methods below remain available for administrative metadata, revocation,
+cleanup and historical accounting. New account admissions and asynchronous
+personal-data writes have the separate [late-write protections](#late-writes).
+`CreateUser` inserts a new account; it does not restore the deleted account.
 
 | Table | Methods |
 |---|---|
-| `users` | `CreateUser` insert, `SetUserStripeAccount`, `SetUserRole`, `SetUserPlatformFeePercent` (`coordinator/store/postgres/users.go`) |
-| `api_keys` | `CreateAPIKey` and `SeedKey` inserts (`InsertAPIKey`, `InsertAPIKeyIfAbsent`), `TouchAPIKey`, `RevokeKey` (`DeactivateAPIKeyByHash`), `RevokeAPIKeyByID` and the delete in `RotateAPIKey` (`DeleteAPIKeyByID`) |
-| `provider_tokens` | `CreateProviderToken`, `RevokeProviderToken` (`coordinator/store/postgres/device_auth.go`) |
-| `providers` | `DeleteProvidersBySerial` (`coordinator/store/postgres/providers.go`). `UpsertProvider` and `UpsertProviderWithReputation` (`coordinator/store/postgres/provider_record_write.go`) skip a soft-deleted row (see above) |
+| `users` | `CreateUser` insert, `SetUserRole`, `SetUserPlatformFeePercent` (`coordinator/store/postgres/users.go`) |
+| `api_keys` | `SeedKey` insert (`InsertAPIKeyIfAbsent`), `TouchAPIKey`, `RevokeKey` (`DeactivateAPIKeyByHash`), `RevokeAPIKeyByID` and the delete in `RotateAPIKey` (`DeleteAPIKeyByID`) |
+| `provider_tokens` | `RevokeProviderToken` (`coordinator/store/postgres/device_auth.go`) |
+| `providers` | `DeleteProvidersBySerial` (`coordinator/store/postgres/providers.go`) |
 | other tables | `usage`, `provider_earnings`, `ledger_entries` and the other history tables have no `deleted_at`; `KeySpendSince` still counts a soft-deleted key's usage |
 | outside the store | `admin-ui` reads the read replica with its own SQL (`admin-ui/src/lib/queries/`) and does not filter `deleted_at` |
 
@@ -138,7 +136,7 @@ code change reaches `referrals`.
 | The row stays in its table with `deleted_at` set; every read above treats it as absent | the reads above |
 | The user's Privy ID is free for a new live user | `idx_users_privy_live`; `MemoryStore.CreateUser` |
 | `CachedStore` drops its cached users after `RequestAccountErasure`, `CancelAccountErasure` and `ScrubAccount`. A call that does not go through it leaves a cached user for up to `UserTTL` (`30 * time.Second`) | `coordinator/store/cached.go`; `coordinator/internal/store/storecache/config.go` (`DefaultConfig`) |
-| History rows that reference the account (usage, earnings, ledger) do not change | no `deleted_at` on those tables |
+| Confirming the soft delete leaves usage, earnings and ledger history intact; the later scrub removes their personal fields and forfeits remaining balances | [account erasure](../architecture/account-erasure.md#mechanism) |
 | A pre-goose coordinator image cannot boot once a soft-deleted and a live user share a Privy ID | its boot DDL runs `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy`; see the [rollback rules](../operations/schema-migration.md#rollback) |
 | `CancelAccountErasure` during the grace period clears `deleted_at` on the user and its providers; API keys and provider tokens stay revoked. After the scrub, nothing clears `deleted_at` | [Writers of `deleted_at`](#writers-of-deleted_at) |
 
@@ -155,8 +153,8 @@ history-table files and tests outside this gate.
 
 | Writer | Deleted-account behavior | Code |
 |---|---|---|
-| API-key and provider-token creation, provider upserts, hardware-interest writes, payout admission | Refused after acquiring the same user fence as erasure; cancellation permits new writes again | `coordinator/store/postgres/erasure_fences.go` (`lockAccountAdmission`), `coordinator/store/memory/erasure_ownership.go` (`accountAdmissionLocked`) |
-| Stripe account, recipient and Checkout creation results | Preserve cleanup IDs in the erasure outbox and refuse restoring personal fields | `coordinator/store/postgres/erasure_external.go` (`fenceErasureExternalObject`), `coordinator/store/memory/erasure_external.go` (`retainDeletedExternalObjectLocked`) |
+| `CreateAPIKey`, `CreateProviderToken`, `UpsertProvider`, `UpsertProviderWithReputation`, hardware-interest writes, payout admission | Refused after acquiring the same user fence as erasure; cancellation permits new writes again. Provider upserts also leave an existing soft-deleted provider row unchanged | `coordinator/store/postgres/erasure_fences.go` (`lockAccountAdmission`), `coordinator/store/postgres/providers.go` (`upsertProviderRecord`), `coordinator/store/memory/erasure_ownership.go` (`accountAdmissionLocked`), `coordinator/store/memory/providers.go` (`upsertProviderRecordLocked`) |
+| `SetUserStripeAccount`, `SaveGlobalRecipient`, and Checkout creation results | Preserve cleanup IDs in the erasure outbox and refuse restoring personal fields | `coordinator/store/postgres/erasure_external.go` (`fenceErasureExternalObject`), `coordinator/store/memory/erasure_external.go` (`retainDeletedExternalObjectLocked`) |
 | Usage and route persistence | Preserve accounting while clearing erased owners' location and region fields | `coordinator/store/postgres/erasure_observations.go` (`erasedObservationOwners`), `coordinator/store/memory/usage.go` (`RecordUsage`), `coordinator/store/memory/route_telemetry.go` (`recordInferenceRouteLocked`) |
 
 ## Related

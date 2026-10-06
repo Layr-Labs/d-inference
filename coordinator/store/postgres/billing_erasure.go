@@ -12,7 +12,7 @@ func fenceBillingSession(ctx context.Context, tx pgx.Tx, session *store.BillingS
 	if session.PaymentMethod != "stripe" {
 		externalID = ""
 	}
-	deleted, _, err := fenceErasureExternalObject(ctx, tx, session.AccountID, store.ErasureTargetCheckoutSessions, externalID)
+	deleted, err := fenceErasureExternalObject(ctx, tx, session.AccountID, store.ErasureTargetCheckoutSessions, externalID)
 	if err != nil {
 		return false, err
 	}

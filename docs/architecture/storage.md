@@ -227,13 +227,13 @@ Legend: blue = step, amber = decision, green = serving, red = exit 1.
 ### Soft-deleted rows
 
 A row in `users`, `api_keys`, `providers` or `provider_tokens` whose
-`deleted_at` is set belongs to an erased account, and every live read hides
-it. Only [account erasure](#account-erasure) sets `deleted_at`. Writes do
-not filter, with one exception: the provider upsert leaves a soft-deleted
-`providers` row alone, so a late heartbeat persist cannot rewrite it
-(`upsertProviderRecord`). The model is in
-[schema lifecycle](schema-lifecycle.md#soft-delete); every filtered read,
-index and effect is in the [soft-delete reference](../reference/soft-delete.md).
+`deleted_at` is set is hidden from live reads. [Account erasure](#account-erasure)
+sets the column when the grace period begins. New credentials, provider records
+and payout admissions acquire the account fence and refuse a deleted account;
+late external creation results retain cleanup IDs in the erasure outbox.
+Historical accounting and revocation paths remain available. The model is in
+[schema lifecycle](schema-lifecycle.md#soft-delete); the exact read and write
+behavior is in the [soft-delete reference](../reference/soft-delete.md).
 
 ### Provider earnings and history
 

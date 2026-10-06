@@ -241,8 +241,8 @@ not use sqlc. Adding a query is [Write store queries with sqlc](../developer/sql
 
 Account erasure must hide an account's rows at once and must let the same
 person sign up again. Four tables carry a nullable `deleted_at TIMESTAMPTZ`
-(version 17). A row with `deleted_at` set belongs to an erased account. No
-code sets the column yet; the erasure writer will. Every store read that
+(version 17). `RequestAccountErasure` sets the column when the grace period
+begins, before the irreversible scrub. Every store read that
 returns a live user, key, provider record or provider token filters
 `deleted_at IS NULL` in `PostgresStore` and checks `DeletedAt` in
 `MemoryStore`. The full list of reads is in the
@@ -271,7 +271,14 @@ result, red = hidden.
   token lookup, provider record, MDA chain and account listing, usage-flow
   provider locations, and the machine-inventory backfill skip soft-deleted
   rows. `UpdateAPIKey` and `RotateAPIKey` also filter, so they cannot change a
-  soft-deleted key. Writes and hard deletes do not filter.
+  soft-deleted key.
+- **Write fences.** New credential, provider and payout admissions refuse a
+  deleted account under the same user lock as erasure. Late external creation
+  results retain cleanup IDs in the outbox; delayed usage and route writes
+  omit personal locations after the scrub. Historical accounting, revocation
+  and hard deletes remain available. The
+  [soft-delete reference](../reference/soft-delete.md#late-writes) lists the
+  affected methods and the paths that do not filter.
 - **Partial unique index.** `idx_users_privy_live` (version 18) keeps one
   live user per Privy ID and ignores soft-deleted users. Versions 19 and 20
   then drop the full-table key `users_privy_user_id_key` and the index

@@ -44,7 +44,7 @@ func (s *PostgresStore) SaveGlobalRecipient(r store.GlobalRecipient) error {
 		return err
 	}
 	defer rollbackErasureTx(tx)
-	deleted, _, err := fenceErasureExternalObject(ctx, tx, r.AccountID, store.ErasureTargetGlobalRecipient, r.RecipientID)
+	deleted, err := fenceErasureExternalObject(ctx, tx, r.AccountID, store.ErasureTargetGlobalRecipient, r.RecipientID)
 	if err != nil {
 		return err
 	}
@@ -61,13 +61,7 @@ func (s *PostgresStore) SaveGlobalRecipient(r store.GlobalRecipient) error {
 	if err != nil {
 		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	if deleted {
-		return store.ErrErasureConflict
-	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetGlobalRecipient(accountID string) (*store.GlobalRecipient, error) {

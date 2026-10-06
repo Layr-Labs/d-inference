@@ -81,7 +81,7 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 		return err
 	}
 	defer rollbackErasureTx(tx)
-	deleted, _, err := fenceErasureExternalObject(ctx, tx, accountID, store.ErasureTargetStripeAccount, stripeAccountID)
+	deleted, err := fenceErasureExternalObject(ctx, tx, accountID, store.ErasureTargetStripeAccount, stripeAccountID)
 	if err != nil {
 		return err
 	}
@@ -120,13 +120,7 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("user with account ID %q not found", accountID)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	if deleted {
-		return store.ErrErasureConflict
-	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // GetUserByStripeAccount finds a user by their Stripe connected account ID.

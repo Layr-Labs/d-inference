@@ -491,6 +491,20 @@ It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
+It also invokes `scripts/test-install-coordinator-binding.py`, which runs the
+installer's `--bind-coordinator-test` hook (with `COORD_URL` set) against
+temporary `provider.toml` files: production removes only the
+`[coordinator] url` line and creates no file, and other coordinators replace or
+add only that line. `InstallerCoordinatorBindingTests`
+(`provider-swift/Tests/DarkbloomCLITests/`) loads the result through the CLI
+config loaders, and `TestServedInstallerBindsProviderToServingCoordinator`
+(`coordinator/tests/api/releases/contracts/install_test.go`) runs the installer
+as the coordinator serves it.
+
+`go test ./coordinator/tests/cmd/devnet-seed` seeds a throwaway database on a
+**disposable** `DATABASE_URL` through `devnetseed.Run`
+(`coordinator/internal/command/devnetseed`), checks row counts and balances,
+and checks that a database with users is refused before migrations run.
 
 `provider-swift/Tests/ProviderCoreTests/Coordinator/CoordinatorIntegrationTests.swift`
 exercises enrollment over real local HTTP with a linked test token and P-256

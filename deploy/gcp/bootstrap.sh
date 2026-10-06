@@ -2,9 +2,10 @@
 # One-shot GCP bootstrap for the d-inference DEV environment.
 #
 # Creates: Artifact Registry repos, Cloud SQL (Postgres), a GCE VM running the
-# coordinator container (with a persistent data disk for MicroMDM),
-# Cloud Run for console-ui, service accounts, Secret Manager entries
-# (placeholders), firewall rules. Idempotent: safe to re-run.
+# coordinator container (with a persistent data disk for MicroMDM), service
+# accounts, empty Secret Manager entries for the 10 secrets listed under
+# create_secret below, firewall rules. The console UI runs on Vercel, not GCP.
+# Idempotent: safe to re-run.
 #
 # Why GCE VM for the coordinator: MicroMDM uses
 # BoltDB. Both need reliable local filesystem semantics, so the coordinator
@@ -24,6 +25,9 @@
 #   - eigeninference-privy-verification-key  (dev Privy app)
 #   - eigeninference-micromdm-api-key        (openssl rand -hex 32)
 #   - eigeninference-mdm-push-p12-b64        (base64url-encoded MDM push PKCS#12)
+#
+# The Stripe, Datadog, profile-signing and ip-api secrets are not created
+# here; create them first (docs/operations/dev-environment.md, step 2).
 
 set -euo pipefail
 

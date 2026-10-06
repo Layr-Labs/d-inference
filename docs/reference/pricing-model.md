@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -38,8 +38,8 @@ pieces fit together, and what they guarantee, is explained in
 | `stripeRecipientTransferDelay` | `24 * time.Hour` | availability delay of a transfer into a `recipient`-agreement account; sweep-matching cutoff | `coordinator/api/billing/payouts/stripe_payouts_webhooks.go` |
 | `stripeReconcileInterval` / `stripeStuckThreshold` / `stripeReconcileBatch` | `1 * time.Hour` / `48 * time.Hour` / `200` | payout reconciler cadence, stuck threshold, rows per pass | `coordinator/api/billing/payouts/stripe_reconcile.go` |
 | Stripe deposit minimum | `0.50` USD | `amount_usd` lower bound on `create-session` | `coordinator/api/billing/checkout.go` (`HandleStripeCreateSession`) |
-| `ReferralSharePercent` default | `20`; `NewReferralService` resets values outside `(0, 50]` to `20` | referrer's share of the platform fee | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/referral.go` (`NewReferralService`) |
-| Referral code | 3–20 characters, letters/digits/hyphen, no leading or trailing hyphen, uppercased | `validateReferralCode` | `coordinator/billing/referral.go` |
+| `ConsumerReferralPercent` | `5` (fixed) | referrer reward as a percent of collected token spend | `coordinator/store/consumer_settlement.go` |
+| Referral code | 3–20 ASCII characters, letters/digits/hyphen, no leading or trailing hyphen, uppercased | `validateReferralCode` | `coordinator/billing/referral.go` |
 | Invite code default `max_uses` | `1`; auto-generated code `INV-<8 hex>` | `HandleAdminCreateInviteCode` | `coordinator/api/accounts/invite_handlers.go` |
 | Financial rate limiter | `0.2` rps, burst `3` | `create-session`, `POST/PATCH/DELETE /v1/keys`, referral register/apply, invite create/redeem, Stripe dashboard link | `coordinator/ratelimit/config.go` (`Financial`) |
 | Service rate limiter | `200` rps, burst `600` | `RoleService` accounts | `coordinator/ratelimit/config.go` (`Service`) |
@@ -71,7 +71,16 @@ Storage: `model_prices(account_id, model, input_price, output_price,
 cache_read_price NULL, updated_at)`, primary key `(account_id, model)`
 (`coordinator/store/postgres/`; `store.ModelPrice.CacheReadPrice *int64`).
 
+Existing referral codes created by older releases may contain Unicode letters;
+applying those codes remains supported. New registration uses ASCII code rules.
+
 ## Formulas
+
+For eligible token-promotion requests, referral rewards use only
+`ModelTokenReservation.ConsumerCostMicroUSD`; `SponsoredMicroUSD` is excluded.
+The routing exclusions below also exclude the paid portion from rewards and
+eligible-spend totals
+(`coordinator/internal/store/consumersettlement/settlement.go`, `PromotionRecord`).
 
 | Quantity | Formula | Citation |
 |---|---|---|
@@ -89,11 +98,17 @@ cache_read_price NULL, updated_at)`, primary key `(account_id, model)`
 | Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `HandleCompleteAt` |
 | Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/api/inference/consumer.go` (`refundReservedBalance`) |
 | Platform fee | `totalCost × resolveFeePercent(user.PlatformFeePercent) / 100`; override clamped to `[0, 100]`, else `platformFeePercent` | `coordinator/payments/pricing.go` (`PlatformFeeWithPercent`, `resolveFeePercent`) |
-| Referral reward | `platformFee × ReferralSharePercent / 100`, carved out of the platform fee | `coordinator/billing/referral.go` (`DistributeReferralReward`) |
+| Referral reward | For eligible usage, `collectedMicroUSD / (100 / ConsumerReferralPercent)` = `floor(collectedMicroUSD / 20)`; additive Darkbloom-funded withdrawable credit, rounded down per request | `coordinator/store/postgres/consumer_settlement.go`, `coordinator/store/memory/consumer_settlement.go` (`FinalizeConsumerCharge`) |
+| Referral basis | Actual collected token charge after reservation clamp/refund/debit handling; zero for free, uncollected, or routing-excluded usage; attribution is captured at settlement, with no historical backfill | `coordinator/internal/store/consumersettlement/settlement.go` (`Cost`); `coordinator/store/postgres/consumer_settlement.go` (`FinalizeConsumerCharge`) |
+| Referral routing exclusions | Execution by the consumer's own provider, or `SelfRouteOnly`, `FreeSelfRoute`, `PreferOwner`, or nonempty `AllowedProviderSerials`, excludes rewards and eligible-spend totals. Owner-preferred paid fallback is still excluded. Consumer billing, provider payouts, and promotion grant use are unchanged. | `coordinator/api/inference/provider_inference.go` (`HandleCompleteAt`, `referralEnabled`) |
 | Provider payout | `totalCost − platformFee` | `coordinator/payments/pricing.go` (`ProviderPayoutWithPercent`) |
 | Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect.go` (`FeeForMethodMicroUSD`) |
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/billing/payouts/stripe_withdraw.go` (`HandleStripeWithdraw`) |
 | Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/` (`KeySpendSince`); `coordinator/api/inference/key_policy.go` (`checkKeySpendCap`) |
+
+`AllowedProviderSerials` is a retained internal restriction, not a public
+machine-selection field. Public `provider_serial` and `provider_serials` inputs
+are stripped (`coordinator/api/inference/consumer.go`, `StripProviderRoutingFields`).
 
 ## Ledger entry types
 
@@ -108,7 +123,7 @@ type is in [billing.md](../architecture/billing.md#ledger).
 | `payout` | `LedgerPayout` | provider credited for serving a job | yes |
 | `platform_fee` | `LedgerPlatformFee` | platform's share credited to account `platform` | no |
 | `withdrawal` | `LedgerWithdrawal` | legacy on-chain withdrawal; no current writer | — |
-| `referral_reward` | `LedgerReferralReward` | referrer's share of a platform fee | yes |
+| `referral_reward` | `LedgerReferralReward` | referrer reward on collected token spend | yes |
 | `stripe_deposit` | `LedgerStripeDeposit` | Stripe Checkout deposit, reference `stripe:<checkout_session_id>` | no |
 | `stripe_payout` | `LedgerStripePayout` | Stripe Connect withdrawal debit, reference `stripe_withdraw:<id>` | debit (both columns) |
 | `invite_credit` | `LedgerInviteCredit` | invite code redemption, reference `invite:<code>` | no |
@@ -132,6 +147,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 | `Debit` | − (fails with `ErrInsufficientBalance` if `balance < amount`) | `LEAST(withdrawable, balance − amount)` | no | `Debit` |
 | `CreateStripeWithdrawalWithDebit` | − | − (fails unless `withdrawable >= amount`) | row insert in the same transaction | `CreateStripeWithdrawalWithDebit` |
 | `CreditProviderAccount` | + | + | on `provider_earnings.job_id` | `CreditProviderAccount`; index `idx_provider_earnings_job` |
+| `FinalizeConsumerCharge` | consumer adjustment; + reward to referrer | consumer debit cap; + reward to referrer | on `consumer_charge_settlements.job_id`; consumer settlement and reward share one transaction | `coordinator/store/postgres/consumer_settlement.go` |
 | `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres/base_rewards.go` |
 
 ## Per-key spend caps
@@ -178,7 +194,8 @@ Connected-account status `users.stripe_account_status`
 | `MinUptimeForAvail` / `FullUptimeForAvail` | `0.90` / `1.00` | `floor.go` |
 | `defaultGraceSeconds` | `90` (open sessions accrue to `last_seen + grace`) | `engine.go` |
 | `FloorDrawBatchLimit` | `4096` pending rows; a larger plan returns an error without truncation or credit | `coordinator/store/floor_draw_batch.go` |
-| Health gates | Current complete public serving authorization; memory/thermal health and loaded-model readiness; linked account; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
+| Authorization gate | Every provider, old or new, requires macOS 27 or later and current qualified App Attest public serving authorization, including machines also enrolled in MDM. The OS claim must be bound to the same authorization; missing, malformed or older versions fail closed. Grandfathered legacy MDM alone never earns new base rewards. Expired, revoked or unqualified App Attest fails this gate even when legacy serving remains available. | `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`, `candidateSessionAuthorized`) |
+| Health gates | Memory/thermal health and loaded-model readiness; linked account and durable machine binding; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `coordinator/payments/baserewards/machine_candidates.go` (`buildCandidates`, `rewardSnapshotEligible`); `coordinator/internal/payments/rewardpolicy/memory.go` (`RewardMemoryGB`) |
 
 Tier table (`floor.go` `floorTiers`; a machine takes the largest tier whose
 `MinGB` it meets; below 24 GB → `0`):
@@ -239,8 +256,8 @@ the financial rate limiter ([Constants](#constants)).
 | `PUT /v1/admin/users/role` | requireAuth; admin | `HandleAdminSetUserRole` |
 | `PUT /v1/admin/users/platform-fee` | requireAuth; admin | `HandleAdminSetUserPlatformFee` |
 | `POST /v1/admin/models/register` | publishing key (`X-Darkbloom-Publishing-Key` or bearer; `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a stored publishing key) | `coordinator/api/access/publishing.go`, `coordinator/api/access/publishing.go`, `coordinator/api/catalog/model_registry_handlers.go` (`HandleRegisterModel`, `RequirePublishingAPIKey`) |
-| `POST /v1/referral/register` | requireAuth + financial; Privy | `coordinator/api/billing/referrals.go` (`HandleReferralRegister`) |
-| `POST /v1/referral/apply` | requireAuth + financial; Privy | `HandleReferralApply` |
+| `POST /v1/referral/register` | requirePrivyAuth + financial | `coordinator/api/billing/referrals.go` (`HandleReferralRegister`) |
+| `POST /v1/referral/apply` | requirePrivyAuth + financial | `HandleReferralApply` |
 | `GET /v1/referral/stats` | requireAuth | `HandleReferralStats` |
 | `GET /v1/referral/info` | requireAuth | `HandleReferralInfo` |
 | `POST /v1/admin/invite-codes` | requireAuth + financial; admin | `coordinator/api/accounts/invite_handlers.go` (`HandleAdminCreateInviteCode`) |
@@ -311,7 +328,6 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_STRIPE_SECRET_KEY`, `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET`, `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | Stripe Checkout: API key, webhook signature, redirects | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET`, `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY`, `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | Stripe Connect: webhook signature, platform country for the service-agreement choice (`RequiredServiceAgreement`, `coordinator/billing/stripe_regions.go`), onboarding redirects | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_BILLING_MOCK` | mock billing; `Config.Check` rejects it alongside a real Stripe key | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
-| `EIGENINFERENCE_REFERRAL_SHARE_PCT` | referrer share of the platform fee (`ReferralSharePercent`, [Constants](#constants)) | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | in-memory reservation holds for `RoleService` accounts | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_BASE_REWARDS`, `EIGENINFERENCE_BASE_REWARDS_K`, `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO`, `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME`, `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | base-rewards engine switch, reduction factor `k`, monthly pool (µUSD), eligibility uptime fraction, per-account cap fraction | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | read by billing config but used for the coordinator's X25519 request-encryption key, not for money | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |

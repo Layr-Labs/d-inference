@@ -1,6 +1,6 @@
 # Soft delete
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Reference for the coordinator store's soft-delete columns: which tables have
 `deleted_at`, every read that hides a soft-deleted row in `PostgresStore` and
@@ -11,7 +11,7 @@ will. Why the model exists and how it fits the schema is in
 
 ## Tables
 
-`coordinator/store/postgres/schema/migrations/00013_soft_delete_columns.sql` adds the
+`coordinator/store/postgres/schema/migrations/00017_soft_delete_columns.sql` adds the
 column; the Go field is `DeletedAt *time.Time` with `json:"-"`
 (`coordinator/store/user_types.go`, `apikey_types.go`, `provider_types.go`,
 `device_auth_types.go`).
@@ -63,7 +63,7 @@ methods are in `coordinator/store/memory/apikey.go`.
 
 | Store method | PostgresStore | MemoryStore | Result for a soft-deleted token |
 |---|---|---|---|
-| `GetProviderToken` | `coordinator/store/postgres/device_auth.go` | `coordinator/store/memory/device_auth.go` | `provider token not found` |
+| `GetProviderToken` | `coordinator/store/postgres/device_auth.go` | `coordinator/store/memory/device_auth.go` | `ErrProviderTokenInvalid` |
 
 ### `providers`
 
@@ -94,18 +94,18 @@ Writes and hard deletes act on a soft-deleted row as on any other row.
 
 | Index | Definition | Version | Why |
 |---|---|---|---|
-| `idx_users_privy_live` | `UNIQUE (privy_user_id) WHERE deleted_at IS NULL` | 14 (`indexMigrations`) | One live user per Privy ID; an erased user's ID can sign up again. Replaces `users_privy_user_id_key` (dropped by version 15) and `idx_users_privy` (dropped by version 16). |
-| `idx_provider_sessions_account` | `provider_sessions (account_id)` | 6 | Erasure finds rows by account |
-| `idx_provider_log_reports_account` | `provider_log_reports (account_id)` | 7 | Erasure finds rows by account |
-| `idx_device_codes_account` | `device_codes (account_id)` | 8 | Erasure finds rows by account |
-| `idx_darkbloom_machine_sessions_account` | `darkbloom_machine_sessions (account_id)` | 9 | Erasure finds rows by account |
-| `idx_model_token_reservations_account` | `model_token_reservations (account_id)` | 10 | Erasure finds rows by account |
-| `idx_inference_routes_consumer_key_hash` | `inference_routes (consumer_key_hash)` | 11 | Erasure finds rows by hashed key |
-| `idx_request_rejections_consumer_key_hash` | `request_rejections (consumer_key_hash)` | 12 | Erasure finds rows by hashed key |
+| `idx_users_privy_live` | `UNIQUE (privy_user_id) WHERE deleted_at IS NULL` | 18 (`indexMigrations`) | One live user per Privy ID; an erased user's ID can sign up again. Replaces `users_privy_user_id_key` (dropped by version 19) and `idx_users_privy` (dropped by version 20). |
+| `idx_provider_sessions_account` | `provider_sessions (account_id)` | 10 | Erasure finds rows by account |
+| `idx_provider_log_reports_account` | `provider_log_reports (account_id)` | 11 | Erasure finds rows by account |
+| `idx_device_codes_account` | `device_codes (account_id)` | 12 | Erasure finds rows by account |
+| `idx_darkbloom_machine_sessions_account` | `darkbloom_machine_sessions (account_id)` | 13 | Erasure finds rows by account |
+| `idx_model_token_reservations_account` | `model_token_reservations (account_id)` | 14 | Erasure finds rows by account |
+| `idx_inference_routes_consumer_key_hash` | `inference_routes (consumer_key_hash)` | 15 | Erasure finds rows by hashed key |
+| `idx_request_rejections_consumer_key_hash` | `request_rejections (consumer_key_hash)` | 16 | Erasure finds rows by hashed key |
 
 All are built `CONCURRENTLY` by `indexMigrations`
 (`coordinator/store/postgres/migration_indexes.go`). Only
-`idx_users_privy_live` reads `deleted_at`. Version 17 also replaces the
+`idx_users_privy_live` reads `deleted_at`. Version 21 also replaces the
 `referrals.referrer_code` foreign key with
 `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`), so a referrer
 code change reaches `referrals`.
@@ -120,6 +120,15 @@ code change reaches `referrals`.
 | History rows that reference the account (usage, earnings, ledger) do not change | no `deleted_at` on those tables |
 | A pre-goose coordinator image cannot boot once a soft-deleted and a live user share a Privy ID | its boot DDL runs `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy`; see the [rollback rules](../operations/schema-migration.md#rollback) |
 | Nothing clears `deleted_at`; there is no restore of a soft-deleted row | no writer of the column exists |
+
+## Documentation coverage
+
+`scripts/docs-impact-rules.json` requires this reference when the current
+live-row readers and writers listed above change, including the API-key SQL
+source and generated adapter. This is a path-based guard, not SQL analysis:
+a new reader or writer must be added to the rule as well as the tables above.
+`scripts/test-docs-impact-check.py` verifies the mapping and keeps unrelated
+history-table files and tests outside this gate.
 
 ## Related
 

@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -18,6 +18,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [`schema-migration.md`](schema-migration.md) | Back up, check for long queries, apply and verify goose migrations; the first goose cut-over; rollback rules |
 | [`coordinator-startup-measurement.md`](coordinator-startup-measurement.md) | Measure post-stop candidate readiness, per-model routable capacity and optional disposable-test inference separately |
 | [`global-payouts.md`](global-payouts.md) | Enable international bank payouts, verify bank arrival and reconcile uncertain transfers |
+| [`provider-emails.md`](provider-emails.md) | Preview provider-owner update audiences, sync Resend segments, test and review unsent campaign drafts |
 | [`provider-release.md`](provider-release.md) | Ship a provider CLI release: version bump, tag, signed and notarized bundle to R2, registration with the coordinator, rollback by deactivation |
 | [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
 | [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |

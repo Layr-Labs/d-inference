@@ -55,6 +55,63 @@ class DocsImpactCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("bypassed", result.stdout)
 
+    def test_sqlc_changes_require_canonical_docs(self) -> None:
+        sources = (
+            "coordinator/store/postgres/sqlc.yaml",
+            "coordinator/store/postgres/queries/api_keys.sql",
+            "coordinator/store/postgres/storedb/models.go",
+        )
+        documents = ("docs/developer/sqlc.md", "docs/reference/sqlc-type-mapping.md")
+        for source in sources:
+            with self.subTest(source=source):
+                related = ("docs/reference/soft-delete.md",) if source.endswith("queries/api_keys.sql") else ()
+                for unrelated in ((), ("docs/architecture/storage.md",)):
+                    missing = self.run_check(source, *related, *unrelated)
+                    self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+                    self.assertIn("sqlc queries and type mappings source changed", missing.stderr)
+                for document in documents:
+                    covered = self.run_check(source, *related, document)
+                    self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+                overridden = self.run_check(source, labels=["docs-not-needed"])
+                self.assertEqual(overridden.returncode, 0, overridden.stdout + overridden.stderr)
+
+        ignored = self.run_check(
+            "coordinator/tests/store/postgres/storedb/models_test.go",
+            "coordinator/store/postgres/storedb/models_test.go",
+        )
+        self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
+
+    def test_soft_delete_reads_and_writes_require_canonical_docs(self) -> None:
+        sources = (
+            "coordinator/store/memory/users.go",
+            "coordinator/store/postgres/users.go",
+            "coordinator/store/memory/device_auth.go",
+            "coordinator/store/postgres/device_auth.go",
+            "coordinator/store/memory/providers.go",
+            "coordinator/store/postgres/provider_read.go",
+            "coordinator/store/postgres/provider_record_write.go",
+            "coordinator/store/memory/apikey.go",
+            "coordinator/store/postgres/queries/api_keys.sql",
+            "coordinator/store/postgres/storedb/api_keys.sql.go",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                related = ("docs/reference/sqlc-type-mapping.md", "docs/architecture/storage.md")
+                missing = self.run_check(source, *related)
+                self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+                self.assertIn("soft-delete reads and writes source changed", missing.stderr)
+                covered = self.run_check(source, *related, "docs/reference/soft-delete.md")
+                self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+        overridden = self.run_check(*sources, labels=["docs-not-needed"])
+        self.assertEqual(overridden.returncode, 0, overridden.stdout + overridden.stderr)
+        ignored = self.run_check(
+            "coordinator/tests/store/postgres/soft_delete_reads_test.go",
+            "coordinator/store/postgres/users_test.go",
+            "coordinator/store/postgres/usage.go",
+            "coordinator/store/memory/ledger.go",
+        )
+        self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
+
     def test_reorganized_owners_keep_canonical_documentation_gates(self) -> None:
         cases = (
             ("coordinator/api/routes.go", "docs/reference/api-contracts.md"),
@@ -63,6 +120,14 @@ class DocsImpactCheckTests(unittest.TestCase):
             ("coordinator/registry/selection/affinity.go", "docs/architecture/routing.md"),
             ("coordinator/app/startup_config.go", "docs/reference/configuration.md"),
             ("coordinator/store/postgres/migrations.go", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/migration_indexes.go", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/schema/migrations/00010_example.sql", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/schema/schema.sql", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/example_schema.go", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/startup.go", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/retired_backfills.go", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/provider_earnings_index.go", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/earnings_window_index.go", "docs/architecture/storage.md"),
             ("coordinator/api/releases/policy.go", "docs/operations/provider-release.md"),
             ("coordinator/store/memory/memory.go", "docs/developer/navigation.md"),
             ("coordinator/app/app.go", "docs/developer/navigation.md"),

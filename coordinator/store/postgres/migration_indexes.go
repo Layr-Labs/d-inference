@@ -27,17 +27,17 @@ func (s *PostgresStore) indexMigrations() []*goose.Migration {
 	}
 	return []*goose.Migration{
 		// Account erasure finds rows by these columns.
-		index(6, "idx_provider_sessions_account", `CREATE INDEX CONCURRENTLY idx_provider_sessions_account ON provider_sessions (account_id)`),
-		index(7, "idx_provider_log_reports_account", `CREATE INDEX CONCURRENTLY idx_provider_log_reports_account ON provider_log_reports (account_id)`),
-		index(8, "idx_device_codes_account", `CREATE INDEX CONCURRENTLY idx_device_codes_account ON device_codes (account_id)`),
-		index(9, "idx_darkbloom_machine_sessions_account", `CREATE INDEX CONCURRENTLY idx_darkbloom_machine_sessions_account ON darkbloom_machine_sessions (account_id)`),
-		index(10, "idx_model_token_reservations_account", `CREATE INDEX CONCURRENTLY idx_model_token_reservations_account ON model_token_reservations (account_id)`),
-		index(11, "idx_inference_routes_consumer_key_hash", `CREATE INDEX CONCURRENTLY idx_inference_routes_consumer_key_hash ON inference_routes (consumer_key_hash)`),
-		index(12, "idx_request_rejections_consumer_key_hash", `CREATE INDEX CONCURRENTLY idx_request_rejections_consumer_key_hash ON request_rejections (consumer_key_hash)`),
+		index(10, "idx_provider_sessions_account", `CREATE INDEX CONCURRENTLY idx_provider_sessions_account ON provider_sessions (account_id)`),
+		index(11, "idx_provider_log_reports_account", `CREATE INDEX CONCURRENTLY idx_provider_log_reports_account ON provider_log_reports (account_id)`),
+		index(12, "idx_device_codes_account", `CREATE INDEX CONCURRENTLY idx_device_codes_account ON device_codes (account_id)`),
+		index(13, "idx_darkbloom_machine_sessions_account", `CREATE INDEX CONCURRENTLY idx_darkbloom_machine_sessions_account ON darkbloom_machine_sessions (account_id)`),
+		index(14, "idx_model_token_reservations_account", `CREATE INDEX CONCURRENTLY idx_model_token_reservations_account ON model_token_reservations (account_id)`),
+		index(15, "idx_inference_routes_consumer_key_hash", `CREATE INDEX CONCURRENTLY idx_inference_routes_consumer_key_hash ON inference_routes (consumer_key_hash)`),
+		index(16, "idx_request_rejections_consumer_key_hash", `CREATE INDEX CONCURRENTLY idx_request_rejections_consumer_key_hash ON request_rejections (consumer_key_hash)`),
 		// A Privy user ID is unique among live users only, so the same person
-		// can sign up again after an erased account. Versions 15 and 16 drop
+		// can sign up again after an erased account. Versions 19 and 20 drop
 		// the old full-table unique constraint and index.
-		index(14, "idx_users_privy_live", `CREATE UNIQUE INDEX CONCURRENTLY idx_users_privy_live ON users (privy_user_id) WHERE deleted_at IS NULL`),
+		index(18, "idx_users_privy_live", `CREATE UNIQUE INDEX CONCURRENTLY idx_users_privy_live ON users (privy_user_id) WHERE deleted_at IS NULL`),
 	}
 }
 

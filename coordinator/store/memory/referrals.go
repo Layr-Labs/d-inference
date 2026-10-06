@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -14,10 +13,10 @@ func (s *MemoryStore) CreateReferrer(accountID, code string) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.referrersByCode[code]; exists {
-		return fmt.Errorf("referral code %q already exists", code)
+		return fmt.Errorf("%w: referral code %q already exists", store.ErrReferralConflict, code)
 	}
 	if _, exists := s.referrersByAccount[accountID]; exists {
-		return fmt.Errorf("account %q is already a referrer", accountID)
+		return fmt.Errorf("%w: account %q is already a referrer", store.ErrReferralConflict, accountID)
 	}
 
 	ref := &store.Referrer{
@@ -50,7 +49,7 @@ func (s *MemoryStore) GetReferrerByAccount(accountID string) (*store.Referrer, e
 
 	ref, ok := s.referrersByAccount[accountID]
 	if !ok {
-		return nil, fmt.Errorf("account %q is not a referrer", accountID)
+		return nil, fmt.Errorf("%w: account %q is not a referrer", store.ErrNotFound, accountID)
 	}
 	copy := *ref
 	return &copy, nil
@@ -61,11 +60,18 @@ func (s *MemoryStore) RecordReferral(referrerCode, referredAccountID string) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.referrersByCode[referrerCode]; !exists {
-		return fmt.Errorf("referral code %q not found", referrerCode)
+	ref, exists := s.referrersByCode[referrerCode]
+	if !exists {
+		return fmt.Errorf("%w: referral code %q", store.ErrNotFound, referrerCode)
 	}
-	if _, exists := s.referrals[referredAccountID]; exists {
-		return errors.New("account already has a referrer")
+	if ref.AccountID == referredAccountID {
+		return fmt.Errorf("%w: cannot refer yourself", store.ErrReferralConflict)
+	}
+	if existing, exists := s.referrals[referredAccountID]; exists {
+		if existing == referrerCode {
+			return nil
+		}
+		return fmt.Errorf("%w: account already has a referrer", store.ErrReferralConflict)
 	}
 
 	s.referrals[referredAccountID] = referrerCode
@@ -92,7 +98,7 @@ func (s *MemoryStore) GetReferralStats(code string) (*store.ReferralStats, error
 
 	ref, ok := s.referrersByCode[code]
 	if !ok {
-		return nil, fmt.Errorf("referral code %q not found", code)
+		return nil, fmt.Errorf("%w: referral code %q", store.ErrNotFound, code)
 	}
 
 	// Sum referral rewards from ledger
@@ -103,9 +109,16 @@ func (s *MemoryStore) GetReferralStats(code string) (*store.ReferralStats, error
 		}
 	}
 
+	var totalSpend int64
+	for _, settlement := range s.consumerSettlements {
+		if settlement.Referrer == ref.AccountID {
+			totalSpend += settlement.Result.CollectedMicroUSD
+		}
+	}
 	return &store.ReferralStats{
-		Code:                 code,
-		TotalReferred:        s.referralCounts[code],
-		TotalRewardsMicroUSD: totalRewards,
+		Code:                       code,
+		TotalReferred:              s.referralCounts[code],
+		TotalRewardsMicroUSD:       totalRewards,
+		TotalReferredSpendMicroUSD: totalSpend,
 	}, nil
 }

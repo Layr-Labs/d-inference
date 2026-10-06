@@ -4,6 +4,7 @@
 package inference
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -17,10 +18,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/backoff"
 	cancellation "github.com/eigeninference/d-inference/coordinator/internal/inference/cancellation"
 	chunkkeys "github.com/eigeninference/d-inference/coordinator/internal/inference/chunkkeys"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/consumercharge"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/firstcontent"
 	inferhedge "github.com/eigeninference/d-inference/coordinator/internal/inference/hedge"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/promotions"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/scangate"
 	latesettlement "github.com/eigeninference/d-inference/coordinator/internal/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
@@ -56,6 +59,9 @@ type Config struct {
 	FirstContentDeadlineBase time.Duration
 	FirstContentSLAAccounts  []string
 	MediaFetch               *mediafetch.Config
+	// Non-positive values retain the safe defaults; limits cannot be disabled.
+	NonStreamingResponseMaxBytes  int
+	NonStreamingResponseMaxChunks int
 }
 
 type Owner struct {
@@ -82,16 +88,19 @@ type Owner struct {
 	keyTokenLimiter          *ratelimit.KeyTokenLimiter
 	coordinatorKey           *e2e.CoordinatorKey
 	mediaResolver            *mediafetch.Resolver
+	responseLimits           responselimit.Limits
 
 	// One owner arbitrates active requests, late settlement, and cancellation.
-	late         *latesettlement.Controller
-	cancels      *cancellation.Controller
-	hedgeGov     *inferhedge.Governor
-	reservations *reservations.Controller
-	promotions   *promotions.Engine
-	chunkKeys    *chunkkeys.Cache
-	scanGate     *scangate.Gate
-	backoff      *backoff.Policy
+	late             *latesettlement.Controller
+	cancels          *cancellation.Controller
+	hedgeGov         *inferhedge.Governor
+	reservations     *reservations.Controller
+	promotions       *promotions.Engine
+	consumerCharges  consumercharge.Engine
+	accountingWrites sync.RWMutex
+	chunkKeys        *chunkkeys.Cache
+	scanGate         *scangate.Gate
+	backoff          *backoff.Policy
 
 	// Prompt-work resources and their read-only operational snapshots.
 	promptArtifacts              *promptcontract.Provisioner
@@ -104,6 +113,10 @@ type Owner struct {
 	exactCacheStatusCacheMu      sync.Mutex
 	exactCacheStatusCache        ExactCacheStatus
 	exactCacheStatusCacheExpires time.Time
+
+	// Missing cache-allowlist entries already named in the operator log.
+	staleAllowlistMu     sync.Mutex
+	staleAllowlistWarned map[registry.CacheRoutingArtifact]struct{}
 }
 
 func New(d Dependencies, cfg Config) *Owner {
@@ -162,6 +175,7 @@ func New(d Dependencies, cfg Config) *Owner {
 		mediaResolver:            mediafetch.NewResolver(mediaConfig, d.Logger),
 		firstContentDeadlineBase: deadline, firstContentPolicy: accountPolicy,
 		late: late, cancels: cancels, promotions: promos,
+		responseLimits: responselimit.Limits{MaxBytes: cfg.NonStreamingResponseMaxBytes, MaxChunks: cfg.NonStreamingResponseMaxChunks},
 
 		hedgeGov: hedgeGov, reservations: holds,
 		scanGate: scans, backoff: retryBackoff, chunkKeys: keys,
@@ -183,6 +197,23 @@ func (s *Owner) SetBilling(service *billing.Service) {
 // CloseResources runs at the existing application shutdown boundary, before
 // the observation owner flushes its final request records.
 func (s *Owner) CloseResources() {
+	// Application shutdown cancels maintenance before draining producers.
+	// Reconcile terminals received during that drain using a fresh deadline,
+	// and finish their asynchronous usage writes before the store is closed.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.consumerCharges.Flush(ctx, s.logger)
+		s.accountingWrites.Lock()
+		s.accountingWrites.Unlock()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		s.logger.Error("consumer settlement shutdown deadline exceeded; financial reconciliation may be required")
+	}
 	if s.promptPreloader != nil {
 		s.promptPreloader.Close()
 	}

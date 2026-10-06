@@ -1,6 +1,6 @@
 # Apply schema migrations in production
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Runbook for applying the goose migrations of a coordinator candidate to the
 production database (Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet`, read
@@ -93,7 +93,7 @@ The replica's `masterInstanceName` names the primary. Wait for status
 
 ### 3. Check for long-running queries
 
-A migration statement waits 3 s for a lock, three times; a
+An SQL migration statement waits 3 s for a lock, for up to three attempts; a
 `CREATE INDEX CONCURRENTLY` waits for every older snapshot. Each query below
 should return no rows (the second returns `0`):
 
@@ -139,7 +139,7 @@ Expected JSON log lines, in this order:
 | `msg` | Fields | Meaning |
 |---|---|---|
 | `postgres startup phase` | `"phase":"connect","result":"applied"` | Connected and pinged |
-| `postgres startup phase` | `"phase":"<index name>","result":"applied"` | One per index that versions 3, 5, 6 to 12 and 14 build; none when no such version is pending |
+| `postgres startup phase` | `"phase":"<index name>","result":"applied"` | One per index that versions 3, 5, 9, 10 to 16 and 18 build; none when no such version is pending |
 | `postgres migration` | `"version":N,"result":"applied","duration_ms":…` | One per applied version, all written after the run ends; none when nothing was pending |
 | `coordinator migrations complete` | `duration_ms` | Exit 0 |
 
@@ -180,7 +180,7 @@ approved operation.
 
 ### Lock timeout
 
-Log: three `postgres migration hit lock_timeout; retrying` warnings, then
+Log: two `postgres migration hit lock_timeout; retrying` warnings, then
 `partial migration error (type:sql,version:N): ERROR: canceling statement due
 to lock timeout (SQLSTATE 55P03)` (`type:go` for an index migration, which
 waits 1 min per attempt instead of 3 s). Version N is not recorded; a transactional
@@ -190,11 +190,11 @@ loop restarts of the container.
 
 ### Invalid index
 
-Versions 6 to 12 and 14 (`buildConcurrentIndex`) drop an invalid leftover and
+Versions 10 to 16 and 18 (`buildConcurrentIndex`) drop an invalid leftover and
 build again on the next run; run step 4 again after you remove the cause.
 
 Log: `index <name> is invalid; repair the interrupted concurrent index build
-before retrying` (versions 3 and 5, `ensureConcurrentIndex`). The build was
+before retrying` (versions 3, 5 and 9, `ensureConcurrentIndex`). The build was
 interrupted and left an invalid index; the version is not recorded. Under
 approval, drop it without blocking writes, then run step 4 again:
 
@@ -238,15 +238,15 @@ the image by these rules:
    applied: its `ADD COLUMN IF NOT EXISTS` brings a dropped column back, and
    its `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb` undoes a later
    `SET NOT NULL`.
-3. **After versions 13 to 16, roll back only to a goose image.** A pre-goose
+3. **After versions 17 to 20, roll back only to a goose image.** A pre-goose
    image runs `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` at boot. If
    a soft-deleted and a live user share a Privy ID, that statement fails and
    the image cannot boot. If they do not, it builds the full unique index
    again without `CONCURRENTLY`, and it stays after you roll forward, because
-   version 16 is already recorded; drop it under approval with
+   version 20 is already recorded; drop it under approval with
    `DROP INDEX CONCURRENTLY IF EXISTS idx_users_privy;`.
 4. **After a row has `deleted_at` set, roll back only to an image that filters
-   it.** Images built before versions 13 to 17 do not filter `deleted_at`, so
+   it.** Images built before versions 17 to 21 do not filter `deleted_at`, so
    they return soft-deleted rows as live
    ([soft-delete reads](../reference/soft-delete.md)).
 5. **Never start a coordinator built before the
@@ -259,42 +259,40 @@ the image by these rules:
 
 ## First production cut-over to goose
 
-The first goose build records the existing schema as version 1 and applies
-versions 2 to 5 once. They change nothing on a schema that the previous
-coordinator built, but a lock timeout inside one of the baseline's
-`DO ... EXCEPTION WHEN others` blocks is swallowed, and goose still records
-version 1.
+The first goose build applies the baseline as version 1 and the subsequent
+versions through 9. Versions 6 to 9 preserve schema additions merged while
+this migration conversion was in review. Required baseline statement failures
+abort startup without recording version 1; a retry resumes the pending version.
 
 - [ ] Step 1 shows `relation "goose_db_version" does not exist`.
-- [ ] The candidate's highest version is 5: deploy a goose build without the
+- [ ] The candidate's highest version is 9: deploy a goose build without the
       soft-delete versions first, so the pre-goose image stays a safe
-      fallback ([rollback rules 2 and 3](#rollback)). Versions 6 to 17 ship in
+      fallback ([rollback rules 2 and 3](#rollback)). Versions 10 to 21 ship in
       a later deploy ([soft-delete release](#soft-delete-release)).
 - [ ] The three retired-backfill markers exist
       ([deploy step 2](coordinator-deploy.md#2-pre-swap-checks-vm-and-db)).
 - [ ] Backup taken; its ID is in the deploy record (step 2).
 - [ ] Step 3 is clean.
 - [ ] Migrations applied (step 4 or the swap). The log shows
-      `postgres migration` for versions 1 to 5 with `"result":"applied"`.
-- [ ] `goose_db_version` lists 0, 1, 2, 3, 4, 5.
+      `postgres migration` for versions 1 to 9 with `"result":"applied"`.
+- [ ] `goose_db_version` lists every version from 0 through 9.
 - [ ] The invalid-index query returns no rows.
-- [ ] The `pg_dump` diff shows only hand-applied objects. A missing column or
-      index means a swallowed statement; apply it under a separate approved
-      operation.
+- [ ] The `pg_dump` diff shows only hand-applied objects. Investigate any other
+      difference before approving the cutover; repairs need separate approval.
 
 ## Soft-delete release
 
-The deploy that applies versions 6 to 17. Run it only after a goose build with
-versions 1 to 5 runs in production, so that a goose image is the fallback.
+The deploy that applies versions 10 to 21. Run it only after a goose build with
+versions 1 to 9 runs in production, so that a goose image is the fallback.
 
 - [ ] The current production image and the fallback image are goose builds;
-      `goose_db_version` lists 0 to 5.
+      `goose_db_version` lists 0 to 9.
 - [ ] Backup taken (step 2) and step 3 clean. The index builds wait for older
       snapshots, up to 1 min per attempt.
 - [ ] Migrations applied. The log shows `postgres startup phase` for the eight
-      indexes of versions 6 to 12 and 14, and `postgres migration` for
-      versions 6 to 17.
-- [ ] `goose_db_version` lists 0 to 17, and the invalid-index query returns
+      indexes of versions 10 to 16 and 18, and `postgres migration` for
+      versions 10 to 21.
+- [ ] `goose_db_version` lists 0 to 21, and the invalid-index query returns
       no rows.
 - [ ] The Privy key swap and the referral key are in place:
 
@@ -312,4 +310,4 @@ versions 1 to 5 runs in production, so that a goose image is the fallback.
 - [Deploy the coordinator](coordinator-deploy.md) — the container swap and its rollback
 - [Schema lifecycle](../architecture/schema-lifecycle.md) — versions, locks, timeouts, failure modes
 - [Add a database migration](../developer/database-migrations.md) — how migrations are written
-- [Soft delete](../reference/soft-delete.md) — what versions 13 to 17 change in the reads
+- [Soft delete](../reference/soft-delete.md) — what versions 17 to 21 change in the reads

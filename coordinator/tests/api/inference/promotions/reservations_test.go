@@ -190,10 +190,26 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	expected := payments.Rates{Input: 1_000_000, Output: 2_000_000}.Cost(cacheusage.Billable(usage))
 	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage})
 
-	if got := st.DebitCount(); got != 1 {
-		t.Fatalf("Debit calls = %d, want 1 completion settlement debit", got)
+	// The atomic settlement owns the debit now; inspect its financial effect
+	// instead of the old standalone Debit call count.
+	var charges int
+	for _, entry := range st.LedgerHistory("svc-complete") {
+		if entry.Type == store.LedgerCharge {
+			charges++
+			if entry.AmountMicroUSD != -expected || entry.Reference != pr.RequestID {
+				t.Fatalf("unexpected settlement charge: %+v", entry)
+			}
+		}
+	}
+	if charges != 1 {
+		t.Fatalf("charge entries = %d, want 1", charges)
 	}
 	if got := st.GetBalance("svc-complete"); got != 1_000_000-expected {
 		t.Fatalf("balance = %d, want %d", got, 1_000_000-expected)
+	}
+	// A new hold can consume the entire remaining balance only if the
+	// completed request released its original in-memory reservation.
+	if service, err := srv.reservations.ReserveInitial("svc-complete", "svc-model", 1_000_000-expected); err != nil || !service {
+		t.Fatalf("service reservation was not released: service=%v err=%v", service, err)
 	}
 }

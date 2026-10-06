@@ -31,7 +31,7 @@ func (l localPrivyTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 
 // rejectingPrivyAuth returns Privy auth whose upstream answers every call with
 // 400 and a body that echoes the admin email.
-func rejectingPrivyAuth(t *testing.T, st store.Store, logger *slog.Logger) *auth.PrivyAuth {
+func rejectingPrivyAuth(t *testing.T, st store.Store) *auth.PrivyAuth {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -55,7 +55,7 @@ func rejectingPrivyAuth(t *testing.T, st store.Store, logger *slog.Logger) *auth
 		AppSecret:       "test-privy-secret",
 		VerificationKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})),
 		HTTPClient:      &http.Client{Transport: localPrivyTransport{target: target}},
-	}, st, logger)
+	}, st, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestAdminOTPFailureOmitsPrivyResponseBody(t *testing.T) {
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			srv, st, logs := logCaptureServer(t)
-			srv.SetPrivyAuth(rejectingPrivyAuth(t, st, slog.New(slog.DiscardHandler)))
+			srv.SetPrivyAuth(rejectingPrivyAuth(t, st))
 
 			w := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(w, personalDataRequest(http.MethodPost, tc.path, tc.body))

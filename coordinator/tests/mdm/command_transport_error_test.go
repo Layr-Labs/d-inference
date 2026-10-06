@@ -17,7 +17,7 @@ import (
 
 // The raw command URL is /v1/commands/<udid>. http.Client puts that URL in a
 // transport error, and the MDA verifier logs the error.
-const transportErrorUDID = "00008112-0011AABBCCDDEE01"
+const commandUDID = "00008112-0011AABBCCDDEE01"
 
 func mdmClient(url string) *production.Client {
 	return production.NewClient(url, "test-key", slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -27,15 +27,15 @@ func TestRequestDeviceAttestationErrorOmitsMicroMDMBody(t *testing.T) {
 	const bodyMarker = "micromdm-body-marker"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = io.WriteString(w, bodyMarker+" "+transportErrorUDID)
+		_, _ = io.WriteString(w, bodyMarker+" "+commandUDID)
 	}))
 	defer ts.Close()
 
-	_, err := mdmClient(ts.URL).RequestDeviceAttestation(context.Background(), transportErrorUDID, "", time.Second, nil)
+	_, err := mdmClient(ts.URL).RequestDeviceAttestation(context.Background(), commandUDID, "", time.Second, nil)
 	if err == nil || !strings.Contains(err.Error(), "status 500") {
 		t.Fatalf("err = %v, want the MicroMDM status", err)
 	}
-	for _, marker := range []string{bodyMarker, transportErrorUDID} {
+	for _, marker := range []string{bodyMarker, commandUDID} {
 		if strings.Contains(err.Error(), marker) {
 			t.Errorf("error contains %q: %v", marker, err)
 		}
@@ -51,11 +51,11 @@ func TestRequestDeviceAttestationTransportErrorOmitsUDID(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	_, err := mdmClient(ts.URL).RequestDeviceAttestation(context.Background(), transportErrorUDID, "", time.Second, nil)
+	_, err := mdmClient(ts.URL).RequestDeviceAttestation(context.Background(), commandUDID, "", time.Second, nil)
 	if err == nil || !strings.Contains(err.Error(), "send DeviceInformation with nonce failed") {
 		t.Fatalf("err = %v, want the send failure", err)
 	}
-	if strings.Contains(err.Error(), transportErrorUDID) {
+	if strings.Contains(err.Error(), commandUDID) {
 		t.Errorf("transport error contains the UDID: %v", err)
 	}
 }
@@ -75,7 +75,7 @@ func TestRequestDeviceAttestationDeadlineKeepsCauseWithoutUDID(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := mdmClient(ts.URL).RequestDeviceAttestation(ctx, transportErrorUDID, "", time.Second, nil)
+	_, err := mdmClient(ts.URL).RequestDeviceAttestation(ctx, commandUDID, "", time.Second, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded in the chain", err)
 	}
@@ -83,7 +83,7 @@ func TestRequestDeviceAttestationDeadlineKeepsCauseWithoutUDID(t *testing.T) {
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("err = %v, want a net.Error timeout in the chain", err)
 	}
-	if strings.Contains(err.Error(), transportErrorUDID) {
+	if strings.Contains(err.Error(), commandUDID) {
 		t.Errorf("deadline error contains the UDID: %v", err)
 	}
 }

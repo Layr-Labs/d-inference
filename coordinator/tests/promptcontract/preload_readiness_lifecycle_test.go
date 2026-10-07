@@ -17,16 +17,26 @@ import (
 )
 
 type readinessControllerFixture struct {
-	t            *testing.T
-	controller   *preload.PreloadController
-	provisioner  *catalog.State
-	supervisor   *preloadChildFixture
+	t           *testing.T
+	controller  *preload.PreloadController
+	client      *sidecar.Client // The actual client, beneath any interposer.
+	provisioner *catalog.State
+	supervisor  *preloadChildFixture
+	// activeSet is the controller's actual selection policy. The controller
+	// serializes it; read it only between controller calls.
+	activeSet *preload.PreloadActiveSet
+	// policyClock, once set, replaces the injected policy clock's default of
+	// time since construction.
+	policyClock  atomic.Pointer[func() time.Duration]
 	generation   uint64
 	preloads     atomic.Int64
 	readyCalls   atomic.Int64
 	metricsCalls atomic.Int64
 	ready        atomic.Bool
 	readyStatus  atomic.Int64
+	// continuity makes the child serve /v2/preload through respond, which then
+	// owns the continuity marker. Unset, the child is legacy: /v2/preload is 404.
+	continuity atomic.Bool
 }
 
 // wrap optionally interposes on the controller's actual client, the same
@@ -45,7 +55,11 @@ func newReadinessControllerFixture(t *testing.T, respond func(context.Context, i
 		case "/metrics":
 			f.metricsCalls.Add(1)
 			http.NotFound(w, r)
-		case "/v1/preload":
+		case "/v1/preload", "/v2/preload":
+			if r.URL.Path == "/v2/preload" && !f.continuity.Load() {
+				http.NotFound(w, r)
+				return
+			}
 			var request struct {
 				IDs []string `json:"prompt_contract_ids"`
 			}
@@ -68,8 +82,20 @@ func newReadinessControllerFixture(t *testing.T, respond func(context.Context, i
 	f.provisioner = catalog.New()
 	f.supervisor = &preloadChildFixture{status: preload.ChildStatus{Running: true, Ready: true, ChildGeneration: 1}}
 	var err error
+	f.client = client
+	origin := time.Now()
 	f.controller, err = preload.New(f.provisioner, f.supervisor, controlled, preload.PreloadControllerConfig{
 		FailureBackoffMin: time.Hour, FailureBackoffMax: 2 * time.Hour,
+		PolicyNow: func() time.Duration {
+			if clock := f.policyClock.Load(); clock != nil {
+				return (*clock)()
+			}
+			return time.Since(origin)
+		},
+		ActiveSets: func() *preload.PreloadActiveSet {
+			f.activeSet = preload.NewPreloadActiveSet()
+			return f.activeSet
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +130,10 @@ func readinessModel(id string) string { return "model-" + id }
 func (f *readinessControllerFixture) provision(ids ...string) {
 	statuses := make([]catalog.Status, len(ids))
 	for i, id := range ids {
-		statuses[i] = catalog.Status{ModelID: readinessModel(id), PromptContractID: id}
+		// Exact tuple snapshots require a verified aggregate too. This is only
+		// synthetic setup; no readiness, generation or transport assertion changes.
+		statuses[i] = catalog.Status{ModelID: readinessModel(id), PromptContractID: id,
+			ModelAggregateSHA256: strings.Repeat("e", 64)}
 	}
 	f.generation = f.provisioner.Replace(statuses)
 }
@@ -196,7 +225,10 @@ func TestPreloadVerifiedSetGrowthBypassesOldBackoff(t *testing.T) {
 	}
 }
 
-func TestPreloadOversizedAndEmptySetsCloseBeforePolling(t *testing.T) {
+// The pre-selection controller-capacity oracle remains the old-source control.
+// Overflow selection intentionally no longer submits all nine IDs; Client's
+// direct pre-HTTP nine-ID rejection below remains unchanged.
+func TestPreloadOverflowSelectionAndEmptySetsCloseBeforePolling(t *testing.T) {
 	a := strings.Repeat("a", 64)
 	f := newReadinessControllerFixture(t, func(_ context.Context, _ int64, ids []string) sidecar.PreloadReport { return readinessReport(ids, "") })
 	ids := []string{a}
@@ -211,8 +243,11 @@ func TestPreloadOversizedAndEmptySetsCloseBeforePolling(t *testing.T) {
 		t.Fatal("oversized same-generation catalog remained usable")
 	}
 	f.controller.Reconcile(context.Background())
-	if f.preloads.Load() != 1 || f.controller.Status().Failures != 1 {
-		t.Fatal("capacity refusal bypassed old client/pre-HTTP contract")
+	if f.preloads.Load() != 1 || f.controller.Status().Failures != 0 || f.controller.Status().LastError != "capacity_deferred" {
+		t.Fatal("no eligible overflow demand must stay closed without a fake failed runtime load")
+	}
+	if _, err := f.client.Preload(context.Background(), ids); err == nil || f.preloads.Load() != 1 {
+		t.Fatal("direct over-capacity request bypassed the unchanged Client/pre-HTTP guard")
 	}
 	f.verified()
 	f.controller.Reconcile(context.Background())

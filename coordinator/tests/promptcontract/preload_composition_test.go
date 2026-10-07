@@ -2,6 +2,9 @@ package promptcontract_test
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -51,4 +54,62 @@ func TestPreloadControllerComposesRealOwnersForEmptyCatalog(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("composed controller did not observe the empty catalog: %+v", controller.Status())
+}
+
+func TestPreloadControllerUsesActualProvisioningCatalogBound(t *testing.T) {
+	body := []byte(`{"version":"1.0"}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body) }))
+	defer server.Close()
+	base, _ := url.Parse(server.URL + "/")
+	cache, err := promptcontract.NewArtifactCache(promptcontract.ArtifactCacheConfig{Root: readOnlyTempRoot(t), BaseURL: base, HTTPClient: server.Client(), AllowHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioner, err := promptcontract.NewProvisioner(context.Background(), cache, promptcontract.ProvisionerConfig{MaxModels: 129, MaxConcurrent: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer provisioner.Close()
+	manifests := make([]promptcontract.Manifest, 129)
+	for i := range manifests {
+		manifests[i] = fixtureNestedManifest("tokenizer.json", body)
+		manifests[i].ModelID = fmt.Sprintf("model-%03d", i)
+	}
+	// Publish the shared artifact before the asynchronous catalog pass. The
+	// catalog-size regression must not depend on a three-second download/fsync
+	// deadline while an unrelated builder is active.
+	setup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := cache.Ensure(setup, manifests[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisioner.Reconcile(manifests); err != nil {
+		t.Fatal(err)
+	}
+	waitForProvision(t, provisioner, 129)
+	supervisor, _ := startSupervisorHelper(t)
+	waitForSupervisor(t, supervisor, func(s promptcontract.SupervisorStatus) bool { return s.Ready })
+	// The public assembly must derive its bound from the actual provisioner,
+	// rather than retain the default128 or a foreign caller’s bound1.
+	controller, err := promptcontract.NewPreloadController(provisioner, supervisor, promptcontract.PreloadControllerConfig{MaxCatalogModels: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+	controller.Start(context.Background())
+	// This real supervisor fixture intentionally has no preload endpoint. A
+	// failed attempt proves selection reached IO; invalid selection issues none.
+	deadline := time.Now().Add(3 * time.Second)
+	status := controller.Status()
+	for status.Failures == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		status = controller.Status()
+	}
+	if status.Failures == 0 || status.LastError != "preload_failed" {
+		t.Fatalf("actual129-model provisioning bound not handed off: %+v", status)
+	}
+	snapshot, v := provisioner.VerifiedPreloadArtifacts()
+	if snapshot.Counts.Ready != 129 || len(v) != 129 || len(snapshot.ContractIDs) != 1 {
+		t.Fatalf("verified catalog was pruned: %+v tuples=%d", snapshot, len(v))
+	}
 }

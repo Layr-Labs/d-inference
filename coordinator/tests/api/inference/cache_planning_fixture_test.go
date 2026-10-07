@@ -407,7 +407,6 @@ func newCachePlanningUDSFixtureWithOptions(t *testing.T, s *inference.Owner, reg
 	if options.realSidecar != nil {
 		t.Cleanup(cancel)
 	} // Fatal paths cancel all owners before Close/join.
-	f.controller.Start(ctx)
 	s.SetPromptArtifactProvisioner(provisioner)
 	s.SetPromptContractClient(f.supervisor.Client())
 	s.SetPromptPreloadController(f.controller)
@@ -422,6 +421,8 @@ func newCachePlanningUDSFixtureWithOptions(t *testing.T, s *inference.Owner, reg
 		reg.UpdateModelWeightHashes(providerID, hashes)
 	}
 	reg.SetModelCatalog(catalog)
+	// Match production startup: attach the Registry projection before Start.
+	f.controller.Start(ctx)
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}

@@ -537,7 +537,11 @@ request's avoidable prefill work with the confirmed endpoint's restore cost.
 Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[`cache-aware-routing.md`](cache-aware-routing.md). Cache planning first requires
+an acknowledged tokenizer and current exact Registry eligibility. If verified
+contracts exceed sidecar capacity, bounded authenticated demand selects the
+preloaded subset without waiting for tokenizer preload or raising that capacity;
+see [tokenizer selection](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
 
 ### Native model capacity and registry identity
 

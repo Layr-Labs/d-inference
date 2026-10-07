@@ -128,6 +128,10 @@ type PendingRequest struct {
 	// never a timer and unused by ordinary deadline-exempt selection.
 	FirstContentPlanningHorizon time.Duration
 	Hedge                       bool
+	// Set at reservation commit before dispatch; outcome paths read the
+	// attempt's selection evidence even after provider measurements change.
+	firstContentExplored                   bool
+	firstContentExplorationOutcomeRecorded atomic.Bool
 	// Reservation metadata is owned by the provider pending set and read only
 	// under provider.mu. Removing the pending owner retires prompt reservations;
 	// a dispatched service charge survives in the provider retirement shadow

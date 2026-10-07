@@ -122,14 +122,28 @@ for index, (rule_name, pattern, out, code) in enumerate(json.load(open(os.enviro
 MUTATORS = ["apt-get", "blkid", "caddy", "chmod", "chown", "cp", "dd", "docker", "dpkg", "gcloud",
             "gpg", "install", "ln", "mkdir", "mkfs.ext4", "mount", "mountpoint", "mv", "psql",
             "pg_isready", "rm", "sudo", "systemctl", "systemd-run", "tee", "usermod", "findmnt",
-            "lsblk", "wipefs", "stat", "curl", "id", "dig", "git", "gh", "hostname"]
+            "lsblk", "wipefs", "stat", "curl", "id", "dig", "git", "gh", "hostname",
+            "docker-credential-gcloud"]
+
+
+
+def gnu_ln_available():
+    """swap.sh swaps its rollback symlinks with GNU `ln -T`, as on the Ubuntu VM."""
+    probe = subprocess.run(["ln", "--version"], capture_output=True, text=True)
+    return probe.returncode == 0 and "GNU" in probe.stdout
+
+
+requires_gnu_ln = unittest.skipUnless(
+    gnu_ln_available(), "swap.sh uses GNU ln -T (the Ubuntu VM has it; macOS ln does not)")
 
 
 class Sandbox:
     def __init__(self, testcase, stubs, rules):
         tmp = tempfile.TemporaryDirectory()
         testcase.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        # Resolve the temp root: on macOS it is under a symlink (/var -> /private/var),
+        # and the scripts compare resolved paths against the roots they are given.
+        self.root = Path(tmp.name).resolve()
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.log = self.root / "calls.jsonl"
@@ -826,6 +840,7 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("private database credential cleanup failed", Path(extra["RESULT"]).read_text())
         self.assertEqual(len(list(Path(extra["STATE"]).glob(".pg.*"))), 1)
 
+    @requires_gnu_ln
     def test_rollback_state_publication_failure_preserves_prior_record(self):
         box, extra, _ = self.seeded_swap_box()
         state = Path(extra["STATE"])
@@ -866,6 +881,7 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(box.calls("docker"), [])
         self.assertEqual(box.calls("install"), [])
 
+    @requires_gnu_ln
     def test_unexpected_post_swap_failure_triggers_first_deploy_restoration(self):
         box, extra, paths = self.seeded_swap_box(with_current=False)
         refresh_bin, envlib, deploy_root = paths
@@ -909,6 +925,7 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(prior_rollback.read_text(), "prior rollback fixture\n")
         self.assertIn("automatic cleanup status=0", Path(extra["RESULT"]).read_text())
 
+    @requires_gnu_ln
     def test_explicit_rollback_failure_is_single_entry_and_retains_recovery_state(self):
         previous_image = "sha256:" + "c" * 64
         for failure in ("restart", "readiness"):

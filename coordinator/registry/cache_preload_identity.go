@@ -10,7 +10,7 @@ import (
 // never computes account scope, samples, debits QPS or observes demand. These
 // identities permit optional tokenizer selection, not inference authorization.
 func (r *Registry) CachePreloadIdentities(verified []promptcontract.VerifiedPreloadArtifact) []promptcontract.PreloadDemandIdentity {
-	if r == nil || len(verified) > maxCacheArtifacts {
+	if r == nil {
 		return nil
 	}
 	r.mu.RLock()
@@ -26,6 +26,9 @@ func (r *Registry) CachePreloadIdentities(verified []promptcontract.VerifiedPrel
 			PromptContractID: identity.PromptContractID}
 		if cachePlanAuthorityRejection(r.cachePlanAuthorityLocked(identity.ModelID, false), input) != "" {
 			continue
+		}
+		if len(admitted) == maxCacheArtifacts {
+			return nil // Bound the eligible projection, not the global verified catalog.
 		}
 		identity.ModelID = strings.Clone(identity.ModelID)
 		identity.ModelAggregateSHA256 = strings.Clone(identity.ModelAggregateSHA256)

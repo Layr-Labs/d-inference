@@ -48,6 +48,13 @@ func (c *PreloadController) SetSelectionSource(source PreloadSelectionSource) bo
 func (c *PreloadController) selectionInput(refreshAvailability bool) (catalog.Snapshot, ChildStatus, PreloadSelectionInput) {
 	provisioned, verified := c.provisioner.VerifiedPreloadArtifacts()
 	child := c.supervisor.Status()
+	if len(verified) > c.config.MaxCatalogModels {
+		// Reject oversized authoritative input before invoking projections or
+		// retaining advisory metadata. The policy performs the same bound check.
+		return provisioned, child, PreloadSelectionInput{CatalogGeneration: provisioned.Generation,
+			ChildGeneration: child.ChildGeneration, Capacity: c.client.MaxPreloadIDs(),
+			MaxCatalogModels: c.config.MaxCatalogModels, Verified: verified}
+	}
 	c.mu.RLock()
 	source := c.selectionSource
 	sameVerified := c.selection.HoldsVerified(provisioned.Generation, verified)
@@ -83,7 +90,7 @@ func (c *PreloadController) selectionInput(refreshAvailability bool) (catalog.Sn
 	}
 	return provisioned, child, PreloadSelectionInput{
 		CatalogGeneration: provisioned.Generation, ChildGeneration: childGeneration,
-		Capacity: c.client.MaxPreloadIDs(), Verified: verified,
+		Capacity: c.client.MaxPreloadIDs(), MaxCatalogModels: c.config.MaxCatalogModels, Verified: verified,
 		Admissible: admissible, PubliclyAvailable: available,
 	}
 }

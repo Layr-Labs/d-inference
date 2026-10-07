@@ -25,6 +25,9 @@ func NewPreloadController(provisioner *Provisioner, supervisor *Supervisor, conf
 	if provisioner == nil || supervisor == nil || supervisor.Client() == nil {
 		return nil, ErrInvalidConfig
 	}
+	// Full verified membership follows the actual immutable provisioning bound,
+	// including programmatic construction outside the application assembly.
+	config.MaxCatalogModels = provisioner.maxModels
 	controller, err := preload.New(provisioner, preloadChild{supervisor}, supervisor.Client(), config)
 	if err != nil {
 		return nil, err

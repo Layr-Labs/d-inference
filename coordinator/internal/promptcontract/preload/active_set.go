@@ -43,6 +43,7 @@ type PreloadSelectionInput struct {
 	CatalogGeneration uint64
 	ChildGeneration   uint64
 	Capacity          int // Actual configured Client/Supervisor capacity, not a new cap.
+	MaxCatalogModels  int // Actual provisioning limit; zero uses the default catalog bound.
 	Verified          []VerifiedPreloadArtifact
 	Admissible        []PreloadDemandIdentity // Exact current Registry/allowlist intersection.
 	PubliclyAvailable []string                // Advisory model IDs, projected onto Verified.
@@ -426,6 +427,17 @@ func (p *PreloadActiveSet) BeginAttempt(now time.Duration) (PreloadSelectionLeas
 // for partial reports, fresh Client.Ready. This method cannot establish either.
 // Every omitted member failed/has unknown completion; no prior S is restored.
 func (p *PreloadActiveSet) CompleteAttempt(now time.Duration, lease PreloadSelectionLease, successful []string, failureBackoff time.Duration) bool {
+	return p.completeAttempt(now, lease, successful, nil, failureBackoff)
+}
+
+// CompleteUncertainAttempt retires an unknown transport completion. The owner
+// may retain only current negotiated acknowledgements. These preserve residency
+// metadata, never become successes of this attempt or acknowledge new members.
+func (p *PreloadActiveSet) CompleteUncertainAttempt(now time.Duration, lease PreloadSelectionLease, retained []string, failureBackoff time.Duration) bool {
+	return p.completeAttempt(now, lease, nil, retained, failureBackoff)
+}
+
+func (p *PreloadActiveSet) completeAttempt(now time.Duration, lease PreloadSelectionLease, successful, retained []string, failureBackoff time.Duration) bool {
 	if !p.acceptTick(now) || p.inflight == nil || lease.Operation != p.inflight.Operation || !lease.Key.Equal(p.inflight.Key) {
 		return false
 	}
@@ -436,7 +448,7 @@ func (p *PreloadActiveSet) CompleteAttempt(now time.Duration, lease PreloadSelec
 		return false
 	}
 	seen := make(map[string]bool, len(p.key.Desired))
-	valid := len(successful) <= len(p.key.Desired)
+	valid := len(successful) <= len(p.key.Desired) && len(retained) <= len(p.key.Desired)
 	if valid {
 		for _, id := range successful {
 			if !sidecar.ValidHash(id) || seen[id] || !slices.Contains(p.key.Desired, id) {
@@ -446,8 +458,19 @@ func (p *PreloadActiveSet) CompleteAttempt(now time.Duration, lease PreloadSelec
 			seen[id] = true
 		}
 	}
+	kept := make(map[string]bool, min(len(retained), len(p.key.Desired)))
+	for _, id := range retained {
+		if !valid {
+			break
+		}
+		if !sidecar.ValidHash(id) || kept[id] || !slices.Contains(p.key.Desired, id) {
+			valid = false
+			break
+		}
+		kept[id] = true
+	}
 	if !valid {
-		seen = map[string]bool{}
+		seen, kept = map[string]bool{}, map[string]bool{}
 	}
 	failed := len(seen) != len(p.key.Desired)
 	if failed && (failureBackoff <= 0 || failureBackoff > time.Duration(1<<63-1)-now) {
@@ -474,7 +497,9 @@ func (p *PreloadActiveSet) CompleteAttempt(now time.Duration, lease PreloadSelec
 					p.demand[identity] = demand
 				}
 			}
-		} else {
+		} else if !kept[id] || !member.admitted {
+			// Only unacknowledged attempted members are failed. Retained
+			// incumbents keep their original admission and residence time.
 			member.admitted, member.retained, member.failed, member.attemptedAt = false, false, true, now
 			p.retryAt[id] = now + failureBackoff
 			p.markWaiting(id, now, true)
@@ -486,7 +511,11 @@ func (p *PreloadActiveSet) CompleteAttempt(now time.Duration, lease PreloadSelec
 }
 
 func validatePreloadSelection(input PreloadSelectionInput) ([]VerifiedPreloadArtifact, []PreloadDemandIdentity, error) {
-	if input.CatalogGeneration == 0 || input.Capacity <= 0 || len(input.Verified) > preloadActiveSetMaxTuples || len(input.Admissible) > preloadActiveSetMaxTuples || len(input.PubliclyAvailable) > preloadActiveSetMaxTuples {
+	catalogLimit := input.MaxCatalogModels
+	if catalogLimit == 0 {
+		catalogLimit = defaultPreloadCatalogModels
+	}
+	if input.CatalogGeneration == 0 || input.Capacity <= 0 || catalogLimit < 0 || len(input.Verified) > catalogLimit || len(input.Admissible) > preloadActiveSetMaxTuples || len(input.PubliclyAvailable) > catalogLimit {
 		return nil, nil, errPreloadSelectionInput
 	}
 	verified, admissible := make([]VerifiedPreloadArtifact, 0, len(input.Verified)), make([]PreloadDemandIdentity, 0, len(input.Admissible))
@@ -514,7 +543,7 @@ func validatePreloadSelection(input PreloadSelectionInput) ([]VerifiedPreloadArt
 		}
 	}
 	if input.Published != nil {
-		if len(input.Published.Successful) > preloadActiveSetMaxTuples || (len(input.Published.Successful) > 0 && input.Published.ChildGeneration == 0) {
+		if len(input.Published.Successful) > catalogLimit || (len(input.Published.Successful) > 0 && input.Published.ChildGeneration == 0) {
 			return nil, nil, errPreloadSelectionInput
 		}
 		published := make(map[VerifiedPreloadArtifact]bool)

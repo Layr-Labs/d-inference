@@ -572,3 +572,53 @@ func TestPreloadActiveSetMonotonicClockAndGenerationExhaustion(t *testing.T) {
 		t.Fatal("backward authoritative clock did not close selection")
 	}
 }
+
+func TestPreloadActiveSetUsesConfiguredCatalogBound(t *testing.T) {
+	input := activeSetInput(129, 8)
+	input.MaxCatalogModels = 129
+	for i := range input.Verified {
+		input.Verified[i].PromptContractID = activeSetContract(i%8 + 1)
+	}
+	input.Admissible = input.Verified[:1]
+	input.PubliclyAvailable = []string{input.Verified[128].ModelID}
+	policy := preload.NewPreloadActiveSet()
+	key := activeSetReconcile(t, policy, 0, input)
+	if len(key.Verified) != 129 || len(key.Desired) != 8 {
+		t.Fatal("configured full catalog was pruned or rejected")
+	}
+	activeSetLoadAll(t, policy, 0)
+	input.MaxCatalogModels = 128
+	if _, err := policy.Reconcile(time.Second, input); err == nil || len(policy.Successes()) != 0 {
+		t.Fatal("configured catalog bound failed open")
+	}
+}
+
+func TestPreloadActiveSetUnknownCompletionDoesNotCreateSuccesses(t *testing.T) {
+	input := activeSetInput(10, 8)
+	policy := preload.NewPreloadActiveSet()
+	activeSetReconcile(t, policy, 0, input)
+	activeSetDemand(t, policy, 0, input.Admissible[:8]...)
+	activeSetReconcile(t, policy, 0, input)
+	activeSetLoadAll(t, policy, 0)
+	activeSetDemand(t, policy, 0, input.Admissible[8:]...)
+	activeSetReconcile(t, policy, 30*time.Second, input)
+	lease, ok := policy.BeginAttempt(30 * time.Second)
+	if !ok || !policy.CompleteUncertainAttempt(30*time.Second, lease, activeSetContracts(2, 3, 4, 5, 6, 7, 8), time.Hour) {
+		t.Fatal("current uncertain retirement refused")
+	}
+	if len(policy.Successes()) != 0 {
+		t.Fatal("old acknowledgements became successes of unknown attempt")
+	}
+	activeSetReconcile(t, policy, 60*time.Second, input)
+	activeSetWant(t, policy, 2, 3, 4, 5, 6, 7, 8, 10)
+	lease, ok = policy.BeginAttempt(60 * time.Second)
+	// Supplying an unacknowledged selected newcomer as retained cannot admit it.
+	if !ok || !policy.CompleteUncertainAttempt(60*time.Second, lease, activeSetContracts(2, 3, 4, 5, 6, 7, 8, 10), time.Hour) {
+		t.Fatal("second uncertain retirement refused")
+	}
+	activeSetReconcile(t, policy, 90*time.Second, input)
+	activeSetWant(t, policy, 1, 2, 3, 4, 5, 6, 7, 8)
+	if len(policy.Successes()) != 0 {
+		t.Fatal("unknown newcomer became report success")
+	}
+}

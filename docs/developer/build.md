@@ -9,7 +9,14 @@ post-push verification. Branch updates still require the affected CI gates.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
-operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+operator's live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+The Autopilot E2E harness seeds canonical machine UUID fixtures only for its
+running, authenticated, suite-owned provider handles before starting live
+control (`e2e/testbed/autopilot_cohort.go`, `bindAutopilotFixtureMachines`).
+These isolated trusted inputs replace Apple attestation only in the testbed;
+they do not disable the production cohort gate or the real provider's live-lease
+acknowledgement. See [cohort validation](test.md#autopilot-machine-cohorts).
 
 CI and Integration Tests cancel an older run only when a newer revision of the
 same pull request starts in that workflow. Concurrency groups include the

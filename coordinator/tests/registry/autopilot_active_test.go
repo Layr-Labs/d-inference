@@ -22,7 +22,7 @@ func autopilotActiveRequest(id, model string, now time.Time) *production.Pending
 func TestAutopilotUnscopedWorkNeverCreatesPublicPlacementDemand(t *testing.T) {
 	for _, scope := range []string{"local", "self", "prefer", "serial", "excluded", "cancelled", "completed", "missing profile", "missing start", "missing entry", "invalid"} {
 		t.Run(scope, func(t *testing.T) {
-			cfg := autopilot.DefaultConfig()
+			cfg := autopilotFixtureConfig()
 			cfg.Enabled, cfg.ObserveOnly = true, false
 			cfg.AllowIdleUnload = false
 			r, c, now := newAutopilotControllerTestConfig(t, cfg)
@@ -80,7 +80,7 @@ func TestAutopilotUnscopedWorkNeverCreatesPublicPlacementDemand(t *testing.T) {
 }
 
 func TestAutopilotPublicActiveTraitsAndQueueHandoffArePreserved(t *testing.T) {
-	cfg := autopilot.DefaultConfig()
+	cfg := autopilotFixtureConfig()
 	cfg.Enabled, cfg.ObserveOnly = true, false
 	cfg.AllowIdleUnload = false
 	// Exercise recipient eligibility with an explicit public-capacity deficit.

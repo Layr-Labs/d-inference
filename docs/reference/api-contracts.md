@@ -1408,16 +1408,41 @@ authenticated adapter `coordinator/api/autopilot_handlers.go` (`handleAdminAutop
 | `POST /v1/admin/autopilot` | Admin key or authenticated admin | Required JSON `{ "paused": true }` stops new reservations; `false` resumes in the configured mode, never promotes shadow to live. Existing operations continue reconciliation. Missing/invalid input or unknown fields (including `observe_only`) return 400; unavailable controller returns 409; successful mutation returns the summary independently of ledger availability |
 | `GET /v1/me/providers` | Provider owner | Optional `model_autopilot` live snapshot with consent, exact approved cached network inventory (`selected_models`), `active`, `observe_only`, paused state and last operation; a valid shadow lease reports `active=false`, `observe_only=true` |
 
-Each model summary separates completed logical observations (`logical_requests`)
+Each model summary separates terminal logical observations (`logical_requests`)
 from current qualified public queue occupancy (`queued_requests`) and in-flight
 reservations (`public_inflight_requests`). Live snapshots do not increment arrival
 history. Private/local or unattributed slot work creates no public placement demand.
+Per-model ready/pending capacity and warm coverage use actual serving evidence.
+`eligible_idle` remains a coarse count and uses hypothetical post-activation fits
+for shadow recipients; it does not establish an absent target, donor safety,
+load headroom or positive benefit. Shadow planning's permission projection is
+therefore not a second measurement of currently routable capacity.
 
-The controller summary's `observe_only` distinguishes the default shadow rollout
-from live control. Startup enrollment is consent, not activation; shadow proposals
-are hypothetical and `issued` remains zero. Mode changes use the startup
-[`EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY`](configuration.md#model-autopilot) setting
-and a coordinator restart, not this API.
+The controller summary's `observe_only` is the global shadow override, not the
+mode of every enrolled provider. `false` permits live control only for the
+startup [verified-machine allowlist](configuration.md#model-autopilot). An empty
+list keeps every provider shadow. Startup enrollment is consent, not activation;
+mode and membership changes require coordinator configuration and restart, not
+this API. `POST` also rejects a `live_machine_ids` field.
+
+Source: `coordinator/registry/autopilot/types.go` (`Summary`) and
+`coordinator/registry/autopilot/summary.go` (`Summarize`). The `live_cohort`,
+`live_active` and `shadow` fields count connected, consenting, nonprivate sessions,
+not distinct people or machines. `opted_in` retains its separate planner definition.
+
+| Summary field | Meaning |
+|---|---|
+| `live_cohort` | Sessions assigned live mode by the global switch and verified-machine allowlist; includes locally paused or stale sessions and is not an actionability count |
+| `live_active` | Subset with a matching, unexpired, acknowledged live grant; still not proof of fresh idle capacity or feasible placement |
+| `shadow` | Consenting public sessions assigned shadow mode, including paused/stale sessions and selected machines while global shadow is enabled |
+| `opted_in` | Existing planner-managed or hypothetical-shadow population; not an alias for live membership or approved ready capacity |
+| `live_proposed` | Actions selected by this tick's live pass, including actions later refused by reservation or delivery preparation |
+| `shadow_proposed` | Hypothetical actions selected by this tick's detached shadow pass; never residency commands or live capacity |
+| `proposed` | Sum of `live_proposed` and `shadow_proposed`; each pass has its own per-tick bound |
+| `issued` | Live actions advanced to command send, not confirmed delivery or terminal success; zero while global shadow is enabled or no selected machine is actionable |
+
+No machine UUIDs or account identifiers are added to this summary. The separate
+inventory endpoint remains a controller-independent saved-consent projection.
 
 The `events` array is a recent decision/operation ledger, not a per-tick time
 series. Unchanged shadow decisions retain their first timestamp and can age out

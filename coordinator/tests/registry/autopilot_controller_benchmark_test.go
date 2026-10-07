@@ -22,6 +22,7 @@ func BenchmarkAutopilotControllerFleet1000(b *testing.B) {
 		b.Run(operation, func(b *testing.B) {
 			cfg := autopilot.DefaultConfig()
 			cfg.Enabled, cfg.ObserveOnly = true, false
+			cfg.LiveMachineIDs = autopilotFixtureMachineIDs(1000)
 			reg, controller := newAutopilotFixture(cfg, func(deps *production.Dependencies) {
 				deps.AutopilotSender = func(string, protocol.ModelAutopilotMessage) error { return nil }
 			})
@@ -48,6 +49,10 @@ func BenchmarkAutopilotControllerFleet1000(b *testing.B) {
 				msg := testRegisterMessage()
 				msg.Models, msg.DecodeTPS, msg.PrefillTPS = advertised, 100, 2000
 				p := reg.Register(fmt.Sprintf("bench-%04d", i), nil, msg)
+				p.AccountID = "benchmark-owner"
+				if !reg.BindVerifiedMachineIdentity(p, p.AccountID, autopilotFixtureMachineID(i)) {
+					b.Fatal("benchmark verified machine binding rejected")
+				}
 				reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: autopilotControllerCapacity(10, catalog[1].ID)})
 				p.Mu().Lock()
 				p.Hardware.MemoryGB = 64
@@ -62,7 +67,8 @@ func BenchmarkAutopilotControllerFleet1000(b *testing.B) {
 					p.ModelAutopilot.SessionID = p.ID
 					// Preserve the load-plan workload, not an unrelated idle unload.
 					p.ModelAutopilot.ResidentModels[0].IdleSeconds = 60
-					reg.states[p.ID].AcceptControl(p.ModelAutopilot, protocol.ModelAutopilotControl{Revision: p.ModelAutopilot.Revision, ExpiresAtMS: now.Add(time.Hour).UnixMilli()})
+					reg.states[p.ID].AcceptControl(p.ModelAutopilot, protocol.ModelAutopilotControl{Enabled: true, Revision: p.ModelAutopilot.Revision, ExpiresAtMS: now.Add(time.Hour).UnixMilli()})
+					reg.states[p.ID].AcknowledgeControl(p.ModelAutopilot, p.ID, now)
 				}
 				p.Mu().Unlock()
 				providers = append(providers, p)

@@ -15,6 +15,8 @@ import (
 
 // Uses an isolated coordinator/database and a real local provider. Enrollment
 // applies only to the generated test TOML and the explicitly cached test model.
+// The testbed seeds a trusted fixture UUID for its authenticated provider; this
+// exercises machine selection and real control acknowledgements, not Apple trust.
 func TestIntegration_AutopilotCachedBootstrapAndPause(t *testing.T) {
 	model := testbed.DefaultTestModelID()
 	s := testbed.NewSuite(testbed.SuiteConfig{Autopilot: true,
@@ -22,6 +24,12 @@ func TestIntegration_AutopilotCachedBootstrapAndPause(t *testing.T) {
 	since := time.Now()
 	require.NoError(t, s.Start(context.Background()))
 	t.Cleanup(s.Stop)
+	providers, err := s.BoundProviders()
+	require.NoError(t, err)
+	require.Len(t, providers, 1)
+	account, machine := providers[0].GetVerifiedMachineIdentity()
+	require.Equal(t, s.Providers[0].AccountID, account)
+	require.NotEmpty(t, machine)
 	logProviders := func() {
 		s.Coordinator.Registry.ForEachProviderVerification(func(p *registry.Provider, _ registry.Verification, models registry.PublicProviderModelSnapshot) {
 			t.Logf("autopilot provider diagnostics: status=%s models=%v metrics=%+v autopilot=%+v",
@@ -48,7 +56,7 @@ func TestIntegration_AutopilotCachedBootstrapAndPause(t *testing.T) {
 			return false
 		}
 		for _, event := range events {
-			if event.Phase == "succeeded" && event.Load == model {
+			if event.ProviderID == providers[0].ID && event.Phase == "succeeded" && event.Load == model {
 				return true
 			}
 		}
@@ -62,8 +70,14 @@ func TestIntegration_AutopilotCachedBootstrapAndPause(t *testing.T) {
 		}
 	}
 	require.NotNil(t, intent)
+	require.Equal(t, providers[0].ID, intent.ProviderID)
 	require.Equal(t, model, intent.Load)
 	require.Empty(t, intent.Unload, "empty bootstrap must not release anything")
+	cohort := s.Coordinator.Registry.AutopilotSnapshot()
+	require.False(t, cohort.ObserveOnly)
+	require.Equal(t, 1, cohort.LiveCohort)
+	require.Equal(t, 1, cohort.LiveActive, "cached load must follow a real live-lease acknowledgement")
+	require.Zero(t, cohort.Shadow)
 	resp := postChatCompletionsWithModel(t, s, model, "Reply with one short word.", false, 16)
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()

@@ -8,13 +8,14 @@ import (
 )
 
 type modelAutopilotController struct {
-	paused      atomic.Bool
-	registry    *Registry
-	config      autopilot.Config // immutable after construction
-	demand      *autopilot.DemandTracker
-	control     autopilotcontrol.Operations[*Provider]
-	lastSummary autopilot.Summary // guarded by registry.mu
-	running     bool              // guarded by registry.mu; prevents duplicate control goroutines
+	paused       atomic.Bool
+	registry     *Registry
+	config       autopilot.Config    // immutable after construction
+	liveMachines map[string]struct{} // immutable canonical UUID allowlist
+	demand       *autopilot.DemandTracker
+	control      autopilotcontrol.Operations[*Provider]
+	lastSummary  autopilot.Summary // guarded by registry.mu
+	running      bool              // guarded by registry.mu; prevents duplicate control goroutines
 }
 
 // Snapshots retain session identity in the registry adapter, never in policy.

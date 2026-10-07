@@ -1,9 +1,9 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 Autopilot observes demand for an explicitly approved cached model inventory and
-can manage their memory residency during a separately enabled live rollout.
+can manage their memory residency during a separately enabled, machine-selected live rollout.
 Provider enrollment defaults to off; startup opt-in records interest/consent for
 the default shadow rollout, not active control. Files remain on disk.
 
@@ -22,21 +22,57 @@ flowchart TD
   A["Start: shadow interest, default No"] --> B["Discover downloaded active network models"]
   B --> C["Normal model and memory selector; verify cached inventory"]
   C --> D["Save consent and explicit startup preferences"]
-  D --> E{"Coordinator ObserveOnly?"}
-  D --> G["Capacity planner"]
-  F["Logical arrivals by request shape"] --> G["Capacity planner"]
-  E -->|"true: default"| S["Shadow lease; active=false"]
-  E -->|"false: explicit live rollout"| V["Live lease and provider acknowledgement"]
+  D --> E{"Live permitted and verified machine selected?"}
+  D --> G["Separate live and shadow planner passes"]
+  F["Logical arrivals and actual fleet capacity"] --> G
+  E -->|"no: default"| S["Shadow lease; active=false"]
+  E -->|"yes"| V["Live lease and provider acknowledgement"]
   V --> H
-  G --> R{"ObserveOnly?"}
-  R -->|"true"| P["Record hypothetical proposals; no residency ownership"]
-  R -->|"false"| H["Persist live plan intent and reserve idle device"]
-  H --> I["Recheck session, selection, work, pins and memory"]
+  G --> R{"Recipient mode"}
+  R -->|"shadow"| P["Record hypothetical proposals; no residency ownership"]
+  R -->|"live"| H["Persist live plan intent and reserve idle device"]
+  H --> I["Recheck machine, session, consent, work, pins and memory"]
   I --> J["Release named victims and load cached target"]
   J --> K["Matching terminal heartbeat confirms actual capacity"]
   K --> L["Routing and outcome records"]
   L --> G
 ```
+
+### Machine-selected live control
+
+`EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` overrides every selection. With it
+set to `false`, only machines named in `EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS`
+can receive live control. The allowlist defaults to empty, which keeps everyone
+shadow. Both settings are startup-only; runtime pause/resume changes neither.
+`autopilot.Config.ParseLiveMachineIDs` validates exact UUID entries and the
+controller owns its parsed set (`ConfigureAutopilot`).
+
+`modelAutopilotController.liveMachineLocked` matches the canonical machine UUID
+and its verified account binding against the current authenticated provider
+account. `BindVerifiedMachineIdentity` establishes that binding through the
+existing verified machine-continuity path. Connection IDs, client serials,
+endpoint keys and account-wide fallback identities cannot select live control.
+A legacy database inventory association without a verified runtime binding is
+not sufficient. Reconnection requires identity verification and a live report
+for the new connection; a canonical identity change does not expand the allowlist.
+
+Mode is assigned at bounded lease enqueue and rechecked under the registry and
+provider locks at final reservation. An identity rebind revokes the coordinator's
+old grant without clearing accepted command ownership. Activating a first live
+grant, or reactivating after a mode or identity change, needs a subsequent accepted
+positive-sequence report matching session, consent revision and live mode. This
+is receipt ordering, not a new wire-level grant epoch
+(`coordinator/internal/registry/autopilotstate/lease.go`, `Lease.Accept`, `Lease.Active`).
+
+`autopilotcontrol.Controller.Tick` plans shadow and live recipients separately.
+Both passes retain all provider sessions and actual operation debits. Shadow
+uses its cohort's after-activation permission projection; live donor coverage
+uses only actual serving permissions. Neither hypothetical permissions nor
+pass-local reservations enter live reservation state or provide ready live donor
+capacity. Nonmembers remain ordinary-serving shadow participants, not paused
+providers. Limits apply per pass, while actual concurrency is rechecked at live
+reservation. See [configuration](../reference/configuration.md#model-autopilot)
+and [summary fields](../reference/api-contracts.md#experimental-model-autopilot).
 
 ### Connected inventory reporting
 
@@ -137,7 +173,7 @@ disable update a config revision consumed by the running daemon's capacity poll.
 
 Protocol 3 separates `enabled` consent, `observe_only` shadow mode and `active`
 live control. The coordinator defaults to `ObserveOnly=true`; operators explicitly
-set `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` and restart to switch to live.
+permit live control, select verified machine IDs and restart for a cohort rollout.
 The startup enable switch and runtime admin pause remain independent controls;
 resuming a paused shadow controller does not promote it to live.
 

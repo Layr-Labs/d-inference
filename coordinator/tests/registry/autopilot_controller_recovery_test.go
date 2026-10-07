@@ -190,7 +190,7 @@ func TestAutopilotControllerNormalUnloadIsNotReportedAsUncertain(t *testing.T) {
 }
 
 func TestAutopilotControllerFailedHeartbeatUsesReservedBackoff(t *testing.T) {
-	cfg := autopilot.DefaultConfig()
+	cfg := autopilotFixtureConfig()
 	cfg.Enabled, cfg.ObserveOnly = true, false
 	cfg.FailureBackoff = 7 * time.Minute
 	clock := time.Now()

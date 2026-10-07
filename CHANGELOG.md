@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased - machine-scoped Autopilot
+
+- Restrict live Autopilot to an explicit allowlist of verified machine IDs. An empty list keeps every provider in shadow, even when live rollout is permitted; other machines retain ordinary serving behavior and hypothetical planning. Cached-model consent, memory, pins, donor protection and accepted-operation recovery remain enforced.
+- Report live-cohort, acknowledged-live and shadow populations separately, with live and shadow proposal counts. Machine selection is startup-only and does not deploy or activate a production cohort by itself.
+- Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
+
 ## 0.9.19 - prepared candidate (not published)
 
 This candidate contains the SSD write-endurance correction below. The version

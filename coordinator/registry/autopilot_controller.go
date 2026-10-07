@@ -12,6 +12,10 @@ func (r *Registry) ConfigureAutopilot(cfg autopilot.Config) error {
 	if err := cfg.Check(); err != nil {
 		return err
 	}
+	liveMachines, err := cfg.ParseLiveMachineIDs()
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// Startup-only, like routing policy configuration. A running controller is
@@ -26,7 +30,7 @@ func (r *Registry) ConfigureAutopilot(cfg autopilot.Config) error {
 	if demand == nil {
 		demand = &autopilot.DemandTracker{}
 	}
-	c := &modelAutopilotController{registry: r, config: cfg, demand: demand}
+	c := &modelAutopilotController{registry: r, config: cfg, liveMachines: liveMachines, demand: demand}
 	c.control = r.newAutopilotControl(c)
 	r.autopilot = c
 	return nil

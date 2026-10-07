@@ -213,7 +213,11 @@ func (s *Suite) Start(ctx context.Context) (err error) {
 	}
 	if s.Config.Autopilot {
 		cfg := autopilot.DefaultConfig()
-		// This isolated suite explicitly exercises live load/pause transitions.
+		cfg.LiveMachineIDs, err = s.bindAutopilotFixtureMachines()
+		if err != nil {
+			return err
+		}
+		// Only the suite-owned fixture machines exercise live load/pause transitions.
 		cfg.ObserveOnly = false
 		cfg.Interval = time.Second
 		s.stopAutopilot = s.Coordinator.Registry.StartAutopilotController(s.Ctx, cfg)

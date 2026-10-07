@@ -253,7 +253,7 @@ func TestAutopilotControllerReconnectAndOptOutDoNotAcceptStaleAcknowledgements(t
 }
 
 func TestAutopilotControllerConcurrentReservationsHonorBudgetWithObservedLegacyLoads(t *testing.T) {
-	cfg := autopilot.DefaultConfig()
+	cfg := autopilotFixtureConfig()
 	cfg.Enabled, cfg.ObserveOnly = true, false
 	cfg.MaxConcurrentOperations = 2
 	reg, c, now := newAutopilotControllerTestConfig(t, cfg)

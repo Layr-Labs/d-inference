@@ -61,6 +61,10 @@ func TestAutopilotLeaseRenewalDoesNotWaitForPeerSockets(t *testing.T) {
 	if !first.Enabled || first.ObserveOnly || first.Revision != "test" || first.ExpiresAtMS <= now.UnixMilli() {
 		t.Fatalf("invalid lease: %+v", first)
 	}
+	for _, p := range peers {
+		state := *p.ModelAutopilot
+		r.Heartbeat(p.ID, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: autopilotControllerCapacity(11), ModelAutopilot: &state})
+	}
 	renew(now.Add(r.cfg.Interval))
 	second := readHealthy()
 	if second.ExpiresAtMS <= first.ExpiresAtMS {

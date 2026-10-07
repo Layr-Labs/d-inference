@@ -1,9 +1,9 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
-a separately approved live rollout. Startup opt-in records interest/consent, not
+a separately approved machine-selected live rollout. Startup opt-in records interest/consent, not
 activation; the coordinator defaults to shadow observation.
 
 ## When to use
@@ -27,6 +27,9 @@ Use with compatible protocol-3 coordinator and provider releases. See the
 
 1. Keep `EIGENINFERENCE_AUTOPILOT_ENABLED=true` and
    `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` (the defaults) for observation.
+   Leave `EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS` empty until a specific
+   cohort is approved. Empty always means no live machines, including when
+   `OBSERVE_ONLY=false`.
    Run `darkbloom start` and answer Yes to the experimental shadow-interest prompt
    then use the normal model and memory selector. Explicitly chosen missing
    models may download through that selector. Autopilot subsequently verifies
@@ -61,12 +64,31 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    approvals remain in totals. This read works without the ledger and does not
    refresh providers, verify files or establish ready capacity. Offline inventory
    is unavailable. See the [field definitions](../reference/api-contracts.md#autopilot-inventory-report).
-4. After validation and explicit approval for the production configuration change
-   and restart, set `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` using the
-   [coordinator deployment procedure](coordinator-deploy.md). Verify
-   `observe_only=false` in the controller summary and `active` only after a
-   matching live lease acknowledgement. This startup setting applies to the
-   eligible consenting population; it is not a per-provider mode command.
+4. Select the exact machines before permitting live control. Record the
+   coordinator-issued `Machine ID` from `darkbloom status` on each consenting
+   machine. The read-only admin dashboard's `/app-attest` inventory can help
+   review historical associations, but a database UUID alone does not prove a
+   current verified binding. Do not use a WebSocket provider ID, account ID,
+   serial or public key. A machine without that verified runtime identity stays
+   shadow; do not substitute a weaker identifier.
+
+   After validation and explicit approval for the production configuration
+   change and restart, set `EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS` to the
+   comma-separated approved UUIDs and `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false`
+   using the [coordinator deployment procedure](coordinator-deploy.md). A malformed
+   identifier fails startup rather than broadening or partially applying the list.
+   Verify `live_cohort`, `live_active`, `shadow`, `live_proposed` and
+   `shadow_proposed` in the [controller summary](../reference/api-contracts.md#experimental-model-autopilot).
+   `observe_only=false` alone is not proof of any active machine. Confirm `active`
+   only after a selected machine acknowledges its live lease, and confirm a
+   nonmember remains `shadow` with its ordinary model selection and idle policy.
+
+   Start with one action per tick and one concurrent operation when qualifying
+   a small cohort. Keep pins and donor/memory safeguards intact. Disabling
+   `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` stops standalone surplus unloading,
+   not replacements; an addition-only experiment must also protect all victims
+   or separately constrain replacements. No such additional mode is implied by
+   the machine allowlist.
 5. During live control, use `darkbloom autopilot pin MODEL_ID` or `unpin` to adjust
    selected-model protection. Use `pause` to retain ready models and stop new
    demand-based changes; `resume` resumes participation in the coordinator's
@@ -81,7 +103,10 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    Use an explicit inventory refresh only when pruning exclusions is intended.
 6. Compare live intent and terminal residency with request outcomes, not just
    predicted benefit or issued counts. Provider status includes local resident
-   models and the latest transition result.
+   models and the latest transition result. Live and shadow groups share public
+   queues and donor capacity, so stable membership is not traffic isolation or
+   a clean causal A/B experiment. Too few feasible operations is inconclusive,
+   not a reason to relax safety thresholds.
 
 The live planner chooses cached models for utilization; enrollment and rollout
 are not an earnings guarantee. Newly downloaded catalog builds do not expand
@@ -91,6 +116,10 @@ The action and operation bounds are in
 [configuration](../reference/configuration.md#model-autopilot). Shadow control
 leases report mode without granting residency ownership; shadow sends no
 residency commands and creates no Autopilot routing reservations or fences.
+Changing membership is startup-only. New or reconnected sessions must verify
+their current canonical machine identity again. If that UUID changes, the new
+UUID must itself be explicitly allowlisted; selection does not follow aliases.
+Existing accepted operations are not cancelled by removal.
 
 If cached-inventory verification reports a model as busy, allow the existing
 download, verification or revision update to finish before retrying. An ordinary
@@ -113,6 +142,12 @@ liveness, loaded models, authorization and shadow/live mode.
   optional-assistant fallback, partial failures and ledger unavailability.
 - Verify shadow leases report `observe_only=true` and `active=false`, do not
   suppress the saved idle policy, and cannot authorize residency commands.
+- Verify selected/nonselected machines on the same account, empty selection,
+  global shadow override, unverified/rebound identities and reconnects. Confirm
+  shadow proposals and permissions never supply ready capacity to a live plan.
+- Verify removal, pause and lease expiry preserve accepted-operation ownership,
+  retries and terminal reconciliation. Check actual resident sets after partial
+  failures; a successful pause response does not restore an unloaded model.
 - Verify the exact released builds separately. Local tests and completed load
   commands do not establish production improvement.
 
@@ -123,10 +158,12 @@ liveness, loaded models, authorization and shadow/live mode.
    pausing is not a reversal of already accepted work. Resume with
    `{"paused":false}`; this does not change observation/live mode.
 2. To return the rollout to shadow, obtain approval to set
-   `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` and restart through the deployment
+    `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` and restart through the deployment
    procedure. `EIGENINFERENCE_AUTOPILOT_ENABLED=false` disables the controller at
    startup instead. Neither startup setting is a runtime admin API mutation, nor
-   proof that accepted work has reversed.
+   proof that accepted work has reversed. To remove only particular machines,
+   revise the allowlist and restart with the same approval discipline. Runtime
+   admin pause resets on coordinator restart; it is not a durable kill switch.
 3. On a provider, run `darkbloom autopilot disable`. The daemon consumes the new
    revision at its next capacity poll, completes any accepted operation and
    restores its saved idle policy. Selected files remain downloaded.

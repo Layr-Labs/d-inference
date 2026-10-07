@@ -1,6 +1,8 @@
 package registry_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,11 +34,30 @@ type autopilotFixture struct {
 	events       *autopilotledger.Events
 	loads        *production.ModelLoadPlanner
 	pendingLoads *pendingload.Ledger
+	machineIDs   map[string]string
+}
+
+func autopilotFixtureMachineID(index int) string {
+	return fmt.Sprintf("a6b2a814-b6f5-4a90-a614-%012x", index+1)
+}
+
+func autopilotFixtureMachineIDs(count int) string {
+	ids := make([]string, count)
+	for i := range ids {
+		ids[i] = autopilotFixtureMachineID(i)
+	}
+	return strings.Join(ids, ",")
+}
+
+func autopilotFixtureConfig() autopilot.Config {
+	cfg := autopilot.DefaultConfig()
+	cfg.LiveMachineIDs = autopilotFixtureMachineIDs(16)
+	return cfg
 }
 
 func newAutopilotControllerTest(t *testing.T, observe bool, configure ...func(*production.Dependencies)) (*autopilotFixture, *autopilotcontrol.Controller[*production.Provider], time.Time) {
 	t.Helper()
-	cfg := autopilot.DefaultConfig()
+	cfg := autopilotFixtureConfig()
 	cfg.Enabled, cfg.ObserveOnly = true, observe
 	return newAutopilotControllerTestConfig(t, cfg, configure...)
 }
@@ -58,7 +79,7 @@ func newAutopilotControllerTestConfig(t *testing.T, cfg autopilot.Config, config
 // Factories retain the exact owners used by the registry. No fixture state is
 // substituted for placement, sequence gating, or command reconciliation.
 func newAutopilotFixture(cfg autopilot.Config, configure ...func(*production.Dependencies)) (*autopilotFixture, **autopilotcontrol.Controller[*production.Provider]) {
-	r := &autopilotFixture{cfg: cfg, demand: &autopilot.DemandTracker{}, states: map[string]*autopilotstate.State{}, leases: map[string]*autopilotstate.Lease{}, samples: map[string]*capacityvalue.SampleHistory{}, events: &autopilotledger.Events{}, pendingLoads: &pendingload.Ledger{}}
+	r := &autopilotFixture{cfg: cfg, demand: &autopilot.DemandTracker{}, states: map[string]*autopilotstate.State{}, leases: map[string]*autopilotstate.Lease{}, samples: map[string]*capacityvalue.SampleHistory{}, events: &autopilotledger.Events{}, pendingLoads: &pendingload.Ledger{}, machineIDs: map[string]string{}}
 	var control *autopilotcontrol.Controller[*production.Provider]
 	deps := production.Dependencies{
 		AutopilotControl: func(actual *autopilotcontrol.Controller[*production.Provider]) autopilotcontrol.Operations[*production.Provider] {
@@ -100,20 +121,44 @@ func (r *autopilotFixture) SetStore(s store.Store) {
 
 func autopilotControllerProvider(t *testing.T, r *autopilotFixture, id string, now time.Time, residents ...string) *production.Provider {
 	t.Helper()
+	machineID, ok := r.machineIDs[id]
+	if !ok {
+		machineID = autopilotFixtureMachineID(len(r.machineIDs))
+		r.machineIDs[id] = machineID
+	}
+	return autopilotMachineProvider(t, r, id, machineID, now, residents...)
+}
+
+func autopilotMachineProvider(t *testing.T, r *autopilotFixture, id, machineID string, now time.Time, residents ...string) *production.Provider {
+	t.Helper()
 	p := makeSchedulerProvider(t, r.Registry, id, autopilotTestTarget, 100, autopilotTestDonor)
+	p.Mu().Lock()
+	p.AccountID = "autopilot-fixture-owner"
+	p.Mu().Unlock()
+	if machineID != "" && !r.BindVerifiedMachineIdentity(p, "autopilot-fixture-owner", machineID) {
+		t.Fatal("fixture verified machine binding rejected")
+	}
+	selected, err := r.cfg.ParseLiveMachineIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, live := selected[machineID]
+	observe := r.cfg.ObserveOnly || !live
 	state := autopilotControllerState(residents...)
-	state.Active, state.ObserveOnly, state.SessionID = !r.cfg.ObserveOnly, r.cfg.ObserveOnly, id
-	r.Heartbeat(id, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: autopilotControllerCapacity(10, residents...), ModelAutopilot: state, WarmModels: residents})
+	state.Active, state.ObserveOnly, state.SessionID = !observe, observe, id
 	p.Mu().Lock()
 	p.Hardware.MemoryGB = 64
 	p.PrefillTPS = 2000
 	p.Models = []protocol.ModelInfo{{ID: autopilotTestTarget, SizeBytes: 8_000_000_000, ModelType: "chat"}, {ID: autopilotTestDonor, SizeBytes: 8_000_000_000, ModelType: "chat"}}
 	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: .1, CPUUsage: .1, ThermalState: "nominal"}
-	r.samples[id].MarkAccepted(now)
-	p.BackendCapacity = autopilotControllerCapacity(10, residents...)
 	p.ModelAutopilot = state
-	r.states[id].AcceptControl(state, protocol.ModelAutopilotControl{Revision: "test", ObserveOnly: r.cfg.ObserveOnly, ExpiresAtMS: now.Add(time.Hour).UnixMilli()})
-	p.WarmModels = append([]string{}, residents...)
+	r.states[id].AcceptControl(state, protocol.ModelAutopilotControl{SessionID: id, Revision: "test", Enabled: true, ObserveOnly: observe, ExpiresAtMS: now.Add(time.Hour).UnixMilli()})
+	metrics := p.SystemMetrics
+	p.Mu().Unlock()
+	// The accepted capacity heartbeat acknowledges the fixture's current grant.
+	r.Heartbeat(id, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: autopilotControllerCapacity(10, residents...), ModelAutopilot: state, WarmModels: residents, SystemMetrics: metrics})
+	p.Mu().Lock()
+	r.samples[id].MarkAccepted(now)
 	p.Mu().Unlock()
 	return p
 }

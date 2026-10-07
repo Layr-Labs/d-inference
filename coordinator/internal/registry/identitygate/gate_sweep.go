@@ -47,6 +47,9 @@ func (g *State) pruneLocked(r *Directory, now time.Time) (idle bool, inference I
 		}
 	}
 	g.capacityRateHistory.Prune(now)
+	if g.pruneExplorationLocked(now) {
+		idle = false
+	}
 
 	if !inference.Idle() || len(g.dispatchLoadCooldowns)+
 		len(g.capacityRejectStrikes)+len(g.budgetClamps) > 0 || !g.capacityRateHistory.empty() {

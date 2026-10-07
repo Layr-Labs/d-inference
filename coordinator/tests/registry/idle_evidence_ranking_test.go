@@ -14,11 +14,8 @@ import (
 )
 
 // staleIdleDecodeAge is the age after which an idle provider's decode
-// measurement must no longer lower its ranking. It mirrors
-// idleDecodeMeasurementMaxAge from #1243. #1243 is not merged, so this test
-// cannot reference that symbol yet. After #1243 merges, this test must use
-// its constant instead of this copy. The value is a policy number and the
-// maintainers own it.
+// measurement must no longer lower its ranking. It pins the reviewed
+// thirty-minute policy in internal/registry/performance/rates.go.
 const staleIdleDecodeAge = 30 * time.Minute
 
 // idleEvidenceModel is the model of every provider in these tests.
@@ -179,17 +176,11 @@ func TestIdleDecodeMeasurementAgeDoesNotLoseSelection(t *testing.T) {
 	}
 }
 
-// TestExploredIdleProviderIsCostedAtFleetMedian asserts a proposed policy.
-// It is not a regression test for #1243 or #1254. #1254 admits an idle
-// provider without usable evidence to the pool after
-// forecast.EvidenceExplorationAfter, and it does not promise that the
-// provider is selected. #1243, which is not merged, keeps an old decode rate
-// until staleIdleDecodeAge, on purpose. The proposed policy goes beyond both:
-// from forecast.EvidenceExplorationAfter, an explored provider is costed at
-// the fleet median, so that admission can lead to selection. This test checks
-// the decode half of that policy. The closed-loop tests in
-// tests/registry/routingsim cover the prefill half. The maintainers own this
-// policy.
+// TestExploredIdleProviderIsCostedAtFleetMedian checks the decode half of
+// evidence-exploration pricing: admitted idle providers use fleet medians
+// from forecast.EvidenceExplorationAfter, before the separate thirty-minute
+// decode expiration. Admission enables selection; it does not guarantee it.
+// The closed-loop tests in tests/registry/routingsim cover the prefill half.
 func TestExploredIdleProviderIsCostedAtFleetMedian(t *testing.T) {
 	const fleetMedian = 52.0
 	for _, tc := range []struct {

@@ -282,6 +282,12 @@
 - Correct native MiMo image/video admission to charge all retained RGB plus the largest sequential decode workspace. Release temporary image/frame objects each iteration and convert video BGRA directly to RGB; video no longer reserves a decoded raster for every unsampled source frame. Preserve transport, pixel, native-workspace, KV and OS memory gates.
 - Align `ProviderCore.version` and the coordinator's latest-provider display fallback at `0.9.13`. The coordinator keeps enforcing reported token budgets and per-model concurrency; no admission bypass or production configuration change is included. Publication remains a separate operation.
 
+## Unreleased - idle provider routing recovery
+
+- Let idle providers with missing or stale measurements compete using fleet-median prefill and decode rates, replacing each rate independently while preserving reviewed profiles and deadline confidence. Expire independently dated decode estimates after 30 minutes only on loaded, idle providers with no pending work. Selection is not guaranteed, and physical admission remains unchanged.
+- Back off failed exploration attempts and retain corroborated slow-rate evidence across reconnects, without treating deadline refusals as provider-health faults. Median-priced requests also feed back when they have no deadline or contain vision input. The TTFT calibrator does not learn from median-priced predictions.
+- Deduplicate retained observations across reconnects, preserve newer healthy clears during identity merges, and treat explicitly missing performance evidence separately from an undated legacy EWMA. Replayed or invalid metadata cannot manufacture slow-rate corroboration.
+
 ## Unreleased — native MiMo standing wired residency by default
 
 - Enable native MiMo standing wired residency by default. Without a standing residency set every command buffer must make the ~161 GiB weight payload resident again; on a 256 GiB M3 Ultra the driver kept unwiring it and single-stream decode measured ~0.4 tok/s (the request failed at 234 s), versus 37.8 tok/s with residency, identical requests and weights. The existing bounded ceiling still leaves max(16 GiB, 10%) of physical memory unwired and never grants load admission. `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY=0` (or `false`/`no`/`off`) restores the previous behavior and is now forwarded to the launchd provider job; the former opt-in value `1` remains valid.

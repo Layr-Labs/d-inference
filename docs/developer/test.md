@@ -2,6 +2,52 @@
 
 > Last updated: 2026-10-07
 
+## Autopilot machine cohorts
+
+Run the focused coordinator and isolated harness suites with the pinned Go
+toolchain:
+
+```bash
+go test -race ./coordinator/tests/registry/... -run 'Test(Autopilot|ModelAutopilot)' -count=1
+go test ./coordinator/tests/api/operations/contracts -run Autopilot -count=1
+go test ./coordinator/tests/store/... -run 'MachineAutopilot|Migration|Migrate' -count=1
+go test ./e2e/testbed -count=1
+go test ./e2e -run '^$'
+```
+
+`coordinator/tests/registry/autopilot_machine_cohort_test.go`,
+`autopilot_machine_lease_test.go` and `autopilot_machine_donors_test.go` in the
+same directory cover exact machine selection, mixed-mode isolation, reconnects,
+identity changes and actual donor protection. Existing consent, inventory,
+memory, writer, uncertain-command and terminal-reconciliation tests remain part
+of the focused selector.
+
+`coordinator/tests/registry/autopilot_machine_policy_time_test.go` uses virtual
+time and real memory-store callbacks to cross the freshness boundary during a
+successful policy read or between durable deliveries. It keeps fresh and exact
+boundary positive controls, rejects old buffered tick timestamps, and preserves
+future evaluation epochs without changing production thresholds.
+
+Machine-setting contracts exercise real memory/Postgres stores, canonical merges,
+idempotent revisions and the cached-store wrapper. PostgreSQL tests require a
+disposable local `DATABASE_URL`; `testdb.Main` isolates each process's database.
+Without that variable, PostgreSQL coverage skips. Migration checks cover fresh
+and legacy schemas, preserved settings on replay, constraints and reopening a
+store without truncating its data. HTTP tests use the composed authenticated
+router for desired-mode edits, paging, errors and effective-session projection.
+
+`e2e/testbed/autopilot_cohort_test.go` uses real registry operations to check
+that fixture identities bind only to running suite-owned authenticated accounts.
+It creates real inventory/settings rows while seeding trusted account/launch
+outcomes rather than proving Apple attestation.
+The real-provider `TestIntegration_AutopilotCachedBootstrapAndPause` additionally
+requires a cached model and isolated Postgres; it checks live acknowledgement,
+cached loading, inference, persisted endpoint demotion/re-enable, a fresh
+acknowledgement after re-enable, and pause without rewriting desired mode.
+Compiling it is not running it. Neither the
+unit fixture nor that bootstrap case establishes live replacement quality,
+hardware identity proof or production improvement.
+
 ## SSD write endurance
 
 Run `bash scripts/test-ssd-write-budget.sh` on macOS with Xcode to exercise the

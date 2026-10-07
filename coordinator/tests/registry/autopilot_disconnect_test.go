@@ -72,7 +72,11 @@ func TestAutopilotDisconnectQueuesDurableUncertaintyWithoutLedgerIO(t *testing.T
 			r, c, now := newAutopilotControllerTest(t, false, func(deps *production.Dependencies) {
 				deps.Connections = connections
 			})
-			ledger := &disconnectAutopilotStore{MemoryStore: memory.NewMemory(store.Config{})}
+			backend, ok := store.As[*memory.MemoryStore](r.store)
+			if !ok {
+				t.Fatal("fixture store is not the real memory backend")
+			}
+			ledger := &disconnectAutopilotStore{MemoryStore: backend}
 			r.SetStore(ledger)
 			w := autopilotDisconnectWriter(t, connections, "disconnecting", false)
 			p := autopilotControllerProvider(t, r, "disconnecting", now, autopilotTestDonor)

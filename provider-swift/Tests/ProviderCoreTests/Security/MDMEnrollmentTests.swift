@@ -38,6 +38,24 @@ import Testing
         }
     }
 
+    @Test func configuredRetiredDevHostRemainsForeign() {
+        let serverURL = "https://api.dev.darkbloom.xyz/mdm/connect"
+        let output = """
+        MDM enrollment: Yes (User Approved)
+        MDM server: \(serverURL)
+        """
+        let runner = SecurityCommandRunner { path, arguments in
+            #expect(path == "/usr/bin/profiles")
+            #expect(arguments == ["status", "-type", "enrollment"])
+            return SecurityCommandResult(terminationStatus: 0, stdout: output)
+        }
+
+        #expect(checkMDMEnrollment(
+            coordinatorURL: "wss://api.dev.darkbloom.xyz/ws/provider",
+            runner: runner
+        ) == .enrolledOtherMDM(serverURL: serverURL))
+    }
+
     @Test func coordinatorHostFromConfigIsAccepted() {
         // A self-hosted / future coordinator host outside the static lists is
         // matched via the configured coordinator URL's host.

@@ -397,8 +397,7 @@ See [architecture](../architecture/model-autopilot.md) and
 | Variable | Values / type | Default | Effect / source |
 |---|---|---|---|
 | `EIGENINFERENCE_AUTOPILOT_ENABLED` | bool | `true` | Enable demand collection and controller ticks (`autopilotConfigFromEnv`) |
-| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Global shadow override. Explicit `false` permits live control only for selected, verified machines after restart; nonmembers still receive shadow leases and hypothetical planning (`autopilotConfigFromEnv`; `autopilot_activation.go`, `refreshControlLeases`, `liveMachineLocked`) |
-| `EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS` | Comma-separated nonzero, hyphenated machine UUIDs | `""` | Exact canonical verified-machine allowlist; empty means no live machines, never the whole fleet. Surrounding whitespace and UUID case normalize for membership; duplicates collapse. A malformed entry rejects startup, including when the controller is disabled. Matching also requires the verified account to equal the current authenticated provider account (`autopilot.Config.ParseLiveMachineIDs`; `autopilot_activation.go`, `liveMachineLocked`) |
+| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Global shadow override. Explicit `false` permits live control only for verified machines with persisted live intent; nonmembers still receive shadow leases and hypothetical planning. Changing this global flag requires restart, but machine edits do not (`autopilotConfigFromEnv`; `autopilot_activation.go`, `refreshControlLeases`, `liveMachineLocked`) |
 | `EIGENINFERENCE_AUTOPILOT_INTERVAL` | Go duration, `1s...1m` | `10s` | Tick cadence (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_DEMAND_WINDOW` | Go duration, `1m...30m` | `5m` | Arrival-window workload aggregation (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_MIN_DWELL`, `EIGENINFERENCE_AUTOPILOT_IDLE_UNLOAD_AFTER` | Go durations, dwell `1m...24h`; idle ≥ dwell and ≤ `24h` | `30m`, `1h` | Replacement residence/idle protection and optional standalone quiet window; provider's longer dwell also binds (`autopilotConfigFromEnv`, `Check`) |
@@ -406,6 +405,14 @@ See [architecture](../architecture/model-autopilot.md) and
 | `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Each detached shadow pass and live pass has the per-tick action bound and the available actual-operation budget, including legacy pending loads. Only the live pass reserves operations, with concurrency rechecked at reservation; combined proposals can exceed the per-pass bound (`autopilotConfigFromEnv`; `coordinator/internal/registry/autopilotcontrol/controller.go`, `Controller.Tick`) |
 | `EIGENINFERENCE_AUTOPILOT_TARGET_UTILIZATION` | float, `0.1...0.9` | `0.7` | Quality-capacity utilization factor (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
 | `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `true` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle gates. `false` does not prohibit a load that replaces named victims (`autopilotConfigFromEnv`; `coordinator/registry/autopilot/planner.go`, `Plan`) |
+
+Machine selection is not an environment variable. Persist `desired_mode` through
+the [admin machine API](api-contracts.md#autopilot-machine-settings); its default
+and revision semantics are defined in [storage](../architecture/storage.md#autopilot-machine-settings).
+The registry reads persisted live settings before lease renewal on each tick,
+and applies successful local API edits before returning
+(`coordinator/registry/autopilot_machine_policy.go`,
+`refreshMachineAutopilotPolicy`, `SetMachineAutopilotDesiredMode`).
 
 These implementation defaults have **no environment-variable override** in this
 change; programmatic configuration fields are validated by `autopilot.Config.Check`.
@@ -442,8 +449,8 @@ Live control uses a connection/revision lease lasting `3 * Interval + 10s`.
 Select the coordinator-issued `Machine ID` shown by `darkbloom status`, not a
 WebSocket provider ID, account, serial or endpoint key. Legacy inventory rows
 without a verified runtime machine binding remain shadow. If the canonical UUID
-changes, the new UUID must itself be explicitly allowlisted; aliases do not
-expand the allowlist.
+changes, the survivor retains its own desired mode; aliases do not transfer a
+live setting from another identity.
 `POST /v1/admin/autopilot` changes only the runtime pause flag; resume does not
 promote shadow to live, change membership or alter startup configuration. Restart resets the
 operator pause. See `coordinator/registry/autopilot_activation.go`

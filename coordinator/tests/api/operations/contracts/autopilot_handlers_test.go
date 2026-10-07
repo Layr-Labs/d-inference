@@ -1,6 +1,7 @@
 package operations_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
 )
 
@@ -41,15 +43,20 @@ func TestAutopilotAdminEndpointRequiresAuthAndValidPause(t *testing.T) {
 }
 
 func TestAutopilotAdminSummarySeparatesMachineCohortModes(t *testing.T) {
-	const selected = "c2379b15-f532-45a9-a8c6-000000000001"
-	const pausedSelected = "c2379b15-f532-45a9-a8c6-000000000002"
-	const nonmember = "c2379b15-f532-45a9-a8c6-000000000003"
 	f := testkit.New(t, api.ServerConfig{})
 	f.Server.SetAdminKey("cohort-admin-key")
+	selected := observeAutopilotMachine(t, f.Store, "selected-session")
+	pausedSelected := observeAutopilotMachine(t, f.Store, "paused-selected-session")
+	nonmember := observeAutopilotMachine(t, f.Store, "shadow-session")
 	cfg := autopilot.DefaultConfig()
-	cfg.ObserveOnly, cfg.LiveMachineIDs = false, selected+","+pausedSelected
+	cfg.ObserveOnly = false
 	if err := f.Registry.ConfigureAutopilot(cfg); err != nil {
 		t.Fatal(err)
+	}
+	for _, machineID := range []string{selected, pausedSelected} {
+		if _, err := f.Registry.SetMachineAutopilotDesiredMode(context.Background(), machineID, store.MachineAutopilotLive); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, tc := range []struct {
 		id, machine               string

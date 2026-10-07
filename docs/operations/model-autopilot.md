@@ -16,7 +16,7 @@ Use with compatible protocol-3 coordinator and provider releases. See the
 - Complete coordinator/provider validation and the normal release process.
 - Already have eligible active network models downloaded. Enrollment verifies
   cached inventory but never downloads; see [provider setup](../provider/quickstart.md).
-- Production deployment, configuration, traffic changes and fleet restarts
+- Production deployment, machine-mode edits, configuration, traffic changes and fleet restarts
   require the specific approval described in [coordinator deployment](coordinator-deploy.md).
 - Establish a comparable non-enrolled holdout and observation window. Compare
   qualified logical-request completion and first-content outcomes, donor
@@ -27,9 +27,9 @@ Use with compatible protocol-3 coordinator and provider releases. See the
 
 1. Keep `EIGENINFERENCE_AUTOPILOT_ENABLED=true` and
    `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` (the defaults) for observation.
-   Leave `EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS` empty until a specific
-   cohort is approved. Empty always means no live machines, including when
-   `OBSERVE_ONLY=false`.
+   Keep every machine's persisted `desired_mode` at its default `shadow` until
+   a specific cohort is approved. No live settings means no live machines,
+   including when `OBSERVE_ONLY=false`.
    Run `darkbloom start` and answer Yes to the experimental shadow-interest prompt
    then use the normal model and memory selector. Explicitly chosen missing
    models may download through that selector. Autopilot subsequently verifies
@@ -64,19 +64,35 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    approvals remain in totals. This read works without the ledger and does not
    refresh providers, verify files or establish ready capacity. Offline inventory
    is unavailable. See the [field definitions](../reference/api-contracts.md#autopilot-inventory-report).
-4. Select the exact machines before permitting live control. Record the
-   coordinator-issued `Machine ID` from `darkbloom status` on each consenting
-   machine. The read-only admin dashboard's `/app-attest` inventory can help
-   review historical associations, but a database UUID alone does not prove a
-   current verified binding. Do not use a WebSocket provider ID, account ID,
-   serial or public key. A machine without that verified runtime identity stays
-   shadow; do not substitute a weaker identifier.
+4. Inspect admin-authenticated `GET /v1/admin/autopilot/machines` and page with
+   `next_after` as the next request's `after`. Record each approved machine's
+   `machine_id`, `desired_mode`, `revision` and current `sessions`. Cross-check
+   the coordinator-issued `Machine ID` from `darkbloom status` on the consenting
+   Mac. An offline row or historical dashboard association is not a verified
+   current session. Do not substitute a WebSocket provider ID, account ID, serial
+   or public key.
 
-   After validation and explicit approval for the production configuration
-   change and restart, set `EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS` to the
-   comma-separated approved UUIDs and `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false`
-   using the [coordinator deployment procedure](coordinator-deploy.md). A malformed
-   identifier fails startup rather than broadening or partially applying the list.
+   After explicit approval for each production machine-mode edit, submit
+   `PATCH /v1/admin/autopilot/machines/{machine_id}` with
+   `{"desired_mode":"live"}`. Use the approved coordinator URL, admin credential
+   and canonical machine UUID in this example:
+
+   ```bash
+   curl --fail-with-body --request PATCH \
+     "$COORDINATOR_URL/v1/admin/autopilot/machines/$MACHINE_ID" \
+     --header "Authorization: Bearer $ADMIN_TOKEN" \
+     --header 'Content-Type: application/json' \
+     --data '{"desired_mode":"live"}'
+   ```
+
+   This persists intent without a restart. A 200 response is not an active-lease
+   acknowledgement; inspect `sessions[].effective_mode` and `control_active`.
+   The global shadow override still wins. If it is enabled, separately obtain
+   approval to set `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` and restart using
+   the [coordinator deployment procedure](coordinator-deploy.md). Do not change
+   that override just to make an API edit appear active. Unknown or merged-away
+   IDs return 404 without promoting a different identity; malformed input returns
+   400. See the [machine API contract](../reference/api-contracts.md#autopilot-machine-settings).
    Verify `live_cohort`, `live_active`, `shadow`, `live_proposed` and
    `shadow_proposed` in the [controller summary](../reference/api-contracts.md#experimental-model-autopilot).
    `observe_only=false` alone is not proof of any active machine. Confirm `active`
@@ -88,7 +104,7 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` stops standalone surplus unloading,
    not replacements; an addition-only experiment must also protect all victims
    or separately constrain replacements. No such additional mode is implied by
-   the machine allowlist.
+   the machine selection.
 5. During live control, use `darkbloom autopilot pin MODEL_ID` or `unpin` to adjust
    selected-model protection. Use `pause` to retain ready models and stop new
    demand-based changes; `resume` resumes participation in the coordinator's
@@ -116,10 +132,14 @@ The action and operation bounds are in
 [configuration](../reference/configuration.md#model-autopilot). Shadow control
 leases report mode without granting residency ownership; shadow sends no
 residency commands and creates no Autopilot routing reservations or fences.
-Changing membership is startup-only. New or reconnected sessions must verify
-their current canonical machine identity again. If that UUID changes, the new
-UUID must itself be explicitly allowlisted; selection does not follow aliases.
-Existing accepted operations are not cancelled by removal.
+Machine-mode edits persist across coordinator restarts. New or reconnected
+sessions must verify their current canonical machine identity and acknowledge a
+new grant. If that UUID changes, the survivor keeps its own setting; a live
+setting on a merged-away UUID does not transfer. A successful local demotion
+revokes new-reservation authority before returning, even if the control queue is
+full. Another coordinator observes it on its next successful policy refresh;
+provider display can lag until control delivery or lease expiry. Existing
+accepted operations are not cancelled by removal.
 
 If cached-inventory verification reports a model as busy, allow the existing
 download, verification or revision update to finish before retrying. An ordinary
@@ -145,6 +165,10 @@ liveness, loaded models, authorization and shadow/live mode.
 - Verify selected/nonselected machines on the same account, empty selection,
   global shadow override, unverified/rebound identities and reconnects. Confirm
   shadow proposals and permissions never supply ready capacity to a live plan.
+- Verify desired mode and revision survive restart, same-mode edits preserve
+  acknowledgement, promotion needs a new acknowledgement, and storage failure
+  removes live authority. Exercise an off/on change between refreshes and reject
+  edits to merged-away UUIDs without changing the survivor.
 - Verify removal, pause and lease expiry preserve accepted-operation ownership,
   retries and terminal reconciliation. Check actual resident sets after partial
   failures; a successful pause response does not restore an unloaded model.
@@ -157,12 +181,16 @@ liveness, loaded models, authorization and shadow/live mode.
    new reservations. Existing operations retain retries and reconciliation;
    pausing is not a reversal of already accepted work. Resume with
    `{"paused":false}`; this does not change observation/live mode.
-2. To return the rollout to shadow, obtain approval to set
+2. To remove particular machines, submit an approved
+   `PATCH /v1/admin/autopilot/machines/{machine_id}` with
+   `{"desired_mode":"shadow"}` and verify the persisted response and effective
+   session state. This does not require a restart or reverse accepted work.
+   To force the whole rollout to shadow independently of persisted intent,
+   obtain approval to set
     `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` and restart through the deployment
    procedure. `EIGENINFERENCE_AUTOPILOT_ENABLED=false` disables the controller at
    startup instead. Neither startup setting is a runtime admin API mutation, nor
-   proof that accepted work has reversed. To remove only particular machines,
-   revise the allowlist and restart with the same approval discipline. Runtime
+   proof that accepted work has reversed. Runtime
    admin pause resets on coordinator restart; it is not a durable kill switch.
 3. On a provider, run `darkbloom autopilot disable`. The daemon consumes the new
    revision at its next capacity poll, completes any accepted operation and
@@ -181,6 +209,14 @@ remain owned by `autopilotstate.State`
 (`coordinator/internal/registry/autopilotstate/state.go`, `commands.go` in the same
 directory). This is an ownership map for existing recovery behavior, not a new
 rollback action or proof that an uncertain provider command was unsent.
+
+When machine-setting storage fails, treat 503 as an uncertain edit outcome:
+read back or repeat the same desired-mode edit after recovery. Do not assume the
+database rolled back or clear accepted command ownership. The controller removes
+cached live authority on a failed policy refresh or uncertain write; recovery
+requires a fresh grant and acknowledgement. Consult
+`coordinator/registry/autopilot_machine_policy.go`
+(`SetMachineAutopilotDesiredMode`, `refreshMachineAutopilotPolicy`).
 
 ## Related
 

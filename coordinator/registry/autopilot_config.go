@@ -1,8 +1,6 @@
 package registry
 
 import (
-	"os"
-
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 )
@@ -12,7 +10,6 @@ func autopilotConfigFromEnv() autopilot.Config {
 	p := env.EnvPrefix + "_AUTOPILOT_"
 	c.Enabled = env.EnvBool(p+"ENABLED", c.Enabled)
 	c.ObserveOnly = env.EnvBool(p+"OBSERVE_ONLY", c.ObserveOnly)
-	c.LiveMachineIDs = os.Getenv(p + "LIVE_MACHINE_IDS")
 	c.Interval = envDuration(p+"INTERVAL", c.Interval)
 	c.DemandWindow = envDuration(p+"DEMAND_WINDOW", c.DemandWindow)
 	c.MinDwell = envDuration(p+"MIN_DWELL", c.MinDwell)

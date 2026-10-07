@@ -9,15 +9,19 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/providerwrite"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 )
 
 func TestAutopilotRetriesDoNotBlockLeaseRenewalOrLoseOwnership(t *testing.T) {
 	connections := autopilotDeliveryWriters{}
-	cfg := autopilotFixtureConfig()
+	cfg := autopilot.DefaultConfig()
 	cfg.Enabled, cfg.ObserveOnly, cfg.MaxConcurrentOperations = true, false, 16
 	r, c, now := newAutopilotControllerTestConfig(t, cfg, func(deps *production.Dependencies) {
 		deps.Connections = connections
 	})
+	for i := range 9 {
+		r.selectLiveMachines(t, i)
+	}
 	var peers []*production.Provider
 	var writers []*writerFixture
 	for i := 0; i < 9; i++ {

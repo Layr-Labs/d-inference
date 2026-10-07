@@ -32,31 +32,33 @@ func readAutopilotControl(t *testing.T, w *writerFixture) protocol.ModelAutopilo
 }
 
 func TestAutopilotLiveCohortRequiresVerifiedSelectedMachine(t *testing.T) {
-	selected := autopilotFixtureMachineID(0)
-	for _, mode := range []string{"selected", "empty allowlist", "global shadow", "same account other machine", "unverified", "session spoof", "owner mismatch", "empty owner"} {
+	for _, mode := range []string{"selected", "empty live settings", "global shadow", "same account other machine", "unverified", "session spoof", "owner mismatch", "empty owner"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := autopilot.DefaultConfig()
 			cfg.ObserveOnly = mode == "global shadow"
-			cfg.LiveMachineIDs = strings.ToUpper(selected)
+			w := newWriterFixture(0, 8, nil, nil, nil, nil)
+			t.Cleanup(func() { w.Close(); w.Run() })
+			writers := autopilotDeliveryWriters{}
+			var commands []protocol.ModelAutopilotMessage
+			r, c, now := newAutopilotControllerTestConfig(t, cfg, func(d *production.Dependencies) {
+				d.Connections = writers
+				d.AutopilotSender = func(_ string, cmd protocol.ModelAutopilotMessage) error { commands = append(commands, cmd); return nil }
+			})
+			selected := r.machineID(t, 0)
+			if mode != "empty live settings" {
+				r.selectLiveMachines(t, 0)
+			}
 			machine, id := selected, "connection"
 			switch mode {
-			case "empty allowlist":
-				cfg.LiveMachineIDs = ""
 			case "same account other machine":
-				machine = autopilotFixtureMachineID(1)
+				machine = r.machineID(t, 1)
 			case "unverified", "session spoof":
 				machine = ""
 				if mode == "session spoof" {
 					id = selected
 				}
 			}
-			w := newWriterFixture(0, 8, nil, nil, nil, nil)
-			t.Cleanup(func() { w.Close(); w.Run() })
-			var commands []protocol.ModelAutopilotMessage
-			r, c, now := newAutopilotControllerTestConfig(t, cfg, func(d *production.Dependencies) {
-				d.Connections = autopilotDeliveryWriters{id: w}
-				d.AutopilotSender = func(_ string, cmd protocol.ModelAutopilotMessage) error { commands = append(commands, cmd); return nil }
-			})
+			writers[id] = w
 			p := autopilotMachineProvider(t, r, id, machine, now)
 			p.Mu().Lock()
 			if machine == "" {
@@ -108,7 +110,7 @@ func TestAutopilotMixedCohortIsolatesLoadReplacementAndUnload(t *testing.T) {
 	for _, operation := range []string{"load", "replacement", "unload"} {
 		t.Run(operation, func(t *testing.T) {
 			cfg := autopilot.DefaultConfig()
-			cfg.ObserveOnly, cfg.LiveMachineIDs = false, autopilotFixtureMachineID(0)
+			cfg.ObserveOnly = false
 			cfg.MaxActionsPerTick, cfg.MaxConcurrentOperations = 1, 1
 			writers := autopilotDeliveryWriters{}
 			for _, id := range []string{"z-live", "a-shadow"} {
@@ -125,12 +127,13 @@ func TestAutopilotMixedCohortIsolatesLoadReplacementAndUnload(t *testing.T) {
 					return nil
 				}
 			})
+			r.selectLiveMachines(t, 0)
 			var residents []string
 			if operation != "load" {
 				residents = []string{autopilotTestDonor}
 			}
-			live := autopilotMachineProvider(t, r, "z-live", autopilotFixtureMachineID(0), now, residents...)
-			shadow := autopilotMachineProvider(t, r, "a-shadow", autopilotFixtureMachineID(1), now, residents...)
+			live := autopilotMachineProvider(t, r, "z-live", r.machineID(t, 0), now, residents...)
+			shadow := autopilotMachineProvider(t, r, "a-shadow", r.machineID(t, 1), now, residents...)
 			if operation == "replacement" {
 				for _, p := range []*production.Provider{live, shadow} {
 					p.Mu().Lock()
@@ -208,7 +211,7 @@ func TestAutopilotReservationRechecksVerifiedMachineCohort(t *testing.T) {
 				if change == "another selected identity" {
 					index = 1
 				}
-				if !r.BindVerifiedMachineIdentity(p, p.AccountID, autopilotFixtureMachineID(index)) {
+				if !r.BindVerifiedMachineIdentity(p, p.AccountID, r.machineID(t, index)) {
 					t.Fatal("identity rebind rejected")
 				}
 			} else {
@@ -231,16 +234,17 @@ func TestAutopilotReservationRechecksVerifiedMachineCohort(t *testing.T) {
 
 func TestAutopilotMixedPlansPreserveCrossCohortDonors(t *testing.T) {
 	cfg := autopilot.DefaultConfig()
-	cfg.ObserveOnly, cfg.LiveMachineIDs = false, autopilotFixtureMachineID(0)
+	cfg.ObserveOnly = false
 	var sent int
 	r, c, now := newAutopilotControllerTestConfig(t, cfg, func(d *production.Dependencies) {
 		d.AutopilotSender = func(string, protocol.ModelAutopilotMessage) error { sent++; return nil }
 	})
+	r.selectLiveMachines(t, 0)
 	warm := testWarmPoolConfig()
 	warm.MinWarmByModel = map[string]int{autopilotTestTarget: 1, autopilotTestDonor: 1}
 	r.ConfigureWarmPool(warm)
-	live := autopilotMachineProvider(t, r, "z-live", autopilotFixtureMachineID(0), now, autopilotTestDonor)
-	shadow := autopilotMachineProvider(t, r, "a-shadow", autopilotFixtureMachineID(1), now, autopilotTestDonor)
+	live := autopilotMachineProvider(t, r, "z-live", r.machineID(t, 0), now, autopilotTestDonor)
+	shadow := autopilotMachineProvider(t, r, "a-shadow", r.machineID(t, 1), now, autopilotTestDonor)
 	for _, p := range []*production.Provider{live, shadow} {
 		p.Mu().Lock()
 		p.ModelAutopilot.MaxModelSlots = 1

@@ -19,13 +19,13 @@ func providerAutopilotAllowsLocked(p *Provider, model string) bool {
 
 // The inventory identity is bound only after verified machine continuity. A
 // serial, account, endpoint key or connection ID cannot enroll a live machine.
-// Caller holds p.mu; controller configuration is immutable.
+// Caller holds registry.mu and p.mu; controller configuration is immutable.
 func (c *modelAutopilotController) liveMachineLocked(p *Provider) bool {
 	if c.config.ObserveOnly {
 		return false
 	}
 	account, machine := p.VerifiedMachineIdentityLocked()
-	_, selected := c.liveMachines[machine]
+	_, selected := c.registry.autopilotMachines.live[machine]
 	return account != "" && account == p.AccountID && selected
 }
 

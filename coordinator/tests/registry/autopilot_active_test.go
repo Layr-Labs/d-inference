@@ -22,10 +22,11 @@ func autopilotActiveRequest(id, model string, now time.Time) *production.Pending
 func TestAutopilotUnscopedWorkNeverCreatesPublicPlacementDemand(t *testing.T) {
 	for _, scope := range []string{"local", "self", "prefer", "serial", "excluded", "cancelled", "completed", "missing profile", "missing start", "missing entry", "invalid"} {
 		t.Run(scope, func(t *testing.T) {
-			cfg := autopilotFixtureConfig()
+			cfg := autopilot.DefaultConfig()
 			cfg.Enabled, cfg.ObserveOnly = true, false
 			cfg.AllowIdleUnload = false
 			r, c, now := newAutopilotControllerTestConfig(t, cfg)
+			r.selectLiveMachines(t, 0, 1)
 			warmCfg := testWarmPoolConfig()
 			warmCfg.MinWarmByModel = nil
 			r.ConfigureWarmPool(warmCfg)
@@ -80,12 +81,13 @@ func TestAutopilotUnscopedWorkNeverCreatesPublicPlacementDemand(t *testing.T) {
 }
 
 func TestAutopilotPublicActiveTraitsAndQueueHandoffArePreserved(t *testing.T) {
-	cfg := autopilotFixtureConfig()
+	cfg := autopilot.DefaultConfig()
 	cfg.Enabled, cfg.ObserveOnly = true, false
 	cfg.AllowIdleUnload = false
 	// Exercise recipient eligibility with an explicit public-capacity deficit.
 	cfg.TargetUtilization = .1
 	r, c, now := newAutopilotControllerTestConfig(t, cfg)
+	r.selectLiveMachines(t, 0, 1, 2)
 	queue := production.NewRequestQueue(32, time.Minute)
 	r.SetQueue(queue)
 	warmCfg := testWarmPoolConfig()

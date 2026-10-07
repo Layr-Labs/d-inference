@@ -22,6 +22,8 @@ flowchart TD
   A["Start: shadow interest, default No"] --> B["Discover downloaded active network models"]
   B --> C["Normal model and memory selector; verify cached inventory"]
   C --> D["Save consent and explicit startup preferences"]
+  M["Admin PATCH: persist desired machine mode and revision"] --> N["Synchronize policy; revoke changed grants, retain accepted work"]
+  N --> E
   D --> E{"Live permitted and verified machine selected?"}
   D --> G["Separate live and shadow planner passes"]
   F["Logical arrivals and actual fleet capacity"] --> G
@@ -41,11 +43,26 @@ flowchart TD
 ### Machine-selected live control
 
 `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` overrides every selection. With it
-set to `false`, only machines named in `EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS`
-can receive live control. The allowlist defaults to empty, which keeps everyone
-shadow. Both settings are startup-only; runtime pause/resume changes neither.
-`autopilot.Config.ParseLiveMachineIDs` validates exact UUID entries and the
-controller owns its parsed set (`ConfigureAutopilot`).
+set to `false`, only machines whose persisted `desired_mode` is `live` can
+receive live control. Every existing or new machine defaults to `shadow`.
+Administrators edit exact canonical machine IDs through
+`PATCH /v1/admin/autopilot/machines/{machine_id}` without restarting the
+coordinator. The [machine API](../reference/api-contracts.md#autopilot-machine-settings)
+separates durable intent from current-session status; a successful edit alone
+does not make a machine active. Global configuration remains startup-only and
+runtime pause/resume changes neither desired modes nor global shadow.
+
+`MachineAutopilotStore` persists the mode and a revision that advances only when
+the mode changes. `SetMachineAutopilotDesiredMode` serializes the database write
+and runtime publication with periodic policy reads, outside registry/provider
+locks. Before a successful edit returns, publication revokes changed local
+grants under the same registry lock used by final reservation. Each controller
+refresh reads the unmerged live rows before renewing control leases, picking up
+changes made through another coordinator and restoring intent after restart.
+A changed revision also detects a shadow/live round trip between refreshes;
+an idempotent same-mode edit does not reset acknowledgement. A failed policy read
+or uncertain write removes cached live authority, not accepted command ownership.
+See the [persistence contract](storage.md#autopilot-machine-settings).
 
 `modelAutopilotController.liveMachineLocked` matches the canonical machine UUID
 and its verified account binding against the current authenticated provider
@@ -54,11 +71,13 @@ existing verified machine-continuity path. Connection IDs, client serials,
 endpoint keys and account-wide fallback identities cannot select live control.
 A legacy database inventory association without a verified runtime binding is
 not sufficient. Reconnection requires identity verification and a live report
-for the new connection; a canonical identity change does not expand the allowlist.
+for the new connection. Settings do not follow aliases: unknown or merged-away
+IDs cannot be edited, and a merge survivor keeps its own desired mode rather
+than inheriting a live setting from the retired identity.
 
 Mode is assigned at bounded lease enqueue and rechecked under the registry and
-provider locks at final reservation. An identity rebind revokes the coordinator's
-old grant without clearing accepted command ownership. Activating a first live
+provider locks at final reservation. An identity rebind or policy change revokes
+the coordinator's old grant without clearing accepted command ownership. Activating a first live
 grant, or reactivating after a mode or identity change, needs a subsequent accepted
 positive-sequence report matching session, consent revision and live mode. This
 is receipt ordering, not a new wire-level grant epoch
@@ -173,7 +192,8 @@ disable update a config revision consumed by the running daemon's capacity poll.
 
 Protocol 3 separates `enabled` consent, `observe_only` shadow mode and `active`
 live control. The coordinator defaults to `ObserveOnly=true`; operators explicitly
-permit live control, select verified machine IDs and restart for a cohort rollout.
+permit live control through the global configuration, then select verified
+machine IDs through persisted admin edits for a cohort rollout.
 The startup enable switch and runtime admin pause remain independent controls;
 resuming a paused shadow controller does not promote it to live.
 
@@ -275,7 +295,14 @@ reloaded merely because its machine is empty.
 
 ### Execution, timing and records
 
-`reserveAutopilotAction` replans under the registry lock against the same session,
+`autopilotcontrol.Controller.Tick` advances its evaluation epoch over blocking
+policy/ledger reads, retries and delivery. Fleet scans and final reservations
+use refreshed timestamps rather than an old buffered tick time, so waiting
+cannot extend capacity freshness. Each scan/replan uses one coherent timestamp;
+freshness thresholds and already-accepted command retry deadlines are unchanged
+(`coordinator/internal/registry/autopilotcontrol/controller.go`, `Tick`).
+
+`autopilotcontrol.Controller.Reserve` replans under the registry lock against the same session,
 capacity sequence and resident set. The command carries exact victims, expected
 residents, session and consent revision. The provider checks all guards again,
 rejects any target or unload victim outside `selectedModels`, uses the current
@@ -325,8 +352,19 @@ No causal improvement is inferred from command success alone.
 6. Operator pause stops new reservations while keeping pending ownership: `SetAutopilotPaused`.
 7. An uncertain send or watchdog expiry never implies rollback: `sendAutopilotCommand` and `markAutopilotWatchdogs`.
 8. Shadow consent and leases never transfer residency ownership or create actual capacity: `refreshControlLeases`, `autopilotFleetSnapshotLocked` and `modelAutopilotController.tick`.
+9. Persisted intent cannot authorize an unverified session, and changed policy cannot reuse an old grant: `liveMachineLocked`, `publishMachineAutopilotPolicy` and `beginAutopilotReservation`.
 
 ## Failure modes
+
+Machine-setting storage failures return 503 from the admin API. A failed write
+may already have committed: read back or repeat the idempotent desired-mode edit
+after recovery instead of assuming rollback. Policy refresh failures revoke
+local live authority; successful recovery requires a fresh grant and later
+acknowledgement. Nonmembers retain shadow planning. A full control queue cannot
+undo local revocation, but the provider may display its previous lease until it
+receives the new control or the old lease expires. Already accepted operations
+continue their existing recovery path. An edit on another coordinator is seen
+at the next successful policy refresh, not synchronously across processes.
 
 A setup failure before drain publication preserves the running provider and its
 prior consent. After acknowledgement, consent is persisted before stopping the
@@ -388,8 +426,9 @@ its own `Start/` folder.
 | Session consent, leases, inventory and command reconciliation | `coordinator/internal/registry/autopilotstate/state.go` (`State`, `Consented`, `AcceptControl`); `coordinator/internal/registry/autopilotstate/lease.go` (`Lease.Active`); `coordinator/internal/registry/autopilotstate/commands.go` (`Reserve`, `RollbackDelivery`, `Watchdog`); `coordinator/internal/registry/autopilotstate/reconcile.go` (`Reconcile`); `coordinator/internal/registry/autopilotstate/inventory.go` (`RegisterInventory`); adapters in `coordinator/registry/autopilot_provider_state.go` |
 | Bounded control pass and atomic reservation | `coordinator/internal/registry/autopilotcontrol/controller.go` (`Controller.Tick`, `Ports`); `coordinator/internal/registry/autopilotcontrol/plan.go` (`Controller.Reserve`, `Reservation`); `coordinator/registry/autopilot_control.go` (`newAutopilotControl`), `coordinator/registry/autopilot_reservation.go` (`beginAutopilotReservation`) |
 | Activation and execution | `coordinator/registry/autopilot_activation.go`; `coordinator/registry/autopilot_commands.go`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift` |
+| Persisted machine selection and runtime synchronization | `coordinator/store/machine_autopilot.go` (`MachineAutopilotStore`); `coordinator/registry/autopilot_machine_policy.go` (`SetMachineAutopilotDesiredMode`, `refreshMachineAutopilotPolicy`, `publishMachineAutopilotPolicy`) |
 | Durable records | `coordinator/internal/registry/autopilotledger/events.go` (`Events.Queue`, `Flush`); `coordinator/internal/registry/autopilotledger/proposal.go` (`ProposalID`); `coordinator/store/postgres/autopilot.go`; registry adapter `coordinator/registry/autopilot_events.go` |
-| Operator view | `coordinator/api/autopilot/handler.go`; authenticated adapter `coordinator/api/autopilot_handlers.go` |
+| Operator view | `coordinator/api/autopilot/handler.go`; `coordinator/api/autopilot/machines.go` (`MachineHandler`); `coordinator/registry/autopilot_machine_status.go` (`ListMachineAutopilot`); authenticated adapter `coordinator/api/autopilot_handlers.go` |
 
 ## Related
 

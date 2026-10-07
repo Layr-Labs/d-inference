@@ -14,7 +14,11 @@ func (r *Registry) newAutopilotControl(c *modelAutopilotController) autopilotcon
 		BeginReservation: func(now time.Time) (autopilotcontrol.Reservation[*Provider], bool) {
 			return r.beginAutopilotReservation(c, now)
 		},
-		Flush: r.flushAutopilotEvents, Refresh: c.refreshControlLeases,
+		Flush: r.flushAutopilotEvents,
+		Refresh: func(time.Time) {
+			r.refreshMachineAutopilotPolicy()
+			c.refreshControlLeases(time.Now())
+		},
 		Watchdogs: func(now time.Time) { r.markAutopilotWatchdogs(c.config, now) },
 		Retry:     r.retryAutopilotCommands,
 		Paused:    c.paused.Load, Pause: func() { c.paused.Store(true) },

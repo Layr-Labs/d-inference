@@ -2,7 +2,6 @@ package autopilot_test
 
 import (
 	"math"
-	"strings"
 	"testing"
 	"time"
 
@@ -27,49 +26,15 @@ func TestAutopilotFreshnessIncludesConfiguredControlCadence(t *testing.T) {
 	}
 }
 
-func TestAutopilotLiveMachineAllowlistIsCanonicalAndFailClosed(t *testing.T) {
-	const machine = "a6b2a814-b6f5-4a90-a614-000000000001"
-	for _, tc := range []struct {
-		name    string
-		raw     string
-		want    int
-		invalid bool
-	}{
-		{name: "empty"},
-		{name: "blank", raw: " \t "},
-		{name: "machine", raw: machine, want: 1},
-		{name: "normalization and duplicates", raw: " " + strings.ToUpper(machine) + ", " + machine + " ", want: 1},
-		{name: "two machines", raw: machine + ",a6b2a814-b6f5-4a90-a614-000000000002", want: 2},
-		{name: "malformed", raw: "not-a-uuid", invalid: true},
-		{name: "wildcard", raw: "*", invalid: true},
-		{name: "account", raw: "did:privy:account-123", invalid: true},
-		{name: "scoped account", raw: "account:" + machine, invalid: true},
-		{name: "compact UUID", raw: strings.ReplaceAll(machine, "-", ""), invalid: true},
-		{name: "URN", raw: "urn:uuid:" + machine, invalid: true},
-		{name: "braces", raw: "{" + machine + "}", invalid: true},
-		{name: "nil UUID", raw: "00000000-0000-0000-0000-000000000000", invalid: true},
-		{name: "bad entry after valid", raw: machine + ",*", invalid: true},
-		{name: "empty entry", raw: machine + ",", invalid: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestAutopilotGlobalModesValidateWithoutMachineSelection(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, observe := range []bool{false, true} {
 			cfg := production.DefaultConfig()
-			cfg.LiveMachineIDs = tc.raw
-			ids, err := cfg.ParseLiveMachineIDs()
-			if (err != nil) != tc.invalid || len(ids) != tc.want {
-				t.Fatalf("parsed=%v error=%v want count=%d invalid=%v", ids, err, tc.want, tc.invalid)
+			cfg.Enabled, cfg.ObserveOnly = enabled, observe
+			if err := cfg.Check(); err != nil {
+				t.Fatalf("enabled=%v observe_only=%v requires no machine selector: %v", enabled, observe, err)
 			}
-			if tc.want > 0 {
-				if _, ok := ids[machine]; !ok {
-					t.Fatal("canonical machine ID not selected")
-				}
-			}
-			for _, enabled := range []bool{true, false} {
-				cfg.Enabled = enabled
-				if (cfg.Check() != nil) != tc.invalid {
-					t.Fatalf("invalid allowlist bypassed config validation when enabled=%v", enabled)
-				}
-			}
-		})
+		}
 	}
 }
 

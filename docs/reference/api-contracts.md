@@ -565,6 +565,8 @@ grace period or expiry; frozen membership remains a separate prerequisite.
 | GET | `/v1/admin/utilization` | `HandleAdminUtilization` (`coordinator/api/reporting/admin_utilization.go`) | `admin-key` | |
 | GET / POST | `/v1/admin/autopilot` | `handleAdminAutopilot` (`coordinator/api/autopilot_handlers.go`) | `admin` | Two registrations; [controller status and runtime pause](#experimental-model-autopilot), not shadow/live promotion |
 | GET | `/v1/admin/autopilot/inventory` | `handleAdminAutopilotInventory` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Connected saved-approval aggregates](#autopilot-inventory-report), independent of the ledger |
+| GET | `/v1/admin/autopilot/machines` | `handleAdminAutopilotMachines` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Persisted desired machine modes and current verified sessions](#autopilot-machine-settings) |
+| PATCH | `/v1/admin/autopilot/machines/{machine_id}` | `handleAdminAutopilotMachines` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Persist an exact machine's desired mode](#autopilot-machine-settings); no restart or implicit activation |
 | POST | `/v1/admin/drain` | `HandleAdminDrain` (`coordinator/api/operations/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `HandleAdminRoutes`, `HandleAdminRoutesExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `HandleAdminRejections`, `HandleAdminRejectionsExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
@@ -1419,6 +1421,8 @@ authenticated adapter `coordinator/api/autopilot_handlers.go` (`handleAdminAutop
 |---|---|---|
 | `GET /v1/admin/autopilot` | Admin key or authenticated admin | Controller summary and up to 200 durable events in the last 24 hours; ledger read failure returns 503 |
 | `GET /v1/admin/autopilot/inventory` | Admin key or authenticated admin | Read-only connected-session saved-approval aggregates; 200 even without a configured controller or available ledger; `Cache-Control: no-store` |
+| `GET /v1/admin/autopilot/machines` | Admin key or authenticated admin | Bounded canonical-machine list with desired modes and separate current-session status; [machine contract](#autopilot-machine-settings) |
+| `PATCH /v1/admin/autopilot/machines/{machine_id}` | Admin key or authenticated admin | Persist `desired_mode` as `shadow` or `live`; synchronize local authority before success, without changing global overrides or asserting active control |
 | `POST /v1/admin/autopilot` | Admin key or authenticated admin | Required JSON `{ "paused": true }` stops new reservations; `false` resumes in the configured mode, never promotes shadow to live. Existing operations continue reconciliation. Missing/invalid input or unknown fields (including `observe_only`) return 400; unavailable controller returns 409; successful mutation returns the summary independently of ledger availability |
 | `GET /v1/me/providers` | Provider owner | Optional `model_autopilot` live snapshot with consent, exact approved cached network inventory (`selected_models`), `active`, `observe_only`, paused state and last operation; a valid shadow lease reports `active=false`, `observe_only=true` |
 
@@ -1433,11 +1437,11 @@ load headroom or positive benefit. Shadow planning's permission projection is
 therefore not a second measurement of currently routable capacity.
 
 The controller summary's `observe_only` is the global shadow override, not the
-mode of every enrolled provider. `false` permits live control only for the
-startup [verified-machine allowlist](configuration.md#model-autopilot). An empty
-list keeps every provider shadow. Startup enrollment is consent, not activation;
-mode and membership changes require coordinator configuration and restart, not
-this API. `POST` also rejects a `live_machine_ids` field.
+mode of every enrolled provider. `false` permits live control only for verified
+machines with persisted live intent. Without live settings, every provider stays
+shadow. Startup enrollment is consent, not activation. Global mode changes still
+require configuration and restart; machine-mode edits use the separate PATCH
+endpoint. The pause-only `POST` rejects a `live_machine_ids` field.
 
 Source: `coordinator/registry/autopilot/types.go` (`Summary`) and
 `coordinator/registry/autopilot/summary.go` (`Summarize`). The `live_cohort`,
@@ -1446,7 +1450,7 @@ not distinct people or machines. `opted_in` retains its separate planner definit
 
 | Summary field | Meaning |
 |---|---|
-| `live_cohort` | Sessions assigned live mode by the global switch and verified-machine allowlist; includes locally paused or stale sessions and is not an actionability count |
+| `live_cohort` | Sessions assigned live mode by the global switch and synchronized verified-machine settings; includes locally paused or stale sessions and is not an actionability count |
 | `live_active` | Subset with a matching, unexpired, acknowledged live grant; still not proof of fresh idle capacity or feasible placement |
 | `shadow` | Consenting public sessions assigned shadow mode, including paused/stale sessions and selected machines while global shadow is enabled |
 | `opted_in` | Existing planner-managed or hypothetical-shadow population; not an alias for live membership or approved ready capacity |
@@ -1466,6 +1470,51 @@ still reports the latest tick. See [ledger semantics](../architecture/storage.md
 The operator pause lasts for the current coordinator process. Live intent is persisted
 before dispatch. Ledger read/write errors are not success or rollback evidence.
 Snapshots and operation records contain model/control metadata, never prompts.
+
+### Autopilot machine settings
+
+Source: `coordinator/api/autopilot/machines.go` (`MachineHandler.ServeHTTP`),
+`coordinator/registry/autopilot_machine_policy.go`
+(`SetMachineAutopilotDesiredMode`), and
+`coordinator/registry/autopilot_machine_status.go` (`ListMachineAutopilot`).
+Both routes require authentication and admin authorization before parsing input:
+missing/invalid credentials return 401 and authenticated non-admins return 403.
+The authorized machine adapter sets `Cache-Control: no-store`.
+
+| Request | Contract |
+|---|---|
+| `GET /v1/admin/autopilot/machines` | Returns `{"machines":[...]}` in ascending canonical UUID order, including offline machines. `limit` defaults to 100 and accepts integers 1 through 200. Optional `after` is an exclusive canonical UUID cursor. A full page includes `next_after`; following it may return an empty last page. Duplicate or invalid `limit`/`after` values return 400. |
+| `PATCH /v1/admin/autopilot/machines/{machine_id}` | Exactly one JSON object with exactly one `desired_mode` key, value `"shadow"` or `"live"`; body limit 1024 bytes. Missing/null/invalid modes, duplicate keys, unknown fields, case-altered field names and trailing data return 400. Returns `{"machine":{...}}` on 200. |
+| Machine ID or cursor | Nonzero, hyphenated UUID; letter case normalizes to lowercase. Nil UUIDs, whitespace and alternate UUID encodings return 400. Unknown or merged-away mutation targets return 404, never create a machine or redirect to a survivor. |
+| Store failure | 503 with a sanitized error. An interrupted write may have committed; read back or repeat the same desired mode after recovery rather than infer rollback. A missing persistence capability is not an ephemeral fallback. |
+
+| Machine field | Meaning |
+|---|---|
+| `machine_id` | Exact existing, unmerged inventory UUID, not a connection ID or evidence of current live verification |
+| `desired_mode` | Persisted intent, `shadow` by default or explicitly `live`; does not override consent, identity, global shadow/pause or safety gates |
+| `revision` | Nonnegative persisted integer, default 0; increases only on a mode change. Repeating the current mode is idempotent. Not the provider consent revision or a wire grant epoch. |
+| `sessions` | Current sessions on this coordinator with a verified machine binding matching the authenticated account, sorted by `provider_id`; `[]` when no such connection exists. Historical, unverified and disconnected associations are not attached. |
+
+| Session field | Meaning |
+|---|---|
+| `provider_id` | Current provider connection identifier, usable for correlation but not as a machine-edit target |
+| `effective_mode` | `disabled` when the controller is absent/disabled; then, in precedence order, `paused`, `private`, `unconsented`, `shadow`, `awaiting_ack`, or `live` according to effective control. `awaiting_ack` includes expired or missing grants on selected sessions. |
+| `control_active` | Effective acknowledged, unexpired live authority after global and session gates; not proof of idle capacity, feasible placement or an issued operation |
+| `consented` | Current supported cached-only consent with a valid saved selection/revision |
+| `paused` | Provider pause or current coordinator pause; does not alter durable desired mode |
+| `private_only` | Session excludes public participation |
+| `capacity_fresh` | Accepted capacity exists within the applicable control/ordinary freshness window; independent of consent and control activation |
+
+The database read and current-session projection are separate snapshots, not an
+atomic cross-process view. A successful local edit publishes authority and
+revokes changed grants before returning; other coordinators apply it on their
+next successful policy refresh. Provider reports can lag delivery or expiry.
+Demotion, revision changes and policy-store uncertainty preserve accepted
+operation ownership. Promotion requires a fresh grant and a later accepted
+matching acknowledgement. The APIs work while the controller is unconfigured,
+disabled, paused or globally shadow, without changing those safety settings.
+See [persistence](../architecture/storage.md#autopilot-machine-settings) and
+[operator procedure](../operations/model-autopilot.md).
 
 ### Autopilot inventory report
 

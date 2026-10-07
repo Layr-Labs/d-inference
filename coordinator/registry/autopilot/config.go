@@ -2,19 +2,15 @@ package autopilot
 
 import (
 	"fmt"
-	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // Autopilot requires provider consent, verified machine selection and a live
-// coordinator control lease. ObserveOnly overrides the startup allowlist.
+// coordinator control lease. ObserveOnly overrides persisted machine settings.
 // Consent alone retains ordinary residency until control is active (or paused).
 type Config struct {
 	Enabled                 bool
 	ObserveOnly             bool
-	LiveMachineIDs          string // comma-separated canonical UUIDs; empty means no live control
 	Interval                time.Duration
 	DemandWindow            time.Duration
 	MinDwell                time.Duration
@@ -50,9 +46,6 @@ func (c Config) ControlSnapshotMaxAge() time.Duration {
 }
 
 func (c Config) Check() error {
-	if _, err := c.ParseLiveMachineIDs(); err != nil {
-		return err
-	}
 	if !c.Enabled {
 		return nil
 	}
@@ -72,22 +65,4 @@ func (c Config) Check() error {
 		return fmt.Errorf("registry: autopilot utilization/benefit settings are out of range")
 	}
 	return nil
-}
-
-// ParseLiveMachineIDs keeps Config comparable while the controller owns an
-// immutable, normalized set. One malformed entry rejects the entire allowlist.
-func (c Config) ParseLiveMachineIDs() (map[string]struct{}, error) {
-	ids := make(map[string]struct{})
-	if strings.TrimSpace(c.LiveMachineIDs) == "" {
-		return ids, nil
-	}
-	for i, raw := range strings.Split(c.LiveMachineIDs, ",") {
-		raw = strings.TrimSpace(raw)
-		id, err := uuid.Parse(raw)
-		if len(raw) != 36 || err != nil || id == uuid.Nil {
-			return nil, fmt.Errorf("registry: EIGENINFERENCE_AUTOPILOT_LIVE_MACHINE_IDS entry %d must be a nonzero canonical UUID", i+1)
-		}
-		ids[id.String()] = struct{}{}
-	}
-	return ids, nil
 }

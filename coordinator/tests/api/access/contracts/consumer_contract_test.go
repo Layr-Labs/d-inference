@@ -44,6 +44,39 @@ func TestCORSPreflight(t *testing.T) {
 	}
 }
 
+func TestCORSAutopilotMachinePatchPreflight(t *testing.T) {
+	const origin = "http://localhost:3000"
+	f := testkit.New(t, api.ServerConfig{CORSOrigin: origin})
+	server := httptest.NewServer(f.Server.Handler())
+	t.Cleanup(server.Close)
+	req, err := http.NewRequest(http.MethodOptions, server.URL+"/v1/admin/autopilot/machines/c2379b15-f532-45a9-a8c6-000000000001", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", http.MethodPatch)
+	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("PATCH preflight status=%d", res.StatusCode)
+	}
+	if got := res.Header.Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, PATCH, DELETE, OPTIONS" {
+		t.Fatalf("PATCH preflight methods=%q", got)
+	}
+	if res.Header.Get("Access-Control-Allow-Origin") != origin || res.Header.Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("PATCH preflight lost credentialed origin: %v", res.Header)
+	}
+	for _, header := range []string{"authorization", "content-type"} {
+		if !strings.Contains(strings.ToLower(res.Header.Get("Access-Control-Allow-Headers")), header) {
+			t.Fatalf("PATCH preflight excludes %s", header)
+		}
+	}
+}
+
 func TestCORSPublicEndpointsAllowAnyOrigin(t *testing.T) {
 	fixture := testkit.New(t, api.ServerConfig{})
 	srv := fixture.Server
@@ -82,7 +115,7 @@ func TestCORSPublicEndpointsAllowAnyOrigin(t *testing.T) {
 	if got := pw.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
 		t.Errorf("DELETE /v1/pricing preflight: Allow-Credentials = %q, want \"true\"", got)
 	}
-	if got := pw.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, DELETE, OPTIONS" {
+	if got := pw.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, PATCH, DELETE, OPTIONS" {
 		t.Errorf("DELETE /v1/pricing preflight: Allow-Methods = %q, want the credentialed method set", got)
 	}
 }

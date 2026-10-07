@@ -1,8 +1,8 @@
 package registry_test
 
 import (
+	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,29 +37,15 @@ type autopilotFixture struct {
 	machineIDs   map[string]string
 }
 
-func autopilotFixtureMachineID(index int) string {
-	return fmt.Sprintf("a6b2a814-b6f5-4a90-a614-%012x", index+1)
-}
-
-func autopilotFixtureMachineIDs(count int) string {
-	ids := make([]string, count)
-	for i := range ids {
-		ids[i] = autopilotFixtureMachineID(i)
-	}
-	return strings.Join(ids, ",")
-}
-
-func autopilotFixtureConfig() autopilot.Config {
-	cfg := autopilot.DefaultConfig()
-	cfg.LiveMachineIDs = autopilotFixtureMachineIDs(16)
-	return cfg
-}
-
 func newAutopilotControllerTest(t *testing.T, observe bool, configure ...func(*production.Dependencies)) (*autopilotFixture, *autopilotcontrol.Controller[*production.Provider], time.Time) {
 	t.Helper()
-	cfg := autopilotFixtureConfig()
+	cfg := autopilot.DefaultConfig()
 	cfg.Enabled, cfg.ObserveOnly = true, observe
-	return newAutopilotControllerTestConfig(t, cfg, configure...)
+	r, c, now := newAutopilotControllerTestConfig(t, cfg, configure...)
+	for i := range 16 {
+		r.selectLiveMachines(t, i)
+	}
+	return r, c, now
 }
 
 func newAutopilotControllerTestConfig(t *testing.T, cfg autopilot.Config, configure ...func(*production.Dependencies)) (*autopilotFixture, *autopilotcontrol.Controller[*production.Provider], time.Time) {
@@ -119,11 +105,36 @@ func (r *autopilotFixture) SetStore(s store.Store) {
 	r.Registry.SetStore(s)
 }
 
+func (r *autopilotFixture) machineID(t testing.TB, index int) string {
+	t.Helper()
+	inventory, ok := store.As[store.MachineInventoryStore](r.store)
+	if !ok {
+		t.Fatal("fixture store has no machine inventory")
+	}
+	identity, err := inventory.ObserveMachine(context.Background(), store.MachineObservation{
+		SessionID: fmt.Sprintf("fixture-machine-%d", index), AccountID: "autopilot-fixture-owner",
+		VerifiedAppAttestKey: fmt.Sprintf("fixture-app-attest-key-%d", index), At: time.Now(), Source: "test",
+	})
+	if err != nil || identity.ID == "" {
+		t.Fatalf("observe fixture machine: identity=%+v error=%v", identity, err)
+	}
+	return identity.ID
+}
+
+func (r *autopilotFixture) selectLiveMachines(t testing.TB, indices ...int) {
+	t.Helper()
+	for _, index := range indices {
+		if _, err := r.SetMachineAutopilotDesiredMode(context.Background(), r.machineID(t, index), store.MachineAutopilotLive); err != nil {
+			t.Fatalf("select fixture machine %d: %v", index, err)
+		}
+	}
+}
+
 func autopilotControllerProvider(t *testing.T, r *autopilotFixture, id string, now time.Time, residents ...string) *production.Provider {
 	t.Helper()
 	machineID, ok := r.machineIDs[id]
 	if !ok {
-		machineID = autopilotFixtureMachineID(len(r.machineIDs))
+		machineID = r.machineID(t, len(r.machineIDs))
 		r.machineIDs[id] = machineID
 	}
 	return autopilotMachineProvider(t, r, id, machineID, now, residents...)
@@ -138,11 +149,18 @@ func autopilotMachineProvider(t *testing.T, r *autopilotFixture, id, machineID s
 	if machineID != "" && !r.BindVerifiedMachineIdentity(p, "autopilot-fixture-owner", machineID) {
 		t.Fatal("fixture verified machine binding rejected")
 	}
-	selected, err := r.cfg.ParseLiveMachineIDs()
+	settings, ok := store.As[store.MachineAutopilotStore](r.store)
+	if !ok {
+		t.Fatal("fixture store has no machine Autopilot settings")
+	}
+	selected, err := settings.LiveMachineAutopilotSettings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, live := selected[machineID]
+	live := false
+	for _, setting := range selected {
+		live = live || setting.MachineID == machineID
+	}
 	observe := r.cfg.ObserveOnly || !live
 	state := autopilotControllerState(residents...)
 	state.Active, state.ObserveOnly, state.SessionID = !observe, observe, id

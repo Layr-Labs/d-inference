@@ -10,9 +10,10 @@ import (
 )
 
 func TestAutopilotSlowControlCadenceHasBoundedDeliveryGrace(t *testing.T) {
-	cfg := autopilotFixtureConfig()
+	cfg := autopilot.DefaultConfig()
 	cfg.Enabled, cfg.ObserveOnly, cfg.Interval = true, false, time.Minute
 	r, c, now := newAutopilotControllerTestConfig(t, cfg)
+	r.selectLiveMachines(t, 0)
 	p := autopilotControllerProvider(t, r, "controlled", now, autopilotTestDonor)
 	for _, tc := range []struct {
 		age  time.Duration

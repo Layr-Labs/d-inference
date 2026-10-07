@@ -212,11 +212,10 @@ func (s *Suite) Start(ctx context.Context) (err error) {
 		return err
 	}
 	if s.Config.Autopilot {
-		cfg := autopilot.DefaultConfig()
-		cfg.LiveMachineIDs, err = s.bindAutopilotFixtureMachines()
-		if err != nil {
+		if _, err = s.bindAutopilotFixtureMachines(); err != nil {
 			return err
 		}
+		cfg := autopilot.DefaultConfig()
 		// Only the suite-owned fixture machines exercise live load/pause transitions.
 		cfg.ObserveOnly = false
 		cfg.Interval = time.Second

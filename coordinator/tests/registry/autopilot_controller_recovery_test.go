@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -55,87 +56,102 @@ func TestAutopilotControllerPendingFutureLosesCreditWhenRecipientStopsQualifying
 }
 
 func TestAutopilotControllerRecoveryRetriesExactGenerationWithBound(t *testing.T) {
-	var sent []protocol.ModelAutopilotMessage
-	reg, c, now := newAutopilotControllerTest(t, false, func(deps *production.Dependencies) {
-		deps.AutopilotSender = func(_ string, command protocol.ModelAutopilotMessage) error {
-			sent = append(sent, command)
-			return errors.New("delivery is unknown")
+	synctest.Test(t, func(t *testing.T) {
+		var sent []protocol.ModelAutopilotMessage
+		reg, c, now := newAutopilotControllerTest(t, false, func(deps *production.Dependencies) {
+			deps.AutopilotSender = func(_ string, command protocol.ModelAutopilotMessage) error {
+				sent = append(sent, command)
+				return errors.New("delivery is unknown")
+			}
+		})
+		p := autopilotControllerProvider(t, reg, "provider", now)
+		c.Tick(now)
+		for _, tc := range []struct {
+			after time.Duration
+			want  int
+		}{
+			{29 * time.Second, 1}, {30 * time.Second, 2}, {31 * time.Second, 2}, {60 * time.Second, 3}, {120 * time.Second, 3},
+		} {
+			c.Retry(now.Add(tc.after))
+			if len(sent) != tc.want {
+				t.Fatalf("after %s sent=%d want=%d", tc.after, len(sent), tc.want)
+			}
+		}
+		for _, command := range sent {
+			if !reflect.DeepEqual(command, sent[0]) {
+				t.Fatalf("retry changed generation or expiry: first=%+v retry=%+v", sent[0], command)
+			}
+		}
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		pending, ok := reg.states[p.ID].PrepareDelivery()
+		if !ok || pending.Attempts != 3 || !pending.Uncertain {
+			t.Fatalf("retry lost bounded uncertain ownership: %+v", pending)
 		}
 	})
-	p := autopilotControllerProvider(t, reg, "provider", now)
-	c.Tick(now)
-	for _, tc := range []struct {
-		after time.Duration
-		want  int
-	}{
-		{29 * time.Second, 1}, {30 * time.Second, 2}, {31 * time.Second, 2}, {60 * time.Second, 3}, {120 * time.Second, 3},
-	} {
-		c.Retry(now.Add(tc.after))
-		if len(sent) != tc.want {
-			t.Fatalf("after %s sent=%d want=%d", tc.after, len(sent), tc.want)
-		}
-	}
-	for _, command := range sent {
-		if !reflect.DeepEqual(command, sent[0]) {
-			t.Fatalf("retry changed generation or expiry: first=%+v retry=%+v", sent[0], command)
-		}
-	}
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	pending, ok := reg.states[p.ID].PrepareDelivery()
-	if !ok || pending.Attempts != 3 || !pending.Uncertain {
-		t.Fatalf("retry lost bounded uncertain ownership: %+v", pending)
-	}
 }
 
 func TestAutopilotControllerOnlyInitialProvenQueueFullReleasesReservation(t *testing.T) {
 	for _, retry := range []bool{false, true} {
 		t.Run(map[bool]string{false: "initial queue full", true: "retry queue full"}[retry], func(t *testing.T) {
-			calls := 0
-			reg, c, now := newAutopilotControllerTest(t, false, func(deps *production.Dependencies) {
-				deps.AutopilotSender = func(string, protocol.ModelAutopilotMessage) error {
-					calls++
-					if retry && calls == 1 {
-						return errors.New("first delivery uncertain")
+			synctest.Test(t, func(t *testing.T) {
+				calls := 0
+				reg, c, now := newAutopilotControllerTest(t, false, func(deps *production.Dependencies) {
+					deps.AutopilotSender = func(string, protocol.ModelAutopilotMessage) error {
+						calls++
+						if retry && calls == 1 {
+							return errors.New("first delivery uncertain")
+						}
+						return production.ErrProviderWriterQueueFull
 					}
-					return production.ErrProviderWriterQueueFull
+				})
+				p := autopilotControllerProvider(t, reg, "provider", now)
+				if summary := c.Tick(now); summary.Issued != 1 || calls != 1 {
+					t.Fatalf("initial delivery did not exercise the writer failure: %+v calls=%d", summary, calls)
+				}
+				if retry {
+					p.Mu().Lock()
+					before, owned := reg.states[p.ID].PrepareDelivery()
+					p.Mu().Unlock()
+					if !owned || !before.Uncertain || before.Attempts != 1 {
+						t.Fatalf("first ambiguous delivery did not retain one attempt: %+v", before)
+					}
+					c.Retry(now.Add(30 * time.Second))
+					if calls != 2 {
+						t.Fatalf("retry did not exercise the queue-full writer: calls=%d want=2", calls)
+					}
+				}
+				p.Mu().Lock()
+				pending, ok := reg.states[p.ID].PrepareDelivery()
+				backoff := !reg.states[p.ID].Placement(p.ModelAutopilot, now, reg.cfg.CommandWatchdog).Available
+				p.Mu().Unlock()
+				if retry && (!ok || !pending.Uncertain || pending.Attempts != 2) {
+					t.Fatal("retry queue failure erased uncertain first delivery")
+				}
+				if !retry && (ok || !backoff) {
+					t.Fatalf("initial unqueued command should release with backoff: pending=%+v backoff=%v", pending, backoff)
+				}
+				if !reg.events.Flush(reg.store, testLogger()) {
+					t.Fatal("ledger flush failed")
+				}
+				ledger, _ := store.As[store.AutopilotStore](reg.store)
+				records, err := ledger.AutopilotRecords(context.Background(), now.Add(-time.Minute), 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				failed := 0
+				for _, record := range records {
+					if record.Phase == "failed" {
+						failed++
+						if !slices.Equal(record.Before, record.After) {
+							t.Fatal("proven-unsent command changed ledger residency")
+						}
+					}
+				}
+				if (!retry && failed != 1) || (retry && failed != 0) {
+					t.Fatalf("failed terminal count=%d retry=%v", failed, retry)
 				}
 			})
-			p := autopilotControllerProvider(t, reg, "provider", now)
-			c.Tick(now)
-			if retry {
-				c.Retry(now.Add(30 * time.Second))
-			}
-			p.Mu().Lock()
-			pending, ok := reg.states[p.ID].PrepareDelivery()
-			backoff := !reg.states[p.ID].Placement(p.ModelAutopilot, now, reg.cfg.CommandWatchdog).Available
-			p.Mu().Unlock()
-			if retry && (!ok || !pending.Uncertain) {
-				t.Fatal("retry queue failure erased uncertain first delivery")
-			}
-			if !retry && (ok || !backoff) {
-				t.Fatalf("initial unqueued command should release with backoff: pending=%+v backoff=%v", pending, backoff)
-			}
-			if !reg.events.Flush(reg.store, testLogger()) {
-				t.Fatal("ledger flush failed")
-			}
-			ledger, _ := store.As[store.AutopilotStore](reg.store)
-			records, err := ledger.AutopilotRecords(context.Background(), now.Add(-time.Minute), 100)
-			if err != nil {
-				t.Fatal(err)
-			}
-			failed := 0
-			for _, record := range records {
-				if record.Phase == "failed" {
-					failed++
-					if !slices.Equal(record.Before, record.After) {
-						t.Fatal("proven-unsent command changed ledger residency")
-					}
-				}
-			}
-			if (!retry && failed != 1) || (retry && failed != 0) {
-				t.Fatalf("failed terminal count=%d retry=%v", failed, retry)
-			}
 		})
 	}
 }
@@ -190,13 +206,14 @@ func TestAutopilotControllerNormalUnloadIsNotReportedAsUncertain(t *testing.T) {
 }
 
 func TestAutopilotControllerFailedHeartbeatUsesReservedBackoff(t *testing.T) {
-	cfg := autopilotFixtureConfig()
+	cfg := autopilot.DefaultConfig()
 	cfg.Enabled, cfg.ObserveOnly = true, false
 	cfg.FailureBackoff = 7 * time.Minute
 	clock := time.Now()
 	reg, c, now := newAutopilotControllerTestConfig(t, cfg, func(deps *production.Dependencies) {
 		deps.HeartbeatNow = func() time.Time { return clock }
 	})
+	reg.selectLiveMachines(t, 0)
 	p := autopilotControllerProvider(t, reg, "provider", now)
 	command, ok := c.Reserve(autopilotControllerPlan(t, reg, c, now), now)
 	if !ok {

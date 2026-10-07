@@ -2,8 +2,9 @@
 
 ## Unreleased - machine-scoped Autopilot
 
-- Restrict live Autopilot to an explicit allowlist of verified machine IDs. An empty list keeps every provider in shadow, even when live rollout is permitted; other machines retain ordinary serving behavior and hypothetical planning. Cached-model consent, memory, pins, donor protection and accepted-operation recovery remain enforced.
-- Report live-cohort, acknowledged-live and shadow populations separately, with live and shadow proposal counts. Machine selection is startup-only and does not deploy or activate a production cohort by itself.
+- Persist each canonical machine's desired Autopilot mode in the database, defaulting to shadow. Admins list and edit machines through authenticated endpoints without a coordinator restart; live control still requires verified identity, provider consent and acknowledgement, with global shadow and pause overriding intent. Other machines retain ordinary serving and hypothetical planning; memory, pins and donor safeguards remain enforced.
+- Distinguish desired machine mode from current session activity, and report live-cohort, acknowledged-live and shadow populations separately. Mode revisions revoke stale grants, failed policy reads remove live authority, and demotion preserves accepted-operation recovery. This change does not deploy or activate a production cohort by itself.
+- Keep capacity freshness checks current across policy reads and durable command delivery, so slow database operations cannot extend a provider snapshot's lifetime.
 - Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
 
 ## Unreleased - withdrawal funding queue

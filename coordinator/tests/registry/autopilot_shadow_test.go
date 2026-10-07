@@ -22,15 +22,12 @@ func TestAutopilotShadowLeasePlansWithoutChangingResidencyOrLegacyAdmission(t *t
 		t.Run(mode, func(t *testing.T) {
 			cfg := autopilot.DefaultConfig()
 			cfg.ObserveOnly = mode == "global shadow"
-			if mode == "outside live cohort" {
-				cfg.LiveMachineIDs = autopilotFixtureMachineID(10)
-			}
-			testAutopilotShadowServing(t, cfg)
+			testAutopilotShadowServing(t, cfg, mode == "outside live cohort")
 		})
 	}
 }
 
-func testAutopilotShadowServing(t *testing.T, cfg autopilot.Config) {
+func testAutopilotShadowServing(t *testing.T, cfg autopilot.Config, selectOtherMachine bool) {
 	t.Helper()
 	posture := newDeadlineObservations()
 	pendingLoads := &pendingload.Ledger{}
@@ -62,6 +59,9 @@ func testAutopilotShadowServing(t *testing.T, cfg autopilot.Config) {
 			})
 		}
 	})
+	if selectOtherMachine {
+		r.selectLiveMachines(t, 10)
+	}
 	p := autopilotControllerProvider(t, r, "shadow", now, autopilotTestDonor)
 	// The sequence-establishing heartbeat is fixture setup, not placement work.
 	posture.forProvider(p.ID).Reset()

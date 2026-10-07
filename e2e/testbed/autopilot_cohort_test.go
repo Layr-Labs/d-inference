@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,11 @@ import (
 func autopilotCohortTestSuite(t *testing.T) (*Suite, []*registry.Provider) {
 	t.Helper()
 	r := registry.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	st := NewMemoryStore()
+	r.SetStore(st)
 	s := &Suite{
+		Ctx:         t.Context(),
+		PgStore:     st,
 		Config:      SuiteConfig{Autopilot: true, ModelSpecs: []ModelSpec{{ModelID: "cached-model", NumProviders: 2}}},
 		Coordinator: &Coordinator{Registry: r},
 		// These handles stand in for successful testbed process launches. The
@@ -57,9 +62,8 @@ func TestAutopilotFixtureMachinesSelectOnlyOwnedAccounts(t *testing.T) {
 					handle.owned = &ownedProvider{hostID: fmt.Sprintf("physical-%d", i), done: make(chan struct{})}
 				}
 			}
-			ids, err := s.bindAutopilotFixtureMachines()
+			machines, err := s.bindAutopilotFixtureMachines()
 			require.NoError(t, err)
-			machines := strings.Split(ids, ",")
 			require.Len(t, machines, len(s.Providers))
 			require.NotEqual(t, machines[0], machines[1])
 			for i, handle := range s.Providers {
@@ -74,9 +78,17 @@ func TestAutopilotFixtureMachinesSelectOnlyOwnedAccounts(t *testing.T) {
 			account, machine := registered[2].GetVerifiedMachineIdentity()
 			require.Empty(t, account, "an unowned provider must not acquire fixture trust")
 			require.Empty(t, machine)
+			settings, ok := store.As[store.MachineAutopilotStore](s.PgStore)
+			require.True(t, ok)
+			live, err := settings.LiveMachineAutopilotSettings(s.Ctx)
+			require.NoError(t, err)
+			require.ElementsMatch(t, []store.MachineAutopilotSetting{
+				{MachineID: machines[0], DesiredMode: store.MachineAutopilotLive, Revision: 1},
+				{MachineID: machines[1], DesiredMode: store.MachineAutopilotLive, Revision: 1},
+			}, live)
 
 			cfg := autopilot.DefaultConfig()
-			cfg.ObserveOnly, cfg.LiveMachineIDs = false, ids
+			cfg.ObserveOnly = false
 			require.NoError(t, s.Coordinator.Registry.ConfigureAutopilot(cfg))
 			summary := s.Coordinator.Registry.TriggerAutopilot()
 			require.Equal(t, 2, summary.LiveCohort)
@@ -126,6 +138,75 @@ func TestAutopilotFixtureMachinesRejectOwnershipMismatch(t *testing.T) {
 				require.Empty(t, account)
 				require.Empty(t, machine)
 			}
+			settings, ok := store.As[store.MachineAutopilotStore](s.PgStore)
+			require.True(t, ok)
+			live, err := settings.LiveMachineAutopilotSettings(s.Ctx)
+			require.NoError(t, err)
+			require.Empty(t, live, "ownership failure must not persist live selection")
+		})
+	}
+}
+
+func TestAutopilotFixtureMachinesPreserveRegistrationIdentityAndDesiredMode(t *testing.T) {
+	for _, observedFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("registration_observed_first=%t", observedFirst), func(t *testing.T) {
+			s, registered := autopilotCohortTestSuite(t)
+			inventory, ok := store.As[store.MachineInventoryStore](s.PgStore)
+			require.True(t, ok)
+			observation := store.MachineObservation{
+				SessionID: registered[0].ID, AccountID: s.Providers[0].AccountID,
+				SEKey: "fixture-registration-key", Source: "live_registration", At: time.Now().UTC(),
+			}
+			var initial store.MachineIdentity
+			var err error
+			if observedFirst {
+				initial, err = inventory.ObserveMachine(s.Ctx, observation)
+				require.NoError(t, err)
+			}
+			machines, err := s.bindAutopilotFixtureMachines()
+			require.NoError(t, err)
+			if observedFirst {
+				require.Equal(t, initial.ID, machines[0])
+			}
+			observation.At = time.Now().UTC()
+			observed, err := inventory.ObserveMachine(s.Ctx, observation)
+			require.NoError(t, err)
+			require.Equal(t, machines[0], observed.ID)
+			settings, ok := store.As[store.MachineAutopilotStore](s.PgStore)
+			require.True(t, ok)
+			live, err := settings.LiveMachineAutopilotSettings(s.Ctx)
+			require.NoError(t, err)
+			require.Contains(t, live, store.MachineAutopilotSetting{
+				MachineID: machines[0], DesiredMode: store.MachineAutopilotLive, Revision: 1,
+			})
+		})
+	}
+}
+
+func TestAutopilotFixtureMachinesRejectInventoryOwnerConflict(t *testing.T) {
+	for _, account := range []string{"", "different-owner"} {
+		t.Run(fmt.Sprintf("inventory_account=%q", account), func(t *testing.T) {
+			s, registered := autopilotCohortTestSuite(t)
+			inventory, ok := store.As[store.MachineInventoryStore](s.PgStore)
+			require.True(t, ok)
+			_, err := inventory.ObserveMachine(s.Ctx, store.MachineObservation{
+				SessionID: registered[0].ID, AccountID: account,
+				Source: "live_registration", At: time.Now().UTC(),
+			})
+			require.NoError(t, err)
+			machines, err := s.bindAutopilotFixtureMachines()
+			require.ErrorContains(t, err, "machine_session_owner_conflict")
+			require.Empty(t, machines)
+			for _, p := range registered {
+				account, machine := p.GetVerifiedMachineIdentity()
+				require.Empty(t, account)
+				require.Empty(t, machine)
+			}
+			settings, ok := store.As[store.MachineAutopilotStore](s.PgStore)
+			require.True(t, ok)
+			live, err := settings.LiveMachineAutopilotSettings(s.Ctx)
+			require.NoError(t, err)
+			require.Empty(t, live)
 		})
 	}
 }

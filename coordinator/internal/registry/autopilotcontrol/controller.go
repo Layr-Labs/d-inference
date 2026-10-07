@@ -61,14 +61,23 @@ func (c *Controller[T]) Retry(now time.Time)                { c.ports.Retry(now)
 
 func (c *Controller[T]) Tick(now time.Time) autopilot.Summary {
 	started := time.Now()
+	// Preserve a future evaluation epoch, but count queueing and blocking IO
+	// before checking freshness. Buffered ticker timestamps must not extend it.
+	epoch := now
+	if epoch.Before(started) {
+		epoch = started
+	}
+	evaluationTime := func() time.Time { return epoch.Add(time.Since(started)) }
 	c.tickMu.Lock()
 	defer c.tickMu.Unlock()
 	ledgerReady := c.ports.Flush()
 	c.RefreshControlLeases(time.Now())
+	now = evaluationTime()
 	if !c.config.ObserveOnly {
 		c.Watchdogs(now)
 		c.Retry(now)
 	}
+	now = evaluationTime()
 	f := c.Fleet(now)
 	summary := autopilot.Summarize(f.Fleet, c.config, now)
 	remaining := c.config.MaxConcurrentOperations - summary.Pending - f.LegacyPending
@@ -115,6 +124,7 @@ func (c *Controller[T]) Tick(now time.Time) autopilot.Summary {
 			break
 		}
 		summary.LiveProposed++
+		now = evaluationTime()
 		command, ok := c.Reserve(*action, now)
 		if !ok {
 			break
@@ -124,6 +134,7 @@ func (c *Controller[T]) Tick(now time.Time) autopilot.Summary {
 		}
 		summary.Issued++
 		c.ports.Send(action.Session, command)
+		now = evaluationTime()
 		f = c.Fleet(now)
 	}
 	summary.Proposed = summary.LiveProposed + summary.ShadowProposed

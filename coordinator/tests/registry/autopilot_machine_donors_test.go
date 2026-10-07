@@ -13,16 +13,17 @@ func TestAutopilotLiveDonorsRequireActualServingPermission(t *testing.T) {
 	for _, mode := range []string{"shadow", "selected waiting", "selected expired", "selected rebound"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := autopilot.DefaultConfig()
-			cfg.ObserveOnly, cfg.LiveMachineIDs = false, autopilotFixtureMachineIDs(3)
-			if mode == "shadow" {
-				cfg.LiveMachineIDs = autopilotFixtureMachineID(0)
-			}
+			cfg.ObserveOnly = false
 			r, c, now := newAutopilotControllerTestConfig(t, cfg)
+			r.selectLiveMachines(t, 0)
+			if mode != "shadow" {
+				r.selectLiveMachines(t, 1, 2)
+			}
 			warm := testWarmPoolConfig()
 			warm.MinWarmByModel = map[string]int{autopilotTestTarget: 1, autopilotTestDonor: 1}
 			r.ConfigureWarmPool(warm)
-			live := autopilotMachineProvider(t, r, "live", autopilotFixtureMachineID(0), now, autopilotTestDonor)
-			peer := autopilotMachineProvider(t, r, "peer", autopilotFixtureMachineID(1), now, autopilotTestDonor)
+			live := autopilotMachineProvider(t, r, "live", r.machineID(t, 0), now, autopilotTestDonor)
+			peer := autopilotMachineProvider(t, r, "peer", r.machineID(t, 1), now, autopilotTestDonor)
 			live.Mu().Lock()
 			live.ModelAutopilot.MaxModelSlots = 1
 			live.Mu().Unlock()
@@ -38,7 +39,7 @@ func TestAutopilotLiveDonorsRequireActualServingPermission(t *testing.T) {
 				r.states[peer.ID].AcceptControl(peer.ModelAutopilot, protocol.ModelAutopilotControl{Enabled: true, Revision: "test", ExpiresAtMS: now.Add(-time.Second).UnixMilli()})
 			}
 			peer.Mu().Unlock()
-			if mode == "selected rebound" && !r.BindVerifiedMachineIdentity(peer, peer.AccountID, autopilotFixtureMachineID(2)) {
+			if mode == "selected rebound" && !r.BindVerifiedMachineIdentity(peer, peer.AccountID, r.machineID(t, 2)) {
 				t.Fatal("rebind rejected")
 			}
 			fleet := c.Fleet(now)
@@ -64,9 +65,10 @@ func TestAutopilotLiveDonorsRequireActualServingPermission(t *testing.T) {
 
 func TestAutopilotActualShadowDonorRetainsOrdinaryDedicatedPermission(t *testing.T) {
 	cfg := autopilot.DefaultConfig()
-	cfg.ObserveOnly, cfg.LiveMachineIDs = false, autopilotFixtureMachineID(0)
+	cfg.ObserveOnly = false
 	r, c, now := newAutopilotControllerTestConfig(t, cfg)
-	p := autopilotMachineProvider(t, r, "shadow", autopilotFixtureMachineID(1), now, autopilotTestDonor)
+	r.selectLiveMachines(t, 0)
+	p := autopilotMachineProvider(t, r, "shadow", r.machineID(t, 1), now, autopilotTestDonor)
 	r.SetDedicatedModels([]string{autopilotTestDonor})
 	p.Mu().Lock()
 	p.Models[0].WeightHash = "cached-target-weights"

@@ -61,14 +61,23 @@ func (c *Controller[T]) Retry(now time.Time)                { c.ports.Retry(now)
 
 func (c *Controller[T]) Tick(now time.Time) autopilot.Summary {
 	started := time.Now()
+	// Preserve a future evaluation epoch, but count queueing and blocking IO
+	// before checking freshness. Buffered ticker timestamps must not extend it.
+	epoch := now
+	if epoch.Before(started) {
+		epoch = started
+	}
+	evaluationTime := func() time.Time { return epoch.Add(time.Since(started)) }
 	c.tickMu.Lock()
 	defer c.tickMu.Unlock()
 	ledgerReady := c.ports.Flush()
 	c.RefreshControlLeases(time.Now())
+	now = evaluationTime()
 	if !c.config.ObserveOnly {
 		c.Watchdogs(now)
 		c.Retry(now)
 	}
+	now = evaluationTime()
 	f := c.Fleet(now)
 	summary := autopilot.Summarize(f.Fleet, c.config, now)
 	remaining := c.config.MaxConcurrentOperations - summary.Pending - f.LegacyPending
@@ -76,32 +85,46 @@ func (c *Controller[T]) Tick(now time.Time) autopilot.Summary {
 	if c.ports.Paused() || !ledgerReady {
 		limit = 0
 	}
+	// Shadow evaluates the same actual starting fleet with its own bounded
+	// counterfactual reservations. It cannot spend live budget, remove a live
+	// donor or promise future capacity to the subsequent live pass.
+	shadow := f
+	shadow.Nodes = slices.Clone(f.Nodes)
+	shadowConfig := c.config
+	shadowConfig.ObserveOnly = true
+	for range limit {
+		action := Plan(shadow, shadowConfig, now)
+		if action == nil {
+			break
+		}
+		summary.ShadowProposed++
+		c.ports.Propose(*action, now)
+		for i := range shadow.Nodes {
+			if shadow.Nodes[i].ID == action.Node.ID {
+				shadow.Nodes[i].Pending = true
+				shadow.Nodes[i].Future = action.Future
+				shadow.Nodes[i].FutureResidents = []string{}
+				for _, m := range action.Node.Residents {
+					if !slices.Contains(action.Unload, m) {
+						shadow.Nodes[i].FutureResidents = append(shadow.Nodes[i].FutureResidents, m)
+					}
+				}
+				if action.Load != "" {
+					shadow.Nodes[i].FutureResidents = append(shadow.Nodes[i].FutureResidents, action.Load)
+				}
+			}
+		}
+	}
+	if c.config.ObserveOnly {
+		limit = 0
+	}
 	for range limit {
 		action := Plan(f, c.config, now)
 		if action == nil {
 			break
 		}
-		summary.Proposed++
-		if c.config.ObserveOnly {
-			c.ports.Propose(*action, now)
-			// Debit only this pass. Hypothetical capacity never reaches routing.
-			for i := range f.Nodes {
-				if f.Nodes[i].ID == action.Node.ID {
-					f.Nodes[i].Pending = true
-					f.Nodes[i].Future = action.Future
-					f.Nodes[i].FutureResidents = []string{}
-					for _, m := range action.Node.Residents {
-						if !slices.Contains(action.Unload, m) {
-							f.Nodes[i].FutureResidents = append(f.Nodes[i].FutureResidents, m)
-						}
-					}
-					if action.Load != "" {
-						f.Nodes[i].FutureResidents = append(f.Nodes[i].FutureResidents, action.Load)
-					}
-				}
-			}
-			continue
-		}
+		summary.LiveProposed++
+		now = evaluationTime()
 		command, ok := c.Reserve(*action, now)
 		if !ok {
 			break
@@ -111,8 +134,10 @@ func (c *Controller[T]) Tick(now time.Time) autopilot.Summary {
 		}
 		summary.Issued++
 		c.ports.Send(action.Session, command)
+		now = evaluationTime()
 		f = c.Fleet(now)
 	}
+	summary.Proposed = summary.LiveProposed + summary.ShadowProposed
 	c.ports.Publish(summary, started)
 	return summary
 }

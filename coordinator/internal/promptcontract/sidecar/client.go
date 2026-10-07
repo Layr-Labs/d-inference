@@ -24,6 +24,12 @@ const (
 	DefaultMaxResponseBytes = 1 << 20
 	DefaultMaxTokens        = 1_048_576
 	DefaultMaxPreloadIDs    = 128
+	DefaultMaxConnections   = 64
+	// Rust holds a permit for the entire connection, including keep-alive idle
+	// time. Separate HTTP pools alone do not reserve server-side capacity.
+	healthConnections          = 2
+	controlConnections         = 2
+	ReservedControlConnections = healthConnections + controlConnections
 )
 
 var (
@@ -34,6 +40,10 @@ var (
 )
 
 type ClientConfig struct {
+	// These must match the sidecar's worker and total connection limits.
+	// Standalone clients use the sidecar defaults when unspecified.
+	MaxConcurrency   int
+	MaxConnections   int
 	SocketPath       string
 	RequestTimeout   time.Duration
 	HealthTimeout    time.Duration
@@ -42,9 +52,17 @@ type ClientConfig struct {
 	MaxResponseBytes int64
 	MaxTokens        int
 	MaxPreloadIDs    int
+	// PlanAdmissions constructs the planning admission for the client's planning
+	// slots. Nil, or a nil result, uses NewPlanAdmission.
+	PlanAdmissions func(workers int) *PlanAdmission
+	// Transports returns the round-tripper a pool uses, given the Unix-socket
+	// transport the client built within that pool's connection limit
+	// (MaxConnsPerHost). Nil, or a nil result, uses that transport.
+	Transports func(pool Pool, transport *http.Transport) http.RoundTripper
 }
 
 type Client struct {
+	planAdmission    *PlanAdmission
 	config           ClientConfig
 	planHTTP         *http.Client
 	healthHTTP       *http.Client
@@ -68,6 +86,12 @@ type ClientStats struct {
 }
 
 func NewClient(config ClientConfig) *Client {
+	if config.MaxConcurrency <= 0 {
+		config.MaxConcurrency = DefaultMaxConcurrency
+	}
+	if config.MaxConnections <= 0 {
+		config.MaxConnections = DefaultMaxConnections
+	}
 	if config.SocketPath == "" {
 		config.SocketPath = DefaultSocketPath
 	}
@@ -92,14 +116,20 @@ func NewClient(config ClientConfig) *Client {
 	if config.MaxPreloadIDs <= 0 {
 		config.MaxPreloadIDs = DefaultMaxPreloadIDs
 	}
-	planTransport := newUnixTransport(config.SocketPath, config.RequestTimeout, 16)
-	healthTransport := newUnixTransport(config.SocketPath, config.HealthTimeout, 2)
-	controlTransport := newUnixTransport(config.SocketPath, config.PreloadTimeout, 2)
+	// Never let active OR idle planning connections consume the control reserve.
+	// A directly constructed invalid client fails planning closed; Supervisor's
+	// Check rejects a total connection limit too small for even one planner.
+	planningSlots := max(0, min(config.MaxConcurrency, MaxPendingPlans,
+		config.MaxConnections-ReservedControlConnections))
+	planTransport := newUnixTransport(config.SocketPath, config.RequestTimeout, max(1, planningSlots))
+	healthTransport := newUnixTransport(config.SocketPath, config.HealthTimeout, healthConnections)
+	controlTransport := newUnixTransport(config.SocketPath, config.PreloadTimeout, controlConnections)
 	return &Client{
+		planAdmission:    config.newPlanAdmission(planningSlots),
 		config:           config,
-		planHTTP:         &http.Client{Transport: planTransport},
-		healthHTTP:       &http.Client{Transport: healthTransport},
-		controlHTTP:      &http.Client{Transport: controlTransport},
+		planHTTP:         config.newPool(PoolPlan, planTransport),
+		healthHTTP:       config.newPool(PoolHealth, healthTransport),
+		controlHTTP:      config.newPool(PoolControl, controlTransport),
 		planTransport:    planTransport,
 		healthTransport:  healthTransport,
 		controlTransport: controlTransport,
@@ -175,12 +205,42 @@ func (c *Client) Health(ctx context.Context) error {
 }
 
 func (c *Client) Plan(ctx context.Context, input PlanInput) (Plan, error) {
-	if !ValidHash(input.PromptContractID) ||
-		input.ScopeID == "" ||
-		len(input.ScopeID) > 256 ||
-		!ValidEndpoint(input.Endpoint) ||
-		len(input.Body) == 0 ||
-		!json.Valid(input.Body) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+	if !ValidHash(input.PromptContractID) || input.ScopeID == "" || len(input.ScopeID) > 256 ||
+		!ValidEndpoint(input.Endpoint) || len(input.Body) == 0 {
+		return Plan{}, ErrInvalidPlan
+	}
+	if int64(len(input.Body)) > c.config.MaxRequestBytes {
+		return Plan{}, ErrPlanTooLarge
+	}
+	// Include the original payload and a conservative escaped-envelope bound.
+	// Serialization happens only after admission; overflow is impossible after
+	// the absolute pending-byte limit check.
+	if int64(len(input.Body)) > (MaxPendingPlanBytes-2048)/7 {
+		return Plan{}, ErrPlanTooLarge
+	}
+	retainedBytes := int64(len(input.Body))*2 + 2048
+	// encoding/json only expands these valid RawMessage characters. Count
+	// without allocating a serialized copy for every waiter. Reserve both the
+	// caller input and its possible wire envelope, including escaped scope.
+	for _, escaped := range [][]byte{{'<'}, {'>'}, {'&'}} {
+		retainedBytes += 5 * int64(bytes.Count(input.Body, escaped))
+	}
+	for _, escaped := range [][]byte{{0xe2, 0x80, 0xa8}, {0xe2, 0x80, 0xa9}} {
+		retainedBytes += 3 * int64(bytes.Count(input.Body, escaped))
+	}
+	release, err := c.planAdmission.Acquire(ctx, retainedBytes)
+	if err != nil {
+		if isTimeoutError(err) {
+			c.planTimeouts.Add(1)
+		} else if ctx.Err() == nil {
+			c.overloads.Add(1)
+		}
+		return Plan{}, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
+	}
+	defer release()
+	if !json.Valid(input.Body) {
 		return Plan{}, ErrInvalidPlan
 	}
 	requestBody, err := json.Marshal(struct {
@@ -200,8 +260,6 @@ func (c *Client) Plan(ctx context.Context, input PlanInput) (Plan, error) {
 	if int64(len(requestBody)) > c.config.MaxRequestBytes {
 		return Plan{}, ErrPlanTooLarge
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
-	defer cancel()
 	request, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,

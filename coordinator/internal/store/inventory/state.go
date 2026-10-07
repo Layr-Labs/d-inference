@@ -21,6 +21,8 @@ type State struct {
 	Sessions        map[string]store.MachineObservation
 	SessionMachines map[string]string
 	Events          []store.AppAttestEvent
+	// Observations reconstruct MachineIdentity; operator intent has its own lifetime.
+	autopilotSettings map[string]store.MachineAutopilotSetting
 }
 
 func (s *State) ObserveMachine(ctx context.Context, o store.MachineObservation) (store.MachineIdentity, error) {
@@ -76,6 +78,7 @@ func (s *State) ObserveMachine(ctx context.Context, o store.MachineObservation) 
 		}
 		m.Merged[old] = id
 		delete(m.Machines, old)
+		delete(m.autopilotSettings, old)
 	}
 	m.Machines[id] = identity
 	for _, a := range o.Aliases() {

@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 What the coordinator persists, through which interface and in which backend;
 then what a provider keeps on its own disk and in its Keychain. How the schema
@@ -495,6 +495,10 @@ may deliver them. The scrub also deletes the account's frozen legacy MDM
 cohort and saved hardware interest. Code and synchronization:
 [concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
 
+## Withdrawal funding queue records
+
+Connect keeps `queued` in `stripe_withdrawals.status` and stores `transfer_attempt`, `transfer_dispatch_attempts`, `transfer_started_at` and `transfer_lease_until` alongside the financial record. A claim records its idempotency generation and lease before sending; retrying never debits the ledger again (`coordinator/store/postgres/stripe_withdrawal_queue.go`, `ClaimStripeWithdrawal`). Global Payouts keeps its queued status, funding generation and dispatch start in the existing `global_payout_withdrawals.data` JSON document; the projected status and reconciliation index include queued records (`coordinator/store/postgres/global_payouts.go`, `ListGlobalPayoutsToReconcile`). No separate queue table or user-cache invalidation is required.
+
 ## Related
 
 - [`../reference/configuration.md`](../reference/configuration.md) — `EIGENINFERENCE_DATABASE_URL`, `EIGENINFERENCE_ALLOW_MEMORY_STORE`, `USER_PERSISTENT_DATA_PATH` and the provider path overrides
@@ -538,6 +542,42 @@ country-policy rollback and invalidates old unconfirmed quotes. Historical
 withdrawals retain their immutable destination and source data. Legacy Connect
 user IDs remain available for old payout events. The maintenance tool uses an
 existing pool through `StripeSettlementForMaintenance` without startup migrations.
+
+## Autopilot machine settings
+
+`MachineAutopilotStore` (`coordinator/store/machine_autopilot.go`) is an optional
+capability implemented by memory and PostgreSQL, discovered through `store.As`.
+It is independent of the observation-only `MachineInventoryStore` and the
+operation ledger. These writes change neither cached users nor model records,
+so `CachedStore` needs no additional invalidation or forwarding override.
+
+| Persisted field on `darkbloom_machines` | Contract |
+|---|---|
+| `autopilot_desired_mode` | Non-null text, default `shadow`, restricted to `shadow` or `live`. Applies to existing and new rows, including offline machines. It is desired policy, never restored live authority. |
+| `autopilot_revision` | Non-null bigint, default 0, constrained nonnegative. The same atomic update increments it only when the desired mode changes. Repeated same-mode edits preserve it. |
+
+`SetMachineAutopilotDesiredMode` updates only the exact existing row with
+`merged_into IS NULL`. PostgreSQL's row lock and predicate recheck serialize it
+with a concurrent merge; a missing or merged-away target returns `ErrNotFound`.
+No setter creates inventory or follows an alias. A survivor keeps its own
+setting, even when a retired identity was live. Observation and reconnect writes
+preserve these columns. Migrations 29 and 30 add and validate the fields without
+resetting existing values; see [schema lifecycle](schema-lifecycle.md#versions).
+
+The memory backend holds its existing transaction mutex and stores settings
+alongside inventory state, separately from the reconstructed `MachineIdentity`.
+It removes a loser's setting on merge without transferring it. An existing
+machine with no explicit setting reads `shadow`, revision 0. Memory settings last
+for that store instance; PostgreSQL settings survive coordinator/store restarts.
+
+`ListMachineAutopilotSettings` keyset-pages unmerged IDs in ascending order,
+defaulting to 100 rows and clamping to 200. `LiveMachineAutopilotSettings` returns
+all unmerged live rows for controller synchronization, without the admin page
+limit. Both backends implement these methods in their `machine_autopilot.go`.
+Actual verified sessions, grants and accepted-operation ownership remain in the
+registry, not these fields. The [machine API](../reference/api-contracts.md#autopilot-machine-settings)
+exposes desired and effective state separately; [Autopilot synchronization](model-autopilot.md#machine-selected-live-control)
+defines publication, revocation and failure behavior.
 
 ## Autopilot operation ledger
 

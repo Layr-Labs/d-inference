@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// Autopilot requires provider consent and a live coordinator control lease.
-// Operators can disable it or select inert observation. Consent alone retains
-// ordinary residency behavior until control is active (or explicitly paused).
+// Autopilot requires provider consent, verified machine selection and a live
+// coordinator control lease. ObserveOnly overrides persisted machine settings.
+// Consent alone retains ordinary residency until control is active (or paused).
 type Config struct {
 	Enabled                 bool
 	ObserveOnly             bool

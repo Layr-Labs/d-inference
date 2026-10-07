@@ -22,3 +22,11 @@ func (s *Server) handleAdminAutopilot(w http.ResponseWriter, r *http.Request) {
 	ledger, _ := store.As[store.AutopilotStore](s.store)
 	autopilotapi.Handler{Controller: s.registry, Ledger: ledger}.ServeHTTP(w, r)
 }
+
+func (s *Server) handleAdminAutopilotMachines(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !s.access.IsAdminAuthorized(w, r) {
+		return
+	}
+	autopilotapi.MachineHandler{Controller: s.registry}.ServeHTTP(w, r)
+}

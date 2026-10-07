@@ -47,7 +47,7 @@ func cacheReceiptMismatch(result production.CacheReceiptResult) bool {
 func receiptTestAttempt(tracker *cachetracker.Tracker[*production.Provider], nonce string, capability protocol.PrefixCacheV2Capability, prompt protocol.PrefixCacheAnchor) {
 	now := time.Now()
 	claims, _ := cacheplan.NewClaims([]protocol.PrefixCacheAnchor{prompt}, capability.BlockSize, prompt)
-	tracker.StoreAttemptLocked(nonce, cachetracker.Attempt[*production.Provider]{
+	admitted := tracker.StoreAttemptLocked(nonce, cachetracker.Attempt[*production.Provider]{
 		RequestID: "request-" + nonce, ProviderID: "provider", Model: capability.ModelID,
 		CreatedAt: now, ExpiresAt: now.Add(time.Minute), V2: true,
 		Plan: production.CachePlan{
@@ -56,4 +56,7 @@ func receiptTestAttempt(tracker *cachetracker.Tracker[*production.Provider], non
 		},
 		V2Capability: capability, ExpectedPrompt: prompt, ExpectedBoundaries: claims,
 	})
+	if !admitted {
+		panic("fixture cache attempt admission refused")
+	}
 }

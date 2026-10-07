@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -235,6 +235,19 @@ read lease and evaluates providers under their existing locks
 snapshot/reservation/transport/store operations
 (`coordinator/registry/autopilot_control.go`, `newAutopilotControl`). These boundaries
 do not create independent admission, drain or command authority on the same session.
+
+The Autopilot adapter owns database-backed machine-cohort selection, checks the current
+verified machine/account binding when enqueueing control leases and rechecks it
+at reservation (`coordinator/registry/autopilot_activation.go`, `liveMachineLocked`;
+`coordinator/registry/autopilot_reservation.go`, `beginAutopilotReservation`).
+`coordinator/registry/autopilot_machine_policy.go` serializes desired-mode writes
+and periodic reads through runtime publication, without database IO under
+registry/provider locks. `MachineAutopilotStore` persists intent independently
+of session leases and command records. Authenticated admin adapters expose edits
+and separate desired/current-session projections, not direct provider mutation.
+The detached controller separates live and hypothetical shadow passes without
+splitting actual donor or accepted-command ownership. The [Autopilot architecture](../model-autopilot.md#machine-selected-live-control)
+defines the mode and reconnect boundaries.
 
 Reservation preparation retains the scan's registry read lease in
 `PreparedReservation` (`coordinator/registry/reservation_preparation.go`). `Finish`

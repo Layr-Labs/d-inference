@@ -149,6 +149,11 @@ func (p *State) Snapshot() Snapshot {
 		return Snapshot{}
 	}
 	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.snapshotLocked()
+}
+
+func (p *State) snapshotLocked() Snapshot {
 	snapshot := Snapshot{Generation: p.generation}
 	if p.catalogError != "" {
 		snapshot.Counts.Failed++
@@ -170,7 +175,6 @@ func (p *State) Snapshot() Snapshot {
 			snapshot.Counts.Pending++
 		}
 	}
-	p.mu.RUnlock()
 	snapshot.ContractIDs = make([]string, 0, len(contracts))
 	for contractID := range contracts {
 		snapshot.ContractIDs = append(snapshot.ContractIDs, contractID)

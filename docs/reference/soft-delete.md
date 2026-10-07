@@ -1,6 +1,6 @@
 # Soft delete
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Reference for the coordinator store's soft-delete columns: which tables have
 `deleted_at`, every read that hides a soft-deleted row in `PostgresStore` and
@@ -187,6 +187,9 @@ history-table files and tests outside this gate.
 | `SetUserStripeAccount`, `SaveGlobalRecipient`, and Checkout creation results | Preserve cleanup IDs in the erasure outbox and refuse restoring personal fields | `coordinator/store/postgres/erasure_external.go` (`fenceErasureExternalObject`), `coordinator/store/memory/erasure_external.go` (`retainDeletedExternalObjectLocked`) |
 | Usage and route persistence | Preserve accounting while clearing erased owners' location and region fields | `coordinator/store/postgres/erasure_observations.go` (`erasedObservationOwners`), `coordinator/store/memory/usage.go` (`RecordUsage`), `coordinator/store/memory/route_telemetry.go` (`recordInferenceRouteLocked`) |
 | Trust-reuse upsert/recovery and verification jobs | Hold the shared privacy fence through SE-owner validation and persistence; erased-only keys are rejected, while a live co-owner or a subsequent authenticated owner remains usable | `coordinator/store/postgres/erasure_personal_writes.go` (`checkPersonalSEOwner`), `coordinator/store/memory/erasure_ownership.go` (`erasedSEOwnerLocked`) |
+
+
+Queued Connect and Global Payouts withdrawals count as open withdrawals in both backends. Planning reports them; erasure request and scrub refuse while their funds are reserved. The queue retains the saved destination for eventual dispatch. Posted Global Payouts remain protected during the [post-dispatch return window](pricing-model.md#global-payouts-withdrawals), excluding time spent queued. Code: `coordinator/store/memory/erasure.go` (`openWithdrawalsLocked`), `coordinator/store/postgres/queries/erasure.sql` (`CountOpenStripeWithdrawals`, `CountOpenGlobalPayouts`).
 
 ## Related
 

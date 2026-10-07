@@ -147,10 +147,10 @@ func TestIntegration_FlashNextCacheScope(t *testing.T) {
 	restartedPreloader, err := promptcontract.NewPreloadController(provisioner, restarted,
 		promptcontract.PreloadControllerConfig{PollInterval: 50 * time.Millisecond})
 	require.NoError(t, err)
-	restartedPreloader.Start(s.Ctx)
 	t.Cleanup(restartedPreloader.Close)
 	s.Coordinator.Server.SetPromptContractClient(restarted.Client())
 	s.Coordinator.Server.SetPromptPreloadController(restartedPreloader)
+	restartedPreloader.Start(s.Ctx)
 	s.Coordinator.Server.SetPromptSupervisor(restarted)
 	waitForPreloadedContract(t, restartedPreloader, contract, 30*time.Second)
 	run("sidecar_restart_hit", 0, "ssd", "hit")

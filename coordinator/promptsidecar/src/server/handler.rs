@@ -25,7 +25,10 @@ pub(super) async fn handle(
         (&Method::GET, "/ready") => ready_response(&planner),
         (&Method::GET, "/metrics") => encoded_response(StatusCode::OK, &planner.status()),
         (&Method::POST, "/v1/preload") => {
-            handle_preload(request, planner, max_body_bytes, body_read_timeout).await
+            handle_preload(request, planner, max_body_bytes, body_read_timeout, false).await
+        }
+        (&Method::POST, "/v2/preload") => {
+            handle_preload(request, planner, max_body_bytes, body_read_timeout, true).await
         }
         (&Method::POST, "/v1/plan") => {
             handle_plan(
@@ -54,6 +57,7 @@ async fn handle_preload(
     planner: Planner,
     max_body_bytes: usize,
     body_read_timeout: Duration,
+    incremental: bool,
 ) -> Response<ResponseBody> {
     let preload_request: PreloadRequest = match decode_request(
         request,
@@ -66,13 +70,26 @@ async fn handle_preload(
         Ok(request) => request,
         Err(response) => return response,
     };
-    match planner
-        .preload_contracts(preload_request.prompt_contract_ids)
-        .await
-    {
+    let result = if incremental {
+        planner
+            .preload_incremental_contracts(preload_request.prompt_contract_ids)
+            .await
+    } else {
+        planner
+            .preload_contracts(preload_request.prompt_contract_ids)
+            .await
+    };
+    match result {
         Ok(report) => {
             let metrics = planner.status().metrics;
-            encoded_response(StatusCode::OK, &PreloadResponse { report, metrics })
+            encoded_response(
+                StatusCode::OK,
+                &PreloadResponse {
+                    report,
+                    metrics,
+                    continuity_version: if incremental { 1 } else { 0 },
+                },
+            )
         }
         Err(error) => preload_error_response(error),
     }
@@ -143,6 +160,7 @@ struct HealthResponse {
 
 #[derive(Serialize)]
 struct PreloadResponse {
+    continuity_version: u32,
     #[serde(flatten)]
     report: PreloadReport,
     metrics: MetricsSnapshot,
@@ -290,6 +308,11 @@ fn preload_error_response(error: PreloadError) -> Response<ResponseBody> {
             StatusCode::CONFLICT,
             "preload_in_progress",
             "a preload is already running",
+        ),
+        PreloadError::LegacyDisabled => error_response(
+            StatusCode::CONFLICT,
+            "legacy_preload_disabled",
+            "legacy replacement is disabled after continuity negotiation",
         ),
         PreloadError::Worker => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,

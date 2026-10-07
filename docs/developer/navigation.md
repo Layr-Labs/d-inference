@@ -58,6 +58,7 @@ components for the specific invariant:
 | Middleware, projections and reporting calculations | `coordinator/internal/api/` |
 | Shared request prelude and provider-bound caller-field minimization | `coordinator/internal/inference/prelude/request_prelude.go` (`Parser.Parse`), `coordinator/internal/inference/prelude/provider_body_privacy.go` (`stripProviderCallerIdentity`); bound to the key policy by `coordinator/api/inference/prelude_parser.go` (`NewPreludeParser`) |
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
+| Optional cache-planning decisions and their bounded metric reasons | `coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`), `coordinator/internal/inference/routeplan/cache_planning_telemetry.go` (`CachePlanner.EmitDecision`); bound by `coordinator/api/inference/cache_planner.go` (`NewCachePlanner`) and called from `coordinator/api/inference/prompt_work.go` (`planPromptRoute`) |
 | Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
 | APNs proof, challenge and budget erasure; publication generation fences | `coordinator/internal/provider/identity/erasure.go`; `coordinator/api/provider/trust/erasure.go` connects the account scrub to runtime cleanup |
@@ -77,6 +78,7 @@ components for the specific invariant:
 | Cache generations, memory history, shared records, account erasure rules and SQL helpers | `coordinator/internal/store/`; erasure rules and keys in `coordinator/internal/store/erasure/` |
 | Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
+| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`PreloadController.ReadyFor`, `Reconcile`) |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
 | Command bodies: coordinator lifecycle, payout audit and DevNet seed data | `coordinator/internal/command/coordinator/`, `payoutaudit/`, `devnetseed/`; each `coordinator/cmd/<name>/main.go` is a thin entry point |

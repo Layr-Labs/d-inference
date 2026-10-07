@@ -79,14 +79,55 @@ The coordinator calls the local prompt-contract sidecar
 resolution, tool normalization, endpoint lowering, output-bound injection, and
 construction of the final provider-bound body (`planPromptRoute`,
 `coordinator/api/inference/prompt_work.go`, called through the request's
-`routeplan.Memo` in `coordinator/api/inference/consumer.go`). The sidecar returns the prompt contract
+`routeplan.Memo` in `coordinator/api/inference/consumer.go`; planning itself is
+`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`). The sidecar returns the prompt contract
 identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
 
 Sidecar timeout, crash, malformed output, unavailable artifacts, and dynamic-time
-templates return a non-participating plan. The request still dispatches.
+templates return a non-participating plan. Ordinary inference continues subject
+to its existing admission and remaining request budget.
 Requests carrying media (`HasMedia`) never produce a participating plan.
+
+Planning uses a child context capped at the original request receipt time plus
+the already-selected first-content budget. The request handlers derive it with
+`promptwork.PlanningContext` (`coordinator/api/promptwork/planning.go`) each
+time the request's `routeplan.Memo` computes a plan (`HandleChatCompletions` and
+`handleGenericInference`, `coordinator/api/inference/consumer.go`). It does not
+restart that clock after alias fallback, replace the inference context, or carry
+the child's deferred cancellation into dispatch. Zero/exempt
+budgets and a missing receipt timestamp add no artificial deadline.
+`CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`)
+can apply the same bound itself through `FirstTokenWriteContext`
+(`coordinator/internal/inference/firstcontent/first_content_policy.go`) when
+`CachePlanningInput.ReceivedAt` and `FirstContentBudget` are set;
+`planPromptRoute` does not set them, so in production that step passes its
+caller's context through. An earlier parent deadline, the
+`promptcontract.DefaultRequestTimeout` prompt-accounting bound (`promptwork.Account`,
+`coordinator/api/promptwork/accounting.go`) or the client's own timeout still
+wins. An exhausted request
+uses the existing dispatch deadline outcome; optional cache work grants no
+extra service time.
+
+Each planning decision is counted once, when the request's plan for a concrete
+model and provider-bound body is first computed; for a request that takes the
+public capacity preflight that is while admission builds its forecast. The count
+includes dependency/artifact/preload refusals, and a generic-endpoint body that
+cannot be lowered is counted as `lowering_unsupported` after admission
+(`CachePlanner.EmitDecision`, called from `handleGenericInference`,
+`coordinator/api/inference/consumer.go`). This broader metric
+does not change legacy Registry outcomes, sampling/QPS precedence or public
+status fields. It adds one legacy sample: a media request whose model is
+verified and whose contract is preload-acknowledged now reaches the Registry's
+existing `ineligible` decision, because the planner is consulted to record its
+decision, and is counted once in `exact_cache_plan_total`; routing and billing
+are unaffected. Artifact and preload checks are scoped to the resolved
+model and its exact contract: unrelated pending or failed artifacts do not close
+an acknowledged healthy member. Current catalog/child/verified-set identity
+and actual runtime readiness still gate participation; see
+[per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
+See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
 
 An optional exact-artifact list runs before the cohort, QPS gate and sidecar
 plan. `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` matches the resolved model
@@ -121,6 +162,16 @@ participation; they never reject, delay, or otherwise change ordinary
 inference.
 
 ### Identity and isolation
+
+After those unchanged rollout gates, planning admission waits within its
+existing deadline instead of oversubscribing the sidecar's worker pool.
+Count/byte bounds and explicit server-connection headroom for independent
+health/control pools are enforced by `NewClient`,
+`PlanAdmission` and `Client.Plan` (`coordinator/internal/promptcontract/sidecar/plan_admission.go`,
+`coordinator/internal/promptcontract/sidecar/client.go`); see
+[the sidecar mechanism](prompt-contract-sidecar.md#process-and-lifecycle).
+Successful planning is an opportunity for reuse, not proof that a provider
+actually adopted an SSD checkpoint.
 
 One cache plan contains:
 
@@ -952,20 +1003,30 @@ back are operator procedures, kept in the runbook
 
 ## Invariants
 
-1. **Routing `off` runs none of the machinery, and applying `off` clears all
-   in-memory evidence** — `ConfigureCacheRouting` installs a fresh, empty
+1. **Routing `off` prevents cache planning, new cache participation and
+   cache-based selection; API planning-decision telemetry and count-only prompt
+   accounting remain active.** With routing `off` the Registry declines without
+   calling the sidecar: `off`, or `ineligible` for a request its eligibility
+   guard rejects first, such as media. A text request whose model's artifacts
+   are verified and whose contract is preload-acknowledged is still tokenized
+   through a count-only `POST /v1/plan` call, inside the prompt-accounting
+   bound; its boundaries are discarded and it creates no cache participation
+   (`promptwork.Plan`, `coordinator/api/promptwork/planner.go`).
+   Applying `off` clears in-memory routing evidence: `ConfigureCacheRouting` installs a fresh, empty
    holder/attempt tracker on every application
    (`coordinator/registry/cache_routing.go`). With routing and persistence
    enabled, restarts can restore SSD holders and demand under the
    [persistence rules](#persistence-across-restarts); attempts and resident-tier
    holders are never restored (`StartCacheRoutingPersistence`,
    `coordinator/registry/cache_persistence_registry.go`).
-2. **Cache routing never rejects, delays or otherwise changes ordinary
-   inference.** The activation cohort and the plan-QPS bucket only decline
+2. **Cache planning is optional and cannot extend the original service budget.**
+   Planning can consume bounded pre-dispatch time. The activation cohort and the plan-QPS bucket only decline
    participation (`cacheactivation.Gate`,
    `coordinator/internal/registry/cacheactivation/gate.go`); a sidecar failure or a media
-   request yields a non-participating plan and the request still dispatches
-   (`planPromptRoute`, `coordinator/api/inference/prompt_work.go`).
+   request yields a non-participating plan; ordinary admission and the remaining
+   original deadline still decide whether dispatch is possible
+   (`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`;
+   the budget bound is `promptwork.PlanningContext`, `coordinator/api/promptwork/planning.go`).
 3. **Only exact text-token prefix proofs from protocol-v2 providers affect
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
@@ -1059,7 +1120,7 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 | Status vocabularies and sanitization | `coordinator/internal/registry/cachepolicy/eligibility.go` (`SanitizeStatuses`, `ReconcileStatuses`, `SanitizeDonationOutcomes`); adapters in `coordinator/registry/cache_eligibility.go`; `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | Capability publication and deferred binding | `coordinator/registry/cache_snapshot.go` (`UpdatePrefixCacheSnapshot`, `CacheSnapshotUpdater.Apply`); `coordinator/registry/cache_snapshot_result.go` (`CacheSnapshotResult`, `SettleDrop`, `BindRemaining`); heartbeat caller in `coordinator/api/provider/session.go` |
 | Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` (`applyCacheRoutingCost`); `coordinator/registry/cache_service_cost.go` (`PriceForProviderLocked`); `coordinator/internal/registry/cachepolicy/service_cost.go` (`ApplyServiceCost`); `coordinator/registry/candidate_selection.go` (`selectRoutingCandidate`); `coordinator/registry/first_content_selection.go` (`selectFirstContentCandidate`); `coordinator/registry/gate_reason.go` (`SelectionCacheCredit`) |
-| Plan construction and sealed body | `coordinator/api/inference/prompt_work.go` (`planPromptRoute`); `coordinator/internal/inference/routeplan/cache_plan_memo.go` (`Memo.ForBody`, `Memo.ForModel`); `coordinator/internal/inference/providerwire/body.go` (`BodyForCacheAttempt`) |
+| Plan construction and sealed body | `coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`), bound by `coordinator/api/inference/cache_planner.go` (`NewCachePlanner`) and called from `coordinator/api/inference/prompt_work.go` (`planPromptRoute`); `coordinator/internal/inference/routeplan/cache_plan_memo.go` (`Memo.ForBody`, `Memo.ForModel`); `coordinator/internal/inference/providerwire/body.go` (`BodyForCacheAttempt`) |
 | Status endpoint and gauges | `coordinator/api/inference/exact_cache_status.go`, `coordinator/api/inference/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/internal/observation/cachemetrics/cache_terminal_policy.go` (`TerminalTags`), emitted by `coordinator/api/observation/cache_terminal.go` (`EmitCacheSelectionTerminal`); `coordinator/internal/inference/metrics/calibration.go` (`Reporter.ObserveTTFTCalibration`); `coordinator/internal/inference/profile/reputation_latency.go` (`ShouldRecordReputationLatency`) |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |

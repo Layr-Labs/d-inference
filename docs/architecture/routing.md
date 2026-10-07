@@ -136,6 +136,17 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 
 ### Entry points
 
+Whether a request carries a prefix-cache plan is decided before the provider
+scan. `CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`,
+bound to the inference owner by `Owner.NewCachePlanner` in
+`coordinator/api/inference/cache_planner.go`) returns the Registry's planning
+result, or an empty result when one of its own prerequisites declines first, and
+records one reason from a closed vocabulary on every call, `planned` included
+(`CachePlanningDecisionReason`,
+`coordinator/internal/inference/routeplan/cache_planning_telemetry.go`). A
+request without a plan is routed exactly like any other request; see
+[cache-aware routing](cache-aware-routing.md).
+
 `ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
 dispatch-time entry point. It scans the fleet
 (`scanCandidatesLocked`), gates each provider

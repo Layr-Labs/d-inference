@@ -38,13 +38,17 @@ func TestPreloadControllerComposesRealOwnersForEmptyCatalog(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		status := controller.Status()
-		if status.Ready {
-			if status.CatalogGeneration != provisioner.Snapshot().Generation || status.ChildGeneration != supervisor.Status().ChildGeneration || status.ContractCount != 0 || controller.ReadyFor(strings.Repeat("a", 64)) {
+		// An empty verified set closes participation without an empty preload.
+		// The controller reports this reason only after it has observed both the
+		// real catalog generation and the real running child generation.
+		if status.LastError == "no verified prompt contracts" {
+			if status.Ready || status.CatalogGeneration != 0 || status.ChildGeneration != 0 || status.ContractCount != 0 ||
+				status.Runs != 0 || status.Failures != 0 || controller.ReadyFor(strings.Repeat("a", 64)) {
 				t.Fatalf("composed empty-catalog handoff was not fenced: %+v", status)
 			}
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("composed controller did not become ready: %+v", controller.Status())
+	t.Fatalf("composed controller did not observe the empty catalog: %+v", controller.Status())
 }

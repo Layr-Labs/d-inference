@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -61,7 +61,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 10 | Reserve funds | Worst-case cost held on the account ledger; 402 when it cannot be | `reserveInferenceBalance` (`coordinator/api/inference/inference_balance.go`); [`billing.md`](billing.md) |
 | 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `Bridge.Resolve` (`coordinator/internal/inference/media/media_resolve.go`), bound by `coordinator/api/inference/media_bridge.go` |
 | 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `Admission.Run` (`coordinator/api/inference/inference_admission.go`) |
-| 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/api/inference/prompt_artifacts.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
+| 13 | Plan | Cache-aware route plan for the prompt prefix | `planPromptRoute` (`coordinator/api/inference/prompt_work.go`) through `CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
 | 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/api/inference/dispatch.go`); scoring in [`routing.md`](routing.md) |
 | 15 | Encrypt | Fresh session keys; the job body is sealed to the provider's public key | `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), called from `dispatchPrimary` |
 | 16 | Send | `inference_request` over the provider WebSocket | `coordinator/api/inference/dispatch.go`, message types in `coordinator/protocol/messages.go` |
@@ -116,7 +116,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Response relay and SSE | `coordinator/internal/inference/relay/consumer_stream.go` — `handleStreamingResponseWithFirstChunkAndError`; `coordinator/internal/inference/sse/sse_normalize.go` — `NormalizeSSEChunk`; `coordinator/api/inference/response/sse_events.go` — `stripSSEDoneEvents` |
 | Reservation and capacity admission | `coordinator/api/inference/inference_balance.go` — `reserveInferenceBalance`; `coordinator/api/inference/inference_admission.go` — `Admission.Run` |
 | Remote media | `coordinator/internal/inference/media/media_resolve.go` (`Bridge.Gate`, `Bridge.Resolve`); `coordinator/api/inference/media_bridge.go` binds accounting, self-route and deadline callbacks |
-| Cache route plan | `coordinator/api/inference/prompt_artifacts.go` — `planCacheRoute` |
+| Cache route plan | `coordinator/internal/inference/routeplan/cache_planning.go` — `CachePlanner.PlanResult`; `coordinator/api/inference/prompt_work.go` — `planPromptRoute` |
 | Dispatch, speculative backup, commit, client-gone | `coordinator/api/inference/dispatch.go` — `dispatchState.run`, `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `commitFirstContent`, `writeCommittedResponse`, `emitClientGone`; `coordinator/api/inference/response/sse_response.go` — `WriteSSEResponseHeader`; `coordinator/api/inference/response/response_metadata.go` — `WriteCommittedProviderHeaders`, `RequestTimingDetails` |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
 | Wire messages | `coordinator/protocol/messages.go` |

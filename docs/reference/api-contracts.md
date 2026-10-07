@@ -919,6 +919,13 @@ outputs; accepting a Responses image for inference does not establish exact
 coordinator cache-routing eligibility. Native model codec, media-size, context
 and tool-capability checks still apply.
 
+A Responses, Completions or Messages body that cannot be lowered for cache
+planning is still served on its own endpoint, without a cache plan. The
+coordinator counts that decision as `lowering_unsupported` in the cache-planning
+decision telemetry (`CachePlanner.EmitDecision`, called from
+`handleGenericInference` in `coordinator/api/inference/consumer.go`). The
+response shape, status and error codes do not change.
+
 Bodies are lowered into the chat pipeline (`coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesStreamEmitter`, `coordinator/api/inference/response/responses_stream.go`).
 
 `usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including

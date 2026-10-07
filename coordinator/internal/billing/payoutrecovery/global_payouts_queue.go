@@ -48,11 +48,9 @@ func (s *Reconciler) prepareGlobalFunding(ctx context.Context, repo store.Global
 		return false, err
 	}
 	fees, amount, expires := p.EstimatedStripeFees, p.DestinationAmount, p.ExpiresAt
-	needed, err := globalpayouts.RequiredFundingCents(p.AmountMicroUSD/10_000, fees)
-	if err != nil {
-		return false, s.rejectUnsentGlobalPayout(ctx, repo, p, "invalid_fee_estimate")
-	}
-	if available < needed {
+	// Below the principal, no nonnegative fee estimate can make this send
+	// fundable. Otherwise refresh an expired quote before using its fees.
+	if available < p.AmountMicroUSD/10_000 {
 		return false, repo.ApplyGlobalPayout(p.ID, store.GlobalPayoutResult{ExpectedLease: p.LeaseUntil, Status: "queued", FailureCode: store.WithdrawalFundingReason}, time.Now())
 	}
 	// The approved USD amount and bank destination stay fixed. The UI discloses
@@ -90,13 +88,13 @@ func (s *Reconciler) prepareGlobalFunding(ctx context.Context, repo store.Global
 		if err != nil {
 			return false, err
 		}
-		needed, err = globalpayouts.RequiredFundingCents(p.AmountMicroUSD/10_000, fees)
-		if err != nil {
-			return false, s.rejectUnsentGlobalPayout(ctx, repo, p, "invalid_fee_estimate")
-		}
-		if available < needed {
-			return false, repo.ApplyGlobalPayout(p.ID, store.GlobalPayoutResult{ExpectedLease: p.LeaseUntil, Status: "queued", FailureCode: store.WithdrawalFundingReason}, time.Now())
-		}
+	}
+	needed, err := globalpayouts.RequiredFundingCents(p.AmountMicroUSD/10_000, fees)
+	if err != nil {
+		return false, s.rejectUnsentGlobalPayout(ctx, repo, p, "invalid_fee_estimate")
+	}
+	if available < needed {
+		return false, repo.ApplyGlobalPayout(p.ID, store.GlobalPayoutResult{ExpectedLease: p.LeaseUntil, Status: "queued", FailureCode: store.WithdrawalFundingReason}, time.Now())
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {

@@ -133,7 +133,17 @@ func TestGlobalFundingReadFailureDoesNotConsumeSendAttempt(t *testing.T) {
 	}
 	f.fundingReadFailures = 1
 	body := `{"amount_usd":"10","quote_id":"` + quote.ID + `"}`
-	globalAPIRequest(t, s, u, "/withdraw", body, s.HandleStripeWithdraw)
+	w = globalAPIRequest(t, s, u, "/withdraw", body, s.HandleStripeWithdraw)
+	var response map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := response["eta"]; ok {
+		t.Fatalf("unsent payout promised a bank ETA: %s", w.Body.String())
+	}
+	if message, ok := response["message"].(string); !ok || !strings.Contains(message, "reserved") {
+		t.Fatalf("missing pending reservation message: %s", w.Body.String())
+	}
 	unsent, _ := st.GetGlobalPayout(quote.ID)
 	if unsent.DispatchAttempts != 0 || !unsent.DispatchStartedAt.IsZero() || f.creates != 0 {
 		t.Fatalf("failed preflight consumed a send: %+v", unsent)
@@ -190,5 +200,54 @@ func TestGlobalFundingQueueRefundsAnUnsendableRenewedQuote(t *testing.T) {
 	}
 	if b, wb := st.GetBalanceWithWithdrawable(u.AccountID); b != 20_000_000 || wb != b {
 		t.Fatalf("quote rejection did not refund exactly once: %d %d", b, wb)
+	}
+}
+
+func TestGlobalFundingQueueUsesRenewedFeesBeforeCheckingFunding(t *testing.T) {
+	s, st, u, f := globalPayoutAPIFixture(t, false)
+	globalAPIRequest(t, s, u, "/onboard", `{"country":"IN"}`, s.HandleStripeOnboard)
+	w := globalAPIRequest(t, s, u, "/quote", `{"amount_usd":"10"}`, s.HandleGlobalPayoutQuote)
+	var quote struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &quote); err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.GetGlobalPayout(quote.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.ID = "falling-fee-quote"
+	p.ExpiresAt = time.Now().Add(100 * time.Millisecond)
+	if err := st.CreateGlobalPayoutQuote(*p); err != nil {
+		t.Fatal(err)
+	}
+	available := int64(1010) // Covers $10 principal plus the renewed fee, but not the old $1.50 fee.
+	f.mu.Lock()
+	f.availableUSD = &available
+	f.mu.Unlock()
+	w = globalAPIRequest(t, s, u, "/withdraw", `{"amount_usd":"10","quote_id":"`+p.ID+`"}`, s.HandleStripeWithdraw)
+	if !strings.Contains(w.Body.String(), `"status":"queued"`) {
+		t.Fatal(w.Body.String())
+	}
+	time.Sleep(120 * time.Millisecond)
+	f.mu.Lock()
+	f.quoteFeeValue = json.Number("10")
+	f.mu.Unlock()
+	if err := s.syncGlobalPayout(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetGlobalPayout(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "processing" || got.ExternalID != "obp_gp" || got.Refunded {
+		t.Fatalf("stale fees stranded a funded payout: %+v", got)
+	}
+	if f.creates != 1 || f.quoteCalls < 2 {
+		t.Fatalf("creates=%d quoteCalls=%d", f.creates, f.quoteCalls)
+	}
+	if b, wb := st.GetBalanceWithWithdrawable(u.AccountID); b != 10_000_000 || wb != b {
+		t.Fatalf("fee refresh debited again: %d %d", b, wb)
 	}
 }

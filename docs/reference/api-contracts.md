@@ -1479,7 +1479,9 @@ Confirmation reserves the gross amount once. Low funding (including estimated
 platform-paid fees) returns HTTP 202 with `status="queued"`, the same
 `withdrawal_id`, and the remaining balance. Withdrawal history includes `queued`
 with `failure_reason="awaiting_funding"`; the minute reconciliation loop retries
-automatically. If persisting the Connect queue fails, the response and history
+automatically. A bank-arrival `eta` is returned only after an external payout
+is processing or posted; an unsent `pending` response explains that earnings
+remain reserved while confirmation is in progress. If persisting the Connect queue fails, the response and history
 remain `pending` with `funding_queue_persistence_failed` and the UI shows **Needs
 review** while retaining the debit. A Global Payouts exchange estimate may be refreshed after a funding
 wait, while USD principal and bank destination stay fixed. Already-confirmed quote retries

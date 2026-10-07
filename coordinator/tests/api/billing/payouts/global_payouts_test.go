@@ -31,6 +31,7 @@ type fakeGlobalStripe struct {
 	availableUSD                  *int64
 	fundingReject                 bool
 	fundingReadFailures           int
+	quoteFeeValue                 json.Number
 }
 
 func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +81,11 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		var req globalpayouts.PaymentRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		q := globalpayouts.Quote{EstimatedFees: []globalpayouts.EstimatedFee{{Type: "standard_payout_fee", Amount: globalpayouts.EstimatedFeeAmount{Currency: "usd", Value: json.Number("150")}}}, ID: "obpq_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * f.rate, Currency: f.currency}}}
+		fee := f.quoteFeeValue
+		if fee == "" {
+			fee = json.Number("150")
+		}
+		q := globalpayouts.Quote{EstimatedFees: []globalpayouts.EstimatedFee{{Type: "standard_payout_fee", Amount: globalpayouts.EstimatedFeeAmount{Currency: "usd", Value: fee}}}, ID: "obpq_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * f.rate, Currency: f.currency}}}
 		_ = json.NewEncoder(w).Encode(q)
 	case r.URL.Path == "/v2/money_management/outbound_payments":
 		if f.fundingReject {

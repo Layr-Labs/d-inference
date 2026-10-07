@@ -223,7 +223,9 @@ func (s *Owner) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, user
 	response := map[string]any{"status": p.Status, "withdrawal_id": p.ID, "payout_id": p.ExternalID, "amount_usd": formatUSD(p.AmountMicroUSD), "fee_usd": "0.00", "net_usd": formatUSD(p.AmountMicroUSD), "method": "standard", "payout_rail": "global", "destination_amount": p.DestinationAmount, "payout_currency": p.Currency, "refunded": p.Refunded, "balance_micro_usd": s.billing.Ledger().Balance(user.AccountID)}
 	if p.Status == "queued" {
 		response["message"] = "Your withdrawal is queued until payout funding is available. Your earnings are reserved; no need to submit it again."
-	} else {
+	} else if p.Status == "pending" && !p.Refunded {
+		response["message"] = "Your withdrawal is awaiting confirmation. Your earnings are reserved; track this withdrawal before submitting another."
+	} else if p.ExternalID != "" && (p.Status == "processing" || p.Status == "posted") {
 		response["eta"] = "Typically 1–7 business days"
 	}
 	httpx.WriteJSON(w, http.StatusAccepted, response)

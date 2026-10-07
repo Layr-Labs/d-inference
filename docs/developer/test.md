@@ -1703,6 +1703,15 @@ controller selects a bounded set under the
 
 #### Bounded preload selection and real HTTP overflow
 
+`TestPreloadContinuityUnknownCompletionPreservesIncumbents` uses real control
+transport EOF and a deterministic ten-contract/eight-slot rotation to check
+repeated uncertain completion without losing acknowledged incumbents or
+acknowledging newcomers. `TestCachePreloadIdentityProjectsLargeVerifiedCatalog`
+and `TestCachePreloadConfiguredCatalogControllerFlow` cover 129 verified models
+sharing eight contracts with one allowlisted model; selection retains the full
+verified catalog without raising native capacity.
+
+
 The pure `coordinator/tests/promptcontract/preload_active_set*_test.go` cases cover
 full verified-set preservation, deduplication, eligible demand, expiry, residence,
 fair waiting, failure backoff, same-generation verified-set growth and irreversible

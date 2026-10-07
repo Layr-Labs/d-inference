@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -81,5 +82,23 @@ func TestCachePreloadIdentityDetachesAndBoundsInput(t *testing.T) {
 	}
 	if r.CachePreloadIdentities(make([]promptcontract.VerifiedPreloadArtifact, cachepolicy.MaxArtifacts+1)) != nil {
 		t.Fatal("over-bound projection was accepted")
+	}
+}
+
+func TestCachePreloadIdentityProjectsLargeVerifiedCatalog(t *testing.T) {
+	r := production.New(testLogger())
+	artifact := artifactTestIdentity()
+	if err := r.ConfigureCacheRouting(artifactTestConfig([]production.CacheRoutingArtifact{artifact})); err != nil {
+		t.Fatal(err)
+	}
+	r.SetModelCatalog([]production.CatalogEntry{{ID: artifact.ModelID, WeightHash: artifact.ModelAggregateSHA256}})
+	verified := make([]promptcontract.VerifiedPreloadArtifact, 129)
+	for i := range verified {
+		verified[i] = promptcontract.VerifiedPreloadArtifact{CatalogGeneration: 1, ModelID: fmt.Sprintf("model-%03d", i), ModelAggregateSHA256: artifact.ModelAggregateSHA256, PromptContractID: artifact.PromptContractID}
+	}
+	verified[128].ModelID = artifact.ModelID
+	got := r.CachePreloadIdentities(verified)
+	if len(got) != 1 || got[0] != verified[128] {
+		t.Fatalf("129-model catalog projection=%+v, want one allowlisted identity", got)
 	}
 }

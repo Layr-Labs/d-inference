@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -286,13 +286,23 @@ accounts, request IDs, bodies, prompts or provider identities
 (`PreloadController.NoteDemand`, `coordinator/internal/promptcontract/preload/selection.go`;
 `CachePlanner.cachePreloadIdentity`, `coordinator/internal/inference/routeplan/cache_preload_selection.go`).
 
-The pure selector bounds tuples at `preloadActiveSetMaxTuples = 128`, expires
+The controller carries the provisioner’s configured model limit as
+`PreloadControllerConfig.MaxCatalogModels`; full verified membership and public
+availability advice use that limit. The separate cache-routing projection and
+demand limit remains `preloadActiveSetMaxTuples = 128`, applied after Registry
+allowlist projection rather than to the full catalog. Native preload capacity
+remains the configured client/supervisor capacity. The selector expires
 demand after `preloadDemandExpiry = 5 * time.Minute`, gives admitted members
 `preloadMinimumResidence = 30 * time.Second`, and allows at most one ordinary
 replacement per `PreloadReplacementInterval = 30 * time.Second`. Oldest eligible
 waiting demand wins; public model availability only breaks otherwise equal fresh
 waits. Failed members requeue under the existing retry deadline instead of
-monopolizing a slot. Safety revocation is immediate and is not delayed by minimum
+monopolizing a slot. An uncertain transport completion under current negotiated
+continuity preserves acknowledged incumbents’ admission and residence metadata;
+only unacknowledged attempted members become failed replacement candidates. It
+does not manufacture new report acknowledgements. Validated negative results,
+protocol loss and identity invalidation retain their fail-closed behavior
+(`CompleteUncertainAttempt`, `PreloadController.finishAttemptLocked`). Safety revocation is immediate and is not delayed by minimum
 residence or the replacement interval (`PreloadActiveSet`,
 `coordinator/internal/promptcontract/preload/active_set.go`).
 

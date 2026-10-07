@@ -63,6 +63,21 @@ struct SSDNoFollowIOSpecialFileTests {
         #expect(info.st_mtimespec.tv_sec == 123)
     }
 
+    @Test func missingParentIsConfirmedAbsence() throws {
+        let root = try Self.makeRoot()
+        defer { Self.removeRoot(root) }
+        let target = root.appendingPathComponent("missing-parent/target")
+        #expect(try SSDNoFollowIO.checkedRegularFileStatus(at: target) == .missing)
+        #expect(SSDNoFollowIO.regularFileStatus(at: target) == .missing)
+        do {
+            let handle = try SSDNoFollowIO.openRegularFileForReading(at: target)
+            try handle.close()
+            Issue.record("A file under a missing parent was opened")
+        } catch SSDBlockStoreError.posixFailure(_, let code) {
+            #expect(code == ENOENT)
+        }
+    }
+
     @Test func directoryAndSymlinkStayRejected() throws {
         let root = try Self.makeRoot()
         defer { Self.removeRoot(root) }

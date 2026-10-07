@@ -66,6 +66,12 @@ A disk observer sees the lookup tag, the weight hash, the layout epoch, block
 shape descriptors and `createdAt`; never raw chain hashes, token ids or counts,
 scope values, or request ids (`SSDBlockStore.swift` header).
 
+A confirmed missing parent directory is file absence, not corruption. The
+resident-preflight regression creates actual malformed DBK3 files: equal or
+shorter SSD matches must avoid reading them, while a longer match must reject
+the malformed data. Missing-parent status and typed `ENOENT` reads have separate
+coverage (`SSDNoFollowIOSpecialFileTests`, `EngineV2BridgeTests`).
+
 ## Bounded attention-block staging
 
 Attention snapshots retain their existing DBK3 block format. Staging validates

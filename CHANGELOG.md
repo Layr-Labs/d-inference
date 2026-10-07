@@ -175,6 +175,7 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 - Reject substituted FIFO cache entries without blocking encrypted-cache read or touch operations; preserve descriptor-based path checks and regular-file behavior.
 - Preserve surviving encrypted SSD checkpoints and routing announcements during routine active-store capacity/TTL eviction. Coordinate durable writes and index commits with retirement to prevent rename-to-index races without global invalidation. Keep destructive epoch fencing for unsafe changes, native authentication and bounded stale-hint invalidation.
 - Refuse and retry SSD epoch checks when parent-directory opens or metadata status probes fail transiently, preserving the existing store's ownership. Continue disowning proven missing, substituted, malformed or oversized records; verify the original capability again when connected retirement observes an eviction.
+- Use actual malformed files in the resident-preflight corruption fixture, retaining its no-I/O and corruption assertions; cover confirmed missing-parent status and typed `ENOENT` reads separately.
 
 ## Unreleased — provider 0.9.17
 

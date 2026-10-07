@@ -55,6 +55,8 @@ public struct CapturedMessages: Sendable {
     /// Raw bodies POSTed to the retired `/v1/telemetry/events` route. The
     /// provider never sends telemetry; this only catches a regression.
     public var telemetryPosts: [Data] = []
+    public var enrollmentPosts: [Data] = []
+    public var enrollmentAuthorizations: [String] = []
 
     public init() {}
 }
@@ -176,6 +178,7 @@ public final class MockCoordinator: @unchecked Sendable {
     public let releaseArtifact: Data?
     public let version: MockVersionFixture
     public let mobileConfig: Data
+    public let enrollmentHTTPStatus: Int
     public let deviceCode: MockDeviceCodeFixture
 
     // MARK: State
@@ -217,6 +220,7 @@ public final class MockCoordinator: @unchecked Sendable {
         releaseArtifact: Data? = nil,
         version: MockVersionFixture = MockVersionFixture(version: "0.5.0"),
         mobileConfig: Data = MockCoordinator.defaultMobileConfig,
+        enrollmentHTTPStatus: Int = 200,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
     ) {
         self.acknowledgeDrains = acknowledgeDrains
@@ -229,6 +233,7 @@ public final class MockCoordinator: @unchecked Sendable {
         self.releaseArtifact = releaseArtifact
         self.version = version
         self.mobileConfig = mobileConfig
+        self.enrollmentHTTPStatus = enrollmentHTTPStatus
         self.deviceCode = deviceCode
     }
 
@@ -546,14 +551,19 @@ public final class MockCoordinator: @unchecked Sendable {
         }
 
         // ----- HTTP: /v1/enroll -----
-        router.post("/v1/enroll") { [weak self] _, _ -> Response in
+        router.post("/v1/enroll") { [weak self] request, _ -> Response in
             guard let self else {
                 return MockCoordinator.makeJSONResponse(
                     body: ["error": "mock dead"], status: .internalServerError
                 )
             }
+            let body = try await request.body.collect(upTo: 64 * 1024)
+            self.lock.withLock {
+                self.captured.enrollmentPosts.append(Data(body.readableBytesView))
+                self.captured.enrollmentAuthorizations.append(request.headers[.authorization] ?? "")
+            }
             return Response(
-                status: .ok,
+                status: .init(code: self.enrollmentHTTPStatus),
                 headers: [.contentType: "application/x-apple-aspen-config"],
                 body: .init(byteBuffer: ByteBuffer(bytes: self.mobileConfig))
             )

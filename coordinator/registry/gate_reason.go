@@ -9,6 +9,8 @@ package registry
 import (
 	"regexp"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/selection"
 )
 
 // GateReason is the closed enum of reasons a provider is dropped from a
@@ -95,7 +97,7 @@ func (g GateReason) String() string {
 // a (provider, slot) that passes every routing gate for a plain text probe.
 const EligibilityReasonEligible = "eligible"
 
-// SelectionPath records which branch of selectRoutingCandidate produced the
+// SelectionPath records which branch of selectFirstContentCandidate produced the
 // winner. Closed enum; String() is the persisted name.
 type SelectionPath uint8
 
@@ -219,84 +221,34 @@ func ProviderVersionFold(raw string) string {
 // copied by value onto RoutingDecision (Top / RunnerUp / BestIdle); the api
 // layer serialises it later. No slices, maps, or pointers: ProviderID is a
 // string-header copy of the immutable Provider.ID.
-type CandidateSummary struct {
-	ProviderID string
-	// FirstContent carries the advisory delivery forecast separately from the
-	// historical cost/TTFT diagnostics. It contains no prompt or cache identity.
-	FirstContent FirstContentEstimate
-
-	CostMs, StateMs, QueueMs, PendingMs, BacklogMs, ThisReqMs, HealthMs, CapacityRateMs, CacheDiscountMs float64
-	TTFTMs, EffectiveTPS                                                                                 float64
-
-	EffectiveQueue, TotalPending, BackendRunning, BackendWaiting int32
-
-	ActiveTokenBudgetUsed, ActiveTokenBudgetMax, QueuedPrefillTokens int64
-
-	// SlotState is the folded (closed) slot state of the candidate's slot for
-	// the requested model at snapshot time.
-	SlotState SlotState
-	// HBAgeMs is the age of the candidate's last heartbeat at snapshot time
-	// (clamped to int32).
-	HBAgeMs int32
-	// Present is false for an unfilled slot (fewer candidates than the array).
-	Present bool
-}
+type CandidateSummary selection.CandidateSummary[SlotState]
 
 // candidateSummaryOf builds the fixed-size summary of a scanned candidate.
 // Allocation-free: every field is a value copy.
 func candidateSummaryOf(c *routingCandidate) CandidateSummary {
 	if c == nil || c.provider == nil {
-		return CandidateSummary{}
+		return CandidateSummary(selection.SummarizeCandidate[SlotState](nil, SlotStateFold))
 	}
-	bd := c.breakdown
 	snap := &c.snapshot
-	return CandidateSummary{
+	return CandidateSummary(selection.SummarizeCandidate(&selection.SummaryInput{
 		ProviderID:            c.provider.ID,
 		FirstContent:          c.firstContent,
+		Breakdown:             c.breakdown,
 		CostMs:                c.costMs,
-		StateMs:               bd.StateMs,
-		QueueMs:               bd.QueueMs,
-		PendingMs:             bd.PendingMs,
-		BacklogMs:             bd.BacklogMs,
-		ThisReqMs:             bd.ThisReqMs,
-		HealthMs:              bd.HealthMs,
-		CapacityRateMs:        bd.CapacityRateMs,
-		CacheDiscountMs:       bd.CacheDiscountMs,
-		TTFTMs:                bd.TTFTMs,
 		EffectiveTPS:          c.effectiveTPS,
-		EffectiveQueue:        clampInt32(c.effectiveQueue),
-		TotalPending:          clampInt32(snap.totalPending),
-		BackendRunning:        clampInt32(snap.backendRunning),
-		BackendWaiting:        clampInt32(snap.backendWaiting),
+		EffectiveQueue:        c.effectiveQueue,
+		TotalPending:          snap.totalPending,
+		BackendRunning:        snap.backendRunning,
+		BackendWaiting:        snap.backendWaiting,
 		ActiveTokenBudgetUsed: snap.activeTokenBudgetUsed,
 		ActiveTokenBudgetMax:  snap.activeTokenBudgetMax,
 		QueuedPrefillTokens:   snap.queuedPrefillTokens,
-		SlotState:             SlotStateFold(snap.slotState),
+		SlotState:             snap.slotState,
 		HBAgeMs:               snap.hbAgeMs,
-		Present:               true,
-	}
+	}, SlotStateFold))
 }
 
 // clampInt32 narrows an int to int32, saturating at the bounds.
 func clampInt32(v int) int32 {
-	const maxI32, minI32 = int(^uint32(0) >> 1), -int(^uint32(0)>>1) - 1
-	if v > maxI32 {
-		return int32(maxI32)
-	}
-	if v < minI32 {
-		return int32(minI32)
-	}
-	return int32(v)
-}
-
-// clampMsInt32 narrows a millisecond count (int64) to int32, saturating.
-func clampMsInt32(ms int64) int32 {
-	const maxI32 = int64(^uint32(0) >> 1)
-	if ms > maxI32 {
-		return int32(maxI32)
-	}
-	if ms < 0 {
-		return 0
-	}
-	return int32(ms)
+	return selection.ClampInt32(v)
 }

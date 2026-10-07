@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/residency"
 )
 
 // Cohorts are bounded, prompt-free capability and work-size bins. The model
 // remains an exact catalog build; a cohort key is never sent to a provider.
-func ModelID(key string) string { model, _, _ := strings.Cut(key, "\x1f"); return model }
+func ModelID(key string) string { return residency.ModelID(key) }
 func ShapeKey(s DemandSample) string {
 	input, output := 0, 0
 	for input < len(autopilotPromptBounds)-1 && s.PromptTokens > autopilotPromptBounds[input] {

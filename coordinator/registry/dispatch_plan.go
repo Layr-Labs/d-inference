@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/shortlist"
 )
 
 // Bounded dispatch plan — Routing v2 Phase 3 (identity retention).
@@ -28,7 +28,7 @@ import (
 // new object) and re-runs the FULL admission gate chain via the same helpers
 // the scan uses, so a plan entry can never bypass a gate that a fresh scan
 // would apply.
-const dispatchPlanMaxAlternates = 8
+const dispatchPlanMaxAlternates = shortlist.MaxAlternates
 
 // PlanSkipReason is the bounded reason a plan entry was passed over by
 // ReserveNextFromPlan. Bounded (never free-form) so it can feed route-row
@@ -70,10 +70,11 @@ type PlanSkip struct {
 // captured at scan time. Estimates are scan-time values — ReserveNextFromPlan
 // recomputes everything against live state before reserving.
 type PlanEntry struct {
-	FirstContent   FirstContentEstimate
-	HealthMs       float64
-	CapacityRateMs float64
-	ProviderID     string
+	CandidateBinding `json:"-"`
+	FirstContent     FirstContentEstimate
+	HealthMs         float64
+	CapacityRateMs   float64
+	ProviderID       string
 	// CostMs retains the legacy cost diagnostic; FirstContent carries the
 	// expected/conservative predictions and service work used for ordering.
 	CostMs float64
@@ -108,19 +109,6 @@ type PlanEntry struct {
 	QuoteCapacitySeq     uint64
 }
 
-// planEntry pairs the exported view with the retained provider identity. The
-// pointer is deliberately unexported: the ONLY way to turn an entry into a
-// dispatchable provider is ReserveNextFromPlan's verify-and-reserve path.
-type planEntry struct {
-	evidenceQualified         bool
-	forecastAt                time.Time
-	cacheEvidenceWeight       float64
-	cacheEstimatedTTFTSavedMs float64
-	cacheAffinityEligible     bool
-	provider                  *Provider
-	view                      PlanEntry
-}
-
 // DispatchPlan is the request-local shortlist produced by
 // ReserveProviderWithPlan. Entries retain first-content order and are consumed
 // once each (cursor); quotes re-rank the unconsumed tail into confirmed,
@@ -136,13 +124,10 @@ type planEntry struct {
 // acquires it strictly after r.mu, and no code path takes r.mu or p.mu while
 // holding it.
 type DispatchPlan struct {
+	*QuotePlan
 	// Serialize consumers while quotes may still update the independent tail lock.
 	reserveMu sync.Mutex
-	mu        sync.Mutex
 	model     string
-	affinity  string
-	entries   []planEntry
-	cursor    int
 	// attempted holds every provider this request has been bound to or has
 	// passed over through this plan: the primary winner plus every entry the
 	// cursor has visited, regardless of outcome. A refresh excludes them all —
@@ -162,10 +147,14 @@ type DispatchPlan struct {
 // same first-content selector to the narrowed scan pool. Current identity,
 // forecast, cache proof and physical admission are checked again on consumption.
 func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate) *DispatchPlan {
+	return scan.Plan(model, winner)
+}
+
+// Plan retains the bounded alternates from this scan, excluding its selected
+// winner. Every retained identity is revalidated before reservation.
+func (scan CandidateScan) Plan(model string, winner *Candidate) *DispatchPlan {
 	plan := &DispatchPlan{
 		model:     model,
-		affinity:  scan.affinity,
-		entries:   make([]planEntry, 0, dispatchPlanMaxAlternates),
 		attempted: make(map[string]struct{}, dispatchPlanMaxAlternates+1),
 		// Aggregate derivation from the scan tallies: capacity- and
 		// TTFT-rejected providers cleared every structural gate first (the scan
@@ -173,14 +162,18 @@ func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate)
 		// TTFT-rejected providers additionally passed capacity admission
 		// (the ceiling is checked after buildCandidateWithReason succeeds), so
 		// they are admissible; candidateCount passed everything.
-		eligible:         scan.candidateCount + scan.capacityRejections + scan.ttftRejections,
-		admissible:       scan.candidateCount + scan.ttftRejections,
-		deadlineFeasible: scan.candidateCount,
+		eligible:         scan.CandidateCount + scan.CapacityRejections + scan.TTFTRejections,
+		admissible:       scan.CandidateCount + scan.TTFTRejections,
+		deadlineFeasible: scan.CandidateCount,
 	}
 	if winner != nil {
-		plan.attempted[winner.provider.ID] = struct{}{}
+		plan.attempted[winner.ProviderID] = struct{}{}
 	}
-	plan.entries = firstContentPlanEntries(scan.pool, winner, scan.affinity)
+	var order *shortlist.Order
+	if scan.planOrderFactory != nil {
+		order = scan.planOrderFactory()
+	}
+	plan.QuotePlan = NewQuotePlan(firstContentPlanEntries(scan.Candidates, winner, scan.affinity), scan.affinity, order)
 
 	return plan
 }
@@ -194,37 +187,38 @@ func (dp *DispatchPlan) Model() string {
 }
 
 // Len returns the number of retained alternates (consumed or not).
-func (dp *DispatchPlan) Len() int {
+func (dp *QuotePlan) Len() int {
 	if dp == nil {
 		return 0
 	}
-	return len(dp.entries)
+	return dp.alternates().Len()
 }
 
 // Remaining returns how many alternates the cursor has not yet visited.
-func (dp *DispatchPlan) Remaining() int {
+func (dp *QuotePlan) Remaining() int {
 	if dp == nil {
 		return 0
 	}
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	return len(dp.entries) - dp.cursor
+	return dp.alternates().Remaining()
 }
 
 // PeekNext returns the next unconsumed entry's view without advancing the
 // cursor, and false when the plan is exhausted. Inspection only — hedge
 // timing reads BestConfirmedBackup, and consumption goes through
 // ReserveNextFromPlan.
-func (dp *DispatchPlan) PeekNext() (PlanEntry, bool) {
+func (dp *QuotePlan) PeekNext() (PlanEntry, bool) {
 	if dp == nil {
 		return PlanEntry{}, false
 	}
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	if dp.cursor >= len(dp.entries) {
+	handle, ok := dp.alternates().Peek()
+	if !ok {
 		return PlanEntry{}, false
 	}
-	return dp.entries[dp.cursor].view, true
+	return dp.entries[handle.Index].PlanEntry, true
 }
 
 // EligibleCount is the number of providers that cleared every structural,
@@ -281,19 +275,6 @@ func (dp *DispatchPlan) AttemptedProviderIDs() []string {
 	return ids
 }
 
-// nextEntry advances the cursor by one and marks the entry attempted.
-func (dp *DispatchPlan) nextEntry() (planEntry, bool) {
-	dp.mu.Lock()
-	defer dp.mu.Unlock()
-	if dp.cursor >= len(dp.entries) {
-		return planEntry{}, false
-	}
-	e := dp.entries[dp.cursor]
-	dp.cursor++
-	dp.attempted[e.view.ProviderID] = struct{}{}
-	return e, true
-}
-
 // ReserveProviderWithPlan is ReserveProviderEx plus plan retention: identical
 // selection and reservation semantics (it IS the same implementation —
 // reserveProvider in scheduler.go), additionally returning the bounded
@@ -347,161 +328,4 @@ func (r *Registry) RefreshDispatchPlan(pr *PendingRequest, plan *DispatchPlan, e
 		fresh.mu.Unlock()
 	}
 	return p, decision, fresh, true
-}
-
-// planEntryRank orders the unconsumed tail into quote tiers: provider-confirmed
-// entries first (their quotes are the freshest state we have), unprobed and
-// legacy entries mid (today's ledger estimate — neither endorsed nor refuted),
-// demoted entries last (a live refusal, timeout, or dead transport outranks any
-// scan-time cost — but the entry stays consumable as a last resort because
-// ReserveNextFromPlan re-gates everything anyway, and a stale-negative quote
-// must not permanently strand a provider a refresh would re-offer).
-func planEntryRank(v PlanEntry) int {
-	switch {
-	case v.Demoted:
-		return 2
-	case v.Confirmed:
-		return 0
-	default:
-		return 1
-	}
-}
-
-// resortTailLocked orders quote tiers using the same first-content band and
-// service-work selector within each tier. Entries already consumed are history.
-// Caller holds the leaf dp.mu; this helper never reads mutable provider state.
-func (dp *DispatchPlan) resortTailLocked() {
-	tail := dp.entries[dp.cursor:]
-	remaining := append([]planEntry(nil), tail...)
-	for i := range tail {
-		bestTier := 3
-		for _, entry := range remaining {
-			bestTier = min(bestTier, planEntryRank(entry.view))
-		}
-		candidates := make([]*routingCandidate, 0, len(remaining))
-		positions := make(map[*routingCandidate]int, len(remaining))
-		for j, entry := range remaining {
-			if planEntryRank(entry.view) != bestTier {
-				continue
-			}
-			forecast := entry.view.FirstContent
-			if entry.view.Confirmed && entry.view.QuoteTTFTP50 > 0 {
-				forecast.ExpectedMs = max(forecast.ExpectedMs, float64(entry.view.QuoteTTFTP50)/float64(time.Millisecond)+forecast.RestoreMs)
-			}
-			candidate := &routingCandidate{provider: entry.provider, costMs: entry.view.CostMs, firstContent: forecast,
-				cacheEvidenceWeight: entry.cacheEvidenceWeight, cacheEstimatedTTFTSavedMs: entry.cacheEstimatedTTFTSavedMs, cacheAffinityEligible: entry.cacheAffinityEligible,
-				breakdown: costBreakdown{HealthMs: entry.view.HealthMs, CapacityRateMs: entry.view.CapacityRateMs}}
-			candidates = append(candidates, candidate)
-			positions[candidate] = j
-		}
-		chosen, _, _, _ := selectRoutingCandidateWithAffinity(candidates, dp.affinity)
-		j := positions[chosen]
-		tail[i] = remaining[j]
-		remaining = append(remaining[:j], remaining[j+1:]...)
-	}
-}
-
-// ConfirmEntry records an affirmative capacity_quote on the named unconsumed
-// entry: the provider's live TTFT quantiles, token headroom, and confidence
-// replace nothing (the scan-time estimates stay for telemetry) but ride
-// alongside for hedge timing, and the entry is promoted into the confirmed
-// tier. A no-op when the entry was already consumed or is not in the plan —
-// a quote that raced the dispatch loop carries no ordering work to do.
-func (dp *DispatchPlan) ConfirmEntry(providerID string, quote *protocol.CapacityQuoteMessage) {
-	dp.confirmEntryAt(providerID, quote, time.Now())
-}
-
-func (dp *DispatchPlan) confirmEntryAt(providerID string, quote *protocol.CapacityQuoteMessage, observedAt time.Time) {
-	if dp == nil || quote == nil {
-		return
-	}
-	dp.mu.Lock()
-	defer dp.mu.Unlock()
-	for i := dp.cursor; i < len(dp.entries); i++ {
-		v := &dp.entries[i].view
-		if v.ProviderID != providerID {
-			continue
-		}
-		v.Confirmed = true
-		v.Demoted = false
-		v.QuoteTTFTP50 = time.Duration(quote.TTFTP50MS * float64(time.Millisecond))
-		v.QuoteTTFTP90 = time.Duration(quote.TTFTP90MS * float64(time.Millisecond))
-		v.QuoteAvailableTokens = quote.AvailableTokenBudget
-		v.QuoteConfidence = quote.Confidence
-		v.QuoteObservedAt = observedAt
-		v.QuoteCapacitySeq = quote.CapacitySeq
-		dp.resortTailLocked()
-		return
-	}
-}
-
-// DemoteEntry pushes the named unconsumed entry into the last-resort tier —
-// the outcome for a negative quote, a probe timeout, or a transport failure.
-// Demotion wins over a prior confirmation (it is always the fresher signal:
-// quotes resolve their entry exactly once per probe, so a demote after a
-// confirm can only come from a later event such as a disconnect).
-func (dp *DispatchPlan) DemoteEntry(providerID string) {
-	if dp == nil {
-		return
-	}
-	dp.mu.Lock()
-	defer dp.mu.Unlock()
-	for i := dp.cursor; i < len(dp.entries); i++ {
-		v := &dp.entries[i].view
-		if v.ProviderID != providerID {
-			continue
-		}
-		v.Demoted = true
-		v.Confirmed = false
-		dp.resortTailLocked()
-		return
-	}
-}
-
-// BestConfirmedBackup returns the best retained, fresh high-confidence quote
-// for hedge timing. Reservation independently revalidates its session, sequence,
-// current capacity and original deadline before dispatch.
-func (dp *DispatchPlan) BestConfirmedBackup() (providerID string, ttftP90 time.Duration, ok bool) {
-	if dp == nil {
-		return "", 0, false
-	}
-	dp.mu.Lock()
-	defer dp.mu.Unlock()
-	now := time.Now()
-	for i := dp.cursor; i < len(dp.entries); i++ {
-		entry := dp.entries[i]
-		v := entry.view
-		age := now.Sub(entry.forecastAt)
-		if !entry.evidenceQualified || entry.forecastAt.IsZero() || age < 0 ||
-			time.Duration(v.FirstContent.CapacityAgeMs)*time.Millisecond+age > firstContentFreshness ||
-			time.Duration(v.FirstContent.PerformanceAgeMs)*time.Millisecond+age > firstContentPerformanceFreshness {
-			continue
-		}
-		if v.Confirmed && !v.Demoted && v.QuoteConfidence == protocol.CapacityConfidenceHigh &&
-			!v.QuoteObservedAt.IsZero() && !now.Before(v.QuoteObservedAt) && now.Sub(v.QuoteObservedAt) <= firstContentFreshness {
-			p90 := max(time.Duration(v.FirstContent.ConservativeMs*float64(time.Millisecond)), v.QuoteTTFTP90+time.Duration(v.FirstContent.RestoreMs*float64(time.Millisecond)))
-			return v.ProviderID, p90, true
-		}
-	}
-	return "", 0, false
-}
-
-// probeTargets snapshots the unconsumed, not-yet-quoted entries for the probe
-// fanout (ProbePlanCandidates). Copies of the planEntry pairs, taken under
-// dp.mu, so the fanout can inspect providers and mint probes without holding
-// the plan lock while entries concurrently re-rank.
-func (dp *DispatchPlan) probeTargets() []planEntry {
-	if dp == nil {
-		return nil
-	}
-	dp.mu.Lock()
-	defer dp.mu.Unlock()
-	targets := make([]planEntry, 0, len(dp.entries)-dp.cursor)
-	for _, e := range dp.entries[dp.cursor:] {
-		if e.view.Confirmed || e.view.Demoted {
-			continue
-		}
-		targets = append(targets, e)
-	}
-	return targets
 }

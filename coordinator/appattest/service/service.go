@@ -6,9 +6,13 @@ package service
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
-	"sync/atomic"
+	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/appattest/authorization"
+	"github.com/eigeninference/d-inference/coordinator/internal/appattest/qualification"
+	storagebudget "github.com/eigeninference/d-inference/coordinator/internal/appattest/storage"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -16,14 +20,11 @@ import (
 
 // ReleasePolicy captures one immutable catalog generation. Approves must close
 // over that same snapshot rather than reload a newer generation mid-decision.
-type ReleasePolicy struct {
-	Generation               uint64
-	Known                    bool
-	Approves                 func(*registry.Provider, *protocol.AppAttestStatus) bool
-	ContainsQualifiedRelease func(store.Release) bool
-}
+type ReleasePolicy = authorization.ReleasePolicy
 
 type Dependencies struct {
+	ReceiptNow           func() time.Time
+	ReceiptClient        *http.Client
 	Store                store.Store
 	Registry             *registry.Registry
 	Logger               *slog.Logger
@@ -32,20 +33,22 @@ type Dependencies struct {
 	SendTrustStatus      func(*registry.Provider, registry.TrustLevel, string, string)
 	CurrentReleasePolicy func() ReleasePolicy
 	RefreshReleasePolicy func() error
+	Notifications        *authorization.Outbox
+	StorageBudget        *storagebudget.Budget
 }
 
 type Service struct {
+	receiptNow           func() time.Time
+	receiptClient        *http.Client
 	store                store.Store
 	registry             *registry.Registry
 	logger               *slog.Logger
 	config               Config
 	lifetime             context.Context
-	authorizer           *authorizer
+	authorizer           *authorization.Controller
 	verifierSlots        chan struct{}
-	storageOnce          sync.Once
-	storageSlots         chan struct{}
-	diagnosticOnce       sync.Once
-	diagnosticSlots      chan struct{}
+	storageBudget        *storagebudget.Budget
+	defaultStorageBudget storagebudget.Budget
 	inventorySlots       chan struct{}
 	startOnce            sync.Once
 	metrics              Metrics
@@ -53,8 +56,8 @@ type Service struct {
 	trustStatus          func(*registry.Provider, registry.TrustLevel, string, string)
 	currentReleasePolicy func() ReleasePolicy
 	refreshReleasePolicy func() error
-	qualificationMu      sync.Mutex
-	qualifications       atomic.Pointer[buildQualificationSnapshot]
+	qualifications       qualification.Cache
+	notifications        *authorization.Outbox
 }
 
 // New constructs the service without starting workers, which also allows unit
@@ -68,13 +71,23 @@ func New(ctx context.Context, cfg Config, deps Dependencies) *Service {
 		logger = slog.Default()
 	}
 	return &Service{
+		receiptNow: deps.ReceiptNow, receiptClient: deps.ReceiptClient,
 		store: deps.Store, registry: deps.Registry, logger: logger,
 		config: cfg, lifetime: ctx,
 		verifierSlots: make(chan struct{}, 4), inventorySlots: make(chan struct{}, 4),
 		metrics: deps.Metrics, emitEvent: deps.Emit, trustStatus: deps.SendTrustStatus,
 		currentReleasePolicy: deps.CurrentReleasePolicy,
 		refreshReleasePolicy: deps.RefreshReleasePolicy,
+		notifications:        deps.Notifications,
+		storageBudget:        deps.StorageBudget,
 	}
+}
+
+func (s *Service) shadowStorageBudget() *storagebudget.Budget {
+	if s.storageBudget != nil {
+		return s.storageBudget
+	}
+	return &s.defaultStorageBudget
 }
 
 // Start owns workers until the constructor's context is cancelled. Receipt

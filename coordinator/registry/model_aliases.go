@@ -234,46 +234,7 @@ func (r *Registry) anyProviderCanServeAliasWithTraitsLocked(
 	traits RequestTraits,
 	structural bool,
 ) bool {
-	// Only providers advertising the build can route it; the per-model index
-	// prunes the rest (gates unchanged). Copied before any p.mu is taken.
-	for _, p := range r.providersForModelLocked(buildID) {
-		p.mu.Lock()
-		ok := func() bool {
-			if len(allowedSerials) > 0 {
-				// A provider with no attestation result can't be serial-matched
-				// (and dereferencing it would panic) — treat as not eligible.
-				serial := ""
-				if p.AttestationResult != nil {
-					serial = p.AttestationResult.SerialNumber
-				}
-				if _, in := allowedSerials[serial]; !in || serial == "" {
-					return false
-				}
-			}
-			owned := p.AccountID != "" && p.AccountID == ownerAccountID
-			if selfRouteOnly && !owned {
-				return false
-			}
-			minTrust := r.MinTrustLevel
-			allowPrivate := false
-			if owned && (selfRouteOnly || preferOwner) {
-				minTrust = TrustNone
-				allowPrivate = true
-			}
-			canRoute := r.providerCanRouteBuildLocked(
-				p, buildID, minTrust, now, allowPrivate)
-			if structural {
-				canRoute = r.providerStructurallyCanRouteBuildLocked(
-					p, buildID, minTrust, now, allowPrivate)
-			}
-			return canRoute && r.providerEligibleForTraitsLocked(p, buildID, traits)
-		}()
-		p.mu.Unlock()
-		if ok {
-			return true
-		}
-	}
-	return false
+	return r.reservationPlanner.canServeAliasLocked(buildID, allowedSerials, ownerAccountID, selfRouteOnly, preferOwner, now, traits, structural)
 }
 
 // providerStructurallyCanRouteBuildLocked reports whether a provider has every
@@ -288,6 +249,11 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 	now time.Time,
 	allowPrivate bool,
 ) bool {
+	return (&ProviderEligibility{registry: r}).structuralBuildLocked(p, buildID, minTrust, now, allowPrivate)
+}
+
+func (e *ProviderEligibility) structuralBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
+	r := e.registry
 	// Catalog membership + dedicated-box isolation, mirroring
 	// providerPassesRoutingGatesLockedEx so alias routability (and rollout/drop
 	// measurement) matches actual dispatch routability: a dedicated-family build
@@ -296,13 +262,13 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 	// to Desired (then 429 at dispatch) instead of failing over to a Previous
 	// build on a dedicated box. allowPrivate marks the owner self-route context,
 	// exempt like selfRouteOwner.
-	if !r.providerServesRoutableModelLocked(p, buildID, allowPrivate) {
+	if ok, _ := e.catalogReasonLocked(p, buildID, allowPrivate); !ok {
 		return false
 	}
 	// Liveness/trust/privacy core. allowPrivate marks the owner self-route
 	// context (relax private-only admission); the trust-floor relaxation is
 	// folded into the minTrust the caller passes (TrustNone for owner routes).
-	if !r.providerLivenessGateLocked(p, minTrust, allowPrivate, now) {
+	if ok, _ := e.livenessLocked(p, minTrust, allowPrivate, now); !ok {
 		return false
 	}
 	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
@@ -337,7 +303,12 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 // pass (no warm slot required — they load on first demand). Caller holds r.mu
 // (RLock) and p.mu.
 func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
-	if !r.providerStructurallyCanRouteBuildLocked(
+	return (&ProviderEligibility{registry: r}).buildLocked(p, buildID, minTrust, now, allowPrivate)
+}
+
+func (e *ProviderEligibility) buildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
+	r := e.registry
+	if !e.structuralBuildLocked(
 		p, buildID, minTrust, now, allowPrivate,
 	) {
 		return false
@@ -370,18 +341,7 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 // anyProviderCanRouteBuildLocked reports whether at least one provider could
 // route the build right now. Caller holds r.mu.
 func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
-	now := time.Now()
-	minTrust := r.MinTrustLevel
-	// Per-model index: only advertisers can route the build (model_index.go).
-	for _, p := range r.providersForModelLocked(buildID) {
-		p.mu.Lock()
-		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now, false)
-		p.mu.Unlock()
-		if ok {
-			return true
-		}
-	}
-	return false
+	return r.reservationPlanner.canRouteBuildLocked(buildID)
 }
 
 // RoutableProviderIDsForBuild returns the ids of providers that would actually

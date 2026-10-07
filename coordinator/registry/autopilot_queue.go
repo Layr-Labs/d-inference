@@ -7,10 +7,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 )
 
-// Copy only immutable eligibility/envelope fields while queue membership is
-// locked. Restricted/owner traffic does not create public placement pressure.
-// No bodies, tool names, account identities or provider restrictions escape.
-func (q *RequestQueue) autopilotSamples(now time.Time, activeIDs map[string]bool) []autopilot.DemandSample {
+// AutopilotSamples projects immutable eligibility/envelope fields while queue
+// membership is locked. Restricted/owner traffic does not create public placement
+// pressure. No bodies, tool names, account identities or provider restrictions escape.
+func (q *RequestQueue) AutopilotSamples(now time.Time, activeIDs map[string]bool) []autopilot.DemandSample {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var samples []autopilot.DemandSample

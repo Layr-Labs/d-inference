@@ -3,16 +3,9 @@ package registry
 import (
 	"context"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/transport"
 )
-
-const transportFreshness = 90 * time.Second
-
-type transportMeasurement struct {
-	rtt       time.Duration
-	deviation time.Duration
-	at        time.Time
-	samples   int
-}
 
 // MeasureTransport samples this connection's WebSocket ping/pong round trip.
 // RFC control frames use the WebSocket library's control-frame serialization,
@@ -22,7 +15,7 @@ type transportMeasurement struct {
 // write deadline: nhooyr treats expiration during a write as connection failure.
 // Its ordinary control-frame failure policy still applies, as for automatic
 // pongs. A missing pong keeps this one observer pending until connection teardown;
-// an eventual RTT above three seconds is discarded by recordTransportLocked.
+// an eventual RTT above three seconds is discarded by the measurement history.
 func (p *Provider) MeasureTransport() error {
 	p.mu.Lock()
 	conn := p.Conn
@@ -37,36 +30,20 @@ func (p *Provider) MeasureTransport() error {
 	finished := time.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.Conn == conn && p.Status != StatusOffline && !p.modelIndexDetached {
-		p.recordTransportLocked(finished.Sub(start), finished)
+	if p.Conn == conn && p.Status != StatusOffline && (p.modelMembership == nil || p.modelMembership.Active()) {
+		if p.transport == nil {
+			p.transport = &transport.History{}
+		}
+		p.transport.Record(finished.Sub(start), finished)
 	}
 	return nil
 }
 
-func (p *Provider) recordTransportLocked(rtt time.Duration, now time.Time) {
-	if rtt <= 0 || rtt > 3*time.Second {
-		return
+func (r *Registry) newTransportHistory(id string) *transport.History {
+	if r.transportFactory != nil {
+		if history := r.transportFactory(id); history != nil {
+			return history
+		}
 	}
-	m := &p.transport
-	if m.at.IsZero() || now.Sub(m.at) > transportFreshness {
-		*m = transportMeasurement{rtt: rtt, at: now, samples: 1}
-		return
-	}
-	delta := rtt - m.rtt
-	if delta < 0 {
-		delta = -delta
-	}
-	m.deviation = (3*m.deviation + delta) / 4
-	m.rtt = (3*m.rtt + rtt) / 4
-	m.samples++
-	m.at = now
-}
-
-func transportForecast(m transportMeasurement, now time.Time) (expected, conservative float64, age int32) {
-	if m.samples < 2 || m.at.IsZero() || now.Before(m.at) || now.Sub(m.at) > transportFreshness {
-		return 0, 0, -1
-	}
-	expected = float64(m.rtt) / float64(time.Millisecond)
-	conservative = float64(m.rtt+4*m.deviation) / float64(time.Millisecond)
-	return expected, max(expected, conservative), heartbeatAgeMs(now, m.at)
+	return &transport.History{}
 }

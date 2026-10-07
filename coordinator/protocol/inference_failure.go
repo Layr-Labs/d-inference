@@ -13,6 +13,8 @@ type InferenceFailureCode string
 type CoordinatorInferenceErrorCause string
 
 const (
+	// CoordinatorCauseResponseLimit is local-only: decrypted non-streaming output exceeded its budget.
+	CoordinatorCauseResponseLimit CoordinatorInferenceErrorCause = "response_limit"
 	// CoordinatorCauseProviderDisconnected marks the pending-request flush of
 	// an ABRUPT socket loss (read error, OOM-suspected drop, stale eviction,
 	// duplicate-serial kick): the provider vanished with work in flight, so

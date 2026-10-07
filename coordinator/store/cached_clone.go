@@ -1,16 +1,11 @@
 package store
 
-// Deep-copy helpers for the values CachedStore hands out. The cached value is
-// the canonical copy; callers (e.g. the admin runtime_parameters PATCH, which
-// writes into rec.RuntimeParameters before upserting) must never be able to
-// reach it through a returned pointer.
-
 func cloneUser(u *User) *User {
 	if u == nil {
 		return nil
 	}
 	cp := *u
-	cp.PlatformFeePercent = cloneInt64Ptr(u.PlatformFeePercent)
+	cp.PlatformFeePercent = CloneInt64Ptr(u.PlatformFeePercent)
 	return &cp
 }
 
@@ -49,8 +44,8 @@ func cloneRegistryEntryForCache(entry *ModelRegistryEntry) ModelRegistryEntry {
 
 func cloneModelVersionForCache(version *ModelVersion) ModelVersion {
 	cp := *version
-	cp.PromotedAt = cloneTimePtr(version.PromotedAt)
-	cp.HuggingFaceArtifact = cloneHuggingFaceArtifact(version.HuggingFaceArtifact)
+	cp.PromotedAt = CloneTimePtr(version.PromotedAt)
+	cp.HuggingFaceArtifact = CloneHuggingFaceArtifact(version.HuggingFaceArtifact)
 	cp.Metadata = cloneJSONMap(version.Metadata)
 	return cp
 }

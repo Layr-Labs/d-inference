@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-04
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -37,6 +37,23 @@ flowchart TD
   K --> L["Routing and outcome records"]
   L --> G
 ```
+
+### Connected inventory reporting
+
+`coordinator/registry/autopilot_inventory_report.go` (`AutopilotInventory`)
+projects saved `SelectedModels` from connected provider sessions without calling
+the planner or changing consent, leases, routing gates or residency. It uses the
+existing consent predicate and excludes private-only providers. Counts include
+waiting, shadow, paused and stale sessions; they do not assert active control.
+Disconnected sessions disappear immediately and there is no durable offline
+inventory. Each exact model ID counts once per connection, without alias folding
+or filtering against today's catalog. These are last-reported approvals of cached
+builds, not a new disk scan, hash verification, resident count or routing claim.
+
+The admin-only inventory read is independent of controller configuration and the
+operation ledger, so a ledger outage cannot hide this in-memory projection. See
+the [inventory response contract](../reference/api-contracts.md#autopilot-inventory-report)
+for the population, freshness and count definitions.
 
 ### Enrollment and ownership
 
@@ -132,6 +149,10 @@ ownership. Only a matching acknowledged live lease transfers normal network
 cold-load/idle ownership. Shadow planning uses eligible consent hypothetically,
 without requiring a lease acknowledgement, and never reserves, fences or sends residency
 commands (`autopilotFleetSnapshotLocked`, `modelAutopilotController.tick`).
+Request routing checks lease ownership for every candidate and reads the clock
+only for a provider holding a matching grant
+([scan cost per candidate](routing.md#scan-cost-per-candidate)); an expired
+grant still stops managing the provider at its expiry instant.
 Renewals enqueue without waiting on sockets through each connection's bounded
 priority lane. A full queue does not extend that provider's coordinator lease;
 slow connections cannot serialize renewal of healthy peers or the planning tick.
@@ -169,7 +190,7 @@ minimum, matching the other daemon diagnostics.
 
 ### Demand and placement
 
-`beginAutopilotDemand` creates a request-owned observation after entering an
+`BeginAutopilotDemand` creates a request-owned observation after entering an
 inference endpoint. Admission arms it only after public authentication, account
 limits, balance and parsing checks. Retries and speculative attempts annotate
 the same observation; terminal consumption occurs once. Owner/private traffic,
@@ -297,6 +318,23 @@ a residency decision.
 cohorts, placement, donor coverage, summaries and snapshot validation. The registry
 adapter keeps live provider pointers and locks out of that package. It binds each
 returned plan to the exact snapshotted session and revalidates it before mutation.
+Production-consumed components separate that policy from operational ownership:
+`autopilotstate.State` owns connection-local inventory, control lease and pending
+command/retry authority under the registry's existing provider lock;
+`autopilotcontrol.Controller` owns the bounded tick and reservation protocol over
+retained snapshot/reservation/delivery ports; `autopilotledger.Events` owns
+deduplicated pending operation phases and their durable flush. The registry
+adapter binds those ports to its real session, queue, transport and store
+collaborators (`coordinator/registry/autopilot_control.go`, `newAutopilotControl`;
+`coordinator/registry/dependencies.go`, `NewWithDependencies`). It retains the
+exclusive placement lease and final provider-local authority checks.
+
+`autopilot.DemandTracker` still records one content-free logical request at its
+original arrival time (`coordinator/registry/autopilot/demand.go`, `Record`). Its
+bounded history uses `demandwindow.Window` (`coordinator/internal/registry/demandwindow/window.go`,
+`Record`, `Snapshot`); live occupancy remains a separate lower bound, not another
+arrival. These ownership boundaries do not change shadow/live consent, command
+leases, donor protection, demand counting or uncertainty/reconciliation outcomes.
 `coordinator/api/autopilot/` owns admin request validation and ledger/status
 responses; its parent route adapter owns authentication and admin authorization.
 Swift runtime, protocol, CLI and test files are grouped by feature; startup has
@@ -310,9 +348,11 @@ its own `Start/` folder.
 | Protocol | `coordinator/protocol/model_autopilot.go`; `provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift` |
 | Shapes and planning | `coordinator/registry/autopilot/shapes.go`; `coordinator/registry/autopilot/coverage.go`; `coordinator/registry/autopilot/planner.go` |
 | Hard request eligibility | `coordinator/registry/autopilot/requirements.go`; `coordinator/registry/autopilot_traits.go` |
-| Demand and policy defaults | `coordinator/registry/autopilot/demand.go`; `coordinator/registry/autopilot/config.go` |
+| Demand and policy defaults | `coordinator/registry/autopilot/demand.go` (`DemandTracker.Record`); `coordinator/internal/registry/demandwindow/window.go` (`Window.Record`, `Snapshot`); `coordinator/registry/autopilot/config.go` |
+| Session consent, leases, inventory and command reconciliation | `coordinator/internal/registry/autopilotstate/state.go` (`State`, `Consented`, `AcceptControl`); `coordinator/internal/registry/autopilotstate/lease.go` (`Lease.Active`); `coordinator/internal/registry/autopilotstate/commands.go` (`Reserve`, `RollbackDelivery`, `Watchdog`); `coordinator/internal/registry/autopilotstate/reconcile.go` (`Reconcile`); `coordinator/internal/registry/autopilotstate/inventory.go` (`RegisterInventory`); adapters in `coordinator/registry/autopilot_provider_state.go` |
+| Bounded control pass and atomic reservation | `coordinator/internal/registry/autopilotcontrol/controller.go` (`Controller.Tick`, `Ports`); `coordinator/internal/registry/autopilotcontrol/plan.go` (`Controller.Reserve`, `Reservation`); `coordinator/registry/autopilot_control.go` (`newAutopilotControl`), `coordinator/registry/autopilot_reservation.go` (`beginAutopilotReservation`) |
 | Activation and execution | `coordinator/registry/autopilot_activation.go`; `coordinator/registry/autopilot_commands.go`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift` |
-| Durable records | `coordinator/store/postgres_autopilot.go`; `coordinator/registry/autopilot_events.go` |
+| Durable records | `coordinator/internal/registry/autopilotledger/events.go` (`Events.Queue`, `Flush`); `coordinator/internal/registry/autopilotledger/proposal.go` (`ProposalID`); `coordinator/store/postgres/autopilot.go`; registry adapter `coordinator/registry/autopilot_events.go` |
 | Operator view | `coordinator/api/autopilot/handler.go`; authenticated adapter `coordinator/api/autopilot_handlers.go` |
 
 ## Related

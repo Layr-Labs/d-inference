@@ -1,0 +1,221 @@
+package inference_test
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	api "github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/tests/internal/testkit"
+)
+
+func TestTTFTAdmission429BelowOldTenSecondFloor(t *testing.T) {
+	fixture := testkit.New(t, api.ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
+	srv := fixture.Server
+	srv.SetTTFTHardReject(true) // legacy hard 429-on-slow-estimate path (now opt-in)
+	model := "exact-ttft-floor-model"
+	fixture.Registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	p := testkit.RegisterBuildsProvider(fixture.Registry, "exact-floor-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2 // Slow measured prefill exceeds the exact first-content target.
+	p.Mu().Unlock()
+	reportMeasuredFirstContentEvidence(t, fixture.Registry, p.ID, model, 0.2, 100)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		strings.ReplaceAll(`{"model":"MODEL","input":"hello","max_output_tokens":128}`, "MODEL", model)))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusTooManyRequests, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got == "" {
+		t.Fatal("Retry-After header missing")
+	}
+}
+
+func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
+	fixture := testkit.New(t, api.ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
+	srv := fixture.Server
+	srv.SetTTFTHardReject(true) // legacy hard 429-on-slow-estimate path (now opt-in)
+	model := "route-slow-ttft-model"
+	fixture.Registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	p := testkit.RegisterBuildsProvider(fixture.Registry, "route-slow-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 400
+	p.Mu().Unlock()
+	reportMeasuredFirstContentEvidence(t, fixture.Registry, p.ID, model, 0.2, 100)
+
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "responses-style chat completions",
+			path: "/v1/chat/completions",
+			body: `{"model":"MODEL","input":"hello","max_output_tokens":128}`,
+		},
+		{
+			name: "completions",
+			path: "/v1/completions",
+			body: `{"model":"MODEL","prompt":"hello","max_tokens":128}`,
+		},
+		{
+			name: "anthropic messages",
+			path: "/v1/messages",
+			body: `{"model":"MODEL","messages":[{"role":"user","content":"hello"}],"max_tokens":128}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(strings.ReplaceAll(tc.body, "MODEL", model)))
+			req.Header.Set("Authorization", "Bearer test-key")
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusTooManyRequests, w.Body.String())
+			}
+			if got := w.Header().Get("Retry-After"); got == "" {
+				t.Fatal("Retry-After header missing")
+			}
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if body.Error.Code != "rate_limit_exceeded" {
+				t.Fatalf("code = %q, want rate_limit_exceeded", body.Error.Code)
+			}
+			// Assert the TTFT preflight path specifically (not a capacity 429),
+			// so this test exercises the hard TTFT gate it is named for.
+			if !strings.Contains(body.Error.Message, "TTFT target") {
+				t.Fatalf("message = %q, want TTFT target detail", body.Error.Message)
+			}
+		})
+	}
+}
+
+// TestTTFTSoftGateDoesNotShedAtDispatch is the regression for the Codex P1: in
+// the default SOFT gate, an over-deadline request must not be rejected as
+// ttft_too_slow — not at the preflight AND not (the bug) at dispatch via a
+// non-zero pr.MaxTTFTMs causing ReserveProviderEx to drop every candidate. With
+// a single eligible provider and no capacity pressure, the only possible 429 is
+// the TTFT shed, so asserting "not 429" pins the fix. (The request can't truly
+// stream over a nil test conn; it just must never be ttft-rejected.)
+func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
+	fixture := testkit.New(t, api.ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
+	srv := fixture.Server // default: soft gate (ttftHardReject=false)
+	model := "soft-serve-ttft-model"
+	fixture.Registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	p := testkit.RegisterBuildsProvider(fixture.Registry, "slow-prefill-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2 // ~5s prefill even for a tiny prompt => TTFT estimate >> deadline
+	p.Mu().Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		strings.ReplaceAll(`{"model":"MODEL","messages":[{"role":"user","content":"hello"}],"max_tokens":16}`, "MODEL", model)))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusTooManyRequests {
+		t.Fatalf("soft gate shed an over-deadline request with 429 (P1 regression); body=%s", w.Body.String())
+	}
+}
+
+func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
+	fixture := testkit.New(t, api.ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
+	srv := fixture.Server
+	srv.SetTTFTHardReject(true)
+	warmCfg := registry.ReadConfig().WarmPool
+	warmCfg.Enabled = true
+	warmCfg.ObserveOnly = false
+	fixture.Registry.ConfigureWarmPool(warmCfg)
+	model := "media-estimate-is-partial"
+	fixture.Registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	fixture.Registry.RecordWarmPoolSpeculativeStarted(model) // seed an observable bucket
+	p := testkit.RegisterBuildsProvider(fixture.Registry, "vision-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2
+	p.Models[0].IsVision = true
+	p.Mu().Unlock()
+
+	body := strings.ReplaceAll(
+		`{"model":"MODEL","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}],"max_tokens":16}`,
+		"MODEL", model)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusTooManyRequests || strings.Contains(w.Body.String(), "TTFT target") {
+		t.Fatalf("hard gate used a text-only estimate to reject media: status=%d body=%s", w.Code, w.Body.String())
+	}
+	found := false
+	for _, snap := range fixture.Registry.TriggerWarmPool() {
+		if snap.Model != model {
+			continue
+		}
+		found = true
+		if snap.TTFTMisses != 0 {
+			t.Fatalf("media token proxy emitted %d synthetic warm-pool TTFT miss(es), want 0", snap.TTFTMisses)
+		}
+	}
+	if !found {
+		t.Fatal("warm-pool snapshot missing media model")
+	}
+}
+
+// reportMeasuredFirstContentEvidence establishes bounded sample ages using two
+// accepted frames with changed prefill and decode EWMAs. It preserves the
+// provider's existing physical-capacity fixture.
+func reportMeasuredFirstContentEvidence(t *testing.T, reg *registry.Registry, id, model string, prefill, decode float64) {
+	t.Helper()
+	p := reg.GetProvider(id)
+	if p == nil {
+		t.Fatalf("missing provider %s", id)
+	}
+	capacity := p.BackendCapacitySnapshot()
+	if capacity == nil {
+		t.Fatal("measured fixture requires capacity")
+	}
+	seq := capacity.CapacitySeq
+	for i, factor := range []float64{0.99, 1} {
+		capacity = p.BackendCapacitySnapshot()
+		capacity.CapacitySeq = seq + uint64(i+1)
+		for j := range capacity.Slots {
+			slot := &capacity.Slots[j]
+			if slot.Model != model {
+				continue
+			}
+			rate, initialized := prefill*factor, true
+			slot.State = "idle"
+			slot.ObservedDecodeTPS = decode * factor
+			slot.ObservedPrefillTPS = rate
+			slot.Telemetry = &protocol.SlotTelemetry{QueuedPrefillTokens: new(int64), PartialPrefillRows: new(int64), IsolatedPrefillTPS: &rate, EWMAInitialized: &initialized}
+		}
+		if !reg.Heartbeat(id, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: capacity}) {
+			t.Fatal("fresh sample rejected")
+		}
+	}
+}

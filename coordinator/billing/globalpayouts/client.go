@@ -113,6 +113,17 @@ func (c *Client) Recipient(ctx context.Context, id string) (*Recipient, error) {
 	return &result, err
 }
 
+// CloseRecipient closes a recipient account (account erasure). Stripe
+// requires every configuration on the account; CreateRecipient sets only
+// "recipient".
+func (c *Client) CloseRecipient(ctx context.Context, id string) error {
+	body := map[string]any{"applied_configurations": []string{"recipient"}}
+	var result struct {
+		ID string `json:"id"`
+	}
+	return c.do(ctx, "POST", "/v2/core/accounts/"+url.PathEscape(id)+"/close", "", "", body, &result)
+}
+
 func (c *Client) OnboardingLink(ctx context.Context, id, returnURL, refreshURL string) (string, error) {
 	link, err := c.recipientLink(ctx, id, returnURL, refreshURL, "account_onboarding")
 	// Stripe rejects onboarding links after a recipient has completed onboarding,

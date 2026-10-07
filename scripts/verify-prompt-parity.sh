@@ -65,7 +65,7 @@ PROMPT_PARITY_ARTIFACT_ROOT="$ARTIFACT_ROOT" \
 
 (
   cd "$ROOT/coordinator"
-  go test ./promptcontract -run TestProductionPlansConsumeSharedTokenVectors -count=1
+  go test ./tests/promptcontract -run TestProductionPlansConsumeSharedTokenVectors -count=1
 )
 cargo +1.88.0 test --locked \
   --manifest-path "$ROOT/coordinator/promptsidecar/Cargo.toml" \

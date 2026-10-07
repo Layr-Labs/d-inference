@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = Path("scripts/serving_performance/catalog/deadline_profiles.json")
 SWIFT = Path("provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/ReviewedDeadlineProfilesData.swift")
-GO = Path("coordinator/registry/deadline_catalog_data.go")
+GO = Path("coordinator/internal/registry/deadline/catalog_data.go")
 
 
 def _unique_object(pairs):
@@ -53,7 +53,7 @@ def rendered_sources(raw):
     while '"' + hashes in canonical or "\\" + hashes + "(" in canonical:
         hashes += "#"
     swift = header + "enum ReviewedDeadlineProfilesData {\n" + f'    static let json = {hashes}"{canonical}"{hashes}\n' + "}\n"
-    go = header + "package registry\n\n" + "const reviewedDeadlineProfilesJSON = " + json.dumps(canonical, ensure_ascii=False) + "\n"
+    go = header + "package deadline\n\n" + "const CompiledProfilesJSON = " + json.dumps(canonical, ensure_ascii=False) + "\n"
     return {SWIFT: swift, GO: go}
 
 

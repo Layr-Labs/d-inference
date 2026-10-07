@@ -1,0 +1,84 @@
+package inference_test
+
+import (
+	"math"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/promotions"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/reservations"
+
+	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+func TestModelTokenPromotionExactPricing(t *testing.T) {
+	fee := int64(20)
+	for _, tt := range []struct {
+		name           string
+		prompt, output int
+		free           int64
+		fee            *int64
+		want           promotions.Price
+	}{
+		{"one input", 1, 0, 1, nil, promotions.Price{Gross: 1, Remainder: 5_000_000}},
+		{"one output", 0, 1, 1, nil, promotions.Price{Gross: 1, Remainder: 20_000_000}},
+		{"fee before rounding", 1, 0, 1, &fee, promotions.Price{Gross: 1, Remainder: 4_000_000}},
+		{"mixed", 1, 1, 1, nil, promotions.Price{Gross: 101, Paid: 100, Payout: 100, Remainder: 5_000_000}},
+		{"mixed with fee", 1, 1, 1, &fee, promotions.Price{Gross: 101, Paid: 100, Payout: 80, Remainder: 4_000_000}},
+		{"paid after exhaustion", 1, 0, 0, nil, promotions.Price{Gross: 100, Paid: 100, Payout: 100}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := promotions.PriceTokens(tt.prompt, tt.output, payments.Rates{Input: 50_000, Output: 200_000}, tt.free, tt.fee)
+			if err != nil || got != tt.want {
+				t.Fatalf("got %+v %v; want %+v", got, err, tt.want)
+			}
+		})
+	}
+	if _, err := promotions.PriceTokens(math.MaxInt, math.MaxInt, payments.Rates{Input: math.MaxInt64, Output: math.MaxInt64}, 1, nil); err == nil {
+		t.Fatal("overflowing price accepted")
+	}
+}
+
+func TestModelTokenPromotionTinyRequestsCannotAmplifyPayout(t *testing.T) {
+	s, st, r := promotionTestServer(t, 100)
+	// The first fractional earning commits but loses its acknowledgement.
+	// Reconciliation must neither lose nor duplicate that remainder.
+	s.fault.useSettlement(&promotionSettlementFaultStore{Store: st, ModelTokenPromotionStore: st})
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: promoTestModel, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		w := httptest.NewRecorder()
+		_, _, handled := s.reservations.Reserve(w, r, nil, reservations.Params{Model: promoTestModel, PublicModel: promoTestModel, BillingPromptTokens: 1})
+		if handled {
+			t.Fatal(w.Body)
+		}
+		provider, pr := promotionCompletionRequest(s, promotions.Reservation(r), promotions.Reservation(r).ID)
+		s.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{RequestID: pr.RequestID, Usage: protocol.UsageInfo{PromptTokens: 1}})
+		s.promotions.Maintain(time.Now())
+		if got := st.GetWithdrawableBalance("paid-provider"); got != int64(i+1)/20 {
+			t.Fatalf("after %d requests payout=%d", i+1, got)
+		}
+	}
+	grants, _ := st.ListModelTokenGrants("promotion-user")
+	if grants[0].UsedTokens != 100 || grants[0].ReservedTokens != 0 || st.GetBalance("promotion-user") != 0 {
+		t.Fatal("incorrect grant/consumer accounting", grants)
+	}
+	// A subsequent fully paid request still funds the ordinary 100 micro-USD minimum.
+	if err := st.Credit("promotion-user", 100, store.LedgerAdminCredit, "paid-fallback"); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	_, _, handled := s.reservations.Reserve(w, r, nil, reservations.Params{Model: promoTestModel, PublicModel: promoTestModel, BillingPromptTokens: 1})
+	if handled {
+		t.Fatal(w.Body)
+	}
+	provider, pr := promotionCompletionRequest(s, promotions.Reservation(r), "paid-fallback")
+	s.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{RequestID: pr.RequestID, Usage: protocol.UsageInfo{PromptTokens: 1}})
+	if st.GetBalance("promotion-user") != 0 || st.GetWithdrawableBalance("paid-provider") != 105 {
+		t.Fatal("paid minimum changed")
+	}
+}

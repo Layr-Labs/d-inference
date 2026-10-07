@@ -112,7 +112,7 @@ class ProviderFixtureTests(unittest.TestCase):
     def test_provider_job_provisions_prompt_and_tiny_inputs_before_tests(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text().split("  test-provider:", 1)[1]
         workflow = workflow.split("  test-provider-sdk:", 1)[0]
-        run = workflow.index("run: ../scripts/run-provider-tests.sh")
+        run = workflow.index("-- ../scripts/run-provider-tests.sh")
         for command in ("scripts/prepare-mimo-prompt-fixtures.py", "scripts/prepare-mimo-provider-fixtures.py"):
             self.assertLess(workflow.index(command), run)
         self.assertIn("--asymmetric", workflow)

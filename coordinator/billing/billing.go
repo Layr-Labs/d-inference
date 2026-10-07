@@ -6,7 +6,7 @@
 //  3. Stripe webhook confirms payment and credits internal balance
 //
 // Payouts to providers use Stripe Connect Express (bank/card withdrawals).
-// A referral system allows accounts to earn a share of platform fees.
+// A referral system allows accounts to earn 5% of referred consumer token spend.
 package billing
 
 import (
@@ -40,16 +40,12 @@ type Service struct {
 
 // NewService creates a new billing service from the given configuration.
 func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cfg Config) *Service {
-	if cfg.ReferralSharePercent == 0 {
-		cfg.ReferralSharePercent = 20
-	}
-
 	svc := &Service{
 		store:    st,
 		ledger:   ledger,
 		logger:   logger,
 		config:   cfg,
-		referral: NewReferralService(st, logger, cfg.ReferralSharePercent),
+		referral: NewReferralService(st, logger),
 	}
 
 	if cfg.StripeGlobalPayoutsSecretKey != "" && cfg.StripeGlobalPayoutsFinancialAccount != "" {

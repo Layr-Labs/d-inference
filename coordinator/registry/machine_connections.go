@@ -36,7 +36,7 @@ func (r *Registry) DisconnectDuplicatesByMachine(keep *Provider) {
 		if match {
 			candidates = append(candidates, p)
 			if r.providerAppAttestServingAuthorizedLocked(p, time.Now()) &&
-				(p.registeredAt.After(winner.registeredAt) || (p.registeredAt.Equal(winner.registeredAt) && p.ID > winner.ID)) {
+				p.connectionOrigin.NewerThan(winner.connectionOrigin, p.ID, winner.ID) {
 				winner = p
 			}
 		}
@@ -48,8 +48,7 @@ func (r *Registry) DisconnectDuplicatesByMachine(keep *Provider) {
 		// runtime/policy checks are still finishing. An older connection's
 		// periodic renewal must not evict that pending newcomer before it has
 		// an opportunity to qualify. It cannot displace the winner yet either.
-		if p == winner || p.registeredAt.After(winner.registeredAt) ||
-			(p.registeredAt.Equal(winner.registeredAt) && p.ID > winner.ID) {
+		if p == winner || p.connectionOrigin.NewerThan(winner.connectionOrigin, p.ID, winner.ID) {
 			continue
 		}
 		p.mu.Lock()
@@ -62,6 +61,6 @@ func (r *Registry) DisconnectDuplicatesByMachine(keep *Provider) {
 	}
 	r.mu.Unlock()
 	for _, p := range evict {
-		r.disconnectProvider(p.ID, p, -1, protocol.CoordinatorCauseProviderRestart)
+		r.connectionLifecycle.Disconnect(p.ID, p, -1, protocol.CoordinatorCauseProviderRestart)
 	}
 }

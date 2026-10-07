@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -49,7 +50,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
+	if err := p.writeModelCommand(ctx, data); err != nil {
 		return fmt.Errorf("failed to send load_model to provider %q: %w", providerID, err)
 	}
 
@@ -99,7 +100,7 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
+	if err := p.writeModelCommand(ctx, data); err != nil {
 		return fmt.Errorf("failed to send prefetch_model to provider %q: %w", providerID, err)
 	}
 
@@ -212,7 +213,7 @@ func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredMode
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), providerControlWriteTimeout)
 	defer cancel()
-	if err := p.WriteText(ctx, data); err != nil {
+	if err := p.writeModelCommand(ctx, data); err != nil {
 		return fmt.Errorf("failed to send desired_models to provider %q: %w", providerID, err)
 	}
 	recordDesiredModelsSent(p, entries)
@@ -224,15 +225,7 @@ func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredMode
 }
 
 func desiredModelEntriesEqual(left, right []protocol.DesiredModelEntry) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(left, right)
 }
 
 func recordDesiredModelsSent(p *Provider, entries []protocol.DesiredModelEntry) {

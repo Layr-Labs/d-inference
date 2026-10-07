@@ -24,8 +24,15 @@ permissions:
   pull-requests: write
 
 jobs:
+  changes:
+    uses: ./.github/workflows/component-changes.yml
+    permissions:
+      contents: read
+
   benchmark:
     name: E2E Benchmarks
+    needs: changes
+    if: ${{ needs.changes.outputs.benchmark == 'true' }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 45
     environment: benchmarks

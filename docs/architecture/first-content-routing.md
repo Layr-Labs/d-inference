@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-07
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -46,10 +46,16 @@ flowchart TD
 
 ### Prediction and freshness
 
-`estimateFirstContent` (`coordinator/registry/first_content_forecast.go`) prices
+`estimateFirstContent` (`coordinator/registry/first_content_forecast.go`) adapts the
+request and detached evidence to `forecast.Evaluate`
+(`coordinator/internal/registry/forecast/forecast.go`), which prices
 handoff, cold load when needed, queued/competing prompt work, cache restoration,
 uncached prompt work, and initial decode/delivery. `backlog_ms` remains a
 historical commitment diagnostic and is never an elapsed waiting term.
+`firstContentForecastEvidence` in `coordinator/registry/first_content_evidence.go`
+binds the snapshot to that calculation; `forecast.Allows` in
+`coordinator/internal/registry/forecast/admission.go` applies the request's
+fresh-feasible and hard-ceiling policy without owning live provider state.
 
 `planPromptRoute` reuses the existing verified renderer/tokenizer contract for
 numeric prompt work, including tools and history. It shares a successful cache
@@ -72,8 +78,14 @@ require the candidate's advertised `prompt_work_identity` artifact and renderer
 contract, including when an exact cache plan supplies the count. Loaded engines
 publish this identity independently of prefix-cache enablement. Older providers
 can establish the same pair through validated cache capabilities; missing or
-conflicting identity retains heuristic counts (`providerPromptWorkIdentityLocked`
-in `coordinator/registry/prompt_work_identity.go`). Calibrated template estimates
+conflicting identity retains heuristic counts. `providerPromptWorkIdentityLocked`
+in `coordinator/registry/prompt_work_identity.go` supplies the advertised model,
+capacity and validated cache capabilities to `promptidentity.Resolve`
+(`coordinator/internal/registry/promptidentity/identity.go`). A matching loaded
+engine identity takes precedence; malformed or conflicting evidence cannot
+borrow the request's identity. `forecast.PromptCounts`
+(`coordinator/internal/registry/forecast/prompt.go`) then selects counts against
+that resolved artifact and contract. Calibrated template estimates
 also require a reviewed measured domain
 and independent held-out coverage. Unmeasured prompt-rendering controls also
 withdraw fallback qualification; exact tokenizer planning remains available.
@@ -108,6 +120,11 @@ observed value has unknown sample age. An unchanged EWMA never becomes
 fresh merely because another heartbeat arrives. Provider sample-age/count and
 workload profiles remain the separate provider delivery in the design.
 
+Invalid explicit metadata withdraws freshness without forgetting the previous
+producer counters. Replaying an earlier valid report therefore cannot create
+new freshness or corroborating slow-rate observations
+(`coordinator/internal/registry/measurements/history.go`, `History.Reconcile`).
+
 The existing coordinator and provider validation envelopes both accept prefill
 rates through `maxPrefillTPS = 20000.0` tokens/s. Invalid rates retain their
 diagnostics and fallback behavior (`coordinator/registry/heartbeat.go`,
@@ -123,11 +140,12 @@ Performance evidence requires serving work, so feasible-first selection can
 indefinitely exclude a provider with missing or stale measurements. A loaded,
 idle provider with a `performance_missing` or `performance_age_unknown_or_stale`
 forecast can compete beside feasible peers after
-`firstContentEvidenceExplorationAfter` (5 minutes). This threshold uses the older
+`firstContentEvidenceExplorationAfter` (`forecast.EvidenceExplorationAfter = 5 * time.Minute`). This threshold uses the older
 paired measurement's age, or connection age when either measurement is undated;
 it is not a continuous-idle timer or time since evidence expired. Unknown
-connection age cannot qualify (`firstContentEvidenceGapAgeMs`,
-`coordinator/registry/first_content_exploration.go`).
+connection age cannot qualify (`forecast.EvidenceGapAgeMS` and
+`forecast.EvidenceExplorable`, `coordinator/internal/registry/forecast/exploration.go`;
+registry adapters in `coordinator/registry/first_content_exploration.go`).
 
 Outstanding service-retirement shadows, reported service usage or reservations,
 load transitions, competing slot work and pending requests prevent the idle
@@ -136,10 +154,70 @@ exception (`fillFirstContentSnapshot`,
 service fields and still qualify using their existing slot telemetry. Reservation
 rechecks the exception under the provider lock and rescans if eligibility changed.
 The candidate stays `unknown`, so hedge and fresh-feasible requests still exclude
-it. Ordinary ranking need not select it, and a served request need not refresh
-both measurements: cache reuse can leave isolated-prefill evidence unchanged, as
-can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
-selection or recovery.
+it. Its forecast uses the fleet median isolated-prefill rate while its own
+isolated-prefill evidence is missing or at least 5 minutes old, and the fleet
+median decode rate while its own decode evidence is missing or at least 5
+minutes old. Each rate is checked on its own. Explicit missing or invalid
+measurements cannot borrow a retained positive EWMA as an undated own rate;
+the legacy first-observation fallback remains separate. A provider that sent no rates at
+registration, or whose last measurement was slow, is therefore priced like a
+typical peer and can enter the 100 ms band. A reviewed profile point still comes
+first, and a missing median keeps the ordinary fallback ([rate
+order](routing.md#historical-cost-diagnostics), which also lists the known
+limits). A served request brings back the provider's own value for each rate
+that it renewed. Ordinary ranking need not select it, and a served request need
+not refresh both measurements: cache reuse can leave isolated-prefill evidence
+unchanged, as can an unchanged legacy EWMA. Exploration offers an opportunity,
+not guaranteed selection or recovery.
+
+### Exploration feedback
+
+Two per-model guards on the stable-identity gate prevent a genuinely slow
+provider from repeatedly winning as if it were a typical peer. They suppress
+the idle evidence exception and exploration median pricing, not ordinary
+feasible selection or the existing unknown-provider fallback.
+
+| Guard | Policy |
+|---|---|
+| Failed exploration | First-content timeout, `deadline_unreachable`, or an otherwise attributable provider fault advances suppression through 5, 10, 20, 40, 80 and 120 minutes, capped at 120. A delivered exploration removes one backoff level without extending the current suppression; a short successful request does not reset the whole history. |
+| Remembered decode | Keep up to eight newly observed rates for the model. At least five observations whose upper median is below 0.25 times the model/chip-family fleet median suppress exploration. A new observation at or above 0.5 times the fleet median clears only the decode samples, not failure backoff. One slow observation cannot suppress exploration. |
+| Lifetime | State survives evidence clearing and reconnects for the same stable identity. Identity migration retains the stricter state, a provider version change resets it, and unused state expires after 6 hours. |
+
+`coordinator/internal/registry/identitygate/` owns the state;
+`coordinator/registry/heartbeat.go` binds newly observed decode measurements,
+and `coordinator/registry/first_content_exploration_outcome.go` binds
+`RecordFirstContentExplorationOutcome` to it. These values are
+bounded routing policy, not measured performance guarantees.
+
+Healthy observations retain a dated clear marker even if the identity has no
+earlier slow samples. Identity migration selects rate history or a clear by
+observation time, independently of outcome/backoff updates. An older delayed
+observation cannot repopulate samples after a newer clear or clear newer slow
+evidence. Tombstone-only identities retain the lock-free routing-read path;
+recording a new healthy observation uses the ordinary identity lock.
+
+The identity also retains up to eight producer watermarks per model for the
+memory lifetime: explicit epoch/sample-count maxima, or distinct legacy EWMA
+values when the producer has no counters. Reconnects and serving-set history
+resets do not turn a replay into corroboration. The bounded store does not evict
+an unexpired watermark to admit another slow sample. A merge that cannot retain
+every watermark fences unknown producers until the omitted marks expire;
+chronologically newer healthy recovery can still clear samples. This favors
+missing corroboration over falsely suppressing a provider when provenance
+storage is saturated.
+
+`ReservationSelection.commit` tags an attempt when it uses the evidence
+exception or actually uses an exploration median. This includes median-priced
+no-deadline and vision requests, but excludes reviewed-profile predictions that
+take precedence over a median. The inference owner feeds delivered results,
+eligible errors and first-content timeouts back through
+`coordinator/internal/inference/providerhealth/` and
+`coordinator/internal/inference/cancellation/`. Each explored attempt contributes
+at most one terminal observation, including when timeout cancellation also
+reports an attributable provider stall. Capacity sheds, client-shaped outcomes
+and neutral terminal causes do not contribute. Existing health-breaker
+classification remains unchanged: exploration eligibility is separate from
+provider health.
 
 ### Automatic MiMo calibration
 
@@ -273,7 +351,12 @@ is currently empty, so that optional timing path remains disabled. The ordinary
 forecast's removal of the fixed rate reduction is active without a catalog
 entry. Enabling reviewed timing profiles requires independently qualified
 evidence with continuous power observations. Concurrency, chunk and memory
-defaults remain unchanged.
+defaults remain unchanged. Review-controlled records are decoded by
+`deadline.DecodeProfiles` and selected by `Catalog.Qualified`
+(`coordinator/internal/registry/deadline/catalog.go`); generated bytes remain in
+`coordinator/internal/registry/deadline/catalog_data.go` (`CompiledProfilesJSON`).
+Record validation is `Profile.Valid`
+(`coordinator/internal/registry/deadline/profile.go`).
 
 A compiled profile must match the qualifier's current scheduler and posture
 domain: one partial prefill at a time, an absent mixed cap or exactly 128, 256
@@ -284,7 +367,11 @@ revision cannot transfer AC measurements to Battery Automatic. The provider adve
 reference only while these prerequisites hold. The coordinator requires
 explicit nominal thermal state and `low_power_mode=false`, and invalidates
 an old idle reference after locally tracked work, load transitions or reported
-GPU activity (`coordinator/registry/deadline_applicability.go`). This does not
+GPU activity (`coordinator/registry/deadline_applicability.go` delegates to
+`deadline.PosturePolicy`, `coordinator/internal/registry/deadline/posture.go`).
+`Posture.Activity`, `InvalidatePosture` and `Allows` run under the provider's
+existing critical section; they do not move live locking into the detached
+forecast calculation. This does not
 delay requests: ineligible work retains conservative admission. Provider
 retirement and the final atomic evidence guard remain authoritative. Phase
 rates from earlier posture epochs are omitted from profiled capacity snapshots,
@@ -372,11 +459,28 @@ clock covers lock waits, cache work, quotes, queues and provider writer handoff.
 Preflight releases its CPU routing-scan permit during prompt-contract planning
 and fallback body preparation, then reacquires it against the remaining clock
 before another fleet walk (`admissionScanPermit`,
-`coordinator/api/inference_admission_scan.go`).
+`coordinator/api/inference/inference_admission_scan.go`).
 Reservation cleanup follows the existing pending-request lifecycle on refusal,
 disconnect, timeout, cancellation and terminal completion.
 
+`recordReservedPrefill` and `fillFirstContentPending`
+(`coordinator/registry/first_content_pending.go`) use `forecast.ReservePrefill`
+and `PrefillQueue.Add`/`Ahead` (`coordinator/internal/registry/forecast/prefill.go`).
+They retain cache-adjusted prompt work at the same reservation boundary and
+reconcile earlier local work with reported work using a maximum; reservations
+at or after the accepted capacity frame are additional unreported work.
+`fillFirstContentSnapshot` (`coordinator/registry/first_content_snapshot.go`)
+uses `forecast.WorkBuilder` (`coordinator/internal/registry/forecast/work.go`)
+for whole-Mac service accounting under the same provider lock. These components
+do not acquire a separate live-state lock or release pending reservations.
+
 ### Retries, quotes and hedges
+
+Alternate creation projects selection evidence once, then reranks after every
+removal through `selection.RetainRanked`. Borrowed forecast/calibration evidence
+lasts only through evaluation; retained quotes remain detached. Pending scalar
+work and service-report validation are shared only within the provider snapshot
+critical section, preserving exact lease overlap and retirement accounting.
 
 Retained plans are reranked from current evidence before reservation; a quote
 does not reserve capacity. Predictive refusals exclude the refusing provider for
@@ -387,6 +491,23 @@ bounded to two providers and spends the original deadline. Existing provider
 quote quantiles lack sample-age and workload provenance. A recent quote therefore
 needs independently fresh, matching local evidence and cannot lower the local
 forecast; busy, cold, vision or stale observations remain Unknown.
+
+The registry's `DispatchPlan` (`coordinator/registry/dispatch_plan.go`) embeds
+`QuotePlan` (`coordinator/registry/quote_plan.go`), sharing its candidate storage
+and leaf mutex. `QuoteCandidate` retains immutable ranking evidence and
+`CandidateBinding` (`coordinator/registry/candidate_binding.go`) retains connection
+identity; neither grants admission. `shortlist.Order`
+(`coordinator/internal/registry/shortlist/order.go`) owns only bounded handles,
+quote ordering and consumption, with `MaxAlternates = 8`. `claimEntry` in
+`coordinator/registry/first_content_plan.go` consumes an identity through
+`Order.Claim` under the plan mutex; inspecting or reranking surviving entries
+does not consume them. Its `applyFirstContentQuote` adapter calls
+`forecast.ApplyQuote`; `QuotePlan.BestConfirmedBackup`
+(`coordinator/registry/quote_plan_evidence.go`) calls
+`forecast.BackupTiming` (`coordinator/internal/registry/forecast/quote.go`). Both
+retain the local freshness requirements rather than treating a quote as a new
+performance measurement. The request-scoped inference `Plan` remains a
+separate owner of dispatch, probe and shared refresh sequencing.
 
 A logical request launches at most one hedge, on a distinct feasible provider
 with spare service allowance, under the existing hedge governor. Exempt requests
@@ -403,7 +524,7 @@ requests and structural-error semantics remain intact.
 ## Invariants
 
 1. Physical admission still reserves prompt plus maximum output and all existing
-   activation/KV allowances (`freeMemoryAdmits`, `coordinator/registry/scheduler.go`).
+   activation/KV allowances (`memorypolicy.Admits`, `coordinator/internal/registry/memorypolicy/admission.go`).
 2. A new attempt cannot reset the first-content deadline (`RefreshFirstContentBudget`,
    `coordinator/registry/pending_request.go`).
 3. Cache hints never replace endpoint identity, proof or current-capacity checks
@@ -422,7 +543,7 @@ predicted refusal would actually miss in execution.
 
 The profiler persists each candidate's `first_content` object with expected and
 conservative times, class/reason, remaining budget, evidence ages, cache work and
-service-work estimate (`decisionJSON`, `coordinator/api/profiler_record.go`). The
+service-work estimate (`DecisionJSON`, `coordinator/internal/observation/profile/profiler_record.go`). The
 winner carries its commit-time evidence. Existing cost and calibrated TTFT
 columns remain separate diagnostics; [profiler sampling](system-profiler.md)
 does not represent a random sample of all outcomes.
@@ -431,18 +552,26 @@ does not represent a random sample of all outcomes.
 
 | Concern | Source |
 |---|---|
-| Forecast types and classification | `coordinator/registry/first_content_forecast.go` — `FirstContentEstimate`, `estimateFirstContent` |
+| Forecast types and classification | `coordinator/internal/registry/forecast/forecast.go` (`Estimate`, `Evaluate`, `UnknownReason`); `coordinator/registry/first_content_forecast.go` (`estimateFirstContent`) binds detached evidence |
+| Forecast inputs and admission | `coordinator/registry/first_content_evidence.go` (`firstContentForecastEvidence`); `coordinator/internal/registry/forecast/admission.go` (`Allows`) |
 | Prompt accounting and bounded planning | `coordinator/api/promptwork/` — `Memo`, `Plan`, `Calibration` |
+| Prompt identity and count qualification | `coordinator/internal/registry/promptidentity/identity.go` (`Resolve`); `coordinator/registry/prompt_work_identity.go` (`providerPromptWorkIdentityLocked`); `coordinator/internal/registry/forecast/prompt.go` (`PromptCounts`) |
 | Qualified prediction arithmetic | `coordinator/registry/firstcontent/` — `Calibration`, `Predict` |
-| Independent deadline profile identity | `coordinator/registry/deadline_profile.go` — `qualifiedDeadlineProfileLocked` |
+| Independent deadline profile identity | `coordinator/internal/registry/deadline/profile.go` (`Profile.Valid`); `coordinator/internal/registry/deadline/catalog.go` (`Catalog.Qualified`); `coordinator/registry/deadline_profile.go` (`qualifiedDeadlineProfileLocked`) retains the provider critical section |
+| Generated deadline catalog and posture | `coordinator/internal/registry/deadline/catalog_data.go` (`CompiledProfilesJSON`); `coordinator/internal/registry/deadline/posture.go` (`PosturePolicy`, `Posture.Allows`) |
 | Existing work ownership | `coordinator/registry/first_content_calibrated_work.go` — `fillCalibratedWorkSnapshot` |
+| Pending prefill and whole-Mac service accounting | `coordinator/internal/registry/forecast/prefill.go` (`ReservePrefill`, `PrefillQueue`); `coordinator/internal/registry/forecast/work.go` (`WorkBuilder`, `PendingServiceMS`); registry adapters in `coordinator/registry/first_content_pending.go` and `coordinator/registry/first_content_snapshot.go` |
+| Idle evidence exploration | `coordinator/internal/registry/forecast/exploration.go` (`EvidenceGapAgeMS`, `EvidenceExplorable`, `IdleEvidenceGap`); `coordinator/registry/first_content_exploration.go` (`firstContentEvidenceExplorable`, `firstContentIdleEvidenceGap`) |
+| Explored provider pricing | `coordinator/internal/registry/forecast/exploration.go` (`ExplorationReplacesRate`); `coordinator/internal/registry/performance/rates.go` (`Rates.ExploredPrefill`, `Rates.ExploredDecode`); `coordinator/registry/first_content_exploration_pricing.go` (`fillExplorationRates`, `firstContentExplorationAdmitted`); `coordinator/registry/tps_prefill.go` (`TPSRegistry.RecordPrefill`, `TPSRegistry.PrefillMedian`) |
 | Candidate selection | `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity` |
 | Physical reservation | `coordinator/registry/scheduler.go` — `commitProviderReservation` |
 | Cache-aware preflight | `coordinator/registry/first_content_preflight.go` — `QuickFirstContentCapacityForRequest` |
-| Retained alternatives | `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan`, `RefreshDispatchPlan` |
-| Quote correlation | `coordinator/registry/capacity_quotes.go` — `ProbePlanCandidates` |
-| Request retry and terminal ownership | `coordinator/api/dispatch.go` — `dispatchState` |
-| Persisted forecast evidence | `coordinator/api/profiler_record.go` — `decisionJSON` |
+| Retained alternatives | `coordinator/registry/dispatch_plan.go` (`DispatchPlan`, `ReserveNextFromPlan`, `RefreshDispatchPlan`); `coordinator/registry/quote_plan.go` (`QuotePlan`, `NewQuotePlan`); `coordinator/registry/quote_plan_evidence.go` (`ConfirmEntry`, `DemoteEntry`, `BestConfirmedBackup`); `coordinator/internal/registry/shortlist/order.go` (`Order.Claim`, `Order.Rank`); `coordinator/registry/selection/retain_ranked.go` (`RetainRanked`); `coordinator/registry/first_content_plan.go` (`reserveFirstContentFromPlan`, `claimEntry`) |
+| Request-scoped plan and probe budget | `coordinator/internal/inference/dispatch/plan.go` (`Plan.Scan`, `Plan.Next`); `plan_probes.go` (`Plan.Probe`, `Plan.RefreshQuotes`) retains the initial chain, shares one refresh across retry and hedge, and waits for the initial quote round before refreshing evidence |
+| Quote correlation | `coordinator/internal/registry/capacityquote/tracker.go` (`Tracker.Add`, `Take`, `Resolve`, `FailProvider`); `coordinator/registry/capacity_quotes.go` (`ProbePlanCandidates`, `HandleCapacityQuote`) |
+| Quote qualification and backup timing | `coordinator/internal/registry/forecast/quote.go` (`ApplyQuote`, `BackupTiming`); adapters in `coordinator/registry/first_content_plan.go` (`applyFirstContentQuote`) and `coordinator/registry/dispatch_plan.go` (`BestConfirmedBackup`) |
+| Request retry and terminal ownership | `coordinator/api/inference/dispatch.go` — `dispatchState` |
+| Persisted forecast evidence | `coordinator/internal/observation/profile/profiler_record.go` — `DecisionJSON` |
 | Native text measurement recovery | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift` — `canRecoverPrefillEvidence`; `provider-swift/Sources/ProviderCore/Inference/Performance/PrefillEvidenceRecovery.swift` — `PrefillEvidenceRecovery` |
 | Automatic MiMo calibration and customer preemption | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MimoCalibration.swift` — `startMimoCalibrationIfNeeded`; `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` — `beginForeground` |
 | Conservative prompt-size evidence | `coordinator/registry/prefill_workload_rates.go` — `capPrefillByWorkload`; `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` — `freshIsolatedPrefillRate` |

@@ -9,7 +9,7 @@ func sameOptionalTime(a, b *time.Time) bool {
 	return a.Equal(*b)
 }
 
-func (p ModelTokenPromotion) claimError(user *User, now time.Time) error {
+func (p ModelTokenPromotion) ClaimError(user *User, now time.Time) error {
 	if user == nil || user.PrivyUserID == "" || user.Role == RoleService || user.CreatedAt.IsZero() || !user.CreatedAt.Before(p.SignupCutoffAt) {
 		return ErrPromotionIneligible
 	}
@@ -37,7 +37,7 @@ func (p ModelTokenPromotion) Offer(user *User, now time.Time, claimed bool) Mode
 	if claimed {
 		status = "claimed"
 	} else {
-		switch p.claimError(user, now) {
+		switch p.ClaimError(user, now) {
 		case ErrPromotionIneligible:
 			status = "ineligible"
 		case ErrPromotionFull:
@@ -49,7 +49,7 @@ func (p ModelTokenPromotion) Offer(user *User, now time.Time, claimed bool) Mode
 	return ModelTokenOffer{ClaimEndsAt: p.ClaimEndsAt, ModelID: p.ModelID, Tokens: p.Tokens, RemainingClaims: max(p.MaxClaims-p.ClaimedCount, 0), MaxClaims: p.MaxClaims, SignupCutoffAt: p.SignupCutoffAt, Status: status}
 }
 
-func (p ModelTokenPromotion) clone() ModelTokenPromotion {
+func (p ModelTokenPromotion) Clone() ModelTokenPromotion {
 	if p.ClaimEndsAt != nil {
 		end := *p.ClaimEndsAt
 		p.ClaimEndsAt = &end

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"iter"
 	"sync"
 )
 
@@ -19,6 +20,10 @@ import (
 //     which needs a static solo rate that cannot collapse under the very
 //     overload the cap exists to prevent.
 //
+// A third store, prefillSamples (RecordPrefill/PrefillMedian, tps_prefill.go),
+// holds isolated prefill rates. It uses the same ingest rule as samples and
+// prices explored providers (fillExplorationRates).
+//
 // Every read-side aggregate (medians, the cross-class solo aggregate) is
 // maintained on write and served as an O(1), allocation-free lookup — see
 // tps_median_cache.go. The routing scan reads them once per provider.
@@ -27,6 +32,12 @@ type TPSRegistry struct {
 	samples     map[tpsKey][]float64
 	soloSamples map[tpsKey][]float64
 	maxSamples  int
+
+	// prefillSamples and prefillMedians hold isolated prefill rates with the
+	// same ring and median as samples. RecordPrefill creates them on first
+	// use (tps_prefill.go).
+	prefillSamples map[tpsKey][]float64
+	prefillMedians map[tpsKey]float64
 
 	// medians caches the median of samples[key]; refreshed by Record.
 	medians map[tpsKey]float64
@@ -87,4 +98,27 @@ func (r *TPSRegistry) Median(model, chipFamily string) float64 {
 	median := r.medians[key]
 	r.mu.RUnlock()
 	return median
+}
+
+// SampleCount reports the retained observations for a model and chip family.
+// Like Median, it is a constant-time read and never exposes sample storage.
+func (r *TPSRegistry) SampleCount(model, chipFamily string) int {
+	r.mu.RLock()
+	count := len(r.samples[tpsKey{Model: model, ChipFamily: chipFamily}])
+	r.mu.RUnlock()
+	return count
+}
+
+// SampleCounts iterates retained observation counts without exposing storage.
+// Callbacks run under the read lock and must not mutate the registry.
+func (r *TPSRegistry) SampleCounts() iter.Seq2[tpsKey, int] {
+	return func(yield func(tpsKey, int) bool) {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		for key, samples := range r.samples {
+			if !yield(key, len(samples)) {
+				return
+			}
+		}
+	}
 }

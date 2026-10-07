@@ -2,9 +2,10 @@ package service
 
 import (
 	"context"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"time"
 )
 
 func (s *Service) startMachineInventoryBackfill(ctx context.Context) {

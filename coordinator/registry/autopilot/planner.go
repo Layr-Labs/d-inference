@@ -3,63 +3,10 @@ package autopilot
 import (
 	"math"
 	"slices"
-	"sort"
 	"time"
-)
 
-func autopilotVictims(n Node, model string, cfg Config) ([]string, bool) {
-	state := n.State
-	if state == nil || state.FreeForLoadNoEvictGB == nil || state.MaxModelSlots < 1 {
-		return nil, false
-	}
-	free := *state.FreeForLoadNoEvictGB
-	slots := state.MaxModelSlots - len(state.ResidentModels)
-	need := n.Fits[model].WeightsGiB
-	if !finiteNonnegative(free) || !finiteNonnegative(need) || need <= 0 {
-		return nil, false
-	}
-	if free >= need && slots > 0 {
-		return []string{}, true
-	}
-	ordered := append([]string(nil), n.Residents...)
-	byID := make(map[string]int)
-	for i, m := range state.ResidentModels {
-		if _, exists := byID[m.ModelID]; exists {
-			return nil, false
-		}
-		byID[m.ModelID] = i
-	}
-	for _, id := range ordered {
-		if _, exists := byID[id]; !exists {
-			return nil, false
-		}
-	}
-	sort.Slice(ordered, func(i, j int) bool {
-		a, b := state.ResidentModels[byID[ordered[i]]].IdleSeconds, state.ResidentModels[byID[ordered[j]]].IdleSeconds
-		if a == b {
-			return ordered[i] < ordered[j]
-		}
-		return a > b
-	})
-	dwell := math.Max(cfg.MinDwell.Seconds(), float64(state.MinDwellSeconds))
-	var victims []string
-	for _, id := range ordered {
-		m := state.ResidentModels[byID[id]]
-		if slices.Contains(state.PinnedModels, id) || m.ResidentSeconds < dwell || m.IdleSeconds < math.Max(1, float64(state.MinIdleSeconds)) {
-			continue
-		}
-		victims = append(victims, id)
-		slots++
-		// Only actual provider-authoritative reclaim credit, NEVER scanner padding.
-		if m.ResidentGB != nil && finiteNonnegative(*m.ResidentGB) {
-			free += *m.ResidentGB
-		}
-		if free >= need && slots > 0 {
-			return victims, true
-		}
-	}
-	return nil, false
-}
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/residency"
+)
 
 func Plan(f Fleet, cfg Config, now time.Time) *Action {
 	c := Coverage(f)
@@ -192,4 +139,8 @@ func autopilotReferenceService(f Fleet, model string) float64 {
 	}
 	slices.Sort(values)
 	return values[len(values)/2]
+}
+
+func autopilotVictims(n Node, model string, cfg Config) ([]string, bool) {
+	return residency.SelectVictims(n.State, n.Residents, n.Fits[model].WeightsGiB, cfg.MinDwell)
 }

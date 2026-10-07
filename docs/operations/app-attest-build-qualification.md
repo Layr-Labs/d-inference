@@ -1,6 +1,6 @@
 # Qualify and publish a signed App Attest build
 
-> Last updated: 2026-09-20
+> Last updated: 2026-10-02
 
 Use this runbook to approve an exact signed provider artifact before users can update to it. Approval persists across coordinator restarts and refreshes without a hotswap. The [authorization reference](../reference/provider-authorization.md) owns serving controls and freshness deadlines.
 
@@ -11,7 +11,7 @@ Every production provider publication, including a retry after missing qualifica
 ## Prerequisites
 
 - Human authorization for the release and build qualification; administrator access to the coordinator through a verified Privy session (including `scripts/admin.sh login`) or admin key. The CI release key and admin-owned inference/provider credentials cannot approve builds.
-- Deploy the coordinator implementing `coordinator/api/app_attest_publication.go` and the additive `app_attest_build_qualifications` table before using the updated publication workflow. All serving coordinators and rollback images must understand durable qualification and revocation.
+- Deploy the coordinator implementing `coordinator/api/releases/app_attest_publication.go` and the additive `app_attest_build_qualifications` table before using the updated publication workflow. All serving coordinators and rollback images must understand durable qualification and revocation.
 - Complete the signed-artifact, actual Apple proof, hardware-security transition, supported older-macOS, and inference checks in [MDM-optional rollout](mdm-optional-rollout.md#prerequisites). Record actual test evidence; a hash mapping is not evidence that those tests ran.
 - Preserve existing qualified env pairs during the initial transition. They remain a compatibility fallback for existing builds without a durable row, only while the qualification store is readable and fresh. They cannot approve a new gated publication and never override a durable revocation.
 

@@ -1,0 +1,26 @@
+name: Nightly Linear Package
+
+on:
+  pull_request:
+    paths:
+      - 'automations/nightly-linear/**'
+      - '.github/workflows/nightly-linear-package.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'automations/nightly-linear/**'
+      - '.github/workflows/nightly-linear-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Test package refresh and layout
+        run: python3 -B -m unittest discover -s automations/nightly-linear/tests -p 'test_*.py'

@@ -19,11 +19,8 @@ func (r *Registry) retryAutopilotCommands(now time.Time) {
 	r.mu.RLock()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		pending := p.autopilotPending
-		if pending != nil && pending.Attempts < 3 && now.Sub(pending.LastSentAt) >= 30*time.Second {
-			pending.Attempts++
-			pending.LastSentAt = now
-			retries = append(retries, retry{p, pending.Command})
+		if delivery, ok := p.autopilotState.Retry(now); ok {
+			retries = append(retries, retry{p, delivery.Command})
 		}
 		p.mu.Unlock()
 	}

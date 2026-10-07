@@ -3,6 +3,8 @@ package mediawork
 import (
 	"context"
 	"encoding/base64"
+
+	encodedreader "github.com/eigeninference/d-inference/coordinator/internal/mediawork/encodedreader"
 )
 
 // Walk reports improved counts only for recognized inline media. Unknown
@@ -77,7 +79,7 @@ func reference(part map[string]any, field string) string {
 	if source, ok := part["source"].(map[string]any); ok && source["type"] == "base64" {
 		mime, _ := source["media_type"].(string)
 		data, _ := source["data"].(string)
-		if len(mime) > 128 || len(data) > base64.StdEncoding.EncodedLen(maxEncodedBytes) {
+		if len(mime) > 128 || len(data) > base64.StdEncoding.EncodedLen(encodedreader.MaxEncodedBytes) {
 			return ""
 		}
 		return "data:" + mime + ";base64," + data

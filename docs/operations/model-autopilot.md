@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-04
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved live rollout. Startup opt-in records interest/consent, not
@@ -53,6 +53,14 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    can age out of the recent events list ([ledger semantics](../architecture/storage.md#autopilot-operation-ledger)).
    Compare qualified demand and donor coverage with the holdout before requesting
    approval to promote. This does not establish causal production improvement.
+   Separately inspect admin-authenticated `GET /v1/admin/autopilot/inventory`
+   for exact per-model saved approval counts and the models-per-provider
+   distribution. Check `enrolled_providers`, `participating_providers`,
+   `paused_providers` and the overlapping `stale_providers` before interpreting
+   coverage; all count connected sessions, not unique machines. Stale and paused
+   approvals remain in totals. This read works without the ledger and does not
+   refresh providers, verify files or establish ready capacity. Offline inventory
+   is unavailable. See the [field definitions](../reference/api-contracts.md#autopilot-inventory-report).
 4. After validation and explicit approval for the production configuration change
    and restart, set `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false` using the
    [coordinator deployment procedure](coordinator-deploy.md). Verify
@@ -96,6 +104,9 @@ liveness, loaded models, authorization and shadow/live mode.
 ## Verification
 
 - Run `go test ./coordinator/...` and focused race tests for Autopilot and routing.
+- Select mirrored policy and operational-owner suites with
+  `go test -race ./coordinator/tests/registry/... -run 'Test(Autopilot|ModelAutopilot)' -count=1`.
+  Production package selectors alone do not select the separate test tree.
 - Run `make provider-test` with the source-matched Metal library.
 - Exercise expired/old-session commands, selection changes, opt-out during a
   transition, local/network work, protected donor floors, mixed shapes,
@@ -121,7 +132,18 @@ liveness, loaded models, authorization and shadow/live mode.
    restores its saved idle policy. Selected files remain downloaded.
 4. Inspect actual resident sets and uncertain records. A failed operation may
    have released a model before failing to load another. Do not report rollback
-   success until the resulting capacity is confirmed.
+    success until the resulting capacity is confirmed.
+
+When ledger writes fail, inspect the existing pending phases and retry the
+durable path rather than clearing command ownership. `autopilotledger.Events.Flush`
+(`coordinator/internal/registry/autopilotledger/events.go`) leaves failed writes
+pending; `autopilotcontrol.Controller.Tick`
+(`coordinator/internal/registry/autopilotcontrol/controller.go`) suppresses new
+mutations while that flush is unavailable. Pending commands and control leases
+remain owned by `autopilotstate.State`
+(`coordinator/internal/registry/autopilotstate/state.go`, `commands.go` in the same
+directory). This is an ownership map for existing recovery behavior, not a new
+rollback action or proof that an uncertain provider command was unsent.
 
 ## Related
 

@@ -1,6 +1,6 @@
 # Privacy expectations
 
-> Last updated: 2026-09-03
+> Last updated: 2026-10-06
 
 What you can and cannot rely on when you send an inference request through Darkbloom. For consumers deciding what to send; the mechanism — which key opens which hop, wire formats, error codes, and the code that enforces each guarantee — is stated once in [`../architecture/security/encryption.md`](../architecture/security/encryption.md) and is not restated here.
 
@@ -13,7 +13,7 @@ In one sentence: your request is encrypted between the coordinator and the provi
 3. The coordinator holds your prompt, attached media and the completion in memory only for the life of the request and writes none of it to logs or the store; the only content-derived artifacts are keyed digests used for cache routing — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
 4. Your request is dispatched only to a provider that passes every privacy gate: an X25519 key bound to an attested Secure Enclave identity, in-process inference, coordinator-verified SIP, and code identity once it is enforced — [invariants](../architecture/security/encryption.md#invariants), [routing gate](../architecture/security/attestation.md#routing-gate).
 5. A provider that returns a plaintext or wrong-key response chunk is marked `untrusted` and your request fails rather than being served insecurely — [hop 3](../architecture/security/encryption.md#hop-3--provider--coordinator-mandatory).
-6. The provider never sees your API key, Privy identity or balance, and never sees another consumer's prompts — [what each party can observe](../architecture/security/encryption.md#what-each-party-can-observe).
+6. Trusted coordinator authentication credentials and billing identity are not copied into provider request bodies. Caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and caller `prompt_cache_key` are removed; other caller fields, prompts and nested content can still reveal identity or credentials — [field minimization](../architecture/security/encryption.md#provider-bound-field-minimization), [what each party can observe](../architecture/security/encryption.md#what-each-party-can-observe).
 7. Provider error text is reduced to a closed vocabulary before it is logged or returned to you, and client telemetry ingest is disabled so no free-form fields reach the coordinator — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
 
 ## What you cannot rely on
@@ -22,7 +22,7 @@ In one sentence: your request is encrypted between the coordinator and the provi
 2. The provider sees your prompt and the completion in plaintext: it is the decryption endpoint, because in-process inference at native speed requires it. The guarantee is about *which* process holds the key — [`../architecture/security/attestation.md`](../architecture/security/attestation.md), [`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md).
 3. Sealing is optional and deployment-dependent: plaintext JSON is accepted on the same routes, and `GET /v1/encryption-key` returns `503 encryption_unavailable` when the coordinator has no sealing key, leaving the consumer → coordinator hop TLS-only — [failure modes](../architecture/security/encryption.md#failure-modes).
 4. A sealed request cannot use remote `image_url` media: the coordinator refuses to fetch on behalf of a sealed body — [hop 1](../architecture/security/encryption.md#hop-1--consumer--coordinator-optional).
-5. Metadata is retained: model, sampling parameters, token counts, latency, request and trace IDs, the selected provider, the remote address of your connection (access log), and your account identity (API key hash, Privy DID, balance) — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
+5. Metadata is retained: model, sampling parameters, token counts, latency, request and trace IDs, the selected provider, and your account identity (API key hash, Privy DID, balance) — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
 6. There is no per-response signature or receipt: the `X-Provider-*` headers are the coordinator's assertion over TLS, not a provider-signed proof — [`verification.md`](./verification.md).
 
 ## Related

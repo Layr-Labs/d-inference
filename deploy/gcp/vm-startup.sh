@@ -103,6 +103,7 @@ fetch() {
 
 cat > "$ENV_FILE" <<EOF
 EIGENINFERENCE_PORT=8080
+EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT=development
 EIGENINFERENCE_MIN_TRUST=hardware
 EIGENINFERENCE_BILLING_MOCK=false
 EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
@@ -110,7 +111,6 @@ EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
 CORS_ORIGIN=https://console.dev.darkbloom.xyz
 EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
 EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
-EIGENINFERENCE_REFERRAL_SHARE_PCT=15
 DOMAIN=api.dev.darkbloom.xyz
 APP_PORT=8080
 EIGENINFERENCE_MDM_URL=https://localhost:9002
@@ -133,6 +133,7 @@ EIGENINFERENCE_STRIPE_CANCEL_URL=$(fetch eigeninference-stripe-cancel-url)
 EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET=$(fetch eigeninference-stripe-connect-webhook-secret)
 EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL=$(fetch eigeninference-stripe-connect-return-url)
 EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL=$(fetch eigeninference-stripe-connect-refresh-url)
+EIGENINFERENCE_IPAPI_KEY=$(fetch eigeninference-ipapi-key)
 DD_API_KEY=$(fetch eigeninference-dd-api-key)
 DD_SITE=$(fetch eigeninference-dd-site)
 DD_ENV=development

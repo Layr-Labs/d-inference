@@ -1,6 +1,135 @@
 # Test
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-07
+
+## Pull-request restacking
+
+Run `python3 scripts/test-restack-after-squash.py` for the regression suite of
+`scripts/restack-after-squash.py`. Follow the [stacking guide](pull-requests.md)
+for the live `--check` before an authorized `--push`; local tests do not replace
+checking the actual squash, current remote refs, Verified signatures, CI,
+mergeability, and approvals after an update.
+
+## Nightly Linear package
+
+Run from the repository root:
+
+```bash
+python3 -B -m unittest discover -s automations/nightly-linear/tests -p 'test_*.py'
+```
+
+`automations/nightly-linear/tests/test_refresh.py` (`RefreshTests`) exercises the
+same updater command used by the launcher against temporary local Git repos.
+It checks fetching one consistent revision, repeat runs, real package loading,
+document links, and preservation after dirty or divergent checkouts, wrong
+origins, unmanaged clones, failed fetches, or missing required skills.
+The tests make no GitHub or Linear requests. The scoped
+`.github/workflows/nightly-linear-package.yml` runs the same command.
+
+Live onboarding, connector permissions, unattended execution, and duplicate-free
+Linear updates require the teammate pilot described in the
+[package rollout procedure](../../automations/nightly-linear/README.md#verification-and-rollout).
+Offline updater tests do not verify those outcomes.
+
+## Reservation storage and scan benchmarks
+
+Registry regression tests in `coordinator/tests/registry/candidate_storage_test.go`
+and `reservation_storage_test.go` cover high-water reference clearing, separate
+scan passes, retained public/decorated candidates and plans, and scans at and
+above the bounded private storage cutoff. `pending_snapshot_test.go` checks
+report ownership/validation boundaries and pending work beyond the inline
+buffer, including content commitment and exact memory retirement. Selection
+regressions in `coordinator/tests/registry/selection/` compare alternate order
+and random draw traces against successive calls to the production selector.
+
+Run `go test -race ./coordinator/tests/registry/...` with the repository's pinned
+Go version. Freeze time through `testing/synctest` for retained-quote comparisons;
+wall-clock forecast ages are part of the quote contract. Fixtures bind only
+isolated localhost endpoints and need no production credentials.
+
+For timing, build identical benchmark harnesses on both revisions first, then
+run their prebuilt test binaries sequentially in fresh processes. Interleave
+revision order across at least six rounds, fix `GOMAXPROCS`, and keep other builds
+and tests idle. `BenchmarkReservationScale` covers 32–6,000 providers and two or
+fifteen models; the 3,000/two-model and larger cutoff cases guard pool economics.
+`BenchmarkReserveProviderExPendingService_350x2` adds exact reported/local lease
+overlap and zero, four or sixteen pending owners. Atomic request IDs in the
+parallel reservation benchmarks prevent worker debits from colliding. Parallel
+ns/op measures aggregate throughput, while writer wait maxima are noisy local
+observations; neither is production inference latency. See
+[the October 4 measurement record](../reports/2026-10-04-registry-scan-optimization.md).
+
+## Component CI routing
+
+CI and Integration Tests stop superseded PR runs without cancelling independent
+default-branch pushes. Routing regressions pin both concurrency policies.
+Cancellation is not a passing test result or an intentional component skip.
+
+The ordinary provider `Run Swift tests` step invokes the unchanged
+`scripts/run-provider-tests.sh` through `scripts/run-provider-test-watchdog.py`.
+After 480 seconds it captures process diagnostics; at 900 seconds it terminates
+owned test processes and exits 124. A 20-minute outer step timeout allows time
+for diagnostics and cleanup. Failure does not suppress later isolated native
+gates; cancellation does. Non-cancelled attempts upload the transcript, result
+and available stack samples as `provider-test-diagnostics` for seven days.
+Run `python3 scripts/test-provider-test-watchdog.py` for real subprocess exit,
+deadline and cancellation regressions. `scripts/test-provider-ci-workflow.py`
+pins the watchdog wiring; `scripts/test-integration-ci-workflow.py` checks cache
+wiring while retaining all E2E gates, and `scripts/test-provider-ci-cache.py`
+checks integration/provider/release cache isolation and compatibility boundaries.
+
+Run `python3 scripts/test-integration-ci-workflow.py` to check those integration
+invariants offline. The command assertion accepts the original E2E commands or
+the exact additive `-cover -covermode=set -coverpkg="$E2E_COVER_PKG"` bundle with
+`-args -test.gocoverdir="$covdir"`. Negative cases reject missing or changed test
+selectors, skip patterns, counts, timeouts and parallelism; the workflow checks
+still require all three unconditional gates and their backend environment values.
+
+Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
+regressions. It creates real temporary Git repositories to check PR merge-base
+comparison, multiple commits, more than 300 changed files, additions, deletions,
+both rename paths, newline-bearing filenames, SDK gitlink updates, push SHAs,
+zero-before fallback and manual runs. Invalid or unavailable revisions must fail
+without emitting skip outputs. No production credentials or model weights are used.
+
+The same suite pins workflow dependency/condition wiring and exhaustively executes
+the `Provider Tests` aggregate shell against detector and lane results. Only a
+successful detector plus three successful selected lanes, or three intentionally
+skipped irrelevant lanes, passes. Failure, cancellation, unexpected skips and
+missing detector outputs fail. `scripts/test-provider-ci-workflow.py` retains its
+independent suite/build prerequisite checks. Release Integrity runs both offline
+suites even for docs-only PRs. See [build routing](build.md) for dependencies and
+default-branch behavior. Relevant E2E benchmarks still require the existing
+`benchmarks` environment approval; irrelevant PRs do not request that approval.
+
+Docs Impact checks out the PR head and compares it with the merge base of the
+event's base SHA, not GitHub's synthetic merge commit. Upstream changes present
+only in that merge therefore do not create documentation requirements for the PR;
+the canonical source-to-document rules still apply to every changed PR path.
+
+The documentation-impact guards (`scripts/test-docs-impact-check.py`) exercise
+both production components and their adapters after package moves. Billing API
+and inference settlement owners require billing documentation; inference demand
+capture requires Autopilot documentation; inference and provider verification
+metric emitters require telemetry documentation; registry eligibility, gates,
+queue assignments, queue-drain admission and candidate/quote plans require
+routing or scheduling documentation. Release artifact metadata validation
+requires API-contract documentation as well as the release runbook. The guards
+supply every unrelated canonical document to ensure ownership or API-contract
+updates cannot satisfy another domain's requirement, then verify each permitted
+domain document satisfies it. Go test files remain excluded from these rules.
+The soft-delete rule separately requires `docs/reference/soft-delete.md` for
+the current live-row readers and writers, including small-model contact exports
+and initial legacy MDM cohort qualification; the cohort owners also retain their
+trust-documentation requirement. sqlc sources still require their
+canonical generation/type docs too. New reader/writer paths must extend the
+rule. The tests cover both backends, generated queries, unrelated history
+files, test exclusions and the maintainer override.
+`coordinator/tests/store/contracts/soft_delete_domain_reads_test.go` exercises
+contact filtering before pagination and cohort evidence filtering in memory and
+isolated PostgreSQL, including repeated reads of a frozen cohort.
+Shared fixtures in `coordinator/tests/protocol/testdata/` retain the protocol
+documentation requirement because they define cross-language wire examples.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -166,7 +295,7 @@ and teardown; `CBv2QwenMTPIntegrationTests` independently covers allocation-refu
 ownership in the shared engine. Loaded-artifact tests remain an additional gate,
 not evidence supplied by tiny fixtures. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
-in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
+in `coordinator/tests/store/contracts/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
 
 `ProductionPromptParityTests` drives the real model-free `MLXOpenAIService`
@@ -202,6 +331,11 @@ used for cache identity. Use it after rebuilding either Swift package's tests.
 The Make target and CI use this shared setup. The native cancellation fixture
 resolves `localhost` and tries its address families; its hermetic socket test
 covers separate IPv4 and IPv6 listeners.
+
+`python3 scripts/test-stage-test-metallib.py` runs the real staging script with
+isolated fetch/copy fixtures. It checks Darwin and non-Darwin copy flags, all
+test-bundle layouts, destination preservation, and staging cleanup on copy or
+comparison failure. No Metal compiler or model is needed.
 
 For a new native family, run the same production corpus against its exact
 config/tokenizer/template artifacts before accepting cache routing. Diffusion
@@ -387,8 +521,27 @@ It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
+It also invokes `scripts/test-install-coordinator-binding.py`, which runs the
+installer's `--bind-coordinator-test` hook (with `COORD_URL` set) against
+temporary `provider.toml` files: production removes only the
+`[coordinator] url` line and creates no file, and other coordinators replace or
+add only that line. `InstallerCoordinatorBindingTests`
+(`provider-swift/Tests/DarkbloomCLITests/`) loads the result through the CLI
+config loaders, and `TestServedInstallerBindsProviderToServingCoordinator`
+(`coordinator/tests/api/releases/contracts/install_test.go`) runs the installer
+as the coordinator serves it.
 
-Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+`go test ./coordinator/tests/cmd/devnet-seed` seeds a throwaway database on a
+**disposable** `DATABASE_URL` through `devnetseed.Run`
+(`coordinator/internal/command/devnetseed`), checks row counts and balances,
+and checks that a database with users is refused before migrations run.
+
+`provider-swift/Tests/ProviderCoreTests/Coordinator/CoordinatorIntegrationTests.swift`
+exercises enrollment over real local HTTP with a linked test token and P-256
+signer. The fixture verifies the canonical token-bound signature rather than
+accepting anonymous profile downloads; no production credentials are used.
+
+Build qualification regressions run in `coordinator/tests/store/postgres/app_attest_builds_test.go`, `coordinator/tests/appattest/service/authorization/build_qualifications_test.go`, `coordinator/tests/api/releases/contracts/app_attest_builds_test.go`, and `coordinator/tests/api/releases/contracts/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 
 ### MiMo encoded audio release regression
 
@@ -475,7 +628,7 @@ DARKBLOOM_LAUNCHD_TESTS=1 swift test --skip-build --filter LaunchAgentDrainInteg
 
 It uses a unique temporary GUI-domain label and plist, never the installed
 provider/watchdog. `TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive`
-in `coordinator/api/provider_drain_barrier_test.go` runs both streaming and
+in `coordinator/tests/api/provider/contracts/provider_drain_barrier_test.go` runs both streaming and
 non-streaming traffic against the actual coordinator, delays asynchronous
 settlement, sends duplicate terminals, and verifies one usage record before
 acknowledgement. Run it and the dispatch/drain tests with Go's race detector.
@@ -746,13 +899,13 @@ multi-host routing, signed key durability, raw logits or hosted account trust.
 The cache fixture also compares consumer-visible cached/reasoning counts with
 the native terminal (`e2e/flash_next_cache_usage_test.go`); observed SSD activity
 alone cannot pass this check. `TestStreamingCombinedFinishUsage` in
-`coordinator/api/chat_combined_terminal_usage_test.go` covers combined and
+`coordinator/tests/api/inference/chat_combined_terminal_usage_test.go` covers combined and
 separate terminal shapes, absent usage, untrusted cache details, unchanged
 totals/content, public identity, signature pairing and a single `[DONE]`.
 
 ```bash
 python3 -B -m unittest discover -s scripts/qwen38_conversion -p 'test_qwen38_provenance.py' -v
-go test ./coordinator/protocol ./coordinator/registry
+go test ./coordinator/tests/protocol ./coordinator/tests/registry/...
 swift test --package-path provider-swift --filter Qwen4SupportPolicyTests
 ```
 
@@ -786,6 +939,17 @@ source/dependency/binary/metallib/artifact tuple:
 ## App Attest validation
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
+
+The provider email command and Resend adapter tests run with
+`go test -race ./coordinator/tests/provideremail/... ./coordinator/tests/cmd/provider-emails/...`.
+With a disposable `DATABASE_URL`, `TestReadSnapshotPostgres` uses an isolated
+schema to verify owner changes, merged identities, delayed first captures and
+unknown-registration exclusions. Registration capture and immutable-origin tests
+run with `go test -race ./coordinator/tests/appattest/service ./coordinator/tests/registry -run 'TestInventoryCapture|TestConnectionOriginTime|TestProviderRegisteredAt'`.
+API contract tests use a local HTTP server; they pin broadcast `reply_to` arrays
+and pagination through `GET /segments/{id}/contacts`. No tests send live email. The
+[provider email runbook](../operations/provider-emails.md) separates live
+self-addressed delivery verification from these checks.
 
 ## Prerequisites
 
@@ -821,6 +985,21 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 
 ### 2. Coordinator (Go)
 
+For Open Sales Program changes, run the referral HTTP/service, consumer settlement,
+and cross-backend contracts from the repository root:
+
+```bash
+go test ./coordinator/tests/api/billing/... ./coordinator/tests/billing/... ./coordinator/tests/api/inference/... ./coordinator/tests/store/... -run 'Referral|ConsumerCharge|ConsumerSettlement'
+```
+
+`coordinator/tests/internal/testkit/billing.go` (`NewBilling`) supplies isolated
+mock billing and a funded consumer; it does not set a configurable referral rate.
+Use the real composed router with locally signed Privy sessions for referral
+mutations, and verify that API keys cannot register or apply a code. Store
+contracts exercise atomic collected-spend rewards and paid-only promotion rewards
+on memory and disposable PostgreSQL backends. Follow the database isolation
+requirements below; no production credentials or databases are permitted.
+
 The Go module lives at the repository root. Run `go test ./coordinator/...`
 there to select coordinator packages; keep component `cd` commands in separate
 shells when following the repository README examples.
@@ -828,22 +1007,25 @@ shells when following the repository README examples.
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store
+go test -race ./coordinator/tests/api/... ./coordinator/tests/registry/... ./coordinator/tests/protocol ./coordinator/tests/store/...
 ```
 
 API fixtures use isolated encrypted WebSocket providers;
-Postgres tests require an explicitly disposable `DATABASE_URL` and include an
+Postgres tests require an explicitly disposable `DATABASE_URL`, a local role
+with `CREATEDB`, and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
-`first_byte_attribution_test.go` holds the registry write lock while primary
+`coordinator/tests/api/inference/first_byte_attribution_test.go` holds the registry write lock while primary
 and backup dispatches capture their serving-slot metrics. The encrypted
-WebSocket test in `first_byte_lock_test.go` separately requires the first
+WebSocket test in `coordinator/tests/api/inference/contracts/first_byte_lock_test.go` separately requires the first
 content to reach the HTTP client while that lock stays held. Run both with
-`go test -race ./coordinator/api -run 'TestServingSlotAttribution|TestFirstByteReachesClient' -count=25`.
+`go test -race ./coordinator/tests/api/... -run 'TestServingSlotAttribution|TestFirstByteReachesClient' -count=25`.
 
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
-gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
+records the original `TestTTFTPendingPrompt` comparison. On the current layout,
+run `go test ./coordinator/tests/registry/... ./coordinator/tests/api/... -run TestTTFTPendingPrompt -count=1 -v`.
+Its registry
 cases exercise preflight, reservation, retained-plan revalidation and retained
 output capacity. The HTTP cases cover both a feasible alternative behind a
 long pending prompt and a long arrival completing behind a short pending prompt.
@@ -855,7 +1037,7 @@ The CI formatting step checks tracked Go files with `gofmt`. It excludes
 by evidence manifests. Live Go source remains subject to the formatting gate.
 
 `TestCacheIndexConcurrentTrackerOperations` in
-`coordinator/registry/cache_index_invariant_test.go` races tracker operations
+`coordinator/tests/registry/cache_index_invariant_test.go` races tracker operations
 with a bounded fake-clock advance while new lookup/ready transactions finish,
 then expires the late holders while the workers remain active. The initial
 advance already expires the old holders. Deferred worker shutdown also runs on
@@ -869,18 +1051,45 @@ make coordinator-test                      # runner guards + complete coordinato
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
   python3 scripts/run-coordinator-tests.py --race --coverprofile coverage.out \
     $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
-go tool cover -func=coverage.out | tail -n 1   # total statement coverage
+# coordinator packages only, as CI reports it:
+scripts/coordinator-statement-coverage.sh coverage.out coverage-coordinator.out   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
 ```
 
-CI writes the total statement coverage to the job summary and keeps
-`coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
-is for information only. A low number does not fail the job.
+`TestReserveProviderExSnapshotAgeAndPending` in
+`coordinator/tests/registry/routing_context_test.go` bounds each heartbeat age
+by the scan or commit interval that produced it. Its preparation fixture also
+refreshes the heartbeat between those phases, checking that candidate summaries
+retain the scan evidence while the winner uses fresh commit evidence. The test
+preserves the pre-debit pending-count assertions and uses no sleeps or fixed
+elapsed-time tolerance. Repeat it with:
 
-The runner compiles `coordinator/api` once and discovers its tests, examples,
-and fuzz seed tests from that binary. Race-enabled runs also compile and shard
-`coordinator/registry`; ordinary runs leave registry in one package process to
+```bash
+go test -race ./coordinator/tests/registry -run '^TestReserveProviderExSnapshotAgeAndPending$' -count=1000
+```
+
+CI writes a coverage table to the job summary and keeps the full
+`coverage.out` for 14 days as the `coordinator-coverage` artifact. The table
+has the columns Component, Statements or Lines, Regions or Branches, Functions
+and Target. The target is 80% and is for information only: a low number does
+not fail the job. The step fails only when the profile has no coordinator data
+or no total. The denominator is the statements in the `coordinator/...`
+production packages. The runner instruments them in every test binary with
+`-coverpkg`, so the tests in `coordinator/tests/` credit the production code
+they run. A production package that no test imports still counts, at 0%. The
+`coordinator/tests/...` packages and their helpers are not instrumented, and
+`_test.go` files never count. The profile also holds `e2e/testbed/...` and a
+frozen docs evidence package; the step leaves them out. `go test` has no
+branch counters, so the table reports statements only. The table appears only
+when the [component router](#component-ci-routing) runs the job; pushes to the
+default branch always run it.
+
+The runner compiles each selected large API test package once and discovers its
+tests, examples, and fuzz seeds from that binary: `coordinator/tests/api`, its
+`inference` and `inference/contracts` packages, and `provider/trust` and
+`provider/contracts`. Race-enabled runs also compile and shard
+`coordinator/tests/registry`; ordinary runs leave registry in one package process to
 preserve its host-throughput guards. Each sharded package's complete list runs
 in eight process-isolated shards with four workers by default. Other selected
 packages run through ordinary `go test` while shard binaries compile, and
@@ -889,8 +1098,57 @@ allowlist, test-result cache, shortened production timeout, or disabled race
 detector is used. Shared environment and package-global fixtures remain isolated
 between shards; tests within each shard keep Go's normal parallelism.
 
+All coordinator Go tests belong in the mirrored `coordinator/tests/` tree.
+Production packages must contain no `_test.go` files or imports of test infrastructure.
+Tests import ordinary production packages; no overlay or copied implementation
+is used. Place tests by the behavior they exercise:
+
+| Test boundary | Location and fixture |
+|---|---|
+| Public HTTP/WebSocket contracts | `coordinator/tests/api/<domain>/contracts/`; use the real composed `api.Server.Handler()` router, in-memory store and scripted local providers through `coordinator/tests/internal/testkit/server.go` (`New`, `NewServer`). Domains include access, accounts, billing, catalog, inference, operations, provider, releases and reporting. |
+| Domain invariants | `coordinator/tests/<owner>/`; retain constructor dependencies in fixtures or test a cohesive production component under `coordinator/internal/`. Do not add raw-state getters, test hooks or arbitrary exports solely to relocate assertions. |
+| Pure request/response behavior | `coordinator/tests/api/inference/request/` and `coordinator/tests/api/inference/response/`; preserve parser, normalization, metadata, emitter and benchmark coverage independently of the router. |
+| Composition and global middleware | `coordinator/tests/api/`: configuration/owner wiring, release-policy propagation, request identity and recovery middleware. |
+| Backend conformance | `coordinator/tests/store/contracts/`; backend-specific invariants in `coordinator/tests/store/memory/` and `coordinator/tests/store/postgres/`. |
+
+Provider heartbeat telemetry and inventory write-failure tests construct the
+production components directly in explicit component fixtures. They do not
+embed a provider owner with separately constructed heartbeat or inventory fields.
+Owner/session wiring is tested through the real `/ws/provider` transport:
+`coordinator/tests/api/provider/contracts/heartbeat_wiring_test.go`
+(`TestProviderHeartbeatSessionUsesLiveRegistryAndObservation`) requires the live
+registry update and emitted telemetry after an ordered drain barrier;
+`coordinator/tests/api/provider/contracts/provider_models_replace_test.go`
+(`TestProviderModelsReplaceUsesSameDrainedConnection`) checks inventory replacement
+and readiness on that same connection. Component benchmark names, workloads and
+allocation reporting remain unchanged; they do not claim to measure owner wiring.
+
+Authenticated contract fixtures use `coordinator/tests/internal/testkit/auth.go`
+(`NewSessions`, `Sessions.Token`) to sign local ES256 Privy-compatible JWTs and
+seed users before authentication. They run the real verifier with a local public
+key, without remote Privy user or JWKS calls. A package move must preserve every
+assertion and must not substitute direct handler calls for a public router test.
+
+Tests that run the coordinator in the test process (`app.Run` or the command
+`Main`) get their listen port from `coordinator/tests/internal/testkit/listen_port.go`
+(`FreeListenPort`). The coordinator exits the process on a bind error, so the
+helper picks a free port below the macOS and Linux ephemeral port ranges.
+
+`coordinator/tests/layout_test.go` (`TestCoordinatorTestsAreIsolated`) rejects
+test files outside the mirror and production imports of `testing` or test helpers.
+The offline runner/hook guards in `scripts/test-coordinator-tests.py` also run
+the actual pre-push hook against local stub tools: standard
+`go test ./coordinator/...` discovery must select the complete mirror, and a
+Go test failure must block the push. These guards are not runtime test passes.
+`coordinator/tests/api/source_layout_test.go` (`TestAPISourceFilesHaveDeclarations`)
+parses the API, extracted internal components and API tests, rejecting
+declaration-free shells. It skips `testdata` directories and permits `doc.go`.
+Use `./coordinator/tests/api/...` from the repository root (or `./tests/api/...`
+from `coordinator/`) for all API tests. Ordinary `go test ./coordinator/...` still
+discovers the whole suite; testing `./coordinator/api` alone tests no mirrored suites.
+
 Use `--jobs 1` for one process per sharded package, or use ordinary focused Go commands
-such as `go test -race ./coordinator/api -run '^TestRequestOutcome' -count=1`.
+such as `go test -race ./coordinator/tests/api/... -run '^TestRequestOutcome' -count=1`.
 Keep an unsharded race/shuffle run when changing shared fixtures or the runner;
 shards do not preserve cross-test process state. `GOMAXPROCS` is inherited rather
 than forced to one. Store tests are never partitioned within their package.
@@ -901,6 +1159,10 @@ and optional coverage. Every discovered test must produce exactly one terminal
 result; a missing, duplicate,
 unexpected, or failing result fails the run. Coverage merges atomic counters by
 source block, retaining zero-hit blocks and counting their statements once.
+With coverage enabled, all binaries use the same selected production-package
+instrumentation. Mirrored test selections also include coordinator production
+packages in `-coverpkg`, even when only a test package was requested. The entire
+test tree, including testkit and test-database plumbing, is excluded from coverage.
 Malformed or missing coverage fails the run rather than publishing a partial
 success. CI uploads test evidence as `coordinator-test-timings` for 14 days.
 The separate uninstrumented adversarial-number parser check still runs in CI.
@@ -923,20 +1185,143 @@ matches the difference of coordinator and provider spans. Negative values remain
 valid observations; this is not a direct nonnegative network-latency measurement.
 The focused `TestApplyProviderProfileTransportEstimateArithmetic` regression covers
 positive, negative and missing operands in
-`coordinator/api/profiler_provider_test.go`.
+`coordinator/tests/api/observation/profiler_provider_test.go`.
 
-Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
-(`coordinator/store/harness_test.go`, `testPostgresStore`); CI provides a
-`postgres:16` service with user/password/db `testbed`. The pre-push hook runs
-`go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
-the slow WebSocket integration tests; run the full set before merging.
+Store tests that need Postgres skip themselves when `DATABASE_URL` is unset.
+`coordinator/tests/internal/testdb/main.go` (`Main`) creates and later drops a
+distinct temporary database for each test process; per-test truncation stays
+within that database. The configured database is used only for administration,
+not migrated or truncated. The connection role therefore needs `CREATEDB`.
+Database isolation alone does not isolate PostgreSQL's connection budget:
+`acquireServerBudget` holds a session advisory lock on the administrative
+database for the test process, serializing participating store suites that use
+that same database. This keeps their production-sized pools compatible with a
+default 100-connection PostgreSQL server without raising its limit. Closing the
+administrative connection releases the lock, including on process exit; tests
+within each process remain sequential because their fixtures truncate tables.
+`coordinator/tests/internal/testdb/main_test.go`
+(`TestServerBudgetSerializesIndependentConnections`,
+`TestIsolatedURLCannotSelectConfiguredDatabase`) pins lock ownership and URL
+isolation, including database query-parameter overrides. Coordinator command
+maintenance tests use the same per-process disposable database and server-budget
+admission through `coordinator/tests/cmd/coordinator/main_test.go` (`TestMain`,
+`testdb.Main`); inheriting `DATABASE_URL` does not authorize those tests to mutate
+the configured database. CI provides a
+`postgres:16` service with user/password/db `testbed`, and runs
+`make sqlc-check` against it after the tests. The pre-push hook is not
+a substitute for the complete coordinator runner and explicit race/database
+validation; run the full set before merging.
+
+#### Idle-provider routing recovery
+
+The routing regression suites use real registry reservations, injected
+measurement histories and virtual-clock heartbeat feedback. Run the focused
+selection and two-hour starvation simulations before the complete coordinator
+suite:
+
+```bash
+go test ./coordinator/tests/registry ./coordinator/tests/registry/routingsim \
+  -run 'TestIdleDecode|TestExploredIdleProvider|TestClosedLoop' -count=1
+```
+
+The simulation's idle-wait bound applies to its fixed fleet and arrival schedule;
+it is not a promise that every production provider receives traffic. Keep the
+exploration-backoff and inference-outcome tests in the full suite as well:
+recovering an idle provider must not repeatedly select a genuinely slow one.
+All tests stay under `coordinator/tests/`; no live coordinator or provider model
+is needed for these routing checks.
+
+#### Offline OpenRouter caller conformance
+
+Scenarios, fixtures and observers live in `coordinator/tests/internal/conformance/`.
+The thin `coordinator/tests/api/inference/contracts/openrouter_conformance_test.go`
+adapter (`conformanceSuite`) retains the existing 22 test entry points. It binds
+the real composed runtime together with the ledger and reservation controller it
+constructs, without adding production exports; the outstanding service hold is
+measured at that controller's admission boundary, not read from private state, by
+`coordinator/tests/internal/conformance/service_hold.go` (`OutstandingServiceHold`).
+Run the inference contract tests below: the support package is not itself a
+test entry point and is not imported by production.
+Streaming providers emit the concrete build ID; the HTTP assertions require
+the caller's alias, so bypassing the coordinator's model rewrite fails.
+Current-wire fixtures send typed `invalid_request` errors and use explicit
+template readiness for the unsupported-tool fence; they do not reintroduce
+upstream's retired version-based tool heuristic. The test-support package
+also exposes shared fixture helpers for the separate composed cache tests.
+
+`TestOpenRouterConformance` exercises `Server.Handler` with synthetic catalog
+records, account-owned API keys, memory storage and encrypted loopback provider
+WebSockets. It needs Go and no provider binary, model, database or external account.
+Use the repository-pinned Go toolchain. Prepare module dependencies separately
+in dedicated `GOMODCACHE`, `GOCACHE` and `GOTMPDIR` directories before the offline
+run; leave `HOME` unchanged. Clear inherited service, database, authentication,
+telemetry and proxy variables from the test process environment.
+
+From the repository root, with those isolated caches prepared:
+
+```bash
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -json -count=1 -timeout=3m \
+  -run '^TestOpenRouterConformance' > conformance.jsonl
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -race -json -count=1 -timeout=5m \
+  -run '^TestOpenRouterConformance' > conformance-race.jsonl
+```
+
+Require nonzero execution of Auth, Feed, Chat, AccountSLA, Drain, Retry,
+PostContentFailure, ClientError, Cancellation, CompletionFirst, Tools, Observer
+and Transport under that prefix. The incident and readiness additions also require
+IncidentProvenance, IncidentEnvelope, IncidentRefusal, Scenario,
+ScenarioFragmentation, ScenarioBounds, ScenarioChoiceShape, ReadinessFeed and
+ReadinessCapabilities. Retain every failure and unexpected skip across all
+22 groups. The combined family has 197 leaf cases, 64 of them in the thirteen
+groups named first. `OR_REPORT` log lines contain bounded synthetic status, attempts,
+terminal, timing, usage and balance evidence.
+Repeat with `-count=2` to compare semantic fields, excluding timing values;
+assert generated identities within each request before normalizing reports.
+
+The observer measures headers at `Client.Do` return, then first complete event,
+semantic payload and terminal while consuming the body. Role, usage and DONE
+are not semantic output; unavailable timing is null. It rejects malformed or
+truncated events, in-band errors, missing or duplicate DONE, changed identity,
+trailing payload and read errors. A provider drain acknowledgement joins prior
+completion workers before duplicate-terminal and no-stray-cancel assertions.
+The transport permits only its fixture address and rejects redirects and proxies.
+
+The OpenRouter cancellation fixture observes the existing completed-write profile
+stamp before canceling a dispatched request. Receiving provider bytes alone does
+not prove that the writer has finished; cancellation during an in-flight write
+may correctly abort that connection. Registry writer tests cover that separate
+outcome, while this fixture continues to require a matching cancel frame and
+exact settlement cleanup.
+
+The incident-envelope and scenario cases preserve the two curated Boston weather
+requests with reasoning disabled and tool choice omitted or auto. Added model
+identity is an explicit synthetic fixture wrapper. They check the complete
+forwarded schema/control fields and distinguish transport validity from the
+expected function, arguments, call IDs, indexes, cardinality and finish reason.
+A well-formed refusal ending in `stop` fails the weather scenario even when
+transport succeeds; a correct authored call may retain permitted pre-call text.
+These scripts do not prove actual Nemotron tool selection or native prompt parity.
+
+Readiness cases use authenticated metadata registration and normal `models_update`
+WebSocket messages to check staged/ready/staged feed visibility and capability
+enable/revoke, legacy omission, hash rejection and wrong-model fencing. A feed
+flag or advertised capability does not establish actual model loading or serving.
+`OR_INCIDENT`, `OR_SCENARIO` and `OR_READINESS` log records state these limits.
+
+These tests qualify the authored HTTP/transport and memory-accounting fixtures.
+Test-only trust and capacity state are explicit; tool declarations are synthetic.
+Real-model qualification and hosted OpenRouter qualification are not run by this
+command. Synthetic timings do not measure production latency, and no live request,
+model download or provider operation follows from an offline pass.
 
 #### Coordinator startup and reconnect recovery
 
 `TestSupervisorRestartsChildAndBecomesReady` allows a five-second helper startup
 and a fifteen-second overall wait so concurrent cold builds do not exhaust its
 restart budget. It asserts restart plus readiness, not a production startup SLA;
-production supervisor deadlines are unchanged (`coordinator/promptcontract/supervisor_test.go`).
+production supervisor deadlines are unchanged (`coordinator/tests/promptcontract/supervisor_test.go`).
 
 The [startup observer](../operations/coordinator-startup-measurement.md) has
 standard-library tests using only local HTTP stubs and a deterministic clock.
@@ -954,8 +1339,8 @@ tests truncate tables and create/drop isolated databases; never point
 ```bash
 cd coordinator
 # DATABASE_URL must name a throwaway local database.
-go test -p 1 ./store ./cmd/coordinator -run 'Test(FreshDatabaseSchema|RecordProviderEarningMaintains|BaseRewardEarningPaths|ProviderEarningsJobIndex|ProviderRestore|PostgresRestore|ProviderAndReputation|Maintenance)' -count=1
-go test -race ./api ./registry -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
+go test -p 1 ./tests/store/... ./tests/cmd/coordinator -run 'Test(FreshDatabaseSchema|RecordProviderEarningMaintains|BaseRewardEarningPaths|ProviderEarningsJobIndex|ProviderRestore|PostgresRestore|ProviderAndReputation|Maintenance)' -count=1
+go test -race ./tests/api/... ./tests/registry/... -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
 ```
 
 These check that a fresh database gets the withdrawable balance column and the
@@ -969,12 +1354,22 @@ index applicability, MDA trust caps, and a migration-only subprocess that exits
 without HTTP startup or admin-key seeding. They do not measure production startup
 latency or validate an overlapping coordinator handoff.
 
+Goose startup, upgrade and advisory-lock tests live in
+`coordinator/tests/store/postgres/migrations_test.go`. Concurrent-index snapshot
+waits, invalid-leftover recovery and failed-version recording live in
+`coordinator/tests/store/postgres/migration_index_test.go`. Run the
+[migration verification commands](database-migrations.md#verify) with the same
+disposable database.
+
 Startup recovery regressions also cover catalog-verified index definitions and isolated
 planner applicability, transient provider/reputation retries, a shared deadline,
 1013 registration teardown before duplicate eviction, and routing/capacity/load
 exclusion while a verified identity is restoring. Tests use disposable stores and
-localhost WebSockets (`coordinator/api/provider_restore_retry_test.go`,
-`coordinator/registry/provider_restore_routing_test.go`); they do not reconnect production providers.
+localhost WebSockets (`coordinator/tests/api/provider/restore_retry_test.go`
+for transient reads, deadlines and disconnects;
+`coordinator/tests/api/provider/contracts/restore_retry_test.go`
+for registration teardown before duplicate eviction;
+`coordinator/tests/registry/provider_restore_routing_test.go`); they do not reconnect production providers.
 
 ### 3. Prompt-contract sidecar (Rust)
 
@@ -990,16 +1385,22 @@ checks `file` reports `statically linked|static-pie linked`, and replays the
 production prompt vectors against it with
 `scripts/verify-prompt-sidecar-linux.sh <binary>`.
 
-CI then measures coverage with `cargo-llvm-cov` 0.9.1 and writes the line
-coverage from its `TOTAL` row to the job summary. A low number does not fail
-the job. `cargo llvm-cov` runs the sidecar tests a second time, with coverage
-instrumentation, so a test failure can first appear in the Report coverage
-step. To measure it locally:
+CI then measures coverage with `cargo-llvm-cov` 0.9.1. It writes the same
+table shape as the coordinator job: lines, regions and functions, with an 80%
+report-only target, and it also appears only when the router runs the job.
+The step reads each value by its field name from the JSON report and fails if
+one is missing. A low number does not fail the job. The
+denominator is `coordinator/promptsidecar/src`. The tests under `tests/`,
+every `tests.rs` test module under `src/` and dependencies are left out;
+inline unit-test modules inside other `src` files are counted. Branch counters
+need a nightly toolchain, so branches are not reported. `cargo llvm-cov` runs
+the sidecar tests a second time, with coverage instrumentation, so a test
+failure can first appear in the Report coverage step. To measure it locally:
 
 ```bash
 rustup component add llvm-tools-preview --toolchain 1.88.0
 cargo install cargo-llvm-cov --version 0.9.1 --locked
-cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only
+cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only   # lines, regions, functions
 ```
 
 A number measured on macOS can differ from the Linux number in CI.
@@ -1156,9 +1557,18 @@ deadline. The shell runner sets `DARKBLOOM_ISOLATED_DEADLINE_TEST=1` only for th
 isolated invocation. Direct/IDE runs retain the original 30-second setup margin.
 It remains subject to the isolated nonempty/no-skips gate.
 
+`libs/mlx-swift-lm/Tests/MLXLMTests/NativeBlockEngineTests.swift`
+(`concurrentWaitingCancellationRetiresEveryGeneration`) stress-tests concurrent
+cancellation across 2,048 submissions and requires every reservation to retire.
+It does not deterministically schedule the cancellation race.
+Separate cancellation reads for filtering and removal can orphan a queued
+request; the regression protects the single-decision retirement/removal in
+`CBv2NativeBlockEngine.pump`, not a larger timeout or an early reservation release.
+
 ### Parallel Provider CI
 
-`.github/workflows/ci.yml` runs three independent jobs on dedicated macOS runners:
+For relevant provider changes, `.github/workflows/ci.yml` runs three independent
+jobs on dedicated macOS runners:
 
 | Job | Coverage |
 |---|---|
@@ -1166,10 +1576,11 @@ It remains subject to the isolated nonempty/no-skips gate.
 | Provider SDK Tests | Full nested SDK test products, DiffusionGemma, paged safety/hash/eligibility/backend/kernel/KV-sharing gates, and every required Nemotron/onboarding selector |
 | Provider Prompt Parity | Real pinned tokenizer/template vectors, Swift/Go/Rust comparison, cold-load singleflight, and the release sidecar's sustained load proof |
 
-The existing `Provider Tests` check aggregates all three results and fails unless
-every lane succeeds. This keeps existing required-check coverage intact without
-an out-of-band branch-protection change; the three macOS lanes still start
-independently and run concurrently.
+The existing `Provider Tests` check aggregates all three results under the
+[component-routing contract](#component-ci-routing). Every selected lane must
+succeed. This keeps existing required-check coverage intact without an
+out-of-band branch-protection change; after detection, the three selected macOS
+lanes still start independently and run concurrently.
 
 No numerical matrix, exclusive allocator assertion, or internal controlled
 concurrency is removed. Tests sharing MLX globals remain serial within a process.
@@ -1204,10 +1615,10 @@ CPU-only check runs in the Release Integrity job; it is not GPU qualification.
 
 ```bash
 make provider-test
-# = cd provider-swift && swift build --build-tests
-#   ./scripts/fetch-metallib.sh <bin-path>            (build mlx.metallib from libs/mlx-swift source)
-#   cp mlx.metallib into every <bin-path>/*PackageTests.xctest/Contents/MacOS/
-#   cd provider-swift && swift test --skip-build
+# = python3 scripts/test-stage-test-metallib.py
+#   cd provider-swift && swift build --build-tests
+#   ./scripts/stage-test-metallib.sh <bin-path>   (build mlx.metallib from libs/mlx-swift source; copy it into every <bin-path>/*.xctest bundle)
+#   cd provider-swift && ../scripts/run-provider-tests.sh
 ```
 
 `PagedKernelPreflightTests.noisyChildCannotDeadlock` runs an owned failing child
@@ -1223,6 +1634,97 @@ Without it kernel-backed tests fail or silently exercise a different kernel
 set than production. To run a subset: `cd provider-swift && swift test
 --skip-build --filter <Suite>` after `make provider-test` has staged the
 metallib once.
+
+#### Provider coverage (report-only)
+
+The Provider Unit Tests job builds the provider tests with `swift build
+--build-tests --enable-code-coverage` (the `provider` lane of
+`.github/actions/provider-ci-build`). The next step sets
+`PROVIDER_COVERAGE_DIR` and `LLVM_PROFILE_FILE` for the rest of the job, so
+each provider test process writes its own `%p-%m.profraw` profile to one
+directory. This includes the isolated native MiMo gates.
+`scripts/run-provider-tests.sh` sets the same `LLVM_PROFILE_FILE` when
+`PROVIDER_COVERAGE_DIR` is set, which is what the local recipe below uses.
+The `swift test` calls do not pass `--enable-code-coverage`: with that flag,
+SwiftPM deletes the profiles of earlier calls and replaces `LLVM_PROFILE_FILE`.
+
+The last steps of the Provider Unit Tests job merge the profiles with
+`xcrun llvm-profdata merge`, run `xcrun llvm-cov` on the test bundle and the
+four executables, and write a table to the job summary: lines, regions,
+functions and an 80% target for each row. The table has four rows:
+
+| Row | Targets |
+|---|---|
+| Product | `ProviderCore`, `ProviderCoreFoundation`, `ProviderAppAttest`, `DarkbloomFanCore`: the code that serves requests |
+| CLI | `darkbloom` |
+| Benchmark | `ProviderBenchmark` |
+| Total | every file in the report, including the targets that have no row of their own |
+
+The full report is kept for 14 days as the `provider-coverage` artifact:
+`provider-coverage.txt` and `provider-coverage.json` have every file, and
+`provider-coverage-summary.md` has the table. The denominator is the Swift code in
+`provider-swift/Sources`. `Tests/`, `.build/` and the `libs/` checkouts do not
+count. The Provider SDK Tests and Provider Prompt Parity lanes build without
+coverage in their own jobs and do not count. The one C++ file in
+`ProviderMetallibControl` is not instrumented. Swift has no branch counters.
+A low number does not fail the job. The report step fails only when there are
+no profiles, a value is missing or a row has no lines; the test steps keep
+their own results.
+
+To measure the local provider suite, first initialize the pinned submodules and
+use the [provider build prerequisites](build.md#prerequisites). Run on an owned
+Apple Silicon test machine, with no other build using this `.build` directory.
+The runner isolates `DARKBLOOM_STATE_FILE` and `DARKBLOOM_LOADED_MODELS_FILE` in a
+fresh temporary directory and removes that state on exit. The profile directory
+below is also fresh, but retained for inspection; it never merges a previous
+build's counters. Leave unrelated live-model opt-ins unset.
+
+```bash
+(
+set -e
+cd provider-swift
+swift build --build-tests --enable-code-coverage
+swift build --product darkbloom-fan-helper --enable-code-coverage
+bin=$(swift build --show-bin-path)
+../scripts/stage-test-metallib.sh "$bin"
+PROVIDER_COVERAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-coverage.XXXXXX")
+export PROVIDER_COVERAGE_DIR
+export LLVM_PROFILE_FILE="$PROVIDER_COVERAGE_DIR/%p-%m.profraw"
+python3 ../scripts/prepare-mimo-provider-fixtures.py \
+  --output "$PROVIDER_COVERAGE_DIR/mimo-fixtures"
+export MIMO_V26_SERIAL_LOAD_FIXTURES="$PROVIDER_COVERAGE_DIR/mimo-fixtures"
+export MIMO_V26_WIRED_METADATA_FIXTURE="$MIMO_V26_SERIAL_LOAD_FIXTURES/tiny-bf16"
+python3 ../scripts/prepare-mimo-prompt-fixtures.py \
+  --output "$PROVIDER_COVERAGE_DIR/mimo-prompt-fixtures"
+export MIMO_PROMPT_ARTIFACT_DIRECTORY="$PROVIDER_COVERAGE_DIR/mimo-prompt-fixtures"
+export MIMO_PROMPT_REFERENCE_VECTORS="$PWD/../fixtures/prompt-contract/mimo-v26-additional20.json"
+export MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS=1
+test_status=0
+../scripts/run-provider-tests.sh || test_status=$?
+xcrun llvm-profdata merge -sparse -o "$PROVIDER_COVERAGE_DIR/provider.profdata" \
+  "$PROVIDER_COVERAGE_DIR"/*.profraw
+test_objects=()
+for bundle in "$bin"/*.xctest; do
+  test -d "$bundle" || continue
+  test_objects+=(-object "$bundle/Contents/MacOS/$(basename "$bundle" .xctest)")
+done
+test "${#test_objects[@]}" -gt 0
+xcrun llvm-cov report "$bin/darkbloom" "${test_objects[@]}" \
+  -object "$bin/darkbloom-fan-helper" \
+  -object "$bin/darkbloom-enclave" -object "$bin/darkbloom-publish" \
+  -instr-profile "$PROVIDER_COVERAGE_DIR/provider.profdata" \
+  -ignore-filename-regex '/(Tests|\.build|libs)/' "$PWD/Sources"
+exit "$test_status"
+)
+```
+
+This preserves a failing test exit even when reporting succeeds. It prepares
+the bounded synthetic MiMo inputs required by scanner and load-quotation tests
+and fetches four checksum-pinned public prompt metadata files, never model weights
+or credentials. It does not fetch the audio [MiMo CI fixtures](#mimo-provider-ci-fixtures)
+or enable selected native gates, so its totals need not match CI. Keep instrumentation
+enabled when building every reported product; do not use these instrumented
+timings as production throughput evidence.
 
 For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
 in the active `debug` or `release` directory containing the `.xctest` bundle.
@@ -1295,8 +1797,7 @@ cd libs/mlx-swift-lm
 swift package unedit --force mlx-swift >/dev/null 2>&1 || true
 swift package edit --path ../mlx-swift mlx-swift      # use the local mlx-swift, not the remote branch
 swift build --build-tests
-../../scripts/fetch-metallib.sh "$PWD/.build/debug"            # stage mlx.metallib beside the nested test runner
-for b in .build/debug/*PackageTests.xctest; do cp .build/debug/mlx.metallib "$b/Contents/MacOS/"; done
+../../scripts/stage-test-metallib.sh "$(swift build --show-bin-path)"   # stage mlx.metallib into every nested test bundle
 for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilityTests \
              CBv2PagedBackendTests CBv2PagedKernelTests CBv2KVSharingParityTests; do
   ../../scripts/run-nested-suite.sh "$suite"
@@ -1330,10 +1831,56 @@ Other folders follow provider responsibilities: `ProviderLoop`, `Server`,
 the `ProviderBenchmark` module and its production-engine integration.
 Drain/swap orchestration stays with `ProviderLoop` and `Server`.
 
+#### Provider lifecycle, CLI and benchmark groups
+
+These groups run in the ordinary provider test products. Paths in the first
+column are below `provider-swift/Tests/`; suite names are usable with
+`swift test --skip-build --no-parallel --filter` after building and staging the
+matched metallib. Prefer `scripts/run-provider-tests.sh` for the complete run
+and its state isolation and fresh-process gates.
+
+| Test group | Representative suites and assertions | Fixture boundary |
+|---|---|---|
+| `ProviderCoreTests/ProviderLoop` | `ModelLoadRefusalTests`, `ModelLoadEvictionAndAdmissionTests`, `ModelSlotBookkeepingTests`: admission, eviction, slot publication, rollback and saved loaded-model state | Temporary model/state files, scripted engines and memory inputs |
+| `ProviderCoreTests/Server` | `StandaloneServerModelAdmissionTests`, `StandaloneServerDrainTests`: load limits, same-model reuse, active-request drain and shutdown | Scripted engines; local request and ownership paths, not model-quality evidence |
+| `ProviderCoreTests/ProviderLoop` and `ProviderCoreTests/Server` | `TinyModelLoadTests`: real loader, hash/tokenizer/sizing, generation, reuse and unload through provider and standalone owners | Generated tiny GPT-OSS checkpoint; actual MLX execution |
+| `ProviderCoreTests/ProviderLoop` and `ProviderCoreTests/Update` | `ServeLoopConnectionTests`, `ServeLoopDispatchTests`, `AutoUpdateCycleTests`: registration, reconnect, encrypted dispatch/cancellation and update recovery | Loopback coordinator, software signing key, scripted engine, temporary install root and injected restart/host services |
+| `ProviderCoreTests/Service` and `ProviderCoreTests/KVCacheSSD` | `LaunchAgentLifecycleTests`, `SSDPrefixCacheFactoryPathTests`, `SSDPrefixCacheFactoryRefusalTests`, `SSDPrefixCacheFactoryConstructionTests`, `SSDPrefixCacheFactoryMaintenanceTests`: service lifecycle, cache construction/refusals, epochs and maintenance | Scripted launchctl, temporary home/cache roots and ephemeral cache keys |
+| `DarkbloomCLITests` | Command-run, doctor, picker, start/service/watchdog and fan suites: parsing, output, refusals, persistence and cleanup | Child-process command sandbox, stubbed HTTP, scripted terminal input and injected service/SMC operations |
+| `ProviderCoreTests/Benchmark` | `ArrivalInvarianceMeasurementTests`, `BackendParityHarnessProbeTests`, `SchedulerPrefillDecisionLiveRunnerTests`, `ThroughputSweepNotesTests`, `ModelBenchmarkReportTests`, `BenchmarkEntryPointRefusalTests`: event accounting, cancellation, metadata, reporting and entry-point refusals | Scripted benchmark engines and temporary reports; no performance or model-parity qualification |
+
+`Inference/Fixtures/TinyModelCheckpoint.swift` (`TinyModelCheckpoint`) creates
+seeded synthetic weights and tokenizer files in a temporary Hugging Face cache
+layout. It needs Apple Silicon, a working Metal runtime and the source-matched
+metallib, but no downloaded checkpoint. Its load-admission inputs are scripted;
+post-load headroom checks still read the actual machine. Run with `--no-parallel`:
+the shared `TinyModelLoadTests` suite is serialized, but that alone does not
+isolate the process-wide model-cache setting from other suites. Generated-token
+and cleanup assertions prove this tiny execution path, not trained-model output
+quality, full-checkpoint memory bounds or production throughput.
+
+`DarkbloomCLITests/CLICommandSandbox.swift` (`CLICommandSandbox.enter`) changes
+environment and shared URL-session behavior only inside exit-test children.
+Keep command config, auth tokens, caches, daemon/guard/watchdog state and test
+reports temporary. Service/fan tests must use their injected host and SMC
+boundaries: they do not authorize real `sudo`, launchd installation, fan writes,
+Keychain changes or provider restarts. The SSD factory tests use in-memory keys;
+persistent-Keychain qualification remains a separate opt-in procedure. Never
+replace fixture URLs or tokens with production endpoints or credentials.
+
+`Benchmark/ScriptedBenchmarkEngine.swift` (`ScriptedBenchmarkEngine`) supplies
+controlled events and counters to the real measurement code. A passing harness
+test is not a measured speedup or proof of backend numerical parity. Use the
+separate model-backed gates for those claims. Coverage reports count executed
+code, not these evidence distinctions; retain test results and prerequisites
+alongside the report.
+
+#### Shared fixture locations
+
 Keep model fixtures in `Inference/Live/Fixtures`, synthetic engine support in
 `Inference/Fixtures`, checkpoint support in `KVCacheSSD/Fixtures`, and shared
 HTTP/coordinator fixtures in `Helpers`. Shared input files under `fixtures/`
-and `coordinator/protocol/testdata/` remain canonical; moving a test deeper
+and `coordinator/tests/protocol/testdata/` remain canonical; moving a test deeper
 requires checking any lookup based on `#filePath`.
 `CachePromptParityTests.vectorFile` locates the owning repository using its
 provider and coordinator manifests instead of assuming a fixed source-folder
@@ -1352,7 +1899,7 @@ After building the provider test targets, run these focused regressions:
 
 ```bash
 (cd provider-swift && swift test --filter 'DoctorCaptureTests|statusCanonical')
-(cd coordinator && go test -race ./attestation -count=1)
+(cd coordinator && go test -race ./tests/attestation -count=1)
 ```
 
 `provider-swift/Tests/DarkbloomCLITests/DoctorCaptureTests.swift`
@@ -1361,7 +1908,7 @@ excluded stderr, nonzero exits, deadline escalation and an inherited stdout
 descriptor. Each child has an independent expiry and fixture-owned cleanup.
 `provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`
 (`statusCanonicalMatchesCoordinatorNestedMapVectors`) and
-`coordinator/attestation/status_canonical_mixed_case_test.go`
+`coordinator/tests/attestation/status_canonical_mixed_case_test.go`
 (`TestBuildStatusCanonicalNestedMapVectors`) retain identical
 golden bytes for nested-map ordering, escaping and optional fields. These cases
 need no model weights, active provider or Secure Enclave key.
@@ -1456,6 +2003,44 @@ The test scopes GPU selection with public `MLX.Device.withDefaultDevice`, so
 both targets compile the same test without depending on target-local helpers.
 Passing these operator cases does not replace full-model trajectory, cache,
 batching or performance validation.
+
+#### Sampled MTP acceptance controls
+
+Build the [candidate radix executable](build.md#prefix-cache-benchmark-executable)
+with `RADIX_CANDIDATE_BUILD=1`. Both `scripts/benchmarks/run_radix_engine.py`
+and `radix-engine` accept `--mtp-acceptance exact|typical`. The wrapper forwards
+the option only when explicitly supplied, preserving old baseline command lines;
+omission leaves the candidate on `exact`. Historical baseline builds reject the
+explicit flag. Values are the exact lowercase strings, not `typical:<delta>`.
+This flag selects acceptance, not MTP activation: pass `--mtp on` separately.
+
+For an eligible target-prefix model, compare `exact` and `typical` using the same
+candidate binary, target/assistant hashes, backend, grant, prompt, seed, sampling
+knobs and output budget. Use sampled inputs and
+`--generation-comparison-policy record`, retaining full outputs and structural,
+capacity, cancellation and retirement checks. Typical output is not
+distribution-exact; token differences are not a greedy parity failure, and a
+higher acceptance ratio alone proves neither quality nor throughput. Keep strict
+greedy controls separate. Native MiMo does not apply this preference and remains
+exact; do not report it as a typical-acceptance arm.
+
+The candidate SSD route passes `mtpAcceptanceConfig: String = "exact"` through
+`EngineV2Factory.makeBenchmarkSession` (`@_spi(Benchmarking)`) to the ordinary
+slot factory. The resident route sets the same engine rule directly. Actual MTP
+metrics report `acceptance`, the installed rule, rather than merely the requested
+flag (`scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift`,
+`mtpRecord`). Production serving still uses TOML; the separate benchmark-session
+environment override is documented in the
+[configuration reference](../reference/configuration.md#engine-and-scheduler).
+
+Run `python3 -m unittest discover -s scripts/benchmarks -p test_run_radix_engine.py`
+for wrapper omission/forwarding and invalid-value coverage. With the same source
+root and candidate define used for the build, run the radix package's
+`BenchmarkMTPAcceptanceTests` for default/configuration, invalid/duplicate flags,
+and installed configuration/metric serialization. Also run provider
+`MTPAcceptanceConfigTests` for optional TOML round trips, per-model precedence,
+unknown-value fallback and the separate benchmark override. These tests are not
+real-model quality or performance measurements.
 
 <a id="resident-prefix-benchmark-validation"></a>
 
@@ -2046,6 +2631,8 @@ makes no network request, writes no login token and updates no host.
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
 ./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
+python3 scripts/check-go-toolchain.py # exact local/container pins satisfy go.mod
+python3 scripts/test-go-toolchain.py  # old production mismatch, patch minimum, drift and digest regressions
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
@@ -2056,7 +2643,24 @@ python3 scripts/test-provider-release-resolution.py # signed-validation and publ
 Version checks, release routing, installer parity and production environment refresh
 run in CI job "Release Integrity". The production env refresh test checks automatic
 payout activation, preservation of an explicit off switch, and rejection of missing
-payout prerequisites before the live env is changed.
+payout prerequisites before the live env is changed. It also verifies that the
+required soft-delete mutation flag bootstraps to `false` while preserving explicit
+`false` and `true` choices. These tests use temporary env files, not production.
+
+The Go toolchain guard runs without Docker or a Go download. Its regression suite
+rejects the former Go 1.25 builder with the Go 1.26 module, mismatched local pins,
+an insufficient patch version and an absent digest; it also executes the guard
+against the checkout. This is not a substitute for the full production Docker
+build in [the build guide](build.md#9-coordinator-container-image).
+
+For a provider version-only preparation, run source/fallback parity and the
+release-script tests without cold-building Swift/MLX. Inspect existing caches
+first; reuse Go's content-addressed caches and only compatible Swift/Metal
+caches. Do not point a separate worktree at another active Swift scratch path or
+present an old binary as the new candidate. A changed checkout path, SDK,
+compiler or dependency pin can invalidate Swift build reuse. Exact signed-bundle
+runtime, numerical and upgrade checks remain required by the
+[0.9.18 rollout gates](../operations/provider-release.md#0918-candidate-rollout).
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle
@@ -2149,6 +2753,11 @@ apply `docs-not-needed` when a mapped source change does not alter documented
 behavior; the PR must explain the exception in its Documentation impact
 section.
 
+Run `python3 scripts/test-docs-impact-check.py` when changing source-to-doc
+mappings. Its extracted-component cases require both the behavior-specific
+canonical doc and the ownership doc: updating navigation alone must not satisfy
+routing, cache, protocol, trust, telemetry or accounting requirements.
+
 The historical-link and freshness-stamping regression checks run in isolated
 temporary Git repositories:
 
@@ -2193,6 +2802,51 @@ go test ./e2e/ -count=1 -v -timeout 10m -p=1 -run '^TestIntegration_(NonStreamin
 
 make e2e-integration     # go test ./e2e/... -run TestIntegration -v   (no posture pins)
 make e2e-benchmark       # go test ./e2e/... -run TestBenchmark -v
+```
+
+#### E2E coverage in CI
+
+The testbed runs the coordinator inside the test process
+(`e2e/testbed/suite.go`, `startCoordinator` calls `api.NewServer`). There is no
+coordinator binary to build with `go build -cover`. So CI adds coverage flags to
+the `go test ./e2e/` command of each of the three lanes:
+`-cover -covermode=set -coverpkg="$E2E_COVER_PKG"` and
+`-args -test.gocoverdir=<dir>`, one directory per lane. The "Select e2e coverage
+packages" step sets `E2E_COVER_PKG` to the `coordinator/...` packages without a
+`tests`, `testkit` or `testdb` path segment, the same production set that
+`scripts/run-coordinator-tests.py` instruments. `set` mode stores 1 per block
+and is the cheapest mode, so the latency checks in the `TestProfile` tests see
+the least extra work. The `-run`, `-skip`, `-timeout` and `-p` flags do not
+change.
+
+The "Report e2e coverage" step merges the lane directories with
+`go tool covdata textfmt`, keeps the `coordinator/...` rows with
+`scripts/coordinator-statement-coverage.sh` (the script that the Coordinator
+Tests report also uses) and writes one row to the job summary:
+`Coordinator (Go), e2e`, statements only, no target. The denominator is the
+statements in the selected production packages that the e2e test binary links;
+packages it does not link, such as `cmd/...`, are not counted. A lane that
+fails or is skipped is left out, and the summary names the lanes that it
+merged. A low number never fails the job. The step fails when a lane passed but
+wrote no data, or when the merged data has no coordinator rows or no total.
+The raw lane directories and the merged `e2e-coverage.out` are kept for 14 days
+as the `coordinator-e2e-coverage` artifact.
+
+The row is not merged with the unit number from the Coordinator Tests job. That
+job runs in another workflow (`ci.yml`) on Linux, and both workflows start on
+the same push with no order between them. To get a combined figure, download
+both artifacts and take the union of covered blocks. To measure one lane
+locally:
+
+```bash
+mkdir -p /tmp/e2e-cov
+E2E_COVER_PKG=$(go list ./coordinator/... | grep -Ev '/(tests|testkit|testdb)(/|$)' | paste -sd, -)
+go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
+  -cover -covermode=set -coverpkg="$E2E_COVER_PKG" \
+  -run '^TestIntegration_(NonStreaming|Streaming)Inference$' \
+  -args -test.gocoverdir=/tmp/e2e-cov
+go tool covdata textfmt -i=/tmp/e2e-cov -o e2e-coverage.out
+scripts/coordinator-statement-coverage.sh e2e-coverage.out e2e-coverage-coordinator.out
 ```
 
 The harness builds the provider itself (`e2e/testbed/provider.go`,
@@ -2342,7 +2996,7 @@ The script, in order:
    `swift test --package-path provider-swift --filter ProductionPromptParityTests`
    (with `PROMPT_PARITY_REQUIRED=1`, `PROMPT_PARITY_VECTORS`,
    `PROMPT_PARITY_ARTIFACT_ROOT` set), Go
-   `go test ./promptcontract -run TestProductionPlansConsumeSharedTokenVectors`,
+   `go test ./tests/promptcontract -run TestProductionPlansConsumeSharedTokenVectors`,
    and Rust `--test shared_vectors production_plans_match_shared_token_vectors`
    plus `--test planner_fixture concurrent_cold_contract_load_is_singleflight`.
 5. Builds the release `promptsidecar` and drives it through the real Go
@@ -2375,10 +3029,16 @@ token IDs are accepted.
 
 ## CI workflow map
 
+The CI, integration and benchmark workflows use the
+[component-routing detector](#component-ci-routing). Component jobs run only for
+relevant PR changes; policy checks remain unconditional. Default-branch pushes
+keep full coverage. The required provider aggregate also passes verified
+intentional skips for irrelevant PRs, rather than requiring unselected macOS jobs.
+
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service, `make sqlc-check` + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build with `--enable-code-coverage`, matched Metal, serial/fresh-process provider tests and installer checks, then a job-summary coverage table (lines, regions and functions over Swift code in `provider-swift/Sources`, with product, CLI, benchmark and total rows, 80% report-only target, no branch counters; the SDK and prompt parity lanes are not counted), full report kept 14 days as the `provider-coverage` artifact · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`); each lane runs with `-coverpkg` over the production `coordinator/...` packages and `-test.gocoverdir`, then a job-summary row of e2e statement coverage (report-only), lane data kept 14 days as the `coordinator-e2e-coverage` artifact |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
@@ -2750,7 +3410,7 @@ a separately reviewed schema-3 comparator for this seven-case pair.
 
 ## App Attest release qualification
 
-Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple'`
+Run `go test ./tests/appattest/... ./tests/api/... ./tests/store/... -run 'TestAppAttest|TestAuthorization|TestApple'`
 from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
@@ -2801,27 +3461,27 @@ from real Apple receipt renewal and final signed-artifact fleet qualification.
 
 ## Model token promotion and SLA checks
 
-`coordinator/api/model_token_pricing_test.go` checks exact input/output prices, fee shares, mixed paid/sponsored requests, overflow rejection, and 100 tiny completions with a lost commit acknowledgement. `coordinator/store/model_token_earnings_test.go` races fractional settlements and duplicate replays on both backends, rejects invalid fractions, and reopens PostgreSQL to verify remainder durability.
+`coordinator/tests/api/inference/promotions/model_token_pricing_test.go` checks exact input/output prices, fee shares, mixed paid/sponsored requests, overflow rejection, and 100 tiny completions with a lost commit acknowledgement. `coordinator/tests/store/contracts/model_token_earnings_test.go` (`TestModelTokenPromotionFractionalEarningsAtomicAndDurable`) races fractional settlements and duplicate replays on both backends, rejects invalid fractions, and reopens PostgreSQL to verify remainder durability.
 
-`coordinator/store/model_token_promotions_test.go` runs the grant/ledger contract on both memory and disposable PostgreSQL backends: one-time claims, day boundaries, concurrent reservations, partial paid fallback, provider earnings, refund/settlement races, media top-ups and orphan recovery. Never point these tests at a production database: the store harness truncates tables. `coordinator/store/model_token_zero_usage_test.go` rejects payouts or charges with no token usage on both backends. `coordinator/api/model_token_reconciliation_test.go` injects pre-commit failures and lost commit acknowledgements, replays reconciliation concurrently, verifies usage/key-spend/referral/platform accounting once, and exercises deterministic cash failures caused by price increases or usage overages.
+`coordinator/tests/store/contracts/model_token_promotions_test.go` runs the grant/ledger contract on both memory and disposable PostgreSQL backends: one-time claims, day boundaries, concurrent reservations, partial paid fallback, provider earnings, refund/settlement races, media top-ups and orphan recovery. Never point these tests at a production database: the store harness truncates tables. `coordinator/tests/store/contracts/model_token_zero_usage_test.go` (`TestModelTokenPromotionZeroUsageRejectsChargeAndPayout`) rejects payouts or charges with no token usage on both backends. `coordinator/tests/api/inference/promotions/model_token_reconciliation_test.go` injects pre-commit failures and lost commit acknowledgements, replays reconciliation concurrently, verifies usage/key-spend/referral/platform accounting once, and exercises deterministic cash failures caused by price increases or usage overages.
 
 ```sh
 cd coordinator
 DATABASE_URL='postgres://USER@127.0.0.1:PORT/THROWAWAY_DB?sslmode=disable' \
-  go test -race ./store -run TestModelTokenPromotion -count=1
-go test -race ./api ./modelpolicy \
+  go test -race ./tests/store/... -run TestModelTokenPromotion -count=1
+go test -race ./tests/api/... ./tests/modelpolicy \
   -run 'Test(ModelTokenPromotion|ModelSpecificFirstContentDeadline|Bonsai|CustomFirstContent)' -count=1
 ```
 
-`console-ui/src/components/app-providers/ModelTokenPromotionsProvider.test.tsx` covers read-only login discovery, explicit claims, sold-out/ineligible states, account-switch races and paid-fallback copy. `coordinator/store/model_token_claims_test.go` races 270 distinct claimants against a 250-grant cap and verifies the signup cutoff. `console-ui/src/lib/chat/stream-thinking.test.ts` checks that frontend thinking defaults on. `console-ui/src/lib/chat/errors.test.ts` preserves promotion errors instead of replacing them with a generic credit error. `python3 scripts/test-model-token-promotion.py` checks local-day boundaries across daylight-saving transitions. Operator steps: [model-token-promotions.md](../operations/model-token-promotions.md).
+`console-ui/src/components/app-providers/ModelTokenPromotionsProvider.test.tsx` covers read-only login discovery, explicit claims, sold-out/ineligible states, account-switch races and paid-fallback copy. `coordinator/tests/store/contracts/model_token_claims_test.go` (`TestModelTokenPromotionFirst250ClaimsAreAtomic`) races 270 distinct claimants against a 250-grant cap. The backend-private `model_token_claims_test.go` files in `coordinator/store/memory/` and `coordinator/store/postgres/` verify the persisted signup cutoff (`TestModelTokenPromotionSignupCutoffUsesPersistedCreationTime`). `console-ui/src/lib/chat/stream-thinking.test.ts` checks that frontend thinking defaults on. `console-ui/src/lib/chat/errors.test.ts` preserves promotion errors instead of replacing them with a generic credit error. `python3 scripts/test-model-token-promotion.py` checks local-day boundaries across daylight-saving transitions. Operator steps: [model-token-promotions.md](../operations/model-token-promotions.md).
 
 ## Account-scoped first-content SLA
 
-`coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.
+`coordinator/tests/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/tests/api/inference/contracts/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/tests/api/inference/media_resolve_test.go` (`TestResolveRemoteMediaPinnedSLAExemptionDoesNotRecompute`) verifies a pinned exemption cannot be recomputed during media fetch. Root `coordinator/tests/api/first_content_accounts_test.go` retains only the environment-configuration test (`TestFirstContentSLAAccountsEnvironment`).
 
 ### Adversarial numeric parsing
 
-`coordinator/api/tool_constraints_test.go`
+`coordinator/tests/api/inference/request/tool_constraints_test.go`
 (`TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals`) checks exact
 integer results and rejects fractional, negative, huge-exponent and multi-megabyte
 inputs. The original 250 ms per-call budget remains enforced by normal tests
@@ -2832,15 +3492,15 @@ it does not replace it. Neither wall-clock budget proves linear complexity.
 No production parser limit or acceptance rule changes.
 
 Run the enforced performance gate with
-`go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1`.
+`go test -race=false -cover=false ./coordinator/tests/api/inference/request -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1`.
 The following full CI suite still runs with race detection and atomic coverage.
 
 Measure size scaling separately with
-`coordinator/api/tool_constraint_numbers_bench_test.go`
+`coordinator/tests/api/inference/request/tool_constraint_numbers_bench_test.go`
 (`BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals`):
 
 ```sh
-go test ./coordinator/api -run '^$' \
+go test ./coordinator/tests/api/inference/request -run '^$' \
   -bench '^BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals$' -benchmem
 ```
 
@@ -2852,14 +3512,14 @@ measurement.
 
 ### Routing plan equivalence
 
-`coordinator/registry/dispatch_plan_test.go`
+`coordinator/tests/registry/dispatch_plan_test.go`
 (`TestReserveProviderWithPlanPrimarySelectionUnchanged`) compares provider
 selection and routing decisions with and without retained alternatives. It
 uses a controlled clock and different fresh evidence ages, then normalizes
 wall-clock telemetry, including known capacity/performance/transport evidence ages on
 the decision and candidate summaries; unknown-age sentinels, selection, forecast values and reservations
 remain subject to exact comparison. Repeat the focused test with
-`go test ./coordinator/registry -run '^TestReserveProviderWithPlanPrimarySelectionUnchanged$' -count=500`
+`go test ./coordinator/tests/registry -run '^TestReserveProviderWithPlanPrimarySelectionUnchanged$' -count=500`
 from the repository root to check for timing-dependent comparison failures.
 
 ### Replacement and reconnect coverage
@@ -2947,7 +3607,63 @@ bounded output. Applying a refund requires an exact withdrawal ID, expected amou
 and an operator-verified Stripe request. See [the cutover runbook](../operations/stripe-migration.md).
 
 Exercise the API, funding and settlement contracts with
-`go test ./coordinator/api ./coordinator/billing/... ./coordinator/store ./coordinator/cmd/payout-audit`.
+`go test ./coordinator/tests/api/... ./coordinator/tests/billing/... ./coordinator/tests/store/... ./coordinator/tests/cmd/payout-audit`.
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Telemetry archive validation
+
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. Accounting tests cover signed micro-USD values, sums beyond INT64, backdated timestamps, sparse IDs, late commits, destination separation, and exact restoration of all four accounting tables. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+Analytics preview tests reject mixed datasets, injected catalog identifiers,
+missing coverage, unbounded series and excessive scan budgets. Optional
+SELECT-only BigQuery semantics tests use synthetic CTE fixtures, creating no
+cloud datasets or tables: set `TEST_ARCHIVE_BIGQUERY_PROJECT` explicitly and
+run `uv run pytest -q tests/test_analytics_bigquery.py`. They exercise provider
+versus reward-only cohorts, anonymous network earnings, signed corrections,
+base-reward exclusion from tokens/jobs, ties/limits, empty windows, exact time
+boundaries and sums beyond INT64. CI skips these credentialed tests; their live
+results must be recorded separately from the local suite.
+
+Backfill regressions cover explicit recapture generations, legacy plan identity,
+large sharded completion catalogs and deadline enforcement during saved-checkpoint
+replay. Publication tests verify reused catalog schema and content, not only row
+counts. Async-query tests use real BigQuery SDK value objects with local transport
+fixtures to check dry-run rejection, pinned sources, idempotent named submission,
+bounded polling/pagination, exact decimal results and owned cancellation; they do
+not establish live BigQuery or IAM correctness. Run the complete locked suite
+with `uv run --locked pytest -q` after `uv sync --locked`.
+
+Archived snapshot validation and no-scan HTTP tests live in `coordinator/tests/analyticssnapshot` and `coordinator/tests/api/reporting/analytics_snapshot_test.go`; run `go test -race ./coordinator/tests/analyticssnapshot ./coordinator/tests/api/reporting ./coordinator/tests/api`. The snapshot tests exercise the exported decoder and cache APIs; HTTP tests exercise the reporting owner and retain the separate database-backed core stats refresh. Python `test_snapshot_sync.py` tests generation/hash/scope validation and atomic file replacement. See [snapshot operations](../operations/analytics-snapshots.md).
+
+Leaderboard cache tests cover concurrent callers with different limits and aliases sharing one top-200 query, and failed queries retaining only their cooldown. Store tests cover closed pools and scan overflow after a valid first row returning an error with no partial ranking; the latter uses the isolated PostgreSQL test database.
+
+## Account erasure regressions
+
+`coordinator/tests/internal/erasurefixture/account.go` seeds an account's
+credentials, provider, balances and Stripe session for mirrored store tests.
+`coordinator/tests/store/contracts/erasure_late_writes_test.go` checks late
+external results, location suppression without lost accounting and refused
+credit replay. PostgreSQL tests use real row/advisory-lock barriers for
+withdrawal admission and simultaneous shared-owner scrubs; the composed HTTP
+Checkout regression pauses a local fake Stripe server across erasure.
+`coordinator/tests/internal/erasurefixture/commit.go` cancels the caller through
+pgx tracing after PostgreSQL confirms `COMMIT`. Store regressions cover plan
+creation/replacement, confirmation, cancellation and scrubbing, plus rollback
+when a returned summary cannot be decoded. Composed API regressions verify
+provider disconnects and auth/usage cache cleanup. The account API contract
+package uses `testdb.Main` to isolate this PostgreSQL coverage in a disposable
+database, just like the store suites.
+The marker fixture in `coordinator/tests/store/postgres/erasure_marker_test.go`
+seeds every personal-data rule, including frozen legacy MDM cohort and saved
+hardware interest, and verifies another account's markers survive.
+
+The route batching tracer in
+`coordinator/tests/store/postgres/route_telemetry_batch_test.go` distinguishes
+bulk inserts from the account-erasure lock and ownership lookup. It requires
+one insert, one lock and one lookup per chunk, with at most two transaction
+boundary statements; duplicates still split into ordered chunks. Outcome
+updates retain their single pipelined batch. The memory marker fixture also
+freezes real MDM eligibility and stores hardware-interest markers before
+scrubbing, so every memory-backed personal-data rule has observed coverage.

@@ -45,27 +45,34 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
 ) (bool, error) {
-	changed, provider, remaining, drops, err := r.applyPrefixCacheSnapshot(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
-	if err == nil && len(drops) > 0 {
+	updater := CacheSnapshotUpdater{registry: r}
+	var result CacheSnapshotResult
+	var err error
+	if r != nil && r.cacheDependencies.Snapshots != nil {
+		result, err = r.cacheDependencies.Snapshots(updater).Apply(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
+	} else {
+		result, err = updater.Apply(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
+	}
+	if err == nil && len(result.Drops) > 0 {
 		// Rows parked under epochs the capability change left behind are
 		// settled here, outside the apply's locks and in chunks, for as
 		// long as this session still owns its ID and its current capability
 		// still leaves them behind (a later heartbeat may have republished
 		// the epoch meanwhile).
-		for _, d := range drops {
-			r.dropParkedWhileStale(provider, d)
+		for _, d := range result.Drops {
+			result.SettleDrop(d)
 		}
 	}
-	if err == nil && remaining && provider != nil {
+	if err == nil && result.Remaining {
 		// The snapshot bound one chunk of parked rows under its locks (the
 		// heartbeat path); the rest binds here, chunk by chunk, with the
 		// registry read lock and the session's ownership re-taken around
 		// each chunk, so a large bucket parked for an already-connected
 		// session binds on its next heartbeat rather than one chunk per
 		// heartbeat.
-		r.bindChunksWhileOwned(provider)
+		result.BindRemaining()
 	}
-	return changed, err
+	return result.Changed, err
 }
 
 // parkedDrop names a (cache epoch, model) whose parked rows no bind will take
@@ -74,7 +81,7 @@ type parkedDrop struct {
 	epoch, model string
 }
 
-func (r *Registry) applyPrefixCacheSnapshot(
+func (updater CacheSnapshotUpdater) Apply(
 	providerID string,
 	replaceCapabilities bool,
 	version int,
@@ -82,22 +89,56 @@ func (r *Registry) applyPrefixCacheSnapshot(
 	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
-) (changed bool, boundProvider *Provider, remaining bool, drops []parkedDrop, err error) {
+) (result CacheSnapshotResult, err error) {
+	r := updater.registry
 	if r == nil {
-		return false, nil, false, nil, nil
+		return result, nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	provider := r.providers[providerID]
 	if provider == nil {
-		return false, nil, false, nil, errInvalidPrefixCacheCapability
+		return result, errInvalidPrefixCacheCapability
 	}
+	commit := CacheSnapshotCommit{
+		registry: r, provider: provider, providerID: providerID,
+		replaceCapabilities: replaceCapabilities, version: version, capabilities: capabilities,
+		memoryCapabilities: memoryCapabilities, statuses: statuses, outcomes: outcomes,
+	}
+	if r.cacheDependencies.SnapshotCommits != nil {
+		return r.cacheDependencies.SnapshotCommits(commit).Commit()
+	}
+	return commit.Commit()
+}
+
+type CacheSnapshotCommitting interface {
+	Commit() (CacheSnapshotResult, error)
+}
+
+// CacheSnapshotCommit publishes and reconciles one provider snapshot while its
+// caller retains registry ownership. The provider lock spans all invalidation.
+type CacheSnapshotCommit struct {
+	registry            *Registry
+	provider            *Provider
+	providerID          string
+	replaceCapabilities bool
+	version             int
+	capabilities        []protocol.PrefixCacheV2Capability
+	memoryCapabilities  *[]protocol.PrefixCacheV2Capability
+	statuses            *[]protocol.PrefixCacheModelStatus
+	outcomes            *[]protocol.PrefixCacheDonationOutcomeCount
+}
+
+func (commit CacheSnapshotCommit) Commit() (result CacheSnapshotResult, err error) {
+	r, provider, providerID := commit.registry, commit.provider, commit.providerID
+	replaceCapabilities, version, capabilities := commit.replaceCapabilities, commit.version, commit.capabilities
+	memoryCapabilities, statuses, outcomes := commit.memoryCapabilities, commit.statuses, commit.outcomes
 
 	provider.mu.Lock()
 	models, err := uniqueProviderModels(provider.Models)
 	if err != nil {
 		provider.mu.Unlock()
-		return false, nil, false, nil, err
+		return result, err
 	}
 
 	resultVersion := provider.PrefixCacheProtocol
@@ -108,7 +149,7 @@ func (r *Registry) applyPrefixCacheSnapshot(
 			version, capabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, nil, false, nil, err
+			return result, err
 		}
 		resultVersion = version
 	}
@@ -117,7 +158,7 @@ func (r *Registry) applyPrefixCacheSnapshot(
 			resultVersion, *memoryCapabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, nil, false, nil, err
+			return result, err
 		}
 	} else if resultVersion < 2 {
 		resultMemoryCapabilities = nil
@@ -169,7 +210,7 @@ func (r *Registry) applyPrefixCacheSnapshot(
 		provider.PrefixCacheProtocol = resultVersion
 		provider.PrefixCacheV2Models = resultCapabilities
 		provider.PrefixCacheMemoryModels = resultMemoryCapabilities
-		provider.prefixCacheRevision++
+		provider.advanceCacheRevisionLocked()
 	}
 	provider.PrefixCacheStatuses = resultStatuses
 	provider.PrefixCacheStatusReported = statusReported
@@ -213,7 +254,7 @@ func (r *Registry) applyPrefixCacheSnapshot(
 			prev, had := previousCapabilities[model]
 			next, has := resultCapabilities[model]
 			if had && (!has || prev.CacheEpoch != next.CacheEpoch) {
-				drops = append(drops, parkedDrop{epoch: prev.CacheEpoch, model: model})
+				result.Drops = append(result.Drops, CacheParkedDrop{Epoch: prev.CacheEpoch, Model: model})
 			}
 		}
 	}
@@ -223,11 +264,12 @@ func (r *Registry) applyPrefixCacheSnapshot(
 		// change: registration already carries the capabilities, so the first
 		// apply after a reconnect is an unchanged one. One chunk here, under
 		// the locks; the caller completes the rest outside them.
-		remaining = tracker.bindRestoredHolders(provider, resultCapabilities)
+		result.Remaining = tracker.bindRestoredHolders(provider, resultCapabilities)
 	}
 	provider.mu.Unlock()
 	if tracker != nil {
 		tracker.recordDonationOutcomes(deltas)
 	}
-	return capabilitiesChanged, provider, remaining, drops, nil
+	result.Changed, result.registry, result.provider = capabilitiesChanged, r, provider
+	return result, nil
 }

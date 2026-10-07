@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -12,6 +13,8 @@ type Config struct {
 	AppID           string // Privy app ID (also used as JWT audience)
 	AppSecret       string // Privy app secret (for REST API basic auth)
 	VerificationKey string // PEM-encoded ES256 public key from Privy dashboard
+	// HTTPClient optionally supplies the REST transport. Nil uses a ten-second timeout.
+	HTTPClient *http.Client `json:"-"`
 }
 
 // ReadConfig reads Privy authentication configuration from environment

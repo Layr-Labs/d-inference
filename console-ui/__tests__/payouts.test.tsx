@@ -105,6 +105,8 @@ describe("useStripePayouts", () => {
   });
 
   it("withdraw() surfaces errors and fires the error analytics", async () => {
+    vi.mocked(fetchStripeStatus).mockResolvedValue(readyStatus);
+    vi.mocked(fetchStripeWithdrawals).mockResolvedValue([]);
     (withdrawStripe as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("insufficient balance"));
     const addToast = vi.fn();
     const onWithdrawError = vi.fn();

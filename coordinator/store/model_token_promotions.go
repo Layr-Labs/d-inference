@@ -2,15 +2,16 @@ package store
 
 import (
 	"errors"
-	"fmt"
-	"math"
 	"strings"
 	"time"
 )
 
 var ErrPromotionConflict = errors.New("a different promotion already exists for this model")
+
 var ErrPromotionUnavailable = errors.New("promotion cannot be claimed")
+
 var ErrPromotionFull = errors.New("all promotion grants have been claimed")
+
 var ErrPromotionIneligible = errors.New("account does not meet the signup cutoff")
 
 var ErrPromotionInvalidSettlement = errors.New("invalid promotion settlement")
@@ -47,7 +48,7 @@ func (p ModelTokenPromotion) Validate() error {
 	return nil
 }
 
-func (p ModelTokenPromotion) sameTerms(other ModelTokenPromotion) bool {
+func (p ModelTokenPromotion) SameTerms(other ModelTokenPromotion) bool {
 	return p.ModelID == other.ModelID && p.Tokens == other.Tokens && p.ClaimStartsAt.Equal(other.ClaimStartsAt) && sameOptionalTime(p.ClaimEndsAt, other.ClaimEndsAt) && p.SignupCutoffAt.Equal(other.SignupCutoffAt) && p.MaxClaims == other.MaxClaims
 }
 
@@ -100,45 +101,7 @@ type ModelTokenPromotionStore interface {
 	ReserveModelTokens(id, accountID, modelID string, tokens int64, quote ModelTokenQuote) (*ModelTokenReservation, error)
 	TopUpModelTokenReservation(id string, tokens int64, quote ModelTokenQuote) (*ModelTokenReservation, error)
 	ReleaseModelTokenReservation(id string) (bool, error)
-	SettleModelTokenReservation(id string, actualTokens int64, quote ModelTokenQuote, earning *ModelTokenEarning) (ModelTokenSettlement, error)
-}
-
-func promotionQuote(quote ModelTokenQuote, free int64) (int64, int64, error) {
-	if quote == nil {
-		return 0, 0, errors.New("promotion quote is required")
-	}
-	gross, paid, err := quote(free)
-	if err != nil {
-		return 0, 0, err
-	}
-	if paid < 0 || gross < paid || gross > math.MaxInt64/2 {
-		return 0, 0, errors.New("invalid promotion price")
-	}
-	return gross, paid, nil
-}
-
-func promotionSettlement(r ModelTokenReservation, actual int64, quote ModelTokenQuote, earning *ModelTokenEarning) (ModelTokenReservation, error) {
-	if actual < 0 {
-		return r, fmt.Errorf("%w: negative token usage", ErrPromotionInvalidSettlement)
-	}
-	used := min(actual, r.FreeTokens)
-	gross, paid, err := promotionQuote(quote, used)
-	if err != nil {
-		return r, fmt.Errorf("%w: %v", ErrPromotionInvalidSettlement, err)
-	}
-	// A request minimum must never fund a payout without consuming tokens.
-	// Zero-cost, zero-payout self-serving completions can still release holds.
-	if actual == 0 && (gross > 0 || earning != nil && (earning.AmountMicroUSD > 0 || earning.FractionalMicroUSD > 0)) {
-		return r, fmt.Errorf("%w: zero token usage cannot carry a charge or payout", ErrPromotionInvalidSettlement)
-	}
-	// Preserve the coordinator's fraud ceiling for provider-reported costs.
-	if gross > 2*r.GrossReservedMicroUSD || paid > 2*r.ReservedMicroUSD && paid > 0 {
-		return r, fmt.Errorf("%w: cost exceeds reservation ceiling", ErrPromotionInvalidSettlement)
-	}
-	if earning != nil && (earning.AccountID == "" || earning.JobID == "" || earning.AmountMicroUSD < 0 || earning.AmountMicroUSD > gross || earning.FractionalMicroUSD < 0 || earning.FractionalMicroUSD >= ModelTokenPayoutScale || earning.AmountMicroUSD == gross && earning.FractionalMicroUSD > 0) {
-		return r, fmt.Errorf("%w: invalid provider earning", ErrPromotionInvalidSettlement)
-	}
-	r.State, r.UsedTokens, r.ConsumerCostMicroUSD = "settled", used, paid
-	r.SponsoredMicroUSD = gross - paid
-	return r, nil
+	// referralEligible affects only referral attribution and rewards, not charges, earnings, or grants.
+	// Terminal reservations replay their persisted result regardless of current eligibility.
+	SettleModelTokenReservation(id string, actualTokens int64, quote ModelTokenQuote, earning *ModelTokenEarning, referralEligible bool) (ModelTokenSettlement, error)
 }

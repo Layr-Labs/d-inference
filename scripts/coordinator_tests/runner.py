@@ -15,8 +15,11 @@ import time
 from .results import merge_coverage, partition, test_names, verify_events
 
 ROOT = Path(__file__).resolve().parents[2]
-API = "github.com/eigeninference/d-inference/coordinator/api"
-REGISTRY = "github.com/eigeninference/d-inference/coordinator/registry"
+COORDINATOR = "github.com/eigeninference/d-inference/coordinator"
+API = COORDINATOR + "/tests/api"
+REGISTRY = COORDINATOR + "/tests/registry"
+API_SHARDS = (API, API + "/inference", API + "/inference/contracts",
+              API + "/provider/trust", API + "/provider/contracts")
 
 
 class Processes:
@@ -112,10 +115,21 @@ def run(args, output, processes):
         raise ValueError("no Go packages selected")
     flags = ["-race"] if args.race else []
     if args.coverprofile:
-        flags += ["-cover", "-covermode=atomic"]
+        # Contract suites live outside their implementations. Instrument the
+        # same production packages in every binary so their imported behavior
+        # remains covered and overlapping profiles have identical counters.
+        sources = list(packages)
+        contract_roots = sorted({package.split("/tests", 1)[0] for package in packages
+                                 if "/tests/" in package or package.endswith("/tests")})
+        if contract_roots:
+            sources += checked_output(["go", "list", *(root + "/..." for root in contract_roots)],
+                                      ROOT, processes).splitlines()
+        covered = [package for package in dict.fromkeys(sources)
+                   if not {"tests", "testkit", "testdb"}.intersection(package.split("/"))]
+        flags += ["-cover", "-covermode=atomic", "-coverpkg=" + ",".join(covered)]
     # Registry has process-wide allocation/throughput guards. The throughput
     # guard already excludes race builds; retain ordinary execution otherwise.
-    sharded = [REGISTRY, API] if args.race else [API]
+    sharded = ([REGISTRY] if args.race else []) + list(API_SHARDS)
     other = [package for package in packages if package not in sharded]
     profiles, results, preparation = [], [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
@@ -131,8 +145,9 @@ def run(args, output, processes):
             for package in sharded:
                 if package not in packages:
                     continue
-                name = package.rsplit("/", 1)[-1]
-                cwd = ROOT / "coordinator" / name
+                relative = package.removeprefix(COORDINATOR + "/")
+                name = relative.replace("/", "-")
+                cwd = ROOT / "coordinator" / relative
                 binary = output / f"{name}.test"
                 started = time.monotonic()
                 checked_output(["go", "test", "-c", *flags, "-o", str(binary), package], ROOT, processes)

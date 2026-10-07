@@ -1,0 +1,1013 @@
+package protocol_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"reflect"
+	"testing"
+
+	production "github.com/eigeninference/d-inference/coordinator/protocol"
+)
+
+func TestBackendCapacityLoadTransitionRoundTrip(t *testing.T) {
+	loading := true
+	capacity := production.BackendCapacity{Slots: []production.BackendSlotCapacity{}, LoadTransitionActive: &loading}
+	raw, err := json.Marshal(capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded production.BackendCapacity
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.LoadTransitionActive == nil || !*decoded.LoadTransitionActive {
+		t.Fatalf("in-flight load lost in capacity round trip: %s", raw)
+	}
+	legacy, err := json.Marshal(production.BackendCapacity{Slots: []production.BackendSlotCapacity{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(legacy, []byte(`"load_transition_active"`)) {
+		t.Fatalf("legacy capacity must omit transition field: %s", legacy)
+	}
+}
+
+func TestBackendSlotCapacityMaxConcurrencyRoundTrip(t *testing.T) {
+	msg := production.HeartbeatMessage{
+		Type:   production.TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &production.BackendCapacity{
+			Slots: []production.BackendSlotCapacity{{
+				Model:          "qwen",
+				State:          "running",
+				MaxConcurrency: 3,
+			}},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !json.Valid(data) {
+		t.Fatal("marshaled heartbeat is invalid JSON")
+	}
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	if got := decoded.BackendCapacity.Slots[0].MaxConcurrency; got != 3 {
+		t.Fatalf("MaxConcurrency=%d, want 3", got)
+	}
+}
+
+func TestBackendSlotCapacityMaxConcurrencyOmittedCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running"}]}
+	}`)
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	if got := decoded.BackendCapacity.Slots[0].MaxConcurrency; got != 0 {
+		t.Fatalf("omitted MaxConcurrency=%d, want zero compatibility default", got)
+	}
+}
+
+func TestBackendSlotCapacityMaxConcurrencyExplicitZeroCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running","max_concurrency":0}]}
+	}`)
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	if got := decoded.BackendCapacity.Slots[0].MaxConcurrency; got != 0 {
+		t.Fatalf("explicit zero MaxConcurrency=%d, want preserved zero", got)
+	}
+}
+
+func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
+	usable, headroom := 14.3, 6.5
+	cap := production.BackendCapacity{
+		Slots: []production.BackendSlotCapacity{
+			{
+				Model:              "mlx-community/Qwen2.5-7B-4bit",
+				State:              "running",
+				NumRunning:         3,
+				NumWaiting:         1,
+				ActiveTokens:       5000,
+				MaxTokensPotential: 12000,
+			},
+			{
+				Model:              "mlx-community/Gemma-4-27B-4bit",
+				State:              "idle_shutdown",
+				NumRunning:         0,
+				NumWaiting:         0,
+				ActiveTokens:       0,
+				MaxTokensPotential: 0,
+			},
+		},
+		GPUMemoryActiveGB: 45.2,
+		GPUMemoryPeakGB:   52.1,
+		GPUMemoryCacheGB:  8.3,
+		TotalMemoryGB:     128,
+		LoadUsableGB:      &usable,
+		LoadHeadroomGB:    &headroom,
+		MLXCacheReclaimer: &production.MLXCacheReclaimerTelemetry{
+			CacheLimitBytes:       8 << 30,
+			SweepSignals:          12,
+			Reclaims:              4,
+			ReclaimedBytes:        24 << 30,
+			LastReclaimedBytes:    6 << 30,
+			LastReclaimDurationMS: 17,
+		},
+	}
+
+	data, err := json.Marshal(cap)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded production.BackendCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(decoded.Slots) != 2 {
+		t.Fatalf("slots len = %d, want 2", len(decoded.Slots))
+	}
+	if decoded.LoadUsableGB == nil || *decoded.LoadUsableGB != usable ||
+		decoded.LoadHeadroomGB == nil || *decoded.LoadHeadroomGB != headroom {
+		t.Fatalf("load diagnostics not preserved: usable=%v headroom=%v",
+			decoded.LoadUsableGB, decoded.LoadHeadroomGB)
+	}
+	if decoded.Slots[0].Model != "mlx-community/Qwen2.5-7B-4bit" {
+		t.Errorf("slot[0].model = %q", decoded.Slots[0].Model)
+	}
+	if decoded.Slots[0].NumRunning != 3 {
+		t.Errorf("slot[0].num_running = %d, want 3", decoded.Slots[0].NumRunning)
+	}
+	if decoded.Slots[1].State != "idle_shutdown" {
+		t.Errorf("slot[1].state = %q, want idle_shutdown", decoded.Slots[1].State)
+	}
+	if decoded.GPUMemoryActiveGB != 45.2 {
+		t.Errorf("gpu_memory_active_gb = %f, want 45.2", decoded.GPUMemoryActiveGB)
+	}
+	if decoded.TotalMemoryGB != 128 {
+		t.Errorf("total_memory_gb = %f, want 128", decoded.TotalMemoryGB)
+	}
+	if decoded.MLXCacheReclaimer == nil {
+		t.Fatal("mlx_cache_reclaimer should survive roundtrip")
+	}
+	if got := decoded.MLXCacheReclaimer.CacheLimitBytes; got != 8<<30 {
+		t.Errorf("cache_limit_bytes = %d, want %d", got, uint64(8<<30))
+	}
+	if got := decoded.MLXCacheReclaimer.Reclaims; got != 4 {
+		t.Errorf("reclaims = %d, want 4", got)
+	}
+	if got := decoded.MLXCacheReclaimer.LastReclaimDurationMS; got != 17 {
+		t.Errorf("last_reclaim_duration_ms = %d, want 17", got)
+	}
+}
+
+func TestHeartbeatWithBackendCapacityMarshal(t *testing.T) {
+	cap := &production.BackendCapacity{
+		Slots: []production.BackendSlotCapacity{
+			{
+				Model:      "test-model",
+				State:      "running",
+				NumRunning: 2,
+			},
+		},
+		GPUMemoryActiveGB: 30.5,
+		TotalMemoryGB:     64,
+	}
+
+	msg := production.HeartbeatMessage{
+		Type:            production.TypeHeartbeat,
+		Status:          "serving",
+		Stats:           production.HeartbeatStats{RequestsServed: 10, TokensGenerated: 5000},
+		BackendCapacity: cap,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.BackendCapacity == nil {
+		t.Fatal("backend_capacity should not be nil")
+	}
+	if decoded.BackendCapacity.GPUMemoryActiveGB != 30.5 {
+		t.Errorf("gpu_memory_active_gb = %f, want 30.5", decoded.BackendCapacity.GPUMemoryActiveGB)
+	}
+	if len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("slots len = %d, want 1", len(decoded.BackendCapacity.Slots))
+	}
+	if decoded.BackendCapacity.Slots[0].NumRunning != 2 {
+		t.Errorf("num_running = %d, want 2", decoded.BackendCapacity.Slots[0].NumRunning)
+	}
+}
+
+func TestHeartbeatWithoutBackendCapacityOmitted(t *testing.T) {
+	msg := production.HeartbeatMessage{
+		Type:   production.TypeHeartbeat,
+		Status: "idle",
+		Stats:  production.HeartbeatStats{},
+		// BackendCapacity is nil — should be omitted from JSON
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var m map[string]any
+	json.Unmarshal(data, &m)
+	if _, ok := m["backend_capacity"]; ok {
+		t.Error("backend_capacity should be omitted when nil (omitempty)")
+	}
+}
+
+func TestProviderMessageUnmarshalHeartbeatWithCapacity(t *testing.T) {
+	raw := `{"type":"heartbeat","status":"serving","active_model":"test","stats":{"requests_served":5,"tokens_generated":1000},"system_metrics":{"memory_pressure":0.3,"cpu_usage":0.2,"thermal_state":"nominal"},"backend_capacity":{"slots":[{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}],"gpu_memory_active_gb":25.5,"gpu_memory_peak_gb":30.0,"gpu_memory_cache_gb":5.0,"total_memory_gb":64}}`
+
+	var pm production.ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	hb := pm.Payload.(*production.HeartbeatMessage)
+	if hb.BackendCapacity == nil {
+		t.Fatal("backend_capacity should not be nil")
+	}
+	if hb.BackendCapacity.TotalMemoryGB != 64 {
+		t.Errorf("total_memory_gb = %f, want 64", hb.BackendCapacity.TotalMemoryGB)
+	}
+	if hb.BackendCapacity.Slots[0].ActiveTokens != 3000 {
+		t.Errorf("active_tokens = %d, want 3000", hb.BackendCapacity.Slots[0].ActiveTokens)
+	}
+}
+
+func TestProviderMessageUnmarshalHeartbeatWithoutCapacity(t *testing.T) {
+	// Simulate an old provider that doesn't send backend_capacity
+	raw := `{"type":"heartbeat","status":"idle","active_model":null,"stats":{"requests_served":0,"tokens_generated":0},"system_metrics":{"memory_pressure":0.1,"cpu_usage":0.05,"thermal_state":"nominal"}}`
+
+	var pm production.ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	hb := pm.Payload.(*production.HeartbeatMessage)
+	if hb.BackendCapacity != nil {
+		t.Error("backend_capacity should be nil for old providers")
+	}
+}
+
+func TestBackendSlotCapacityTokenBudgetFields(t *testing.T) {
+	slot := production.BackendSlotCapacity{
+		Model:                 "mlx-community/Qwen2.5-7B-4bit",
+		State:                 "running",
+		NumRunning:            3,
+		NumWaiting:            1,
+		ActiveTokens:          5000,
+		MaxTokensPotential:    12000,
+		ObservedDecodeTPS:     85.5,
+		ObservedPrefillTPS:    412.0,
+		ActiveTokenBudgetUsed: 28000,
+		ActiveTokenBudgetMax:  32768,
+		QueuedTokenBudget:     4096,
+		ModelLoadTimeMS:       9300,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded production.BackendSlotCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.ObservedDecodeTPS != 85.5 {
+		t.Errorf("observed_decode_tps = %f, want 85.5", decoded.ObservedDecodeTPS)
+	}
+	if decoded.ObservedPrefillTPS != 412.0 {
+		t.Errorf("observed_prefill_tps = %f, want 412.0", decoded.ObservedPrefillTPS)
+	}
+	if decoded.ModelLoadTimeMS != 9300 {
+		t.Errorf("model_load_time_ms = %d, want 9300", decoded.ModelLoadTimeMS)
+	}
+	if decoded.ActiveTokenBudgetUsed != 28000 {
+		t.Errorf("active_token_budget_used = %d, want 28000", decoded.ActiveTokenBudgetUsed)
+	}
+	if decoded.ActiveTokenBudgetMax != 32768 {
+		t.Errorf("active_token_budget_max = %d, want 32768", decoded.ActiveTokenBudgetMax)
+	}
+	if decoded.QueuedTokenBudget != 4096 {
+		t.Errorf("queued_token_budget = %d, want 4096", decoded.QueuedTokenBudget)
+	}
+}
+
+func TestBackendSlotCapacityOmitsZeroTokenBudget(t *testing.T) {
+	slot := production.BackendSlotCapacity{
+		Model:      "test-model",
+		State:      "running",
+		NumRunning: 1,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var m map[string]any
+	json.Unmarshal(data, &m)
+
+	for _, key := range []string{"observed_decode_tps", "observed_prefill_tps", "active_token_budget_used", "active_token_budget_max", "queued_token_budget", "model_load_time_ms"} {
+		if _, ok := m[key]; ok {
+			t.Errorf("%s should be omitted when zero (omitempty)", key)
+		}
+	}
+}
+
+func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
+	// Old provider sends a slot without the new token-budget fields.
+	raw := `{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}`
+
+	var slot production.BackendSlotCapacity
+	if err := json.Unmarshal([]byte(raw), &slot); err != nil {
+		t.Fatalf("unmarshal old-format slot: %v", err)
+	}
+	if slot.ObservedDecodeTPS != 0 {
+		t.Errorf("observed_decode_tps = %f, want 0 (absent from JSON)", slot.ObservedDecodeTPS)
+	}
+	if slot.ObservedPrefillTPS != 0 {
+		t.Errorf("observed_prefill_tps = %f, want 0 (absent from JSON)", slot.ObservedPrefillTPS)
+	}
+	if slot.ModelLoadTimeMS != 0 {
+		t.Errorf("model_load_time_ms = %d, want 0 (absent from JSON)", slot.ModelLoadTimeMS)
+	}
+	if slot.ActiveTokenBudgetUsed != 0 {
+		t.Errorf("active_token_budget_used = %d, want 0", slot.ActiveTokenBudgetUsed)
+	}
+	if slot.ActiveTokenBudgetMax != 0 {
+		t.Errorf("active_token_budget_max = %d, want 0", slot.ActiveTokenBudgetMax)
+	}
+	if slot.QueuedTokenBudget != 0 {
+		t.Errorf("queued_token_budget = %d, want 0", slot.QueuedTokenBudget)
+	}
+	if slot.NumRunning != 2 {
+		t.Errorf("num_running = %d, want 2", slot.NumRunning)
+	}
+}
+
+// TestBackendSlotCapacityWedgeFields verifies the engine-health (first-token
+// wedge) signals round-trip with the exact snake_case keys the Swift WedgeMonitor
+// emits, and that each is omitempty so a legacy/idle slot keeps the prior wire
+// shape (Go omission ↔ Swift's encodeIfNonZero / false-omit).
+func TestBackendSlotCapacityWedgeFields(t *testing.T) {
+	slot := production.BackendSlotCapacity{
+		Model:                      "gpt-oss-20b",
+		State:                      "running",
+		NumRunning:                 0,
+		StepsExecuted:              4321,
+		Admits:                     7,
+		FirstTokensEmitted:         0,
+		SecondsSinceLastStep:       12.5,
+		SecondsSinceLastFirstToken: 13.0,
+		WedgeSuspected:             true,
+		EvalInFlightMs:             11000,
+		IdleClearInFlightMs:        1500,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"steps_executed":4321`,
+		`"admits":7`,
+		`"seconds_since_last_step":12.5`,
+		`"seconds_since_last_first_token":13`,
+		`"wedge_suspected":true`,
+		`"eval_in_flight_ms":11000`,
+		`"idle_clear_in_flight_ms":1500`,
+	} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("expected %s in JSON, got %s", want, data)
+		}
+	}
+	// first_tokens_emitted == 0 is omitted (this is the wedge: admits>0, 0 first
+	// tokens), so its ABSENCE — not a zero — is the on-wire signal.
+	if bytes.Contains(data, []byte("first_tokens_emitted")) {
+		t.Fatalf("zero first_tokens_emitted should be omitted, got %s", data)
+	}
+
+	var decoded production.BackendSlotCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.StepsExecuted != 4321 || decoded.Admits != 7 || decoded.FirstTokensEmitted != 0 {
+		t.Fatalf("counter round-trip mismatch: %+v", decoded)
+	}
+	if decoded.SecondsSinceLastStep != 12.5 || decoded.SecondsSinceLastFirstToken != 13.0 {
+		t.Fatalf("seconds round-trip mismatch: %+v", decoded)
+	}
+	if !decoded.WedgeSuspected {
+		t.Fatal("wedge_suspected should round-trip true")
+	}
+	if decoded.EvalInFlightMs != 11000 || decoded.IdleClearInFlightMs != 1500 {
+		t.Fatalf("eval/idle-clear in-flight round-trip mismatch: %+v", decoded)
+	}
+
+	// All-zero/false slot: every wedge field is omitted (legacy-compatible wire).
+	zero := production.BackendSlotCapacity{Model: "m", State: "idle", NumRunning: 0}
+	zeroData, err := json.Marshal(zero)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	for _, key := range []string{
+		"steps_executed", "admits", "first_tokens_emitted",
+		"seconds_since_last_step", "seconds_since_last_first_token", "wedge_suspected",
+		"eval_in_flight_ms", "idle_clear_in_flight_ms",
+	} {
+		if bytes.Contains(zeroData, []byte(key)) {
+			t.Fatalf("zero wedge field %q should be omitted, got %s", key, zeroData)
+		}
+	}
+
+	// Pre-instrumentation provider: a payload without any wedge field decodes to
+	// the zero values (never a panic, never a spurious wedge).
+	var legacy production.BackendSlotCapacity
+	if err := json.Unmarshal([]byte(`{"model":"m","state":"running","num_running":1}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.StepsExecuted != 0 || legacy.Admits != 0 || legacy.WedgeSuspected {
+		t.Fatalf("legacy slot should default wedge fields to zero/false, got %+v", legacy)
+	}
+}
+
+// The v0.8.0 paged-KV rollout discriminator. `KVBackend` is a *string, not a
+// string, for exactly one reason: a pre-0.8.0 provider omits `kv_backend`
+// entirely and nil must read as UNKNOWN. A plain string would decode omission
+// to "", making "old provider" indistinguishable from any value a provider
+// actually sent — and a rollout dashboard that folds unknown into contiguous
+// reports an A/B comparison that is simply false. The three tests below pin
+// present, omitted and explicit-empty as three DIFFERENT decoded states.
+
+func TestBackendSlotCapacityKVBackendRoundTrip(t *testing.T) {
+	paged := "paged"
+	msg := production.HeartbeatMessage{
+		Type:   production.TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &production.BackendCapacity{
+			Slots: []production.BackendSlotCapacity{{
+				Model:     "gemma-4-26b-qat-4bit",
+				State:     "running",
+				KVBackend: &paged,
+			}},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"kv_backend":"paged"`)) {
+		t.Fatalf("kv_backend missing from wire: %s", data)
+	}
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	got := decoded.BackendCapacity.Slots[0].KVBackend
+	if got == nil {
+		t.Fatal("KVBackend decoded nil, want \"paged\"")
+	}
+	if *got != "paged" {
+		t.Fatalf("KVBackend=%q, want \"paged\"", *got)
+	}
+
+	// The other shipped kind, so the field is not accidentally paged-only and a
+	// contiguous slot is a POSITIVE observation rather than an absence.
+	contiguous := "contiguous"
+	slotData, err := json.Marshal(production.BackendSlotCapacity{
+		Model: "gpt-oss-20b", State: "running", KVBackend: &contiguous,
+	})
+	if err != nil {
+		t.Fatalf("marshal contiguous: %v", err)
+	}
+	var contiguousSlot production.BackendSlotCapacity
+	if err := json.Unmarshal(slotData, &contiguousSlot); err != nil {
+		t.Fatalf("unmarshal contiguous: %v", err)
+	}
+	if contiguousSlot.KVBackend == nil || *contiguousSlot.KVBackend != "contiguous" {
+		t.Fatalf("contiguous round-trip = %v", contiguousSlot.KVBackend)
+	}
+}
+
+func TestBackendSlotCapacityKVBackendOmittedCompatibility(t *testing.T) {
+	// Exactly the pre-0.8.0 heartbeat shape.
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running"}]}
+	}`)
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	// nil, i.e. UNKNOWN — not "", not "contiguous". A legacy provider is not a
+	// contiguous data point.
+	if got := decoded.BackendCapacity.Slots[0].KVBackend; got != nil {
+		t.Fatalf("omitted kv_backend decoded to %q, want nil (unknown)", *got)
+	}
+
+	// Reverse direction: a slot that never sets it keeps the prior wire shape,
+	// so a 0.8.0 coordinator stays byte-compatible with pre-0.8.0 consumers.
+	legacyShape, err := json.Marshal(production.BackendSlotCapacity{Model: "qwen", State: "running"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(legacyShape, []byte("kv_backend")) {
+		t.Fatalf("nil KVBackend should be omitted, got %s", legacyShape)
+	}
+}
+
+func TestBackendSlotCapacityKVBackendExplicitEmptyCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running","kv_backend":""}]}
+	}`)
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	got := decoded.BackendCapacity.Slots[0].KVBackend
+	if got == nil {
+		t.Fatal("explicit empty kv_backend decoded to nil: omission and an explicit empty value must stay distinguishable")
+	}
+	if *got != "" {
+		t.Fatalf("explicit empty kv_backend = %q, want \"\"", *got)
+	}
+
+	// `omitempty` on a POINTER tests the pointer, not the pointee, so an
+	// explicit "" survives a re-marshal instead of collapsing into omission.
+	// This is the mechanism the whole present/omitted/empty distinction rests
+	// on: a plain `string` field would drop the key here and silently downgrade
+	// an authoritative empty value to "unknown".
+	empty := ""
+	reencoded, err := json.Marshal(production.BackendSlotCapacity{
+		Model: "qwen", State: "running", KVBackend: &empty,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(reencoded, []byte(`"kv_backend":""`)) {
+		t.Fatalf("explicit empty kv_backend should survive marshal, got %s", reencoded)
+	}
+}
+
+// `kv_backend_fallback_reason` is the OTHER half of the rollout discriminator,
+// and its omission semantics are the INVERSE of `kv_backend`'s: absent means
+// the slot did NOT degrade, not that the answer is unknown. Both halves are
+// pinned here in one test because a field that is always present is not a
+// signal — the degraded case proving the reason arrives is worth nothing
+// unless the clean case proves the key stays off the wire.
+func TestBackendSlotCapacityKVBackendFallbackReasonRoundTrip(t *testing.T) {
+	// 1. DEGRADED — the slot was configured paged, paged did not happen, it
+	//    serves contiguous and SAYS SO. Without the reason this row is
+	//    byte-identical to an operator who configured contiguous on purpose.
+	contiguous := "contiguous"
+	reason := "pool_construction_capacity: needed 3221225472, available 2147483648"
+	msg := production.HeartbeatMessage{
+		Type:   production.TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &production.BackendCapacity{
+			Slots: []production.BackendSlotCapacity{{
+				Model:                   "gemma-4-26b-qat-4bit",
+				State:                   "running",
+				KVBackend:               &contiguous,
+				KVBackendFallbackReason: &reason,
+			}},
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"kv_backend_fallback_reason":"pool_construction_capacity:`)) {
+		t.Fatalf("kv_backend_fallback_reason missing from wire: %s", data)
+	}
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	slot := decoded.BackendCapacity.Slots[0]
+	if slot.KVBackendFallbackReason == nil {
+		t.Fatal("degraded slot decoded a nil reason — the degrade is invisible again")
+	}
+	if *slot.KVBackendFallbackReason != reason {
+		t.Fatalf("reason = %q, want %q", *slot.KVBackendFallbackReason, reason)
+	}
+	// The resolved kind is unchanged by the degrade: the slot really is
+	// serving contiguous. The pair is what carries the meaning.
+	if slot.KVBackend == nil || *slot.KVBackend != contiguous {
+		t.Fatalf("degraded slot's resolved kind = %v, want contiguous", slot.KVBackend)
+	}
+
+	// 2. NOT DEGRADED — an operator who chose contiguous. Same model, same
+	//    state, same resolved kind, and the key must be ABSENT from the wire:
+	//    not "", not "none". Encoded from a slot IDENTICAL to the degraded one
+	//    apart from the reason, so the byte comparison below is exactly the
+	//    question the rollout dashboard asks.
+	degradedSlot, err := json.Marshal(production.BackendSlotCapacity{
+		Model: "gemma-4-26b-qat-4bit", State: "running",
+		KVBackend: &contiguous, KVBackendFallbackReason: &reason,
+	})
+	if err != nil {
+		t.Fatalf("marshal degraded slot: %v", err)
+	}
+	clean, err := json.Marshal(production.BackendSlotCapacity{
+		Model: "gemma-4-26b-qat-4bit", State: "running", KVBackend: &contiguous,
+	})
+	if err != nil {
+		t.Fatalf("marshal clean: %v", err)
+	}
+	if bytes.Contains(clean, []byte("kv_backend_fallback_reason")) {
+		t.Fatalf("a slot that did not degrade must omit the key entirely, got %s", clean)
+	}
+	var cleanSlot production.BackendSlotCapacity
+	if err := json.Unmarshal(clean, &cleanSlot); err != nil {
+		t.Fatalf("unmarshal clean: %v", err)
+	}
+	if cleanSlot.KVBackendFallbackReason != nil {
+		t.Fatalf("clean slot decoded reason %q, want nil", *cleanSlot.KVBackendFallbackReason)
+	}
+	// The whole ticket in one assertion: before this field, these two slots
+	// were the same bytes and the fleet could not tell a choice from a
+	// regression.
+	if bytes.Equal(degradedSlot, clean) {
+		t.Fatalf("degraded and deliberate contiguous slots are byte-identical: %s", clean)
+	}
+
+	// 3. PRE-0.8.0 — neither key. Reading absence as "did not degrade" here
+	//    would be wrong, which is why the pair is read together: no
+	//    `kv_backend` at all is the UNKNOWN state.
+	var legacy production.BackendSlotCapacity
+	if err := json.Unmarshal([]byte(`{"model":"qwen","state":"running"}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.KVBackend != nil || legacy.KVBackendFallbackReason != nil {
+		t.Fatalf("legacy slot decoded %+v, want both nil", legacy)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// System profiler: `telemetry` sub-objects on BackendSlotCapacity /
+// BackendCapacity and the HeartbeatStats cancel counters.
+// ---------------------------------------------------------------------------
+
+func TestBackendCapacityTelemetryRoundTrip(t *testing.T) {
+	queued, rows, tps, ewma := int64(640), int64(1), 1655.2, true
+	kvUse, kvCap := int64(2415919104), int64(8589934592)
+	lowPower, resources := false, int64(412)
+	msg := production.HeartbeatMessage{
+		Type:   production.TypeHeartbeat,
+		Status: "serving",
+		Stats: production.HeartbeatStats{
+			RequestsServed:            1523,
+			CancelStagePreAcceptTotal: 3,
+			CancelStageDecodeTotal:    20,
+			TokensAfterCancelTotal:    58,
+			CancelAbortNSSum:          1284000000,
+		},
+		BackendCapacity: &production.BackendCapacity{
+			Slots: []production.BackendSlotCapacity{{
+				Model: "gemma-4-26b-qat-4bit",
+				State: "running",
+				Telemetry: &production.SlotTelemetry{
+					QueuedPrefillTokens: &queued,
+					PartialPrefillRows:  &rows,
+					IsolatedPrefillTPS:  &tps,
+					EWMAInitialized:     &ewma,
+					KVBytesInUse:        &kvUse,
+					KVBytesCapacity:     &kvCap,
+				},
+			}},
+			Telemetry: &production.CapacityTelemetry{
+				LowPowerMode:        &lowPower,
+				MemoryPressureLevel: production.MemoryPressureNormal,
+				MLXNumResources:     &resources,
+			},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"telemetry":{"queued_prefill_tokens":640,"partial_prefill_rows":1,"isolated_prefill_tps":1655.2,"ewma_initialized":true,"kv_bytes_in_use":2415919104,"kv_bytes_capacity":8589934592}`,
+		`"telemetry":{"low_power_mode":false,"memory_pressure_level":"normal","mlx_num_resources":412}`,
+		`"cancel_stage_pre_accept_total":3`, `"cancel_stage_decode_total":20`,
+		`"tokens_after_cancel_total":58`, `"cancel_abort_ns_sum":1284000000`,
+	} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("wire missing %s in %s", want, data)
+		}
+	}
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bc := decoded.BackendCapacity
+	if bc == nil || len(bc.Slots) != 1 || bc.Slots[0].Telemetry == nil || bc.Telemetry == nil {
+		t.Fatalf("decoded capacity = %+v", bc)
+	}
+	st := bc.Slots[0].Telemetry
+	if *st.QueuedPrefillTokens != 640 || *st.PartialPrefillRows != 1 || *st.IsolatedPrefillTPS != 1655.2 ||
+		!*st.EWMAInitialized || *st.KVBytesInUse != kvUse || *st.KVBytesCapacity != kvCap {
+		t.Fatalf("slot telemetry = %+v", st)
+	}
+	if st.PumpTasks != nil || st.StepWallNSTotal != nil {
+		t.Fatalf("absent slot telemetry fields must decode nil: %+v", st)
+	}
+	if *bc.Telemetry.LowPowerMode || bc.Telemetry.MemoryPressureLevel != production.MemoryPressureNormal ||
+		*bc.Telemetry.MLXNumResources != 412 || bc.Telemetry.InAdmission != nil {
+		t.Fatalf("capacity telemetry = %+v", bc.Telemetry)
+	}
+	if decoded.Stats.CancelStagePreAcceptTotal != 3 || decoded.Stats.CancelStageDecodeTotal != 20 ||
+		decoded.Stats.TokensAfterCancelTotal != 58 || decoded.Stats.CancelAbortNSSum != 1284000000 {
+		t.Fatalf("stats = %+v", decoded.Stats)
+	}
+
+	// Clone must detach every pointer (the registry clamps the clone in place).
+	slotClone := st.Clone()
+	*slotClone.QueuedPrefillTokens = 1
+	slotClone.IsolatedPrefillTPS = nil
+	if *st.QueuedPrefillTokens != 640 || st.IsolatedPrefillTPS == nil {
+		t.Fatal("SlotTelemetry.Clone shares pointees with the original")
+	}
+	capClone := bc.Telemetry.Clone()
+	*capClone.MLXNumResources = 0
+	if *bc.Telemetry.MLXNumResources != 412 {
+		t.Fatal("CapacityTelemetry.Clone shares pointees with the original")
+	}
+	var nilSlot *production.SlotTelemetry
+	var nilCap *production.CapacityTelemetry
+	if nilSlot.Clone() != nil || nilCap.Clone() != nil {
+		t.Fatal("Clone of nil must stay nil (absence is the legacy sentinel)")
+	}
+}
+
+func TestBackendCapacityTelemetryOmittedCompatibility(t *testing.T) {
+	// Exactly the pre-profiler heartbeat shape.
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{"requests_served":1,"tokens_generated":2},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running"}]}
+	}`)
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bc := decoded.BackendCapacity
+	if bc == nil || len(bc.Slots) != 1 {
+		t.Fatalf("decoded capacity = %+v", bc)
+	}
+	// nil == legacy provider, never an empty telemetry object.
+	if bc.Slots[0].Telemetry != nil || bc.Telemetry != nil {
+		t.Fatalf("omitted telemetry decoded non-nil: slot=%+v cap=%+v", bc.Slots[0].Telemetry, bc.Telemetry)
+	}
+	if decoded.Stats.CancelStagePrefillTotal != 0 || decoded.Stats.CancelAbortNSSum != 0 {
+		t.Fatalf("absent counters must read 0: %+v", decoded.Stats)
+	}
+
+	// Reverse direction: nothing set → prior wire shape, byte-compatible with
+	// pre-profiler consumers (no "telemetry", no zero-valued cancel counters).
+	legacy, err := json.Marshal(production.HeartbeatMessage{
+		Type: production.TypeHeartbeat, Status: "serving",
+		Stats:           production.HeartbeatStats{RequestsServed: 1, TokensGenerated: 2},
+		BackendCapacity: &production.BackendCapacity{Slots: []production.BackendSlotCapacity{{Model: "qwen", State: "running"}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, forbidden := range []string{"telemetry", "cancel_stage", "tokens_after_cancel", "cancel_abort_ns_sum"} {
+		if bytes.Contains(legacy, []byte(forbidden)) {
+			t.Fatalf("unset %s leaked onto the legacy wire: %s", forbidden, legacy)
+		}
+	}
+}
+
+func TestBackendCapacityTelemetryExplicitZeroCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{
+			"slots":[{"model":"qwen","state":"running","telemetry":{"queued_prefill_tokens":0,"isolated_prefill_tps":0}}],
+			"telemetry":{}
+		}
+	}`)
+
+	var decoded production.HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bc := decoded.BackendCapacity
+	st := bc.Slots[0].Telemetry
+	if st == nil {
+		t.Fatal("present telemetry decoded nil: presence is the new-provider sentinel")
+	}
+	// An explicit 0 is a value, not an omission: pointer to 0, not nil.
+	if st.QueuedPrefillTokens == nil || *st.QueuedPrefillTokens != 0 || st.IsolatedPrefillTPS == nil || *st.IsolatedPrefillTPS != 0 {
+		t.Fatalf("explicit zeros = %+v", st)
+	}
+	if st.PartialPrefillRows != nil {
+		t.Fatal("unspecified field inside a present object must stay nil")
+	}
+	// An empty object is still presence.
+	if bc.Telemetry == nil || bc.Telemetry.MemoryPressureLevel != "" || bc.Telemetry.LowPowerMode != nil {
+		t.Fatalf("empty capacity telemetry = %+v", bc.Telemetry)
+	}
+
+	// Re-marshal keeps the distinction: omitempty tests the pointer, not the
+	// pointee, so the explicit zeros and the empty object survive.
+	reencoded, err := json.Marshal(bc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"telemetry":{"queued_prefill_tokens":0,"isolated_prefill_tps":0}`, `"telemetry":{}`} {
+		if !bytes.Contains(reencoded, []byte(want)) {
+			t.Fatalf("re-marshal lost %s: %s", want, reencoded)
+		}
+	}
+}
+
+// A wrong-typed telemetry value fails the whole heartbeat decode — existing
+// behaviour for every heartbeat field, documented here so nobody "fixes" the
+// sub-object into a RawMessage and starts retaining unvalidated bytes.
+func TestBackendCapacityTelemetryWrongTypeDropsHeartbeat(t *testing.T) {
+	for name, in := range map[string]string{
+		"slot count is a string": `{"type":"heartbeat","status":"serving","active_model":null,"stats":{},"system_metrics":{},
+			"backend_capacity":{"slots":[{"model":"qwen","state":"running","telemetry":{"queued_prefill_tokens":"lots"}}]}}`,
+		"capacity level is a number": `{"type":"heartbeat","status":"serving","active_model":null,"stats":{},"system_metrics":{},
+			"backend_capacity":{"slots":[],"telemetry":{"memory_pressure_level":3}}}`,
+		"cancel counter is a bool": `{"type":"heartbeat","status":"serving","active_model":null,"stats":{"cancel_stage_decode_total":true},"system_metrics":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var hb production.HeartbeatMessage
+			if err := json.Unmarshal([]byte(in), &hb); err == nil {
+				t.Fatal("struct decode accepted a wrong-typed telemetry value")
+			}
+			var pm production.ProviderMessage
+			if err := pm.UnmarshalJSON([]byte(in)); err == nil {
+				t.Fatal("ProviderMessage decode accepted a wrong-typed heartbeat; it must be dropped whole")
+			}
+		})
+	}
+}
+
+// The heartbeat frames of the shared Go/Swift fixture decode, and the Go
+// structs cover every key they carry (stats, slot telemetry, capacity
+// telemetry) — no silent drops between the contract and the structs.
+func TestProfilerWireFixtureHeartbeats(t *testing.T) {
+	frames := loadProfilerFixture(t)
+
+	t.Run("heartbeat_telemetry", func(t *testing.T) {
+		frame := frames["heartbeat_telemetry"]
+		if frame == nil {
+			t.Fatal("fixture frame missing")
+		}
+		var pm production.ProviderMessage
+		if err := pm.UnmarshalJSON(frame); err != nil {
+			t.Fatalf("UnmarshalJSON: %v", err)
+		}
+		hb, ok := pm.Payload.(*production.HeartbeatMessage)
+		if !ok {
+			t.Fatalf("payload %T", pm.Payload)
+		}
+		bc := hb.BackendCapacity
+		if bc == nil || len(bc.Slots) != 1 || bc.Slots[0].Telemetry == nil || bc.Telemetry == nil {
+			t.Fatalf("capacity = %+v", bc)
+		}
+		st := bc.Slots[0].Telemetry
+		if *st.QueuedPrefillTokens != 640 || *st.PrefillTokensTotal != 1237904 || *st.MTPAcceptedTotal != 146496 ||
+			*st.IsolatedPrefillTPS != 1655.2 || !*st.EWMAInitialized || *st.EvalInFlightMS != 12 {
+			t.Fatalf("slot telemetry = %+v", st)
+		}
+		if st.StepWallNSTotal != nil || st.DecodeRowsTotal != nil {
+			t.Fatal("slice-3 producers must be absent in the slice-2 fixture")
+		}
+		if bc.Telemetry.MemoryPressureLevel != production.MemoryPressureNormal || *bc.Telemetry.InflightTasks != 3 || *bc.Telemetry.LowPowerMode {
+			t.Fatalf("capacity telemetry = %+v", bc.Telemetry)
+		}
+		if hb.Stats.CancelStagePreEngineTotal != 9 || hb.Stats.CancelStagePostTerminalTotal != 2 ||
+			hb.Stats.TokensAfterCancelTotal != 58 || hb.Stats.CancelAbortNSSum != 1284000000 {
+			t.Fatalf("stats = %+v", hb.Stats)
+		}
+
+		// Key-set parity for the three profiler-owned objects.
+		var fx struct {
+			Stats           json.RawMessage `json:"stats"`
+			BackendCapacity struct {
+				Slots []struct {
+					Telemetry json.RawMessage `json:"telemetry"`
+				} `json:"slots"`
+				Telemetry json.RawMessage `json:"telemetry"`
+			} `json:"backend_capacity"`
+		}
+		if err := json.Unmarshal(frame, &fx); err != nil {
+			t.Fatalf("fixture shape: %v", err)
+		}
+		for name, pair := range map[string][2]any{
+			"stats":              {hb.Stats, fx.Stats},
+			"slot telemetry":     {st, fx.BackendCapacity.Slots[0].Telemetry},
+			"capacity telemetry": {bc.Telemetry, fx.BackendCapacity.Telemetry},
+		} {
+			re, err := json.Marshal(pair[0])
+			if err != nil {
+				t.Fatalf("%s re-marshal: %v", name, err)
+			}
+			got, want := jsonKeySet(t, re), jsonKeySet(t, pair[1].(json.RawMessage))
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s key set differs from fixture:\n got %v\nwant %v", name, got, want)
+			}
+		}
+	})
+
+	t.Run("heartbeat_omitted", func(t *testing.T) {
+		var pm production.ProviderMessage
+		if err := pm.UnmarshalJSON(frames["heartbeat_omitted"]); err != nil {
+			t.Fatalf("UnmarshalJSON: %v", err)
+		}
+		hb := pm.Payload.(*production.HeartbeatMessage)
+		if hb.BackendCapacity == nil || hb.BackendCapacity.Telemetry != nil || hb.BackendCapacity.Slots[0].Telemetry != nil {
+			t.Fatalf("omitted variant carried telemetry: %+v", hb.BackendCapacity)
+		}
+		if hb.Stats.CancelStageDecodeTotal != 0 || hb.Stats.CancelAbortNSSum != 0 {
+			t.Fatalf("omitted counters must read 0: %+v", hb.Stats)
+		}
+	})
+}

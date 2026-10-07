@@ -1,13 +1,7 @@
 package store
 
-// Domain sub-interfaces composed into Store (see interface.go).
-//
-// Store was a ~150-method god-interface that forced parallel memory.go /
-// postgres.go implementations and gave callers no way to depend on a narrow
-// slice of the persistence surface. It is split here into cohesive,
-// single-domain sub-interfaces; Store embeds all of them, so the full method
-// set — and both implementations — are unchanged. The split is purely
-// organizational: every method keeps its exact signature and semantics.
+// Domain sub-interfaces are composed into Store (see interface.go), allowing
+// callers to depend on a narrow persistence contract without choosing a backend.
 
 import (
 	"context"
@@ -255,6 +249,9 @@ type LedgerStore interface {
 // BillingStore covers referrals, billing (deposit) sessions, custom per-account
 // model pricing, and Stripe Connect withdrawals.
 type BillingStore interface {
+	// FinalizeConsumerCharge atomically settles a job and its 5% consumer referral reward.
+	FinalizeConsumerCharge(ConsumerChargeSettlement) (ConsumerChargeResult, error)
+
 	// --- Referral System ---
 
 	// CreateReferrer registers an account as a referrer with the given code.
@@ -483,6 +480,8 @@ type DeviceAuthStore interface {
 	CreateProviderToken(token *ProviderToken) error
 
 	// GetProviderToken validates a provider token and returns it.
+	// Missing or revoked tokens match ErrProviderTokenInvalid via errors.Is;
+	// other errors indicate a storage failure, not an invalid credential.
 	GetProviderToken(token string) (*ProviderToken, error)
 
 	// RevokeProviderToken deactivates a provider token.
@@ -592,11 +591,11 @@ type ProviderStore interface {
 	// ListProvidersByAccount returns stored provider records linked to an account.
 	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
 
-	// DeleteProvidersBySerial removes every persisted provider record sharing the
+	// DeleteProvidersBySerial hides every live persisted provider record sharing the
 	// given stable identity (serial, or a session id when serial is empty),
-	// scoped to ownerAccountID, plus their provider_reputation rows. usage,
-	// provider_earnings and provider_sessions (billing/uptime history) are
-	// preserved. Returns the number of provider rows removed.
+	// scoped to ownerAccountID, and deletes their provider_reputation rows. Hidden
+	// SE/account ownership remains available for account erasure. Usage, earnings
+	// and sessions retain their history. Returns the number of newly hidden rows.
 	DeleteProvidersBySerial(ctx context.Context, ownerAccountID, serialOrID string) (int, error)
 
 	// OpenProviderSession records the start of a provider connection (one row per

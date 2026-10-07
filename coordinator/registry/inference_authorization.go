@@ -3,9 +3,30 @@ package registry
 import (
 	"context"
 	"time"
+
+	providerwrite "github.com/eigeninference/d-inference/coordinator/internal/registry/providerwrite"
 )
 
 type providerRequestAuthorizationBinding struct{ Endpoint, Account, Machine string }
+
+// InferenceHandoff freezes the writer and reservation identity of one attempt.
+// Authorization and a definitive abort operate on that same attempt even when
+// a caller has already removed the pending request or begun a retry.
+type InferenceHandoff struct {
+	provider      *Provider
+	pending       *PendingRequest
+	writer        *providerwrite.Writer
+	reservationID string
+}
+
+func (p *Provider) NewInferenceHandoff(pending *PendingRequest) InferenceHandoff {
+	if p == nil || pending == nil {
+		return InferenceHandoff{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return InferenceHandoff{provider: p, pending: pending, writer: p.writer, reservationID: pending.ServiceReservationID()}
+}
 
 func providerRequestAuthorizationBindingLocked(p *Provider) providerRequestAuthorizationBinding {
 	binding := providerRequestAuthorizationBinding{Endpoint: p.PublicKey, Account: p.AccountID}
@@ -34,30 +55,26 @@ func (p *Provider) WriteInferenceTextDeferred(
 	if p == nil || p.registry == nil || pending == nil || builder == nil {
 		return TextFrameWriteMetadata{}, ErrProviderServingUnauthorized
 	}
-	p.mu.Lock()
-	w := p.writer
-	reservationID := pending.ServiceReservationID()
-	p.mu.Unlock()
-	if w == nil {
+	handoff := p.NewInferenceHandoff(pending)
+	if handoff.writer == nil {
 		return TextFrameWriteMetadata{}, errProviderWriterStopped
 	}
-	metadata, err := w.writeRequest(ctx, &providerWriteRequest{
-		builder:     builder,
-		beforeWrite: func() error { return p.registry.authorizeInferenceAttemptHandoff(p, pending, w, reservationID) },
-	}, false, onHandoff)
+	metadata, err := handoff.writer.WriteRequest(ctx, providerwrite.NewDeferred(builder,
+		func() error { return handoff.Authorize() }), false, onHandoff)
 	if !metadata.Committed {
 		// The writer proves no frame reached the wire, including cancellation
 		// after authorization but before its final in-flight CAS.
-		p.abortServiceReservationHandoff(reservationID)
+		handoff.Abort()
 	}
 	return metadata, err
 }
 
-func (r *Registry) authorizeInferenceHandoff(p *Provider, pending *PendingRequest, writer *providerWriter) error {
-	return r.authorizeInferenceAttemptHandoff(p, pending, writer, pending.ServiceReservationID())
-}
-
-func (r *Registry) authorizeInferenceAttemptHandoff(p *Provider, pending *PendingRequest, writer *providerWriter, reservationID string) error {
+func (h InferenceHandoff) Authorize() error {
+	p, pending, writer, reservationID := h.provider, h.pending, h.writer, h.reservationID
+	if p == nil || p.registry == nil || pending == nil {
+		return ErrProviderServingUnauthorized
+	}
+	r := p.registry
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.providers[p.ID] != p {

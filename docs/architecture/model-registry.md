@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-03
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -25,8 +25,8 @@ database and one hash:
 
 | Question | Answer | Where |
 |---|---|---|
-| Is this build real? | A `model_registry` row with an `active`/`beta` status **and** a `ready` version pointed to by `model_active_versions` | `coordinator/store/postgres_model_registry.go` (`activeModelRegistryQuery`) |
-| Are these the right bytes? | The version's `aggregate_sha256` — a SHA-256 over the sorted per-file digests — must match what the provider computed after download | `coordinator/api/model_registry_handlers.go` (`aggregateManifestFileHashes`); `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift` |
+| Is this build real? | A `model_registry` row with an `active`/`beta` status **and** a `ready` version pointed to by `model_active_versions` | `coordinator/store/postgres/model_registry.go` (`activeModelRegistryQuery`) |
+| Are these the right bytes? | The version's `aggregate_sha256` — a SHA-256 over the sorted per-file digests — must match what the provider computed after download | `coordinator/internal/api/catalog/registration/registry_validation.go` (`AggregateManifestFileHashes`); `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift` |
 | What does `gemma-4-26b` mean today? | A `model_aliases` row: `desired_build`, optional `previous_build`, lineage in `retired_builds` | `coordinator/registry/model_aliases.go` (`ResolveModel`) |
 
 ## Mechanism
@@ -69,19 +69,19 @@ is `v2/<slug>--<first 12 hex of sha256(model_id)>/<version>`
 so a registration can never observe a half-uploaded build. The CDN in front of
 the bucket is `https://models.darkbloom.ai` — the same constant on both sides
 (`defaultModelRegistryCDNBaseURL` in
-`coordinator/api/model_registry_handlers.go`; `ModelDownloader.defaultR2CDNURL`
+`coordinator/api/catalog/`; `ModelDownloader.defaultR2CDNURL`
 in `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`).
 
 ### 2. Registration verifies the upload and writes the rows
 
-`coordinator/api/model_registry_handlers.go` (`handleRegisterModel`) registers
+`coordinator/api/catalog/model_registry_handlers.go` (`HandleRegisterModel`) registers
 a new model. The authenticated `handlePublishModelRevision` action in
-`coordinator/api/model_revision_handlers.go` publishes replacement bytes for an
+`coordinator/api/catalog/model_revision_handlers.go` publishes replacement bytes for an
 existing model while preserving metadata and pricing. Both validate the upload. It authenticates with a publishing key
-(`requirePublishingAPIKey`), recomputes the R2 prefix from `model_id` and
+(`RequirePublishingAPIKey`), recomputes the R2 prefix from `model_id` and
 `version` (`modelR2Prefix`, byte-identical to the Swift builder), fetches
 `<cdn>/<prefix>/manifest.json`, and rejects the request unless
-`validateModelManifest` passes (schema version 1, ids match, every path is a
+`ValidateModelManifest` passes (schema version 1, ids match, every path is a
 safe relative path, `file_count` and `total_size_bytes` agree with the file
 list, and the recomputed aggregate hash equals `aggregate_sha256`). It then
 issues an HTTP `HEAD` for every file with 8 workers (`verifyManifestFiles`)
@@ -95,8 +95,8 @@ and compares `Content-Length` to the manifest. Only after all of that does
 
 Every admin mutation (register, promote, status, capabilities,
 runtime-parameters, alias upsert/delete) and coordinator boot
-(`coordinator/cmd/coordinator/main.go`) ends by calling
-`coordinator/api/server.go` (`SyncModelCatalog`). It re-reads the active rows
+(`coordinator/app/app.go`) ends by calling
+`coordinator/api/catalog/publication.go` (`SyncModelCatalog`). It re-reads the active rows
 and installs two in-memory structures in the registry:
 
 - the **catalog**: `registry.CatalogEntry{ID, WeightHash, SizeGB, MinRAMGB,
@@ -129,7 +129,7 @@ Weight hashes are also re-checked on every attestation challenge: the response
 carries a hash per advertised model, and any mismatch against
 the desired or previously promoted, non-retired hashes for that model marks
 the provider untrusted (`CatalogAcceptsWeightHash`)
-(`coordinator/api/provider.go`, log line
+(`coordinator/api/provider/`, log line
 `provider model weight hash mismatch — possible model swap`).
 
 ### 5. Providers select a source, verify, then announce
@@ -188,7 +188,7 @@ routable on that provider without a re-register.
 
 ### 6. Aliases turn a public name into a build at request time
 
-`coordinator/api/consumer.go` (`resolveRequestedModel`) calls
+`coordinator/api/inference/consumer.go` (`resolveRequestedModel`) calls
 `coordinator/registry/model_aliases.go` (`ResolveModelConstrainedWithTraits`):
 
 1. Not an alias → the id is used unchanged (raw build ids keep working).
@@ -207,8 +207,8 @@ build, and `PublicNameForBuild` maps back for consumer-facing surfaces.
 alias, `{model_name, desired_build, previous_build}` — but only to providers
 that already advertise the desired, previous, or a retired member of that alias
 and that could acquire the desired build (`providerCanAcquireCatalogModelLocked`).
-`fanOutDesiredModels` (`coordinator/api/model_alias_handlers.go`) sends it only
-to Swift providers (`providerSupportsDesiredModels`), the only runtime that
+`FanOutDesiredModels` (`coordinator/api/catalog/model_alias_handlers.go`) sends it only
+to Swift providers (`ProviderSupportsDesiredModels`), the only runtime that
 decodes the message. Empty sets are sent on purpose: they mark a provider's in-flight prefetch
 for a deleted or repointed alias as stale.
 
@@ -231,11 +231,11 @@ the single publish command.
 ## Invariants
 
 1. **Bytes precede rows.** A version row exists only after the coordinator has
-   fetched its manifest and HEAD-verified every file — `handleRegisterModel`
+   fetched its manifest and HEAD-verified every file — `HandleRegisterModel`
    returns 400 and writes nothing otherwise.
 2. **One hash, computed three ways, must agree.** Publisher
-   (`ManifestBuilder.build`), coordinator (`aggregateManifestFileHashes` at
-   registration; `validateModelManifest`), and provider
+   (`ManifestBuilder.build`), coordinator (`AggregateManifestFileHashes` at
+   registration; `ValidateModelManifest`), and provider
    (`WeightHasher.hashFilesWithRelativeKey` in `finalizeStagedManifest`) all
    hash the sorted per-file digests. The catalog pins the result as
    `CatalogEntry.WeightHash`, and `mergeProviderModels` refuses a build whose
@@ -247,13 +247,13 @@ the single publish command.
    installs exactly that set; `modelAllowedByCatalogLocked` consults nothing
    else.
 4. **Alias and build namespaces do not overlap** (except by explicit takeover).
-   `handleRegisterModel` returns 409 when `model_id` equals an existing alias;
-   `handleModelAliasUpsert` returns 409 when `alias_id` equals a concrete model
+   `HandleRegisterModel` returns 409 when `model_id` equals an existing alias;
+   `HandleModelAliasUpsert` returns 409 when `alias_id` equals a concrete model
    unless `takeover=true` **and** `previous_build == alias_id`
-   (`coordinator/api/model_alias_handlers.go`).
+   (`coordinator/api/catalog/model_alias_handlers.go`).
 5. **An alias resolves to a registered build or not at all.** `desired_build`
    and `previous_build` must be registry rows, may not equal each other, and
-   `desired_build` may never equal `alias_id` (`handleModelAliasUpsert`).
+   `desired_build` may never equal `alias_id` (`HandleModelAliasUpsert`).
 6. **`SyncModelCatalog` is the only writer of the in-memory catalog and alias
    map.** Every mutation path calls it; nothing else calls `SetModelCatalog` or
    `SetModelAliases` outside tests.
@@ -262,7 +262,7 @@ the single publish command.
    the raw message, so a bad-hash desired build leaves the previous build
    advertised.
 8. **Providers only receive `desired_models` they can act on.**
-   `providerSupportsDesiredModels` (Swift backend) and
+   `ProviderSupportsDesiredModels` (Swift backend) and
    `DesiredModelsForProvider` (already a member of the alias, capable of the
    build) gate every send.
 
@@ -270,12 +270,12 @@ the single publish command.
 
 | Symptom | Cause | Where to look |
 |---|---|---|
-| `POST /v1/admin/models/register` → 400 `failed to fetch manifest` / `manifest file verification failed` | manifest uploaded before files, wrong `version`, or R2 object missing | `fetchModelManifest`, `verifyManifestFileHEAD` (`coordinator/api/model_registry_handlers.go`) |
+| `POST /v1/admin/models/register` → 400 `failed to fetch manifest` / `manifest file verification failed` | manifest uploaded before files, wrong `version`, or R2 object missing | `fetchModelManifest`, `verifyManifestFileHEAD` (`coordinator/api/catalog/manifest_fetch.go`) |
 | Registration → 409 `model_id collides with an existing public alias` | the concrete id is already a public alias | Invariant 4; pick a different `model_id` |
-| Registered model never appears in `/v1/models/catalog` | not promoted (`model_active_versions` has no row) or `status` not `active`/`beta`; also the 60 s response cache | `PromoteModelVersion`, `handleModelCatalog` (`coordinator/api/billing_handlers.go`) |
+| Registered model never appears in `/v1/models/catalog` | not promoted (`model_active_versions` has no row) or `status` not `active`/`beta`; also the 60 s response cache | `PromoteModelVersion`, `HandleModelCatalog` (`coordinator/api/catalog/catalog.go`) |
 | Provider log `models_update weight-hash missing or mismatched; rejecting build` | bytes on disk differ from the registered version, or the provider reported no hash | `mergeProviderModels`; re-download the build |
-| Provider marked untrusted with `provider model weight hash mismatch — possible model swap` | challenge-time hash differs from `CatalogWeightHash` | `coordinator/api/provider.go`; treat as tamper until proven otherwise |
-| Alias flipped but old providers keep serving the previous build | non-Swift providers or providers not yet members of the alias never receive `desired_models`; prefetch failing with bounded retries | `providerSupportsDesiredModels`, `DesiredModelsForProvider`; provider logs `desired_models: … → converging to …` |
+| Provider marked untrusted with `provider model weight hash mismatch — possible model swap` | challenge-time hash differs from `CatalogWeightHash` | `coordinator/api/provider/`; treat as tamper until proven otherwise |
+| Alias flipped but old providers keep serving the previous build | non-Swift providers or providers not yet members of the alias never receive `desired_models`; prefetch failing with bounded retries | `ProviderSupportsDesiredModels`, `DesiredModelsForProvider`; provider logs `desired_models: … → converging to …` |
 | Fresh coordinator routes nothing | empty (non-nil) catalog is deny-all until a model is registered and promoted | `SetModelCatalog` |
 | Provider prefetch loops on `aggregate hash mismatch` | poisoned manifest; staging is cleared each time | `finalizeStagedManifest`; re-publish the version |
 
@@ -283,13 +283,13 @@ the single publish command.
 
 | Concern | Code |
 |---|---|
-| Tables (`model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `publishing_api_keys`) | `coordinator/store/postgres.go` (DDL); `coordinator/store/postgres_model_registry.go` (queries) |
+| Tables (`model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `publishing_api_keys`) | `coordinator/store/postgres/` (DDL); `coordinator/store/postgres/model_registry.go` (queries) |
 | Store types (`ModelRegistryEntry`, `ModelVersion`, `ModelVersionFile`, `ModelManifest`, `ManifestFile`, `ModelAlias`, `PublishingAPIKey`, `SupportedModel`) | `coordinator/store/interface.go` |
-| Registration, admin actions, publishing-key auth, manifest validation, R2 prefix | `coordinator/api/model_registry_handlers.go` |
-| Alias upsert/list/delete, lineage, `desired_models` fan-out | `coordinator/api/model_alias_handlers.go` |
-| OpenRouter-only aliases | `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/openrouter_alias_invariants.go` |
-| Public catalog endpoints | `coordinator/api/billing_handlers.go` (`handleModelCatalog`); `coordinator/api/model_registry_handlers.go` (`handleModelCatalogItem`, `handleModelCatalogManifest`) |
-| Catalog → registry handoff | `coordinator/api/server.go` (`SyncModelCatalog`, `syncModelAliases`) |
+| Registration, admin actions, publishing-key auth, manifest validation, R2 prefix | `coordinator/api/catalog/` |
+| Alias upsert/list/delete, lineage, `desired_models` fan-out | `coordinator/api/catalog/model_alias_handlers.go` |
+| OpenRouter-only aliases | `coordinator/api/catalog/openrouter_alias_handlers.go`, `coordinator/internal/api/catalog/aliaspolicy/openrouter_alias_invariants.go` |
+| Public catalog endpoints | `coordinator/api/catalog/catalog.go` (`HandleModelCatalog`); `coordinator/api/catalog/model_registry_handlers.go` (`HandleModelCatalogItem`, `HandleModelCatalogManifest`) |
+| Catalog → registry handoff | `coordinator/api/catalog/publication.go` (`SyncModelCatalog`, `syncModelAliases`) |
 | In-memory catalog, alias resolution, `desired_models` computation, models_update merge | `coordinator/registry/model_catalog.go` (`SetModelCatalog`, `modelAllowedByCatalogLocked`); `coordinator/registry/model_aliases.go` (`SetModelAliases`, `ResolveModel`, `ResolveModelConstrainedWithTraits`, `PublicNameForBuild`); `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `SendDesiredModels`); `coordinator/registry/provider_models.go` (`mergeProviderModels`) |
 | Capability requirements per model | `coordinator/registry/provider_capabilities.go` (`providerCanAcquireCatalogModelLocked`, `ProviderCapabilityAppleM5`, `ProviderCapabilityMLXNAX`) |
 | Wire messages | `coordinator/protocol/messages.go` (`DesiredModelsMessage`, `DesiredModelEntry`, `ModelsUpdateMessage`, `PrefetchModelStatusMessage`) |

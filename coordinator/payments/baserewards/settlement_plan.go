@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	rewardpolicy "github.com/eigeninference/d-inference/coordinator/internal/payments/rewardpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -27,7 +28,7 @@ func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, e
 	blocked := make(map[string]bool)
 	counted := make(map[string]bool)
 	verifiedBindings := make(map[string]store.MachineRewardBinding)
-	periodBudget := PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end)
+	periodBudget := rewardpolicy.PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end)
 	// Each retry either joins previously separate aliases or excludes a failed
 	// original session; neither operation admits a new session into this run.
 	for attempt := 0; attempt <= 2*len(initial); attempt++ {
@@ -55,7 +56,7 @@ func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, e
 		}
 		pending := make([]candidate, 0, len(candidates))
 		sessions := make([]string, 0, len(candidates))
-		pure := make([]Candidate, 0, len(candidates))
+		pure := make([]rewardpolicy.Candidate, 0, len(candidates))
 		for _, c := range candidates {
 			c.live = remainingRewardSessions(c.live, initial, blocked)
 			if len(c.live) == 0 {

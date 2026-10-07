@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
+	"github.com/eigeninference/d-inference/coordinator/api/releases"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -320,7 +321,7 @@ func (s *Suite) startCoordinator() error {
 		srv.SyncModelCatalog()
 	}
 	srv.SetAdminKey("testbed-admin-key")
-	srv.SetRuntimeManifest(&api.RuntimeManifest{})
+	srv.SetRuntimeManifest(&releases.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
 	srv.SetSkipChallenge(true)
 	srv.SetAllowDuplicateProviderSerialsForTesting(s.Config.ProviderTargets == nil)

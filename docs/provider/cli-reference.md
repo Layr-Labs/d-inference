@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-07
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -59,7 +59,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
-| `enroll` | Fetch and open the MDM enrollment profile | ✓ | `EnrollCommand.swift` (`Enroll`) |
+| `enroll` | Show App Attest setup guidance or check frozen legacy eligibility before profile setup | ✓ | `EnrollCommand.swift` (`Enroll`) |
 | `unenroll` | Choose full exit or MDM removal with App Attest | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
@@ -129,6 +129,18 @@ waiting (`ProviderModelSelection.withReplacement`,
 `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
 Missing custom files are seeded from this invocation's resolved configuration,
 not from the separate canonical config file.
+
+After a successful provider `bootout`, the lifecycle waits for `launchctl print`
+to confirm that the exact service label is absent before replacing its plist or
+bootstrapping it. It polls at 100 ms intervals with a 10-second monotonic budget
+and at most 101 probes. Unknown or permission errors fail the operation; an
+unconfirmed removal leaves replacement unstarted. This also applies to stop,
+uninstall and restart after drain. The budget includes returning probe calls;
+the shared launchctl subprocess has no command timeout, so a hung subprocess
+can exceed that wall time. Bootstrap error 37 (operation in progress) is a
+failure, not confirmation that the replacement started.
+Source: `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`
+(`unloadService`, `waitForServiceRemoval`, `loadService`).
 
 `start --schedule` requires interactive stdin and stdout. Its confirmed draft
 stays in memory until model selection succeeds; cancellation or an empty/failed
@@ -440,8 +452,14 @@ See [installation → Update](./installation.md#update).
 
 `EnrollmentService.enroll` in `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`
 returns App Attest setup guidance on macOS 27 or later before checking profiles,
-contacting the enrollment endpoint or opening Settings. Older macOS retains the
-legacy profile flow. `ProviderOnboardingPolicy` in
+contacting the enrollment endpoint or opening Settings. This guidance asks the
+operator to verify current status; it is not an App Attest grant. Older macOS
+uses the legacy profile flow only for eligible frozen identities. The linked
+provider token and fresh SE-key proof must pass `POST /v1/enroll` even when a
+local Darkbloom profile exists. Only then does the CLI return "Already enrolled",
+without saving or reinstalling the profile. New identities require macOS 27 or
+later and qualified App Attest, not a copied profile or OS-only grant.
+`ProviderOnboardingPolicy` in
 `provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` owns the
 OS choice and the upgrade/upcoming MDM deactivation notice. The OS choice never
 grants serving authorization or removes an existing profile.
@@ -1156,7 +1174,8 @@ darkbloom logout
 
 ## `darkbloom enroll`
 
-Request and install the Darkbloom MDM / device-attestation profile.
+Show App Attest setup guidance or check frozen legacy eligibility before MDM
+profile setup; see the [enrollment behavior](#darkbloom-enroll--darkbloom-unenroll).
 
 ```bash
 darkbloom enroll [--coordinator <url>] [--no-open]
@@ -1319,7 +1338,7 @@ override `provider.toml` for one process, are in
 
 | Key | Default | Effect |
 |---|---|---|
-| `[provider] memory_reserve_gb` | `4` | Unified memory withheld from model admission |
+| `[provider] memory_reserve_gb` | `4` | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages, so this is not a free-page floor. Set process-start `DARKBLOOM_MEMORY_AVAILABILITY=free-only` for shared hosts; see [memory admission](../architecture/scheduling.md#shared-host-memory-admission). |
 | `[provider] auto_update` | `true` | Startup + periodic self-update |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
@@ -1331,16 +1350,26 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
+| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
+| `[backend] mtp_acceptance_by_model` | `{}` | Exact model ID to acceptance string; overrides `mtp_acceptance` for that model. An unknown override resolves to `exact`, not the global value. Same eligibility and native MiMo exclusion as above (`MTPAcceptancePolicy.resolve`) |
 | `[backend.model_autopilot] enabled` | `false` | Experimental cached-inventory enrollment/consent, not activation; nonempty verified inventory is required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
 | `[backend.model_autopilot] pinned_models` | `[]` | Models autopilot must retain; configured `[backend] model` is additionally pinned (`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`, `autopilotPinnedModels`) |
 | `[backend] startup_preload` | `true` | Preload `preload_models` when set, otherwise selected models (previously loaded first on coordinator starts), within slot and memory limits |
-| `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |
+| `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | The installer binds it to the coordinator that served it: another coordinator, such as dev, writes its URL; the production installer removes the line so this default applies (`scripts/install.sh`, `bind_provider_coordinator`) |
 | `[coordinator] heartbeat_interval_secs` | `5` | Heartbeat; state file refresh is half of it |
 | `[coordinator] private_only` | `false` | Serve only the owner's [self-route](./self-route.md) traffic |
 | `[gemma_optimizations] prefill_layer18`, `weighted_r1` | `true` | See [beta features](./beta-features.md) |
 | `config_version` | retired | Ignored top-level key left by releases up to v0.9.9; no longer written |
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant`, `mtp` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`). The boolean `mtp` is superseded by `mtp_mode` |
+
+To restore exact acceptance, set `mtp_acceptance = "exact"` under `[backend]`
+in `provider.toml` and restart the provider. Per-model entries take precedence:
+remove any `"typical"` overrides from `[backend.mtp_acceptance_by_model]`, or
+set them to `"exact"` too. To opt out for only one model, set its exact model
+ID to `"exact"` in that table. Removing both settings restores the typical
+default, not exact acceptance. The benchmark default `--mtp-acceptance exact`
+is unchanged; see the [benchmark-only environment rule](../reference/configuration.md#engine-and-scheduler).
 
 For foreground/local mixed-prefill tuning, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`
 sets a process-wide token cap and `DARKBLOOM_CBV2_MIXED_PREFILL_CAP_BY_MODEL`
@@ -1351,6 +1380,11 @@ Pure-prefill stripes are unchanged. These variables are not forwarded to a Launc
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
 ## LaunchAgent environment passthrough
+
+For sandboxed foreground/local startup, `TMPDIR` selects the anonymous runtime
+metallib snapshot directory. It is not forwarded to the background provider;
+see [runtime metallib snapshots](../reference/configuration.md#runtime-metallib-snapshots)
+for accepted paths, failure behavior, and serving-process scope.
 
 The [MiMo candidate controls](../reference/configuration.md#native-mimo-v26-candidate)
 are process-scoped settings, not new CLI subcommands or release switches. Native

@@ -1,17 +1,29 @@
 package api
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	trustapi "github.com/eigeninference/d-inference/coordinator/api/provider/trust"
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/journal"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
+	AnalyticsSnapshotPath      string // Empty keeps database-backed analytics.
+	AnalyticsSnapshotStatePath string // Durable accepted-generation record; required with snapshot mode.
+	// Non-positive values retain the safe defaults; limits cannot be disabled.
+	NonStreamingResponseMaxBytes  int
+	NonStreamingResponseMaxChunks int
+
 	AppAttestShadow     AppAttestShadowConfig
 	Port                string
 	ConsoleURL          string
@@ -23,6 +35,10 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
+	// SoftDeleteMutationsEnabled permits new provider removals and account
+	// erasure confirmations. False preserves the initial rollback window; it
+	// does not undo tombstones or stop cleanup of already accepted erasures.
+	SoftDeleteMutationsEnabled bool
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -43,22 +59,6 @@ type ServerConfig struct {
 	MediaFetch *mediafetch.Config
 }
 
-const (
-	defaultMDMVerificationWorkers = 12
-	defaultMDMVerificationQueue   = 4096
-)
-
-// MDMSchedulerConfig bounds all live SecurityInfo and MDA work. Retry windows
-// are fixed policy; only fleet sizing, initial spread, and claim lifetime are
-// deployment knobs.
-type MDMSchedulerConfig struct {
-	Workers          int
-	QueueCapacity    int
-	InitialSpreadMin time.Duration
-	InitialSpreadMax time.Duration
-	ClaimTTL         time.Duration
-}
-
 // BaseRewardsConfig holds the deployment knobs for the provider base-rewards
 // engine. Policy constants (the floor table) live in payments/baserewards; only
 // operational toggles are env-driven here. The
@@ -74,20 +74,26 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
-		AppAttestShadow:         readAppAttestShadowConfig(),
-		Port:                    env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
-		ConsoleURL:              os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
-		CORSOrigin:              os.Getenv("CORS_ORIGIN"),
-		BaseURL:                 os.Getenv(env.EnvPrefix + "_BASE_URL"),
-		R2CDNURL:                os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
-		MinProviderVersion:      os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
-		AdminKey:                os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
-		AdminEmails:             ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:              os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
-		ServiceReservations:     env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
-		FirstContentSLAAccounts: ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
-		TrustReuseJournalPath:   resolveTrustReuseRevocationJournalPath(),
-		MDMScheduler:            readMDMSchedulerConfig(),
+		AnalyticsSnapshotPath:         os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_PATH"),
+		AnalyticsSnapshotStatePath:    os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_STATE_PATH"),
+		NonStreamingResponseMaxBytes:  env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_BYTES", responselimit.DefaultMaxBytes),
+		NonStreamingResponseMaxChunks: env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_CHUNKS", responselimit.DefaultMaxChunks),
+
+		AppAttestShadow:            attestservice.ConfigFromEnvironment(),
+		Port:                       env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		ConsoleURL:                 os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
+		CORSOrigin:                 os.Getenv("CORS_ORIGIN"),
+		BaseURL:                    os.Getenv(env.EnvPrefix + "_BASE_URL"),
+		R2CDNURL:                   os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
+		MinProviderVersion:         os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
+		AdminKey:                   os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
+		AdminEmails:                ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:                 os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
+		ServiceReservations:        env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		SoftDeleteMutationsEnabled: env.EnvBool(env.EnvPrefix+"_SOFT_DELETE_MUTATIONS_ENABLED", false),
+		FirstContentSLAAccounts:    ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
+		TrustReuseJournalPath:      journal.ResolveTrustReuseRevocationJournalPath(),
+		MDMScheduler:               trustapi.ReadMDMSchedulerConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)
@@ -96,47 +102,6 @@ func ReadServerConfig() ServerConfig {
 			AccountCapFrac: env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_ACCOUNT_CAP", 0), // 0 = per-machine (no per-account cap)
 		},
 	}
-}
-
-func readMDMSchedulerConfig() MDMSchedulerConfig {
-	workers := env.EnvInt(env.EnvPrefix+"_MDM_SCHEDULER_WORKERS", defaultMDMVerificationWorkers)
-	if workers < 1 {
-		workers = defaultMDMVerificationWorkers
-	} else if workers > defaultMDMVerificationWorkers {
-		workers = defaultMDMVerificationWorkers
-	}
-	queue := env.EnvInt(env.EnvPrefix+"_MDM_SCHEDULER_QUEUE_CAPACITY", defaultMDMVerificationQueue)
-	if queue < 1 {
-		queue = defaultMDMVerificationQueue
-	} else if queue > defaultMDMVerificationQueue {
-		queue = defaultMDMVerificationQueue
-	}
-	minSpread := durationEnvOr(env.EnvPrefix+"_MDM_INITIAL_SPREAD_MIN", 5*time.Second)
-	maxSpread := durationEnvOr(env.EnvPrefix+"_MDM_INITIAL_SPREAD_MAX", 5*time.Minute)
-	if minSpread < 0 || maxSpread < minSpread || maxSpread > 30*time.Minute {
-		minSpread, maxSpread = 5*time.Second, 5*time.Minute
-	}
-	claimTTL := durationEnvOr(env.EnvPrefix+"_MDM_CLAIM_TTL", 3*time.Minute)
-	if claimTTL < 2*time.Minute || claimTTL > 15*time.Minute {
-		claimTTL = 3 * time.Minute
-	}
-	return MDMSchedulerConfig{
-		Workers: workers, QueueCapacity: queue,
-		InitialSpreadMin: minSpread, InitialSpreadMax: maxSpread,
-		ClaimTTL: claimTTL,
-	}
-}
-
-func durationEnvOr(name string, fallback time.Duration) time.Duration {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return fallback
-	}
-	value, err := time.ParseDuration(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
 }
 
 // ParseCommaList splits a comma-separated environment variable and trims
@@ -154,4 +119,26 @@ func ParseCommaList(raw string) []string {
 		}
 	}
 	return result
+}
+
+// These configuration names are part of the application setup API.
+type MDMSchedulerConfig = trustapi.MDMSchedulerConfig
+type AppAttestShadowConfig = attestservice.Config
+
+// CheckAnalyticsSnapshot validates the opt-in local snapshot path before startup.
+func (c ServerConfig) CheckAnalyticsSnapshot() error {
+	if c.AnalyticsSnapshotPath == "" {
+		if c.AnalyticsSnapshotStatePath != "" {
+			return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH requires snapshot mode")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(c.AnalyticsSnapshotPath) {
+		return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH must be absolute")
+	}
+	if !filepath.IsAbs(c.AnalyticsSnapshotStatePath) ||
+		filepath.Clean(c.AnalyticsSnapshotStatePath) == filepath.Clean(c.AnalyticsSnapshotPath) {
+		return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH must be a distinct absolute path")
+	}
+	return nil
 }

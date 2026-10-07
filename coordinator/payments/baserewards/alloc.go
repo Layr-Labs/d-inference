@@ -1,6 +1,10 @@
 package baserewards
 
-import "sort"
+import (
+	"sort"
+
+	rewardpolicy "github.com/eigeninference/d-inference/coordinator/internal/payments/rewardpolicy"
+)
 
 // alloc.go holds the pure pool allocation (design §7): when eligible floors
 // exceed the budget, fund the 48–96GB workhorse tier first (a reserved sub-pool
@@ -13,57 +17,12 @@ import "sort"
 // 5-minute settlement period receives a prorated share of this pool.
 const FloorPoolBudgetMicroUSD int64 = 9_000_000_000 // $9,000/mo
 
-// Workhorse tier bounds (inclusive) — the 48–96GB class protected by the
-// reserved sub-pool (design §7).
-const (
-	workhorseMinGB = 48
-	workhorseMaxGB = 96
-)
-
-// Candidate is one machine's desired draw plus the inputs the allocator needs to
-// rank and cap it.
-type Candidate struct {
-	ProviderKey string
-	AccountID   string // for the per-account concentration cap (Stripe identity)
-	MemGB       int
-	Earned      int64
-	Floor       int64 // scaled floor
-	Draw        int64 // desired base reward = max(0, Floor - k*Earned); default k=0 ⇒ full Floor
-}
-
 // Allocation is the granted draw for one machine, never exceeding its desired
 // Candidate.Draw.
 type Allocation struct {
 	ProviderKey string
 	AccountID   string
 	Granted     int64 // <= Candidate.Draw
-}
-
-// isWorkhorse reports whether a candidate is in the protected 48–96GB tier.
-func isWorkhorse(c Candidate) bool {
-	return c.MemGB >= workhorseMinGB && c.MemGB <= workhorseMaxGB
-}
-
-// valuePerFloorDollar ranks candidates when the pool can't fund every base
-// reward: higher is funded first. Under additive base income the full prorated floor is
-// always desired, so this only rations a constrained pool — lower earned-vs-floor
-// coverage ranks higher (direct the scarce subsidy to machines not yet earning
-// much, the supply the base reward is meant to retain), and workhorse-class
-// machines are boosted above the rest so biggest idle machines wait behind them.
-// Returns a score in roughly [0, 2].
-func valuePerFloorDollar(c Candidate) float64 {
-	if c.Floor <= 0 {
-		return 0
-	}
-	coverage := float64(c.Earned) / float64(c.Floor)
-	if coverage > 1 {
-		coverage = 1
-	}
-	score := 1 - coverage // 1.0 fully idle, 0.0 fully self-funding
-	if isWorkhorse(c) {
-		score += 1.0 // workhorse boost — never starved by big idle boxes
-	}
-	return score
 }
 
 // AllocateDraws caps Σ Granted <= budget. Protection order (design §7):
@@ -87,7 +46,7 @@ func valuePerFloorDollar(c Candidate) float64 {
 // the final tiebreaker, so map iteration order in the caller never changes the
 // result. Returns one Allocation per input candidate (Granted may be 0 —
 // waitlisted).
-func AllocateDraws(cands []Candidate, budget, capBudget int64, workhorseReserveFrac, perAccountCapFrac float64, priorByAccount map[string]int64) []Allocation {
+func AllocateDraws(cands []rewardpolicy.Candidate, budget, capBudget int64, workhorseReserveFrac, perAccountCapFrac float64, priorByAccount map[string]int64) []Allocation {
 	out := make([]Allocation, len(cands))
 	idx := make(map[string]int, len(cands)) // providerKey -> out index
 	order := make([]int, len(cands))
@@ -104,7 +63,7 @@ func AllocateDraws(cands []Candidate, budget, capBudget int64, workhorseReserveF
 	// final tiebreaker (map-order independent).
 	sort.SliceStable(order, func(a, b int) bool {
 		ca, cb := cands[order[a]], cands[order[b]]
-		va, vb := valuePerFloorDollar(ca), valuePerFloorDollar(cb)
+		va, vb := rewardpolicy.ValuePerFloorDollar(ca), rewardpolicy.ValuePerFloorDollar(cb)
 		if va != vb {
 			return va > vb
 		}
@@ -127,7 +86,7 @@ func AllocateDraws(cands []Candidate, budget, capBudget int64, workhorseReserveF
 	// grant tops up one candidate, honoring the remaining budget and per-account
 	// cap. Returns the amount actually granted (cumulative grants are tracked in
 	// out/accountGranted/remaining).
-	grant := func(c Candidate, cap int64) {
+	grant := func(c rewardpolicy.Candidate, cap int64) {
 		i := idx[c.ProviderKey]
 		want := c.Draw - out[i].Granted
 		if want > cap {
@@ -158,7 +117,7 @@ func AllocateDraws(cands []Candidate, budget, capBudget int64, workhorseReserveF
 				break
 			}
 			c := cands[o]
-			if !isWorkhorse(c) {
+			if !rewardpolicy.IsWorkhorse(c) {
 				continue
 			}
 			before := remaining

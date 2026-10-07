@@ -1,8 +1,10 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 )
 
 func publicAutopilotPending(p *PendingRequest) bool {
@@ -68,7 +70,7 @@ func (r *Registry) autopilotActiveSamplesLocked() ([]autopilot.DemandSample, map
 			capacity := p.BackendCapacity
 			// Consumer completion is not engine retirement. Current-master service
 			// claims and loading/maintenance work must retain their Mac-wide debit.
-			if len(p.serviceRetirementShadows) > 0 || (capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive) {
+			if p.serviceRetirement.Account(nil).Retiring > 0 || (capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive) {
 				unscoped[p.ID] = true
 			}
 			publicCharge := 0.0
@@ -79,7 +81,7 @@ func (r *Registry) autopilotActiveSamplesLocked() ([]autopilot.DemandSample, map
 					publicCharge += lease.UsedFraction
 				}
 			}
-			if used := capacity.WholeMacServiceUsed; used != nil && (!validWholeMacServiceReservations(capacity) || !finiteServiceFraction(*used) || *used > publicCharge+1e-12) {
+			if used := capacity.WholeMacServiceUsed; used != nil && (!capacityvalue.ValidWholeMacServiceReservations(capacity) || !finiteServiceFraction(*used) || *used > publicCharge+1e-12) {
 				unscoped[p.ID] = true
 			}
 			for _, slot := range p.BackendCapacity.Slots {

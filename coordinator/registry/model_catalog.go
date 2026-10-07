@@ -1,11 +1,6 @@
 package registry
 
-import (
-	"strings"
-
-	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-)
+import "github.com/eigeninference/d-inference/coordinator/protocol"
 
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
@@ -137,8 +132,12 @@ func (r *Registry) modelAllowedByCatalogLocked(model protocol.ModelInfo) bool {
 // model and that model is currently allowed by the catalog. Caller must hold
 // r.mu and p.mu.
 func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) bool {
+	return (&ProviderEligibility{registry: r}).servesCatalogLocked(p, model)
+}
+
+func (e *ProviderEligibility) servesCatalogLocked(p *Provider, model string) bool {
 	for _, m := range p.Models {
-		if m.ID == model && r.providerModelAllowedByCatalogLocked(p, m) {
+		if m.ID == model && e.modelAllowedLocked(p, m) {
 			return true
 		}
 	}
@@ -174,8 +173,12 @@ func (r *Registry) modelServableForOwnerLocked(p *Provider, m protocol.ModelInfo
 // and that build is servable for its owner (catalog-allowed, or absent from
 // the catalog entirely). Caller must hold r.mu and p.mu.
 func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model string) bool {
+	return (&ProviderEligibility{registry: r}).servesOwnedLocked(p, model)
+}
+
+func (e *ProviderEligibility) servesOwnedLocked(p *Provider, model string) bool {
 	for _, m := range p.Models {
-		if m.ID == model && r.modelServableForOwnerLocked(p, m) {
+		if m.ID == model && e.registry.modelServableForOwnerLocked(p, m) {
 			return true
 		}
 	}
@@ -195,25 +198,7 @@ func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model str
 // MergeProviderModels/UpdateModelWeightHashes. Pre-0.6.0 providers never set
 // IsVision, so they are correctly excluded.
 func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, allowOffCatalog bool) bool {
-	for _, m := range p.Models {
-		if m.ID != model || !m.IsVision {
-			continue
-		}
-		if allowOffCatalog {
-			if !r.modelServableForOwnerLocked(p, m) {
-				continue
-			}
-		} else if !r.providerModelAllowedByCatalogLocked(p, m) {
-			continue
-		}
-		if model == modelpolicy.Qwen3VL30BA3BInstructModelID &&
-			strings.EqualFold(strings.TrimSpace(p.Hardware.ChipFamily), "M5") {
-			// This concrete VLM produces incorrect visual inference on M5.
-			return false
-		}
-		return true
-	}
-	return false
+	return (&ProviderEligibility{registry: r}).visionLocked(p, model, allowOffCatalog)
 }
 
 // HasVisionProviderForModel reports whether any online, non-untrusted provider

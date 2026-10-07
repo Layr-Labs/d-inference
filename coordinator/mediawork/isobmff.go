@@ -3,6 +3,8 @@ package mediawork
 import (
 	"context"
 	"encoding/binary"
+
+	encodedreader "github.com/eigeninference/d-inference/coordinator/internal/mediawork/encodedreader"
 )
 
 type atom struct {
@@ -10,7 +12,7 @@ type atom struct {
 	body, end int64
 }
 type movieReader struct {
-	source *encodedSource
+	source *encodedreader.Reader
 	atoms  int
 }
 type track struct {
@@ -26,14 +28,14 @@ func (r *movieReader) children(start, end int64, visit func(atom) bool) bool {
 		if r.atoms > 4096 || end-start < 8 {
 			return false
 		}
-		b, ok := r.source.bytes(start, 8)
+		b, ok := r.source.Bytes(start, 8)
 		if !ok {
 			return false
 		}
 		n := int64(binary.BigEndian.Uint32(b))
 		header := int64(8)
 		if n == 1 {
-			x, ok := r.source.bytes(start+8, 8)
+			x, ok := r.source.Bytes(start+8, 8)
 			if !ok {
 				return false
 			}
@@ -61,7 +63,7 @@ func (r *movieReader) read(a atom, n int) ([]byte, bool) {
 	if int64(n) > a.end-a.body {
 		return nil, false
 	}
-	return r.source.bytes(a.body, n)
+	return r.source.Bytes(a.body, n)
 }
 
 func (r *movieReader) parseTrack(a atom) (track, bool) {
@@ -124,7 +126,7 @@ func (r *movieReader) sampleTable(a atom, t *track) bool {
 			return false
 		}
 		for i := 0; i < entries; i++ {
-			b, ok := r.source.bytes(a.body+8+int64(i)*8, 8)
+			b, ok := r.source.Bytes(a.body+8+int64(i)*8, 8)
 			if !ok {
 				return false
 			}
@@ -163,7 +165,7 @@ func (r *movieReader) sampleTable(a atom, t *track) bool {
 }
 
 func (p *Profile) EncodedVideo(ctx context.Context, dataURI string) (int, bool) {
-	s, ok := source(ctx, dataURI, false)
+	s, ok := encodedreader.New(ctx, dataURI, false)
 	if !ok {
 		return 0, false
 	}
@@ -171,7 +173,7 @@ func (p *Profile) EncodedVideo(ctx context.Context, dataURI string) (int, bool) 
 	var videos []track
 	var audioDuration float64
 	movie := false
-	ok = r.children(0, s.size, func(a atom) bool {
+	ok = r.children(0, s.Size(), func(a atom) bool {
 		if a.kind == "moof" {
 			return false
 		} // Fragmented streams need a different sample table.

@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
-	"sync"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityquote"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
@@ -61,110 +61,6 @@ type QuoteOutcome struct {
 	SendFailed bool
 }
 
-// quoteDelivery is the tracker→collector handoff for one settled probe.
-// quote == nil means transport failure (send error or disconnect).
-type quoteDelivery struct {
-	quoteID    string
-	providerID string
-	quote      *protocol.CapacityQuoteMessage
-	observedAt time.Time
-}
-
-// pendingQuote is one outstanding probe: the provider binding the quote must
-// come back from, the expiry after which a quote is too stale to act on, and
-// the owning collector's delivery channel. The channel is buffered to the
-// collector's full probe count and each entry delivers at most once (map
-// removal is the claim), so delivering NEVER blocks — safe under t.mu.
-type pendingQuote struct {
-	providerID string
-	expiresAt  time.Time
-	deliver    chan<- quoteDelivery
-}
-
-// quoteTrackerSweepInterval is the minimum spacing between full sweeps of the
-// pending-quote map. Probe entries expire at probe-window scale (the api
-// layer's capacityProbeWindow, 250ms), so sweeping faster than the window is
-// pure overhead: entries added since the last sweep cannot have expired yet,
-// and rescanning them buys nothing. Without the gate the >1024 size trigger
-// turns quadratic under sustained load — at eight probes per request and a
-// 250ms window, ~129 concurrent primary requests keep the map above the
-// threshold with mostly-unexpired entries, so EVERY insertion would rescan
-// the whole map under the single tracker mutex and serialize quote delivery
-// behind cleanup (codex P1). One sweep per window bounds cleanup to O(size)
-// per window instead of per insert.
-const quoteTrackerSweepInterval = 250 * time.Millisecond
-
-// quoteTracker correlates capacity quotes with their probes by quote_id.
-// LEAF mutex: nothing is called while holding t.mu except buffered channel
-// sends, and no code path takes r.mu, p.mu, or a plan mu under it.
-type quoteTracker struct {
-	mu      sync.Mutex
-	pending map[string]*pendingQuote
-	// lastSweep gates add's expiry sweep to once per
-	// quoteTrackerSweepInterval; sweeps counts performed sweeps (test
-	// instrumentation only). Both guarded by mu.
-	lastSweep time.Time
-	sweeps    int
-}
-
-// add registers an outstanding probe. The opportunistic sweep settles expired
-// entries, including those whose live collector has not run its timer yet.
-// Every map claim includes a delivery, so no collector can wait forever for an
-// entry reclaimed by another owner. The >1024 size
-// trigger merely makes a sweep WORTH considering; the time gate
-// (quoteTrackerSweepInterval) decides whether one actually runs.
-func (t *quoteTracker) add(quoteID string, pq *pendingQuote) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.pending == nil {
-		t.pending = make(map[string]*pendingQuote)
-	}
-	if len(t.pending) > 1024 {
-		now := time.Now()
-		if now.Sub(t.lastSweep) >= quoteTrackerSweepInterval {
-			t.lastSweep = now
-			t.sweeps++
-			for id, e := range t.pending {
-				if now.After(e.expiresAt) {
-					delete(t.pending, id)
-					// A live collector may simply be delayed past expiry.
-					// Claiming its entry must also settle it; otherwise the
-					// collector sees take()==nil and waits for a lost delivery.
-					if e.deliver != nil {
-						e.deliver <- quoteDelivery{quoteID: id, providerID: e.providerID}
-					}
-				}
-			}
-		}
-	}
-	t.pending[quoteID] = pq
-}
-
-// take claims an outstanding probe by quote_id, or nil when another settling
-// event already claimed it. The removal IS the exactly-once guarantee.
-func (t *quoteTracker) take(quoteID string) *pendingQuote {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	pq := t.pending[quoteID]
-	delete(t.pending, quoteID)
-	return pq
-}
-
-// failProvider settles every outstanding probe bound to a disconnected
-// provider as a transport failure. Delivering under t.mu is safe (buffered
-// channels, one delivery per entry) and keeps claim+delivery atomic.
-func (t *quoteTracker) failProvider(providerID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for id, pq := range t.pending {
-		if pq.providerID != providerID {
-			continue
-		}
-		delete(t.pending, id)
-		pq.deliver <- quoteDelivery{quoteID: id, providerID: providerID}
-	}
-}
-
 // capacityQuoteReady reports whether this connection has proven the wave-2
 // capacity protocol: a heartbeat on THIS connection carried capacity_seq > 0
 // (see the gate in Heartbeat). Legacy sessions are never probed — a frame
@@ -214,27 +110,12 @@ func (r *Registry) HandleCapacityQuote(providerID string, msg *protocol.Capacity
 	if msg == nil || msg.QuoteID == "" {
 		return
 	}
-	t := &r.capacityQuotes
-	t.mu.Lock()
-	pq, ok := t.pending[msg.QuoteID]
-	if !ok {
-		t.mu.Unlock()
-		r.logger.Debug("dropping capacity quote", "reason", "unknown_or_late_quote_id", "provider_id", providerID)
-		return
+	reason := r.capacityQuotes.Resolve(providerID, msg)
+	if reason == "provider_mismatch" {
+		r.logger.Warn("dropping capacity quote", "reason", reason, "provider_id", providerID)
+	} else if reason != "" {
+		r.logger.Debug("dropping capacity quote", "reason", reason, "provider_id", providerID)
 	}
-	if pq.providerID != providerID {
-		t.mu.Unlock()
-		r.logger.Warn("dropping capacity quote", "reason", "provider_mismatch", "provider_id", providerID)
-		return
-	}
-	if time.Now().After(pq.expiresAt) {
-		t.mu.Unlock()
-		r.logger.Debug("dropping capacity quote", "reason", "expired", "provider_id", providerID)
-		return
-	}
-	delete(t.pending, msg.QuoteID)
-	pq.deliver <- quoteDelivery{quoteID: msg.QuoteID, providerID: providerID, quote: msg, observedAt: time.Now()}
-	t.mu.Unlock()
 }
 
 // ProbePlanCandidates fans capacity probes out to at most two unconsumed, unquoted,
@@ -255,7 +136,16 @@ func (r *Registry) HandleCapacityQuote(providerID string, msg *protocol.Capacity
 // natural shedding signal and settles the probe as SendFailed immediately.
 // The strict control lane is reserved for cancel/attestation/trust — a probe
 // storm there would starve exactly the frames that must never queue.
-func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeShape, window time.Duration) <-chan QuoteOutcome {
+// QuotedCandidates is the provisional evidence owner used by probe fanout.
+// Only a DispatchPlan can later admit one of these identities for service.
+type QuotedCandidates interface {
+	probeTargets() []planEntry
+	refreshProbeTargets() []planEntry
+	ApplyQuoteDelivery(capacityquote.Delivery) QuoteOutcome
+	DemoteEntry(string)
+}
+
+func (r *Registry) ProbePlanCandidates(plan QuotedCandidates, shape CapacityProbeShape, window time.Duration) <-chan QuoteOutcome {
 	out := make(chan QuoteOutcome, capacityProbeMaxFanout)
 	targets := plan.probeTargets()
 	if shape.RefreshEvidence {
@@ -269,7 +159,7 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 		return out
 	}
 
-	deliveries := make(chan quoteDelivery, len(targets))
+	deliveries := make(chan capacityquote.Delivery, len(targets))
 	// outstanding maps quote_id → provider ID for the collector's timeout
 	// attribution. Owned by the collector after fanout; senders never touch it.
 	outstanding := make(map[string]string, len(targets))
@@ -285,11 +175,11 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 		if len(outstanding) == capacityProbeMaxFanout {
 			break
 		}
-		if _, skip := excluded[target.view.ProviderID]; skip {
+		if _, skip := excluded[target.ProviderID]; skip {
 			continue
 		}
 		provider := target.provider
-		providerID := target.view.ProviderID
+		providerID := target.ProviderID
 		if !provider.capacityQuoteReady() {
 			continue
 		}
@@ -324,10 +214,10 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 		}
 		// Register BEFORE sending so a quote racing the sender's return can
 		// never miss its entry.
-		r.capacityQuotes.add(quoteID, &pendingQuote{
-			providerID: providerID,
-			expiresAt:  expiresAt,
-			deliver:    deliveries,
+		r.capacityQuotes.Add(quoteID, &capacityquote.Pending{
+			ProviderID: providerID,
+			ExpiresAt:  expiresAt,
+			Deliver:    deliveries,
 		})
 		outstanding[quoteID] = providerID
 		saferun.Go(r.logger, "registry.capacityProbeSend", func() {
@@ -338,9 +228,9 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 			if _, writeErr := provider.WriteTextDeferred(ctx, buildProbe, nil); writeErr != nil {
 				// Queue full / writer stopped / timeout: settle as SendFailed
 				// now IF this probe is still ours to settle (a disconnect may
-				// have claimed it first — take() decides exactly once).
-				if pq := r.capacityQuotes.take(quoteID); pq != nil {
-					deliveries <- quoteDelivery{quoteID: quoteID, providerID: providerID}
+				// have claimed it first — Take() decides exactly once).
+				if pq := r.capacityQuotes.Take(quoteID); pq != nil {
+					deliveries <- capacityquote.Delivery{QuoteID: quoteID, ProviderID: providerID}
 				}
 			}
 		})
@@ -357,8 +247,8 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 		for len(outstanding) > 0 {
 			select {
 			case d := <-deliveries:
-				delete(outstanding, d.quoteID)
-				out <- applyQuoteDelivery(plan, d)
+				delete(outstanding, d.QuoteID)
+				out <- plan.ApplyQuoteDelivery(d)
 			case <-timer.C:
 				// Window over. Claim every still-silent probe as a Timeout;
 				// an entry already claimed elsewhere (nil take) has a
@@ -367,7 +257,7 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 				// only continue on deliveries afterwards, and every
 				// unclaimed entry is gone — termination is guaranteed.
 				for quoteID, providerID := range outstanding {
-					if r.capacityQuotes.take(quoteID) == nil {
+					if r.capacityQuotes.Take(quoteID) == nil {
 						continue
 					}
 					delete(outstanding, quoteID)
@@ -380,20 +270,18 @@ func (r *Registry) ProbePlanCandidates(plan *DispatchPlan, shape CapacityProbeSh
 	return out
 }
 
-// applyQuoteDelivery turns a settled probe into its plan mutation + outcome:
-// affirmative quote → confirm, everything else → demote. Kept pure of channel
-// plumbing so tests pin the mapping directly.
-func applyQuoteDelivery(plan *DispatchPlan, d quoteDelivery) QuoteOutcome {
-	if d.quote == nil {
-		plan.DemoteEntry(d.providerID)
-		return QuoteOutcome{ProviderID: d.providerID, SendFailed: true}
+// ApplyQuoteDelivery applies one settled probe before publishing its outcome.
+func (plan *QuotePlan) ApplyQuoteDelivery(d capacityquote.Delivery) QuoteOutcome {
+	if d.Quote == nil {
+		plan.DemoteEntry(d.ProviderID)
+		return QuoteOutcome{ProviderID: d.ProviderID, SendFailed: true}
 	}
-	if d.quote.AdmissibleNow && validCapacityQuotePrediction(d.quote) {
-		plan.confirmEntryAt(d.providerID, d.quote, d.observedAt)
+	if d.Quote.AdmissibleNow && validCapacityQuotePrediction(d.Quote) {
+		plan.confirmEntryAt(d.ProviderID, d.Quote, d.ObservedAt)
 	} else {
-		plan.DemoteEntry(d.providerID)
+		plan.DemoteEntry(d.ProviderID)
 	}
-	return QuoteOutcome{ProviderID: d.providerID, Quote: d.quote}
+	return QuoteOutcome{ProviderID: d.ProviderID, Quote: d.Quote}
 }
 
 // Quotes describe evidence only. Their predictions must be finite and ordered
@@ -409,13 +297,13 @@ func validCapacityQuotePrediction(q *protocol.CapacityQuoteMessage) bool {
 
 // refreshProbeTargets retains the current first-content order while allowing a
 // bounded new evidence round. It never consumes a plan entry or reserves work.
-func (dp *DispatchPlan) refreshProbeTargets() []planEntry {
+func (dp *QuotePlan) refreshProbeTargets() []planEntry {
 	if dp == nil {
 		return nil
 	}
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	return append([]planEntry(nil), dp.entries[dp.cursor:]...)
+	return dp.pendingEntriesLocked()
 }
 
 // HedgeGovernorSnapshot gathers the registry-side inputs the hedge governor

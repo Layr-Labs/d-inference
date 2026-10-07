@@ -12,17 +12,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-)
 
-type arguments struct {
-	BinaryPath      string
-	ArtifactRoot    string
-	VectorsPath     string
-	Duration        time.Duration
-	QPS             int
-	MaxRSSMiB       int
-	MaxRSSGrowthMiB int
-}
+	promptproof "github.com/eigeninference/d-inference/coordinator/internal/promptproof"
+)
 
 func main() {
 	os.Exit(execute())
@@ -32,7 +24,7 @@ func execute() int {
 	args := parseArguments()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	summary, err := runProof(ctx, args)
+	summary, err := promptproof.Run(ctx, args)
 	if err != nil {
 		summary.Passed = false
 		summary.Error = err.Error()
@@ -49,8 +41,8 @@ func execute() int {
 	return 0
 }
 
-func parseArguments() arguments {
-	var args arguments
+func parseArguments() promptproof.Config {
+	var args promptproof.Config
 	flag.StringVar(&args.BinaryPath, "binary", "", "absolute release promptsidecar binary path")
 	flag.StringVar(&args.ArtifactRoot, "artifact-root", "", "absolute provisioned prompt-artifact root")
 	flag.StringVar(&args.VectorsPath, "vectors", "", "production_vectors.json path")

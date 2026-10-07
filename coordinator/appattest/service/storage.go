@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"time"
+
+	recovery "github.com/eigeninference/d-inference/coordinator/internal/appattest/recovery"
+	storagebudget "github.com/eigeninference/d-inference/coordinator/internal/appattest/storage"
 )
 
 // acquireStorage bounds proof-related shadow session database work, including rejected
@@ -12,22 +15,14 @@ import (
 // Nested observations reuse the session's permit.
 // Only the serialized session worker may call this method.
 func (x *Session) acquireStorage() (release func(), ok bool) {
-	if x.storageSlotHeld {
-		return func() {}, true
+	return x.storageAdmission().Acquire()
+}
+
+func (x *Session) storageAdmission() *storagebudget.Scope {
+	if x.storageScope == nil {
+		x.storageScope = storagebudget.NewScope(x.s.shadowStorageBudget())
 	}
-	x.s.storageOnce.Do(func() {
-		x.s.storageSlots = make(chan struct{}, 4)
-	})
-	select {
-	case x.s.storageSlots <- struct{}{}:
-		x.storageSlotHeld = true
-		return func() {
-			x.storageSlotHeld = false
-			<-x.s.storageSlots
-		}, true
-	default:
-		return nil, false
-	}
+	return x.storageScope
 }
 
 // acquireStorageWithin retries acquireStorage for up to limit. Only work that
@@ -39,7 +34,7 @@ func (x *Session) acquireStorageWithin(ctx context.Context, limit time.Duration)
 		if release, ok := x.acquireStorage(); ok {
 			return release, true
 		}
-		if !time.Now().Before(deadline) || !waitAppAttestRetry(ctx, 50*time.Millisecond) {
+		if !time.Now().Before(deadline) || !recovery.Wait(ctx, 50*time.Millisecond) {
 			return nil, false
 		}
 	}

@@ -1,0 +1,459 @@
+package registry_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/queuewait"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	production "github.com/eigeninference/d-inference/coordinator/registry"
+)
+
+func TestEnqueueAndSize(t *testing.T) {
+	q := production.NewRequestQueue(10, 30*time.Second)
+
+	req := &production.QueuedRequest{
+		RequestID:  "req-1",
+		Model:      "test-model",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+
+	if err := q.Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	if q.QueueSize("test-model") != 1 {
+		t.Errorf("queue size = %d, want 1", q.QueueSize("test-model"))
+	}
+	if q.TotalSize() != 1 {
+		t.Errorf("total size = %d, want 1", q.TotalSize())
+	}
+}
+
+func TestQueueMaxSizeEnforced(t *testing.T) {
+	q := production.NewRequestQueue(2, 30*time.Second)
+
+	// Fill the queue.
+	for i := range 2 {
+		req := &production.QueuedRequest{
+			RequestID:  "req-" + string(rune('0'+i)),
+			Model:      "test-model",
+			ResponseCh: make(chan *production.Provider, 1),
+		}
+		if err := q.Enqueue(req); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+
+	// Third enqueue should fail.
+	req := &production.QueuedRequest{
+		RequestID:  "req-overflow",
+		Model:      "test-model",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+	err := q.Enqueue(req)
+	if !errors.Is(err, production.ErrQueueFull) {
+		t.Errorf("expected ErrQueueFull, got %v", err)
+	}
+}
+
+func TestQueueTimeoutReturnsError(t *testing.T) {
+	q := production.NewRequestQueue(10, 100*time.Millisecond)
+
+	req := &production.QueuedRequest{
+		RequestID:  "req-timeout",
+		Model:      "test-model",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+
+	if err := q.Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// No provider becomes available — should timeout.
+	_, err := q.WaitForProviderContext(context.Background(), req)
+	if !errors.Is(err, production.ErrQueueTimeout) {
+		t.Errorf("expected ErrQueueTimeout, got %v", err)
+	}
+
+	// Queue should be empty after timeout cleanup.
+	if q.QueueSize("test-model") != 0 {
+		t.Errorf("queue size after timeout = %d, want 0", q.QueueSize("test-model"))
+	}
+}
+
+func TestQueueRemove(t *testing.T) {
+	q := production.NewRequestQueue(10, 30*time.Second)
+
+	req := &production.QueuedRequest{
+		RequestID:  "req-1",
+		Model:      "test-model",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+	q.Enqueue(req)
+
+	q.Remove("req-1", "test-model")
+
+	if q.QueueSize("test-model") != 0 {
+		t.Errorf("queue size after remove = %d, want 0", q.QueueSize("test-model"))
+	}
+}
+
+func TestMultipleModelsQueues(t *testing.T) {
+	q := production.NewRequestQueue(10, 30*time.Second)
+
+	req1 := &production.QueuedRequest{
+		RequestID:  "req-1",
+		Model:      "model-a",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+	req2 := &production.QueuedRequest{
+		RequestID:  "req-2",
+		Model:      "model-b",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+
+	q.Enqueue(req1)
+	q.Enqueue(req2)
+
+	if q.QueueSize("model-a") != 1 {
+		t.Errorf("model-a queue size = %d, want 1", q.QueueSize("model-a"))
+	}
+	if q.QueueSize("model-b") != 1 {
+		t.Errorf("model-b queue size = %d, want 1", q.QueueSize("model-b"))
+	}
+	if q.TotalSize() != 2 {
+		t.Errorf("total size = %d, want 2", q.TotalSize())
+	}
+}
+
+func TestQueueDifferentModelsMaxSize(t *testing.T) {
+	q := production.NewRequestQueue(1, 30*time.Second)
+
+	// Each model gets its own queue with maxSize.
+	req1 := &production.QueuedRequest{
+		RequestID:  "req-1",
+		Model:      "model-a",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+	req2 := &production.QueuedRequest{
+		RequestID:  "req-2",
+		Model:      "model-b",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+
+	if err := q.Enqueue(req1); err != nil {
+		t.Fatalf("enqueue model-a: %v", err)
+	}
+	if err := q.Enqueue(req2); err != nil {
+		t.Fatalf("enqueue model-b: %v", err)
+	}
+
+	// model-a queue is full.
+	req3 := &production.QueuedRequest{
+		RequestID:  "req-3",
+		Model:      "model-a",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+	if err := q.Enqueue(req3); !errors.Is(err, production.ErrQueueFull) {
+		t.Errorf("expected ErrQueueFull for model-a, got %v", err)
+	}
+}
+
+// TestFailQueuedRequestsForModelSkipsSelfRoute verifies that a PUBLIC unservable
+// verdict fails public waiters but leaves exclusive self-route waiters queued —
+// their own (busy) machine may still serve them.
+func TestFailQueuedRequestsForModelSkipsSelfRoute(t *testing.T) {
+	q := production.NewRequestQueue(10, 30*time.Second)
+	model := "queue-self-route"
+
+	public := &production.QueuedRequest{
+		RequestID:  "pub",
+		Model:      model,
+		ResponseCh: make(chan *production.Provider, 1),
+		Pending:    &production.PendingRequest{RequestID: "pub", Model: model},
+	}
+	selfRoute := &production.QueuedRequest{
+		RequestID:  "self",
+		Model:      model,
+		ResponseCh: make(chan *production.Provider, 1),
+		Pending:    &production.PendingRequest{RequestID: "self", Model: model, SelfRouteOnly: true, OwnerAccountID: "acct-A"},
+	}
+	if err := q.Enqueue(public); err != nil {
+		t.Fatalf("enqueue public: %v", err)
+	}
+	if err := q.Enqueue(selfRoute); err != nil {
+		t.Fatalf("enqueue self-route: %v", err)
+	}
+
+	failed := q.FailQueuedRequestsForModel(model, nil)
+	if failed != 1 {
+		t.Fatalf("failed=%d, want 1 (only the public waiter)", failed)
+	}
+	// Public waiter received a nil (rejection).
+	select {
+	case p := <-public.ResponseCh:
+		if p != nil {
+			t.Fatal("public waiter should have received nil rejection")
+		}
+	default:
+		t.Fatal("public waiter was not failed")
+	}
+	// Self-route waiter is still queued (not failed).
+	if q.QueueSize(model) != 1 {
+		t.Fatalf("queue size = %d, want 1 (self-route waiter must remain)", q.QueueSize(model))
+	}
+	select {
+	case <-selfRoute.ResponseCh:
+		t.Fatal("self-route waiter must NOT be failed by a public-unservable verdict")
+	default:
+	}
+}
+
+// TestCompetingQueueDepth pins the routing-compatibility filter behind the
+// hedge governor's queued-demand input: only waiters that could drain onto
+// capacity available to the probing request count.
+func TestCompetingQueueDepth(t *testing.T) {
+	q := production.NewRequestQueue(10, 30*time.Second)
+	model := "queue-competing"
+
+	add := func(id string, pending *production.PendingRequest) {
+		t.Helper()
+		if err := q.Enqueue(&production.QueuedRequest{
+			RequestID:  id,
+			Model:      model,
+			ResponseCh: make(chan *production.Provider, 1),
+			Pending:    pending,
+		}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	add("pub", &production.PendingRequest{RequestID: "pub", Model: model})
+	add("self", &production.PendingRequest{RequestID: "self", Model: model, SelfRouteOnly: true, OwnerAccountID: "acct-A"})
+	add("pinned", &production.PendingRequest{RequestID: "pinned", Model: model, AllowedProviderSerials: []string{"SER-1"}})
+	add("nilpending", nil)
+
+	// Unconstrained request: the public waiter and the conservative
+	// nil-Pending waiter compete; self-route and serial-pinned do not.
+	public := &production.PendingRequest{RequestID: "probe", Model: model}
+	if depth := q.CompetingQueueDepth(model, public); depth != 2 {
+		t.Fatalf("public depth = %d, want 2 (pub + nil-Pending)", depth)
+	}
+
+	// Overlapping-pinned request: the pinned waiter now competes too.
+	overlapping := &production.PendingRequest{RequestID: "probe-pin", Model: model, AllowedProviderSerials: []string{"SER-1", "SER-2"}}
+	if depth := q.CompetingQueueDepth(model, overlapping); depth != 3 {
+		t.Fatalf("overlapping-pinned depth = %d, want 3", depth)
+	}
+
+	// Disjoint-pinned request: back to 2 — the SER-1 waiter cannot use its pool.
+	disjoint := &production.PendingRequest{RequestID: "probe-dis", Model: model, AllowedProviderSerials: []string{"SER-9"}}
+	if depth := q.CompetingQueueDepth(model, disjoint); depth != 2 {
+		t.Fatalf("disjoint-pinned depth = %d, want 2", depth)
+	}
+
+	// No constraint context (nil pr): only structural exclusions apply.
+	if depth := q.CompetingQueueDepth(model, nil); depth != 2 {
+		t.Fatalf("nil-pr depth = %d, want 2", depth)
+	}
+
+	// QueueSize stays the raw count.
+	if q.QueueSize(model) != 4 {
+		t.Fatalf("QueueSize = %d, want 4", q.QueueSize(model))
+	}
+}
+
+// TestFailQueuedRequestsForModelSkipsEligiblePreferOwner verifies a prefer
+// waiter whose owner HAS an owned provider for the model survives a
+// public-unservable verdict (its own busy machine may free up).
+func TestFailQueuedRequestsForModelSkipsEligiblePreferOwner(t *testing.T) {
+	q := production.NewRequestQueue(10, 30*time.Second)
+	model := "queue-prefer"
+
+	public := &production.QueuedRequest{
+		RequestID:  "pub",
+		Model:      model,
+		ResponseCh: make(chan *production.Provider, 1),
+		Pending:    &production.PendingRequest{RequestID: "pub", Model: model},
+	}
+	prefer := &production.QueuedRequest{
+		RequestID:  "prefer",
+		Model:      model,
+		ResponseCh: make(chan *production.Provider, 1),
+		Pending:    &production.PendingRequest{RequestID: "prefer", Model: model, PreferOwner: true, OwnerAccountID: "acct-A"},
+	}
+	_ = q.Enqueue(public)
+	_ = q.Enqueue(prefer)
+
+	// PreferWaiterOwners surfaces the prefer owner so the caller can compute
+	// eligibility; here acct-A has an owned provider for the model.
+	owners := q.PreferWaiterOwners(model)
+	if len(owners) != 1 || owners[0] != "acct-A" {
+		t.Fatalf("PreferWaiterOwners = %v, want [acct-A]", owners)
+	}
+	eligible := map[string]bool{"acct-A": true}
+
+	if failed := q.FailQueuedRequestsForModel(model, eligible); failed != 1 {
+		t.Fatalf("failed=%d, want 1 (only the public waiter)", failed)
+	}
+	if q.QueueSize(model) != 1 {
+		t.Fatalf("queue size = %d, want 1 (eligible prefer waiter must remain)", q.QueueSize(model))
+	}
+	select {
+	case <-prefer.ResponseCh:
+		t.Fatal("eligible prefer waiter must NOT be failed by a public-unservable verdict")
+	default:
+	}
+}
+
+// TestFailQueuedRequestsForModelFailsOwnerlessPreferWaiter verifies a prefer
+// waiter whose owner has NO owned provider is failed fast (it's effectively a
+// public request), not left to hit the 120s stale timeout.
+func TestFailQueuedRequestsForModelFailsOwnerlessPreferWaiter(t *testing.T) {
+	q := production.NewRequestQueue(10, 30*time.Second)
+	model := "queue-prefer-noowner"
+
+	prefer := &production.QueuedRequest{
+		RequestID:  "prefer",
+		Model:      model,
+		ResponseCh: make(chan *production.Provider, 1),
+		Pending:    &production.PendingRequest{RequestID: "prefer", Model: model, PreferOwner: true, OwnerAccountID: "acct-A"},
+	}
+	_ = q.Enqueue(prefer)
+
+	// acct-A has no owned provider → not eligible → must be failed.
+	if failed := q.FailQueuedRequestsForModel(model, map[string]bool{"acct-A": false}); failed != 1 {
+		t.Fatalf("failed=%d, want 1 (owner-less prefer waiter must fail fast)", failed)
+	}
+	select {
+	case p := <-prefer.ResponseCh:
+		if p != nil {
+			t.Fatal("owner-less prefer waiter should receive a nil rejection")
+		}
+	default:
+		t.Fatal("owner-less prefer waiter was not failed")
+	}
+}
+
+func TestQueuedRequestGetsProviderWhenIdle(t *testing.T) {
+	q := production.NewRequestQueue(10, 5*time.Second)
+
+	req := &production.QueuedRequest{
+		RequestID:  "req-1",
+		Model:      "test-model",
+		ResponseCh: make(chan *production.Provider, 1),
+	}
+
+	if err := q.Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// Simulate a provider becoming idle and being assigned.
+	provider := &production.Provider{
+		ID:     "p1",
+		Status: production.StatusOnline,
+		Models: []protocol.ModelInfo{{ID: "test-model"}},
+	}
+
+	// Send provider on the response channel in a goroutine.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		assignment, offered := q.PrepareProviderAssignment(req, provider, nil)
+		if !offered {
+			return
+		}
+		assignment.Publish()
+	}()
+
+	// WaitForProviderContext should succeed.
+	p, err := q.WaitForProviderContext(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WaitForProviderContext: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected non-nil provider")
+	}
+	if p.ID != "p1" {
+		t.Errorf("provider id = %q, want p1", p.ID)
+	}
+}
+
+type queueWaitBudget struct{ wait time.Duration }
+
+type dormantQueueTimer struct{}
+
+func (b *queueWaitBudget) NewTimer(wait time.Duration) queuewait.Timer {
+	b.wait = wait
+	return dormantQueueTimer{}
+}
+
+func (dormantQueueTimer) Done() <-chan time.Time { return nil }
+
+func (dormantQueueTimer) Stop() bool { return true }
+
+func observeQueueWait(t *testing.T, queue *production.RequestQueue, budget *queueWaitBudget) time.Duration {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := queue.WaitForProviderContext(ctx, &production.QueuedRequest{RequestID: "wait-budget", Model: "model"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled budget observation: %v", err)
+	}
+	return budget.wait
+}
+
+func TestNewRequestQueueFromEnvDefaults(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "")
+
+	budget := &queueWaitBudget{}
+	q := production.NewRequestQueueFromEnv(budget)
+	wait := observeQueueWait(t, q, budget)
+	if q.MaxSize() != 32 {
+		t.Fatalf("MaxSize() = %d, want default 32", q.MaxSize())
+	}
+	if wait != 120*time.Second {
+		t.Fatalf("maxWait = %v, want default 120s", wait)
+	}
+}
+
+func TestNewRequestQueueFromEnvOverrides(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "7")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "45s")
+
+	budget := &queueWaitBudget{}
+	q := production.NewRequestQueueFromEnv(budget)
+	wait := observeQueueWait(t, q, budget)
+	if q.MaxSize() != 7 {
+		t.Fatalf("MaxSize() = %d, want 7", q.MaxSize())
+	}
+	if wait != 45*time.Second {
+		t.Fatalf("maxWait = %v, want 45s", wait)
+	}
+}
+
+func TestNewRequestQueueFromEnvRejectsInvalidValues(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "0")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "-5s")
+
+	budget := &queueWaitBudget{}
+	q := production.NewRequestQueueFromEnv(budget)
+	wait := observeQueueWait(t, q, budget)
+	if q.MaxSize() != 32 {
+		t.Fatalf("MaxSize() = %d, want default 32 for non-positive depth", q.MaxSize())
+	}
+	if wait != 120*time.Second {
+		t.Fatalf("maxWait = %v, want default 120s for non-positive wait", wait)
+	}
+
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_DEPTH", "not-a-number")
+	t.Setenv(env.EnvPrefix+"_QUEUE_MAX_WAIT", "soon")
+	q = production.NewRequestQueueFromEnv(budget)
+	wait = observeQueueWait(t, q, budget)
+	if q.MaxSize() != 32 || wait != 120*time.Second {
+		t.Fatalf("malformed env -> (%d, %v), want defaults (32, 120s)", q.MaxSize(), wait)
+	}
+}

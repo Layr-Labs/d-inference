@@ -1,0 +1,151 @@
+package registry_test
+
+import (
+	"fmt"
+	"testing"
+	"unsafe"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/candidatearena"
+	production "github.com/eigeninference/d-inference/coordinator/registry"
+)
+
+type arenaTestCandidate struct {
+	costMs   float64
+	provider *production.Provider
+	snapshot struct{ model string }
+}
+
+func TestScanPoolCandidatesAreIndependentValues(t *testing.T) {
+	var planner *production.ReservationPlanner
+	reg := production.NewWithDependencies(testLogger(), production.Dependencies{
+		Reservations: func(actual *production.ReservationPlanner) production.ReservationPreparation {
+			planner = actual
+			return actual
+		},
+	})
+	const model = "arena-model"
+	registered := make(map[string]*production.Provider)
+	for i := 0; i < 3*candidatearena.ChunkSize+5; i++ {
+		p := makeSchedulerProvider(t, reg, fmt.Sprintf("p-%03d", i), model, 50+float64(i%9))
+		p.Mu().Lock()
+		p.Hardware.ChipFamily = fmt.Sprintf("family-%03d", i)
+		if i%2 == 0 {
+			p.BackendCapacity.Slots[0].State = "idle"
+		}
+		p.Mu().Unlock()
+		registered[p.ID] = p
+	}
+	scan := func() production.CandidateScan {
+		pr := &production.PendingRequest{RequestID: "arena", Model: model, RequestedMaxTokens: 16}
+		return planner.ScanCandidates(model, pr, false)
+	}
+	first := scan()
+	if len(first.Candidates) != 3*candidatearena.ChunkSize+5 {
+		t.Fatalf("pool size = %d, want %d", len(first.Candidates), 3*candidatearena.ChunkSize+5)
+	}
+	seen := make(map[*production.Candidate]struct{}, len(first.Candidates))
+	providers := make(map[string]struct{}, len(first.Candidates))
+	for _, c := range first.Candidates {
+		if _, dup := seen[c]; dup {
+			t.Fatal("pool entries alias the same arena slot")
+		}
+		seen[c] = struct{}{}
+		p := registered[c.ProviderID]
+		if p == nil || c.CandidateBinding != c.Quote().CandidateBinding || c.CandidateBinding != production.BindCandidate(p, model) {
+			t.Fatalf("candidate/snapshot mismatch: %+v", c)
+		}
+		if _, dup := providers[c.ProviderID]; dup {
+			t.Fatalf("provider %s appears twice in the pool", c.ProviderID)
+		}
+		providers[c.ProviderID] = struct{}{}
+	}
+	quotes := make(map[*production.Candidate]production.PlanEntry, len(first.Candidates))
+	for _, c := range first.Candidates {
+		quote := c.Quote()
+		p := registered[c.ProviderID]
+		p.Mu().Lock()
+		if quote.ChipFamily != p.Hardware.ChipFamily || quote.SlotState != p.BackendCapacity.Slots[0].State || !quote.ModelLoaded {
+			p.Mu().Unlock()
+			t.Fatalf("retained quote mixes another provider's evaluation: %+v", quote)
+		}
+		quotes[c] = quote
+		// Both the next scan's scratch snapshot and live provider data change.
+		// The original scan owns all of its quote values after either change.
+		p.Hardware.ChipFamily = "changed-family"
+		p.BackendCapacity.Slots[0].State = "running"
+		p.BackendCapacity.Slots[0].ObservedDecodeTPS *= 2
+		p.Mu().Unlock()
+	}
+	second := scan()
+	if len(second.Candidates) != len(first.Candidates) {
+		t.Fatalf("second scan pool size = %d, want %d", len(second.Candidates), len(first.Candidates))
+	}
+	for _, c := range first.Candidates {
+		if got := c.Quote(); got != quotes[c] {
+			t.Fatalf("a second scan mutated the first scan's retained quote: got %+v, want %+v", got, quotes[c])
+		}
+	}
+}
+
+// Every kept slot remains stable across the original five-chunk workload.
+func TestCandidateArenaPointersStayValidAcrossChunks(t *testing.T) {
+	var arena candidatearena.Arena[arenaTestCandidate]
+	const n = 5*candidatearena.ChunkSize + 3
+	kept := make([]*arenaTestCandidate, 0, n)
+	for i := 0; i < n; i++ {
+		c := arena.Next()
+		if c.costMs != 0 || c.provider != nil || c.snapshot.model != "" {
+			t.Fatalf("slot %d not zeroed: %+v", i, c)
+		}
+		c.costMs = float64(i)
+		c.snapshot.model = fmt.Sprintf("m-%d", i)
+		kept = append(kept, c)
+	}
+	for i, c := range kept {
+		if c.costMs != float64(i) || c.snapshot.model != fmt.Sprintf("m-%d", i) {
+			t.Fatalf("slot %d was overwritten or moved: %+v", i, c)
+		}
+	}
+	for i := 1; i < len(kept); i++ {
+		if kept[i] == kept[i-1] {
+			t.Fatalf("slots %d and %d alias", i-1, i)
+		}
+	}
+}
+
+func TestCandidateArenaReleaseReusesAndZeroes(t *testing.T) {
+	var arena candidatearena.Arena[arenaTestCandidate]
+	a := arena.Next()
+	a.costMs = 42
+	arena.Release(a)
+	b := arena.Next()
+	if b != a {
+		t.Fatal("release did not hand the slot back for reuse")
+	}
+	if b.costMs != 0 {
+		t.Fatalf("reused slot not zeroed: costMs=%v", b.costMs)
+	}
+	b.costMs = 7
+	c := arena.Next()
+	arena.Release(b)
+	if arena.Next() == b {
+		t.Fatal("releasing a kept (non-latest) slot reclaimed it")
+	}
+	if b.costMs != 7 {
+		t.Fatal("kept slot was disturbed")
+	}
+	_ = c
+}
+
+// The Go allocator's largest small-object size class is 32 KiB. A chunk that
+// does not fill it wastes the tail of every allocation the scan makes, and a
+// chunk past it becomes a large object. Retune ChunkSize when Candidate changes.
+func TestCandidateArenaChunkFillsLargestSmallSizeClass(t *testing.T) {
+	const largestSmallSizeClass = 32 << 10
+	candidateBytes := unsafe.Sizeof(production.Candidate{})
+	chunkBytes := uintptr(candidatearena.ChunkSize) * candidateBytes
+	if chunkBytes > largestSmallSizeClass || chunkBytes+candidateBytes <= largestSmallSizeClass {
+		t.Fatalf("chunk of %d candidates x %d bytes = %d bytes; want the most candidates that fit %d bytes (%d)",
+			candidatearena.ChunkSize, candidateBytes, chunkBytes, largestSmallSizeClass, largestSmallSizeClass/candidateBytes)
+	}
+}

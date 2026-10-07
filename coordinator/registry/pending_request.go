@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheattempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -21,6 +22,9 @@ type ProviderChunk struct {
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
 	RequestID string
+	// NonStreamingResponseBudget is installed before dispatch and accounts decrypted
+	// chunks before any queue or response accumulator retains them. Nil means streaming.
+	NonStreamingResponseBudget *ResponseBudget
 	// Attempt is the zero-based dispatch attempt number that produced this
 	// pending request. It lets outcome telemetry correlate the final result
 	// with the routing decision record for the same attempt.
@@ -123,6 +127,10 @@ type PendingRequest struct {
 	// never a timer and unused by ordinary deadline-exempt selection.
 	FirstContentPlanningHorizon time.Duration
 	Hedge                       bool
+	// Set at reservation commit before dispatch; outcome paths read the
+	// attempt's selection evidence even after provider measurements change.
+	firstContentExplored                   bool
+	firstContentExplorationOutcomeRecorded atomic.Bool
 	// Reservation metadata is owned by the provider pending set and read only
 	// under provider.mu. Removing the pending owner retires prompt reservations;
 	// a dispatched service charge survives in the provider retirement shadow
@@ -167,11 +175,9 @@ type PendingRequest struct {
 	MinDecodeTPS float64
 	// CachePlan contains exact sidecar block boundaries and opaque build scope.
 	// It is never logged or persisted.
-	CachePlan              CachePlan
-	cacheAttempt           atomic.Pointer[cacheAttemptOwner]
-	cacheAttemptMu         sync.Mutex
-	cachePreparationTicket uint64
-	cachePreparationClosed bool
+	CachePlan        CachePlan
+	cachePreparation cacheattempt.Preparation
+	cacheAttemptMu   sync.Mutex
 	// LegacyCacheBustKey is injected only into the encrypted provider-bound
 	// request body for protocol-0 providers. It is never reflected to the caller.
 	LegacyCacheBustKey string
@@ -464,16 +470,18 @@ func (pr *PendingRequest) ContentIngressAtOrBefore(cutoff time.Time) bool {
 
 // EnableSpeculativeEmptyCompletionArbitration prevents an empty completion
 // from settling until the dispatch owner decides which speculative racer won.
-func (pr *PendingRequest) EnableSpeculativeEmptyCompletionArbitration() {
+func (pr *PendingRequest) EnableSpeculativeEmptyCompletionArbitration() <-chan struct{} {
 	if pr == nil {
-		return
+		return nil
 	}
 	pr.emptyCompletionMu.Lock()
 	if !pr.emptyCompletionEnabled {
 		pr.emptyCompletionEnabled = true
 		pr.emptyCompletionDecision = make(chan struct{})
 	}
+	decision := pr.emptyCompletionDecision
 	pr.emptyCompletionMu.Unlock()
+	return decision
 }
 
 // ResolveSpeculativeEmptyCompletion releases a waiting completion as the

@@ -3,18 +3,11 @@ package autopilot
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/residency"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-type ModelFit struct {
-	Rate           float64 // sustainable request equivalents/sec for this workload
-	ServiceSeconds float64
-	LoadSeconds    float64
-	WeightsGiB     float64 // padded incoming transient
-	Restricted     bool
-	Measured       bool
-	MeetsDeadline  bool
-}
+type ModelFit = residency.ModelFit
 type Node struct {
 	ID                     string
 	Seq                    uint64

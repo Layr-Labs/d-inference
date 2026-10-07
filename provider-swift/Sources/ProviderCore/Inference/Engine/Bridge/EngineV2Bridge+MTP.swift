@@ -157,6 +157,12 @@ extension EngineV2Bridge {
         if let reason = posture.mtpInactiveReason {
             fields["mtp_inactive_reason"] = .string(reason)
         }
+        // The installed acceptance rule (`exact` / `typical`), so a roll-up
+        // can split `mtp_acceptance_rate` by rule: typical acceptance keeps
+        // more drafts by design and would otherwise read as a better drafter.
+        if let acceptance = snapshot.acceptance {
+            fields["mtp_acceptance"] = .string(acceptance)
+        }
         // OMITTED, never 0.0, when nothing was proposed. A zero would read as
         // "the target rejects every draft" rather than "no drafts existed",
         // and would drag any unweighted fleet average toward zero.

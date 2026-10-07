@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-06
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -18,7 +18,55 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
-The **0.9.17** candidate separates normal model selection from Autopilot's
+### 0.9.18 candidate rollout
+
+**0.9.18 is prepared, not published or qualified.** The latest published release
+at preparation is 0.9.17. The [changelog](../../CHANGELOG.md) identifies the
+merged provider, pinned SDK and nested MLX changes; pending PRs are excluded.
+The paired version constants do not change `GET /v1/releases/latest` until
+registration succeeds.
+
+1. Verify Release Integrity, including `python3 scripts/check-go-toolchain.py`
+   and its regression tests, and the final source's component CI gates. The
+   coordinator Docker builder and `mise.toml` now satisfy the unchanged module
+   minimum; require a successful production image build before any swap.
+2. Plan the separately approved coordinator bridge using the
+   [schema migration cut-over](schema-migration.md#first-production-cut-over-to-goose)
+   and [rollback rules](schema-migration.md#rollback). Do not jump directly from
+   pre-goose production to current master. A versions-1-to-9 bridge is not a
+   lasting compatible fallback once soft-deleted data exists: ordinary
+   `DELETE /v1/me/providers/{id}` writes `deleted_at`, not just account erasure.
+   Keep `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false` until a fallback
+   implements the required soft-delete and erasure semantics. This blocks new
+   erasure confirmations and provider removals, not accepted scrub/outbox work;
+   prior tombstones or erasures still require a compatible fallback. Review the
+   [migration budgets and invalid-index procedure](schema-migration.md#steps)
+   before online preparation. Preserve active App Attest, removal, payout and
+   cache controls; the bridge is not permission to reset production policy.
+3. Coordinate authenticated legacy reenrollment with the signed provider and
+   embedded installer. Existing 0.9.17 providers do not send the new signed
+   `/v1/enroll` contract, so an upgraded coordinator can preserve eligible
+   serving while old-client reenrollment remains unavailable. Do not describe
+   that interval as uninterrupted recovery. Keep the frozen cohort, current
+   qualified App Attest requirements and existing management intact; never
+   restore anonymous enrollment as a workaround. Follow the
+   [MDM-optional gates](#mdm-optional-onboarding-candidate).
+4. For a separately authorized tag/signing run, reuse compatible release caches,
+   but build and qualify the exact retained signed artifact. Check launchd
+   replacement/removal failure, subprocess output
+   saturation, explicit valid/invalid `TMPDIR`, default versus opt-in free-only
+   memory admission, authenticated legacy eligibility, and queued-cancel
+   retirement. Requalify the compiled nested MLX gather/numerical paths with
+   source-matched Metal on supported Macs; prior-pin benchmarks are not evidence
+   for this artifact. Retain the SDK numerical, lifecycle and existing model
+   runtime gates rather than replacing them with version-parity checks.
+5. Only after the bridge, compatible fallback and exact-artifact qualification
+   are ready, authorize publication through the existing workflow.
+   Signing/staging may precede publication approval; deployment,
+   registration, aliases and GitHub publication remain distinct operations.
+   This preparation performs none of them.
+
+Released **0.9.17** separates normal model selection from Autopilot's
 verified cached inventory using protocol 3. Version preparation does not publish
 the release; tag only the reviewed merged commit and qualify the retained signed
 artifact before production registration. Validate a one-model selection with
@@ -167,7 +215,7 @@ Production publication requires independent [durable App Attest build qualificat
    provider publication are separate operations.
 
 The drain implementation lives in `provider-swift/Sources/darkbloom/ServiceDrain.swift`
-(`ServiceDrain`) and `coordinator/api/provider_completion_barrier.go`
+(`ServiceDrain`) and `coordinator/internal/provider/session/provider_completion_barrier.go`
 (`providerCompletionBarrier`). See [CLI lifecycle behavior](../provider/cli-reference.md)
 for normal timeout and explicit-force semantics.
 
@@ -180,8 +228,13 @@ Deploy the coordinator containing the native SSD-offload capacity accounting and
 ### MDM-optional onboarding candidate
 
 The installer and `darkbloom enroll` select App Attest setup on macOS 27+ without
-requesting an MDM profile. Older macOS keeps legacy enrollment and sees the
-upgrade/upcoming deactivation notice. Follow the
+requesting an MDM profile. On older macOS the installer defers eligible legacy
+reenrollment to account login and the signed `darkbloom enroll` check, while
+showing the upgrade/upcoming deactivation notice. Verify with
+`scripts/test-install-onboarding.py` that no installer branch posts an anonymous
+profile request or opens profile setup, and existing management stays untouched.
+Installer success is not serving authorization; new providers require macOS 27+
+and current qualified App Attest. Follow the
 [MDM-optional rollout runbook](mdm-optional-rollout.md) to coordinate the embedded
 installer, signed provider, setup page and serving cohort. A disabled or
 unqualified coordinator leaves new macOS 27+ providers pending; the notice does
@@ -212,8 +265,8 @@ A coordinator binary upgrade is not required solely to register 0.9.2. The
 0.9.1 coordinator already validates and stores the release, refreshes active
 binary/metallib trust, preserves other active releases and serves the new
 version through `GET /v1/releases/latest`. `LatestProviderVersion` is a display
-fallback, not an exact-version admission pin (`coordinator/api/release_handlers.go`,
-`handleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
+fallback, not an exact-version admission pin (`coordinator/api/releases/release_handlers.go`,
+`HandleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
 `SyncRuntimeManifest`).
 
 The 0.9.2 assistant transition uses existing slot state `reloading`, capacity
@@ -477,6 +530,13 @@ without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
 
+Dev and production builds carry the same version string. A Mac reaches the dev
+release only through the dev installer
+(`curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash`), which writes
+the dev `[coordinator] url` into `provider.toml`
+(`scripts/install.sh`, `bind_provider_coordinator`); updates then come from the
+dev coordinator. See [dev-environment.md](dev-environment.md), step 9.
+
 ### Signed validation bundle
 
 To test a source revision before release registration, dispatch the same signing,
@@ -585,7 +645,7 @@ never overwrite them. Code: `scripts/provider_release_github.py`
 [release-asset API reference](https://docs.github.com/en/rest/releases/assets).
 
 The retained production registration payload (`registerReleaseRequest` in
-`coordinator/api/release_handlers.go`; unknown fields are rejected) contains:
+`coordinator/api/releases/release_handlers.go`; unknown fields are rejected) contains:
 
 ```json
 {
@@ -605,7 +665,7 @@ The retained production registration payload (`registerReleaseRequest` in
 ```
 
 Use the downloaded payload instead of reconstructing signed-artifact hashes
-by hand. `handleRegisterRelease` authenticates the scoped release key,
+by hand. `HandleRegisterRelease` authenticates the scoped release key,
 validates semver/platform/digests and the exact configured R2 origin/path,
 then downloads and verifies the final archive and provider binary (2 GiB cap,
 two-minute timeout). New publication uses the bundle-digest path; the original
@@ -638,8 +698,8 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 ```
 
 - `GET /v1/releases/latest` returns the **highest active semver** for the
-  platform (`GetLatestRelease` in `coordinator/store/postgres.go`, ordered by
-  `releaseVersionGreater` in `coordinator/store/release_version.go`), not the
+  platform (`GetLatestRelease` in `coordinator/store/postgres/`, ordered by
+  `releaseVersionGreater` in `coordinator/store/`), not the
   most recently registered row.
 - Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
   `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle
@@ -673,7 +733,7 @@ it** so the previous active version becomes "latest" again.
      -d '{"version":"0.9.10","platform":"macos-arm64"}'
    ```
 
-   `handleAdminDeleteRelease` answers `409 release_in_use` while connected
+   `HandleAdminDeleteRelease` answers `409 release_in_use` while connected
    providers still run that `binary_hash` (in-use protection is active when
    binary-hash enforcement is on **or** a release inventory has ever been
    published). Add `"force":true` only when the release must be pulled

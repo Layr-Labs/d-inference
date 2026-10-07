@@ -2,9 +2,10 @@ package payouts
 
 import (
 	"context"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"time"
 )
 
 func (s *Owner) ProcessStripeWithdrawalQueue(ctx context.Context) {
@@ -26,15 +27,28 @@ func (s *Owner) ProcessStripeWithdrawalQueue(ctx context.Context) {
 		}
 		// Revalidate the saved destination without substituting a new account.
 		acct, err := s.billing.StripeConnect().GetAccount(row.StripeAccountID)
-		unavailable := err != nil || !acct.PayoutsEnabled
+		unavailable := err != nil || acct == nil || !acct.PayoutsEnabled
 		gone := billing.IsDefinitiveAPIErr(err) && billing.IsAccountGoneErr(err)
-		if row.Status == "queued" && unavailable && !gone {
+		if row.Status == "queued" && gone {
+			// Reject while still unsent. A failed durable write leaves the
+			// generation queued, so recovery never invents a previous send.
+			if err := repo.RejectQueuedStripeWithdrawal(row.ID, row.TransferAttempt, time.Now(), "queued_destination_removed"); err != nil {
+				s.logger.Error("queued stripe withdrawal rejection persistence failed", "withdrawal_id", row.ID, "error", err)
+				s.deferStripeWithdrawal(repo, &row)
+				continue
+			}
+			s.refundConfirmedStripeTransfer(row.ID)
+			continue
+		}
+		if row.Status == "queued" && unavailable {
 			s.logger.Warn("queued stripe withdrawal account unavailable", "withdrawal_id", row.ID, "error", err)
+			s.deferStripeWithdrawal(repo, &row)
 			continue
 		}
 		if row.Status == "queued" && acct != nil && acct.PayoutInterval == "manual" {
 			if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleAuto(row.StripeAccountID, acct.Country); err != nil {
 				s.logger.Warn("queued stripe withdrawal schedule repair pending", "withdrawal_id", row.ID, "error", err)
+				s.deferStripeWithdrawal(repo, &row)
 				continue
 			}
 		}
@@ -46,12 +60,6 @@ func (s *Owner) ProcessStripeWithdrawalQueue(ctx context.Context) {
 		if wd == nil {
 			continue
 		}
-		// Only a fresh unsent queue claim can refund a removed destination.
-		// A previous ambiguous send must be retried with its original key.
-		if gone && wd.TransferDispatchAttempts == 1 {
-			s.refundRejectedStripeTransfer(wd, "queued_destination_removed")
-			continue
-		}
 		country := ""
 		if acct != nil {
 			country = acct.Country
@@ -60,5 +68,11 @@ func (s *Owner) ProcessStripeWithdrawalQueue(ctx context.Context) {
 		if result.status >= 400 {
 			s.logger.Warn("queued stripe withdrawal dispatch failed", "withdrawal_id", wd.ID, "status", result.status)
 		}
+	}
+}
+
+func (s *Owner) deferStripeWithdrawal(repo store.StripeWithdrawalQueueStore, wd *store.StripeWithdrawal) {
+	if err := repo.DeferStripeWithdrawal(wd.ID, wd.TransferAttempt, time.Now()); err != nil {
+		s.logger.Error("queued stripe withdrawal deferral failed", "withdrawal_id", wd.ID, "error", err)
 	}
 }

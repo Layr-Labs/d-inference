@@ -1,9 +1,10 @@
 package memory
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"sort"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func (s *MemoryStore) QueueStripeWithdrawal(id string, attempt int) error {
@@ -20,6 +21,29 @@ func (s *MemoryStore) QueueStripeWithdrawal(id string, attempt int) error {
 	w.FailureReason = store.WithdrawalFundingReason
 	w.TransferLeaseUntil = time.Time{}
 	w.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *MemoryStore) DeferStripeWithdrawal(id string, attempt int, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w := s.stripeWithdrawalsByID[id]
+	if w == nil || w.Status != "queued" || w.TransferAttempt != attempt || !stripeQueueEligible(w, now) {
+		return store.ErrPayoutConflict
+	}
+	w.TransferLeaseUntil = now.Add(5 * time.Minute)
+	w.UpdatedAt = now
+	return nil
+}
+
+func (s *MemoryStore) RejectQueuedStripeWithdrawal(id string, attempt int, now time.Time, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w := s.stripeWithdrawalsByID[id]
+	if reason == "" || w == nil || w.Status != "queued" || w.TransferAttempt != attempt || !stripeQueueEligible(w, now) {
+		return store.ErrPayoutConflict
+	}
+	w.Status, w.FailureReason, w.UpdatedAt = "failed", store.StripeConfirmedRejectionPrefix+reason, now
 	return nil
 }
 

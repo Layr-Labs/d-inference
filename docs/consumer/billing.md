@@ -197,7 +197,7 @@ Choose your country of residence in bank setup and use a bank account in that co
 
 For international bank withdrawals, enter a USD amount and select **Review withdrawal**. Review the estimated local deposit, destination, withdrawal fee and expected timing, then select **Confirm withdrawal**. Reviewing does not deduct earnings. An expired estimate must be refreshed. If a response is interrupted, **Check withdrawal** resolves the existing withdrawal before allowing another. The same browser remembers that confirmation when you reload or reopen the page, including when your remaining balance is zero.
 
-If history shows **Queued**, payout funding is temporarily low. Your requested earnings are reserved and the withdrawal retries automatically when funding returns. Do not submit another withdrawal for the same amount. Bank arrival timing starts after the queued payment is sent; a queued international exchange estimate is refreshed then.
+If history shows **Queued**, payout funding is temporarily low. Your requested earnings are reserved and the withdrawal retries automatically when funding returns. Do not submit another withdrawal for the same amount. If Stripe temporarily cannot verify the saved destination, the coordinator retries after a short backoff. Bank arrival timing starts after the queued payment is sent; a queued international exchange estimate is refreshed then.
 
 If history shows **Needs review**, contact support with the withdrawal ID. This includes a queue that could not be saved reliably. Its funds remain reserved until the outcome is established; do not submit another payment for that withdrawal.
 

@@ -1431,7 +1431,7 @@ provider plist's `EnvironmentVariables`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
 `passthroughEnvKeys` + `inferencePassthroughEnvKeys`,
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
-media, SSD-prefix and memory-cap tunables — reaches the engine only under
+media, remaining SSD-prefix and memory-cap tunables — reaches the engine only under
 `darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
 defaults to enabled for the exact Qwen, Nemotron Lightning and Bonsai 2 artifacts,
 Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`), GPT-OSS 20B (`gpt-oss-20b`) and the
@@ -1447,7 +1447,11 @@ routing also requires the separate live capability described in
 once in [`reference/configuration.md`](../reference/configuration.md).
 
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides the compiled SSD
-write budget in foreground/local processes; see the [SSD cache limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
+write budget. It and `DARKBLOOM_PREFIX_CACHE_DISK_GB` are also forwarded when
+`darkbloom start` installs the launchd job. An ordinary `darkbloom restart` reuses
+the saved plist and does not import newly exported shell variables; stop and
+start with the intended environment to update them. See the
+[SSD cache limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` and `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`
 control the explicitly opted-in recurrent checkpoint bank in foreground/local processes; they are

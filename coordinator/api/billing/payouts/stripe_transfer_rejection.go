@@ -13,9 +13,17 @@ func (s *Owner) refundRejectedStripeTransfer(wd *store.StripeWithdrawal, reason 
 		s.logger.Error("stripe payout: persist rejection failed; manual reconciliation required", "withdrawal_id", wd.ID, "error", err)
 		return false
 	}
-	_, err := repo.RefundRejectedStripeWithdrawal(wd.ID)
+	return s.refundConfirmedStripeTransfer(wd.ID)
+}
+
+func (s *Owner) refundConfirmedStripeTransfer(withdrawalID string) bool {
+	repo, ok := store.As[store.StripeSettlementStore](s.billing.Store())
+	if !ok {
+		return false
+	}
+	_, err := repo.RefundRejectedStripeWithdrawal(withdrawalID)
 	if err != nil {
-		s.logger.Error("stripe payout: refund pending recovery", "withdrawal_id", wd.ID, "error", err)
+		s.logger.Error("stripe payout: refund pending recovery", "withdrawal_id", withdrawalID, "error", err)
 	}
 	return err == nil
 }

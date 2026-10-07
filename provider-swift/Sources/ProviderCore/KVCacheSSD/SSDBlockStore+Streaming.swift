@@ -4,6 +4,22 @@ import CryptoKit
 import Foundation
 
 extension SSDBlockStore {
+    /// Charge the complete DBK3 file, including metadata and authentication tags.
+    static func serializedByteCount(metadata: SSDBlockMetadata) throws -> Int {
+        let header = try assembleHeader(
+            fileIV: Data(count: fileIVLength),
+            wrappedDEK: Data(count: nonceLength + 32 + gcmTagLength),
+            metadataJSON: canonicalEncode(metadata))
+        var bytes = header.count + 4 // chunk count
+        for size in metadata.chunkPlaintextSizes {
+            guard size >= 0, size <= Int.max - bytes - 4 - gcmTagLength else {
+                throw SSDBlockStoreError.sizeOverflow("serialized block size overflow")
+            }
+            bytes += 4 + size + gcmTagLength
+        }
+        return bytes
+    }
+
     /// DBK3 wire format with one plaintext chunk alive at a time. The producer
     /// may export a tensor segment directly; it need not retain a whole file.
     static func writeStreaming(

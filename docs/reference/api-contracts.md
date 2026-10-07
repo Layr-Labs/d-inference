@@ -460,7 +460,7 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `HandleLatestRelease` (`coordinator/api/releases/read_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `HandleReadyz` (`coordinator/api/operations/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.18 prepared candidate sets `LatestProviderVersion` in
+The 0.9.19 prepared candidate sets `LatestProviderVersion` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
@@ -1479,7 +1479,8 @@ Confirmation reserves the gross amount once. Low funding (including estimated
 platform-paid fees) returns HTTP 202 with `status="queued"`, the same
 `withdrawal_id`, and the remaining balance. Withdrawal history includes `queued`
 with `failure_reason="awaiting_funding"`; the minute reconciliation loop retries
-automatically. A bank-arrival `eta` is returned only after an external payout
+automatically. Temporarily unavailable Connect destinations back off for five
+minutes without consuming a send or blocking newer eligible withdrawals. A bank-arrival `eta` is returned only after an external payout
 is processing or posted; an unsent `pending` response explains that earnings
 remain reserved while confirmation is in progress. If persisting the Connect queue fails, the response and history
 remain `pending` with `funding_queue_persistence_failed` and the UI shows **Needs

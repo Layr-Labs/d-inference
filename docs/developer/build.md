@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -225,6 +225,14 @@ Provider signing, R2 staging and publication run in separate jobs in `.github/wo
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
+## Standalone SSD accounting check
+
+`bash scripts/test-ssd-write-budget.sh` compiles only the production
+`SSDWriteBudget.swift` and `SSDWriteRateLimiter.swift` sources, then links their
+Swift Testing suites with Xcode's testing framework. It needs no MLX submodule
+build or GPU work and removes its temporary build output on exit. See the
+[SSD endurance tests](test.md#ssd-write-endurance) for scope and limitations.
 
 ## Nightly Linear workflow
 

@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"errors"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/jackc/pgx/v5"
-	"time"
 )
 
 func (s *PostgresStore) QueueStripeWithdrawal(id string, attempt int) error {
@@ -22,6 +23,31 @@ func (s *PostgresStore) QueueStripeWithdrawal(id string, attempt int) error {
 }
 
 const stripeQueuePredicate = `NOT refunded AND transfer_id='' AND payout_id='' AND sweep_payout_id='' AND transfer_lease_until<=$1 AND (status='queued' OR (status='pending' AND transfer_attempt>0 AND transfer_started_at>$2))`
+
+func (s *PostgresStore) DeferStripeWithdrawal(id string, attempt int, now time.Time) error {
+	ctx, cancel := payoutContext()
+	defer cancel()
+	tag, err := s.pool.Exec(ctx, `UPDATE stripe_withdrawals SET transfer_lease_until=$4,updated_at=$1
+ WHERE id=$3 AND status='queued' AND transfer_attempt=$5 AND `+stripeQueuePredicate, now, now.Add(-12*time.Hour), id, now.Add(5*time.Minute), attempt)
+	if err == nil && tag.RowsAffected() != 1 {
+		return store.ErrPayoutConflict
+	}
+	return err
+}
+
+func (s *PostgresStore) RejectQueuedStripeWithdrawal(id string, attempt int, now time.Time, reason string) error {
+	if reason == "" {
+		return store.ErrPayoutConflict
+	}
+	ctx, cancel := payoutContext()
+	defer cancel()
+	tag, err := s.pool.Exec(ctx, `UPDATE stripe_withdrawals SET status='failed',failure_reason=$4,updated_at=$1
+ WHERE id=$3 AND status='queued' AND transfer_attempt=$5 AND `+stripeQueuePredicate, now, now.Add(-12*time.Hour), id, store.StripeConfirmedRejectionPrefix+reason, attempt)
+	if err == nil && tag.RowsAffected() != 1 {
+		return store.ErrPayoutConflict
+	}
+	return err
+}
 
 func (s *PostgresStore) ClaimStripeWithdrawal(id string, now time.Time) (*store.StripeWithdrawal, error) {
 	ctx, cancel := payoutContext()

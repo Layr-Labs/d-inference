@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - per-model MTP acceptance opt-in
+
+- Make typical MTP acceptance a per-model opt-in with an `exact` default. This reverses the typical default from #1376: typical acceptance is not yet benchmarked. Only `[backend.mtp_acceptance_by_model]` with an exact model ID selects `typical` or `exact`; every other model uses `exact`. The global `[backend] mtp_acceptance` key is retired: it still parses, selects nothing, and logs one startup warning that names `mtp_acceptance_by_model`. A slot that cannot honour `typical` (MTP off, or a drafter without target-prefix acceptance, such as native MiMo) installs `exact`, logs one warning, and reports `exact` in slot posture telemetry. The benchmark-only `DARKBLOOM_MTP_ACCEPTANCE` override and its `exact` default are unchanged.
+
 ## Unreleased - typical MTP acceptance
 
 - Default eligible sampled target-prefix MTP requests to typical acceptance (delta `0.2`) when `[backend] mtp_acceptance` and the model override are absent. Sampled output is approximate, not distribution-exact; explicit `exact` restores exact acceptance and invalid values remain safely exact. Greedy behavior, native MiMo exact acceptance, disabled MTP and model eligibility are unchanged. Benchmark acceptance still defaults to `exact`; the recorded single-host B=1 runs do not qualify sampled quality or fleet-wide speed.

@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -281,6 +281,7 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 | Component | State |
 |---|---|
 | `TelemetryClient.emit` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift`) | discards the event; `configure` logs that client telemetry is disabled |
+| Slot posture event `engine_v2_slot_posture` (`EngineV2Bridge.emitSlotPostureTelemetry`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`) | built per slot at start and every 60 s with `mtp_enabled`, `mtp_active`, `mtp_inactive_reason`, `mtp_acceptance` (the installed rule, `exact` or `typical`, with no delta; a slot that cannot honour a configured `typical` reports `exact`), `mtp_acceptance_rate`, `mtp_proposed_tokens`, `mtp_accepted_tokens` and, for paged slots, `pool_utilization`; production injects no sink, so `TelemetryClient.emit` discards it |
 | `TelemetryOverflowQueue` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift`) | `purge` deletes the legacy `telemetry-queue.jsonl` |
 | Console `emit`, `installGlobalHandlers` (`console-ui/src/lib/telemetry.ts`) | no-ops |
 | Coordinator `POST /v1/telemetry/events` | not registered; 404 |

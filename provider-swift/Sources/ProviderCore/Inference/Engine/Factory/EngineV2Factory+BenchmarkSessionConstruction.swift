@@ -216,7 +216,8 @@ extension EngineV2Factory {
                 maxConcurrentRequests: maxConcurrentRequests, constructionPurpose: .benchmark,
                 kvBudget: budget,
                 activationReserveBytes: reserve, kvBackendConfig: kvBackendConfig,
-                mtpAcceptanceConfig: mtpAcceptanceConfig,
+                // The session's requested rule applies to its one model.
+                mtpAcceptanceConfigByModel: [modelId: mtpAcceptanceConfig],
                 weightHash: verifiedWeightHash, specDecPreparation: preparation,
                 preparedModel: prepared,
                 assemblyOverrides: .init(gemmaMTPVerification: gemmaMTPVerification),

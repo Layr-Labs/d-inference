@@ -14,6 +14,7 @@ production (`darkbloom-mainnet`).
   DBLM-559).
 - A manual deploy or rollback of the dev coordinator.
 - The automatic deploys from `master` (`deploy-dev.yml`), and their pause.
+- The DevNet test suite (`devnet-suite.yml`) and its cadence.
 - A change of a dev secret or a dev setting.
 - A dev provider release, a dev Mac, or synthetic data in the dev database.
 
@@ -377,6 +378,55 @@ Add flags after `/tmp/devnet-seed` to change the scale:
 Each row is a separate store write, so a large run takes a long time. Keep
 `--workers` at its default while the coordinator runs.
 
+### 13. DevNet test suite
+
+[`.github/workflows/devnet-suite.yml`](../../.github/workflows/devnet-suite.yml)
+tests the deployed dev coordinator with
+[`scripts/devnet-suite.sh`](../../scripts/devnet-suite.sh) (Linear DBLM-575).
+It uses only public endpoints. It has no GCP access, it is not a deploy gate,
+and it does not touch production. Each deploy keeps its own check in
+`deploy-dev.yml` (step 7).
+
+Cadence:
+
+- Every 3 hours (schedule), or after 10 first-parent `master` commits since
+  the last tested commit (after a successful `deploy-dev.yml` run). The first
+  of the two starts the suite.
+- The run is skipped when the deployed commit is the last tested commit. A
+  dispatch with `-f force=true` always runs.
+- The deployed commit is `build_commit` of the public `/health`. If `/health`
+  does not answer, the run is skipped with a notice.
+- The last tested commit is in the artifact `devnet-suite-tested-commit` of
+  the newest successful run (kept 90 days). If there is no artifact, the
+  suite runs.
+- Only one run at a time, and at most one pending run. A newer pending run
+  replaces the older pending run (concurrency group `devnet-suite`).
+
+Checks:
+
+| Check | Kind |
+|---|---|
+| `/health` `status` `ok` and `build_commit` = the tested commit | hard |
+| `active_providers` >= 1 | report only |
+| `scripts/smoke-dev.sh` with the authenticated chat test, only when the repository secret `DEVNET_SMOKE_API_KEY` is set | hard when it runs |
+
+The job summary shows the tested commit, each check, pass or fail, and the
+duration. When the repository secret `DEVNET_SUITE_SLACK_WEBHOOK` is set, the
+job also posts the result to Slack.
+
+No existing e2e target can test a remote coordinator: the `e2e/` suites start
+their own coordinator.
+
+Enable the suite after DBLM-559 (a repository admin):
+
+```bash
+gh variable set DEVNET_SUITE_ENABLED -R Layr-Labs/d-inference --body true
+gh workflow run devnet-suite.yml -R Layr-Labs/d-inference --ref master -f force=true   # first run
+```
+
+Each job runs only when `DEVNET_SUITE_ENABLED` is `true`. To stop the suite,
+set the variable to `false`.
+
 ## Verification
 
 ```bash
@@ -430,6 +480,7 @@ These steps need a person with the right access:
 5. Ask Stripe for Redaction Jobs access on the dev account, so that account
    erasure can be tested against Stripe.
 6. Enrol at least one dev Mac (step 11). Run `devnet-seed` (step 12).
+7. DBLM-575: after DBLM-559, set `DEVNET_SUITE_ENABLED` to `true` (step 13).
 
 ## What dev does not cover
 

@@ -1,0 +1,158 @@
+name: DevNet Suite
+
+# Tests the deployed dev coordinator (Linear DBLM-575) with
+# scripts/devnet-suite.sh, through public endpoints only. No GCP access, no
+# deploy gate, and production is not touched. Each deploy keeps its own cheap
+# check in deploy-dev.yml.
+#
+# Cadence: every 3 hours, or after MERGE_THRESHOLD first-parent master commits
+# since the last tested commit, whichever comes first. A run is skipped when
+# the deployed commit is the last tested commit. workflow_dispatch with
+# force=true always runs.
+#
+# Master switch: every job runs only when vars.DEVNET_SUITE_ENABLED is "true".
+# Runbook: docs/operations/dev-environment.md, step 13.
+
+on:
+  schedule:
+    - cron: '23 */3 * * *'
+  workflow_run:
+    workflows: [Deploy Dev Coordinator]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Run the suite even when the deployed commit was tested already'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One run at a time, and at most one pending run. GitHub keeps one running and
+# one pending run in a group with cancel-in-progress false; a newer pending run
+# cancels the older pending run.
+concurrency:
+  group: devnet-suite
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MERGE_THRESHOLD: '10'
+  TESTED_ARTIFACT: devnet-suite-tested-commit
+
+jobs:
+  gate:
+    name: Decide whether to test
+    if: vars.DEVNET_SUITE_ENABLED == 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read   # read the tested-commit artifact of an earlier run
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      commit: ${{ steps.decide.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0       # first-parent count on master
+          filter: tree:0
+          sparse-checkout: deploy/gcp/dev
+
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          decide() {
+            echo "run=$1" >> "$GITHUB_OUTPUT"
+            echo "Gate: $1. $2" >> "$GITHUB_STEP_SUMMARY"
+            echo "gate: $1. $2"
+          }
+          domain=$(awk -F= '$1 == "DOMAIN" { print $2; exit }' deploy/gcp/dev/env-overrides)
+          deployed=$(curl -fsS --max-time 10 "https://$domain/health" 2>/dev/null | jq -r '.build_commit // empty' 2>/dev/null) || deployed=""
+          if [[ ! "$deployed" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::notice::https://$domain/health gives no build_commit; the suite is skipped"
+            decide false "no deployed commit from /health"
+            exit 0
+          fi
+          echo "commit=$deployed" >> "$GITHUB_OUTPUT"
+
+          last=""
+          artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$TESTED_ARTIFACT&per_page=100" \
+            --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .id // empty')
+          if [ -n "$artifact" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/tested.zip"
+            last=$(unzip -p "$RUNNER_TEMP/tested.zip" commit.txt | tr -d '[:space:]')
+          fi
+
+          if [ "$FORCE" = true ]; then decide true "force, deployed $deployed"; exit 0; fi
+          if [[ ! "$last" =~ ^[0-9a-f]{40}$ ]]; then decide true "no last tested commit, deployed $deployed"; exit 0; fi
+          if [ "$deployed" = "$last" ]; then decide false "deployed $deployed is the last tested commit"; exit 0; fi
+          if [ "$GITHUB_EVENT_NAME" != workflow_run ]; then decide true "deployed $deployed, last tested $last"; exit 0; fi
+          if ! merges=$(git rev-list --first-parent --count "$last..$deployed" 2>/dev/null); then
+            decide true "cannot count master commits from $last to $deployed"
+            exit 0
+          fi
+          if [ "$merges" -ge "$MERGE_THRESHOLD" ]; then
+            decide true "$merges master commits since the last tested $last (threshold $MERGE_THRESHOLD)"
+          else
+            decide false "$merges master commits since the last tested $last (threshold $MERGE_THRESHOLD)"
+          fi
+
+  suite:
+    name: DevNet suite
+    needs: gate
+    if: vars.DEVNET_SUITE_ENABLED == 'true' && needs.gate.outputs.run == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      EXPECTED_COMMIT: ${{ needs.gate.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            deploy/gcp/dev
+            scripts
+
+      - name: Run scripts/devnet-suite.sh
+        id: suite
+        env:
+          API_KEY: ${{ secrets.DEVNET_SMOKE_API_KEY }}
+        run: scripts/devnet-suite.sh
+
+      - name: Record the tested commit
+        run: echo "$EXPECTED_COMMIT" > "$RUNNER_TEMP/commit.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.TESTED_ARTIFACT }}
+          path: ${{ runner.temp }}/commit.txt
+          retention-days: 90
+
+      - name: Post the result to Slack
+        if: always() && steps.suite.outcome != 'skipped'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.DEVNET_SUITE_SLACK_WEBHOOK }}
+          OUTCOME: ${{ steps.suite.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::notice::DEVNET_SUITE_SLACK_WEBHOOK is not set; no Slack post"
+            exit 0
+          fi
+          result=fail
+          [ "$OUTCOME" != success ] || result=pass
+          text="DevNet suite: $result, commit ${EXPECTED_COMMIT::12}. $RUN_URL"
+          jq -n --arg text "$text" '{text: $text}' |
+            curl -fsS --max-time 10 -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK" >/dev/null

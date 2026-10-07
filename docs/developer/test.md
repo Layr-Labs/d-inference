@@ -2466,6 +2466,10 @@ such command is a stub that records its arguments. It also reads
 `vars.DEV_DEPLOY_PAUSED` to `deploy.sh`, the steps must run in `bash` with
 `pipefail`, and the file must not contain
 `--override-pause`, a job environment, a pull request trigger or a secret.
+It runs `scripts/devnet-suite.sh` against a stub `curl`, and it checks the
+rules of `.github/workflows/devnet-suite.yml`: the concurrency group, the
+`DEVNET_SUITE_ENABLED` switch on each job, the 3-hour schedule, the threshold
+of 10 commits, no job environment, and no printed secret.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

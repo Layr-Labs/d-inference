@@ -22,6 +22,8 @@ OVERRIDES = DEV / "env-overrides"
 REQUIRED = ROOT / "deploy/gcp/prod/required-env-keys.txt"
 DEFAULTS = ROOT / "deploy/gcp/prod/release-env-defaults"
 WORKFLOW = ROOT / ".github/workflows/deploy-dev.yml"
+SUITE_WORKFLOW = ROOT / ".github/workflows/devnet-suite.yml"
+SUITE = ROOT / "scripts/devnet-suite.sh"
 PROD_ENV = ROOT / "deploy/environments/prod.env"
 COMMIT = "a" * 40
 DIGEST = "sha256:" + "b" * 64
@@ -148,7 +150,8 @@ class DevEnvContractTests(unittest.TestCase):
         api, console = overlay["DOMAIN"], overlay["EIGENINFERENCE_CONSOLE_URL"]
         self.assertRegex(api, r"^[a-z0-9.-]+$")
         self.assertTrue(console.startswith("https://"))
-        files = [*DEV.glob("*.sh"), ROOT / "deploy/gcp/host-setup.sh", ROOT / "scripts/smoke-dev.sh", WORKFLOW]
+        files = [*DEV.glob("*.sh"), ROOT / "deploy/gcp/host-setup.sh", ROOT / "scripts/smoke-dev.sh", WORKFLOW,
+                 SUITE_WORKFLOW, SUITE]
         for path in files:
             self.assertNotIn(api, path.read_text(), path)
             self.assertNotIn(console.removeprefix("https://"), path.read_text(), path)
@@ -507,6 +510,103 @@ class DeployWorkflowTests(unittest.TestCase):
     def test_token_subject_rules_of_the_wif_provider(self):
         for banned in ("environment:", "pull_request", "secrets."):
             self.assertNotIn(banned, self.text, f"deploy-dev.yml has {banned}")
+
+
+class DevnetSuiteWorkflowTests(unittest.TestCase):
+    """devnet-suite.yml implements the DBLM-575 cadence and never prints a secret."""
+
+    def setUp(self):
+        self.text = SUITE_WORKFLOW.read_text()
+
+    def jobs(self):
+        body = self.text.split("\njobs:\n", 1)[1]
+        heads = list(re.finditer(r"^  ([a-z0-9_-]+):\n", body, re.MULTILINE))
+        return {m.group(1): body[m.end():heads[i + 1].start() if i + 1 < len(heads) else len(body)]
+                for i, m in enumerate(heads)}
+
+    def test_one_running_and_one_pending_run(self):
+        self.assertIn("\nconcurrency:\n  group: devnet-suite\n  cancel-in-progress: false\n", self.text)
+
+    def test_every_job_needs_the_master_switch(self):
+        jobs = self.jobs()
+        self.assertEqual(sorted(jobs), ["gate", "suite"])
+        for name, block in jobs.items():
+            self.assertRegex(block, r"(?m)^    if: vars\.DEVNET_SUITE_ENABLED == 'true' && ", name)
+
+    def test_schedule_is_every_three_hours_off_the_hour(self):
+        crons = re.findall(r"(?m)^    - cron: '(.+)'$", self.text)
+        self.assertEqual(len(crons), 1)
+        minute, rest = crons[0].split(" ", 1)
+        self.assertEqual(rest, "*/3 * * *")
+        self.assertTrue(minute.isdigit() and 0 < int(minute) < 60, minute)
+
+    def test_merge_threshold_is_ten(self):
+        self.assertIn("\n  MERGE_THRESHOLD: '10'\n", self.text)
+        self.assertIn('-ge "$MERGE_THRESHOLD"', self.text)
+
+    def test_no_job_environment_and_no_cloud_token(self):
+        for banned in ("environment:", "id-token", "pull_request"):
+            self.assertNotIn(banned, self.text, f"devnet-suite.yml has {banned}")
+
+    def test_no_secret_is_echoed(self):
+        secret_lines = [line for line in self.text.splitlines() if "secrets." in line]
+        self.assertEqual(len(secret_lines), 2)
+        for line in secret_lines:
+            self.assertRegex(line, r"^ +(API_KEY|SLACK_WEBHOOK): \$\{\{ secrets\.(DEVNET_SMOKE_API_KEY|DEVNET_SUITE_SLACK_WEBHOOK) \}\}$")
+        for path in (SUITE_WORKFLOW, SUITE):
+            for line in path.read_text().splitlines():
+                self.assertNotIn("set -x", line, path)
+                if re.search(r"\b(echo|printf)\b", line):
+                    self.assertNotRegex(line, r"\$\{?(API_KEY|SLACK_WEBHOOK)", f"{path}: {line}")
+
+
+class DevnetSuiteScriptTests(unittest.TestCase):
+    COORD = "https://dev.example.invalid"
+
+    def run_suite(self, health_commit=COMMIT, providers=2, api_key=""):
+        health = json.dumps({"status": "ok", "build_commit": health_commit})
+        rules = [
+            ["curl", "/health$", health, 0],
+            ["curl", "/v1/stats$", json.dumps({"active_providers": providers}), 0],
+            ["curl", "/v1/models/catalog$", json.dumps({"models": [{"id": "m"}]}), 0],
+            ["curl", "/install.sh$", f"COORD={self.COORD}\n", 0],
+            ["curl", "/v1/chat/completions$", "200", 0],
+        ]
+        box = Sandbox(self, ["curl"], rules)
+        summary = box.root / "summary.md"
+        summary.touch()
+        result = box.run([SUITE], {"COORD": self.COORD, "EXPECTED_COMMIT": COMMIT, "API_KEY": api_key,
+                                   "GITHUB_STEP_SUMMARY": str(summary)})
+        return box, result, summary.read_text()
+
+    def test_pass_reports_the_commit_and_skips_chat_without_a_key(self):
+        box, result, summary = self.run_suite()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"### DevNet suite: pass, commit `{COMMIT}`", summary)
+        self.assertIn("| hard | skipped |", summary)
+        self.assertIn("DEVNET_SMOKE_API_KEY is not set", result.stdout)
+        self.assertNotIn("/v1/chat/completions", json.dumps(box.calls()))
+
+    def test_wrong_commit_fails_and_no_provider_only_reports(self):
+        _, result, summary = self.run_suite(health_commit="c" * 40, providers=0)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("### DevNet suite: fail", summary)
+        self.assertIn("| report | fail |", summary)
+        _, result, _ = self.run_suite(providers=0)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_chat_runs_with_a_key_and_the_key_is_never_printed(self):
+        key = "SECRET-FIXTURE-KEY"
+        box, result, summary = self.run_suite(api_key=key)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("/v1/chat/completions", json.dumps(box.calls()))
+        for text in (result.stdout, result.stderr, summary):
+            self.assertNotIn(key, text)
+
+    def test_usage_error_without_a_commit(self):
+        box = Sandbox(self, ["curl"], [])
+        self.assertEqual(box.run([SUITE], {"EXPECTED_COMMIT": ""}).returncode, 2)
+        self.assertEqual(box.calls(), [])
 
 
 if __name__ == "__main__":

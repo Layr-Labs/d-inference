@@ -234,6 +234,14 @@ threat definitions, avoiding unrelated repository blobs before verification.
 and conditional merge clearance without cloud calls. Live validation and activation
 are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
 
+## Standalone SSD accounting check
+
+`bash scripts/test-ssd-write-budget.sh` compiles only the production
+`SSDWriteBudget.swift` and `SSDWriteRateLimiter.swift` sources, then links their
+Swift Testing suites with Xcode's testing framework. It needs no MLX submodule
+build or GPU work and removes its temporary build output on exit. See the
+[SSD endurance tests](test.md#ssd-write-endurance) for scope and limitations.
+
 ## Nightly Linear workflow
 
 The [nightly Linear package](../../automations/nightly-linear/README.md) needs

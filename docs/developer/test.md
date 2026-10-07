@@ -2,6 +2,18 @@
 
 > Last updated: 2026-10-07
 
+
+## SSD write endurance
+
+Run `bash scripts/test-ssd-write-budget.sh` on macOS with Xcode to exercise the
+unchanged production accounting sources without building MLX. It covers an
+accelerated full day, hourly cache reconstruction, concurrent accounting,
+separate-process persistence, clock rollback and damaged/unsafe ledger files.
+Only small temporary accounting files are written; no model, provider process,
+production cache or credentials are used. This focused check does not replace
+the full `ProviderCoreTests` integration suites, including `SSDBlockStreamingTests`
+and `LaunchAgentPathsAndErrorsTests`.
+
 ## Pull-request restacking
 
 Run `python3 scripts/test-restack-after-squash.py` for the regression suite of

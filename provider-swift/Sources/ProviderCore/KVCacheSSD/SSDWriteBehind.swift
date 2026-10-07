@@ -271,11 +271,6 @@ final class SSDWriteBehind: @unchecked Sendable {
 
         for block in job.blocks {
             defer { onBlockSettled(block.tag16) }
-            guard rateLimiter.tryConsume(bytes: block.plaintextBytes) else {
-                rateLimited = true
-                stats.add(donationsDropped: 1, writeRateLimited: 1)
-                continue
-            }
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: block.tag16Hex)
             guard SSDBlockStore.isSafeBlockURL(url, modelRoot: config.root) else {
                 stats.add(donationsDropped: 1)
@@ -284,6 +279,12 @@ final class SSDWriteBehind: @unchecked Sendable {
             let fileBytes: Int
             let sidecar = block.metadata.windowKind == nil ? 0 : 1
             do {
+                let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: block.metadata)
+                guard rateLimiter.tryConsume(bytes: budgetBytes) else {
+                    rateLimited = true
+                    stats.add(donationsDropped: 1, writeRateLimited: 1)
+                    continue
+                }
                 if let writeBlock = config.writeBlock {
                     fileBytes = try writeBlock(block, url)
                 } else {

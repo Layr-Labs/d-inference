@@ -233,7 +233,7 @@ verify_ci() {
         ([.[].total_count] | unique | length == 1) and
         all(.[].statuses[];
             (.context | type == "string") and (.context | length > 0) and
-            (.state | type == "string"))
+            (.state | type == "string") and (.state | IN("error", "failure", "pending", "success")))
     ' >/dev/null ||
         die "invalid GitHub status-context response for $CANDIDATE_COMMIT; nothing changed" 3
     [[ "$check_count" =~ ^[0-9]+$ ]] && [[ "$total_count" =~ ^[0-9]+$ ]] &&

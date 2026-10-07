@@ -699,6 +699,25 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("human-only", result.stderr)
         self.assertEqual(box.calls(), [])
 
+    def test_malformed_status_states_are_not_waiver_eligible(self):
+        for state in ("", "unknown"):
+            with self.subTest(state=state):
+                values = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+                values.append({"context": "malformed-state", "state": state})
+                rules = self.deploy_rules()
+                for rule in rules:
+                    if rule[0] == "gh" and "commits/.*/status" in rule[1]:
+                        rule[2] = json.dumps([{"total_count": len(values), "statuses": values}])
+                box = Sandbox(self, MUTATORS, rules)
+                result = box.run([
+                    DEV / "deploy.sh", "--dry-run",
+                    "--allow-ci-failure", "malformed-state",
+                    "--ci-waiver-reason", "owner reviewed optional context",
+                ])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid GitHub status-context response", result.stderr)
+                self.assert_read_only(box)
+
     def test_override_reasons_must_be_nonblank_single_lines(self):
         box = Sandbox(self, MUTATORS, self.deploy_rules(paused="true\n"))
         for reason in ("   ", "line one\nline two", "line one\rline two"):

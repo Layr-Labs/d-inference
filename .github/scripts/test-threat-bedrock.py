@@ -6,13 +6,15 @@ from pathlib import Path
 import runpy
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from threat_review.bedrock import BedrockCalls, MODELS
 from threat_review.budget_scan import SCHEMA
 from threat_review.budget_runner import status_body
-from threat_review.client import ReviewUnavailable, ScanTimeout
+from threat_review.client import APIError, ReviewUnavailable, ScanTimeout
 from threat_review.context import SONNET
 from threat_review.merge_policy import clean, manual_override
+from threat_review.membership import active_member, ORGANIZATION_ID
 from threat_review.state import BudgetStopped
 
 
@@ -258,6 +260,126 @@ class PolicyTests(unittest.TestCase):
                     manual_override(self, self.pull)
             else:
                 self.assertIsNone(manual_override(self, self.pull))
+
+
+class MembershipTests(unittest.TestCase):
+    def setUp(self):
+        self.author = {"id": 123, "login": "member", "type": "User"}
+        self.membership = {"state": "active", "role": "member",
+                           "organization": {"id": ORGANIZATION_ID}, "user": dict(self.author)}
+        self.calls = []
+
+    def transport(self, url, token):
+        self.calls.append((url, token))
+        self.assertEqual(url, "https://api.github.com/orgs/Layr-Labs/memberships/member")
+        self.assertEqual(token, "membership-only")
+        return self.membership
+
+    def test_active_member_and_admin_with_matching_immutable_id(self):
+        for role in ("member", "admin"):
+            self.membership["role"] = role
+            self.assertTrue(active_member(self.author, "membership-only", self.transport))
+
+    def test_association_or_repository_access_cannot_replace_membership(self):
+        self.author.update(author_association="MEMBER", permissions={"admin": True})
+        self.membership["state"] = "pending"
+        self.assertFalse(active_member(self.author, "membership-only", self.transport))
+        for status in (403, 404, 500):
+            def denied(url, token):
+                raise APIError(status)
+            if status == 404:
+                self.assertFalse(active_member(self.author, "membership-only", denied))
+            else:
+                with self.assertRaises(ReviewUnavailable):
+                    active_member(self.author, "membership-only", denied)
+
+    def test_no_token_bot_and_malformed_identity_never_lookup_or_clear(self):
+        self.assertFalse(active_member(self.author, "", self.transport))
+        for author in (None, {}, dict(self.author, type="Bot"), dict(self.author, id=True),
+                       dict(self.author, login="member/other")):
+            self.assertFalse(active_member(author, "membership-only", self.transport))
+        self.assertEqual(self.calls, [])
+
+    def test_wrong_organization_user_role_and_malformed_response_fail_closed(self):
+        original = copy.deepcopy(self.membership)
+        for field, value in (("organization", {"id": 1}), ("organization", None),
+                             ("user", dict(self.author, id=999)), ("user", dict(self.author, type="Bot")),
+                             ("user", dict(self.author, login="someone-else")), ("role", "billing_manager"),
+                             ("state", "pending")):
+            self.membership = dict(original, **{field: value})
+            self.assertFalse(active_member(self.author, "membership-only", self.transport), field)
+        self.membership = []
+        self.assertFalse(active_member(self.author, "membership-only", self.transport))
+
+    def test_membership_is_rechecked_after_revocation(self):
+        self.assertTrue(active_member(self.author, "membership-only", self.transport))
+        self.membership["state"] = "pending"
+        self.assertFalse(active_member(self.author, "membership-only", self.transport))
+        self.assertEqual(len(self.calls), 2)
+
+
+class MemberGateTests(unittest.TestCase):
+    def setUp(self):
+        self.head, self.base = "a" * 40, "b" * 40
+        self.pull = {"number": 1, "head": {"sha": self.head}, "base": {"sha": self.base, "ref": "master"},
+                     "state": "open", "draft": False, "changed_files": 1,
+                     "user": {"id": 123, "login": "member", "type": "User"}}
+        self.reviews, self.member = [], True
+        self.lookups = 0
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        event, report = root / "event.json", root / "report.json"
+        event.write_text(json.dumps({"pull_request": self.pull}))
+        report.write_text(json.dumps({"repository": "Layr-Labs/d-inference", "head": self.head,
+          "base": self.base, "diff_base": self.base, "review": {"integration_completed": True,
+          "covered_units": 1, "total_units": 1, "depth_batches_pending": 0,
+          "findings": [], "errors": [], "limited_files": []}}))
+        self.env = {"THREAT_REVIEW_REQUIRE_CLEARANCE": "true", "GITHUB_EVENT_PATH": str(event),
+                    "THREAT_REVIEW_RESULT_FILE": str(report), "GITHUB_REPOSITORY": "Layr-Labs/d-inference",
+                    "GH_TOKEN": "repo-only", "THREAT_REVIEW_MEMBERSHIP_TOKEN": "membership-only"}
+        self.main = runpy.run_path(str(Path(__file__).with_name("threat-review-gate.py")))["main"]
+
+    def call(self, path):
+        return self.reviews if "/reviews?" in path else {"permission": "write"}
+
+    def files(self, count):
+        return [{"filename": "coordinator/api/access/authorize.go"}]
+
+    def member_lookup(self, author, token):
+        self.lookups += 1
+        self.assertEqual(author, self.pull["user"])
+        self.assertEqual(token, "membership-only")
+        return self.member
+
+    def evaluate(self):
+        class Repo:
+            pass
+        github = Repo()
+        github.pull, github.call, github.files = lambda: self.pull, self.call, self.files
+        with patch.dict("os.environ", self.env, clear=True), patch("sys.argv", ["gate", "after"]), \
+             patch.dict(self.main.__globals__, GitHub=lambda *args: github, active_member=self.member_lookup):
+            return self.main()
+
+    def test_clean_active_member_clears_but_clean_outsider_does_not(self):
+        self.assertEqual(self.evaluate(), 0)
+        self.member = False
+        self.assertEqual(self.evaluate(), 1)
+        self.assertEqual(self.lookups, 2)
+
+    def test_outsider_still_has_explicit_independent_human_review_path(self):
+        self.member = False
+        self.reviews = [{"id": 1, "state": "APPROVED", "commit_id": self.head,
+                        "user": {"id": 456, "login": "maintainer", "type": "User"},
+                        "body": f"Security override: {self.head}\nReason: Independently reviewed this external contribution."}]
+        self.assertEqual(self.evaluate(), 0)
+        self.assertEqual(self.lookups, 0)
+
+    def test_prior_membership_cannot_clear_a_later_evaluation(self):
+        self.assertEqual(self.evaluate(), 0)
+        self.member = False
+        self.pull["author_association"] = "MEMBER"
+        self.assertEqual(self.evaluate(), 1)
 
 
 if __name__ == "__main__":

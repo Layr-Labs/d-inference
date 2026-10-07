@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — Member-only automatic security clearance
+
+- Limit scan-only merge clearance to verified active Layr-Labs organization members. Non-members, bots and unavailable membership require independent formal human review. Use a separate read-only membership token and retain ordinary CI and current-revision checks.
+- Surface fixed validation-failure reasons in incomplete review reports without exposing raw provider output.
+
 ## Unreleased — Bedrock review and conditional merge clearance
 
 - Support an explicitly approved ongoing OpenRouter budget with daily and per-attempt caps, retaining historical charges and unknown reservations. Preflight now rejects exhausted budget capacity even when provider funding is available.

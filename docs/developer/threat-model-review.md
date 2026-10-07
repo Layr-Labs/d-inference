@@ -5,8 +5,9 @@
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
 show coverage, cost, reuse and failures. The default remains advisory. Optional
-conditional clearance allows a completed scan without medium/high findings, or an
-independent formal manual override, to satisfy the security workflow requirement.
+conditional clearance allows a completed scan without medium/high findings from
+a verified active Layr-Labs organization member, or an independent formal manual
+override, to satisfy the security workflow requirement.
 See [Bedrock and merge-policy rollout](../operations/threat-review-rollout.md).
 Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 
@@ -134,6 +135,26 @@ Source, prompts, reasoning and keys are excluded from AWS usage records.
 Unknown usage stays unknown; Bedrock token totals are not presented as actual
 dollars. No external gateway or long-lived AWS credential is used.
 
+Automatic clearance requires a live organization membership lookup for the PR
+author through `.github/scripts/threat_review/membership.py` (`active_member`).
+It checks the immutable Layr-Labs organization ID and author ID, active membership
+state and a human account. Repository write access, PR `author_association`,
+pending invitations and bot accounts never substitute for membership. Missing
+credentials, lookup failures and mismatched identities require independent human
+review. An external author can still use the explicit formal human-review path;
+a clean model verdict alone cannot waive that approval.
+
+The existing review App needs **Organization permissions → Members: read-only**,
+including installation-owner approval of that permission. The workflow requests
+a separate short-lived token with only that permission for the final gate. The
+state-writer token retains its explicit repository Contents permission and does
+not receive membership permission. Neither token is exposed to models or PR code.
+Membership is fetched anew each time the gate runs; this is not a webhook that
+instantly revokes a completed check after a later organization membership change.
+After removing a member with a pending PR, rerun its security workflow before
+merging. Human overrides continue to verify the reviewer's current repository
+permission and the exact current commit.
+
 Conditional clearance disables reuse of prior cached verdicts. It evaluates a
 result file produced by the current trusted scan, not public comments, artifacts
 from PR jobs, or state-branch cache entries. Human overrides also reread current
@@ -186,8 +207,8 @@ Never delete or reset the ledger to work around a limit.
 To pause, set `THREAT_REVIEW_ENABLED=false` and cancel active review jobs. Pending
 calls may still incur cost; their reservations remain. Inspect the ledger and
 linked reports, reconcile unknown charges against provider billing, and fix
-credentials, permissions or invalid responses before resuming. HTTP statuses are
-shown without raw error bodies. Cache/checkpoint failures halt further spending.
+credentials, permissions or invalid responses before resuming. HTTP statuses and fixed local validation-failure reasons are
+shown without raw error bodies or model responses. Cache/checkpoint failures halt further spending.
 
 ## Scope, reuse and saved findings
 

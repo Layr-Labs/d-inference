@@ -3571,6 +3571,12 @@ production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
 
+The conditional gate uses a separate organization-membership read token.
+`python3 .github/scripts/test-threat-bedrock.py` checks active member identity,
+outsiders, bots, pending membership, repeat lookups and the independent human
+review path. The budget suite checks that local validator reasons remain visible
+without exposing raw provider output. See [review configuration](threat-model-review.md).
+
 The threat-review preflight checks the configured OpenRouter budget mode and
 remaining normal-attempt capacity as well as writer access and funding. Offline
 budget regressions cover migration without resetting charges, daily caps,

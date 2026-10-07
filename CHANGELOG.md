@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - SSD write endurance
+
+- Enforce the SSD prefix-cache write budget across cache instances, model reloads and provider restarts using a persistent root-wide rolling-day ledger. Charge serialized cache-file bytes, including encryption framing, before writing; exhausted budgets retain read access and report `write_rate_limited`.
+- Forward `DARKBLOOM_PREFIX_CACHE_DISK_GB` and `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` into newly installed launchd provider jobs.
+
 ## Unreleased - typical MTP acceptance
 
 - Default eligible sampled target-prefix MTP requests to typical acceptance (delta `0.2`) when `[backend] mtp_acceptance` and the model override are absent. Sampled output is approximate, not distribution-exact; explicit `exact` restores exact acceptance and invalid values remain safely exact. Greedy behavior, native MiMo exact acceptance, disabled MTP and model eligibility are unchanged. Benchmark acceptance still defaults to `exact`; the recorded single-host B=1 runs do not qualify sampled quality or fleet-wide speed.

@@ -813,7 +813,9 @@ class ZeroMutationTests(unittest.TestCase):
             path.write_text(STUB)
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         box.set_rules(dev_host_rules() + [rule])
-        result = box.run([DEV / "swap.sh"], extra)
+        # The stub answers every call of the command; a stubbed mktemp returns an
+        # empty path, so run from the sandbox to keep any relative write inside it.
+        result = box.run([DEV / "swap.sh"], extra, cwd=box.root)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(box.calls("python3"), [])
         self.assertEqual(box.calls("psql"), [])

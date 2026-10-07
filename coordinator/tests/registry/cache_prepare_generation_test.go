@@ -153,6 +153,9 @@ func TestCachePreparePublicationRevalidatesOwnership(t *testing.T) {
 				t.Fatal("new request closed")
 			}
 			attempts := f.attempts
+			if _, admitted := attempts.Load("staged-nonce"); !admitted {
+				t.Fatal("staged fixture insertion refused")
+			}
 			// Preserve the original staged receipt record through the same primary
 			// directory. The real publisher is parked, so no tracker work races it.
 			attempts.Store("staged-nonce", cachetracker.Attempt[*production.Provider]{RequestID: pr.RequestID, ProviderID: p.ID, Provider: p, Model: pr.Model, ExpiresAt: time.Now().Add(time.Hour)})

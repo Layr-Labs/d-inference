@@ -103,6 +103,10 @@ Rules for values:
 - Each value is one line. Store a PEM key with `\n` escapes.
 - `eigeninference-database-url`:
   `postgres://coordinator:<password>@<private ip>:5432/eigeninference?sslmode=require`.
+  `swap.sh` also accepts `sslmode=verify-ca` or `sslmode=verify-full`, and
+  gives `sslrootcert` to `psql`. It refuses a URI without one of these three
+  `sslmode` values, and a URI with a query parameter that names another host,
+  port, database, user, password or service.
 - `eigeninference-release-key` equals the GitHub secret `DEV_RELEASE_KEY`.
   `eigeninference-r2-cdn-url` equals `DEV_R2_PUBLIC_URL`
   ([provider-release.md](provider-release.md)).
@@ -233,8 +237,15 @@ the rollback state, the rename to `coordinator_fallback_<ts>`, `docker stop -t
 75`, `docker run`, and the `/health` and `/readyz` checks. A failed hard check
 rolls back by itself. A phase-aware exit trap also restores the env, refresh
 tooling and prior `current` link after an unexpected post-mutation command
-failure while preserving its original exit status. The output has `REPORT`
-lines, one `OK` or `FAIL` line, and `deployed=true` or `deployed=false`.
+failure while preserving its original exit status. After the new
+`current` link is in place, the deploy is committed and no failure rolls it
+back. If the removal of the private database credential files fails, the `OK`
+line ends with `; private database credential cleanup failed`. A committed
+deploy removes the older `attempt-*` directories in `/var/lib/darkbloom-deploy`
+(each one has a copy of the env file) and the older commit directories in
+`/usr/local/lib/darkbloom-deploy`. It keeps the files that one rollback needs.
+The output has `REPORT` lines, one `OK` or `FAIL` line, and `deployed=true` or
+`deployed=false`.
 
 `--dry-run` does the read-only part of step 1 and prints what it would ship and
 run. `MIGRATE_ONLY=0` skips `--migrate-only`. `SSH_KEY_FILE` selects the SSH
@@ -384,6 +395,10 @@ provider is attached and a model is registered. Its fixture checks are in
 | The first deploy is bad (no previous image) | `deploy/gcp/dev/deploy.sh rollback --override-pause "first-deploy rollback <ticket>"`; it removes the candidate and restores the pre-first-deploy env/tooling/link state |
 | A bad reseed | Copy `/etc/d-inference/env.pre-reseed.<UTC>` back to `/etc/d-inference/env`, then deploy |
 | A bad provider bundle | Deactivate the release (`scripts/admin.sh releases deactivate <version>`), then `deploy/provider-fleet/update-fleet.sh dev`; see [`provider-release.md`](provider-release.md) |
+
+A rollback goes back one deploy. A second rollback in a row stops before it
+changes anything: the last deploy removed the backups of the deploy before
+it.
 
 Rollback never reverts the schema; see the
 [schema migration rollback rules](schema-migration.md#rollback). A teardown is

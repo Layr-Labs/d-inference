@@ -1114,6 +1114,115 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("automatic cleanup failed", result.stderr)
         self.assertIn("could not stop coordinator during rollback", Path(extra["RESULT"]).read_text())
 
+    @staticmethod
+    def first_deploy_rules():
+        """A first deploy (no coordinator container) that passes every gate."""
+        image = f"us-east4-docker.pkg.dev/darkbloom-dev/coordinator/coordinator@{DIGEST}"
+        return dev_host_rules() + [
+            ["psql", "select count", "0\n", 0],
+            ["docker", "^pull", "", 0],
+            ["docker", "image inspect.*image.revision", COMMIT + "\n", 0],
+            ["docker", "image inspect.*image.version", "0.9.17\n", 0],
+            ["docker", "^container inspect coordinator", "", 1],
+            ["docker", "^run", "candidate-container\n", 0],
+            ["docker", r"^inspect --format \{\{\.Config\.Image\}\} coordinator", image + "\n", 0],
+            ["docker", r"^inspect --format \{\{\.Image\}\} coordinator", "sha256:" + "e" * 64 + "\n", 0],
+            ["date", r"^\+%s$", "100\n", 0],
+            ["curl", "localhost:8080/health", json.dumps({"status": "ok", "build_commit": COMMIT,
+                                                            "build_date": "fixture", "version": "0.9.17"}), 0],
+            ["curl", "localhost:8080/readyz", "", 0],
+        ]
+
+    @requires_gnu_ln
+    def test_committed_deploy_survives_a_credential_cleanup_failure(self):
+        box, extra, paths = self.seeded_swap_box(with_current=False)
+        _, _, deploy_root = paths
+        path = box.bin / "rm"
+        path.write_text(STUB)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        box.set_rules(self.first_deploy_rules() + [["rm", "\\.pg\\.", "", 55]])
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result_line = Path(extra["RESULT"]).read_text()
+        self.assertTrue(result_line.startswith(f"OK {COMMIT} "), result_line)
+        self.assertIn("private database credential cleanup failed", result_line)
+        self.assertIn("private database credential cleanup failed", result.stderr)
+        self.assertNotIn("automatic cleanup", result.stdout + result.stderr)
+        self.assertEqual(len([call for call in box.calls("docker") if call[1] == "run"]), 1)
+        self.assertEqual([call for call in box.calls("docker") if call[1] == "stop"], [])
+        self.assertEqual((deploy_root / "current").resolve(), ROOT.resolve())
+        self.assertNotIn("fixture-password", result.stdout + result.stderr + result_line)
+
+    @requires_gnu_ln
+    def test_committed_deploy_keeps_only_the_files_one_rollback_reads(self):
+        box, extra, paths = self.seeded_swap_box()
+        _, _, deploy_root = paths
+        previous = deploy_root / ("c" * 40)
+        previous.mkdir()
+        (deploy_root / "current").unlink()
+        (deploy_root / "current").symlink_to(previous)
+        superseded = deploy_root / ("d" * 40)
+        superseded.mkdir()
+        (superseded / "file").write_text("superseded deploy files\n")
+        lib = deploy_root / COMMIT
+        lib.mkdir()
+        (lib / "deploy").symlink_to(ROOT / "deploy")
+        unit_result = deploy_root / "darkbloom-dev-swap-aaaaaaa-1.result"
+        unit_result.write_text("OK fixture\n")
+        state = Path(extra["STATE"])
+        state.mkdir()
+        old_attempt = state / "attempt-20200101T000000Z-1"
+        old_attempt.mkdir(mode=0o700)
+        (old_attempt / "env.before").write_text("SECRET-FIXTURE-VALUE\n")
+        extra["LIB"] = str(lib)
+        box.set_rules(self.first_deploy_rules())
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(Path(extra["RESULT"]).read_text().startswith(f"OK {COMMIT} "))
+        record = (state / "rollback-state").read_text().splitlines()
+        self.assertEqual(len(record), 6)
+        self.assertEqual(sorted(state.glob("attempt-*")), [Path(record[4])])
+        self.assertTrue(Path(record[1]).is_file())
+        self.assertEqual(record[5], str(previous))
+        self.assertFalse(old_attempt.exists())
+        self.assertFalse(superseded.exists())
+        for kept in (previous, lib, unit_result, deploy_root / "old"):
+            self.assertTrue(kept.exists(), kept)
+        self.assertEqual((deploy_root / "current").resolve(), lib.resolve())
+
+    def test_swap_requires_a_tls_single_host_database_url(self):
+        box, extra, _ = self.seeded_swap_box()
+        env_file = Path(extra["ENV_FILE"])
+        seeded = env_file.read_text()
+        base = "postgresql://coordinator:fixture-password@192.0.2.5:5432/eigeninference"
+        accepted = {
+            "?sslmode=require": "require",
+            "?sslmode=verify-ca": "verify-ca",
+            "?connect_timeout=10&sslmode=verify-full&sslrootcert=/mnt/disks/userdata/server-ca.pem": "verify-full",
+        }
+        rejected = ("", "?sslmode=prefer", "?sslmode=disable", "?sslmode=allow", "?sslmode=",
+                    "?sslmode=require&sslmode=disable", "?sslmode=require&host=203.0.113.9",
+                    "?sslmode=require&hostaddr=203.0.113.9", "?sslmode=require&port=6432",
+                    "?sslmode=require&dbname=other", "?sslmode=require&user=other",
+                    "?sslmode=require&service=other", "?sslmode=require&sslrootcert=a%09b")
+        # A connection that passes TLS selection reaches db_clear, which reports a long query.
+        box.set_rules(dev_host_rules() + [["psql", "select 1", "1\n", 0], ["psql", "select count", "1\n", 0]])
+        for query in [*accepted, *rejected]:
+            with self.subTest(query=query):
+                env_file.write_text(seeded.replace(f"{base}?sslmode=require", base + query))
+                box.log.write_text("")
+                mode = accepted.get(query)
+                result = box.run([DEV / "swap.sh"], {**extra, "STUB_EXPECT_PGSSLMODE": mode or "unused"})
+                self.assertNotEqual(result.returncode, 0)
+                result_line = Path(extra["RESULT"]).read_text()
+                if mode:
+                    self.assertIn("long queries", result_line)
+                else:
+                    self.assertIn("EIGENINFERENCE_DATABASE_URL is not", result_line)
+                    self.assertEqual(box.calls("psql"), [])
+                self.assertNotIn("fixture-password", result.stdout + result.stderr + result_line)
+                self.assertEqual(list(Path(extra["STATE"]).glob(".pg.*")), [])
+
     def test_swap_refuses_other_project(self):
         box = Sandbox(self, MUTATORS, dev_host_rules(project="darkbloom-mainnet"))
         result_file = box.root / "result"

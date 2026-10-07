@@ -168,8 +168,21 @@ if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or not port.isdigit():
     raise SystemExit(1)
 if not re.fullmatch(r"[A-Za-z0-9_.-]+", database) or not re.fullmatch(r"[A-Za-z0-9_.-]+", user):
     raise SystemExit(1)
-params = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
-if params != [("sslmode", "require")]:
+# TLS is required. The URI names the only host, port, database and user;
+# query parameters that libpq reads as another target are refused.
+try:
+    params = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+except ValueError:
+    raise SystemExit(1)
+sslmodes = [value for key, value in params if key == "sslmode"]
+if len(sslmodes) != 1 or sslmodes[0] not in ("require", "verify-ca", "verify-full"):
+    raise SystemExit(1)
+if any(key in ("host", "hostaddr", "port", "dbname", "user", "password", "passfile", "service")
+       for key, _ in params):
+    raise SystemExit(1)
+sslrootcerts = [value for key, value in params if key == "sslrootcert"]
+sslrootcert = sslrootcerts[0] if len(sslrootcerts) == 1 else ""
+if len(sslrootcerts) > 1 or re.search(r"[\x00\t\r\n]", sslrootcert):
     raise SystemExit(1)
 def pgpass_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:")
@@ -177,19 +190,19 @@ def write_private(path: Path, value: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as stream:
         stream.write(value)
-write_private(connection_file, "\t".join((*fields, "require")) + "\n")
+write_private(connection_file, "\t".join((*fields, sslmodes[0], sslrootcert)) + "\n")
 write_private(passfile, ":".join(pgpass_escape(value) for value in (*fields[:3], user, password)) + "\n")
 PYDB
     then
         return 1
     fi
-    IFS=$'\t' read -r PG_HOST PG_PORT PG_DATABASE PG_USER PG_SSLMODE < "$PG_TMP/connection"
-    [ -n "$PG_HOST" ] && [ -n "$PG_PORT" ] && [ -n "$PG_DATABASE" ] && [ -n "$PG_USER" ] &&
-        [ "$PG_SSLMODE" = require ] || return 1
+    IFS=$'\t' read -r PG_HOST PG_PORT PG_DATABASE PG_USER PG_SSLMODE PG_SSLROOTCERT < "$PG_TMP/connection"
+    [ -n "$PG_HOST" ] && [ -n "$PG_PORT" ] && [ -n "$PG_DATABASE" ] && [ -n "$PG_USER" ] || return 1
+    case "$PG_SSLMODE" in require|verify-ca|verify-full) ;; *) return 1 ;; esac
 }
 psql_private() {
     PGHOST="$PG_HOST" PGPORT="$PG_PORT" PGDATABASE="$PG_DATABASE" PGUSER="$PG_USER" \
-        PGSSLMODE="$PG_SSLMODE" PGPASSFILE="$PG_TMP/pgpass" psql "$@"
+        PGSSLMODE="$PG_SSLMODE" PGSSLROOTCERT="$PG_SSLROOTCERT" PGPASSFILE="$PG_TMP/pgpass" psql "$@"
 }
 db_clear() {    # runbook step 2 and schema-migration.md step 3; counts only
     local long blocked goose
@@ -373,7 +386,8 @@ else
         fail "current deploy files do not resolve to an existing directory; nothing changed"
 fi
 install -d -o root -g root -m 0700 "$STATE"
-prepare_psql || fail "EIGENINFERENCE_DATABASE_URL is not the required single-host sslmode=require URI; nothing changed"
+prepare_psql ||
+    fail "EIGENINFERENCE_DATABASE_URL is not a single-host URI with sslmode require, verify-ca or verify-full; nothing changed"
 
 # Step 2: pre-swap checks. Nothing changes until they pass.
 psql_private -Atc 'select 1' >/dev/null 2>&1 ||
@@ -513,12 +527,36 @@ if ! ln -sfnT "$LIB" "$DEPLOY_ROOT/current"; then
     rollback
     fail "could not publish the current deploy files; restored the pre-deploy state"
 fi
-cleanup_pg_files || fail "could not remove the private temporary database credential files"
 COMMITTED=1
 CLEANUP_PHASE=none
-# Dev housekeeping: keep this run's fallback container, all rollback-referenced
-# deploy files, and images younger than 7 days or in use.
+# Past the commit point a failure is reported and never rolls back.
+pg_cleanup_report=""
+if ! cleanup_pg_files; then
+    echo "REPORT private database credential cleanup failed after the commit; remove $PG_TMP on the VM" >&2
+    pg_cleanup_report="; private database credential cleanup failed"
+    PG_TMP=""
+fi
+
+# prune_superseded_files keeps what one rollback reads: this attempt (the env
+# and tooling backup that rollback-state names), and the current and previous
+# deploy files. Each older attempt holds a copy of the secret env file.
+prune_superseded_files() {
+    local dir status=0
+    for dir in "$STATE"/attempt-*; do
+        [ -d "$dir" ] && [ ! -L "$dir" ] && [ ! "$dir" -ef "$ATTEMPT" ] || continue
+        rm -rf "$dir" || status=1
+    done
+    for dir in "$DEPLOY_ROOT"/*; do
+        [[ "${dir##*/}" =~ ^[0-9a-f]{40}$ ]] && [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+        [ "$dir" -ef "$LIB" ] || [ "$dir" -ef "$PREVIOUS_CURRENT" ] || rm -rf "$dir" || status=1
+    done
+    return "$status"
+}
+# Dev housekeeping: keep this run's fallback container, the files of one
+# rollback, and images younger than 7 days or in use.
+prune_superseded_files ||
+    echo "REPORT could not remove every superseded directory in $STATE and $DEPLOY_ROOT" >&2
 docker ps -a --format '{{.Names}}' | grep '^coordinator_fallback_' | grep -vx "$FALLBACK" |
     xargs -r docker rm >/dev/null 2>&1 || true
 docker image prune -af --filter until=168h >/dev/null 2>&1 || true
-finish "OK $CANDIDATE_COMMIT drain_s=$((T1 - T0)) start_to_ready_s=$((T2 - T1))"
+finish "OK $CANDIDATE_COMMIT drain_s=$((T1 - T0)) start_to_ready_s=$((T2 - T1))$pg_cleanup_report"

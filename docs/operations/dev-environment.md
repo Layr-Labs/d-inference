@@ -190,7 +190,9 @@ every provider.
 
 The seed reads the secrets with the VM account, runs the production
 `refresh-env.sh --check` on a temporary file in `/etc/d-inference`, then moves
-it into place and runs `--apply`. Expect `OK wrote /etc/d-inference/env`. If a
+it into place and runs `--apply`. Expect `OK wrote /etc/d-inference/env`. If
+the seed cannot remove the redundant refresh backup, it prints a `REPORT` line
+and still writes `OK`. If a
 required value is missing, the seed lists the key names and writes nothing.
 Add the values and run it again. The second `host-setup.sh --apply` installs
 the Datadog Agent when `DD_API_KEY` has a value.
@@ -255,13 +257,22 @@ key.
 
 Candidate files are extracted into a unique hidden directory and atomically
 renamed to the commit path. A same-commit redeploy reuses the published directory
-only when its normalized tree is identical; an interrupted or mismatched transfer
-leaves `current` and the prior rollback files untouched. The shared refresh still
-creates its production timestamped backup. Dev seed validates and removes that
-redundant copy; dev swap verifies it matches the attempt-directory rollback copy
-before removing it. Successful swaps also remove only generated dev result and
-failed-container log files older than 14 days; unknown operator files are not
-matched.
+only when its normalized tree is identical. If the tree is different and
+neither `current` nor the rollback state uses the directory, the script moves
+it aside and puts the new tree in its place (`REPORT replaced unused published
+candidate files ...`). If one of them uses it, the script stops. An interrupted
+or mismatched transfer leaves `current` and the prior rollback files untouched.
+Each publication removes the hidden directories that are older than 60
+minutes; an interrupted run leaves them. The shared refresh still creates its
+production timestamped backup. Dev seed validates and removes that redundant
+copy. Dev swap removes it only when it matches the attempt-directory rollback
+copy. A backup that does not match has an env change that was made during the
+deploy; the swap keeps it and stops. Successful swaps also remove only
+generated dev result and failed-container log files older than 14 days; unknown
+operator files are not matched. They also remove each
+`/etc/d-inference/env.bak.<UTC>` file (the boot refresh makes one at each boot)
+that is the same as the live env file or the retained rollback copy. A backup
+with other content is the only copy of that env state, and it stays.
 
 Expected last line from the VM: `OK <commit> drain_s=0 start_to_ready_s=<n>`.
 The first deploy has no previous image; a failed first attempt removes its
@@ -427,6 +438,8 @@ a Terraform change in darkbloom-devnet-infra.
 | `FAIL the running image is not the last verified image ...` | Someone changed the container by hand | Find out why. After review, write the running image ID to `/var/lib/darkbloom-deploy/last-good-image` |
 | `candidate ... is not origin/master` / `is no longer origin/master` | `master` moved before or during build wait | Deploy the new head |
 | `CI is not complete for ... after 1200 s: ...` | A required check run or a status context did not finish in time. `(not reported)` marks a required name that GitHub does not have | Wait for CI, then deploy again |
+| `FAIL published candidate files differ from the same commit archive, and current or rollback-state uses them` | The files of a deployed commit on the VM changed, or a different checkout made a different archive of the commit (for example with another `tar.umask`) | Do not deploy this commit again. Find out why the files changed. Deploy the next `master` commit |
+| `FAIL the refresh backup ... does not match the pre-refresh env and is kept` | The env file changed during the deploy, for example a hand edit or `seed-env.sh --reseed` | The live file is the pre-deploy file. The kept backup has the change. If you want the change, copy the backup to `/etc/d-inference/env`. Then deploy again |
 | `CI failure is not explicitly waived: ...` | A GitHub check/status failed | Fix/re-run it. Only a human owner may name that exact known baseline failure with `--allow-ci-failure` and a one-line `--ci-waiver-reason` |
 
 ## DevNet checklist

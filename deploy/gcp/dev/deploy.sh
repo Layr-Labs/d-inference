@@ -67,6 +67,7 @@ TRIGGER=dev-build
 BUILD_FILE=deploy/gcp/cloudbuild-prod.yaml
 REPO=us-east4-docker.pkg.dev/darkbloom-dev/coordinator/coordinator
 REMOTE=/usr/local/lib/darkbloom-deploy
+REMOTE_STATE=/var/lib/darkbloom-deploy
 GITHUB_REPO=Layr-Labs/d-inference
 REQUIRED_CHECKS=(
     "Release Integrity" "Docs Lint" "Coordinator Tests" "Coordinator Lint"
@@ -341,12 +342,17 @@ fi
 enforce_pause live
 
 # Shell variables do not cross SSH: ship the candidate's files and pass the values.
-# A commit directory is immutable once published. Extract into a hidden sibling,
-# then rename it into place. A same-SHA redeploy reuses only an exact tree; it
-# never removes or rewrites files that current or rollback may still reference.
+# A commit directory is immutable while current or rollback-state uses it.
+# Extract into a hidden sibling, then rename it into place. A same-SHA redeploy
+# reuses an exact tree. A different tree that neither uses is moved aside, and
+# the new tree takes its place. A hidden directory older than 60 minutes is
+# left by an interrupted run and is removed; a live run uses its own for
+# seconds.
 LIB=$REMOTE/$CANDIDATE_COMMIT
+STAGE_NAME=".incoming-$(printf '[0-9a-f]%.0s' {1..40}).??????"
 extract="/bin/bash -c 'set -euo pipefail
 sudo install -d -m 0700 $REMOTE
+sudo find $REMOTE -mindepth 1 -maxdepth 1 -type d -name \"$STAGE_NAME\" -mmin +60 -exec rm -rf -- {} +
 stage=\$(sudo mktemp -d $REMOTE/.incoming-$CANDIDATE_COMMIT.XXXXXX)
 cleanup_stage() { [ -z \"\$stage\" ] || sudo rm -rf -- \"\$stage\"; }
 trap cleanup_stage EXIT
@@ -354,6 +360,18 @@ sudo tar -xz --no-same-owner -C \"\$stage\"
 tree_digest() {
     sudo tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \\
         -cf - -C \"\$1\" . | sha256sum | cut -d\" \" -f1
+}
+in_use() {
+    local target
+    if sudo test -e $REMOTE/current || sudo test -L $REMOTE/current; then
+        target=\$(sudo readlink -f $REMOTE/current) || return 0
+        ! sudo test \"\$target\" -ef $LIB || return 0
+    fi
+    if sudo test -e $REMOTE_STATE/rollback-state; then
+        target=\$(sudo sed -n 6p $REMOTE_STATE/rollback-state) || return 0
+        ! sudo test \"\$target\" -ef $LIB || return 0
+    fi
+    return 1
 }
 if sudo test -e $LIB || sudo test -L $LIB; then
     sudo test -d $LIB && ! sudo test -L $LIB ||
@@ -365,8 +383,14 @@ if sudo test -e $LIB || sudo test -L $LIB; then
     [[ \"\$staged_digest\" =~ ^[0-9a-f]{64}\$ ]] &&
         [[ \"\$published_digest\" =~ ^[0-9a-f]{64}\$ ]] ||
         { echo \"FAIL candidate tree digest is malformed\" >&2; exit 1; }
-    [ \"\$staged_digest\" = \"\$published_digest\" ] ||
-        { echo \"FAIL published candidate files differ from the same commit archive\" >&2; exit 1; }
+    if [ \"\$staged_digest\" != \"\$published_digest\" ]; then
+        ! in_use || { echo \"FAIL published candidate files differ from the same commit archive, and current or rollback-state uses them\" >&2; exit 1; }
+        aside=\$(sudo mktemp -d $REMOTE/.incoming-$CANDIDATE_COMMIT.XXXXXX)
+        sudo mv -T -- $LIB \"\$aside\"
+        sudo mv -T -- \"\$stage\" $LIB
+        stage=\$aside
+        echo \"REPORT replaced unused published candidate files that differ from the same commit archive\"
+    fi
     sudo rm -rf -- \"\$stage\"
 else
     sudo mv -T -- \"\$stage\" $LIB

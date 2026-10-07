@@ -3,31 +3,24 @@ name: Dev Deploy Safety
 on:
   push:
     branches: [master, main]
-    paths:
+    # The repository files that scripts/test-dev-deploy.py and the scripts
+    # under test read, and their docs. deploy-dev.yml arrives with PR 1370.
+    paths: &dev-deploy-safety-paths
       - .github/workflows/dev-deploy-safety.yml
       - .github/workflows/deploy-dev.yml
+      - coordinator/api/server.go
       - deploy/gcp/cloudbuild-prod.yaml
       - deploy/gcp/dev/**
       - deploy/gcp/host-setup.sh
       - deploy/gcp/prod/**
       - deploy/environments/prod.env
+      - scripts/smoke-dev.sh
       - scripts/test-dev-deploy.py
       - scripts/run-dev-deploy-safety-ci.sh
       - docs/operations/dev-environment.md
       - docs/developer/test.md
   pull_request:
-    paths:
-      - .github/workflows/dev-deploy-safety.yml
-      - .github/workflows/deploy-dev.yml
-      - deploy/gcp/cloudbuild-prod.yaml
-      - deploy/gcp/dev/**
-      - deploy/gcp/host-setup.sh
-      - deploy/gcp/prod/**
-      - deploy/environments/prod.env
-      - scripts/test-dev-deploy.py
-      - scripts/run-dev-deploy-safety-ci.sh
-      - docs/operations/dev-environment.md
-      - docs/developer/test.md
+    paths: *dev-deploy-safety-paths
 
 permissions:
   contents: read

@@ -242,6 +242,39 @@ def manifest_keys(path):
     return keys
 
 
+def fail_rm_of_env_backups(box):
+    """rm fails for <env file>.bak.<UTC> paths and runs the real rm otherwise."""
+    rm = box.bin / "rm"
+    rm.write_text('#!/bin/sh\ncase "$*" in *.bak.*) exit 55 ;; esac\nexec /bin/rm "$@"\n')
+    rm.chmod(0o755)
+
+
+def lib_with_refresh_wrapper(box, before_refresh="", refresh="exec"):
+    """A copy of the shipped deploy files whose prod refresh-env.sh runs the
+    shell text before_refresh, then the real refresh (refresh="exec"), or
+    the text of refresh in place of that exec."""
+    lib = box.root / "lib"
+    for name in ("dev", "prod"):
+        directory = lib / "deploy/gcp" / name
+        directory.mkdir(parents=True)
+        for source in (ROOT / "deploy/gcp" / name).iterdir():
+            (directory / source.name).symlink_to(source)
+    (lib / "deploy/environments").symlink_to(ROOT / "deploy/environments")
+    real = ROOT / "deploy/gcp/prod/refresh-env.sh"
+    wrapper = lib / "deploy/gcp/prod/refresh-env.sh"
+    wrapper.unlink()
+    run_real = f'exec bash "{real}" "$@"' if refresh == "exec" else refresh.replace("REAL", f'"{real}"')
+    wrapper.write_text(f"#!/bin/bash\nset -euo pipefail\n{before_refresh}\n{run_real}\n")
+    wrapper.chmod(0o755)
+    return lib
+
+
+def path_filter_matches(pattern, path):
+    """GitHub Actions paths filter: ** matches across /, * does not."""
+    regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+    return re.fullmatch(regex, path) is not None
+
+
 class DevEnvContractTests(unittest.TestCase):
     def test_dedicated_workflow_runs_offline_suite_on_supported_platforms(self):
         text = DEV_DEPLOY_WORKFLOW.read_text()
@@ -290,6 +323,32 @@ class DevEnvContractTests(unittest.TestCase):
                     self.assertIn("Test log capture: failed", summary.read_text())
                 else:
                     self.assertIn("Could not inspect temporary fixture containment", result.stderr)
+
+    def test_workflow_paths_are_one_list_that_covers_every_file_the_suite_reads(self):
+        text = DEV_DEPLOY_WORKFLOW.read_text()
+        self.assertEqual(text.count("paths:"), 2)
+        self.assertEqual(text.count("    paths: &dev-deploy-safety-paths\n"), 1)
+        self.assertEqual(text.count("    paths: *dev-deploy-safety-paths\n"), 1)
+        anchored = text.split("    paths: &dev-deploy-safety-paths\n", 1)[1]
+        patterns = re.findall(r"^      - (\S+)$", anchored.split("  pull_request:", 1)[0], re.M)
+        literals = re.findall(r'ROOT / "([^"]+)"', Path(__file__).read_text())
+        inputs = {path for path in literals if (ROOT / path).is_file()}
+        for directory in ("deploy/gcp/dev", "deploy/gcp/prod"):
+            inputs |= {str(path.relative_to(ROOT)) for path in (ROOT / directory).iterdir()}
+        # deploy.sh reads LatestProviderVersion; this file is the suite.
+        inputs |= {"coordinator/api/server.go", "scripts/test-dev-deploy.py"}
+        uncovered = sorted(path for path in inputs
+                           if not any(path_filter_matches(pattern, path) for pattern in patterns))
+        self.assertEqual(uncovered, [], "suite inputs outside the workflow paths filter")
+
+    def test_refresh_backup_contract_has_one_reader(self):
+        contract = DEV / "refresh-backup.sh"
+        self.assertIn("${2##*backup=}", contract.read_text())
+        for script in (SEED, DEV / "swap.sh"):
+            text = script.read_text()
+            self.assertIn("/refresh-backup.sh\"\n", text, script)
+            self.assertNotIn("##*backup=", text, script)
+            self.assertNotIn("[0-9]{8}T[0-9]{6}Z", text, script)
 
     def test_every_required_key_has_a_dev_source(self):
         overlay = env_lines(OVERRIDES)
@@ -405,6 +464,29 @@ class SeedEnvTests(unittest.TestCase):
         self.assertEqual(box.run([SEED, "--seed"]).returncode, 0)
         self.assertEqual(snapshot(box.env_dir), before)
         self.assertEqual(len(box.calls("gcloud")), calls)
+
+    def test_seed_reports_a_kept_refresh_backup_without_failing(self):
+        cases = (
+            ("removal fails", "", "exec",
+             "REPORT could not remove the redundant post-seed refresh backup"),
+            ("output names no backup", "", 'out=$(bash REAL "$@"); printf \'%s\\n\' "${out%%; backup=*}"',
+             "REPORT the refresh did not report one regular timestamped backup; nothing removed"),
+        )
+        for label, before, refresh, expected in cases:
+            with self.subTest(label=label):
+                box = self.sandbox()
+                if label == "removal fails":
+                    fail_rm_of_env_backups(box)
+                seed = lib_with_refresh_wrapper(box, before, refresh) / "deploy/gcp/dev/seed-env.sh"
+                result = box.run([seed, "--seed"])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(expected, result.stdout)
+                self.assertIn(f"OK wrote {box.env_dir / 'env'}", result.stdout)
+                self.assert_no_value_printed(result)
+                self.assertEqual(len(list(box.env_dir.glob("env.bak.*"))), 1)
+                rerun = box.run([seed, "--seed"])
+                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+                self.assertIn("nothing to do", rerun.stdout)
 
     def test_other_project_is_refused_before_any_change(self):
         box = self.sandbox(project="darkbloom-mainnet")
@@ -976,8 +1058,9 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("REPORT waived CI failure: Coordinator Tests", result.stdout)
         self.assert_read_only(box)
 
-    @requires_gnu_publication_tools
-    def test_candidate_publication_is_atomic_and_same_sha_is_immutable(self):
+    def publication(self):
+        """The remote publication command of deploy.sh, run locally without
+        sudo against sandbox copies of the VM deploy and state directories."""
         box = Sandbox(self, MUTATORS, self.deploy_rules())
         dry_run = box.run([DEV / "deploy.sh", "--dry-run"])
         self.assertEqual(dry_run.returncode, 0, dry_run.stdout + dry_run.stderr)
@@ -986,8 +1069,9 @@ class ZeroMutationTests(unittest.TestCase):
         end = dry_run.stdout.index("\nDRY-RUN ssh: sudo systemd-run", start)
         command = dry_run.stdout[start:end]
 
-        remote = box.root / "remote"
+        remote, state = box.root / "remote", box.root / "state"
         command = command.replace("/usr/local/lib/darkbloom-deploy", str(remote))
+        command = command.replace("/var/lib/darkbloom-deploy", str(state))
         command = command.replace("sudo ", "")
         archive = subprocess.run(
             ["tar", "-czf", "-", "deploy/gcp/prod", "deploy/gcp/dev",
@@ -995,12 +1079,17 @@ class ZeroMutationTests(unittest.TestCase):
             cwd=ROOT, capture_output=True, check=True,
         ).stdout
 
-        def publish(payload, selected_command=command):
+        def publish(payload=archive, selected_command=command):
             return subprocess.run(
                 ["bash", "-c", selected_command], input=payload, cwd=ROOT,
                 capture_output=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"},
             )
 
+        return command, archive, publish, remote, state
+
+    @requires_gnu_publication_tools
+    def test_candidate_publication_is_atomic_and_same_sha_is_immutable(self):
+        command, archive, publish, remote, _ = self.publication()
         first = publish(archive)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         published = remote / COMMIT
@@ -1028,6 +1117,60 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(published.stat().st_ino, inode)
         self.assertEqual(snapshot(published), before)
         self.assertEqual(list(remote.glob(f".incoming-{COMMIT}.*")), [])
+
+    @requires_gnu_publication_tools
+    def test_unused_same_sha_directory_that_differs_is_replaced(self):
+        _, _, publish, remote, state = self.publication()
+        first = publish()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        published = remote / COMMIT
+        exact = snapshot(published)
+        (published / "stray").write_text("left by an earlier run\n")
+        replaced = publish()
+        self.assertEqual(replaced.returncode, 0, replaced.stdout + replaced.stderr)
+        self.assertIn(b"REPORT replaced unused published candidate files", replaced.stdout)
+        def tree(snap):
+            return {path.removeprefix(str(published)): (mode, digest) for path, (mode, _, digest) in snap.items()}
+        self.assertEqual(tree(snapshot(published)), tree(exact))
+        self.assertFalse((published / "stray").exists())
+        self.assertEqual(list(remote.glob(".incoming-*")), [])
+
+        (published / "stray").write_text("left by an earlier run\n")
+        changed = snapshot(published)
+        current = remote / "current"
+        current.symlink_to(published)
+        state.mkdir()
+        rollback_state = state / "rollback-state"
+        for user in ("current", "rollback-state"):
+            with self.subTest(user=user):
+                if user == "rollback-state":
+                    current.unlink()
+                    current.symlink_to(remote / "old")
+                    rollback_state.write_text(f"none\nx\nx\nx\nx\n{published}\n")
+                refused = publish()
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(b"and current or rollback-state uses them", refused.stderr)
+                self.assertEqual(snapshot(published), changed)
+                self.assertEqual(list(remote.glob(".incoming-*")), [])
+
+    @requires_gnu_publication_tools
+    def test_publication_removes_stale_hidden_stage_directories(self):
+        _, _, publish, remote, _ = self.publication()
+        remote.mkdir()
+        stale = remote / f".incoming-{'c' * 40}.Ab12Cd"
+        fresh = remote / f".incoming-{'d' * 40}.Ef34Gh"
+        operator = remote / ".incoming-notes"
+        for directory in (stale, fresh, operator):
+            directory.mkdir()
+            (directory / "file").write_text("partial extract\n")
+        for directory in (stale, operator):
+            os.utime(directory, (1, 1))
+        result = publish()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue(operator.exists())
+        self.assertTrue((remote / COMMIT).is_dir())
 
     def seeded_swap_box(self, with_current=True):
         stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install", "chown"]
@@ -1419,6 +1562,65 @@ class ZeroMutationTests(unittest.TestCase):
             ["curl", "localhost:8080/readyz", "", 0],
         ]
 
+    def test_refresh_backup_that_differs_from_the_snapshot_is_kept(self):
+        # An env edit between the env.before snapshot and the refresh is only
+        # in the refresh backup. The restore must not remove that copy.
+        box, extra, _ = self.seeded_swap_box(with_current=False)
+        lib = lib_with_refresh_wrapper(
+            box, 'if [ "${1:-}" = --apply ]; then echo CONCURRENT_EDIT=1 >> "$ENV_FILE"; fi')
+        env_file = Path(extra["ENV_FILE"])
+        before = env_file.read_bytes()
+        box.set_rules(self.first_deploy_rules())
+        result = box.run([lib / "deploy/gcp/dev/swap.sh"], {**extra, "LIB": str(lib)})
+        self.assertNotEqual(result.returncode, 0)
+        result_line = Path(extra["RESULT"]).read_text()
+        self.assertIn("does not match the pre-refresh env and is kept", result_line)
+        self.assertEqual(env_file.read_bytes(), before)
+        backups = list(env_file.parent.glob("env.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(env_lines(backups[0]).get("CONCURRENT_EDIT"), "1")
+        self.assertNotIn("fixture-password", result.stdout + result.stderr + result_line)
+
+    def test_failed_refresh_backup_removal_restores_the_prior_rollback_state(self):
+        box, extra, _ = self.seeded_swap_box(with_current=False)
+        state = Path(extra["STATE"])
+        state.mkdir()
+        prior = state / "rollback-state"
+        prior.write_text("prior rollback fixture\n")
+        prior.chmod(0o600)
+        env_file = Path(extra["ENV_FILE"])
+        before = env_file.read_bytes()
+        fail_rm_of_env_backups(box)
+        box.set_rules(self.first_deploy_rules())
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(Path(extra["RESULT"]).read_text().strip(),
+                         "FAIL could not remove the redundant refresh backup; "
+                         "restored the pre-deploy env, tooling and current link")
+        self.assertEqual(prior.read_text(), "prior rollback fixture\n")
+        self.assertEqual(env_file.read_bytes(), before)
+        self.assertNotIn("automatic cleanup", result.stdout + result.stderr)
+        self.assertEqual([call for call in box.calls("docker") if call[1] == "run"], [])
+
+    @requires_gnu_ln
+    def test_committed_deploy_removes_only_redundant_env_backups(self):
+        box, extra, _ = self.seeded_swap_box(with_current=False)
+        env_file = Path(extra["ENV_FILE"])
+        redundant = env_file.parent / "env.bak.20200101T000000Z"
+        unique = env_file.parent / "env.bak.20200102T000000Z"
+        lookalike = env_file.parent / "env.bak.operator"
+        redundant.write_bytes(env_file.read_bytes())
+        unique.write_bytes(env_file.read_bytes() + b"BOOT_ONLY_STATE=1\n")
+        lookalike.write_bytes(env_file.read_bytes())
+        box.set_rules(self.first_deploy_rules())
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(Path(extra["RESULT"]).read_text().startswith(f"OK {COMMIT} "))
+        self.assertFalse(redundant.exists())
+        self.assertTrue(unique.exists())
+        self.assertTrue(lookalike.exists())
+        self.assertEqual(sorted(env_file.parent.glob("env.bak.*")), sorted([lookalike, unique]))
+
     @requires_gnu_ln
     def test_committed_deploy_survives_a_credential_cleanup_failure(self):
         box, extra, paths = self.seeded_swap_box(with_current=False)
@@ -1462,12 +1664,21 @@ class ZeroMutationTests(unittest.TestCase):
         lookalike_result.write_text("operator lookalike\n")
         newline_result = deploy_root / "darkbloom-dev-swap-ccccccc-3.result\noperator"
         newline_result.write_text("operator newline name\n")
-        os.utime(lookalike_result, (1, 1))
-        os.utime(newline_result, (1, 1))
+        nondigit_result = deploy_root / "darkbloom-dev-swap-abcdef0-1x.result"
+        nondigit_result.write_text("operator lookalike\n")
+        aged_rollback = deploy_root / "darkbloom-dev-rollback-123.result"
+        aged_rollback.write_text("old generated result\n")
+        rollback_lookalike = deploy_root / "darkbloom-dev-rollback-12a.result"
+        rollback_lookalike.write_text("operator lookalike\n")
+        for path in (lookalike_result, newline_result, nondigit_result, aged_rollback, rollback_lookalike):
+            os.utime(path, (1, 1))
         state = Path(extra["STATE"])
         state.mkdir()
         aged_log = state / "failed-coordinator-20200101T000000Z.log"
         aged_log.write_text("old generated log\n")
+        log_lookalike = state / "failed-coordinator-2020.log"
+        log_lookalike.write_text("operator lookalike\n")
+        os.utime(log_lookalike, (1, 1))
         operator_file = state / "operator-note.log"
         operator_file.write_text("preserve me\n")
         os.utime(aged_log, (1, 1))
@@ -1491,8 +1702,12 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertFalse(aged_result.exists())
         self.assertTrue(lookalike_result.exists())
         self.assertTrue(newline_result.exists())
+        self.assertTrue(nondigit_result.exists())
+        self.assertFalse(aged_rollback.exists())
+        self.assertTrue(rollback_lookalike.exists())
         self.assertFalse(aged_log.exists())
         self.assertTrue(operator_file.exists())
+        self.assertTrue(log_lookalike.exists())
         for kept in (previous, lib, unit_result, deploy_root / "old"):
             self.assertTrue(kept.exists(), kept)
         self.assertEqual((deploy_root / "current").resolve(), lib.resolve())

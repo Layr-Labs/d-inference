@@ -29,6 +29,8 @@ REFRESH=$SCRIPT_DIR/../prod/refresh-env.sh
 REQUIRED_FILE=$SCRIPT_DIR/../prod/required-env-keys.txt
 DEFAULTS_FILE=$SCRIPT_DIR/../prod/release-env-defaults
 export ENV_DIR REQUIRED_FILE DEFAULTS_FILE
+# shellcheck source=deploy/gcp/dev/refresh-backup.sh
+. "$SCRIPT_DIR/refresh-backup.sh"
 
 fail() {
     echo "FAIL dev env seed: $*" >&2
@@ -188,10 +190,11 @@ if ! refresh_out=$(ENV_FILE="$ENV_FILE" "$REFRESH" --apply); then
     fail "the written file could not be refreshed: $refresh_out"
 fi
 printf '%s\n' "$refresh_out" | sed 's/^/REPORT /'
-refresh_backup=${refresh_out##*backup=}
-case "$refresh_backup" in "$ENV_FILE".bak.*) suffix=${refresh_backup#"$ENV_FILE".bak.} ;; *) suffix="" ;; esac
-if ! [[ "$suffix" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] ||
-    [ ! -f "$refresh_backup" ] || [ -L "$refresh_backup" ] || ! rm -f -- "$refresh_backup"; then
-    fail "the redundant post-seed refresh backup could not be safely removed"
+# The env file is in place and refreshed. A backup that stays is reported, not
+# a failure: a second --seed finds the file and does nothing.
+if ! refresh_backup=$(reported_refresh_backup "$ENV_FILE" "$refresh_out"); then
+    echo "REPORT the refresh did not report one regular timestamped backup; nothing removed"
+elif ! rm -f -- "$refresh_backup"; then
+    echo "REPORT could not remove the redundant post-seed refresh backup $refresh_backup"
 fi
 echo "OK wrote $ENV_FILE"

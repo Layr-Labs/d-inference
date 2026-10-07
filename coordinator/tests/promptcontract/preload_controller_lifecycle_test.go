@@ -93,7 +93,7 @@ func readyCatalog(contractIDs ...string) *catalog.State {
 	statuses := make([]catalog.Status, len(contractIDs))
 	for index, contractID := range contractIDs {
 		statuses[index] = catalog.Status{
-			ModelID: fmt.Sprintf("model-%d", index), ArtifactReady: true, PromptContractID: contractID,
+			ModelID: fmt.Sprintf("model-%d", index), ArtifactReady: true, PromptContractID: contractID, ModelAggregateSHA256: strings.Repeat("e", 64),
 		}
 	}
 	provisioner := catalog.New()
@@ -134,14 +134,24 @@ func TestPreloadControllerNilReceiverIsSafe(t *testing.T) {
 	}
 }
 
+func TestPreloadControllerCloseBeforeStartStaysClosed(t *testing.T) {
+	contractID := strings.Repeat("c", 64)
+	fake := &preloadTestSidecar{}
+	controller, _, _ := newTestPreloadController(t, fake, readyCatalog(contractID), preload.PreloadControllerConfig{})
+	controller.Close()
+	controller.Start(context.Background())
+	controller.Reconcile(context.Background())
+	if controller.ReadyFor(contractID) || controller.Status().Ready || fake.preloads.Load() != 0 {
+		t.Fatal("closed controller restarted preload or routing")
+	}
+}
+
 func TestPreloadControllerStartRunsUntilClose(t *testing.T) {
 	contractID := strings.Repeat("c", 64)
 	fake := &preloadTestSidecar{}
 	controller, _, _ := newTestPreloadController(t, fake, readyCatalog(contractID),
 		preload.PreloadControllerConfig{PollInterval: 5 * time.Millisecond, MetricsInterval: time.Hour})
 
-	// Close before Start has nothing to stop and must not block.
-	controller.Close()
 	controller.Start(context.Background())
 	// A second Start is ignored; only one run loop exists.
 	controller.Start(context.Background())
@@ -199,7 +209,7 @@ func TestPreloadControllerReconcileUnavailableReasons(t *testing.T) {
 			name:        "no catalog yet",
 			provisioner: catalog.New(),
 			child:       preload.ChildStatus{Running: true, ChildGeneration: 1},
-			want:        "awaiting model catalog",
+			want:        "invalid preload selection",
 		},
 		{
 			name:        "artifact failed",
@@ -243,21 +253,21 @@ func TestPreloadControllerReconcileUnavailableReasons(t *testing.T) {
 	}
 }
 
-func TestPreloadControllerEmptyCatalogIsReadyWithoutPreload(t *testing.T) {
+func TestPreloadControllerEmptyCatalogStaysUnavailableWithoutPreload(t *testing.T) {
 	fake := &preloadTestSidecar{}
 	controller, _, _ := newTestPreloadController(t, fake, readyCatalog(),
 		preload.PreloadControllerConfig{MetricsInterval: time.Hour})
 
 	controller.Reconcile(context.Background())
 	status := controller.Status()
-	if !status.Ready || status.ContractCount != 0 || status.Runs != 0 || status.CatalogGeneration != 1 {
+	if status.Ready || status.ContractCount != 0 || status.Runs != 0 || status.Failures != 0 || status.LastError != "no verified prompt contracts" {
 		t.Fatalf("empty catalog status = %+v", status)
 	}
 	controller.Reconcile(context.Background())
 	if fake.preloads.Load() != 0 {
 		t.Fatal("empty catalog sent a preload")
 	}
-	// Becoming ready counts as a fresh refresh, so a long interval is not due.
+	// An unavailable empty catalog never refreshes ready runtime metrics.
 	if fake.metrics.Load() != 0 {
 		t.Fatalf("metrics calls = %d before the interval", fake.metrics.Load())
 	}
@@ -267,7 +277,7 @@ func TestPreloadControllerRefreshMetricsRespectsInterval(t *testing.T) {
 	const interval = 250 * time.Millisecond
 	fake := &preloadTestSidecar{}
 	fake.metricsStatus.Store(http.StatusInternalServerError)
-	controller, client, _ := newTestPreloadController(t, fake, readyCatalog(),
+	controller, client, _ := newTestPreloadController(t, fake, readyCatalog(strings.Repeat("a", 64)),
 		preload.PreloadControllerConfig{MetricsInterval: interval})
 
 	// Becoming ready records the refresh time no later than readyAt.
@@ -329,7 +339,7 @@ func TestPreloadControllerHTTPErrorIsAFailure(t *testing.T) {
 
 	controller.Reconcile(context.Background())
 	status := controller.Status()
-	if status.Ready || status.Failures != 1 || !strings.Contains(status.LastError, "HTTP 500") {
+	if status.Ready || status.Failures != 1 || status.LastError != "preload_failed" {
 		t.Fatalf("failure status = %+v", status)
 	}
 	controller.Reconcile(context.Background())
@@ -370,7 +380,7 @@ func TestPreloadControllerDiscardsPreloadFromChangedGeneration(t *testing.T) {
 
 	controller.Reconcile(context.Background())
 	status := controller.Status()
-	if status.Ready || status.LastError != "preload generation changed" || status.Runs != 0 || status.Failures != 0 {
+	if status.Ready || status.LastError != "preload identity changed or stopped" || status.Runs != 0 || status.Failures != 0 {
 		t.Fatalf("status = %+v", status)
 	}
 	if controller.ReadyFor(contractID) {
@@ -418,6 +428,18 @@ func (f *preloadCatalogFixture) Snapshot() catalog.Snapshot {
 	return snapshot
 }
 
+func (f *preloadCatalogFixture) VerifiedPreloadArtifacts() (catalog.Snapshot, []preload.VerifiedPreloadArtifact) {
+	snapshot := f.Snapshot()
+	artifacts := make([]preload.VerifiedPreloadArtifact, len(snapshot.ContractIDs))
+	for i, contractID := range snapshot.ContractIDs {
+		artifacts[i] = preload.VerifiedPreloadArtifact{
+			CatalogGeneration: snapshot.Generation, ModelID: "fixture-" + contractID,
+			ModelAggregateSHA256: strings.Repeat("e", 64), PromptContractID: contractID,
+		}
+	}
+	return snapshot, artifacts
+}
+
 func (f *preloadCatalogFixture) replace(snapshot catalog.Snapshot) {
 	f.mu.Lock()
 	f.snapshot = snapshot
@@ -429,11 +451,19 @@ type preloadClientFixture struct {
 	err      error
 }
 
-func (f *preloadClientFixture) Preload(context.Context, []string) (sidecar.PreloadReport, error) {
+func (f *preloadClientFixture) PreloadContinuous(context.Context, []string, bool) (sidecar.PreloadReport, error) {
 	f.preloads.Add(1)
 	return sidecar.PreloadReport{}, f.err
 }
 
 func (f *preloadClientFixture) Metrics(context.Context) (sidecar.SidecarStatus, error) {
 	return sidecar.SidecarStatus{}, f.err
+}
+
+func (f *preloadClientFixture) Ready(context.Context) (bool, error) {
+	return false, f.err
+}
+
+func (f *preloadClientFixture) MaxPreloadIDs() int {
+	return 8
 }

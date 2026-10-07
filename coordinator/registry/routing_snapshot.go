@@ -90,4 +90,5 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 		snap.deadlineProfile = nil
 	}
 	r.fillFirstContentSnapshot(snap, p, now, pendingWork, report)
+	r.fillExplorationRates(snap, p, now)
 }

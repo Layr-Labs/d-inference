@@ -128,7 +128,7 @@ func (s *PostgresStore) newMigrationProvider(db *sql.DB) (*goose.Provider, error
 		goose.WithSessionLocker(locker),
 		goose.WithTableName(migrationVersionTable),
 		goose.WithDisableGlobalRegistry(true),
-		goose.WithGoMigrations(s.goMigrations()...),
+		goose.WithGoMigrations(s.allGoMigrations()...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: create migration provider: %w", err)
@@ -137,9 +137,9 @@ func (s *PostgresStore) newMigrationProvider(db *sql.DB) (*goose.Provider, error
 }
 
 // goMigrations are the startup steps that ran after the old boot-time DDL
-// loop, in the same order. They keep their code and run on the store pool,
-// which sets no session timeouts unless the database URL specifies them. Each
-// index helper retains its existing invalid-index policy.
+// loop, in the same order. They use the store pool's URL timeouts, except
+// concurrent index builds use dedicated connections with their own lock timeout
+// and refuse to modify any existing invalid index.
 func (s *PostgresStore) goMigrations() []*goose.Migration {
 	step := func(version int64, run func(context.Context) error) *goose.Migration {
 		return goose.NewGoMigration(version, &goose.GoFunc{
@@ -153,4 +153,10 @@ func (s *PostgresStore) goMigrations() []*goose.Migration {
 		step(5, s.ensureProviderEarningsWindowIndex),
 		step(9, s.ensureStripeRefundIndex),
 	}
+}
+
+// allGoMigrations are the pre-goose startup steps, then the
+// CONCURRENTLY index builds.
+func (s *PostgresStore) allGoMigrations() []*goose.Migration {
+	return append(s.goMigrations(), s.indexMigrations()...)
 }

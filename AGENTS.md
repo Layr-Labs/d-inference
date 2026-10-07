@@ -384,6 +384,25 @@ branch's signed-commit rule does not validate commits hosted on a contributor
 fork, so the `Commit Signatures` contribution-policy check enforces this before
 merge.
 
+**Stacked PRs**
+
+Use linear PR bases: the first targets `master`, each child targets its immediate
+parent. Before approval, merge each refreshed parent into its child with a signed
+commit and a non-force push, working from the bottom of the stack upward.
+`master` is squash-only: a squash loses the original commit ancestry, so a
+pre-merge parent update never guarantees conflict-free merges after the squash.
+After each actual squash, run
+`python3 scripts/restack-after-squash.py PARENT CHILD [DESCENDANTS...] --check`,
+then `--push` (optionally `--retarget`), following
+[the stacking guide](docs/developer/pull-requests.md). The script only adds
+signed same-tree ancestry bridges; content differences require manual
+reconciliation. Never force-push or change merge policy to repair a stack.
+Use `--skip-hook` only with explicit human approval. Keep affected branches
+unchanged during the operation; non-force pushes are not compare-and-swap
+protection against branch deletion or rewind. Updates can dismiss approvals;
+recheck CI, Verified signatures, bases and mergeability before requesting approval
+again. This procedure does not authorize merging PRs.
+
 **Every PR MUST include a before-and-after diagram (Mermaid) in its description** that details what changed — covering BOTH:
 
 - **Behavior**: the request/response flow, states, and outcomes a user or caller observes (e.g. dispatch → retry → 429/503/200).

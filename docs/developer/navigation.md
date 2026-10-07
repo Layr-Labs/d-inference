@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -17,16 +17,18 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 
 | Behavior | Start here |
 |---|---|
-| Process assembly and shutdown | `coordinator/app/`; command parsing stays in `coordinator/cmd/coordinator/` |
+| Process assembly and shutdown | `coordinator/app/`; command body in `coordinator/internal/command/coordinator/`, thin executable in `coordinator/cmd/coordinator/` |
+| Pre-database production-serving validation | `coordinator/config/app_config.go` (`AppConfig.Check`); pure `service.Config.CheckProductionServing` in `coordinator/appattest/service/config.go`, reused by `coordinator/internal/provider/legacymdm/policy.go` before the cohort freeze |
 | Provider-owner email campaigns | `coordinator/provideremail/`; CLI orchestration in `provideremail/command/`, Resend transport in `provideremail/resend/`, thin executable in `coordinator/cmd/provider-emails/` |
 | HTTP composition | `coordinator/api/`; `NewServer` binds domain owners to the real router |
 | Authentication, principals, keys and device login | `coordinator/api/access/`, `access/keys/`, `access/device/` |
 | Request admission, dispatch and settlement | `coordinator/api/inference/`; request/response codecs in its `request/` and `response/` packages |
 | Provider sessions and trust | `coordinator/api/provider/` and `provider/trust/`; terminal inference events return to the shared inference owner |
 | Catalog publication and release policy | `coordinator/api/catalog/` and `coordinator/api/releases/` |
-| Accounts, billing HTTP and payouts | `coordinator/api/accounts/`, `coordinator/api/billing/`, `billing/payouts/` |
+| Accounts, account erasure, billing HTTP and payouts | `coordinator/api/accounts/`, `accounts/erasure/`, `coordinator/api/billing/`, `billing/payouts/`; account HTTP owners gate new soft-delete mutations, not existing scrub/outbox obligations |
 | Earn-page hardware interest: registration, own readback and admin export | `coordinator/api/accounts/small_models_interest.go`; contract in `coordinator/store/small_models_interest.go`, backends in `coordinator/store/memory/small_models_interest.go` and `coordinator/store/postgres/small_models_interest.go` |
 | Public projections and operational endpoints | `coordinator/api/reporting/` and `coordinator/api/operations/` |
+| Optional archived public analytics | `coordinator/analyticssnapshot/` owns validation and durable acceptance; `coordinator/api/reporting/analytics_snapshot.go` owns polling and HTTP integration; `coordinator/tests/analyticssnapshot/` mirrors decoder/cache coverage |
 | Profiles, request outcomes and route sinks | `coordinator/api/observation/`; separate bounded queues retain their own loss/flush rules |
 | Prompt accounting and planning | `coordinator/api/promptwork/` and the inference owner |
 | Pure deadline calibration | `coordinator/registry/firstcontent/`; runtime adapters remain in `coordinator/registry/` |
@@ -54,9 +56,11 @@ components for the specific invariant:
 | Concern | Internal owner |
 |---|---|
 | Middleware, projections and reporting calculations | `coordinator/internal/api/` |
+| Shared request prelude and provider-bound caller-field minimization | `coordinator/internal/inference/prelude/request_prelude.go` (`Parser.Parse`), `coordinator/internal/inference/prelude/provider_body_privacy.go` (`stripProviderCallerIdentity`); bound to the key policy by `coordinator/api/inference/prelude_parser.go` (`NewPreludeParser`) |
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
 | Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
+| APNs proof, challenge and budget erasure; publication generation fences | `coordinator/internal/provider/identity/erasure.go`; `coordinator/api/provider/trust/erasure.go` connects the account scrub to runtime cleanup |
 | Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
 | Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
 | Writer lanes/watchdog, drain authority, identity gates, queue-drain coalescing, bounded demand and detached residency/capacity/forecast/deadline policy | `coordinator/internal/registry/` |
@@ -67,7 +71,9 @@ components for the specific invariant:
 | Cache-routing artifact allowlist and stale-entry reporting | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist`); configured instance in `coordinator/registry/cache_artifact_allowlist.go`; status count and one-time warning in `coordinator/api/inference/exact_cache_allowlist_staleness.go` |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
 | Routing scan candidate storage | `coordinator/internal/registry/candidatearena/` (`Arena`, `Storage`, `ChunkSize`); private ownership in `coordinator/registry/reservation_storage.go`, compact retained evidence in `coordinator/registry/candidate_snapshot.go`; chunk size and retained public lifetimes are guarded by `coordinator/tests/registry/candidate_arena_test.go`, `candidate_storage_test.go` and `reservation_storage_test.go` |
-| Cache generations, memory history, shared records and SQL helpers | `coordinator/internal/store/` |
+| Explored provider pricing | `coordinator/internal/registry/forecast/exploration.go` (`IdleEvidenceGap`, `ExplorationReplacesRate`), `coordinator/internal/registry/performance/rates.go` (`Rates.ExploredPrefill`, `Rates.ExploredDecode`); `coordinator/registry/first_content_exploration_pricing.go` (`fillExplorationRates`) binds them to the routing snapshot; guarded by `coordinator/tests/registry/first_content_exploration_pricing_test.go` |
+| Exploration feedback and stale decode ranking | `coordinator/internal/registry/identitygate/exploration.go` retains identity/model backoff and corroborated rates; `coordinator/registry/first_content_exploration_outcome.go` binds terminal feedback from `coordinator/internal/inference/providerhealth/` and `cancellation/`; `coordinator/internal/registry/performance/rates.go` expires independently dated idle decode estimates without changing projected admission rates |
+| Cache generations, memory history, shared records, account erasure rules and SQL helpers | `coordinator/internal/store/`; erasure rules and keys in `coordinator/internal/store/erasure/` |
 | Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |

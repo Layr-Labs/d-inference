@@ -20,6 +20,9 @@ func (s *PostgresStore) UpsertProviderWithReputation(ctx context.Context, p stor
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockAccountAdmission(ctx, tx, p.AccountID); err != nil {
+		return err
+	}
 	if err := upsertProviderRecord(ctx, tx, p); err != nil {
 		return err
 	}

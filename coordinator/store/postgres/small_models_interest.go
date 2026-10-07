@@ -10,11 +10,22 @@ import (
 )
 
 func (s *PostgresStore) UpsertSmallModelsInterest(ctx context.Context, record store.SmallModelsInterest) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO small_models_interest (account_id,mac_type,chip,ram_gb)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, record.AccountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO small_models_interest (account_id,mac_type,chip,ram_gb)
  VALUES ($1,$2,$3,$4) ON CONFLICT (account_id) DO UPDATE SET
  mac_type=EXCLUDED.mac_type, chip=EXCLUDED.chip, ram_gb=EXCLUDED.ram_gb, updated_at=NOW()`,
 		record.AccountID, record.MacType, record.Chip, record.RAMGB)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetSmallModelsInterest(ctx context.Context, accountID string) (*store.SmallModelsInterest, error) {
@@ -34,7 +45,7 @@ func (s *PostgresStore) GetSmallModelsInterest(ctx context.Context, accountID st
 func (s *PostgresStore) ListSmallModelsInterest(ctx context.Context, after string, limit int) ([]store.SmallModelsInterestContact, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.account_id,i.mac_type,i.chip,i.ram_gb,i.created_at,i.updated_at,u.email
  FROM small_models_interest i JOIN users u ON u.account_id=i.account_id
- WHERE i.account_id > $1 ORDER BY i.account_id LIMIT $2`, after, shared.SmallModelsInterestPageLimit(limit))
+ WHERE i.account_id > $1 AND u.deleted_at IS NULL ORDER BY i.account_id LIMIT $2`, after, shared.SmallModelsInterestPageLimit(limit))
 	if err != nil {
 		return nil, err
 	}

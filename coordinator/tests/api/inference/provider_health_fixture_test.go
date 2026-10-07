@@ -14,11 +14,15 @@ import (
 // newBreakerExemptionHarness builds a server with one registered provider that
 // carries a stable identity (AccountID), so all three provider-fault breakers
 // AND the stable-identity ejection breaker are armed for the test.
-func newBreakerExemptionHarness(t *testing.T, name string) (*serverFixture, *registry.Registry, *registry.Provider, *registry.PendingRequest) {
+func newBreakerExemptionHarness(t *testing.T, name string, dependencies ...registry.Dependencies) (*serverFixture, *registry.Registry, *registry.Provider, *registry.PendingRequest) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := memory.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
+	var deps registry.Dependencies
+	if len(dependencies) > 0 {
+		deps = dependencies[0]
+	}
+	reg := registry.NewWithDependencies(logger, deps)
 	srv := newComposedServer(reg, st, TestServerConfig{}, logger)
 	provider := reg.Register("provider-"+name, nil, &protocol.RegisterMessage{
 		Type:     protocol.TypeRegister,

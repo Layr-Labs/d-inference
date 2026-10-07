@@ -10,7 +10,15 @@ import (
 // ON CONFLICT DO NOTHING so a duplicate register, or an open that races behind a
 // close (fast connect→disconnect), never creates a second or reopened row.
 func (s *PostgresStore) OpenProviderSession(ctx context.Context, sessionID, serial, accountID string) error {
-	_, err := s.pool.Exec(ctx,
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err = checkPersonalSession(ctx, tx, sessionID, accountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO provider_sessions (session_id, serial_number, account_id)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (session_id) DO NOTHING`,
@@ -19,13 +27,21 @@ func (s *PostgresStore) OpenProviderSession(ctx context.Context, sessionID, seri
 	if err != nil {
 		return fmt.Errorf("store: open provider session: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // TouchProviderSession updates the open session's last_seen and backfills
 // serial/account/provider_key if they were unknown at open time.
 func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error {
-	_, err := s.pool.Exec(ctx,
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err = checkPersonalSession(ctx, tx, sessionID, accountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`UPDATE provider_sessions
 		    SET last_seen = $2,
 		        serial_number = CASE WHEN serial_number = '' THEN $3 ELSE serial_number END,
@@ -37,7 +53,7 @@ func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, ser
 	if err != nil {
 		return fmt.Errorf("store: touch provider session: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // CloseProviderSession marks the session for sessionID as ended. Implemented as

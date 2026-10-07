@@ -81,6 +81,7 @@ func (s *Service,
 	if len(facts) > 0 {
 		fact = facts[0]
 	}
+	publication := s.trustReuseCache.PublicationGeneration()
 	result := s.trustReuseCache.Decide(trustreuse.Input{
 		SEPubKey:          seKey,
 		Serial:            serial,
@@ -154,7 +155,9 @@ func (s *Service,
 		rec.EvidenceGeneration = writeResult.EvidenceGeneration
 		rec.RevocationGeneration = writeResult.RevocationGeneration
 	}
-	s.trustReuseCache.RecordTrust(rec)
+	if !s.trustReuseCache.RecordTrust(publication, rec) {
+		return reject(trustreuse.TrustReuseReasonRevoked)
+	}
 	if !provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(registry.DeviceEvidence{
 		SEPublicKey:          seKey,
 		Serial:               serial,

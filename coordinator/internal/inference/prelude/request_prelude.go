@@ -99,6 +99,7 @@ func (s *Parser) Parse(w http.ResponseWriter, r *http.Request) (Result, bool) {
 	// Own the template date before any model fallback or endpoint lowering.
 	// Always overwrite the reserved field; originalRawBody remains untouched.
 	promptcontract.SetRequestDate(parsed, receivedAt)
+	stripProviderCallerIdentity(parsed)
 
 	return Result{
 		Body:            inreq.ForwardBody{Parsed: parsed, Bytes: rawBody, Dirty: true},

@@ -1,13 +1,30 @@
 package performance
 
-import "github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+)
+
+// Idle ranking outlives deadline evidence, but a dated slow observation must
+// not indefinitely keep an otherwise idle provider from receiving new work.
+const idleDecodeMeasurementMaxAge = 30 * time.Minute
 
 // Rates projects detached measurements without owning serving or admission state.
+// ExploredPrefill and ExploredDecode are fleet medians that replace the
+// provider's own rate while evidence exploration prices it; 0 keeps the
+// ordinary order. A reviewed profile point still comes first. EffectiveDecode
+// and Prefill use them; ProjectedDecode does not.
 type Rates struct {
 	Profile                                   *Profile
 	StaticPrefill, ObservedPrefill            float64
 	StaticDecode, ObservedDecode, FleetMedian float64
+	ExploredPrefill, ExploredDecode           float64
 	ObservedBatch, Occupancy                  int
+	// IdleLoaded requires a loaded model, no whole-Mac work and no reservations.
+	// DecodeAgeMs dates decode independently of prefill; negative means unknown.
+	IdleLoaded  bool
+	DecodeAgeMs int32
 }
 
 // EffectiveDecode resolves the current batch rate, not a new request's join rate.
@@ -15,7 +32,11 @@ func (r Rates) EffectiveDecode(loadFactor float64) float64 {
 	if point, ok := r.Profile.BatchAt(max(1, r.Occupancy+1)); ok {
 		return point.DecodeP10TPS
 	}
-	if r.ObservedDecode > 0 {
+	if r.ExploredDecode > 0 {
+		return r.ExploredDecode
+	}
+	staleIdleDecode := r.IdleLoaded && r.DecodeAgeMs > int32(idleDecodeMeasurementMaxAge/time.Millisecond)
+	if r.ObservedDecode > 0 && !staleIdleDecode {
 		return r.ObservedDecode
 	}
 	if r.FleetMedian > 0 {
@@ -44,13 +65,25 @@ func (r Rates) Prefill() float64 {
 		return point.PrefillTPS
 	}
 	tps := r.StaticPrefill
-	if capacityvalue.FinitePositive(r.ObservedPrefill) {
+	switch {
+	case capacityvalue.FinitePositive(r.ExploredPrefill):
+		tps = r.ExploredPrefill
+	case capacityvalue.FinitePositive(r.ObservedPrefill):
 		tps = r.ObservedPrefill
 	}
 	if !capacityvalue.FinitePositive(tps) {
 		tps = 1
 	}
 	return min(tps, capacityvalue.MaxPrefillTPS)
+}
+
+// UsesExploration reports actual median pricing, not medians hidden by a
+// reviewed profile. Ordinary fleet fallbacks are not evidence exploration.
+func (r Rates) UsesExploration() bool {
+	if _, ok := r.Profile.BatchAt(max(1, r.Occupancy+1)); ok {
+		return false
+	}
+	return r.ExploredDecode > 0 || capacityvalue.FinitePositive(r.ExploredPrefill)
 }
 
 func (r Rates) ProjectedDecode(joinBatch int, loadFactor float64, useFleetMedian bool) float64 {

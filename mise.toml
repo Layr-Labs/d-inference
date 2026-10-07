@@ -1,6 +1,6 @@
 [tools]
-# Coordinator (Go control plane). Source of truth: go.mod `go 1.25.7`.
-go = "1.25.7"
+# Coordinator (Go control plane). Match the Docker builder; satisfy go.mod.
+go = "1.26.8"
 
 # Prompt-contract sidecar. CI and the coordinator container use the same
 # release so Cargo.lock resolution and language semantics stay reproducible.

@@ -109,6 +109,7 @@ domain.
 | Expression result | Cast it, or sqlc types it `interface{}` | `COALESCE(SUM(cost_micro_usd), 0)::bigint AS total_micro_usd` returns `int64` |
 | Struct names | Generated from the table name, singular, with sqlc's default casing; there are no renames in `sqlc.yaml` | table `api_keys` becomes `storedb.ApiKey`; `limit_micro_usd` becomes `LimitMicroUsd` |
 | `SELECT *` | Allowed; sqlc expands it to the column list at generation time | `GetAPIKeyByHash` |
+| Lease result | Lock the row before checking current-time expiry; require the claim generation and an affected row before dependent writes | `LockErasureOutbox` then `SaveErasureOutboxResult :execrows` in `coordinator/store/postgres/queries/erasure.sql`; `erasure_outbox.go` inserts a manual split only after the fenced update succeeds |
 
 ## Verify
 
@@ -139,6 +140,20 @@ go test ./coordinator/tests/store/... -count=1 -run 'APIKey'
 | A reused `$1` has the name of only its first column | sqlc gives a positional parameter one name | Use one `sqlc.arg('name')` for both places, or two parameters. |
 | `requires go >= 1.26.0` with `GOTOOLCHAIN=local` | The selected Go version is too old for sqlc | Unset `GOTOOLCHAIN` to permit automatic toolchain selection, or install Go 1.26. |
 | Downloading the Go toolchain fails | The automatic download could not reach the Go module proxy | Restore proxy access, or install Go 1.26 locally. |
+
+### Erasure query ownership
+
+Erasure queries include typed historical-provider discovery, shared-key
+ownership excluding erased accounts, payment-row locks and staged external
+object collection. The callback passed to `erasureTx` receives the transaction's
+bounded context; use that argument for every generated query. Source:
+`coordinator/store/postgres/queries/erasure.sql`; adapters:
+`coordinator/store/postgres/erasure.go` and `coordinator/store/postgres/erasure_keys.go`.
+
+Account-erasure key collection in `coordinator/store/postgres/queries/erasure.sql`
+uses authenticated account-scoped inventory aliases plus retained hashed
+ownership. Keep owner filtering and the shared-owner exclusion together when
+changing these queries; transport keys and serial claims are not SE ownership.
 
 ## Related
 

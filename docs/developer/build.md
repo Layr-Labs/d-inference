@@ -403,7 +403,7 @@ The provider consumes the local packages through immutable Git submodule pins:
 | `libs/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | `gather_mm` / `gather_qmm` row-tile backport |
 | `libs/mlx-swift/Source/Cmlx/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | Same merged MLX source used by Cmlx and the provider metallib |
 | `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources |
-| `libs/mlx-swift-lm` | `e407e899c4e3f9ee4d95f8974ed4f01e7e60e702` | Retained current SDK pin; no SDK gitlink change in this PR |
+| `libs/mlx-swift-lm` | `3fd4944c3b3ee5cb45c5cbfac8805876332d3a29` | [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165): opt-in typical MTP acceptance; exact remains the default |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
@@ -757,6 +757,17 @@ uses the normal slot factory after a fresh pre/post-load weight-hash check;
 `--cache-mode resident` explicitly reproduces the earlier resident-cache arm.
 The baseline conditional and resident reproduction use the direct production
 engine factory (`BenchmarkLoader.swift`).
+
+The candidate also accepts `--mtp-acceptance exact|typical` after its positional
+arguments; historical baseline builds reject an explicit flag. Omission keeps
+`exact`. Rebuild against the provider SPI that exposes
+`EngineV2Factory.makeBenchmarkSession(mtpAcceptanceConfig:)`, a `String` argument
+defaulting to `"exact"`, in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSessionConstruction.swift`.
+The candidate SSD route forwards the flag through that normal slot factory;
+the resident reproduction sets `CBv2MTPConfig.acceptance` directly. Neither route
+changes model/assistant verification or memory gates. The flag does not enable
+MTP and offers no delta override. See [sampled acceptance validation](test.md#sampled-mtp-acceptance-controls).
 
 The paired persistent-test namespace/access-group options require a candidate
 build containing `SSDPersistentTestKeyNamespace`; historical builds reject them.

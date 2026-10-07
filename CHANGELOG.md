@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - typical MTP acceptance
+
+- Add per-model typical MTP draft acceptance for sampled requests (`[backend] mtp_acceptance`, `mtp_acceptance_by_model`; default `exact`), ported from mlx-serve PR #427. Greedy requests are unchanged; slot posture telemetry reports `mtp_acceptance`.
+- Pin the merged SDK implementation from `mlx-swift-lm` main; its file tree matches the engine revision used in the recorded acceptance benchmarks.
+
 ## 0.9.18 - prepared candidate (not published)
 
 The next provider release is prepared from changes merged since `v0.9.17`.

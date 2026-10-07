@@ -17,10 +17,13 @@ export function startingModel(snapshot: Snapshot): NativeModel | undefined {
 // known only for models the runtime has measured; an unmeasured pin can't be counted.
 export function pinnedMemory(snapshot: Snapshot, pinned: string[]) {
   const chosen = snapshot.models.filter((model) => pinned.includes(model.id));
-  const needed = chosen.reduce((total, model) => total + (model.memory_gb ?? 0), 0);
+  const needed = chosen.reduce((total, model) => total + (model.memory_gb ?? model.size_gb), 0);
   return {
     needed,
-    measured: chosen.every((model) => model.memory_gb !== undefined),
-    exceeds: needed > snapshot.memory.total_gb,
+    measured: chosen.every((model) => model.memory_gb != null),
+    exceeds:
+      needed > (snapshot.memory.pin_budget_gb ?? snapshot.memory.total_gb) ||
+      (snapshot.memory.max_model_slots !== undefined &&
+        chosen.length > snapshot.memory.max_model_slots),
   };
 }

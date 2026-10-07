@@ -19,7 +19,17 @@ export function startModels(snapshot: Snapshot, method: StartMethod, pinned: str
 
 export function startAction(snapshot: Snapshot, method: StartMethod, pinned: string[]): Action {
   const models = startModels(snapshot, method, pinned);
-  if (method === 'autopilot')
-    return { action: 'autopilot', models, pinned: [...pinned].sort(), endpoint: true };
+  if (method === 'autopilot') {
+    const downloads = snapshot.models
+      .filter((model) => models.includes(model.id) && !model.downloaded)
+      .map((model) => model.id);
+    return {
+      action: 'autopilot',
+      models,
+      pinned: [...pinned].sort(),
+      ...(downloads.length ? { downloads } : {}),
+      endpoint: true,
+    };
+  }
   return { action: 'start', models, local: method === 'local', endpoint: true };
 }

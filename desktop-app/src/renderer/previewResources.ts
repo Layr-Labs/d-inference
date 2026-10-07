@@ -40,6 +40,7 @@ export function previewResources(): Partial<Record<Resource, unknown>> {
     },
     cooling: {
       supported: true,
+      enabled: true,
       mode: 'automatic',
       temperature: 52,
       fans: [

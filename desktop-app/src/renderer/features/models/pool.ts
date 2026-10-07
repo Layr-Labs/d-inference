@@ -4,7 +4,11 @@ import type { NativeModel, Operation, Snapshot } from '../../../shared/contracts
 // A runtime without the Autopilot block can't run it, so it only ever gets manual selection.
 export type ModelsMode = 'autopilot' | 'manual' | 'unsupported';
 export const modelsMode = ({ autopilot }: Snapshot): ModelsMode =>
-  !autopilot ? 'unsupported' : autopilot.enabled ? 'autopilot' : 'manual';
+  !autopilot
+    ? 'unsupported'
+    : autopilot.enabled || autopilot.configured === false
+      ? 'autopilot'
+      : 'manual';
 
 // `outside` is downloaded but not yet in the pool: downloading alone never adds to it.
 export type PoolState =
@@ -14,10 +18,10 @@ export const poolLabels: Record<PoolState, string> = {
   ineligible: 'Not available',
   downloading: 'Downloading',
   available: 'Not downloaded',
-  outside: 'On this Mac · not in pool',
-  pool: 'In pool',
-  loaded: 'Loaded now · Autopilot',
-  pinned: 'Pinned · always on',
+  outside: 'Downloaded · not in Autopilot',
+  pool: 'Available to Autopilot',
+  loaded: 'In memory',
+  pinned: 'Kept in memory',
 };
 
 // `requested` maps operations this page started to their model, for runtimes that don't
@@ -29,7 +33,7 @@ export function runningDownload(
 ): Operation | undefined {
   return snapshot.operations.find(
     (operation) =>
-      operation.action === 'download' &&
+      (operation.action === 'download' || operation.action === 'autopilot') &&
       operation.state === 'running' &&
       (operation.model ?? requested[operation.id]) === model,
   );
@@ -49,9 +53,13 @@ export function poolState(
 }
 
 export const poolFilters = [
-  { id: 'all', label: 'All', states: [] },
-  { id: 'pool', label: 'In pool', states: ['pool', 'loaded', 'pinned'] },
-  { id: 'pinned', label: 'Pinned', states: ['pinned'] },
+  {
+    id: 'pool',
+    label: 'Your models',
+    states: ['outside', 'pool', 'loaded', 'pinned', 'downloading'],
+  },
+  { id: 'all', label: 'Browse models', states: [] },
+  { id: 'pinned', label: 'Kept in memory', states: ['pinned'] },
   { id: 'available', label: 'Not downloaded', states: ['available', 'downloading'] },
 ] as const satisfies readonly { id: string; label: string; states: readonly PoolState[] }[];
 export type PoolFilter = (typeof poolFilters)[number]['id'];
@@ -95,21 +103,21 @@ export function phaseCopy(status: AutopilotStatus, running: boolean): PhaseCopy 
       };
     case 'shadow':
       return {
-        label: 'Learning',
+        label: 'Observing demand',
         tone: 'idle',
         detail:
-          'Autopilot is learning; models stay as they are for now. It records what it would load as demand changes, but doesn’t change what’s in memory yet.',
+          'Autopilot is observing demand; models stay as they are for now. It records what it would load as demand changes, but doesn’t change what’s in memory yet.',
       };
     case 'waiting':
       return {
-        label: 'Waiting',
+        label: 'Waiting for control',
         tone: 'idle',
         detail:
           'Autopilot is waiting for the network to hand it control. Models stay as they are until then.',
       };
     case 'waiting_inventory':
       return {
-        label: 'Waiting for the pool',
+        label: 'Refresh models needed',
         tone: 'warning',
         detail:
           'Models on this Mac changed. Refresh the pool so Autopilot can use them; models stay as they are until then.',
@@ -118,9 +126,9 @@ export function phaseCopy(status: AutopilotStatus, running: boolean): PhaseCopy 
     default:
       return running
         ? {
-            label: 'Starting',
+            label: 'Checking status',
             tone: 'idle',
-            detail: 'The runtime hasn’t reported Autopilot’s state yet. Models stay as they are.',
+            detail: 'Autopilot status is not available yet. Models stay as they are.',
           }
         : {
             label: 'Ready',

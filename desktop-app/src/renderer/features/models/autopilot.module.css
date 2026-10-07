@@ -6,6 +6,29 @@
   background: var(--panel-bg);
 }
 
+.counts {
+  color: var(--muted);
+  font-size: 11px;
+}
+.phaseDetails {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+.phaseDetails summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.phaseDetails p {
+  margin: 8px 0;
+}
+.actions {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
 .card > header {
   display: flex;
   align-items: center;
@@ -15,15 +38,6 @@
 .card h3 {
   font-size: 15px;
   font-weight: 500;
-}
-
-.card > p {
-  margin: 12px 0 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-  max-width: 620px;
-  text-wrap: pretty;
 }
 
 .icon {
@@ -81,54 +95,6 @@
   font-size: 11px;
 }
 
-.detail {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 14px;
-  padding: 11px 14px;
-  border-radius: 6px;
-  background: rgba(var(--contrast-rgb), 0.035);
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.detail[data-tone='warning'] {
-  background: var(--warning-wash);
-  color: var(--warning);
-}
-
-.facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
-  margin: 18px 0 0;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
-}
-
-.facts dt {
-  color: var(--muted);
-  font-size: 10px;
-  margin-bottom: 7px;
-}
-
-.facts dd {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.facts :global(.memory-track) {
-  margin: 9px 0 7px;
-}
-
-.facts small {
-  font-size: 10px;
-}
-
 .offer {
   display: flex;
   align-items: center;
@@ -149,7 +115,8 @@
   font-weight: 500;
 }
 
-.offer p {
+.offer small {
+  display: block;
   margin: 5px 0 0;
   color: var(--muted);
   font-size: 11px;
@@ -171,9 +138,19 @@
   font-size: 10px;
 }
 
-.hint {
-  margin-top: 4px;
+.description {
+  margin-top: 7px;
+  font-size: 11px;
   color: var(--muted);
+}
+
+.description summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.description p {
+  margin: 7px 0 0;
 }
 
 .badge {
@@ -289,8 +266,15 @@
 }
 
 @media (max-width: 900px) {
-  .facts {
-    grid-template-columns: 1fr;
-    gap: 14px;
+  .card > header {
+    flex-wrap: wrap;
+  }
+  .controls {
+    width: 100%;
+    margin-left: 46px;
+  }
+  .actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 }

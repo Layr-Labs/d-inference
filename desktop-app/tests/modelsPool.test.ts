@@ -46,7 +46,7 @@ describe('pool state', () => {
   it('groups states into filters', () => {
     expect(inFilter('outside', 'all')).toBe(true);
     expect(inFilter('loaded', 'pool')).toBe(true);
-    expect(inFilter('outside', 'pool')).toBe(false);
+    expect(inFilter('outside', 'pool')).toBe(true);
     expect(inFilter('pinned', 'pinned')).toBe(true);
     expect(inFilter('loaded', 'pinned')).toBe(false);
     expect(inFilter('downloading', 'available')).toBe(true);
@@ -74,7 +74,7 @@ describe('phase copy', () => {
         /stay as they are|reconciling/,
       );
     expect(phaseCopy({ ...activeAutopilot, phase: 'shadow' }, true).detail).toMatch(
-      /^Autopilot is learning; models stay as they are for now\./,
+      /^Autopilot is observing demand; models stay as they are for now\./,
     );
   });
 
@@ -89,7 +89,7 @@ describe('phase copy', () => {
 
   it('distinguishes a runtime that hasn’t reported yet from a stopped Mac', () => {
     const unreported = { ...activeAutopilot, phase: undefined };
-    expect(phaseCopy(unreported, true).label).toBe('Starting');
+    expect(phaseCopy(unreported, true).label).toBe('Checking status');
     expect(phaseCopy(unreported, false).label).toBe('Ready');
   });
 });

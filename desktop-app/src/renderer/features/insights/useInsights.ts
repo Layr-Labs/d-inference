@@ -28,7 +28,7 @@ export function useInsights(state: Snapshot, window: '7d' | '30d' = '7d') {
         setSnapshot((previous) => ({
           key: current.key,
           data: previous.key === current.key ? previous.data : null,
-          error: 'Earnings insights are unavailable. Check your connection and runtime version.',
+          error: 'Couldn’t load earnings. Try again shortly.',
         }));
     } finally {
       current.busy = false;

@@ -38,7 +38,7 @@ export function RuntimeVersion({ backend }: { backend: BackendState }) {
       </div>
       <div className={styles.versions}>
         <div>
-          <span>This Mac’s runtime</span>
+          <span>Installed provider version</span>
           <strong>{installed}</strong>
         </div>
         <ArrowRight size={23} />

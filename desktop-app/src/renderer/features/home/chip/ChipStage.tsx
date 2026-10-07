@@ -1,10 +1,11 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Pause, Play } from 'lucide-react';
-import type { DesktopAPI, Snapshot } from '../../../../shared/contracts';
+import type { CoolingData, DesktopAPI, Snapshot } from '../../../../shared/contracts';
 import { useHardwareLoad } from '../../../hardware/useHardwareLoad';
 import { useReducedMotion } from '../../../useReducedMotion';
 import { ChipCanvas } from './ChipCanvas';
 import { ChipStatus } from './ChipStatus';
+import { FanStatus } from './FanStatus';
 import { ChipReadouts } from './ChipReadouts';
 import { hardwareReadout } from './hardware/readouts';
 import { useChipPalette } from './hooks/useChipPalette';
@@ -40,10 +41,14 @@ export function ChipStage({
   state,
   preview,
   source,
+  cooling,
+  onCooling,
 }: {
   state: Snapshot;
   preview: boolean;
   source?: DesktopAPI;
+  cooling?: CoolingData;
+  onCooling?: () => void;
 }) {
   const load = useHardwareLoad(source);
   const override = useMemo(() => (preview ? previewChip() : null), [preview]);
@@ -118,7 +123,11 @@ export function ChipStage({
           </p>
         </div>
         <div className={styles.controls}>
-          <ChipStatus mode={text.mode} live={text.measured} />
+          {onCooling ? (
+            <FanStatus cooling={cooling} onOpen={onCooling} />
+          ) : (
+            <ChipStatus mode={text.mode} live={text.measured} />
+          )}
           {preview && <VariantSwitch value={variant} onChange={choose} />}
           <button
             className={styles.iconButton}

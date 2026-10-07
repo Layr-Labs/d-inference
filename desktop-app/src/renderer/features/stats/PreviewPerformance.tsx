@@ -1,3 +1,4 @@
+import { assessReadiness } from '../machines/overview/readiness';
 import { useMemo, useState } from 'react';
 import type { BackendState } from '../../useBackend';
 import { isPreview } from '../../useBackend';
@@ -119,7 +120,15 @@ export function PreviewPerformance({ backend }: { backend: BackendState }) {
       </section>
       <details className={styles.health}>
         <summary>Runtime & readiness</summary>
-        <p>{state.readiness}</p>
+        <p>
+          {
+            assessReadiness({
+              state,
+              status: backend.status,
+              update: { required: false, available: false },
+            }).status
+          }
+        </p>
         <p>
           Runtime {state.version} · Local API {state.endpoint ? 'available' : 'not enabled'}
         </p>

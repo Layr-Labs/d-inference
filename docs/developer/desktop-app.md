@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-07
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -125,7 +125,7 @@ projection supplies them. The
 app stores the selected machine ID so new remote observations are shown instead
 of retaining the originally clicked snapshot, and Models, Cooling, Stats,
 Settings and Studio always apply to This Mac. Cancellable native operations
-appear inline for This Mac; Settings retains Availability and Memory controls,
+appear in the shared bottom popup; Settings retains Availability and Memory controls,
 and model metadata uses expandable details.
 
 This Mac's Overview starts with a health bar: memory from native state, fan
@@ -152,6 +152,46 @@ Missing location data never lights illustrative locations in production.
 Regions sharing a map cell light it together in one of four shades scaled by Mac
 count; hovering a cell or choosing a region shows its count.
 
+
+The Home chip header links to Cooling through `FanStatus`. The enabled helper
+stays blue regardless of its current SMC mode. With the option off, temperatures
+above 60°C become progressively red up to 90°C; missing or stale observations
+stay neutral. Home reads the existing cached cooling resource while visible
+(`showsCooling`, `DesktopBackend.projectCooling`).
+
+Overview readiness uses `assessReadiness` to show current state, including the
+coordinator’s `provider_status`, rather than the raw `readiness` event message.
+A ready Mac shows "Ready to serve" with its loaded-model count. Shared product
+labels in `desktop-app/src/renderer/presentation/status.ts` (`machineStatus`,
+`modelActivity`) distinguish online Macs and idle models from processing requests.
+`operationLabel` names actions in progress and completed outcomes. `App` mounts
+one `OperationFeed` outside page content; its body portal stays at the bottom
+on Home, My Macs (including remote Macs and all tabs), Leaderboard and Updates.
+Successful operations disappear after ten seconds, using their native completion
+time when available; navigation and state refresh do not reset the countdown.
+Failures and immediate `backend.error` messages remain until Close. Dismissal
+persists across remounts, and expanded details retain native diagnostic messages. Cooling labels use the
+enabled fan policy independently of its current firmware mode (`coolingStatus`).
+
+The account footer displays `state.account.email` with Signed in. Swift obtains
+identity from the existing `/v1/provider/account-earnings` response's optional
+`email`, persists it with the coordinator-scoped dashboard credential, and shares
+the same cached ledger request with stats and earnings (`DesktopAccountIdentity`).
+State polling hydrates older credentials even when the provider is stopped;
+missing identity leaves Account as the label. Sign-out removes the identity,
+and replies from another coordinator/session cannot update it. Coordinators must
+include the authenticated owner's email in that response for the address to appear.
+
+Account control replaces the machine-name card at the bottom of the sidebar.
+Sign in immediately opens a modal (`AccountControl`, `useAccountSignIn`,
+`components/account/AccountSignInProgress.tsx`) using `link.code` from the native
+snapshot. Electron's Swift account action sets `automaticallyOpenBrowser=false`;
+only Continue in browser calls the existing external-link bridge. The dialog leads
+with a short code instruction and a full-width action; waiting status appears
+after the browser opens. The CLI keeps automatic
+browser opening. Copy, cancel, retry and approval states stay in the modal.
+Closing it preserves pending approval; Continue sign-in reopens the same attempt
+across pages. Account sign-in is excluded from the generic `OperationFeed`.
 
 Home scrolls. It opens with the network milestone strip: tokens processed, the
 last 24 hours when the runtime relays `last_24h_tokens`, Macs connected, and a
@@ -262,13 +302,16 @@ one gets its reasons and a waitlist; an unconfirmed one can check again or conti
 - **Waitlist.** `{ action: 'waitlist', email, reasons }` takes the failed check
   IDs as reasons and counts only once its operation succeeds.
 - **Autopilot.** "Start serving with Autopilot" sends
-  `{ action: 'autopilot', models, pinned, endpoint: true }`
+  `{ action: 'autopilot', models, pinned, downloads, endpoint: true }`
   (`desktop-app/src/shared/autopilot.ts`). It mirrors
   `darkbloom start --autopilot --model … --local-endpoint` followed by
   `darkbloom autopilot pin …`.
-  - `models` is the startup selection. It is the pins or, with no pins, one
-    starting model: an eligible model already on disk, else the smallest eligible
-    download.
+  - With network earnings available, choose from the top three compatible earners
+    over seven days; all three are checked initially. `downloads` contains only
+    chosen models missing from disk. Swift completes downloads before enrollment.
+  - `models` is the startup selection: the pins or one chosen model. Other cached
+    network models are verified and enrolled without pinning or loading all three
+    together. Without ranking data, the existing single-model start remains available.
   - `pinned` is a subset of `models`, matching the CLI rule that pins must be
     selected models.
   - It is a separate action, not a `start` flag, because `DesktopAction`
@@ -276,8 +319,8 @@ one gets its reasons and a waitlist; an unconfirmed one can check again or conti
     success.
   - A runtime that supports the action reports `Snapshot.autopilot`
     (configured enrollment plus the live phase from `autopilot status --json`).
-  - Pins need provider-side residency enforcement while Autopilot holds
-    ownership.
+  - Pins use the existing CLI's unload protection while Autopilot holds ownership;
+    pinning a cold model does not itself load it.
 - **Account linking.** An unlinked Mac runs the existing `link` action first and
   starts serving as soon as the account is linked. A failed or cancelled link
   returns to the start button.
@@ -304,25 +347,36 @@ Preview links (`?preview` plus):
 This Mac > Models follows `Snapshot.autopilot`
 (`desktop-app/src/renderer/features/models/`). The user decides which models
 are downloaded; Autopilot decides which of them are loaded in memory.
+Both model modes show the first three ranked matches, with a Show more models
+bar to reveal the remainder. Changing the filter or search restores the compact
+view; expansion preserves the existing earnings order.
 
-- **Autopilot on** (`enabled: true`). The catalog is the pool. Each row shows
-  its size, its memory need and one state: Not downloaded, Downloading, On this
-  Mac · not in pool, In pool, Loaded now · Autopilot, Pinned · always on, or Not
-  available with the reason. There is no Apply selection.
+![Autopilot model browsing with direct memory controls and a three-row list](../assets/desktop-autopilot-browse.png)
+
+The local review screenshot shows an older coordinator without network earnings;
+recommendations remain unavailable until that response field is deployed.
+
+- **Autopilot on** (`enabled: true`). Your models opens first and ranks downloads
+  by personal earnings. Browse models ranks the catalog by seven-day network
+  earnings from `network`. Recommendations select eligible positive earners,
+  at most three (`recommendations.ts`, `recommendedModels`). The status bar shows
+  the daemon's actual phase and resident count. Descriptions and phase explanations
+  stay collapsed. There is no Apply selection.
   - Downloading alone never adds a model to the pool. Download sends `download`,
     then `autopilot_models` to re-inventory the pool.
-  - Pin downloads the model into the pool first when needed.
-  - A pin is refused when the pinned models' memory would exceed the Mac's
-    memory.
-  - Remove is disabled while a model is pinned. Removing a loaded model unloads
-    it first.
-  - The card above the list shows what is loaded, what is pinned, the runtime's
-    free-to-load allowance and the phase. Only `active` and `transitioning`
-    change what is loaded; `shadow`, `waiting`, `waiting_inventory` and `paused`
-    say that models stay as they are.
+  - Keep in memory is a direct row toggle. Catalog rows also offer Download & keep
+    in memory. A cold pin says Kept · waiting to load; only observed residents
+    say In memory · kept (`PoolRow`).
+  - Pin capacity uses native `pin_budget_gb` (the shared startup load allowance)
+    and `max_model_slots`. Swift rechecks downloaded estimates before pinning.
+  - Remove is disabled for pinned, resident or advertised models. After removing
+    a cached pool model, refresh available models.
   - Pause and Turn off ask for confirmation first. Models stay loaded as they
     are, and after Turn off, manual selection takes over.
-- **Autopilot off** (`enabled: false`). The manual workflow (checkboxes, Apply
+- **First use** (`configured: false`). Show Autopilot setup with editable
+  recommendations. Missing earnings stay unavailable; prices and demand counts
+  are never substituted for settled payouts.
+- **Autopilot explicitly off** (`enabled: false`, `configured: true`). The manual workflow (checkboxes, Apply
   selection) plus a card that sends `{ action: 'autopilot', models, pinned: [],
   endpoint }` with the models serving now.
 - **No `Snapshot.autopilot`.** The manual workflow with a note that Autopilot
@@ -339,7 +393,7 @@ The policy actions (`AutopilotPolicyAction` in
 | `{ action: 'autopilot_pause' }` | `darkbloom autopilot pause` |
 | `{ action: 'autopilot_resume' }` | `darkbloom autopilot resume` |
 | `{ action: 'autopilot_disable' }` | `darkbloom autopilot disable` |
-| `{ action: 'autopilot_models' }` | `darkbloom autopilot models` |
+| `{ action: 'autopilot_models' }` | Noninteractive `darkbloom start --autopilot --model <saved startup models>`; same verified inventory and safe restart as `autopilot models` |
 
 A runtime that rejects one of these by name gets an error asking for a newer
 runtime or manual selection. A download operation that reports `model` and
@@ -351,7 +405,7 @@ Preview links (`?preview` plus):
 | Query | Shows |
 |---|---|
 | none (`&autopilot=on`) | Autopilot on: two models loaded, one pinned, one in the pool and not loaded, and several not downloaded |
-| `&autopilot=shadow` | Shadow mode: Autopilot is learning and changes nothing |
+| `&autopilot=shadow` | Shadow mode: Autopilot is observing demand and changes nothing |
 | `&autopilot=off` | Manual selection with the turn-on card |
 | `&autopilot=unsupported` | Runtime without Autopilot: manual selection with the note |
 

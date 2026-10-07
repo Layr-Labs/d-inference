@@ -1,0 +1,23 @@
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.bar:hover {
+  background: var(--raised-bg);
+  color: var(--text-primary);
+}
+
+.bar[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}

@@ -1,7 +1,7 @@
 import { ArrowUpRight } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import type { Route } from '../../shared/contracts';
-import { Notice, OperationFeed } from '../components/UI';
+import { Notice } from '../components/UI';
 import { Models } from './models/Models';
 import { Cooling } from './Cooling';
 import { Stats } from './Stats';
@@ -42,8 +42,9 @@ export function Machines({
         onSelect={onSelect}
       />
       <div className={styles.content}>
-        {local && <OperationFeed backend={backend} inline />}
-        {backend.cloud?.error && route === 'machines' && <Notice>{backend.cloud.error}</Notice>}
+        {backend.cloud?.error && route === 'machines' && (
+          <Notice>Couldn’t refresh account data.</Notice>
+        )}
         <div className={styles.breadcrumb}>
           <span>My Macs</span>
           <span>/</span>

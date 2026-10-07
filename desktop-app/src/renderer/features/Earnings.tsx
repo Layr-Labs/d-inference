@@ -76,7 +76,7 @@ export function Earnings({ backend }: { backend: BackendState }) {
         <div className={styles.analytics}>
           {error && (
             <p className={styles.notice} role="status">
-              {error} Showing the last observation.
+              {error} Showing previously loaded earnings.
             </p>
           )}
           <div className={styles.metrics}>

@@ -46,11 +46,6 @@ export default function App() {
       <>
         <div className="drag-region" />
         <Onboarding backend={backend} done={finishOnboarding} />
-        {backend.error && (
-          <div className="onboarding-error">
-            <Notice onClose={() => backend.setError('')}>{backend.error}</Notice>
-          </div>
-        )}
         <OperationFeed backend={backend} />
       </>
     );
@@ -78,18 +73,6 @@ export default function App() {
         <div className="sidebar-bottom">
           <SocialLinks />
           <AccountControl backend={backend} />
-          <button className="local-profile" onClick={() => navigate('settings')}>
-            <div className="profile-icon">
-              <Monitor size={17} />
-            </div>
-            <span>
-              <strong>{backend.state.machine.name}</strong>
-              <small>
-                {backend.state.state === 'running' ? 'Providing to the grid' : 'Ready when you are'}
-              </small>
-            </span>
-            <i className={backend.state.state === 'running' ? 'online-dot' : ''} />
-          </button>
         </div>
       </aside>
       <div className="workspace">
@@ -98,16 +81,15 @@ export default function App() {
             {isPreview && <b className="preview-label">Development preview</b>}
             <Appearance />
             <i className={backend.status.state === 'ready' ? 'online-dot' : ''} />
-            {backend.status.state === 'ready' ? 'Runtime connected' : 'Reconnecting'}
+            {backend.status.state === 'ready' ? 'Connected to this Mac' : 'Reconnecting'}
           </span>
         </header>
         <main
           key={machineRoute ? 'machines' : route}
           className={`page-content ${machineRoute ? 'machine-page' : route === 'home' ? 'home-page' : ''}`}
         >
-          {backend.error && <Notice onClose={() => backend.setError('')}>{backend.error}</Notice>}
           {backend.status.state !== 'ready' && (
-            <Notice>{backend.status.message || 'Connecting to the native runtime…'}</Notice>
+            <Notice>{backend.status.message || 'Connecting to this Mac…'}</Notice>
           )}
           {route === 'home' && (
             <Home backend={backend} navigate={navigate} openMachine={openMachine} />
@@ -131,7 +113,7 @@ export default function App() {
             <span>Compute, powered by people.</span>
           </footer>
         </main>
-        {!machineRoute && <OperationFeed backend={backend} />}
+        <OperationFeed backend={backend} />
       </div>
     </div>
   );

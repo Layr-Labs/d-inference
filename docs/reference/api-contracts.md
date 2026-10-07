@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 The complete public HTTP surface of the coordinator, derived from the 120 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -384,6 +384,17 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | GET | `/health` | `handleHealth` (`coordinator/api/consumer.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
 A successful empty analytics window returns 200 with empty arrays or zero totals.
+`/v1/stats` also includes `model_earnings`, an optional public aggregate for
+desktop download recommendations (`coordinator/api/network_model_earnings.go`,
+`networkModelEarnings`). It is `null` when aggregation is unavailable. On success
+it contains `window: "7d"`, UTC `since` and `as_of` timestamps and `models` rows
+`{id, earnings_micro_usd}` sorted by descending payout, then ID. Money is a decimal
+string, preserving integers beyond JavaScript's safe range. The half-open rolling
+window excludes base rewards, unknown-model and nonpositive payouts; account and
+provider identities never enter the response. A successful empty window has
+`models: []`. This optional aggregate shares the existing stats refresh/cache and
+does not change core stats availability.
+
 Core stats query failures retain the unexpired success or return 503; request
 geography never blocks core stats. Geography refreshes on its own
 `statsRefreshInterval` loop, using `statsGeographyCacheKey`. Core snapshots
@@ -1074,3 +1085,13 @@ Checkout amounts require at most two decimal places and the supported integer
 cent range (`coordinator/api/stripe_checkout_webhook.go`, `checkoutUSDCents`).
 Current and legacy Checkout signatures share exact local-session validation and
 atomic, non-withdrawable credit (`handleStripeWebhook`, `CompleteStripeCheckout`).
+
+### Desktop account email
+
+`GET /v1/provider/account-earnings` without a `window` parameter optionally
+includes `email` for the authenticated account owner. This adds identity to the
+existing account read, without another endpoint. Query parameters cannot select
+another account's address. The field is omitted for identities without an email;
+older coordinators and credentials remain compatible. Desktop Swift stores the
+verified address alongside its account credential and exposes only the address
+and signed-in status to Electron.

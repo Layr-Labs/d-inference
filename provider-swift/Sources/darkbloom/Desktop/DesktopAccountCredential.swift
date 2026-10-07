@@ -7,7 +7,11 @@ struct DesktopAccountCredential: Codable, Sendable {
   let token: String
   let base: String
   let expiresAt: Date
+  var email: String? = nil
 
+  static func supports(token: String) -> Bool {
+    token.hasPrefix("darkbloom-at-") || token.hasPrefix("eigeninference-pt-")
+  }
   static func filename(base: String) -> String {
     let hash = SHA256.hash(data: Data(base.utf8)).map { String(format: "%02x", $0) }.joined()
     return "account-\(hash).json"
@@ -17,13 +21,15 @@ struct DesktopAccountCredential: Codable, Sendable {
   }
   static func load(base: String) -> Self? {
     guard let value = DesktopStorage.read(Self.self, name: filename(base: base)),
-      value.base == base, value.token.hasPrefix("darkbloom-at-"), value.expiresAt > Date()
+      value.base == base, Self.supports(token: value.token), value.expiresAt > Date()
     else { return nil }
     return value
   }
   static func save(token: String, base: String) throws {
+    guard supports(token: token) else { throw URLError(.userAuthenticationRequired) }
     try DesktopStorage.write(true, name: "disabled-" + filename(base: base))
-    // Server lifetime is 30 days; expire locally one minute early.
+    // Cap local dashboard use at 30 days. Scoped sessions also expire on the server;
+    // older coordinator provider grants have no server-side account-session expiry.
     try DesktopStorage.write(Self(token: token, base: base, expiresAt: Date().addingTimeInterval(30 * 86400 - 60)), name: filename(base: base))
   }
   static func remove(base: String) throws {
@@ -49,16 +55,19 @@ extension DesktopBackend {
     guard let config = try? configuration().config,
       let credential = DesktopAccountCredential.load(base: coordinatorHTTPBase(config.coordinator.url))
     else { return .dict(["signed_in": .bool(false), "legacy_data": .bool(accountReadToken() != nil)]) }
-    return .dict(["signed_in": .bool(true), "expires_at": .number(credential.expiresAt.timeIntervalSince1970)])
+    return .dict(["signed_in": .bool(true), "email": credential.email.map(JSONValue.string) ?? .null,
+      "expires_at": .number(credential.expiresAt.timeIntervalSince1970)])
   }
   func clearAccountResources() {
     resourceGeneration += 1
+    accountIdentityRead?.cancel(); accountIdentityRead = nil; accountIdentityReadAt = .distantPast
     catalogTask?.cancel(); catalogTask = nil; catalogAt = .distantPast
     accountEarningsTask?.task.cancel(); accountEarningsTask = nil; accountEarningsCache = nil
     for task in resourceTasks.values { task.cancel() }; resourceTasks = [:]; resourceCache = [:]; resourceFailures = [:]
     usageRead?.cancel(); usageRead = nil; usageReadAt = .distantPast; usageArchive = DesktopUsageArchive()
   }
   static func revokeAccount(base: String, token: String) async throws {
+    guard token.hasPrefix("darkbloom-at-") else { return }
     guard let url = URL(string: "\(base)/v1/device/token") else { throw URLError(.badURL) }
     var request = URLRequest(url: url); request.httpMethod = "DELETE"; request.timeoutInterval = 5
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

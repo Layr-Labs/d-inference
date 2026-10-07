@@ -13,7 +13,8 @@ const ids = (readiness: ReturnType<typeof assess>) => readiness.steps.map((step)
 it('is ready with no steps while linked models serve', async () => {
   expect(assess(await state())).toEqual({
     tone: 'ready',
-    summary: 'Serving GPT-OSS 20B and Gemma 4 26B',
+    status: 'Ready to serve',
+    summary: '2 models loaded',
     steps: [],
   });
 });
@@ -140,7 +141,7 @@ it('puts a running operation first and holds provider steps during lifecycle cha
   const starting = assess({ ...snapshot, state: 'stopped', operations: [operation('start')] });
   expect(starting.tone).toBe('pending');
   expect(starting.steps).toEqual([
-    expect.objectContaining({ id: 'operation', title: 'Start in progress', actions: [] }),
+    expect.objectContaining({ id: 'operation', title: 'Starting provider', actions: [] }),
   ]);
   const downloading = assess({
     ...snapshot,
@@ -161,4 +162,33 @@ it('requires an update the routing floor rejects and offers it only when compati
   ]);
   const unavailable = assess(snapshot, connected, { required: true, available: false });
   expect(unavailable.steps[0]).toMatchObject({ id: 'update', actions: [] });
+});
+
+it('uses current facts instead of authorization event text or processing counts', async () => {
+  const snapshot = {
+    ...(await state()),
+    readiness: 'Provider authorization updated',
+    provider_status: 'online',
+  };
+  const ready = assess(snapshot);
+  expect(ready.status).toBe('Ready to serve');
+  expect(ready.summary).toBe('2 models loaded');
+  const unloaded = snapshot.models.map((model) => ({ ...model, loaded: false }));
+  expect(assess({ ...snapshot, models: unloaded }).status).toBe('Loading models');
+  expect(assess({ ...snapshot, provider_status: 'untrusted' })).toMatchObject({
+    tone: 'blocked',
+    status: 'Verification needed',
+  });
+  expect(assess({ ...snapshot, provider_status: 'offline' })).toMatchObject({
+    tone: 'pending',
+    status: 'Connecting to the network',
+  });
+  expect(assess({ ...snapshot, state: 'stale' }).status).toBe('Status unavailable');
+  expect(assess({ ...snapshot, state: 'stopped' }).status).toBe('Stopped');
+  expect(
+    assess({
+      ...snapshot,
+      models: snapshot.models.map((model, i) => ({ ...model, loaded: i === 0 })),
+    }).summary,
+  ).toBe('1 model loaded');
 });

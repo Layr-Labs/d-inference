@@ -36,11 +36,7 @@ export function HealthBar({
       <div className={styles.cells}>
         <ReadinessHealth
           tone={readiness.tone}
-          status={
-            backend.status.state === 'ready'
-              ? state.readiness
-              : backend.status.message || 'Connecting to the native runtime…'
-          }
+          status={readiness.status}
           summary={readiness.summary}
         />
         <MemoryHealth memory={state.memory} />

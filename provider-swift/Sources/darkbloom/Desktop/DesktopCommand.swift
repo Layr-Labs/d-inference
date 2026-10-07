@@ -37,7 +37,11 @@ struct Desktop: AsyncParsableCommand {
       }
       let token = Data(bytes).base64EncodedString()
       let instance = UUID().uuidString
-      let backend = DesktopBackend(configPath: configOptions.config)
+      // Local review builds attach to an existing installation; serving operations
+      // must keep using its verified CLI rather than installing this ad-hoc build.
+      let worker = ProcessInfo.processInfo.environment["DARKBLOOM_DESKTOP_ATTACH_ONLY"] == "1"
+        ? try DesktopFanRuntime.resolve() : nil
+      let backend = DesktopBackend(configPath: configOptions.config, executable: worker)
       let app = Application(
         responder: DesktopHTTP(backend: backend, token: token),
         configuration: .init(address: .hostname("127.0.0.1", port: 0)),

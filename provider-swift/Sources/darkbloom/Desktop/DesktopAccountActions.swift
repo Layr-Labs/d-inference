@@ -8,7 +8,7 @@ extension DesktopBackend {
         let base = coordinatorHTTPBase(config.coordinator.url)
         let token = try await performDeviceCodeLogin(coordinatorURL: base, onDisplayCode: { [weak self] code, url, seconds in
           Task { await self?.setLink(request.id, .dict(["url": .string(url), "code": .string(code), "expires_at": .number(Date().timeIntervalSince1970 + Double(seconds)), "state": .string("waiting")])) }
-        }, purpose: "desktop_account")
+        }, purpose: "desktop_account", allowLegacyAccountFlow: true, automaticallyOpenBrowser: false)
         try Task.checkCancellation()
         try DesktopAccountCredential.save(token: token, base: base)
         clearAccountResources()

@@ -39,6 +39,7 @@ describe('start action', () => {
       action: 'autopilot',
       models: ['qwen-3.5-9b', 'gpt-oss-20b'],
       pinned: ['gpt-oss-20b', 'qwen-3.5-9b'],
+      downloads: ['qwen-3.5-9b'],
       endpoint: true,
     });
   });

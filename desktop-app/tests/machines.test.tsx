@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
+import { OperationFeed } from '../src/renderer/components/UI';
+import { AccountControl } from '../src/renderer/components/AccountControl';
 import { Machines } from '../src/renderer/features/Machines';
 import type { BackendState } from '../src/renderer/useBackend';
 import type { Route } from '../src/shared/contracts';
@@ -55,7 +57,12 @@ it('opens This Mac by default without a fleet overview', async () => {
 it('keeps a selected remote Mac view-only and refreshes its observed values', async () => {
   const backend = await previewBackend();
   const navigate = vi.fn();
-  const { rerender } = render(<SelectableMachines backend={backend} navigate={navigate} />);
+  const { rerender } = render(
+    <>
+      <SelectableMachines backend={backend} navigate={navigate} />
+      <OperationFeed backend={backend} />
+    </>,
+  );
   fireEvent.click(screen.getByRole('button', { name: 'Select Mac Studio, View only' }));
   expect(screen.getByText(/^View only\. Controls for this Mac/)).toBeVisible();
   expect(screen.queryByRole('navigation', { name: 'Machine sections' })).not.toBeInTheDocument();
@@ -75,7 +82,7 @@ it('keeps a selected remote Mac view-only and refreshes its observed values', as
   };
   rerender(<SelectableMachines backend={updated} navigate={navigate} />);
   expect(screen.getByText('$9.00')).toBeVisible();
-  expect(screen.getAllByText('offline').length).toBeGreaterThan(0);
+  expect(screen.getAllByText('Offline').length).toBeGreaterThan(0);
   rerender(
     <SelectableMachines
       backend={{ ...updated, cloud: { ...updated.cloud!, machines: [] } }}
@@ -106,7 +113,40 @@ it('applies local sections to This Mac even while a remote Mac is selected', asy
   expect(screen.getByRole('button', { name: 'Restart' })).toBeVisible();
 });
 
-it('keeps the local machine controls and supported operation cancellation in the workspace', async () => {
+it('keeps pending account approval visible while browsing a remote Mac', async () => {
+  const backend = await previewBackend();
+  backend.state!.operations = [
+    {
+      id: 'login',
+      action: 'account-signin',
+      state: 'running',
+      started_at: 1,
+      message: 'Working…',
+      cancellable: true,
+    },
+  ];
+  backend.state!.link = {
+    code: 'ABCD-EFGH',
+    url: 'https://console.darkbloom.dev/link',
+    expires_at: 1_790_001_000,
+    state: 'waiting',
+  };
+  backend.state!.capabilities = ['account-signin'];
+  render(
+    <>
+      <AccountControl backend={backend} />
+      <SelectableMachines backend={backend} navigate={vi.fn()} />
+    </>,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Select Mac Studio, View only' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Continue sign-in' }));
+  expect(screen.getByRole('dialog', { name: 'Sign in to Darkbloom' })).toBeVisible();
+  expect(screen.getByLabelText('Connection code ABCD-EFGH')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(backend.act).toHaveBeenCalledWith({ action: 'cancel', operation: 'login' });
+});
+
+it('keeps local controls in the workspace and cancellation in the global notification', async () => {
   const backend = await previewBackend();
   const navigate = vi.fn();
   backend.state!.operations = [
@@ -119,7 +159,12 @@ it('keeps the local machine controls and supported operation cancellation in the
       cancellable: true,
     },
   ];
-  render(<SelectableMachines backend={backend} navigate={navigate} />);
+  render(
+    <>
+      <SelectableMachines backend={backend} navigate={navigate} />
+      <OperationFeed backend={backend} />
+    </>,
+  );
   expect(screen.getByRole('button', { name: 'Stop provider' })).toBeVisible();
   const tabs = screen.getByRole('navigation', { name: 'Machine sections' });
   expect(

@@ -1,3 +1,4 @@
+import { machineStatus } from '../../presentation/status';
 import { useState } from 'react';
 import { Search } from 'lucide-react';
 import type { Machine } from '../../../shared/contracts';
@@ -76,7 +77,7 @@ export function FleetMacs({
               </span>
             </span>
             <Status state={isOnline(machine.status) ? 'online' : 'offline'}>
-              {machine.status}
+              {machineStatus(machine.status)}
             </Status>
             <span>{machine.models.length}</span>
             <strong>{money(machine.earnings_micro_usd)}</strong>

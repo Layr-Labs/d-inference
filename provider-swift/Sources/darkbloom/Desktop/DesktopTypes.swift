@@ -43,6 +43,8 @@ struct DesktopAction: Codable, Sendable, Equatable {
   let id: String
   let action: String
   var models: [String]?
+  var pinned: [String]?
+  var downloads: [String]?
   var model: String?
   var operation: String?
   var local: Bool?
@@ -62,12 +64,26 @@ struct DesktopAction: Codable, Sendable, Equatable {
     let known = [
       "start", "switch", "stop", "restart", "download", "remove", "settings", "link", "unlink",
       "update", "diagnose", "cancel", "cooling", "account-signin", "account-signout",
+      "autopilot", "autopilot_pin", "autopilot_unpin", "autopilot_pause", "autopilot_resume",
+      "autopilot_disable", "autopilot_models",
     ]
     guard known.contains(action) else { throw ValidationError("Unknown action") }
-    if ["start", "switch"].contains(action) {
+    if ["start", "switch", "autopilot", "autopilot_pin", "autopilot_unpin"].contains(action) {
       guard let models, !models.isEmpty, models.count <= 32, Set(models).count == models.count
       else { throw ValidationError("Choose at least one model") }
       try models.forEach(Self.validateModel)
+    }
+    if action == "autopilot" {
+      guard local != true, let pinned, Set(pinned).isSubset(of: Set(models ?? [])),
+        Set(pinned).count == pinned.count
+      else { throw ValidationError("Autopilot pins must be startup models") }
+      try pinned.forEach(Self.validateModel)
+      if let downloads {
+        guard downloads.count <= 256, Set(downloads).count == downloads.count else {
+          throw ValidationError("Invalid Autopilot downloads")
+        }
+        try downloads.forEach(Self.validateModel)
+      }
     }
     if ["download", "remove"].contains(action) { try Self.validateModel(model ?? "") }
     if action == "settings" {
@@ -108,4 +124,6 @@ struct DesktopOperation: Codable, Sendable {
   var finished_at: Double?
   var message = "Working…"
   var cancellable: Bool
+  var model: String?
+  var progress: Double?
 }

@@ -3571,6 +3571,12 @@ production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
 
+The threat-review preflight checks the configured OpenRouter budget mode and
+remaining normal-attempt capacity as well as writer access and funding. Offline
+budget regressions cover migration without resetting charges, daily caps,
+unknown reservations and exhausted-pilot detection; see
+[review configuration](threat-model-review.md#openrouter-budget-behavior-and-recovery).
+
 Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
 OpenRouter response validation, credential isolation, pagination, stale-head and
 comment lifecycle tests. The suite opens a temporary loopback HTTP server and

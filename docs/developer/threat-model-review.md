@@ -15,8 +15,8 @@ Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 - Actions administration and a reviewed workflow on the default branch.
 - An OpenRouter key with access to `anthropic/claude-sonnet-5.5`,
   `anthropic/claude-opus-5.5` and `openai/gpt-6.1-sol`. Retain a provider-side key
-  spending limit as an independent backstop. This change does not add credits,
-  raise a limit or enable paid scanning.
+  spending limit as an independent backstop. Provider credits and key limits are
+  managed separately from the durable repository budget policy.
 - A writer permitted to update `codex/threat-review-state` under branch
   restrictions and signed-commit rules. Contents write permission alone does
   not bypass repository rules.
@@ -63,7 +63,10 @@ Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 6. When authorized to start the pilot, set `THREAT_REVIEW_ENABLED=true`. This
    repository variable can be set before merge so activation takes effect as
    soon as the workflow lands on the default branch. It admits
-   at most **ten distinct PRs** and **$25 total**, with no automatic renewal.
+   at most **ten distinct PRs** and **$25 total** by default. For an approved
+   ongoing rollout, set `THREAT_REVIEW_BUDGET_MODE=daily`: this removes only the
+   lifetime dollar and PR-count limits while retaining every per-day and
+   per-attempt cap. Unset or `pilot` retains the pilot; other values fail closed.
 7. In advisory mode, keep **Threat Model Review (advisory)** out of required checks. Opening,
    reopening, marking ready or retargeting a PR starts immediately. Follow-up
    pushes wait 75 seconds; another push cancels the older job. Drafts and
@@ -145,7 +148,22 @@ and the exact override format.
 | Opus and Sol 6.1 combined per attempt | $3 |
 | PR per UTC day across attempts and pushes | $5 |
 | Repository per UTC day across PRs | $25 |
-| Entire pilot, no automatic reset | $25 and ten distinct PRs |
+| Default `pilot` mode, no automatic reset | $25 and ten distinct PRs |
+| Approved `daily` mode | No lifetime/PR-count cap; all other caps above remain |
+
+`THREAT_REVIEW_BUDGET_MODE` is a trusted repository Actions variable used by
+preflight and both OpenRouter routes (direct reviews and Bedrock backup). Moving
+to `daily` preserves the existing ledger, all charges, unknown reservations and
+the circuit breaker. Returning to `pilot` restores its lifetime limits against
+the full retained history; it does not restart the pilot. The ledger remains
+bounded to 1,000 requests and 500,000 bytes; reaching capacity stops spending
+and needs maintainer maintenance, never an automatic reset.
+
+Preflight checks writer access, signatures, provider funding and room for a new
+PR's $1 normal attempt under the selected policy. This is a read-only capacity
+snapshot, not a reservation or proof that a whole scan fits. Every actual request
+rechecks the budget atomically. Preflight fails on an exhausted pilot even when
+the provider has credits.
 
 `state.py` reserves integer microdollars in one ledger **before** transport.
 GitHub Contents SHA compare-and-swap rejects stale concurrent writes; retries

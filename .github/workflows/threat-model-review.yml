@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       preflight:
-        description: 'Verify state writes and provider funding without paid model calls'
+        description: 'Verify state writes, budget capacity and funding without paid calls'
         type: boolean
         default: false
 
@@ -51,6 +51,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.state-token.outputs.token || secrets.THREAT_REVIEW_STATE_TOKEN || github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          THREAT_REVIEW_BUDGET_MODE: ${{ vars.THREAT_REVIEW_BUDGET_MODE }}
         run: python3 .github/scripts/threat-review-preflight.py
   review:
     name: Threat Model Review (advisory)
@@ -159,6 +160,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          THREAT_REVIEW_BUDGET_MODE: ${{ vars.THREAT_REVIEW_BUDGET_MODE }}
           THREAT_REVIEW_STATE_TOKEN: ${{ steps.state-token.outputs.token || secrets.THREAT_REVIEW_STATE_TOKEN }}
           THREAT_REVIEW_RESULT_FILE: ${{ runner.temp }}/threat-review-result.json
           THREAT_REVIEW_ENABLED: ${{ vars.THREAT_REVIEW_ENABLED }}

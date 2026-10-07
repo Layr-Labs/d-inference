@@ -60,7 +60,13 @@ and fallback acceptance tests below. Do not recreate the provisioned resources.
    defaults (12 calls, 4,096 output tokens), and keep fork AWS access disabled
    (`BEDROCK_SCAN_ALLOW_FORKS` absent), until a different workload budget has
    been approved. No AWS access key is stored in GitHub.
-5. Dispatch **Bedrock review smoke test** on master. It makes at most six small
+5. Set the approved backup policy, `THREAT_REVIEW_BUDGET_MODE=daily`, and dispatch
+   the threat-review workflow with `preflight=true`. Confirm writer, funding and
+   remaining daily capacity all pass. Preserve the existing ledger: this policy
+   lifts only the old lifetime dollar/PR-count limits, with caps documented in
+   [review configuration](../developer/threat-model-review.md#openrouter-budget-behavior-and-recovery).
+   The preflight does not call models or reserve budget.
+6. Dispatch **Bedrock review smoke test** on master. It makes at most six small
    paid requests, two per model, with no OpenRouter fallback. Check each model's
    source/integration production schema validation, including the boolean
    `needs_deeper_review`, and the request/response usage pairs. The smoke uses
@@ -70,23 +76,23 @@ and fallback acceptance tests below. Do not recreate the provisioned resources.
    Independently exercise STS denial from a feature-branch workflow identity and
    denial of direct foundation-model invocation. Positive smoke execution alone
    does not prove either denial or the `pull_request_target` identity.
-6. Enable `BEDROCK_SCAN_ENABLED=true` while leaving clearance enforcement off.
+7. Enable `BEDROCK_SCAN_ENABLED=true` while leaving clearance enforcement off.
    Exercise the actual PR workflow with harmless synthetic authorization-removal
    and restoration commits in a test PR. Check findings, source citations,
    incomplete-review handling, and explicit OpenRouter fallback using a bounded
    test fixture. Close the synthetic PR without merging its vulnerable commit.
    Verify all three model API contracts; model availability alone is insufficient.
-7. Install the organization rule proposed in `infra/threat-review/merge-rules.json`
+8. Install the organization rule proposed in `infra/threat-review/merge-rules.json`
    while preserving all existing protections. It requires the exact master-branch
    workflow, binds ordinary CI checks to GitHub Actions, and requires an up-to-date
    branch. A named security check alone can be forged by a PR workflow and is not
    sufficient. Confirm the GitHub plan supports exact required workflows and any
    Actions-sharing requirement before proceeding. Do not broaden private-repo
    sharing or add bypass actors as an incidental setup step.
-8. Set `THREAT_REVIEW_REQUIRE_CLEARANCE=true`. Verify the matrix below on the
+9. Set `THREAT_REVIEW_REQUIRE_CLEARANCE=true`. Verify the matrix below on the
    actual required workflow before replacing the existing blanket approval rule.
    Pending rollout, keep every PR subject to the existing human approval.
-9. Once acceptance tests pass, update only the default-branch approval policy:
+10. Once acceptance tests pass, update only the default-branch approval policy:
    set the blanket approving-review count to zero and turn off unconditional
    last-push/unattributed-change approval requirements. Preserve resolved-thread,
    signed-commit, deletion, force-push, squash-only, and access-control rules.
@@ -129,10 +135,10 @@ apply. An override cannot make failing builds or tests pass.
 
 The AWS usage artifact contains metadata and token counts, not source or keys.
 Reconcile delivered CUR charges by application-profile tags; token counts are
-not actual dollar billing. The existing OpenRouter ten-PR/$25 pilot is retained
-for fallback and does not auto-renew. Reaching that cap makes backup unavailable;
-changing it requires a separate budget decision. Bedrock has a per-attempt call
-bound, not that dollar pilot or a repository-wide daily spend cap.
+not actual dollar billing. The approved `daily` OpenRouter policy retains
+repository-day, PR-day and attempt caps without the exhausted pilot lifetime
+limits. The default remains `pilot` until the repository variable is set. Bedrock
+has a per-attempt call bound, not that dollar pilot or a repository-wide daily spend cap.
 
 ## Rollback
 

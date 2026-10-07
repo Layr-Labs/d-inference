@@ -70,7 +70,8 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
         raise ReviewUnavailable("Invalid review identity")
     github = github or GitHub(repository, number, env["GH_TOKEN"])
     state = state or State(GitHub(repository, number, env["THREAT_REVIEW_STATE_TOKEN"])
-                           if env.get("THREAT_REVIEW_STATE_TOKEN") else github)
+                           if env.get("THREAT_REVIEW_STATE_TOKEN") else github,
+                           budget_mode=env.get("THREAT_REVIEW_BUDGET_MODE") or "pilot")
     if pr.get("draft"):
         return "Skipped: draft PR."
     current = github.pull()

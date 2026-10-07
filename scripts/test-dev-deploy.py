@@ -485,7 +485,6 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual([c[0] for c in box.calls()], ["id", "curl"])
 
 
-
 class DeployWorkflowTests(unittest.TestCase):
     """deploy-dev.yml leaves the pause decision to deploy.sh on every run."""
 
@@ -493,16 +492,19 @@ class DeployWorkflowTests(unittest.TestCase):
         self.text = WORKFLOW.read_text()
 
     def test_workflow_never_overrides_the_pause(self):
-        self.assertFalse("--override-pause" in self.text, "deploy-dev.yml names --override-pause")
+        self.assertNotIn("--override-pause", self.text, "deploy-dev.yml names --override-pause")
 
     def test_deploy_step_passes_the_pause_variable(self):
         step = self.text.split("        id: deploy\n", 1)[1].split("\n      - ", 1)[0]
         self.assertIn("deploy/gcp/dev/deploy.sh", step)
         self.assertIn("          DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}\n", step)
+        # Without pipefail, `deploy.sh | tee` passes when deploy.sh stops (exit 3).
+        self.assertIn("\ndefaults:\n  run:\n    shell: bash\n", self.text)
+        self.assertNotIn("shell:", step)
 
     def test_token_subject_rules_of_the_wif_provider(self):
         for banned in ("environment:", "pull_request", "secrets."):
-            self.assertFalse(banned in self.text, f"deploy-dev.yml has {banned}")
+            self.assertNotIn(banned, self.text, f"deploy-dev.yml has {banned}")
 
 
 if __name__ == "__main__":

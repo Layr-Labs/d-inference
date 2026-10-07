@@ -263,8 +263,8 @@ What one run does:
    run. A commit that is no longer the `master` head stops with
    `deployed=false`; the newer run deploys.
 2. Hard gate: the public `/health` reports `status` `ok`, `draining` `false`,
-   `version` = `LatestProviderVersion` and the 40-character commit (for a
-   rollback, a 40-character commit).
+   `version` = `LatestProviderVersion` and `build_commit` = the commit of the
+   run (for a rollback, any 40-character commit).
 3. Notify only: providers attach again within 120 s, and
    `scripts/smoke-dev.sh`. The workflow has no secrets, so the authenticated
    chat test does not run.
@@ -273,7 +273,8 @@ What one run does:
    for that run.
 5. It removes the SSH key from the OS Login profile and writes the job
    summary: the time from merge to healthy, the `dev-build` times, the swap
-   result line and the `REPORT` lines.
+   result line, the provider counts, the smoke and provider release results,
+   and the `REPORT` lines.
 
 Manual runs (always `--ref master`; WIF refuses other branches):
 

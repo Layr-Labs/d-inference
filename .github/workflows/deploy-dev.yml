@@ -48,6 +48,11 @@ concurrency:
   group: deploy-dev
   cancel-in-progress: false
 
+# An explicit bash shell adds pipefail, so `deploy.sh | tee` fails when deploy.sh fails.
+defaults:
+  run:
+    shell: bash
+
 env:
   PROJECT: darkbloom-dev
   WIF_PROVIDER: projects/907319144169/locations/global/workloadIdentityPools/github-pool/providers/github-d-inference
@@ -59,7 +64,7 @@ jobs:
     name: Deploy dev coordinator
     if: github.event_name == 'workflow_dispatch' || vars.DEV_DEPLOY_PAUSED == 'false'
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 45   # 20 min build wait in deploy.sh + 75 s stop + checks
+    timeout-minutes: 45   # deploy.sh: build wait up to 20 min, swap a few min (capped at 25), then checks
     permissions:
       contents: read
       id-token: write   # WIF token
@@ -174,7 +179,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
         run: |
-          read_version() { grep -E '^var LatestProviderVersion = ' | cut -d'"' -f2; }
+          read_version() { awk -F'"' '/^var LatestProviderVersion =/ { print $2 }'; }
           now=$(read_version < coordinator/api/server.go)
           if [[ "$BEFORE" =~ ^0+$ ]]; then echo "result=no base commit" >> "$GITHUB_OUTPUT"; exit 0; fi
           git fetch --no-tags --depth=1 origin "$BEFORE"

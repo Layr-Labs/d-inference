@@ -130,7 +130,7 @@ func TestAutopilotMachinePromotionRequiresFreshAckAndSameModePreservesIt(t *test
 					t.Fatal("desired live alone made a provider reservable")
 				}
 				seq := uint64(11 + revision/2)
-				now = acknowledgeAutopilotMachine(r, p, control, seq-1)
+				acknowledgeAutopilotMachine(r, p, control, seq-1)
 				if autopilotMachineControlActive(r, p) {
 					t.Fatal("duplicate capacity heartbeat acknowledged a fresh grant")
 				}

@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -103,6 +103,13 @@ If you also operate a provider, distinguish completed-inference earnings from
 macOS 27 or later and current qualified App Attest authorization for every
 provider, old or new, not legacy MDM alone. This does not
 remove previously earned balances or change payment for completed inference.
+An eligible machine opted into Autopilot gets 10% extra on its allocated base
+reward, rounded down per settlement to a whole micro-dollar. Darkbloom funds
+this from a separate bonus pot, so it does not reduce other machines' base
+rewards. The bonus is withdrawable and included in displayed base-reward
+earnings. It applies per opted-in machine; pausing Autopilot retains consent,
+while opting out stops bonuses on new settlements. Past settlements are final.
+See the [base-reward policy](../reference/pricing-model.md#base-rewards).
 
 ### 4. Understand what a request costs you
 

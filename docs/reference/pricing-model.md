@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -132,6 +132,7 @@ type is in [billing.md](../architecture/billing.md#ledger).
 | `admin_reward` | `LedgerAdminReward` | `POST /v1/admin/reward` | yes |
 | `migration` | `LedgerMigration` | balance moved between account identities | both columns move |
 | `provider_floor_draw` | `LedgerFloorDraw` | base-rewards epoch draw, reference `<epoch_id>` | yes |
+| `provider_autopilot_bonus` | `LedgerAutopilotBonus` | separate Autopilot bonus pot, reference `<epoch_id>`; included in the `base_reward` earning, not added again through `RewardLedgerTypes` | yes |
 | `erasure_forfeit` | `LedgerErasureForfeit` | account erasure zeroes the balance, reference `erasure:<request_id>` | debit (both columns to 0) |
 
 `RewardLedgerTypes = [referral_reward, admin_reward]` — counted as "reward"
@@ -194,6 +195,8 @@ Connected-account status `users.stripe_account_status`
 | `DefaultReductionK` | `0.0` (additive) | `floor.go` |
 | `MinUptimeForAvail` / `FullUptimeForAvail` | `0.90` / `1.00` | `floor.go` |
 | `defaultGraceSeconds` | `90` (open sessions accrue to `last_seen + grace`) | `engine.go` |
+| Autopilot bonus | `allocated_base_draw / 10`, rounded down in micro-USD; valid opt-in consent at settlement, independent of pause/observation/controller activation | `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`), `coordinator/registry/provider_snapshot.go` (`providerRewardSnapshotLocked`) |
+| Autopilot pot | Separate allowance of `period_base_budget / 10`; monthly ceiling is `PoolBudgetMicroUSD / 10` ($900 at defaults). Base caps and prior spending exclude bonuses. Unused allowance is not redistributed | `coordinator/payments/baserewards/engine.go` (`Status`), `settlement_plan.go` |
 | `FloorDrawBatchLimit` | `4096` pending rows; a larger plan returns an error without truncation or credit | `coordinator/store/floor_draw_batch.go` |
 | Authorization gate | Every provider, old or new, requires macOS 27 or later and current qualified App Attest public serving authorization, including machines also enrolled in MDM. The OS claim must be bound to the same authorization; missing, malformed or older versions fail closed. Grandfathered legacy MDM alone never earns new base rewards. Expired, revoked or unqualified App Attest fails this gate even when legacy serving remains available. | `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`, `candidateSessionAuthorized`) |
 | Health gates | Memory/thermal health and loaded-model readiness; linked account and durable machine binding; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `coordinator/payments/baserewards/machine_candidates.go` (`buildCandidates`, `rewardSnapshotEligible`); `coordinator/internal/payments/rewardpolicy/memory.go` (`RewardMemoryGB`) |
@@ -218,7 +221,7 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 `provider_floor_draws` with `UNIQUE (provider_key, epoch_id)`; mirrored
 `provider_earnings` row has `model = 'base_reward'` and
 `job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres/base_rewards.go`
-`SettleProviderFloorDraw`).
+`settleProviderFloorDraw`). The earnings row includes the base grant plus its separately recorded `autopilot_bonus_micro_usd`; the draw's `amount_micro_usd` remains base-only. Existing settled epochs default to zero bonus and are not retroactively credited.
 
 `settleCandidatePlan` commits all pending rows atomically through `FloorDrawBatchStore`, rechecking current session authorization before each planned credit and before commit. A late rejection rolls back the pending plan and triggers reallocation under the same pool/account caps. Canonical identities, endpoint continuity and prior finalized rows follow the [provider authorization contract](provider-authorization.md#machine-identity-and-base-rewards). Code: `coordinator/payments/baserewards/settlement_plan.go`, `coordinator/store/floor_draw_batch.go`.
 

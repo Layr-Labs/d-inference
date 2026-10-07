@@ -201,26 +201,38 @@ func candidatePreviouslySettled(c candidate, settled map[string]bool) bool {
 	return false
 }
 
-func (e *Engine) eligibleCandidateSession(c candidate) (string, bool) {
+// Prefer a consenting live session when a machine has multiple connections;
+// settlement still uses one canonical machine identity and one base allocation.
+func (e *Engine) eligibleCandidateSession(c candidate) (registry.ProviderSnapshot, bool) {
+	var fallback registry.ProviderSnapshot
+	found := false
 	for _, original := range c.live {
-		if e.candidateSessionAuthorized(c, original.ID) {
-			return original.ID, true
+		if p, eligible := e.candidateSessionSnapshot(c, original.ID); eligible {
+			if p.AutopilotOptedIn {
+				return p, true
+			}
+			fallback, found = p, true
 		}
 	}
-	return "", false
+	return fallback, found
 }
 
 func (e *Engine) candidateSessionAuthorized(c candidate, session string) bool {
+	_, eligible := e.candidateSessionSnapshot(c, session)
+	return eligible
+}
+
+func (e *Engine) candidateSessionSnapshot(c candidate, session string) (registry.ProviderSnapshot, bool) {
 	for _, original := range c.live {
 		if original.ID != session {
 			continue
 		}
 		p, ok := e.reg.GetProviderRewardSnapshot(original.ID)
 		if !ok || !rewardSnapshotEligible(p) || p.ProviderKey != original.ProviderKey || p.AccountID != original.AccountID || p.MachineID != original.MachineID || p.HardwareModel != original.HardwareModel {
-			return false
+			return registry.ProviderSnapshot{}, false
 		}
 		mem, known := rewardpolicy.RewardMemoryGB(p)
-		return known && mem >= c.c.MemGB
+		return p, known && mem >= c.c.MemGB
 	}
-	return false
+	return registry.ProviderSnapshot{}, false
 }

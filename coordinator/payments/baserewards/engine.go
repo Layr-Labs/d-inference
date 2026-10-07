@@ -88,11 +88,12 @@ func NewEngine(s store.Store, reg *registry.Registry, cfg Config, logger *slog.L
 
 // SettleResult summarizes one SettleEpoch call.
 type SettleResult struct {
-	EpochID           rewardpolicy.EpochID
-	Eligible          int   // candidates that passed every gate
-	Settled           int   // rows newly credited this call
-	AlreadySettled    int   // skipped via idempotent (provider_key, epoch_id) conflict
-	TotalDrawMicroUSD int64 // Σ newly-printed money this call
+	EpochID                     rewardpolicy.EpochID
+	Eligible                    int   // candidates that passed every gate
+	Settled                     int   // rows newly credited this call
+	AlreadySettled              int   // skipped via idempotent (provider_key, epoch_id) conflict
+	TotalDrawMicroUSD           int64 // base plus separately funded bonus credited this call
+	TotalAutopilotBonusMicroUSD int64 // bonus pot only
 }
 
 // candidate pairs an allocation Candidate with the per-machine audit context the
@@ -182,6 +183,7 @@ func (e *Engine) settleOnce(ctx context.Context) {
 			"settled", res.Settled,
 			"already_settled", res.AlreadySettled,
 			"total_draw_micro_usd", res.TotalDrawMicroUSD,
+			"autopilot_bonus_micro_usd", res.TotalAutopilotBonusMicroUSD,
 		)
 	}
 }
@@ -205,15 +207,26 @@ func (e *Engine) Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	var bonusUsed int64
+	for _, draw := range draws {
+		bonusUsed += draw.AutopilotBonusMicroUSD
+	}
+	periodBudget := rewardpolicy.PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end)
+	// Every bonus is floor(base grant / 10), so this separate pot covers all
+	// enrolled machines even when the ordinary pool is fully allocated.
 	return map[string]any{
-		"enabled":             true,
-		"epoch_id":            epochID,
-		"period_seconds":      int64(end.Sub(start).Seconds()),
-		"monthly_pool_budget": e.cfg.PoolBudgetMicroUSD,
-		"pool_budget":         rewardpolicy.PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end),
-		"pool_used":           used,
-		"reduction_k":         e.cfg.ReductionK,
-		"draw_count":          len(draws),
-		"draws":               draws,
+		"autopilot_bonus_percent":             10,
+		"autopilot_bonus_pool_budget":         periodBudget / 10,
+		"autopilot_bonus_pool_used":           bonusUsed,
+		"monthly_autopilot_bonus_pool_budget": e.cfg.PoolBudgetMicroUSD / 10,
+		"enabled":                             true,
+		"epoch_id":                            epochID,
+		"period_seconds":                      int64(end.Sub(start).Seconds()),
+		"monthly_pool_budget":                 e.cfg.PoolBudgetMicroUSD,
+		"pool_budget":                         periodBudget,
+		"pool_used":                           used,
+		"reduction_k":                         e.cfg.ReductionK,
+		"draw_count":                          len(draws),
+		"draws":                               draws,
 	}, nil
 }

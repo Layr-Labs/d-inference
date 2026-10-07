@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -74,6 +74,7 @@ components for the specific invariant:
 | Explored provider pricing | `coordinator/internal/registry/forecast/exploration.go` (`IdleEvidenceGap`, `ExplorationReplacesRate`), `coordinator/internal/registry/performance/rates.go` (`Rates.ExploredPrefill`, `Rates.ExploredDecode`); `coordinator/registry/first_content_exploration_pricing.go` (`fillExplorationRates`) binds them to the routing snapshot; guarded by `coordinator/tests/registry/first_content_exploration_pricing_test.go` |
 | Exploration feedback and stale decode ranking | `coordinator/internal/registry/identitygate/exploration.go` retains identity/model backoff and corroborated rates; `coordinator/registry/first_content_exploration_outcome.go` binds terminal feedback from `coordinator/internal/inference/providerhealth/` and `cancellation/`; `coordinator/internal/registry/performance/rates.go` expires independently dated idle decode estimates without changing projected admission rates |
 | Cache generations, memory history, shared records, account erasure rules and SQL helpers | `coordinator/internal/store/`; erasure rules and keys in `coordinator/internal/store/erasure/` |
+| Base-reward allocation and Autopilot bonus | `coordinator/payments/baserewards/settlement_plan.go` owns eligibility and allocation; `coordinator/internal/store/shared/floor_draw_batch.go` validates base and bonus amounts for both stores; `coordinator/store/memory/base_rewards.go` and `coordinator/store/postgres/base_rewards.go` own atomic credit and audit writes |
 | Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |

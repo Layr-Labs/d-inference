@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -561,7 +561,7 @@ grace period or expiry; frozen membership remains a separate prerequisite.
 | POST | `/v1/admin/reward` | `HandleAdminReward` (`coordinator/api/billing/admin_balance_adjustment.go`) | `admin` | Manual provider reward |
 | GET | `/v1/admin/log-reports/{id}` | `HandleGetLogReport` (`coordinator/api/operations/log_reports.go`) | `admin` | Fetch an uploaded provider log bundle |
 | GET | `/v1/admin/metrics` | `HandleAdminMetrics` | `admin-key` | Telemetry counters |
-| GET | `/v1/admin/base-rewards` | `HandleAdminBaseRewards` (`coordinator/api/billing/base_rewards_handlers.go`) | `admin-key` | |
+| GET | `/v1/admin/base-rewards` | `HandleAdminBaseRewards` (`coordinator/api/billing/base_rewards_handlers.go`) | `admin-key` | Enabled status includes base-only `pool_budget` / `pool_used`, separate `autopilot_bonus_percent`, `autopilot_bonus_pool_budget`, `autopilot_bonus_pool_used`, `monthly_autopilot_bonus_pool_budget` and per-draw `autopilot_bonus_micro_usd`; all money is micro-USD (`coordinator/payments/baserewards/engine.go`, `Status`). |
 | GET | `/v1/admin/utilization` | `HandleAdminUtilization` (`coordinator/api/reporting/admin_utilization.go`) | `admin-key` | |
 | GET / POST | `/v1/admin/autopilot` | `handleAdminAutopilot` (`coordinator/api/autopilot_handlers.go`) | `admin` | Two registrations; [controller status and runtime pause](#experimental-model-autopilot), not shadow/live promotion |
 | GET | `/v1/admin/autopilot/inventory` | `handleAdminAutopilotInventory` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Connected saved-approval aggregates](#autopilot-inventory-report), independent of the ledger |

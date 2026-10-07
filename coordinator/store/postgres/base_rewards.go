@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -41,8 +42,8 @@ type floorDrawDB interface {
 // the audit row (so it is "settled, $0") but the credit/ledger CTEs (guarded by
 // amount > 0) are no-ops. Returns credited=true when this call inserted the row.
 func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *store.ProviderFloorDraw) (bool, error) {
-	if draw == nil {
-		return false, errors.New("provider floor draw is required")
+	if err := shared.ValidateFloorDrawAmounts(draw); err != nil {
+		return false, err
 	}
 	if draw.ProviderKey == "" {
 		return false, errors.New("provider floor draw provider_key is required")
@@ -61,13 +62,15 @@ func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *store.Pr
 	err := db.QueryRow(ctx, `
 		WITH draw AS (
 			INSERT INTO provider_floor_draws (provider_key, account_id, epoch_id, amount_micro_usd,
-				floor_micro_usd, earned_micro_usd, uptime_frac, memory_gb, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+				floor_micro_usd, earned_micro_usd, uptime_frac, memory_gb, autopilot_bonus_micro_usd, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $11, NOW())
 			ON CONFLICT (provider_key, epoch_id) DO NOTHING
-			RETURNING account_id, amount_micro_usd
+			RETURNING account_id, amount_micro_usd, autopilot_bonus_micro_usd
 		), credit AS (
 			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
-			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM draw WHERE amount_micro_usd > 0
+			SELECT account_id, amount_micro_usd + autopilot_bonus_micro_usd,
+				amount_micro_usd + autopilot_bonus_micro_usd, NOW()
+			FROM draw WHERE amount_micro_usd > 0
 			ON CONFLICT (account_id) DO UPDATE SET
 			  balance_micro_usd = balances.balance_micro_usd + EXCLUDED.balance_micro_usd,
 			  withdrawable_micro_usd = balances.withdrawable_micro_usd + EXCLUDED.withdrawable_micro_usd,
@@ -75,12 +78,18 @@ func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *store.Pr
 			RETURNING balance_micro_usd
 		), ledger AS (
 			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-			SELECT d.account_id, $9, d.amount_micro_usd, c.balance_micro_usd, $3, NOW()
-			FROM draw d CROSS JOIN credit c WHERE d.amount_micro_usd > 0
+			SELECT d.account_id, entry.entry_type, entry.amount_micro_usd, entry.balance_after, $3, NOW()
+			FROM draw d CROSS JOIN credit c
+			CROSS JOIN LATERAL (VALUES
+				(1, $9::text, d.amount_micro_usd, c.balance_micro_usd - d.autopilot_bonus_micro_usd),
+				(2, $12::text, d.autopilot_bonus_micro_usd, c.balance_micro_usd)
+			) AS entry(position, entry_type, amount_micro_usd, balance_after)
+			WHERE entry.amount_micro_usd > 0
+			ORDER BY entry.position
 		), earning AS (
 			INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model,
 				amount_micro_usd, prompt_tokens, completion_tokens, created_at)
-			SELECT d.account_id, '', $1, $10, 'base_reward', d.amount_micro_usd, 0, 0, NOW()
+			SELECT d.account_id, '', $1, $10, 'base_reward', d.amount_micro_usd + d.autopilot_bonus_micro_usd, 0, 0, NOW()
 			FROM draw d WHERE d.amount_micro_usd > 0
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
 			RETURNING account_id, amount_micro_usd
@@ -92,16 +101,18 @@ func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *store.Pr
 			  updated_at = NOW()
 		)
 		SELECT EXISTS (SELECT 1 FROM draw)`,
-		draw.ProviderKey,              // $1
-		draw.AccountID,                // $2
-		draw.EpochID,                  // $3
-		draw.AmountMicroUSD,           // $4
-		draw.FloorMicroUSD,            // $5
-		draw.EarnedMicroUSD,           // $6
-		draw.UptimeFrac,               // $7
-		draw.MemoryGB,                 // $8
-		string(store.LedgerFloorDraw), // $9
-		earningJobID,                  // $10
+		draw.ProviderKey,                   // $1
+		draw.AccountID,                     // $2
+		draw.EpochID,                       // $3
+		draw.AmountMicroUSD,                // $4
+		draw.FloorMicroUSD,                 // $5
+		draw.EarnedMicroUSD,                // $6
+		draw.UptimeFrac,                    // $7
+		draw.MemoryGB,                      // $8
+		string(store.LedgerFloorDraw),      // $9
+		earningJobID,                       // $10
+		draw.AutopilotBonusMicroUSD,        // $11
+		string(store.LedgerAutopilotBonus), // $12
 	).Scan(&credited)
 	if err != nil {
 		return false, fmt.Errorf("store: settle provider floor draw: %w", err)
@@ -126,7 +137,7 @@ func (s *PostgresStore) SumFloorDrawsForEpoch(ctx context.Context, epochID strin
 func (s *PostgresStore) ListFloorDrawsForEpoch(ctx context.Context, epochID string) ([]store.ProviderFloorDraw, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, provider_key, account_id, epoch_id, amount_micro_usd,
-		        floor_micro_usd, earned_micro_usd, uptime_frac, memory_gb, created_at
+		        floor_micro_usd, earned_micro_usd, uptime_frac, memory_gb, created_at, autopilot_bonus_micro_usd
 		   FROM provider_floor_draws
 		  WHERE epoch_id = $1
 		  ORDER BY amount_micro_usd DESC`,
@@ -141,12 +152,12 @@ func (s *PostgresStore) ListFloorDrawsForEpoch(ctx context.Context, epochID stri
 	for rows.Next() {
 		var d store.ProviderFloorDraw
 		if err := rows.Scan(&d.ID, &d.ProviderKey, &d.AccountID, &d.EpochID, &d.AmountMicroUSD,
-			&d.FloorMicroUSD, &d.EarnedMicroUSD, &d.UptimeFrac, &d.MemoryGB, &d.CreatedAt); err != nil {
-			continue
+			&d.FloorMicroUSD, &d.EarnedMicroUSD, &d.UptimeFrac, &d.MemoryGB, &d.CreatedAt, &d.AutopilotBonusMicroUSD); err != nil {
+			return nil, fmt.Errorf("store: scan floor draw: %w", err)
 		}
 		out = append(out, d)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // ListProviderSessionsOverlapping returns sessions whose lifetime interval

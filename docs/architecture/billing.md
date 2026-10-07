@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -382,6 +382,32 @@ account as withdrawable `provider_floor_draw`, and mirrors a
 rolls back every pending row and recalculates the unspent allocation; no partial
 or zero-value row from that rejected plan is frozen. Settlement is serialized
 by a per-epoch lock (an advisory lock in PostgreSQL).
+After the ordinary allocation, a machine with valid explicit Autopilot consent
+receives `allocated_draw / 10` extra micro-USD, rounded down. The separate bonus
+pot is `period_base_budget / 10` (a $900 monthly allowance alongside the default
+$9,000 base pool). Since each bonus is bounded by its base grant, the bonus pot
+covers all opted-in machines without changing base allocation, workhorse
+priority or account caps. Unspent bonus allowance never enters the base pool.
+
+`providerRewardSnapshotLocked` (`coordinator/registry/provider_snapshot.go`)
+uses the existing `Consented` predicate: supported protocol, enabled cached-only
+selection and valid revision. Consent, rather than active controller ownership,
+is rewarded; pause, observation and a disabled controller retain eligibility.
+All ordinary base-reward gates still apply per machine. Consent is sampled at
+settlement, not prorated over historical opted-in time. The engine rechecks it
+before credit and commit; a change rebuilds the plan without forfeiting the base
+grant. Already-finalized epochs are never topped up retrospectively.
+
+Both amounts share the machine/epoch idempotency key and transaction. The draw's
+`amount_micro_usd` remains base-only; `autopilot_bonus_micro_usd` audits the
+separate pot. The extra withdrawable ledger credit is
+`provider_autopilot_bonus`; the existing `base_reward` earnings row contains the
+combined amount, so summaries count the bonus once and never as inference work.
+Code: `coordinator/payments/baserewards/settlement_plan.go`
+(`settleCandidatePlan`), `coordinator/store/postgres/base_rewards.go`
+(`settleProviderFloorDraw`) and `coordinator/store/memory/base_rewards.go`
+(`settleProviderFloorDrawLocked`).
+
 `GET /v1/admin/base-rewards` returns
 `{"enabled": false}` when the engine is not wired
 (`coordinator/api/billing/base_rewards_handlers.go`). The tier table is in

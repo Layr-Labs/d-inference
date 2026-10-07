@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -361,3 +361,11 @@ its own `Start/` folder.
 - [Provider CLI](../provider/cli-reference.md#darkbloom-autopilot)
 - [Configuration](../reference/configuration.md#model-autopilot)
 - [Protocol](../reference/protocol-messages.md#model_autopilot)
+
+## Opt-in base-reward bonus
+
+Valid enrollment also qualifies an otherwise base-reward-eligible machine for
+the [separately funded bonus](billing.md#base-rewards-implemented-disabled-by-default).
+The reward snapshot uses `Consented` independently of controller activation,
+observation or pause. Opt-out removes bonus eligibility at settlement.
+Code: `coordinator/registry/provider_snapshot.go` (`providerRewardSnapshotLocked`).

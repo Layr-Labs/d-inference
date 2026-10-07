@@ -1,6 +1,6 @@
 # Schema lifecycle
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the
@@ -91,6 +91,7 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 24 | `indexMigrations` | Builds `idx_users_privy_deleted` concurrently for pending-erasure login checks. |
 | 25 | `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql` | Creates refused-credit audit records, including a reference hash for once-credit identity, and balance/ledger triggers in one transaction. |
 | 26 | `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql` | One transaction: adds the Stripe redaction-job fields and independent `lease_generation BIGINT NOT NULL DEFAULT 0` to `erasure_outbox`. Constant defaults change only the catalog; `ALTER TABLE` takes a brief exclusive table lock. |
+| 27 | `coordinator/store/postgres/schema/migrations/00027_autopilot_reward_bonus.sql` | One transaction: adds `provider_floor_draws.autopilot_bonus_micro_usd BIGINT NOT NULL DEFAULT 0`. Constant default avoids a table rewrite; `ALTER TABLE` takes a brief exclusive lock under the existing migration timeout. Old draws remain zero-bonus; rollback keeps the additive column and finalized credits. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They preserve the
 startup steps that ran after the old DDL loop, with concurrent builds now using

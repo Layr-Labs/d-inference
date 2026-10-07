@@ -282,8 +282,8 @@ What one run does:
    `version` = `LatestProviderVersion` and `build_commit` = the commit of the
    run (for a rollback, any 40-character commit).
 3. Notify only: providers attach again within 120 s, and
-   `scripts/smoke-dev.sh`. The workflow has no secrets, so the authenticated
-   chat test does not run.
+   `scripts/smoke-dev.sh`. This smoke step receives no API key, so the
+   authenticated chat test does not run.
 4. When a push changes the `var LatestProviderVersion` line, the job starts
    `release-swift.yml` with `environment=dev` on `master`. It does not wait
    for that run.

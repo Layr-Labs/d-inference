@@ -1,6 +1,6 @@
 # Queryable accounting history
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 Preserve complete accounting-history snapshots in private Cloud Storage and
 query them through BigQuery. This copy-only phase does not change billing,
@@ -15,6 +15,18 @@ defined by `scripts/telemetry_archive/src/telemetry_archive/tables.py`
 live withdrawal workflows are not exportable with this worker.
 
 ## Prerequisites
+
+- Before capturing `provider_floor_draws` with the bonus-aware worker, verify
+  coordinator migration 27 has reached the replica. New captures reconcile
+  `autopilot_bonus_micro_usd` separately from base `amount_micro_usd`. The typed
+  reader exposes the bonus as `INT64`, with zero for pre-column rows. Existing
+  receipts keep their original three-field reconciliation and artifact IDs;
+  they do not certify bonus totals. Mixed-plan summaries omit totals absent
+  from any contributing receipt. Under the approved worker upgrade, recapture
+  affected windows and republish readers before using archive summaries to
+  audit the complete bonus pot. No receipt rewrite or automatic republish is
+  performed. Code: `scripts/telemetry_archive/src/telemetry_archive/accounting.py`
+  (`validate_totals`, `query_projections`).
 
 - Human authorization for this accounting copy and its dedicated resources.
 - A physical SELECT-only replica and its existing bigint primary keys. ID

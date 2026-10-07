@@ -30,7 +30,12 @@ def validate_totals(table, totals, rows):
     fields = ACCOUNTING_FIELDS.get(table)
     if fields is None:
         return
-    if not isinstance(totals, dict) or set(totals) != set(fields):
+    # Pre-bonus receipts remain immutable and verify only their original totals.
+    # New captures require the complete current source schema in source.snapshot.
+    allowed = [set(fields)]
+    if table == "provider_floor_draws":
+        allowed.append(set(fields) - {"autopilot_bonus_micro_usd"})
+    if not isinstance(totals, dict) or set(totals) not in allowed:
         raise ArchiveError("missing or unexpected accounting reconciliation fields")
     for value in totals.values():
         try:
@@ -41,13 +46,14 @@ def validate_totals(table, totals, rows):
             raise ArchiveError("invalid accounting reconciliation total")
 
 
-def query_aggregates(table):
+def query_aggregates(table, fields=None):
     return [
         "CAST(COALESCE(SUM(CAST(JSON_VALUE(row_json, '$."
         + field
         + "') AS BIGNUMERIC)), 0) AS STRING) AS accounting_"
         + field
         for field in ACCOUNTING_FIELDS.get(table, ())
+        if fields is None or field in fields
     ]
 
 
@@ -56,6 +62,10 @@ def query_projections(table):
         f"JSON_VALUE(r.row_json, '$.{field}') AS {field}"
         for field in ACCOUNTING_TEXT_FIELDS.get(table, ())
     ] + [
-        f"CAST(JSON_VALUE(r.row_json, '$.{field}') AS INT64) AS {field}"
+        (
+            f"COALESCE(CAST(JSON_VALUE(r.row_json, '$.{field}') AS INT64), 0) AS {field}"
+            if table == "provider_floor_draws" and field == "autopilot_bonus_micro_usd"
+            else f"CAST(JSON_VALUE(r.row_json, '$.{field}') AS INT64) AS {field}"
+        )
         for field in ACCOUNTING_FIELDS.get(table, ())
     ]

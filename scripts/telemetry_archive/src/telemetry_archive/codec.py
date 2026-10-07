@@ -8,7 +8,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .accounting import add_row, empty_totals, serialized_totals
+from .accounting import add_row, empty_totals, serialized_totals, validate_totals
 from .model import ARCHIVE_SCHEMA, TABLES, ArchiveError, Window, stamp, utc
 
 
@@ -106,7 +106,10 @@ def verify_parquet(path: Path, window: Window, expected: dict) -> None:
     if not parquet.schema_arrow.equals(ARCHIVE_SCHEMA, check_metadata=True):
         raise ArchiveError("Parquet schema mismatch")
     digest = hashlib.sha256()
+    validate_totals(window.table, expected.get("accounting_totals"), expected["rows"])
     totals = empty_totals(window.table)
+    if window.table == "provider_floor_draws":
+        totals = dict.fromkeys(expected["accounting_totals"], 0)
     count = raw_bytes = 0
     min_id = max_id = None
     first = last = previous = None

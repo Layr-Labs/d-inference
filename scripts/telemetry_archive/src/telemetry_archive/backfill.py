@@ -119,9 +119,17 @@ class Runner:
                 target["windows"] += 1
                 validate_totals(window.table, result.get("accounting_totals"), result["rows"])
                 if "accounting_totals" in result:
-                    sums = target.setdefault("accounting_totals", {})
-                    for field, value in result["accounting_totals"].items():
-                        sums[field] = str(int(sums.get(field, "0")) + int(value))
+                    incoming = result["accounting_totals"]
+                    if "accounting_totals" not in target:
+                        target["accounting_totals"] = dict(incoming)
+                    else:
+                        # A complete total needs reconciliation in every window.
+                        # Legacy receipts cannot certify a partial bonus sum.
+                        target["accounting_totals"] = {
+                            field: str(int(value) + int(incoming[field]))
+                            for field, value in target["accounting_totals"].items()
+                            if field in incoming
+                        }
                 data = result["objects"]["data"]
                 entries = files.setdefault(window.table, {})
                 if data["name"] in entries and entries[data["name"]] != data:

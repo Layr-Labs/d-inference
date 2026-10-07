@@ -11,7 +11,12 @@ ACCOUNTING_FIELDS = {
     "usage": ("cost_micro_usd", "prompt_tokens", "completion_tokens"),
     "provider_earnings": ("amount_micro_usd", "prompt_tokens", "completion_tokens"),
     "ledger_entries": ("amount_micro_usd", "balance_after"),
-    "provider_floor_draws": ("amount_micro_usd", "floor_micro_usd", "earned_micro_usd"),
+    "provider_floor_draws": (
+        "amount_micro_usd",
+        "floor_micro_usd",
+        "earned_micro_usd",
+        "autopilot_bonus_micro_usd",
+    ),
 }
 ACCOUNTING_TEXT_FIELDS = {
     "usage": ("consumer_key_hash", "key_id", "request_id", "public_model"),

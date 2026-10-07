@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 ## Pull-request restacking
 
@@ -3604,6 +3604,10 @@ concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
 
 ## Telemetry archive validation
+
+`test_autopilot_bonus.py` verifies separate bonus totals, mismatched bonus
+reconciliation, typed reader projection and immutable pre-bonus receipts.
+The PostgreSQL accounting restoration tests also include the bonus column.
 
 In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. Accounting tests cover signed micro-USD values, sums beyond INT64, backdated timestamps, sparse IDs, late commits, destination separation, and exact restoration of all four accounting tables. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
 

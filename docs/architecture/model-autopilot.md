@@ -279,6 +279,14 @@ controller tick or delay another provider's control renewal. Enqueue acceptance
 retains pending ownership; only terminal heartbeat reconciliation releases it.
 No causal improvement is inferred from command success alone.
 
+### Opt-in base-reward bonus
+
+Valid enrollment also qualifies an otherwise base-reward-eligible machine for
+the [separately funded bonus](billing.md#base-rewards-implemented-disabled-by-default).
+The reward snapshot uses `Consented` independently of controller activation,
+observation or pause. Opt-out removes bonus eligibility at settlement.
+Code: `coordinator/registry/provider_snapshot.go` (`providerRewardSnapshotLocked`).
+
 ## Invariants
 
 1. Consent is explicit, nonempty and revisioned: `ModelAutopilotSettings.hasConsent`.
@@ -361,11 +369,3 @@ its own `Start/` folder.
 - [Provider CLI](../provider/cli-reference.md#darkbloom-autopilot)
 - [Configuration](../reference/configuration.md#model-autopilot)
 - [Protocol](../reference/protocol-messages.md#model_autopilot)
-
-## Opt-in base-reward bonus
-
-Valid enrollment also qualifies an otherwise base-reward-eligible machine for
-the [separately funded bonus](billing.md#base-rewards-implemented-disabled-by-default).
-The reward snapshot uses `Consented` independently of controller activation,
-observation or pause. Opt-out removes bonus eligibility at settlement.
-Code: `coordinator/registry/provider_snapshot.go` (`providerRewardSnapshotLocked`).

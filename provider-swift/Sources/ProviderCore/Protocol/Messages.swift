@@ -200,6 +200,12 @@ public enum ProviderMessage: Sendable, Equatable {
     case capacityQuote(CapacityQuote)
 
     public struct Register: Sendable, Equatable {
+        /// Restrictive registration role. Omitted legacy role remains ordinary
+        /// solo; a member role grants no trust or model capability. Mirrors
+        /// RegisterMessage.ExecutionRole/MemberRegistrationNonce/ClusterModels (Go).
+        public var executionRole: ProviderExecutionRole
+        public var memberRegistrationNonce: String?
+        public var clusterModels: [ModelInfo]?
         public var modelAutopilot: ModelAutopilotSnapshot?
         public var autopilotInventory: [ModelInfo]?
         public var hardware: HardwareInfo
@@ -262,8 +268,14 @@ public enum ProviderMessage: Sendable, Equatable {
             toolConstraintModels: [String]? = nil,
             appAttestProtocol: Int? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
-            autopilotInventory: [ModelInfo]? = nil
+            autopilotInventory: [ModelInfo]? = nil,
+            executionRole: ProviderExecutionRole = .solo,
+            memberRegistrationNonce: String? = nil,
+            clusterModels: [ModelInfo]? = nil
         ) {
+            self.executionRole = executionRole
+            self.memberRegistrationNonce = memberRegistrationNonce
+            self.clusterModels = clusterModels
             self.modelAutopilot = modelAutopilot
             self.autopilotInventory = autopilotInventory
             self.hardware = hardware
@@ -886,6 +898,9 @@ extension ProviderMessage: Codable {
         case serviceReservationID = "service_reservation_id"
         // Register
         case hardware, models, backend, version
+        case executionRole = "execution_role"
+        case memberRegistrationNonce = "member_registration_nonce"
+        case clusterModels = "cluster_models"
         case publicKey = "public_key"
         case encryptedResponseChunks = "encrypted_response_chunks"
         case attestation
@@ -993,6 +1008,11 @@ extension ProviderMessage: Codable {
 
         case .register(let r):
             try container.encode(TypeValue.register, forKey: .type)
+            if r.executionRole != .solo {
+                try container.encode(r.executionRole, forKey: .executionRole)
+                try container.encodeIfPresent(r.memberRegistrationNonce, forKey: .memberRegistrationNonce)
+                try container.encodeIfPresent(r.clusterModels, forKey: .clusterModels)
+            }
             try container.encodeIfPresent(r.modelAutopilot, forKey: .modelAutopilot)
             try container.encodeIfPresent(r.autopilotInventory, forKey: .autopilotInventory)
             try container.encode(r.hardware, forKey: .hardware)
@@ -1300,7 +1320,10 @@ extension ProviderMessage: Codable {
                     [String].self, forKey: .toolConstraintModels),
                 appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
-                autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory)
+                autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory),
+                executionRole: try container.decodeIfPresent(ProviderExecutionRole.self, forKey: .executionRole) ?? .solo,
+                memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
+                clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels)
             ))
 
         case .heartbeat:

@@ -93,7 +93,7 @@ func readyCatalog(contractIDs ...string) *catalog.State {
 	statuses := make([]catalog.Status, len(contractIDs))
 	for index, contractID := range contractIDs {
 		statuses[index] = catalog.Status{
-			ModelID: fmt.Sprintf("model-%d", index), ArtifactReady: true, PromptContractID: contractID,
+			ModelID: fmt.Sprintf("model-%d", index), ArtifactReady: true, PromptContractID: contractID, ModelAggregateSHA256: strings.Repeat("e", 64),
 		}
 	}
 	provisioner := catalog.New()
@@ -209,7 +209,7 @@ func TestPreloadControllerReconcileUnavailableReasons(t *testing.T) {
 			name:        "no catalog yet",
 			provisioner: catalog.New(),
 			child:       preload.ChildStatus{Running: true, ChildGeneration: 1},
-			want:        "awaiting model catalog",
+			want:        "invalid preload selection",
 		},
 		{
 			name:        "artifact failed",
@@ -339,7 +339,7 @@ func TestPreloadControllerHTTPErrorIsAFailure(t *testing.T) {
 
 	controller.Reconcile(context.Background())
 	status := controller.Status()
-	if status.Ready || status.Failures != 1 || !strings.Contains(status.LastError, "HTTP 500") {
+	if status.Ready || status.Failures != 1 || status.LastError != "preload_failed" {
 		t.Fatalf("failure status = %+v", status)
 	}
 	controller.Reconcile(context.Background())
@@ -428,6 +428,18 @@ func (f *preloadCatalogFixture) Snapshot() catalog.Snapshot {
 	return snapshot
 }
 
+func (f *preloadCatalogFixture) VerifiedPreloadArtifacts() (catalog.Snapshot, []preload.VerifiedPreloadArtifact) {
+	snapshot := f.Snapshot()
+	artifacts := make([]preload.VerifiedPreloadArtifact, len(snapshot.ContractIDs))
+	for i, contractID := range snapshot.ContractIDs {
+		artifacts[i] = preload.VerifiedPreloadArtifact{
+			CatalogGeneration: snapshot.Generation, ModelID: "fixture-" + contractID,
+			ModelAggregateSHA256: strings.Repeat("e", 64), PromptContractID: contractID,
+		}
+	}
+	return snapshot, artifacts
+}
+
 func (f *preloadCatalogFixture) replace(snapshot catalog.Snapshot) {
 	f.mu.Lock()
 	f.snapshot = snapshot
@@ -439,7 +451,7 @@ type preloadClientFixture struct {
 	err      error
 }
 
-func (f *preloadClientFixture) Preload(context.Context, []string) (sidecar.PreloadReport, error) {
+func (f *preloadClientFixture) PreloadContinuous(context.Context, []string, bool) (sidecar.PreloadReport, error) {
 	f.preloads.Add(1)
 	return sidecar.PreloadReport{}, f.err
 }

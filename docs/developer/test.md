@@ -1412,6 +1412,8 @@ The merged preload lifecycle fixtures use the controller's current client
 contract and keep a closed controller closed even if Start is called later.
 An empty verified set remains unavailable; metrics timing is tested with an
 acknowledged nonempty set, and in-flight generation changes discard publication.
+Active-set fixtures hand off coherent verified model identities and assert
+bounded selection/failure reasons rather than exposing transport errors.
 
 The Go `TestPreload*` unit tests cover healthy members beside unrelated pending
 or failed artifacts, strict partial reports, fresh runtime readiness, retry

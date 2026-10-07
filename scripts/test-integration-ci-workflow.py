@@ -19,6 +19,14 @@ PIN = "1bd1e32a3bdc45362d1e726936510720a7c30a57"
 
 
 class IntegrationWorkflowTests(unittest.TestCase):
+    def assert_integration_command(self, script, command):
+        normalized = " ".join(script.replace("\\\n", " ").split())
+        # Accept the existing lanes and their exact additive coverage wiring.
+        covered = command.replace(
+            " -run ", ' -cover -covermode=set -coverpkg="$E2E_COVER_PKG" -run ', 1
+        ) + ' -args -test.gocoverdir="$covdir"'
+        self.assertTrue(normalized.endswith((command, covered)), normalized)
+
     def setUp(self):
         self.text = (ROOT / ".github/workflows/integration.yml").read_text()
         self.job = workflow.job_blocks(self.text)["integration-tests"]
@@ -74,8 +82,7 @@ class IntegrationWorkflowTests(unittest.TestCase):
         )
         for step, command in zip(gates, expected):
             self.assertIsNone(field(step, "if"))
-            normalized = " ".join(run_command(step).replace("\\\n", " ").split())
-            self.assertTrue(normalized.endswith(command), normalized)
+            self.assert_integration_command(run_command(step), command)
             self.assertIn('if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then', step)
         for step in gates[:2]:
             self.assertEqual(field(step, "DARKBLOOM_TESTBED_KV_BACKEND", 10), "paged")
@@ -83,6 +90,38 @@ class IntegrationWorkflowTests(unittest.TestCase):
         self.assertEqual(field(gates[0], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "paged")
         self.assertEqual(field(gates[2], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "contiguous")
         self.assertIsNone(field(gates[2], "DARKBLOOM_TESTBED_KV_BACKEND", 10))
+
+    def test_command_assertion_accepts_only_additive_coverage(self):
+        command = "go test ./e2e/ -count=1 -v -timeout 25m -p=1 -run 'TestIntegration|TestProfile' -skip '^TestIntegrationExactCacheRouting$'"
+        covered = (
+            "go test ./e2e/ -count=1 -v -timeout 25m -p=1 "
+            '-cover -covermode=set -coverpkg="$E2E_COVER_PKG" '
+            "-run 'TestIntegration|TestProfile' -skip '^TestIntegrationExactCacheRouting$' "
+            '-args -test.gocoverdir="$covdir"'
+        )
+        for actual in (command, covered):
+            with self.subTest(actual=actual):
+                self.assert_integration_command(actual, command)
+            for flag, changed in (
+                ("-count=1", "-count=2"),
+                ("-v", "-json"),
+                ("-timeout 25m", "-timeout 0"),
+                ("-p=1", "-p=2"),
+                ("-run 'TestIntegration|TestProfile'", "-run 'TestProfile'"),
+                ("-skip '^TestIntegrationExactCacheRouting$'", "-skip 'TestIntegration'"),
+            ):
+                for replacement in ("", changed):
+                    with self.subTest(actual=actual, flag=flag, replacement=replacement):
+                        with self.assertRaises(AssertionError):
+                            self.assert_integration_command(actual.replace(flag, replacement), command)
+        for invalid in (
+            covered.replace("-covermode=set", "-covermode=atomic"),
+            covered.replace("$E2E_COVER_PKG", "./..."),
+            covered.replace(' -args -test.gocoverdir="$covdir"', ""),
+            covered + " -test.run=TestProfile",
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(AssertionError):
+                self.assert_integration_command(invalid, command)
 
     def test_actual_shell_builds_on_cold_and_warm_cache_and_stages_fresh_metal(self):
         cleanup = self.named["Revalidate source timestamps and discard cached runtime resources"]

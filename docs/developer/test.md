@@ -78,6 +78,13 @@ pins the watchdog wiring; `scripts/test-integration-ci-workflow.py` checks cache
 wiring while retaining all E2E gates, and `scripts/test-provider-ci-cache.py`
 checks integration/provider/release cache isolation and compatibility boundaries.
 
+Run `python3 scripts/test-integration-ci-workflow.py` to check those integration
+invariants offline. The command assertion accepts the original E2E commands or
+the exact additive `-cover -covermode=set -coverpkg="$E2E_COVER_PKG"` bundle with
+`-args -test.gocoverdir="$covdir"`. Negative cases reject missing or changed test
+selectors, skip patterns, counts, timeouts and parallelism; the workflow checks
+still require all three unconditional gates and their backend environment values.
+
 Run `python3 scripts/test-ci-component-paths.py` for offline component-routing
 regressions. It creates real temporary Git repositories to check PR merge-base
 comparison, multiple commits, more than 300 changed files, additions, deletions,
@@ -94,6 +101,11 @@ independent suite/build prerequisite checks. Release Integrity runs both offline
 suites even for docs-only PRs. See [build routing](build.md) for dependencies and
 default-branch behavior. Relevant E2E benchmarks still require the existing
 `benchmarks` environment approval; irrelevant PRs do not request that approval.
+
+Docs Impact checks out the PR head and compares it with the merge base of the
+event's base SHA, not GitHub's synthetic merge commit. Upstream changes present
+only in that merge therefore do not create documentation requirements for the PR;
+the canonical source-to-document rules still apply to every changed PR path.
 
 The documentation-impact guards (`scripts/test-docs-impact-check.py`) exercise
 both production components and their adapters after package moves. Billing API
@@ -1193,6 +1205,91 @@ the configured database. CI provides a
 `make sqlc-check` against it after the tests. The pre-push hook is not
 a substitute for the complete coordinator runner and explicit race/database
 validation; run the full set before merging.
+
+#### Offline OpenRouter caller conformance
+
+Scenarios, fixtures and observers live in `coordinator/tests/internal/conformance/`.
+The thin `coordinator/tests/api/inference/contracts/openrouter_conformance_test.go`
+adapter (`conformanceSuite`) retains the existing 22 test entry points. It binds
+the real composed runtime together with the ledger and reservation controller it
+constructs, without adding production exports; the outstanding service hold is
+measured at that controller's admission boundary, not read from private state, by
+`coordinator/tests/internal/conformance/service_hold.go` (`OutstandingServiceHold`).
+Run the inference contract tests below: the support package is not itself a
+test entry point and is not imported by production.
+Streaming providers emit the concrete build ID; the HTTP assertions require
+the caller's alias, so bypassing the coordinator's model rewrite fails.
+Current-wire fixtures send typed `invalid_request` errors and use explicit
+template readiness for the unsupported-tool fence; they do not reintroduce
+upstream's retired version-based tool heuristic. The test-support package
+also exposes shared fixture helpers for the separate composed cache tests.
+
+`TestOpenRouterConformance` exercises `Server.Handler` with synthetic catalog
+records, account-owned API keys, memory storage and encrypted loopback provider
+WebSockets. It needs Go and no provider binary, model, database or external account.
+Use the repository-pinned Go toolchain. Prepare module dependencies separately
+in dedicated `GOMODCACHE`, `GOCACHE` and `GOTMPDIR` directories before the offline
+run; leave `HOME` unchanged. Clear inherited service, database, authentication,
+telemetry and proxy variables from the test process environment.
+
+From the repository root, with those isolated caches prepared:
+
+```bash
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -json -count=1 -timeout=3m \
+  -run '^TestOpenRouterConformance' > conformance.jsonl
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -race -json -count=1 -timeout=5m \
+  -run '^TestOpenRouterConformance' > conformance-race.jsonl
+```
+
+Require nonzero execution of Auth, Feed, Chat, AccountSLA, Drain, Retry,
+PostContentFailure, ClientError, Cancellation, CompletionFirst, Tools, Observer
+and Transport under that prefix. The incident and readiness additions also require
+IncidentProvenance, IncidentEnvelope, IncidentRefusal, Scenario,
+ScenarioFragmentation, ScenarioBounds, ScenarioChoiceShape, ReadinessFeed and
+ReadinessCapabilities. Retain every failure and unexpected skip across all
+22 groups. The combined family has 197 leaf cases, 64 of them in the thirteen
+groups named first. `OR_REPORT` log lines contain bounded synthetic status, attempts,
+terminal, timing, usage and balance evidence.
+Repeat with `-count=2` to compare semantic fields, excluding timing values;
+assert generated identities within each request before normalizing reports.
+
+The observer measures headers at `Client.Do` return, then first complete event,
+semantic payload and terminal while consuming the body. Role, usage and DONE
+are not semantic output; unavailable timing is null. It rejects malformed or
+truncated events, in-band errors, missing or duplicate DONE, changed identity,
+trailing payload and read errors. A provider drain acknowledgement joins prior
+completion workers before duplicate-terminal and no-stray-cancel assertions.
+The transport permits only its fixture address and rejects redirects and proxies.
+
+The OpenRouter cancellation fixture observes the existing completed-write profile
+stamp before canceling a dispatched request. Receiving provider bytes alone does
+not prove that the writer has finished; cancellation during an in-flight write
+may correctly abort that connection. Registry writer tests cover that separate
+outcome, while this fixture continues to require a matching cancel frame and
+exact settlement cleanup.
+
+The incident-envelope and scenario cases preserve the two curated Boston weather
+requests with reasoning disabled and tool choice omitted or auto. Added model
+identity is an explicit synthetic fixture wrapper. They check the complete
+forwarded schema/control fields and distinguish transport validity from the
+expected function, arguments, call IDs, indexes, cardinality and finish reason.
+A well-formed refusal ending in `stop` fails the weather scenario even when
+transport succeeds; a correct authored call may retain permitted pre-call text.
+These scripts do not prove actual Nemotron tool selection or native prompt parity.
+
+Readiness cases use authenticated metadata registration and normal `models_update`
+WebSocket messages to check staged/ready/staged feed visibility and capability
+enable/revoke, legacy omission, hash rejection and wrong-model fencing. A feed
+flag or advertised capability does not establish actual model loading or serving.
+`OR_INCIDENT`, `OR_SCENARIO` and `OR_READINESS` log records state these limits.
+
+These tests qualify the authored HTTP/transport and memory-accounting fixtures.
+Test-only trust and capacity state are explicit; tool declarations are synthetic.
+Real-model qualification and hosted OpenRouter qualification are not run by this
+command. Synthetic timings do not measure production latency, and no live request,
+model download or provider operation follows from an offline pass.
 
 #### Coordinator startup and reconnect recovery
 

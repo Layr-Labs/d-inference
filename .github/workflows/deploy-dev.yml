@@ -179,9 +179,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
         run: |
+          if [[ "$BEFORE" =~ ^0+$ ]]; then echo "result=no base commit" >> "$GITHUB_OUTPUT"; exit 0; fi
           read_version() { awk -F'"' '/^var LatestProviderVersion =/ { print $2 }'; }
           now=$(read_version < coordinator/api/server.go)
-          if [[ "$BEFORE" =~ ^0+$ ]]; then echo "result=no base commit" >> "$GITHUB_OUTPUT"; exit 0; fi
           git fetch --no-tags --depth=1 origin "$BEFORE"
           was=$(git show "$BEFORE:coordinator/api/server.go" | read_version)
           if [ "$now" = "$was" ]; then echo "result=not needed ($now)" >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -204,7 +204,9 @@ jobs:
           PAIR: ${{ steps.pair.outputs.result }}
         run: |
           d() { if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then echo "$(( $2 - $1 )) s"; else echo "n/a"; fi; }
-          MERGE=$(date -d "$HEAD_TS" +%s 2>/dev/null || true)
+          # A dispatch has no head commit; `date -d ""` would give midnight.
+          MERGE=""
+          [ -z "$HEAD_TS" ] || MERGE=$(date -d "$HEAD_TS" +%s 2>/dev/null || true)
           LOG="$RUNNER_TEMP/deploy.log"
           BUILD_ID=$(sed -n 's/^build=\([^ ]*\) image=.*/\1/p' "$LOG" 2>/dev/null | tail -n 1 || true)
           BUILD_TIMES=""

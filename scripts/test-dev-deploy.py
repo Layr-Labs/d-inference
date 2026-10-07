@@ -490,17 +490,19 @@ class DeployWorkflowTests(unittest.TestCase):
 
     def setUp(self):
         self.text = WORKFLOW.read_text()
+        self.deploy_step = self.text.split("        id: deploy\n", 1)[1].split("\n      - ", 1)[0]
 
     def test_workflow_never_overrides_the_pause(self):
         self.assertNotIn("--override-pause", self.text, "deploy-dev.yml names --override-pause")
 
     def test_deploy_step_passes_the_pause_variable(self):
-        step = self.text.split("        id: deploy\n", 1)[1].split("\n      - ", 1)[0]
-        self.assertIn("deploy/gcp/dev/deploy.sh", step)
-        self.assertIn("          DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}\n", step)
+        self.assertIn("deploy/gcp/dev/deploy.sh", self.deploy_step)
+        self.assertIn("          DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}\n", self.deploy_step)
+
+    def test_steps_run_with_pipefail(self):
         # Without pipefail, `deploy.sh | tee` passes when deploy.sh stops (exit 3).
         self.assertIn("\ndefaults:\n  run:\n    shell: bash\n", self.text)
-        self.assertNotIn("shell:", step)
+        self.assertNotIn("shell:", self.deploy_step)
 
     def test_token_subject_rules_of_the_wif_provider(self):
         for banned in ("environment:", "pull_request", "secrets."):

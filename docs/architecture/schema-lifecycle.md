@@ -42,6 +42,9 @@ and starts no listener or worker. Store duration settings are validated before
 database access. Unlike normal startup's `AppConfig.Check`, this database-only
 command does not require App Attest serving configuration.
 
+Concurrent-index connections close with the original migration context, so a
+stalled graceful close cannot detach from its cancellation or deadline.
+
 ```mermaid
 flowchart TD
   classDef step fill:#dbeafe,stroke:#1d4ed8,color:#0b1220

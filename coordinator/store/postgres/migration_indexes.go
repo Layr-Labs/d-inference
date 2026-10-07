@@ -62,7 +62,7 @@ func (s *PostgresStore) ensureConcurrentIndex(ctx context.Context, name, ddl str
 	if err != nil {
 		return fmt.Errorf("store: connect to build index %s: %w", name, err)
 	}
-	defer conn.Close(context.WithoutCancel(ctx))
+	defer conn.Close(ctx)
 
 	exists, valid, err := concurrentIndexState(ctx, conn, name)
 	if err != nil || valid {

@@ -943,7 +943,7 @@ and pagination through `GET /segments/{id}/contacts`. No tests send live email. 
 self-addressed delivery verification from these checks.
 
 
-Withdrawal funding regressions run in `coordinator/tests/api/billing/contracts/stripe_withdrawal_queue_test.go`, `coordinator/tests/api/billing/payouts/global_payouts_queue_test.go` and `coordinator/tests/store/contracts/withdrawal_funding_queue_test.go`. Run the billing API and store contract packages; set `DATABASE_URL` to a disposable PostgreSQL database for both-backend coverage. Tests verify single reservation, concurrent claims, funding recovery, refreshed FX quotes, unknown-outcome retention and queued-money erasure guards. UI copy tests cover the queued success and history states.
+Withdrawal funding regressions run in `coordinator/tests/api/billing/contracts/stripe_withdrawal_queue_test.go`, `coordinator/tests/api/billing/payouts/global_payouts_queue_test.go` and `coordinator/tests/store/contracts/withdrawal_funding_queue_test.go`. Run the billing API and store contract packages; set `DATABASE_URL` to a disposable PostgreSQL database for both-backend coverage. Tests verify single reservation, concurrent claims, funding recovery, refreshed FX quotes, unknown-outcome retention and queued-money erasure guards. UI copy tests cover the queued success and history states. `coordinator/tests/store/postgres/withdrawal_funding_migration_test.go` verifies adoption of an existing schema preserves queued records and records the migration once; the migration timeout suite includes the queued reconciliation index. Run the full PostgreSQL store package with the disposable database to cover replay fixtures as well as fresh/legacy upgrades.
 
 ## Prerequisites
 

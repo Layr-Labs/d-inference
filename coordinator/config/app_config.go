@@ -77,6 +77,11 @@ func (c AppConfig) Check() error {
 			return fmt.Errorf("%s: %w", component.name, err)
 		}
 	}
+	if c.RequiresProductionAppAttest() {
+		if err := c.ServerConfig.AppAttestShadow.CheckProductionServing(); err != nil {
+			return fmt.Errorf("app_attest: %w", err)
+		}
+	}
 	return nil
 }
 

@@ -98,6 +98,18 @@ see [frozen legacy authorization](../architecture/security/enrollment.md#frozen-
 
 ## Writers of `deleted_at`
 
+The HTTP writers require `ServerConfig.SoftDeleteMutationsEnabled`
+(`EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED`, default `false`).
+`HandleDeleteMyProvider` checks authentication, record existence and ownership
+before returning 503 `soft_delete_mutations_disabled`; erasure `HandleRequest`
+checks admin authorization before the gate, including for `force: true`.
+Both gates precede mutation (`coordinator/api/accounts/delete_provider.go`,
+`coordinator/api/accounts/erasure/handlers.go`). Plan, status and cancel stay
+available. This is not a store-level fence or a worker pause: already-pending
+erasures and outbox delivery continue, and all live-read and credit protections
+remain active. Prior tombstones or erasures still require a compatible fallback
+even after disabling the flag ([rollback rules](../operations/schema-migration.md#rollback)).
+
 | Store method | Effect | PostgresStore | MemoryStore |
 |---|---|---|---|
 | `RequestAccountErasure` (confirm) | Sets `deleted_at` on the user and its providers; sets `active = false` and `deleted_at` on its API keys and provider tokens. Rows that already have `deleted_at` do not change | `coordinator/store/postgres/erasure.go` (`SoftDeleteUser`, `SoftDeleteProviders`, `SoftDeleteAPIKeys`, `SoftDeleteProviderTokens`) | `coordinator/store/memory/erasure.go` |

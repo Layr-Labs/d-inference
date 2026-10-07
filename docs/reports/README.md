@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 - [Cache planning admission](2026-09-24-cache-planner-admission.md) — reproduced admission loss, bounded client repair and exactness/lifecycle qualification.
 - [SSD eviction and cache discovery](2026-09-24-cache-eviction-publication.md) — reproduced discovery loss, active-store retirement repair and native qualification.
@@ -15,6 +15,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Typical MTP acceptance benchmarks](2026-10-07-typical-mtp-acceptance-benchmarks.md) - controlled three-model M5 Max before/exact/typical decode measurements, weighted acceptance and paired spread, with quality and default-change limits.
 - [Registry scan optimization](2026-10-04-registry-scan-optimization.md) — combined reservation storage, compact evidence and pending-work measurements on an isolated Mac mini, with correctness and production-latency limits.
 
 - [Hybrid provider trust review](2026-09-27-hybrid-provider-trust-review.md) — September 27 snapshot of legacy MDM/APNs and App Attest authorization boundaries, threats, evidence and deployment limits.

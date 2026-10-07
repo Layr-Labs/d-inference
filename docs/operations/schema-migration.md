@@ -1,6 +1,6 @@
 # Apply schema migrations in production
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Runbook for applying the goose migrations of a coordinator candidate to the
 production database (Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet`, read
@@ -352,6 +352,10 @@ versions 1 to 9 runs in production, so that a goose image is the fallback.
   ```
 
 - [ ] From now on, use only goose images as the fallback ([rollback rule 3](#rollback)).
+
+### Rollback with queued withdrawals
+
+The withdrawal funding-queue columns and index migrations are additive. Before a rollback, inspect `stripe_withdrawals` and `global_payout_withdrawals` for `status='queued'`. Use an image that understands the queue while queued withdrawals exist: older code leaves reservations stranded and its account-erasure guards do not count that status. Do not discard reservations or infer a refund from a missing payment ID. Code: `coordinator/store/postgres/stripe_withdrawal_queue.go` (`ListStripeWithdrawalQueue`), `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`).
 
 ## Related
 

@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -10,6 +10,9 @@ type, or test name you are investigating.
 
 Run the commands below from the repository root with `rg` installed.
 Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
+
+
+Payout funding queues remain within the billing domain. `coordinator/api/billing/payouts/stripe_dispatch.go` (`dispatchStripeWithdrawal`) shares Connect dispatch between HTTP confirmation and `stripe_withdrawal_queue.go` (`ProcessStripeWithdrawalQueue`). `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`) owns Global Payouts balance checks and safe quote refresh. Memory and PostgreSQL queue implementations own durable claims and transitions; shared Global Payouts guards live in `coordinator/internal/store/shared/global_payouts_queue.go`.
 
 ## Steps
 

@@ -2,6 +2,22 @@
 
 > Last updated: 2026-10-07
 
+## SSD epoch status lookup and retirement snapshots
+
+Run the rebuilt provider's `SSDCacheEpochStoreRecoveryTests` with
+`scripts/run-nested-suite.sh` and Swift Testing enabled. The non-root permission
+regression exercises both failed parent-directory opens and failed status
+lookups, verifies refused retirement/rotation/sequence operations, and then
+requires the same store to recover without changing its persisted epoch.
+Existing missing, substituted and malformed record cases retain their refusal
+and ownership-revocation checks.
+
+Run `go test ./e2e -run '^TestConnectedRetirementObservationRejectsIdentityReplacement$'`
+for the retirement snapshot oracle. This test rejects delayed evictions after
+provider, model or epoch replacement. The connected live fixture also compares
+the original capability when eviction is first observed and after refreshing
+the report; it still requires its ordinary model, host and disk admission gates.
+
 ## Pull-request restacking
 
 Run `python3 scripts/test-restack-after-squash.py` for the regression suite of
@@ -1692,6 +1708,15 @@ controller selects a bounded set under the
 [overflow policy](../architecture/prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
 
 #### Bounded preload selection and real HTTP overflow
+
+`TestPreloadContinuityUnknownCompletionPreservesIncumbents` uses real control
+transport EOF and a deterministic ten-contract/eight-slot rotation to check
+repeated uncertain completion without losing acknowledged incumbents or
+acknowledging newcomers. `TestCachePreloadIdentityProjectsLargeVerifiedCatalog`
+and `TestCachePreloadConfiguredCatalogControllerFlow` cover 129 verified models
+sharing eight contracts with one allowlisted model; selection retains the full
+verified catalog without raising native capacity.
+
 
 The pure `coordinator/tests/promptcontract/preload_active_set*_test.go` cases cover
 full verified-set preservation, deduplication, eligible demand, expiry, residence,

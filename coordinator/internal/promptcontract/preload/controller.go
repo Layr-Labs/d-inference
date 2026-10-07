@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	defaultPreloadPollInterval = 250 * time.Millisecond
-	defaultMetricsPollInterval = 5 * time.Second
-	defaultFailureBackoffMin   = time.Second
-	defaultFailureBackoffMax   = time.Minute
+	defaultPreloadCatalogModels = 128
+	defaultPreloadPollInterval  = 250 * time.Millisecond
+	defaultMetricsPollInterval  = 5 * time.Second
+	defaultFailureBackoffMin    = time.Second
+	defaultFailureBackoffMax    = time.Minute
 )
 
 type Catalog interface {
@@ -39,6 +40,9 @@ type Client interface {
 }
 
 type PreloadControllerConfig struct {
+	// MaxCatalogModels bounds full verified membership independently of the
+	// cache-routing projection and native tokenizer capacity. Zero uses 128.
+	MaxCatalogModels  int
 	PollInterval      time.Duration
 	MetricsInterval   time.Duration
 	FailureBackoffMin time.Duration
@@ -104,6 +108,12 @@ func New(
 ) (*PreloadController, error) {
 	if provisioner == nil || supervisor == nil || client == nil {
 		return nil, catalog.ErrInvalidConfig
+	}
+	if config.MaxCatalogModels < 0 {
+		return nil, catalog.ErrInvalidConfig
+	}
+	if config.MaxCatalogModels == 0 {
+		config.MaxCatalogModels = defaultPreloadCatalogModels
 	}
 	if config.PollInterval <= 0 {
 		config.PollInterval = defaultPreloadPollInterval
@@ -345,7 +355,16 @@ func (c *PreloadController) finishAttemptLocked(
 	if backoff == 0 {
 		backoff = c.config.FailureBackoffMin // Defensive invalid reports still fail closed.
 	}
-	accepted := c.selection.CompleteAttempt(c.policyNow(), lease, successful, backoff)
+	var accepted bool
+	if errors.Is(err, sidecar.ErrSidecarUnavailable) && len(report.Results) == 0 && c.retainPublicationLocked(key) {
+		retained := make([]string, 0, len(c.contracts))
+		for id := range c.contracts {
+			retained = append(retained, id)
+		}
+		accepted = c.selection.CompleteUncertainAttempt(c.policyNow(), lease, retained, backoff)
+	} else {
+		accepted = c.selection.CompleteAttempt(c.policyNow(), lease, successful, backoff)
+	}
 	if !accepted {
 		c.clearPublicationLocked("preload_failed")
 		return preloadCompletionDiagnostic{}

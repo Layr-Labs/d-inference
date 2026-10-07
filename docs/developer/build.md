@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -10,6 +10,12 @@ post-push verification. Branch updates still require the affected CI gates.
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+SSD epoch lookup regressions use the current provider test product and its
+normal source-matched resources. Filesystem permission cases require a non-root
+test user; they change permissions only on each fixture's temporary model root.
+The connected retirement snapshot oracle has an ordinary Go test and does not
+require a model download or running provider.
 
 CI and Integration Tests cancel an older run only when a newer revision of the
 same pull request starts in that workflow. Concurrency groups include the

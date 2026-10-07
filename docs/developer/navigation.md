@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -78,7 +78,7 @@ components for the specific invariant:
 | Cache generations, memory history, shared records, account erasure rules and SQL helpers | `coordinator/internal/store/`; erasure rules and keys in `coordinator/internal/store/erasure/` |
 | Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
-| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`Reconcile`), `coordinator/internal/promptcontract/preload/selection.go` (`PreloadController.ReadyFor`, `PlanningState`) |
+| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`Reconcile`), `coordinator/internal/promptcontract/preload/selection.go` (`PreloadController.ReadyFor`, `PlanningState`); `coordinator/promptcontract/preload_controller.go` (`NewPreloadController`) carries the actual provisioning model bound into `PreloadControllerConfig.MaxCatalogModels`; `coordinator/internal/promptcontract/preload/active_set.go` (`CompleteUncertainAttempt`) retains negotiated incumbents’ residency metadata without creating report acknowledgements |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
 | Command bodies: coordinator lifecycle, payout audit and DevNet seed data | `coordinator/internal/command/coordinator/`, `payoutaudit/`, `devnetseed/`; each `coordinator/cmd/<name>/main.go` is a thin entry point |

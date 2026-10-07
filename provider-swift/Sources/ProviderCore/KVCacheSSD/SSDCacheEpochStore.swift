@@ -228,7 +228,7 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     /// Rereads the durable record before an owned operation. A record that was
     /// read and is missing, unparseable, or names another schema, epoch or
     /// binding refutes ownership and disowns this instance. A read that fails
-    /// (I/O error, busy or unopenable file, non-regular path) says nothing
+    /// (I/O error, busy or temporarily unopenable parent/file) says nothing
     /// about the record, so the operation is refused and ownership is kept;
     /// the next owned operation rereads. Caller holds `lock`, then `recordLock`.
     private func ownedRecordStillCurrentLocked(epoch ownedEpoch: String) -> Bool {
@@ -236,10 +236,9 @@ final class SSDCacheEpochStore: @unchecked Sendable {
         do {
             existing = try Self.readRecord(at: root.appendingPathComponent(Self.fileName))
         } catch SSDBlockStoreError.ioFailure {
-            // `readRecord`'s own verdicts about the entry: the path is no
-            // longer a regular file (symlink, directory, device, or an
-            // unopenable parent) or the record is oversized. Persistent and
-            // refuting, exactly as before.
+            // A successfully observed non-regular/unsafe path or an oversized
+            // record refutes ownership. Failed parent opens and status probes
+            // carry typed POSIX failures and take the retryable branch below.
             epoch = nil
             Self.epochs.publish(root: rootKey, epoch: nil)
             return false
@@ -300,7 +299,7 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     }
 
     private static func readRecord(at url: URL) throws -> ReadResult {
-        switch SSDNoFollowIO.regularFileStatus(at: url) {
+        switch try SSDNoFollowIO.checkedRegularFileStatus(at: url) {
         case .missing:
             return ReadResult(exists: false, record: nil)
         case .invalid:

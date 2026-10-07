@@ -388,6 +388,16 @@ block size, layout epoch or key fingerprint drift), so `epoch_change` means a
 whole-root rebuild, not capacity pressure. Providers older than this change
 still rotate on eviction.
 
+Before retiring an owned SSD entry, `SSDCacheEpochStore` rereads the durable
+epoch record. Failed parent-directory opens and file-status probes refuse the
+operation without disowning the store; the next pass retries the same record.
+Successfully observed missing, non-regular, malformed, oversized or replaced
+records still revoke ownership. `SSDNoFollowIO.checkedRegularFileStatus` keeps
+lookup failures separate from observed invalid entries, while ordinary active
+file lookups remain conservative. The connected retirement fixture checks the
+original provider/model capability in both the eviction-observing snapshot and
+the refreshed snapshot before reporting epoch preservation.
+
 Because a provider that removes one file keeps its epoch, the coordinator
 learns of the removal from the next lookup: a miss at the attempted boundaries
 (`miss_invalidation`), or a valid hit below a boundary recorded for that

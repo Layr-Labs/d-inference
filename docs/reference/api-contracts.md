@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -292,7 +292,7 @@ All six `/v1/me/*` routes are wrapped in `RequirePrivyAuth`, so they are Privy-J
 | GET | `/v1/billing/stripe/session` | `HandleStripeSessionStatus` (`coordinator/api/billing/checkout.go`) | `key` | — | Poll a checkout session |
 | POST | `/v1/billing/stripe/onboard` | `HandleStripeOnboard` (`coordinator/api/billing/payouts/connect_onboarding.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
 | GET | `/v1/billing/stripe/status` | `HandleStripeStatus` (`coordinator/api/billing/payouts/connect_status.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `migration_required` (self-service bank setup needed), `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
-| POST | `/v1/billing/withdraw/stripe` | `HandleStripeWithdraw` (`coordinator/api/billing/payouts/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
+| POST | `/v1/billing/withdraw/stripe` | `HandleStripeWithdraw` (`coordinator/api/billing/payouts/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; low funding accepts a reserved `queued` withdrawal with HTTP 202 on either rail; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
 | GET | `/v1/billing/stripe/withdrawals` | `HandleStripeWithdrawals` (`coordinator/api/billing/payouts/history.go`) | `user` | — | Withdrawal history |
 | POST | `/v1/billing/stripe/dashboard` | `HandleStripeDashboardLink` (`coordinator/api/billing/payouts/connect_dashboard.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
 | DELETE | `/v1/billing/stripe/account` | `HandleStripeUnlink` (`coordinator/api/billing/payouts/connect_unlink.go`) | `user` (Privy-only wrapper) | — | Resets Global Payouts to a fresh empty generation while retaining its routing fence. During cutover, preserves the legacy Connect mapping; before cutover, an unmigrated Connect user can still unlink it. Does not close Stripe accounts or cancel withdrawals. |
@@ -1475,8 +1475,14 @@ All returned countries use `rail=global`; users enter their own bank details via
 an unsupported destination returns 400 `country_unavailable`, and paused bank
 setup returns 503 `payouts_paused`. No error falls through to Connect.
 
-Before first confirmation, unavailable funding (including estimated fees) returns
-503 `payout_funding_unavailable` without debit. Already-confirmed quote retries
+Confirmation reserves the gross amount once. Low funding (including estimated
+platform-paid fees) returns HTTP 202 with `status="queued"`, the same
+`withdrawal_id`, and the remaining balance. Withdrawal history includes `queued`
+with `failure_reason="awaiting_funding"`; the minute reconciliation loop retries
+automatically. If persisting the Connect queue fails, the response and history
+remain `pending` with `funding_queue_persistence_failed` and the UI shows **Needs
+review** while retaining the debit. A Global Payouts exchange estimate may be refreshed after a funding
+wait, while USD principal and bank destination stay fixed. Already-confirmed quote retries
 remain available while paused. Bank reset never re-enables Connect or mutates
 historical payouts (`coordinator/api/billing/payouts/global_payouts_withdraw.go`,
 `maybeGlobalWithdraw`; `coordinator/api/billing/payouts/global_payouts_status.go`, `maybeGlobalStatus`).

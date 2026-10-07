@@ -268,3 +268,27 @@ describe("Japan weekly payout copy", () => {
     expect(methodExplainer("instant", 150, 0.5, "JP")).toContain("debit card");
   });
 });
+
+
+describe("queued withdrawal copy", () => {
+  it("shows a funding wait with reserved earnings on either rail", () => {
+    for (const payout_rail of ["connect", "global"] as const) {
+      const copy = withdrawSuccessMessage({status:"queued",payout_rail,method:"standard"});
+      expect(copy).toContain("queued");
+      expect(copy).toContain("earnings are reserved");
+      expect(copy).not.toContain("On its way");
+    }
+    const status = withdrawalStatusPresentation("queued",false,"awaiting_funding");
+    expect(status.label).toBe("Queued");
+    expect(status.detail).toContain("retry automatically");
+  });
+});
+
+
+describe("funding queue persistence failure", () => {
+  it("keeps a held withdrawal distinct from a transfer already on its way", () => {
+    const message = "Your withdrawal is awaiting confirmation. Check Recent withdrawals before submitting again.";
+    expect(withdrawSuccessMessage({ status: "pending", method: "standard", message })).toBe(message);
+    expect(withdrawalStatusPresentation("pending", false, "funding_queue_persistence_failed: stripe 400").label).toBe("Needs review");
+  });
+});

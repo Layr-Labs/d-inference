@@ -43,7 +43,7 @@ func (s *MemoryStore) openWithdrawalsLocked(accountID string, now time.Time) int
 	var n int64
 	for _, id := range s.stripeWithdrawalsByAccount[accountID] {
 		w := s.stripeWithdrawalsByID[id]
-		if w != nil && (w.Status == "pending" || w.Status == "transferred" || store.StripeRefundRecoverable(w) ||
+		if w != nil && (w.Status == "queued" || w.Status == "pending" || w.Status == "transferred" || store.StripeRefundRecoverable(w) ||
 			(w.Status == "paid" && w.UpdatedAt.After(now.Add(-erasure.StripePayoutBounceWindow)))) {
 			n++
 		}
@@ -52,7 +52,7 @@ func (s *MemoryStore) openWithdrawalsLocked(accountID string, now time.Time) int
 		if p.AccountID != accountID {
 			continue
 		}
-		if p.Status == "pending" || p.Status == "processing" ||
+		if p.Status == "queued" || p.Status == "pending" || p.Status == "processing" ||
 			(p.Status == "posted" && p.SubmittedAt.After(now.Add(-erasure.GlobalPayoutReconcileWindow))) {
 			n++
 		}

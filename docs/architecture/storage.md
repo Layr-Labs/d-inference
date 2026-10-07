@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 What the coordinator persists, through which interface and in which backend;
 then what a provider keeps on its own disk and in its Keychain. How the schema
@@ -494,6 +494,10 @@ are staged in `erasure_outbox`, including during grace; only erased requests
 may deliver them. The scrub also deletes the account's frozen legacy MDM
 cohort and saved hardware interest. Code and synchronization:
 [concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
+
+## Withdrawal funding queue records
+
+Connect keeps `queued` in `stripe_withdrawals.status` and stores `transfer_attempt`, `transfer_dispatch_attempts`, `transfer_started_at` and `transfer_lease_until` alongside the financial record. A claim records its idempotency generation and lease before sending; retrying never debits the ledger again (`coordinator/store/postgres/stripe_withdrawal_queue.go`, `ClaimStripeWithdrawal`). Global Payouts keeps its queued status, funding generation and dispatch start in the existing `global_payout_withdrawals.data` JSON document; the projected status and reconciliation index include queued records (`coordinator/store/postgres/global_payouts.go`, `ListGlobalPayoutsToReconcile`). No separate queue table or user-cache invalidation is required.
 
 ## Related
 

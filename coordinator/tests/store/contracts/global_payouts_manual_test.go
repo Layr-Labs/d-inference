@@ -16,8 +16,12 @@ func TestGlobalPayoutManualReviewDoesNotCrowdReconciliation(t *testing.T) {
 			if _, err := g.BeginGlobalPayout(old.AccountID, old.ID, now.Add(-13*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			if claimed, err := g.ClaimGlobalPayout(old.ID, now); err != nil || !claimed {
+			if claimed, err := g.ClaimGlobalPayout(old.ID, now); err != nil || claimed == nil {
 				t.Fatalf("initial claim: %v %v", claimed, err)
+			}
+			claimed, _ := g.GetGlobalPayout(old.ID)
+			if err := g.StartGlobalPayoutDispatch(old.ID, claimed.LeaseUntil, now); err != nil {
+				t.Fatal(err)
 			}
 			if err := g.ApplyGlobalPayout(old.ID, store.GlobalPayoutResult{FailureCode: store.GlobalPayoutManualReview}, now); err != nil {
 				t.Fatal(err)
@@ -31,7 +35,7 @@ func TestGlobalPayoutManualReviewDoesNotCrowdReconciliation(t *testing.T) {
 				if err != nil || len(rows) != 1 || rows[0].ID != active.ID {
 					t.Fatalf("manual row crowded active payout out of batch: %+v %v", rows, err)
 				}
-				if claimed, err := g.ClaimGlobalPayout(old.ID, later); err != nil || claimed {
+				if claimed, err := g.ClaimGlobalPayout(old.ID, later); err != nil || claimed != nil {
 					t.Fatalf("manual payout claimed again: %v %v", claimed, err)
 				}
 			}
@@ -44,7 +48,7 @@ func TestGlobalPayoutManualReviewDoesNotCrowdReconciliation(t *testing.T) {
 			if err := g.ApplyGlobalPayout(old.ID, store.GlobalPayoutResult{ExternalID: "obp_found", Status: "processing"}, now); err != nil {
 				t.Fatal(err)
 			}
-			if claimed, err := g.ClaimGlobalPayout(old.ID, now.Add(2*time.Minute)); err != nil || !claimed {
+			if claimed, err := g.ClaimGlobalPayout(old.ID, now.Add(2*time.Minute)); err != nil || claimed == nil {
 				t.Fatalf("known remote payout could not resume: %v %v", claimed, err)
 			}
 			resumed, _ := g.GetGlobalPayout(old.ID)

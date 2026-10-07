@@ -1,6 +1,6 @@
 # Enable and operate international bank withdrawals
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-07
 
 This runbook enables Stripe Global Payouts alongside existing Connect withdrawals. Providers use one bank setup and withdrawal flow. Country selection chooses the payout product; international withdrawals include a local-currency estimate before confirmation.
 
@@ -40,7 +40,7 @@ Before activation, review the cost of covering these fees. Before confirming the
 - **403 from Stripe:** inspect exact key permissions. Do not rotate unrelated credentials or substitute a broad secret key.
 - **Country absent:** reconcile the live account's menu and API capability with `Countries`. Public documentation alone does not establish account entitlement.
 - **Quote rejected:** no withdrawal is submitted. `recipient_amount_limit` names the local deposit threshold; adjust the USD amount and review again. Check destination requirements, bank eligibility, currency, limits, required payee verification and funding access.
-- **Unknown send result:** use the internal ID and `gp-withdraw-<id>` to find the original Stripe request. Do not independently pay from the Dashboard or credit the ledger before establishing the outcome.
+- **Unknown send result:** use the internal ID and persisted `data.funding_generation` to find the original Stripe request. Generation zero uses `gp-withdraw-<id>`; later funding generations append `-funding-<generation>`. Do not independently pay from the Dashboard or credit the ledger before establishing the outcome.
 - **Posted but no bank credit:** use the Stripe payout detail and bank trace. Posted is not a guaranteed delivery receipt.
 - **Returned:** confirm Stripe's current state. The signed webhook or reconciler restores earnings once. Do not add a second manual refund.
 
@@ -48,9 +48,12 @@ Before activation, review the cost of covering these fees. Before confirming the
 
 The source-of-truth payout row is `global_payout_withdrawals` and its `data` object. Quote state is `quoted`; a confirmed withdrawal atomically debits both balance columns and moves to `pending`. Stripe then supplies `processing`, `posted`, `failed`, `canceled`, or `returned`. Refunds are atomic with the state update and applied once. State cannot regress from posted to processing or reopen after a refund (`coordinator/store/global_payouts.go`, `applyGlobalResult`).
 
+Queued withdrawals retain the ledger debit and saved bank destination. Observe `status=queued` and `failure_reason=awaiting_funding` in user history while the financial account is short of principal plus platform-paid fees. Funding restoration permits the minute reconciler to dispatch. An expired queued exchange estimate is refreshed before sending the approved USD amount. Verify one debit and one external payment; never refund an unknown Stripe outcome merely because the current funding balance is low. Code: `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`).
+
+
 Expired unconfirmed quotes are pruned according to the [retention policy](../reference/pricing-model.md#global-payouts-withdrawals); confirmed payout records are preserved.
 
-Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours and receive `failure_code=manual_reconciliation_required`. They keep their debit and remain visible in history, but subsequent automatic scans and claims skip them. Investigate the original request before any manual action; a verified external ID allows readback reconciliation to resume. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/billing/payouts/global_payouts_reconcile.go`, `syncGlobalPayout`).
+Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours from dispatch start and receive `failure_code=manual_reconciliation_required`; funding queue wait does not consume this horizon. They keep their debit and remain visible in history, but subsequent automatic scans and claims skip them. Investigate the original request before any manual action; a verified external ID allows readback reconciliation to resume. A definitive first-send funding rejection queues the reserved withdrawal for retry; other definitive first-send rejections are persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/billing/payouts/global_payouts_reconcile.go`, `syncGlobalPayout`).
 
 Inspect without exposing the stored request or recipient information:
 
@@ -59,6 +62,8 @@ SELECT id, status, external_id, submitted_at, checked_at,
        data->>'failure_code' AS failure_code,
        data->>'refunded' AS refunded,
        data->>'dispatch_attempts' AS dispatch_attempts,
+       data->>'funding_generation' AS funding_generation,
+       data->>'dispatch_started_at' AS dispatch_started_at,
        data->'estimated_stripe_fees' AS estimated_stripe_fees
 FROM global_payout_withdrawals
 WHERE status <> 'quoted'

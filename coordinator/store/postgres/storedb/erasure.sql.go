@@ -204,7 +204,7 @@ func (q *Queries) CountMDASerialAliasesRows(ctx context.Context, digests []strin
 const countOpenGlobalPayouts = `-- name: CountOpenGlobalPayouts :one
 SELECT COUNT(*) FROM global_payout_withdrawals
 WHERE account_id = $1 AND (
-    status IN ('pending', 'processing')
+    status IN ('queued', 'pending', 'processing')
     OR (status = 'posted' AND submitted_at > $2::timestamptz))
 `
 
@@ -224,7 +224,7 @@ const countOpenStripeWithdrawals = `-- name: CountOpenStripeWithdrawals :one
 
 SELECT COUNT(*) FROM stripe_withdrawals
 WHERE account_id = $1 AND (
-    status IN ('pending', 'transferred')
+    status IN ('queued', 'pending', 'transferred')
     OR (status = 'paid' AND updated_at > $2::timestamptz)
     OR (status = 'failed' AND NOT refunded AND transfer_id = '' AND payout_id = ''
         AND sweep_payout_id = '' AND amount_micro_usd > 0

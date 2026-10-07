@@ -205,27 +205,6 @@ func (s *Owner) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, user
 			globalPayoutError(w, err)
 			return true
 		}
-		needed, fundingErr := globalpayouts.RequiredFundingCents(p.AmountMicroUSD/10_000, p.EstimatedStripeFees)
-		if fundingErr != nil {
-			globalPayoutError(w, fundingErr)
-			return true
-		}
-		available, fundingErr := s.billing.GlobalPayouts().AvailableUSD(r.Context())
-		if fundingErr != nil || available < needed {
-			s.logger.Warn("global payout funding check blocked confirmation", "available_cents", available, "required_cents", needed, "error", fundingErr)
-			// Another confirmation may already have submitted this same quote.
-			// Recover that outcome instead of reporting a new funding failure.
-			latest, readErr := repo.GetGlobalPayout(p.ID)
-			if readErr != nil {
-				globalPayoutError(w, readErr)
-				return true
-			}
-			if latest.Status == "quoted" {
-				httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("payout_funding_unavailable", "Bank payouts are temporarily unavailable. This attempt did not debit your earnings; check any pending withdrawal before trying again."))
-				return true
-			}
-			p = latest
-		}
 		p, err = repo.BeginGlobalPayout(user.AccountID, p.ID, time.Now())
 		if err != nil {
 			globalPayoutError(w, err)
@@ -241,6 +220,12 @@ func (s *Owner) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, user
 	if err == nil {
 		p = latest
 	}
-	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"status": p.Status, "withdrawal_id": p.ID, "payout_id": p.ExternalID, "amount_usd": formatUSD(p.AmountMicroUSD), "fee_usd": "0.00", "net_usd": formatUSD(p.AmountMicroUSD), "method": "standard", "payout_rail": "global", "destination_amount": p.DestinationAmount, "payout_currency": p.Currency, "refunded": p.Refunded, "eta": "Typically 1–7 business days", "balance_micro_usd": s.billing.Ledger().Balance(user.AccountID)})
+	response := map[string]any{"status": p.Status, "withdrawal_id": p.ID, "payout_id": p.ExternalID, "amount_usd": formatUSD(p.AmountMicroUSD), "fee_usd": "0.00", "net_usd": formatUSD(p.AmountMicroUSD), "method": "standard", "payout_rail": "global", "destination_amount": p.DestinationAmount, "payout_currency": p.Currency, "refunded": p.Refunded, "balance_micro_usd": s.billing.Ledger().Balance(user.AccountID)}
+	if p.Status == "queued" {
+		response["message"] = "Your withdrawal is queued until payout funding is available. Your earnings are reserved; no need to submit it again."
+	} else {
+		response["eta"] = "Typically 1–7 business days"
+	}
+	httpx.WriteJSON(w, http.StatusAccepted, response)
 	return true
 }

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 ## Pull-request restacking
 
@@ -941,6 +941,9 @@ API contract tests use a local HTTP server; they pin broadcast `reply_to` arrays
 and pagination through `GET /segments/{id}/contacts`. No tests send live email. The
 [provider email runbook](../operations/provider-emails.md) separates live
 self-addressed delivery verification from these checks.
+
+
+Withdrawal funding regressions run in `coordinator/tests/api/billing/contracts/stripe_withdrawal_queue_test.go`, `coordinator/tests/api/billing/payouts/global_payouts_queue_test.go` and `coordinator/tests/store/contracts/withdrawal_funding_queue_test.go`. Run the billing API and store contract packages; set `DATABASE_URL` to a disposable PostgreSQL database for both-backend coverage. Tests verify single reservation, concurrent claims, funding recovery, refreshed FX quotes, unknown-outcome retention and queued-money erasure guards. UI copy tests cover the queued success and history states.
 
 ## Prerequisites
 

@@ -1948,7 +1948,11 @@ CREATE TABLE public.stripe_withdrawals (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     fee_refunded boolean DEFAULT false NOT NULL,
-    sweep_payout_id text DEFAULT ''::text NOT NULL
+    sweep_payout_id text DEFAULT ''::text NOT NULL,
+    transfer_attempt integer DEFAULT 0 NOT NULL,
+    transfer_started_at timestamp with time zone DEFAULT '0001-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
+    transfer_lease_until timestamp with time zone DEFAULT '0001-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
+    transfer_dispatch_attempts integer DEFAULT 0 NOT NULL
 );
 
 
@@ -3037,6 +3041,12 @@ CREATE INDEX global_payout_quote_expiry ON public.global_payout_withdrawals USIN
 --
 
 CREATE INDEX global_payout_reconcile ON public.global_payout_withdrawals USING btree (checked_at) WHERE (status = ANY (ARRAY['pending'::text, 'processing'::text, 'posted'::text]));
+
+--
+-- Name: global_payout_funding_reconcile; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX global_payout_funding_reconcile ON public.global_payout_withdrawals USING btree (checked_at) WHERE (status = ANY (ARRAY['queued'::text, 'pending'::text, 'processing'::text, 'posted'::text]));
 
 
 --

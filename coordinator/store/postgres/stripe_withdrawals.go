@@ -76,11 +76,11 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawa
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at, transfer_attempt, transfer_started_at, transfer_lease_until, transfer_dispatch_attempts)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
-		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
+		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt, w.TransferAttempt, w.TransferStartedAt, w.TransferLeaseUntil, w.TransferDispatchAttempts,
 	); err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
 	}
@@ -90,13 +90,13 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawa
 
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-	failure_reason, refunded, fee_refunded, created_at, updated_at`
+	failure_reason, refunded, fee_refunded, created_at, updated_at, transfer_attempt, transfer_started_at, transfer_lease_until, transfer_dispatch_attempts`
 
 func scanStripeWithdrawal(row rowScanner) (*store.StripeWithdrawal, error) {
 	var w store.StripeWithdrawal
 	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID, &w.SweepPayoutID,
 		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Status,
-		&w.FailureReason, &w.Refunded, &w.FeeRefunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		&w.FailureReason, &w.Refunded, &w.FeeRefunded, &w.CreatedAt, &w.UpdatedAt, &w.TransferAttempt, &w.TransferStartedAt, &w.TransferLeaseUntil, &w.TransferDispatchAttempts); err != nil {
 		return nil, err
 	}
 	return &w, nil

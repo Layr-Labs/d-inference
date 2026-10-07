@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -173,7 +173,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 ## Stripe Connect withdrawal states
 
 `stripe_withdrawals.status` (`coordinator/api/billing/payouts/stripe_withdraw.go`
-`HandleStripeWithdraw`): `pending` → `transferred` → `paid` \| `failed`.
+`HandleStripeWithdraw`): `pending` → `queued` → `pending` → `transferred` → `paid` \| `failed`. `queued` reserves the gross debit until platform funding returns; other definitive failures retain the atomic refund path.
 Connected-account status `users.stripe_account_status`
 (`coordinator/api/billing/payouts/`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):
@@ -345,8 +345,10 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/billing/payouts/global_payouts_withdraw.go` (`payoutCurrencyExponent`) |
 | Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/billing/payouts/global_payouts_withdraw.go` (`HandleGlobalPayoutQuote`) |
 | Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`) |
-| Retry window without remote ID | Twelve hours, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`syncGlobalPayout`) |
+| Retry window without remote ID | Twelve hours from dispatch start, excluding the funding queue wait, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`syncGlobalPayout`) |
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`) |
+| Funding queue | Both rails return `queued` with reserved earnings; no additional withdrawal fee or ledger debit on retry | `coordinator/api/billing/payouts/stripe_dispatch.go` (`dispatchStripeWithdrawal`); `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`) |
+| Queued FX estimate | Requoted at dispatch after expiry; USD principal and bank destination stay fixed; destination limits and platform fees are revalidated | `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/billing/payouts/global_payouts_withdraw.go`, `HandleGlobalPayoutQuote`).
 
@@ -372,10 +374,11 @@ The cutover preserves the existing user-facing standard withdrawal fee and
 minimum; it does not introduce instant-card payouts. `RequiredFundingCents`
 (`coordinator/billing/globalpayouts/funding.go`) checks the financial account's
 available USD against principal plus rounded-up quoted USD Stripe fees before
-the first debit. The platform pays these fees. This is an availability check,
-not a reservation: definitive send rejection still refunds atomically.
+the first send. The platform pays these fees. Confirmation reserves the user's earnings once; low platform funding returns `queued` and retries automatically.
+This does not reserve Stripe funds: a definitive low-funding send rejection also
+queues, while other definitive first-send rejections refund atomically.
 
-Confirmed Connect rejections refund gross principal and mark the row refunded in
+Confirmed Connect rejections other than `balance_insufficient` refund gross principal and mark the row refunded in
 one transaction (`coordinator/store/postgres/stripe_settlement.go`,
 `RefundRejectedStripeWithdrawal`). Historical failures without a verified
 rejection marker are not automatically credited; follow the

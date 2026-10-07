@@ -225,6 +225,13 @@ def snapshot(path):
     return result
 
 
+def tree_contents(path):
+    """The mode and digest of each entry under path, keyed by its relative
+    name. Unlike snapshot, it ignores mtimes and the location of path."""
+    prefix = str(path)
+    return {name.removeprefix(prefix): (mode, digest) for name, (mode, _, digest) in snapshot(path).items()}
+
+
 def env_lines(path):
     out = {}
     for line in Path(path).read_text().splitlines():
@@ -1150,14 +1157,12 @@ class ZeroMutationTests(unittest.TestCase):
         first = publish()
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         published = remote / COMMIT
-        exact = snapshot(published)
+        exact = tree_contents(published)
         (published / "stray").write_text("left by an earlier run\n")
         replaced = publish()
         self.assertEqual(replaced.returncode, 0, replaced.stdout + replaced.stderr)
         self.assertIn(b"REPORT replaced unused published candidate files", replaced.stdout)
-        def tree(snap):
-            return {path.removeprefix(str(published)): (mode, digest) for path, (mode, _, digest) in snap.items()}
-        self.assertEqual(tree(snapshot(published)), tree(exact))
+        self.assertEqual(tree_contents(published), exact)
         self.assertFalse((published / "stray").exists())
         self.assertEqual(list(remote.glob(".incoming-*")), [])
 
@@ -1211,7 +1216,7 @@ class ZeroMutationTests(unittest.TestCase):
         first = publish()
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         published = remote / COMMIT
-        exact = snapshot(published)
+        exact = tree_contents(published)
         # mv fails to rename the new tree onto the commit path, and, with
         # FAIL_RESTORE=1, also fails to rename the old tree (it has "stray") back.
         tools = remote.parent / "mv-tools"
@@ -1244,9 +1249,7 @@ class ZeroMutationTests(unittest.TestCase):
 
         recovered = publish()
         self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
-        def tree(snap, root):
-            return {path.removeprefix(str(root)): (mode, digest) for path, (mode, _, digest) in snap.items()}
-        self.assertEqual(tree(snapshot(published), published), tree(exact, published))
+        self.assertEqual(tree_contents(published), exact)
 
     @requires_gnu_publication_tools
     def test_publication_removes_stale_hidden_stage_directories(self):

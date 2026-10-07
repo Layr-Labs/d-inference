@@ -192,8 +192,8 @@ The seed reads the secrets with the VM account, runs the production
 `refresh-env.sh --check` on a temporary file in `/etc/d-inference`, then moves
 it into place and runs `--apply`. Expect `OK wrote /etc/d-inference/env`. If
 the seed keeps the refresh backup, it prints a `REPORT` line and still writes
-`OK`. If a required value is missing, the seed lists the key
-names and writes nothing.
+`OK`. If a required value is missing, the seed lists the key names and writes
+nothing.
 Add the values and run it again. The second `host-setup.sh --apply` installs
 the Datadog Agent when `DD_API_KEY` has a value.
 
@@ -266,8 +266,8 @@ Each publication removes the hidden directories that are older than 60
 minutes; an interrupted run leaves them.
 
 The shared refresh still creates its production timestamped backup. Dev seed
-removes it only when it is the same as the file that the seed wrote; else the
-seed keeps it and prints a `REPORT` line. Dev swap removes it only when it
+removes it only when it is the same as the file that the seed wrote. If not,
+the seed keeps it and prints a `REPORT` line. Dev swap removes it only when it
 matches the attempt-directory rollback copy. A backup that does not match has
 an env change that was made during the deploy; the swap keeps it and stops.
 

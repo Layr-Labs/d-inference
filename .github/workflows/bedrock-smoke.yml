@@ -16,6 +16,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/scripts/
+            /docs/threat-model.yaml
       - name: Install pinned Bedrock dependencies
         run: python3 -m pip install --require-hashes -r .github/scripts/requirements-bedrock.txt
       - name: Obtain exact-workflow AWS session

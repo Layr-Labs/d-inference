@@ -228,6 +228,8 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 
 The optional Bedrock reviewer installs hash-locked dependencies from
 `.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+Review, preflight and smoke checkouts fetch only the trusted scanner scripts and
+threat definitions, avoiding unrelated repository blobs before verification.
 `python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback
 and conditional merge clearance without cloud calls. Live validation and activation
 are separate: see [the rollout runbook](../operations/threat-review-rollout.md).

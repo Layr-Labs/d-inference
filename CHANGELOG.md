@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased - SSD write endurance
+## 0.9.19 - prepared candidate (not published)
+
+This candidate contains the SSD write-endurance correction below. The version
+bump does not publish, register or deploy the release; full artifact qualification
+and publication remain separate gates.
 
 - Enforce the SSD prefix-cache write budget across cache instances, model reloads and provider restarts using a persistent root-wide rolling-day ledger. Charge serialized cache-file bytes, including encryption framing, before writing; exhausted budgets retain read access and report `write_rate_limited`.
 - Forward `DARKBLOOM_PREFIX_CACHE_DISK_GB` and `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` into newly installed launchd provider jobs.

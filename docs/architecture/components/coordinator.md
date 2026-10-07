@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a

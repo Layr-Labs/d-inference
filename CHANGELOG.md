@@ -5,6 +5,34 @@
 - Add per-model typical MTP draft acceptance for sampled requests (`[backend] mtp_acceptance`, `mtp_acceptance_by_model`; default `exact`), ported from mlx-serve PR #427. Greedy requests are unchanged; slot posture telemetry reports `mtp_acceptance`.
 - Pin the merged SDK implementation from `mlx-swift-lm` main; its file tree matches the engine revision used in the recorded acceptance benchmarks.
 
+## 0.9.18 - prepared candidate (not published)
+
+The next provider release is prepared from changes merged since `v0.9.17`.
+This is not signed-artifact qualification or a release announcement. Included
+changes are detailed in the retained topic entries below:
+
+- [Provider service replacement](#unreleased--provider-service-replacement) (#1315), [shared-host memory admission](#unreleased--shared-host-memory-admission) (#1264), and [system tool output readers](#unreleased--system-tool-output-readers) (#1327).
+- [Authenticated legacy enrollment](#unreleased---frozen-legacy-mdm-authorization) (#1344), including the signed CLI eligibility check. Older providers cannot use the new authenticated reenrollment contract; coordinate the bridge rollout before publication.
+- [Native queued cancellation retirement](#unreleased---native-queued-cancellation-retirement) in the pinned SDK and [provider lifecycle coverage](#unreleased---provider-test-coverage) (#1253).
+- [MLX gather row tiles](#unreleased---mlx-gather-row-tiles) (#1237), including the compiled nested MLX and regenerated Swift kernels. Changed numerical paths require fresh qualification; earlier full-model results do not qualify this candidate.
+- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere (#1322).
+- The merged [DevNet installer binding](#unreleased--devnet) is included; pending provider build-environment and release-qualification PRs are not.
+
+The bundled coordinator build fix aligns the digest-pinned Go builder and local
+toolchain at Go 1.26.8, satisfying the unchanged `go.mod` minimum of 1.26.0.
+Release Integrity now rejects missing pins, local/container drift and toolchains
+below the module minimum. The bundled [upgrade safety changes](#unreleased---coordinator-upgrade-safety)
+add migration budgets, early trust preflight and a default-off soft-delete
+mutation gate. Coordinator deployment and provider publication remain
+separate approvals; see the [candidate rollout checks](docs/operations/provider-release.md#0918-candidate-rollout).
+
+## Unreleased - coordinator upgrade safety
+
+- Add `EIGENINFERENCE_MIGRATION_TIMEOUT` (default `15m`) for the positive total `--migrate-only` deadline, and `EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` (default `1m`, minimum `1ms`) for all concurrent index builders on dedicated connections. Ordinary SQL DDL retains its 3-second lock and 10-minute statement defaults.
+- Preserve invalid indexes and fail with operator inspection guidance, including legacy earnings indexes; never automatically drop a potentially active external build. Schema versions and financial semantics are unchanged.
+- Validate production App Attest serving prerequisites before database access or migrations, reusing the later pre-freeze validator. Explicit development and actual opted-in memory-store startup remain exempt; database-only maintenance intentionally skips full application validation.
+- Default `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED` to `false`, blocking new erasure confirmations (including `force`) and owned-provider removal with 503 `soft_delete_mutations_disabled` after authorization. Plan/status/cancel and accepted scrub/outbox work continue. Prior tombstones or erasures still require compatible fallback code; disabling the flag does not restore old-image compatibility. Production env refresh preserves explicit opt-ins.
+
 ## Unreleased - MLX gather row tiles
 
 - Backport row-tile selection for `gather_mm` and `gather_qmm` in the provider's pinned MLX dependencies, with matching regenerated Swift kernel sources. Rebuild with a source-matched metallib; earlier full-model measurements do not qualify performance on these pins.
@@ -53,7 +81,7 @@
 
 ## Unreleased — soft-delete schema
 
-- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Nothing sets `deleted_at` yet. After this release runs, roll back only to coordinator images built with goose.
+- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Account erasure and ordinary provider removal write `deleted_at` behind the [mutation gate](#unreleased---coordinator-upgrade-safety). After these migrations run, roll back only to compatible goose-based coordinator images.
 
 - Exclude soft-deleted users from small-model interest exports before pagination, and exclude deleted users and provider records from initial legacy MDM cohort qualification. Repeated cohort reads preserve the frozen snapshot.
 - Suppress stale registry-supplied provider locations in memory-store usage flows when the stored provider record is soft-deleted.
@@ -138,8 +166,6 @@
 - Remove caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and `prompt_cache_key` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.
 
 ## Unreleased — provider 0.9.17
-
-- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere.
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
 - Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.

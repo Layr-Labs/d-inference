@@ -298,7 +298,7 @@ safe.
 | `canceling statement due to lock timeout` three times | Another session holds the table. Stop it, or make the statement take a weaker lock. |
 | `TestMigrationsBuildCheckedInSchema` fails | `schema.sql` is stale. Repeat step 5 on an empty database. |
 | The `schema.sql` diff shows objects you did not add | The dump came from a database that held other objects, or from a `pg_dump` older than 17. Repeat step 5 with a new database. |
-| `index ... is invalid; repair the interrupted concurrent index build before retrying` locally | Versions 3, 5 and 9 only: drop the index (`DROP INDEX CONCURRENTLY <name>`) and run again. An `indexMigrations` version drops and rebuilds an invalid leftover itself. |
+| A builder reports an invalid or unready index | All builders preserve the index, including legacy earnings. Check for active concurrent builders before repairing an abandoned index and retrying; follow the [invalid-index procedure](../operations/schema-migration.md#invalid-index), with explicit approval for production repair. |
 
 ## Related
 

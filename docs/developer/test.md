@@ -2622,6 +2622,8 @@ makes no network request, writes no login token and updates no host.
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
 ./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
+python3 scripts/check-go-toolchain.py # exact local/container pins satisfy go.mod
+python3 scripts/test-go-toolchain.py  # old production mismatch, patch minimum, drift and digest regressions
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
@@ -2632,7 +2634,24 @@ python3 scripts/test-provider-release-resolution.py # signed-validation and publ
 Version checks, release routing, installer parity and production environment refresh
 run in CI job "Release Integrity". The production env refresh test checks automatic
 payout activation, preservation of an explicit off switch, and rejection of missing
-payout prerequisites before the live env is changed.
+payout prerequisites before the live env is changed. It also verifies that the
+required soft-delete mutation flag bootstraps to `false` while preserving explicit
+`false` and `true` choices. These tests use temporary env files, not production.
+
+The Go toolchain guard runs without Docker or a Go download. Its regression suite
+rejects the former Go 1.25 builder with the Go 1.26 module, mismatched local pins,
+an insufficient patch version and an absent digest; it also executes the guard
+against the checkout. This is not a substitute for the full production Docker
+build in [the build guide](build.md#9-coordinator-container-image).
+
+For a provider version-only preparation, run source/fallback parity and the
+release-script tests without cold-building Swift/MLX. Inspect existing caches
+first; reuse Go's content-addressed caches and only compatible Swift/Metal
+caches. Do not point a separate worktree at another active Swift scratch path or
+present an old binary as the new candidate. A changed checkout path, SDK,
+compiler or dependency pin can invalidate Swift build reuse. Exact signed-bundle
+runtime, numerical and upgrade checks remain required by the
+[0.9.18 rollout gates](../operations/provider-release.md#0918-candidate-rollout).
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

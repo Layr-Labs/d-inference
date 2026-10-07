@@ -82,16 +82,20 @@ The policy gate applies at registration identity recovery, scheduler submission,
 live MDM verification, late callbacks and cached trust reuse. A saved grant or an
 already outstanding command cannot authorize a nonmember.
 
-`Policy.Initialize` requires production App Attest serving enabled with
-full rollout before freezing; invalid configuration fails startup before the
-freeze. The [deployment prerequisites](../../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
+`AppConfig.Check` calls the pure `service.Config.CheckProductionServing`
+(`coordinator/appattest/service/config.go`) before database access or migrations.
+`Policy.Initialize` repeats the same production-serving check before freezing,
+still after revocation replay. The database-only `--migrate-only` command
+intentionally bypasses full application validation and never freezes membership.
+The [deployment prerequisites](../../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
 own the required settings. New identities also require App Attest on owner
 self/prefer routes; lowering the legacy trust floor cannot bypass that gate.
 
 The [deployment classification](../../reference/configuration.md#deployment-environment)
 defaults to production. Explicit development or actual opted-in memory-store
-fallback skips the startup freeze; neither telemetry tags nor the App Attest
-proof environment select that exception. A later production startup freezes
+fallback skips both serving preflight and startup freeze; allowing memory
+fallback does not exempt a configured Postgres store. Neither telemetry tags nor
+the App Attest proof environment select that exception. A later production startup freezes
 then-current eligible membership.
 
 ```mermaid

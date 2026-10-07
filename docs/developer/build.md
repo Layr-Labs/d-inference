@@ -377,7 +377,7 @@ jobs queued behind a provider quota do not shorten the critical path. See
 
   | Tool | Pin | Used by |
   |---|---|---|
-  | `go` | `1.25.7` | coordinator, e2e (matches `go 1.25.7` in [`go.mod`](../../go.mod)) |
+  | `go` | `1.26.8` | coordinator, e2e (matches the container builder and satisfies the `1.26.0` minimum in [`go.mod`](../../go.mod)) |
   | `rust` | `1.88.0` | `coordinator/promptsidecar` (matches `rust-version = "1.88"` in `coordinator/promptsidecar/Cargo.toml` and the `rust:1.88.0-alpine` builder in `coordinator/Dockerfile`) |
   | `node` | `22` | `console-ui`, `admin-ui` |
   | `swift` | `6.3` | `provider-swift` (the local `libs/mlx-swift` package declares `swift-tools-version: 6.3`; `provider-swift/Package.swift` itself is `6.1`) |
@@ -896,6 +896,13 @@ require a server runtime rather than a static export. See the
 
 ### 9. Coordinator container image
 
+Run `python3 scripts/check-go-toolchain.py` before building. Release Integrity
+runs the same guard and its regression suite: `mise.toml` and the digest-pinned
+Go builder must declare the same exact patch version, at least the `go.mod`
+minimum. Do not downgrade dependencies or rely on automatic toolchain downloads
+to compensate for an older builder. The guard checks declarations, not registry
+contents; verify the image digest and platform when updating its tag.
+
 The production image is built by [`coordinator/Dockerfile`](../../coordinator/Dockerfile)
 from the **repo root** (it copies both `coordinator/` and the sidecar crate):
 
@@ -908,7 +915,7 @@ docker build \
 ```
 
 Stages: `prompt-sidecar-builder` (`rust:1.88.0-alpine`, musl static build) →
-`builder` (`golang:1.25-alpine`, `-ldflags` version injection) → final image
+`builder` (`golang:1.26.8-alpine`, `-ldflags` version injection) → final image
 `FROM eigengajesh/d-inference-base:v1-amd64` with `/usr/local/bin/coordinator`
 and `/usr/local/bin/promptsidecar`, OCI labels
 `org.opencontainers.image.{version,revision,created}`, `EXPOSE 8080`, entrypoint
@@ -919,8 +926,12 @@ and `/usr/local/bin/promptsidecar`, OCI labels
 ### 10. Use the database-only coordinator command
 
 The normal coordinator build also supports `coordinator --migrate-only`. It
-requires `EIGENINFERENCE_DATABASE_URL`, runs store migrations, and exits without
-starting the server or seeding an admin key. Container execution must override
+requires `EIGENINFERENCE_DATABASE_URL`, validates store configuration rather than
+full application/serving prerequisites, and exits without starting the server or
+seeding an admin key. `EIGENINFERENCE_MIGRATION_TIMEOUT` bounds the full command;
+`EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` independently bounds concurrent
+build lock waits (see [configuration](../reference/configuration.md#database-store-and-persistent-disk)).
+Container execution must override
 the default MicroMDM entrypoint script; see the
 [schema migration runbook](../operations/schema-migration.md#4-apply-the-migrations).
 

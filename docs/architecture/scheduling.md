@@ -368,11 +368,14 @@ existing concurrency behavior. A zero budget still means unavailable, and raw
 Before a new model loads or an advertised serving set raises its reserve,
 `resliceMeetsServiceabilityFloor`
 (`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`)
-preserves one native request's fixed workspace, the watermark and minimum KV
-allowance for existing slots. The new native contiguous engine is checked
-against the same floor before publication. Ordinary engines keep their existing
-floor. These are provider-side changes; the coordinator's existing per-model
-concurrency and token-budget checks consume the corrected heartbeat.
+uses `EngineV2Bridge.minimumServiceableGrantBytes` for existing native and
+ordinary fixed-workspace slots. The [total slot floor](hardware-support.md#kv-slot-grants)
+includes one request's workspace, the actual admission policy, minimum KV and
+private cache carve. Ordinary stateless engines retain their base floor.
+`EngineV2SlotFactory.makeProductionBundle` refuses an ordinary fixed-workspace
+newcomer that cannot serve even one request before publishing the bridge; native
+publication retains its transaction-owned gate. The coordinator's existing
+per-model concurrency and token-budget checks consume the corrected heartbeat.
 The standalone/local server applies the same per-engine minimum to native and
 ordinary newcomer loads and serving-set reserve raises through
 `StandaloneServer.resliceKeepsSlotsServiceable`

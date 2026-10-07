@@ -770,6 +770,10 @@ not a merely received heartbeat, supplies freshness. The registry retains no
 cross-operation rate history: disconnects, model changes, trust loss and cleared
 capacity are re-evaluated on the next capture.
 
+The fleet profiler reuses one forecast table per sample and bounds donor lock
+leases separately from row projection. Its [sampling contract](system-profiler.md#tables)
+does not introduce a persistent rate cache or extra request admission work.
+
 The estimate is separate from `KVBytesPerToken` in a live slot report. It prices
 cold structural and memory checks and cold-model coordinator-pending work, but
 does not synthesize a slot maximum, override an authoritative zero budget, change

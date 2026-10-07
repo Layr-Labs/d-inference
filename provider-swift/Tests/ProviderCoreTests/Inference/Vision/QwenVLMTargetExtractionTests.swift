@@ -522,7 +522,7 @@ struct QwenVLMTargetExtractionTests {
                 fp16KVBytesPerToken: 256,
                 maxContextLength: 2_048,
                 defaultMaxTokens: 32),
-            kvBytesCapacity: 8 << 20,
+            kvBytesCapacity: 2 << 30, // Logical grant covers fixed state and the serving KV floor.
             maxConcurrentRequests: 2,
             kvBudget: nil,
             weightHash: String(repeating: "a", count: 64),

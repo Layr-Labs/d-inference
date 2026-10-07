@@ -18,6 +18,30 @@ type coldKVKey struct {
 // the destination's real load and request gates remain authoritative.
 type coldKVEstimates map[coldKVKey]int64
 
+type coldKVRequirements map[string]map[coldKVKey]struct{}
+
+// addLocked records only cold, identified work. Caller holds p.mu.
+func (wanted *coldKVRequirements) addLocked(p *Provider, model string) {
+	if p.BackendCapacity != nil {
+		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model == model && (slot.KVBytesPerToken > 0 || slotStateModelLoaded(slot.State)) {
+				return
+			}
+		}
+	}
+	key, ok := coldKVKeyLocked(p, model)
+	if !ok {
+		return
+	}
+	if *wanted == nil {
+		*wanted = make(coldKVRequirements)
+	}
+	if (*wanted)[model] == nil {
+		(*wanted)[model] = make(map[coldKVKey]struct{})
+	}
+	(*wanted)[model][key] = struct{}{}
+}
+
 func coldKVKeyLocked(p *Provider, model string) (coldKVKey, bool) {
 	if p.Backend != BackendMLXSwift || p.Version == "" || !p.RuntimeVerified ||
 		!p.RuntimeManifestChecked || !p.MetallibVerified {
@@ -41,7 +65,8 @@ func coldKVKeyLocked(p *Provider, model string) (coldKVKey, bool) {
 
 // Rate returns a prediction only for an absent/cold model. A resident's missing
 // rate remains legacy/unknown; a positive own rate is never replaced by a peer.
-// Caller holds p.mu and the registry read lease used to collect the estimates.
+// Caller holds p.mu and a current registry read lease; estimates live only for
+// this operation and never replace current destination identity or slot state.
 func (estimates coldKVEstimates) Rate(p *Provider, model string) int64 {
 	if len(estimates) == 0 {
 		return 0
@@ -67,38 +92,18 @@ func (estimates coldKVEstimates) Rate(p *Provider, model string) int64 {
 // heartbeat clearing take effect on the next scan, including reservation commit.
 // Caller holds r.mu and no provider lock.
 func (r *Registry) coldKVEstimatesLocked(providers []*Provider, model string, now time.Time) coldKVEstimates {
-	var wanted map[string]map[coldKVKey]struct{}
+	var wanted coldKVRequirements
 	for _, p := range providers {
 		p.mu.Lock()
-		require := func(model string) {
-			if p.BackendCapacity != nil {
-				for _, slot := range p.BackendCapacity.Slots {
-					if slot.Model == model && (slot.KVBytesPerToken > 0 || slotStateModelLoaded(slot.State)) {
-						return
-					}
-				}
-			}
-			key, ok := coldKVKeyLocked(p, model)
-			if !ok {
-				return
-			}
-			if wanted == nil {
-				wanted = make(map[string]map[coldKVKey]struct{})
-			}
-			if wanted[model] == nil {
-				wanted[model] = make(map[coldKVKey]struct{})
-			}
-			wanted[model][key] = struct{}{}
-		}
 		if model != "" {
-			require(model)
+			wanted.addLocked(p, model)
 		} else {
 			for _, info := range p.Models {
-				require(info.ID)
+				wanted.addLocked(p, info.ID)
 			}
 		}
 		for _, pending := range p.pendingReqs {
-			require(pending.Model)
+			wanted.addLocked(p, pending.Model)
 		}
 		p.mu.Unlock()
 	}

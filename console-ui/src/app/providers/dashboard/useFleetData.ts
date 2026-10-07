@@ -20,9 +20,9 @@ export interface FleetData {
   providersResp: MyProvidersResponse | null;
   summary: MySummaryResponse | null;
   ctx: RoutingCtx;
-  /** True only during the very first load (before any data arrives). */
+  /** True until the account's first fleet load completes. */
   loading: boolean;
-  /** True whenever a fetch is in flight (drives the header spinner). */
+  /** True while the required fleet fetch is in flight (drives the header spinner). */
   refreshing: boolean;
   /** Hard error — only set when there is no data to show. */
   error: string | null;
@@ -39,7 +39,8 @@ type FleetSnapshot = Pick<FleetData,
 
 interface FleetSession {
   accountKey: string;
-  inFlight: AbortController | null;
+  providersInFlight: AbortController | null;
+  summaryInFlight: AbortController | null;
 }
 
 function emptySnapshot(accountKey: string | null): FleetSnapshot {
@@ -62,19 +63,19 @@ const DEFAULT_CTX_FROM = (resp: MyProvidersResponse | null): RoutingCtx => ({
   challenge_max_age_seconds: resp?.challenge_max_age_seconds ?? 360,
 });
 
-async function readProviders(result: PromiseSettledResult<Response>): Promise<MyProvidersResponse> {
-  if (result.status !== "fulfilled") throw new Error(result.reason?.message || "network error");
-  if (!result.value.ok) throw new Error(`HTTP ${result.value.status}`);
-  const providers = (await result.value.json()) as MyProvidersResponse;
+async function readProviders(response: Response): Promise<MyProvidersResponse> {
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const providers = (await response.json()) as MyProvidersResponse;
   // A malformed success is not proof that the account has no machines.
   if (!Array.isArray(providers?.providers)) throw new Error("Invalid provider response");
   return providers;
 }
 
-async function readSummary(result: PromiseSettledResult<Response>): Promise<MySummaryResponse | undefined> {
-  if (result.status !== "fulfilled" || !result.value.ok) return;
+async function fetchSummary(options: RequestInit): Promise<MySummaryResponse | undefined> {
   try {
-    return (await result.value.json()) as MySummaryResponse;
+    const response = await fetch(SUMMARY_URL, options);
+    if (!response.ok) return;
+    return (await response.json()) as MySummaryResponse;
   } catch {
     // Missing summary data must not hide a successfully loaded fleet.
     return;
@@ -98,10 +99,10 @@ export function useFleetData(): FleetData {
 
   const fetchAll = useCallback(async () => {
     const session = sessionRef.current;
-    if (!session || session.accountKey !== accountKey || session.inFlight) return;
-    const controller = new AbortController();
-    session.inFlight = controller;
-    const isCurrent = () => sessionRef.current === session && !controller.signal.aborted;
+    if (!session || session.accountKey !== accountKey || session.providersInFlight) return;
+    const providersController = new AbortController();
+    session.providersInFlight = providersController;
+    const isCurrent = () => sessionRef.current === session && !providersController.signal.aborted;
     setSnapshot((previous) => ({ ...previous, refreshing: true }));
 
     try {
@@ -111,16 +112,27 @@ export function useFleetData(): FleetData {
       const options = {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store" as const,
-        signal: controller.signal,
+        signal: providersController.signal,
       };
 
-      // Providers is required; summary is best-effort.
-      const [pRes, sRes] = await Promise.allSettled([
-        fetch(PROVIDERS_URL, options),
-        fetch(SUMMARY_URL, options),
-      ]);
-      if (!isCurrent()) return;
-      const providers = await readProviders(pRes);
+      const providersResponse = fetch(PROVIDERS_URL, options);
+      // The optional summary owns a separate request so stalled headers or
+      // body parsing cannot hold fleet loading or subsequent polls hostage.
+      if (!session.summaryInFlight) {
+        const summaryController = new AbortController();
+        session.summaryInFlight = summaryController;
+        void (async () => {
+          try {
+            const summary = await fetchSummary({ ...options, signal: summaryController.signal });
+            if (sessionRef.current === session && !summaryController.signal.aborted && summary !== undefined) {
+              setSnapshot((previous) => ({ ...previous, summary }));
+            }
+          } finally {
+            session.summaryInFlight = null;
+          }
+        })();
+      }
+      const providers = await readProviders(await providersResponse);
       if (!isCurrent()) return;
       setSnapshot((previous) => ({
         ...previous,
@@ -129,9 +141,6 @@ export function useFleetData(): FleetData {
         pollFailed: false,
         lastUpdatedAt: Date.now(),
       }));
-
-      const summary = await readSummary(sRes);
-      if (isCurrent() && summary !== undefined) setSnapshot((previous) => ({ ...previous, summary }));
     } catch (e) {
       if (!isCurrent()) return;
       const message = e instanceof Error ? e.message : String(e);
@@ -140,7 +149,7 @@ export function useFleetData(): FleetData {
         : { ...previous, error: message });
     } finally {
       if (isCurrent()) {
-        session.inFlight = null;
+        session.providersInFlight = null;
         setSnapshot((previous) => ({ ...previous, loading: false, refreshing: false }));
       }
     }
@@ -149,13 +158,14 @@ export function useFleetData(): FleetData {
   useEffect(() => {
     setSnapshot(emptySnapshot(accountKey));
     if (accountKey === null) return;
-    const session: FleetSession = { accountKey, inFlight: null };
+    const session: FleetSession = { accountKey, providersInFlight: null, summaryInFlight: null };
     sessionRef.current = session;
     // An authenticated account switch does not re-arm useVisiblePolling.
     // Start its first load here; the in-flight guard coalesces the mount poll.
     void fetchAll();
     return () => {
-      session.inFlight?.abort();
+      session.providersInFlight?.abort();
+      session.summaryInFlight?.abort();
       if (sessionRef.current === session) sessionRef.current = null;
     };
   }, [accountKey, fetchAll]);

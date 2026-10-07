@@ -280,7 +280,7 @@ func (s *PostgresStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID strin
 }
 
 // ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
-// status created before olderThan, oldest first. Limits <= 0 or above the cap
+// status whose reconciliation age starts before olderThan, oldest first. Limits <= 0 or above the cap
 // are clamped to MaxStripeWithdrawalsByStatusLimit — never unbounded.
 func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]store.StripeWithdrawal, error) {
 	if limit <= 0 || limit > store.MaxStripeWithdrawalsByStatusLimit {
@@ -289,8 +289,9 @@ func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan t
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	ageStart := `CASE WHEN status='pending' THEN COALESCE(NULLIF(transfer_started_at,'0001-01-01 00:00:00+00'::timestamptz),created_at) WHEN status='transferred' THEN updated_at ELSE created_at END`
 	q := `SELECT ` + stripeWithdrawalSelectColumns + ` FROM stripe_withdrawals
-		 WHERE status = $1 AND created_at < $2 ORDER BY created_at ASC LIMIT $3`
+		 WHERE status = $1 AND ` + ageStart + ` < $2 ORDER BY ` + ageStart + ` ASC,id ASC LIMIT $3`
 	args := []any{status, olderThan, limit}
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -310,7 +311,7 @@ func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan t
 }
 
 // ListStripeWithdrawalsForStripeAccount returns withdrawals destined for the
-// given connected account in the given status, oldest first. Capped at
+// given connected account in the given status, oldest update first. Capped at
 // MaxStripeWithdrawalsByStatusLimit as a webhook-path safety bound (a single
 // account should never approach it; stragglers are picked up on redelivery
 // or the next sweep since completed rows drop out of the status filter).
@@ -320,7 +321,7 @@ func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, s
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
-		 WHERE stripe_account_id = $1 AND status = $2 ORDER BY created_at ASC LIMIT $3`,
+		 WHERE stripe_account_id = $1 AND status = $2 ORDER BY updated_at ASC,id ASC LIMIT $3`,
 		stripeAccountID, status, store.MaxStripeWithdrawalsByStatusLimit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list stripe withdrawals for stripe account: %w", err)

@@ -205,7 +205,7 @@ const countOpenGlobalPayouts = `-- name: CountOpenGlobalPayouts :one
 SELECT COUNT(*) FROM global_payout_withdrawals
 WHERE account_id = $1 AND (
     status IN ('queued', 'pending', 'processing')
-    OR (status = 'posted' AND submitted_at > $2::timestamptz))
+    OR (status = 'posted' AND COALESCE(NULLIF((data->>'dispatch_started_at')::timestamptz, '0001-01-01T00:00:00Z'::timestamptz), submitted_at) > $2::timestamptz))
 `
 
 type CountOpenGlobalPayoutsParams struct {

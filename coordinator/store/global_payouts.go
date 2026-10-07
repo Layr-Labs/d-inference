@@ -95,3 +95,12 @@ type GlobalPayoutResult struct {
 func (p GlobalPayout) RequiresManualReconciliation() bool {
 	return p.ExternalID == "" && p.Rejection == nil && p.FailureCode == GlobalPayoutManualReview
 }
+
+// ReconciliationWindowStart excludes the funding wait from posted-payment
+// protection. Historical payments without a dispatch timestamp use confirmation.
+func (p GlobalPayout) ReconciliationWindowStart() time.Time {
+	if !p.DispatchStartedAt.IsZero() {
+		return p.DispatchStartedAt
+	}
+	return p.SubmittedAt
+}

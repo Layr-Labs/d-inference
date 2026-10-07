@@ -170,6 +170,26 @@ describe("classifyDashboardError", () => {
 });
 
 describe("withdrawSuccessMessage", () => {
+  it.each(["connect", "global"] as const)("%s pending withdrawal preserves the server's confirmation message", (payout_rail) => {
+    const message = "Your withdrawal is awaiting confirmation. Your earnings are reserved; track this withdrawal before submitting another.";
+    expect(withdrawSuccessMessage({ status: "pending", payout_rail, method: STANDARD, message })).toBe(message);
+  });
+
+  it.each(["connect", "global"] as const)("%s pending withdrawal defaults to confirmation and reserved earnings", (payout_rail) => {
+    const message = withdrawSuccessMessage({ status: "pending", payout_rail, method: STANDARD });
+    expect(message).toContain("awaiting confirmation");
+    expect(message).toContain("earnings are reserved");
+    expect(message).toContain("before submitting again");
+    expect(message).not.toContain("being processed");
+  });
+
+  it.each([
+    ["processing", "Your withdrawal is being processed. Track its status in Recent withdrawals."],
+    ["posted", "Your bank transfer has been sent. Your bank may take several business days to credit it."],
+  ])("global %s withdrawal keeps its delivery copy", (status, expected) => {
+    expect(withdrawSuccessMessage({ status, payout_rail: "global", method: STANDARD, message: "Awaiting confirmation" })).toBe(expected);
+  });
+
   it("standard: daily payout in local currency with ETA", () => {
     expect(withdrawSuccessMessage({ status: TRANSFERRED, method: STANDARD, eta: STANDARD_ETA_TEXT }))
       .toBe("On its way - Stripe pays out daily to your bank in your local currency (ETA 1-3 business days).");

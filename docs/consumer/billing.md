@@ -201,7 +201,7 @@ If history shows **Queued**, payout funding is temporarily low. Your requested e
 
 If history shows **Needs review**, contact support with the withdrawal ID. This includes a queue that could not be saved reliably. Its funds remain reserved until the outcome is established; do not submit another payment for that withdrawal.
 
-In history, **Sent to bank** means the transfer left Stripe; it can take additional time for your bank to credit it. **Returned to balance** means the transfer was returned and your withdrawable earnings were restored. Your bank can charge additional fees. Existing Connect withdrawals keep their current payout schedule. See the [pricing reference](../reference/pricing-model.md#global-payouts-withdrawals).
+In history, **Sent to bank** means the transfer left Stripe; it can take additional time for your bank to credit it. **Returned to balance** means the transfer was returned and your withdrawable earnings were restored. Darkbloom continues checking for bank returns after sending, even when the withdrawal spent a long time queued. Your bank can charge additional fees. Existing Connect withdrawals keep their current payout schedule. See the [pricing reference](../reference/pricing-model.md#global-payouts-withdrawals).
 
 The form shows the bank's published deposit minimum and maximum in local currency. If an amount is outside those limits, adjust the USD withdrawal and review again; Stripe confirms the exchange rate. When new withdrawals are paused, an unsubmitted confirmation is released. Already-submitted withdrawals can still be checked.
 

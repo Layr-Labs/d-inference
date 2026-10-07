@@ -21,7 +21,7 @@ func cloneGlobalPayout(p store.GlobalPayout) store.GlobalPayout {
 }
 
 func globalPayoutReconcile(p store.GlobalPayout, now time.Time) bool {
-	return !p.RequiresManualReconciliation() && (p.Status == "queued" || p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.SubmittedAt) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
+	return !p.RequiresManualReconciliation() && (p.Status == "queued" || p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.ReconciliationWindowStart()) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
 }
 
 var _ store.GlobalPayoutStore = (*MemoryStore)(nil)

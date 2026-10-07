@@ -112,7 +112,7 @@ WHERE account_id = sqlc.arg('account_id') AND (
 SELECT COUNT(*) FROM global_payout_withdrawals
 WHERE account_id = sqlc.arg('account_id') AND (
     status IN ('queued', 'pending', 'processing')
-    OR (status = 'posted' AND submitted_at > sqlc.arg('posted_after')::timestamptz));
+    OR (status = 'posted' AND COALESCE(NULLIF((data->>'dispatch_started_at')::timestamptz, '0001-01-01T00:00:00Z'::timestamptz), submitted_at) > sqlc.arg('posted_after')::timestamptz));
 
 -- name: LockBalance :one
 SELECT balance_micro_usd, withdrawable_micro_usd FROM balances WHERE account_id = $1 FOR UPDATE;

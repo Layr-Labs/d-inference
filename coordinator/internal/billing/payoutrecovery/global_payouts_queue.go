@@ -76,7 +76,7 @@ func (s *Reconciler) prepareGlobalFunding(ctx context.Context, repo store.Global
 			return false, s.rejectUnsentGlobalPayout(ctx, repo, p, "recipient_amount_out_of_bounds")
 		}
 		expires = time.Now().Add(2 * time.Minute)
-		if quote.FXQuote != nil && quote.FXQuote.LockExpiresAt.Before(expires) {
+		if quote.FXQuote != nil && !quote.FXQuote.LockExpiresAt.IsZero() && quote.FXQuote.LockExpiresAt.Before(expires) {
 			expires = quote.FXQuote.LockExpiresAt
 		}
 		if !expires.After(time.Now().Add(5 * time.Second)) {

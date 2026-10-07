@@ -219,5 +219,5 @@ func (s *PostgresStore) ListGlobalPayouts(accountID string, limit int) ([]store.
 }
 
 func (s *PostgresStore) ListGlobalPayoutsToReconcile(now time.Time, limit int) ([]store.GlobalPayout, error) {
-	return s.listGlobalPayouts(`SELECT data FROM global_payout_withdrawals WHERE (status IN ('queued','pending','processing') OR (status='posted' AND submitted_at>$1)) AND NOT (external_id='' AND COALESCE(data->>'rejection','')='' AND COALESCE(data->>'failure_code','')=$5) AND checked_at<=$2 AND lease_until<=$3 ORDER BY checked_at LIMIT $4`, now.Add(-90*24*time.Hour), now.Add(-time.Minute), now, globalPayoutLimit(limit), store.GlobalPayoutManualReview)
+	return s.listGlobalPayouts(`SELECT data FROM global_payout_withdrawals WHERE (status IN ('queued','pending','processing') OR (status='posted' AND COALESCE(NULLIF((data->>'dispatch_started_at')::timestamptz, '0001-01-01T00:00:00Z'::timestamptz), submitted_at)>$1)) AND NOT (external_id='' AND COALESCE(data->>'rejection','')='' AND COALESCE(data->>'failure_code','')=$5) AND checked_at<=$2 AND lease_until<=$3 ORDER BY checked_at LIMIT $4`, now.Add(-90*24*time.Hour), now.Add(-time.Minute), now, globalPayoutLimit(limit), store.GlobalPayoutManualReview)
 }

@@ -34,3 +34,17 @@ type StripeWithdrawal struct {
 	CreatedAt                time.Time `json:"created_at"`
 	UpdatedAt                time.Time `json:"updated_at"`
 }
+
+// ReconciliationStartedAt excludes funding waits from the stuck-withdrawal age.
+// Historical pending rows without a dispatch timestamp retain their creation age.
+func (w StripeWithdrawal) ReconciliationStartedAt() time.Time {
+	switch w.Status {
+	case "pending":
+		if !w.TransferStartedAt.IsZero() {
+			return w.TransferStartedAt
+		}
+	case "transferred":
+		return w.UpdatedAt
+	}
+	return w.CreatedAt
+}

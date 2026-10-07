@@ -53,7 +53,7 @@ func (s *MemoryStore) openWithdrawalsLocked(accountID string, now time.Time) int
 			continue
 		}
 		if p.Status == "queued" || p.Status == "pending" || p.Status == "processing" ||
-			(p.Status == "posted" && p.SubmittedAt.After(now.Add(-erasure.GlobalPayoutReconcileWindow))) {
+			(p.Status == "posted" && p.ReconciliationWindowStart().After(now.Add(-erasure.GlobalPayoutReconcileWindow))) {
 			n++
 		}
 	}

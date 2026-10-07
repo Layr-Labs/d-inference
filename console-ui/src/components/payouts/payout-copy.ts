@@ -213,10 +213,10 @@ export function withdrawSuccessMessage(resp: {
   message?: string;
 }): string {
   if (resp.status === "queued") return "Your withdrawal is queued until payout funding is available. Your earnings are reserved; no need to submit it again.";
+  if (resp.status === "pending") return resp.message || "Your withdrawal is awaiting confirmation. Your earnings are reserved; check Recent withdrawals before submitting again.";
   if (resp.payout_rail === "global") return resp.status === "posted"
     ? "Your bank transfer has been sent. Your bank may take several business days to credit it."
     : "Your withdrawal is being processed. Track its status in Recent withdrawals.";
-  if (resp.status === "pending") return resp.message || "Your withdrawal is awaiting confirmation. Check Recent withdrawals before submitting again.";
   const eta = resp.eta ? ` (ETA ${resp.eta})` : "";
   if (resp.method === "instant") {
     if (resp.status === "submitted") {

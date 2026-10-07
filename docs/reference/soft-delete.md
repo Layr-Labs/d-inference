@@ -189,7 +189,7 @@ history-table files and tests outside this gate.
 | Trust-reuse upsert/recovery and verification jobs | Hold the shared privacy fence through SE-owner validation and persistence; erased-only keys are rejected, while a live co-owner or a subsequent authenticated owner remains usable | `coordinator/store/postgres/erasure_personal_writes.go` (`checkPersonalSEOwner`), `coordinator/store/memory/erasure_ownership.go` (`erasedSEOwnerLocked`) |
 
 
-Queued Connect and Global Payouts withdrawals count as open withdrawals in both backends. Planning reports them; erasure request and scrub refuse while their funds are reserved. The queue retains the saved destination for eventual dispatch. Code: `coordinator/store/memory/erasure.go` (`openWithdrawalsLocked`), `coordinator/store/postgres/queries/erasure.sql` (`CountOpenStripeWithdrawals`, `CountOpenGlobalPayouts`).
+Queued Connect and Global Payouts withdrawals count as open withdrawals in both backends. Planning reports them; erasure request and scrub refuse while their funds are reserved. The queue retains the saved destination for eventual dispatch. Posted Global Payouts remain protected during the [post-dispatch return window](pricing-model.md#global-payouts-withdrawals), excluding time spent queued. Code: `coordinator/store/memory/erasure.go` (`openWithdrawalsLocked`), `coordinator/store/postgres/queries/erasure.sql` (`CountOpenStripeWithdrawals`, `CountOpenGlobalPayouts`).
 
 ## Related
 

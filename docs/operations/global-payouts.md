@@ -46,7 +46,7 @@ Before activation, review the cost of covering these fees. Before confirming the
 
 ## Verification
 
-The source-of-truth payout row is `global_payout_withdrawals` and its `data` object. Quote state is `quoted`; a confirmed withdrawal atomically debits both balance columns and moves to `pending`. Stripe then supplies `processing`, `posted`, `failed`, `canceled`, or `returned`. Refunds are atomic with the state update and applied once. State cannot regress from posted to processing or reopen after a refund (`coordinator/store/global_payouts.go`, `applyGlobalResult`).
+The source-of-truth payout row is `global_payout_withdrawals` and its `data` object. Quote state is `quoted`; a confirmed withdrawal atomically debits both balance columns and moves to `pending`, or `queued` while waiting for funding. Dispatch returns a queued withdrawal to `pending`. Stripe then supplies `processing`, `posted`, `failed`, `canceled`, or `returned`. Refunds are atomic with the state update and applied once. State cannot regress from posted to processing or reopen after a refund (`coordinator/internal/store/shared/global_payouts.go`, `ApplyGlobalResult`).
 
 Queued withdrawals retain the ledger debit and saved bank destination. Observe `status=queued` and `failure_reason=awaiting_funding` in user history while the financial account is short of principal plus platform-paid fees. Funding restoration permits the minute reconciler to dispatch. An expired queued exchange estimate is refreshed before sending the approved USD amount. Verify one debit and one external payment; never refund an unknown Stripe outcome merely because the current funding balance is low. Code: `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`).
 

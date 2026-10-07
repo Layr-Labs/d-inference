@@ -38,23 +38,25 @@ type Hooks struct {
 }
 
 type Dependencies struct {
-	Store        store.AccountErasureStore
-	Access       Authorizer
-	Logger       *slog.Logger
-	Hooks        Hooks
-	MaxBodyBytes int64
+	Store                      store.AccountErasureStore
+	Access                     Authorizer
+	Logger                     *slog.Logger
+	Hooks                      Hooks
+	MaxBodyBytes               int64
+	SoftDeleteMutationsEnabled bool
 	// Datadog returns the client that stores the erasure_log record. A nil
 	// client, or one without DD_API_KEY, writes the record to the process log.
 	Datadog func() *datadog.Client
 }
 
 type Owner struct {
-	store        store.AccountErasureStore
-	access       Authorizer
-	logger       *slog.Logger
-	hooks        Hooks
-	maxBodyBytes int64
-	datadog      func() *datadog.Client
+	store                      store.AccountErasureStore
+	access                     Authorizer
+	logger                     *slog.Logger
+	hooks                      Hooks
+	maxBodyBytes               int64
+	softDeleteMutationsEnabled bool
+	datadog                    func() *datadog.Client
 	// billing holds the Stripe clients the outbox worker deletes through.
 	billing *billing.Service
 	// grace is the time from the soft delete to the scrub
@@ -68,7 +70,8 @@ func New(d Dependencies) *Owner {
 		d.Logger.Warn("EIGENINFERENCE_ERASURE_GRACE is not a valid non-negative Go duration; using the default",
 			"default", defaultGrace)
 	}
-	return &Owner{store: d.Store, access: d.Access, logger: d.Logger, hooks: d.Hooks, maxBodyBytes: d.MaxBodyBytes, datadog: d.Datadog, grace: grace}
+	return &Owner{store: d.Store, access: d.Access, logger: d.Logger, hooks: d.Hooks, maxBodyBytes: d.MaxBodyBytes, datadog: d.Datadog, grace: grace,
+		softDeleteMutationsEnabled: d.SoftDeleteMutationsEnabled}
 }
 
 // SetBilling is called during application assembly, before the outbox loop starts.

@@ -153,6 +153,10 @@ func (s *Owner) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.access.IsAdminAuthorized(w, r) {
 		return
 	}
+	if !s.softDeleteMutationsEnabled {
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("soft_delete_mutations_disabled", "account erasure confirmation is disabled during the rollback window"))
+		return
+	}
 	accountID, ok := erasureAccountID(w, r)
 	if !ok {
 		return

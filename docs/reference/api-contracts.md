@@ -276,7 +276,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/summary` | `HandleMySummary` (`coordinator/api/accounts/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `HandleMyProviders` (`coordinator/api/accounts/providers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `HandleMySelfRouteModels` (`coordinator/api/accounts/self_route.go`) | `user` | — | Models the account's own machines can serve |
-| DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine |
+| DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine; requires the [soft-delete mutation gate](soft-delete.md#writers-of-deleted_at). After authentication, record existence and ownership checks, a disabled gate returns 503 `soft_delete_mutations_disabled` without mutation |
 | GET | `/v1/pricing` | `HandleGetPricing` (`coordinator/api/billing/pricing.go`) | `—` | — | Public price table, `types.PricingResponse` `{prices: [{model, input_price, output_price, cache_read_price, input_usd, output_usd, cache_read_usd}], fallback_input_price, fallback_output_price, fallback_cache_read_price, fallback_*_usd}`; `cache_read_price` is the effective rate (derived when the row sets none); see [`pricing-model.md`](pricing-model.md) |
 | PUT | `/v1/pricing` | `HandleSetPricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelprice.Input`, `coordinator/api/modelprice/price.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
 | DELETE | `/v1/pricing` | `HandleDeletePricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Revert to defaults |
@@ -454,11 +454,11 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `HandleLatestRelease` (`coordinator/api/releases/read_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `HandleReadyz` (`coordinator/api/operations/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.16 candidate sets `LatestProviderVersion` in
+The 0.9.18 prepared candidate sets `LatestProviderVersion` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
-exists (`coordinator/api/releases/release_handlers.go`, `HandleLatestRelease`).
+exists (`coordinator/api/releases/read_handlers.go`, `HandleLatestRelease`).
 
 `POST /v1/releases` accepts additive `code_directory_hash`, `source_commit`, `ci_run_id`, and `require_app_attest_qualification`. The production workflow requires durable approval; enabled production App Attest serving also enforces the gate server-side. The scoped release key cannot create approval. Missing or conflicting approval returns 409 without advancing latest; unavailable qualification returns 503. Both the legacy version path and a bundle-hash-qualified `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-<PLATFORM>.tar.gz` path are accepted only on the configured R2 origin. Code: `coordinator/api/releases/app_attest_publication.go` (`persistReleaseForPublication`), `coordinator/api/releases/artifact_metadata.go` (`trustedReleaseArtifactURL`).
 
@@ -1156,6 +1156,13 @@ Authorization: Bearer admin-key
 `POST /v1/admin/accounts/{account_id}/erasure`. Soft deletes the account and starts the grace period. Handler
 `HandleRequest`; store `RequestAccountErasure`.
 
+Requires `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=true` (default `false`).
+After admin authorization, a disabled gate returns 503 with error `type` and
+`code` `soft_delete_mutations_disabled`, before body parsing or mutation,
+including when `force` is requested. Plan, status and cancel remain available;
+already-pending scrub and outbox delivery continue. Disabling the gate does not
+undo deletion or remove read/credit fences.
+
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `account_id` | string | yes | Must equal the path's account ID |
@@ -1180,7 +1187,7 @@ Response 200: `{"request": ErasureRequest}`, the request in `pending`, or in
 | 409 | `erasure_conflict` | The request is already `pending`, or the user is already soft deleted |
 | 409 or 500 | — (not the error envelope) | `force` only: the soft delete committed but the scrub failed. Body `{"request": ErasureRequest, "scrub_error": "<error text>"}`; 409 for an open withdrawal, 500 otherwise. The request stays `pending` and the loop retries |
 
-The checks run in this order: body, token present, account ID, then the
+The checks run in this order: admin authorization, mutation gate, body, token present, account ID, then the
 store checks (user, request state, token, email, wallets, withdrawals).
 
 Side effects, in one transaction: `deleted_at` on the user and its providers;

@@ -39,8 +39,8 @@ func (s *Policy) Initialize(ctx context.Context, cfg attestservice.Config) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cohort.Store(&cohort{machines: map[identity]string{}})
-	if !cfg.ServingEnabled || cfg.Environment != "production" || cfg.RolloutPercent != 100 {
-		return fmt.Errorf("legacy MDM freeze requires production App Attest serving enabled with a 100%% account rollout")
+	if err := cfg.CheckProductionServing(); err != nil {
+		return err
 	}
 	st, ok := store.As[store.LegacyMDMCohortStore](s.store)
 	if !ok {

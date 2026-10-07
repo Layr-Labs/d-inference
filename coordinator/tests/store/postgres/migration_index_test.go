@@ -120,10 +120,24 @@ func indexValid(ctx context.Context, pool *pgxpool.Pool, name string) (bool, err
 	return valid, err
 }
 
-// An interrupted CONCURRENTLY build leaves an invalid index of the same name.
-// The index migration drops it, builds again, and records the version only
-// with a valid index.
-func TestIndexMigrationRebuildsInvalidLeftover(t *testing.T) {
+// An interrupted build must survive retries unchanged until an operator repairs
+// it. Exercise both the newer migrations and the legacy earnings unique index.
+func TestIndexMigrationPreservesInvalidLeftover(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version int64
+		ddl     string
+	}{
+		{"idx_provider_sessions_account", 10, `CREATE INDEX CONCURRENTLY idx_provider_sessions_account ON provider_sessions (account_id)`},
+		{"idx_provider_earnings_job", 4, `CREATE UNIQUE INDEX CONCURRENTLY idx_provider_earnings_job ON provider_earnings(job_id) WHERE job_id <> ''`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testIndexMigrationPreservesInvalidLeftover(t, tc.name, tc.version, tc.ddl)
+		})
+	}
+}
+
+func testIndexMigrationPreservesInvalidLeftover(t *testing.T, name string, version int64, ddl string) {
 	ctx := context.Background()
 	databaseURL := newThrowawayTestDatabase(t)
 	s, err := openPostgresFixture(ctx, store.Config{DatabaseURL: databaseURL})
@@ -131,10 +145,10 @@ func TestIndexMigrationRebuildsInvalidLeftover(t *testing.T) {
 		t.Fatalf("NewPostgres: %v", err)
 	}
 	t.Cleanup(s.Close)
-	if _, err := s.pool.Exec(ctx, `DROP INDEX idx_provider_sessions_account`); err != nil {
+	if _, err := s.pool.Exec(ctx, `DROP INDEX `+pgx.Identifier{name}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
-	pendingFrom(t, s, 10)
+	pendingFrom(t, s, version)
 
 	// The reviewer's reproduction: a build that times out behind an older
 	// snapshot fails and leaves an invalid index.
@@ -143,6 +157,7 @@ func TestIndexMigrationRebuildsInvalidLeftover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `SELECT count(*) FROM users`); err != nil {
 		t.Fatal(err)
 	}
@@ -150,28 +165,47 @@ func TestIndexMigrationRebuildsInvalidLeftover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer builder.Close(ctx)
 	if _, err := builder.Exec(ctx, `SET lock_timeout = '200ms'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := builder.Exec(ctx, `CREATE INDEX CONCURRENTLY idx_provider_sessions_account ON provider_sessions (account_id)`); err == nil {
+	if _, err := builder.Exec(ctx, ddl); err == nil {
 		t.Fatal("fixture: the build behind an older snapshot did not fail")
 	}
 	_ = builder.Close(ctx)
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if valid, err := indexValid(ctx, s.pool, "idx_provider_sessions_account"); err != nil || valid {
+	if valid, err := indexValid(ctx, s.pool, name); err != nil || valid {
 		t.Fatalf("fixture: leftover index valid=%v err=%v, want an invalid index", valid, err)
 	}
+	before := queryLines(t, s.pool, `SELECT indexrelid::text || ' ' || pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid = '`+name+`'::regclass`)
 
+	for attempt := range 2 {
+		err := s.reopen(ctx)
+		for _, hint := range []string{name, "preserved without changes", "pg_stat_progress_create_index", "pg_stat_activity", "operator"} {
+			if err == nil || !strings.Contains(err.Error(), hint) {
+				t.Fatalf("attempt %d: error = %v, want actionable hint %q", attempt, err, hint)
+			}
+		}
+		if valid, err := indexValid(ctx, s.pool, name); err != nil || valid {
+			t.Fatalf("%s valid=%v err=%v after migration refusal", name, valid, err)
+		}
+		assertSameLines(t, "invalid index before", before, "after refusal", queryLines(t, s.pool,
+			`SELECT indexrelid::text || ' ' || pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid = '`+name+`'::regclass`))
+		if versionRecorded(t, s, version) {
+			t.Fatalf("version %d recorded despite invalid index", version)
+		}
+	}
+	// Only an explicit operator repair permits the migration to proceed.
+	if _, err := s.pool.Exec(ctx, `DROP INDEX `+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.reopen(ctx); err != nil {
-		t.Fatalf("migrate with an invalid leftover index: %v", err)
+		t.Fatalf("migrate after explicit repair: %v", err)
 	}
-	if valid, err := indexValid(ctx, s.pool, "idx_provider_sessions_account"); err != nil || !valid {
-		t.Fatalf("idx_provider_sessions_account valid=%v err=%v after migrate", valid, err)
-	}
-	if !versionRecorded(t, s, 10) {
-		t.Fatal("version 10 not recorded after a successful rebuild")
+	if valid, err := indexValid(ctx, s.pool, name); err != nil || !valid || !versionRecorded(t, s, version) {
+		t.Fatalf("%s valid=%v err=%v after explicit repair", name, valid, err)
 	}
 }
 

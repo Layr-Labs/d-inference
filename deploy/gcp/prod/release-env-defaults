@@ -66,3 +66,7 @@ EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS=1
 
 # Opt in only after the Stripe account and bank-setup migration checks.
 EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY=false
+
+# Enable new erasure confirmations/provider removals only with a compatible fallback.
+# Existing pending erasures and outbox work continue; preserve an explicit true.
+EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false

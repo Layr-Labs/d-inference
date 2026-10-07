@@ -448,6 +448,82 @@ struct SSDSpeculativeDiskAdmissionTests {
         await b.closeAndWait()
     }
 
+    @Test("failed temporary cleanup retains disk occupancy without masking I/O failure or speculative yield",
+          .enabled(if: getuid() != 0, "a root user can rename or unlink a file whatever its directory mode"),
+          arguments: [false, true])
+    func failedTempCleanupRetainsOccupancy(yieldDuringWrite: Bool) async throws {
+        let next = try await sizes(position: 256)
+        let incumbent = try await sizes(position: 512)
+        let pair = Pair()
+        defer { pair.remove() }
+        let disk = pair.disk
+        let ledger = pair.ledger
+        let cap = next.file * 1_000
+        let a = try pair.a.makeStore(diskBudget: pair.ledger, maxWriteBytesPerDay: cap,
+            diskBudgetBytes: { disk.bytes }, donationRecorder: pair.outcomesA, writeNowSeconds: { 0 })
+        let b = try pair.b.makeStore(diskBudget: pair.ledger, maxWriteBytesPerDay: cap,
+            diskBudgetBytes: { disk.bytes }, donationRecorder: pair.outcomesB, writeNowSeconds: { 0 })
+        defer { a.close(); b.close() }
+        #expect(try await donate(pair.a, a, Self.coordinatorRepeat, receipt: 100, position: 512) == [512])
+        #expect(try await donate(pair.b, b, Self.coordinatorRepeat, receipt: 101, position: 512) == [512])
+        disk.bytes = pair.ledger.totalBytes + next.file
+        let target = pair.a.file(a, position: 256)
+        let fanout = target.deletingLastPathComponent()
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fanout.path) }
+        a.beforeSpeculativeChunkForTesting = { index in
+            guard index == 0 else { return }
+            // The temp is open and has its header. Its fd can still be written,
+            // but both renameat and unlinkat now fail on the owned directory.
+            do {
+                try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fanout.path)
+            } catch {
+                Issue.record("failed to make fixture fanout read-only: \(error)")
+            }
+            if yieldDuringWrite { ledger.revokeSpeculativeWrites() }
+        }
+        #expect(try await donate(pair.a, a, Self.firstSight, receipt: 102, position: 256).isEmpty)
+        a.beforeSpeculativeChunkForTesting = nil
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fanout.path)
+        #expect(count(pair.outcomesA, yieldDuringWrite ? .writeSpeculativeLimited : .writeIOFailed) == 1)
+        let temps = tempFiles(under: pair.a.root)
+        #expect(temps.count == 1)
+        let orphan = fanout.appendingPathComponent(try #require(temps.first))
+        #expect(try fileBytes(orphan) > 0)
+        #expect(!exists(target))
+        #expect(pair.ledger.reservedBytesSnapshot == 0)
+        #expect(pair.ledger.unownedBytesSnapshot(wholeRootKey: a.wholeRootKey) == next.file)
+        #expect(a.stats().speculativeWritesYielded == (yieldDuringWrite ? 1 : 0))
+        #expect(a.lock.withLock { a.writing.isEmpty })
+        // Even an unindexed failed write spent its plaintext charge. There is
+        // no refill under this fixed clock and no refund after cleanup failed.
+        let remaining = cap - incumbent.plaintext - next.plaintext
+        #expect(a.rateLimiter.admission(bytes: remaining, writeClass: .repeated) == .accepted)
+        #expect(a.rateLimiter.admission(bytes: remaining + 1, writeClass: .repeated) == .rateLimited)
+        #expect(try await donate(pair.b, b, Self.firstSight, receipt: 103, position: 256).isEmpty)
+        #expect(count(pair.outcomesB, .writeSpeculativeLimited) == 1)
+        #expect(pair.ledger.evictionCount == 0)
+        #expect(exists(pair.a.file(a, position: 512)))
+        #expect(exists(pair.b.file(b, position: 512)))
+        // The next whole pass replaces the conservative full-file charge with
+        // the actual orphan size; a young temp still occupies that room.
+        let maintainer = SSDWholeRootMaintainer()
+        let now = Int64(Date().timeIntervalSince1970)
+        _ = maintainer.maintain(root: pair.a.root, ttlSeconds: 0, nowSeconds: now,
+                               budgetBytes: disk.bytes, budget: pair.ledger)
+        #expect(pair.ledger.unownedBytesSnapshot(wholeRootKey: a.wholeRootKey) == (try fileBytes(orphan)))
+        #expect(pair.ledger.evictionCount == 0)
+        try FileManager.default.removeItem(at: orphan)
+        _ = maintainer.maintain(root: pair.a.root, ttlSeconds: 0, nowSeconds: now,
+                               budgetBytes: disk.bytes, budget: pair.ledger)
+        #expect(pair.ledger.unownedBytesSnapshot(wholeRootKey: a.wholeRootKey) == 0)
+        #expect(try await donate(pair.b, b, Self.firstSight, receipt: 104, position: 256) == [256])
+        #expect(pair.ledger.evictionCount == 0)
+        #expect(exists(pair.a.file(a, position: 512)))
+        #expect(exists(pair.b.file(b, position: 512)))
+        await a.closeAndWait()
+        await b.closeAndWait()
+    }
+
     @Test("a first-sight write cancelled by its store closing leaves its room free: queued for its file it has taken none, in flight it gives it back",
           arguments: [true, false])
     func closedWriteReleasesItsRoom(queued: Bool) async throws {

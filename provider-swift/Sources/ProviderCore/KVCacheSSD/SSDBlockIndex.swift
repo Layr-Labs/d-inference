@@ -861,10 +861,11 @@ final class SSDDiskBudget: @unchecked Sendable {
     /// Indexed + unowned + pending + `bytes` against the budget once every
     /// byte not yet on the volume has landed. Pending is every outstanding
     /// reservation but `excluding`, plus the proven writes every registered
-    /// store has accepted and not started. Indexed and pending bytes are
-    /// box-wide, as the budget is; unowned bytes are those of the write's own
-    /// whole root, the tree its maintenance pass enforces. Saturating: an
-    /// overflow is a refusal.
+    /// store has accepted and not started. Indexed, unowned and pending bytes
+    /// are box-wide, as the budget is: releasing a claim with bytes left on
+    /// disk must not make that room available under another root. Each root's
+    /// unowned figure already excludes its registered indexes. Saturating:
+    /// an overflow is a refusal.
     private func fitsLocked(
         bytes: Int, includesReserved: Bool, excluding own: SSDDiskReservation? = nil,
         ownBytesStillToLand: Int, wholeRootKey: String, basis: SSDDiskBudgetBasis
@@ -886,7 +887,9 @@ final class SSDDiskBudget: @unchecked Sendable {
             occupied = Self.saturatingSum(occupied, registration.store.diskBytesOnDisk)
             pending = Self.saturatingSum(pending, max(0, registration.store.queuedWriteBytes))
         }
-        occupied = Self.saturatingSum(occupied, unownedBytes[wholeRootKey] ?? 0)
+        for unowned in unownedBytes.values {
+            occupied = Self.saturatingSum(occupied, unowned)
+        }
         occupied = Self.saturatingSum(occupied, pending)
         occupied = Self.saturatingSum(occupied, bytes)
         guard occupied < Int.max else { return false }

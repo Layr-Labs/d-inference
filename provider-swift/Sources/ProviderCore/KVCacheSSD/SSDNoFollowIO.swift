@@ -115,6 +115,7 @@ enum SSDNoFollowIO {
         strictFsync: Bool,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
         beforePublish: ((Int) throws -> Void)? = nil,
+        onIncompleteCleanup: (() -> Void)? = nil,
         writer: (FileHandle) throws -> Void
     ) throws -> Int {
         let (parentFD, name) = try openVerifiedBlockParentForWrite(of: url)
@@ -144,7 +145,10 @@ enum SSDNoFollowIO {
         var renamed = false
         defer {
             if !renamed {
-                tempName.withCString { _ = unlinkat(parentFD, $0, 0) }
+                let gone = tempName.withCString { unlinkat(parentFD, $0, 0) == 0 || errno == ENOENT }
+                // Notify before the original error reaches the caller and its
+                // disk claim is released. A failed unlink is not proof of absence.
+                if !gone { onIncompleteCleanup?() }
             }
         }
 
@@ -159,7 +163,7 @@ enum SSDNoFollowIO {
             let fileBytes = info.st_size > off_t(Int.max) ? Int.max : Int(info.st_size)
             try handle.close()
             // Last point at which the file is not yet visible under its
-            // final name: a throw unlinks the temp like any write failure.
+            // final name: a throw attempts temp cleanup like any write failure.
             try beforePublish?(max(0, fileBytes))
             let renameResult = tempName.withCString { tempPtr in
                 name.withCString { namePtr in
@@ -482,6 +486,7 @@ enum SSDNoFollowIO {
         strictFsync: Bool,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
         beforePublish: ((Int) throws -> Void)? = nil,
+        onIncompleteCleanup: (() -> Void)? = nil,
         writer: (FileHandle) throws -> Void
     ) throws -> Int {
         beforeOperation?(.write)
@@ -494,11 +499,13 @@ enum SSDNoFollowIO {
         guard FileManager.default.createFile(atPath: temp.path, contents: nil) else {
             throw SSDBlockStoreError.ioFailure("create tmp failed")
         }
-        let handle = try FileHandle(forWritingTo: temp)
+        var handle: FileHandle?
         do {
-            try writer(handle)
-            if strictFsync { try handle.synchronize() }
-            try handle.close()
+            let opened = try FileHandle(forWritingTo: temp)
+            handle = opened
+            try writer(opened)
+            if strictFsync { try opened.synchronize() }
+            try opened.close()
             try beforePublish?((try? temp.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
             if FileManager.default.fileExists(atPath: url.path) {
                 _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
@@ -507,8 +514,15 @@ enum SSDNoFollowIO {
             }
             return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         } catch {
-            try? handle.close()
-            try? FileManager.default.removeItem(at: temp)
+            try? handle?.close()
+            do {
+                try FileManager.default.removeItem(at: temp)
+            } catch let cleanupError {
+                let failure = cleanupError as NSError
+                if failure.domain != NSCocoaErrorDomain || failure.code != NSFileNoSuchFileError {
+                    onIncompleteCleanup?()
+                }
+            }
             throw error
         }
     }

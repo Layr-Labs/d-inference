@@ -370,16 +370,20 @@ final class SSDWriteBehind: @unchecked Sendable {
             recorded = true
             let fileBytes: Int
             let sidecar = block.metadata.windowKind == nil ? 0 : 1
+            var disposition = SSDDiskReservation.Disposition.discarded
             do {
                 if let writeBlock = config.writeBlock {
                     fileBytes = try writeBlock(block, url)
                 } else {
                     fileBytes = try SSDBlockStore.write(
                         to: url, metadata: block.metadata, chunks: block.chunks,
-                        kekKey: config.kekKey, strictFsync: config.strictFsync)
+                        kekKey: config.kekKey, strictFsync: config.strictFsync,
+                        onIncompleteCleanup: { disposition = .abandonedOnDisk })
                 }
             } catch {
-                diskBudget.release(record, as: .discarded)
+                // A failed temp unlink is still charged until a whole-root
+                // pass proves its size or absence. Preserve the write error.
+                diskBudget.release(record, as: disposition)
                 stats.add(donationsDropped: 1)
                 if isENOSPC(error) {
                     diskUnavailable = true

@@ -223,7 +223,8 @@ enum SSDBlockStore {
         chunks: [Data],
         kekKey: SymmetricKey,
         strictFsync: Bool = false,
-        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
+        onIncompleteCleanup: (() -> Void)? = nil
     ) throws -> Int {
         let modelRoot = url.deletingLastPathComponent().deletingLastPathComponent()
         guard isSafeBlockURL(url, modelRoot: modelRoot) else {
@@ -243,6 +244,7 @@ enum SSDBlockStore {
             to: url, metadata: metadata, kekKey: kekKey,
             maximumChunkBytes: Int(UInt32.max) - gcmTagLength,
             strictFsync: strictFsync, beforeOperation: beforeOperation,
+            onIncompleteCleanup: onIncompleteCleanup,
             chunk: { chunks[$0] })
     }
 

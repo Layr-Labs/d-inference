@@ -356,6 +356,7 @@ extension SSDHybridCheckpointStore {
                     strictFsync: config.strictFsync,
                     beforePublish: speculative
                         ? { try self.checkSpeculativePublish(job, claim, fileBytes: $0) } : nil,
+                    onIncompleteCleanup: { disposition = .abandonedOnDisk },
                     chunk: { index in
                         try self.checkWrite(job)
                         if speculative {
@@ -475,8 +476,8 @@ extension SSDHybridCheckpointStore {
                 result.outcome = .existingCacheUnreadable
                 removeCorrupt(short)
             } else if error is SSDSpeculativeWriteYield {
-                // The temp file is gone and nothing was published. The write
-                // budget charged before the first byte is not refunded.
+                // Nothing was published. A temp whose cleanup failed retains
+                // its disk charge; the daily write charge is never refunded.
                 result.outcome = .writeSpeculativeLimited
                 statsBox.update { $0.speculativeWritesYielded += 1 }
             } else if Task.isCancelled || error is CancellationError {
@@ -493,8 +494,8 @@ extension SSDHybridCheckpointStore {
     }
 
     /// Runs while a speculative write's finished file is still a temp file:
-    /// a throw removes it, so a write that lost its room, or whose store
-    /// closed or changed epoch, never appears under its final name.
+    /// a throw prevents publication and attempts temp removal. If removal
+    /// fails, its disk charge remains until maintenance can reconcile it.
     private func checkSpeculativePublish(
         _ job: WriteJob, _ claim: SSDDiskReservation, fileBytes: Int
     ) throws {

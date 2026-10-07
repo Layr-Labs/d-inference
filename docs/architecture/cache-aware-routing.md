@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -1243,8 +1243,9 @@ the same room. The rule, with its constants, is in the
   A first-sight write is granted room on the writer, before its write-budget
   charge and before a byte is written, only while the occupancy of its cache
   root is known (limit 10) and only if the indexed bytes of every
-  registered store, those unowned bytes, every other reservation, the proven
-  work every registered store has accepted and not yet recorded, and its own
+  registered store, the unowned bytes of every root on the budget, every
+  other reservation, the proven work every registered store has accepted
+  and not yet recorded, and its own
   stored bytes fit the budget as it will be once the reserved and queued
   bytes and its own are on the volume (`reserveSpeculative`,
   `SSDDiskBudgetBasis`). Queued work is counted box-wide at an estimate meant
@@ -1289,7 +1290,7 @@ the same room. The rule, with its constants, is in the
   a first-sight write was withdrawn since the reading.
 - **A first-sight write gives way instead of evicting.** One whose
   reservation is revoked stops at its next chunk (it finishes the chunk in
-  hand; a chunk is at most 4 MiB) and its temp file is removed. One that is
+  hand; a chunk is at most 4 MiB) and attempts to remove its temp file. One that is
   revoked, or whose room is gone, when its finished file is still a temp
   file does not publish it (`checkSpeculativePublish`). One that has
   published is indexed only while it is not revoked, its room still holds
@@ -1315,6 +1316,17 @@ the same room. The rule, with its constants, is in the
   changed epoch at that point settles `cache_closed` or `cache_epoch_changed`
   as for any write, and a first-sight file published in that window is
   removed instead of being left unindexed on disk.
+- **Failed temp cleanup retains its disk charge.** Both complete-checkpoint
+  and block-tier writes attempt to remove their unpublished temp on failure.
+  If removal neither succeeds nor proves the temp absent, the synchronous
+  `SSDNoFollowIO.writeAtomically` cleanup notification marks the claim
+  `abandonedOnDisk` before it is released. Its complete reserved file size
+  moves to unowned bytes on the same budget; another store, including one
+  under another root, cannot reuse that room before maintenance reconciles
+  the orphan's actual size or absence.
+  The original write error, speculative yield or cancellation still selects
+  the outcome, and the daily write charge stays spent. Successful cleanup
+  releases the claim without adding unowned bytes.
 - **No enforcement evicts for it.** `SSDWholeRootMaintainer.maintain` keeps
   the temp file and the published, not yet indexed file of an in-flight
   first-sight write out of its total and never picks them as TTL or budget
@@ -1479,10 +1491,11 @@ Limits:
     - **No refund.** A first-sight write that gives way after its I/O began
       was charged to the daily write cap, and the charge stays. The charge
       was admitted under the headroom rule like any other first-sight charge
-      (limit 6); no entry is kept for it.
+      (limit 6); no indexed entry is kept for it. A temp whose removal failed
+      retains the complete file's disk charge as unowned until reconciliation.
     - **What an in-process ledger cannot see.** Another process writing under
-      the same cache root; a temp file whose unlink failed; and a crash
-      leftover, which is counted as unowned from the next whole-root pass
+      the same cache root and a crash leftover, which is counted as unowned
+      from the next whole-root pass
       until its one-hour temp TTL.
     - **A budget is a reading, taken before the work that uses it.** A fall
       in free disk caused by other disk users after a first-sight write's
@@ -1501,7 +1514,8 @@ Limits:
     - **Unowned bytes are as fresh as the last whole-root pass** (after a
       checkpoint write that was indexed or was already durable, after a
       block-tier job, when a complete-checkpoint store is built, when the
-      60-second task first starts and every 60 seconds after), plus what a deregistering store adds. A pass that walked
+      60-second task first starts and every 60 seconds after), plus failed
+      cleanup charges and what a deregistering store adds. A pass that walked
       while bytes changed sides between an index and the unowned figure, or
       that could not list a directory, may
       raise the figure and not lower it. The figure errs high after a store

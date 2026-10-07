@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -222,7 +222,8 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 
 | Rule | Constant | Code |
 |---|---|---|
-| Disk budget | Default `max(1, volumeFree / 2)`, with no fixed ceiling, re-evaluated during enforcement across all models. Unknown free space uses `fallbackSSDDiskBudgetBytes = 20 * 1_073_741_824` (20 GiB); a valid positive environment override wins verbatim. The separate low-disk write stop still applies. | `PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
+| Disk budget | Default `max(1, volumeFree / 2)`, with no fixed ceiling, re-evaluated during enforcement across all models. Unknown free space uses `fallbackSSDDiskBudgetBytes = 20 * 1_073_741_824` (20 GiB); a valid positive environment override wins verbatim. Speculative admission counts indexed, queued, reserved and unowned bytes across every root sharing the budget. Moving bytes from an index or reservation to unowned occupancy does not free disk room. The separate low-disk write stop still applies. | `PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`), `SSDBlockIndex.swift` (`fitsLocked`) |
+| Failed temp cleanup | Complete-checkpoint and block-tier writers synchronously report an unpublished temp whose removal neither succeeds nor proves absence. Before claim release, its disposition becomes `abandonedOnDisk`, retaining the complete reserved file size as unowned bytes until a safe whole-root observation reconciles its actual size or absence. The original failure, yield or cancellation outcome and daily write charge remain unchanged. Successful removal or ENOENT releases without an orphan charge. | `SSDNoFollowIO.swift` (`writeAtomically`), `SSDHybridCheckpointStore+Write.swift` (`performWrite`), `SSDWriteBehind.swift` |
 | Eviction order | LRU by last hit across the whole `kv3/` root; eviction is `unlink` + index removal | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` |
 | Maintenance sweep | `SSDWholeRootMaintainer`, `intervalSeconds = 60`: TTL expiry, budget eviction, crash-temp cleanup. The temp file and the published, not yet indexed file of an in-flight speculative write are not counted toward the budget eviction, are not its victims and are taken out of a half-of-free limit; the pass also publishes the bytes no registered index counts, and after a walk that could not list a directory it may raise that figure and not lower it ([speculative disk admission](#size-and-eviction-rules), below) | `SSDPrefixCacheFactory.swift` (`startWholeRootMaintenance`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift` |
 | TTL | `defaultTTLSeconds = 1800`, `maxTTLSeconds = 1800`, sliding on hit. Raising either needs the sign-off recorded in `docs/threat-model.yaml` (T-041, SEC-035) | `SSDPrefixCachePolicy.swift` |

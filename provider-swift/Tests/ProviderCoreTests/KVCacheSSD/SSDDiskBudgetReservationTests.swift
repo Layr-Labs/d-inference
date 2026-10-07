@@ -1361,8 +1361,9 @@ struct SSDDiskBudgetReservationTests {
         #expect(!budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: "/another/root", basis: .fixed(150)),
                 "a root no pass has published admits nothing")
         budget.declareOccupancyKnown(wholeRootKey: "/another/root")
-        #expect(budget.hasSpeculativeRoom(bytes: 150, wholeRootKey: "/another/root", basis: .fixed(150)),
-                "another whole root is another tree")
+        #expect(budget.hasSpeculativeRoom(bytes: 50, wholeRootKey: "/another/root", basis: .fixed(150)))
+        #expect(!budget.hasSpeculativeRoom(bytes: 51, wholeRootKey: "/another/root", basis: .fixed(150)),
+                "closing a store does not make its disk bytes available to another root on the same budget")
         let abandoned = proven(budget, 10)
         budget.release(abandoned, as: .abandonedOnDisk)
         #expect(budget.unownedBytesSnapshot(wholeRootKey: key) == 110)
@@ -1412,6 +1413,56 @@ struct SSDDiskBudgetReservationTests {
         budget.publishWholeRoot(
             wholeRootKey: key, bytesByModelRoot: ["/tmp/unloaded": 10], unreservedTempBytes: 0, observation: seen)
         #expect(budget.unownedBytesSnapshot(wholeRootKey: key) == 10, "the next whole pass sets it")
+    }
+
+    @Test("abandoned disk bytes stay charged across roots through publish, commit and whole-root reconciliation")
+    func abandonedBytesCountAcrossRoots() throws {
+        let (budget, firstStore) = ledger()
+        firstStore.bytes = 40
+        let otherRoot = URL(fileURLWithPath: "/tmp/darkbloom-ledger-other-\(UUID().uuidString)")
+        let otherModel = otherRoot.appendingPathComponent("111111111111")
+        let otherKey = SSDDiskBudget.rootKey(otherRoot)
+        let secondStore = StubStore(bytes: 60, root: otherModel)
+        budget.register(secondStore)
+        budget.declareOccupancyKnown(wholeRootKey: otherKey)
+        let basis = SSDDiskBudgetBasis.fixed(160)
+        let abandoned = try #require(speculative(budget, 50, basis: basis))
+        let second = try #require(budget.reserveSpeculative(
+            bytes: 10, keys: ["second"], wholeRootKey: otherKey, basis: basis))
+        budget.release(abandoned, as: .abandonedOnDisk)
+        #expect(budget.reservedBytesSnapshot == 10)
+        #expect(budget.unownedBytesSnapshot(wholeRootKey: Self.wholeRootKey) == 50)
+        #expect(budget.mayPublishSpeculative(second, fileBytes: 10, basis: basis))
+        #expect(!budget.mayPublishSpeculative(second, fileBytes: 11, basis: basis))
+        #expect(budget.commitSpeculative(second, fileBytes: 10, basis: basis) {
+            secondStore.bytes += 10
+            return true
+        })
+        #expect(budget.reservedBytesSnapshot == 0)
+        #expect(budget.totalBytes == 110)
+        #expect(!budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: otherKey, basis: basis))
+        #expect(!budget.hasSpeculativeRoom(bytes: 1, wholeRootKey: Self.wholeRootKey, basis: basis))
+
+        func reconcile(tempBytes: Int) {
+            let window = budget.beginWholeRootObservation(wholeRootKey: Self.wholeRootKey)
+            budget.publishWholeRoot(
+                wholeRootKey: Self.wholeRootKey,
+                bytesByModelRoot: [SSDDiskBudget.rootKey(Self.modelRoot): firstStore.bytes],
+                unreservedTempBytes: tempBytes, observation: budget.endWholeRootObservation(window))
+        }
+        // The pass subtracts the registered index before publishing unowned
+        // bytes. Its replacement charge remains visible to both roots once.
+        reconcile(tempBytes: 25)
+        #expect(budget.unownedBytesSnapshot(wholeRootKey: Self.wholeRootKey) == 25)
+        for key in [Self.wholeRootKey, otherKey] {
+            #expect(budget.hasSpeculativeRoom(bytes: 25, wholeRootKey: key, basis: basis))
+            #expect(!budget.hasSpeculativeRoom(bytes: 26, wholeRootKey: key, basis: basis))
+        }
+        reconcile(tempBytes: 0)
+        #expect(budget.unownedBytesSnapshot(wholeRootKey: Self.wholeRootKey) == 0)
+        #expect(budget.hasSpeculativeRoom(bytes: 50, wholeRootKey: otherKey, basis: basis))
+        #expect(!budget.hasSpeculativeRoom(bytes: 51, wholeRootKey: otherKey, basis: basis))
+        #expect(budget.evictionCount == 0)
     }
 
     @Test("a whole-root observation names every reservation outstanding at any time in its window")
@@ -1497,8 +1548,9 @@ struct SSDDiskBudgetReservationTests {
             + sizes.reduce(0, +) + sizes.count * SSDBlockStore.streamedChunkFramingBytes)
     }
 
-    @Test("a throw before publish leaves neither the file nor a temp file")
-    func refusedPublishLeavesNothing() throws {
+    @Test("a throw before publish leaves neither the file nor a temp file or uncertain cleanup",
+          arguments: [false, true])
+    func refusedPublishLeavesNothing(tempAlreadyRemoved: Bool) throws {
         struct Refused: Error {}
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("ssd-refused-publish-\(UUID().uuidString)")
@@ -1511,11 +1563,21 @@ struct SSDDiskBudgetReservationTests {
             blockSize: 256, layerCount: 1,
             chunks: [.init(layerIndex: 0, tensor: 0, shape: [8], dtype: "uint8")],
             chunkPlaintextSizes: [8], createdAt: 1)
+        var incompleteCleanup = false
         #expect(throws: Refused.self) {
             _ = try SSDBlockStore.writeStreaming(
                 to: file, metadata: metadata, kekKey: SymmetricKey(size: .bits256), maximumChunkBytes: 4096,
-                beforePublish: { _ in throw Refused() }, chunk: { _ in Data(repeating: 1, count: 8) })
+                beforePublish: { _ in
+                    if tempAlreadyRemoved {
+                        let name = try #require(tempFiles(under: root).first)
+                        try FileManager.default.removeItem(at: file.deletingLastPathComponent().appendingPathComponent(name))
+                    }
+                    throw Refused()
+                },
+                onIncompleteCleanup: { incompleteCleanup = true },
+                chunk: { _ in Data(repeating: 1, count: 8) })
         }
+        #expect(!incompleteCleanup)
         #expect(!exists(file))
         #expect(tempFiles(under: root).isEmpty)
     }

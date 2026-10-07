@@ -34,12 +34,14 @@ extension SSDBlockStore {
     /// DBK3 wire format with one plaintext chunk alive at a time. The producer
     /// may export a tensor segment directly; it need not retain a whole file.
     /// `beforePublish` receives the finished file's length while it is still a
-    /// temp file; a throw there removes it and nothing is published.
+    /// temp file; a throw there prevents publication and attempts removal.
+    /// `onIncompleteCleanup` runs synchronously if removal cannot be proved.
     static func writeStreaming(
         to url: URL, metadata: SSDBlockMetadata, kekKey: SymmetricKey,
         maximumChunkBytes: Int, strictFsync: Bool = false,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
         beforePublish: ((Int) throws -> Void)? = nil,
+        onIncompleteCleanup: (() -> Void)? = nil,
         chunk: (Int) throws -> Data
     ) throws -> Int {
         guard isSafeBlockURL(url) else {
@@ -55,7 +57,7 @@ extension SSDBlockStore {
             fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
         return try SSDNoFollowIO.writeAtomically(
             to: url, strictFsync: strictFsync, beforeOperation: beforeOperation,
-            beforePublish: beforePublish
+            beforePublish: beforePublish, onIncompleteCleanup: onIncompleteCleanup
         ) { handle in
             try handle.write(contentsOf: header)
             try handle.write(contentsOf: uint32LE(UInt32(metadata.chunkPlaintextSizes.count)))

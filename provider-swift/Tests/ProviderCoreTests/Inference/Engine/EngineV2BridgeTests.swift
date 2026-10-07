@@ -2596,15 +2596,20 @@ struct EngineV2LookupReceiptCoverageTests {
         #expect(l2Result.promptAnchor?.tokenCount == 64,
             "the SSD probe must retain content-free prompt evidence")
 
-        // An index-only durable candidate deliberately has no files: this
-        // proves equal/shorter SSD matches do no I/O, while a longer match
-        // reaches real staging and is authenticated before any reuse.
+        // Malformed indexed files prove equal/shorter SSD matches do no I/O,
+        // while a longer match reaches the parser and rejects corruption
+        // before any reuse. Missing files would exercise absence instead.
         let hasher = CBv2BlockHasher(
             blockSize: 8, promptContractID: "bridge-l1-l2-contract", scopeID: "scope")
         let keys = SSDLookupKeys(kek: kek)
         for hash in hasher.chainHashes(tokens: prompt).prefix(6) {
+            let tag = keys.tag16(chainHash: hash, cacheSalt: "scope")
+            let file = SSDBlockStore.fileURL(root: root, tag16Hex: tag.hexString)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                   withIntermediateDirectories: true)
+            try Data(repeating: 0, count: 100).write(to: file)
             cache.index.insert(
-                tag16: keys.tag16(chainHash: hash, cacheSalt: "scope"),
+                tag16: tag,
                 fileBytes: 100, lastAccess: 10_000)
         }
         for residentSaved in [64, 48, 16] {

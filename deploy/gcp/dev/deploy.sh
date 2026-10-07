@@ -341,8 +341,38 @@ fi
 enforce_pause live
 
 # Shell variables do not cross SSH: ship the candidate's files and pass the values.
+# A commit directory is immutable once published. Extract into a hidden sibling,
+# then rename it into place. A same-SHA redeploy reuses only an exact tree; it
+# never removes or rewrites files that current or rollback may still reference.
 LIB=$REMOTE/$CANDIDATE_COMMIT
-extract="sudo install -d -m 0700 $REMOTE && sudo rm -rf $LIB && sudo install -d -m 0700 $LIB && sudo tar -xz --no-same-owner -C $LIB"
+extract="/bin/bash -c 'set -euo pipefail
+sudo install -d -m 0700 $REMOTE
+stage=\$(sudo mktemp -d $REMOTE/.incoming-$CANDIDATE_COMMIT.XXXXXX)
+cleanup_stage() { [ -z \"\$stage\" ] || sudo rm -rf -- \"\$stage\"; }
+trap cleanup_stage EXIT
+sudo tar -xz --no-same-owner -C \"\$stage\"
+tree_digest() {
+    sudo tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \\
+        -cf - -C \"\$1\" . | sha256sum | cut -d\" \" -f1
+}
+if sudo test -e $LIB || sudo test -L $LIB; then
+    sudo test -d $LIB && ! sudo test -L $LIB ||
+        { echo \"FAIL published candidate path is not a directory\" >&2; exit 1; }
+    staged_digest=\$(tree_digest \"\$stage\") ||
+        { echo \"FAIL could not hash staged candidate files\" >&2; exit 1; }
+    published_digest=\$(tree_digest $LIB) ||
+        { echo \"FAIL could not hash published candidate files\" >&2; exit 1; }
+    [[ \"\$staged_digest\" =~ ^[0-9a-f]{64}\$ ]] &&
+        [[ \"\$published_digest\" =~ ^[0-9a-f]{64}\$ ]] ||
+        { echo \"FAIL candidate tree digest is malformed\" >&2; exit 1; }
+    [ \"\$staged_digest\" = \"\$published_digest\" ] ||
+        { echo \"FAIL published candidate files differ from the same commit archive\" >&2; exit 1; }
+    sudo rm -rf -- \"\$stage\"
+else
+    sudo mv -T -- \"\$stage\" $LIB
+fi
+stage=
+trap - EXIT'"
 if [ "$DRY_RUN" = 1 ]; then
     echo "DRY-RUN ship git archive HEAD: ${SHIP[*]}"
     echo "DRY-RUN ssh: $extract"

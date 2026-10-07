@@ -253,6 +253,16 @@ The output has `REPORT` lines, one `OK` or `FAIL` line, and `deployed=true` or
 run. `MIGRATE_ONLY=0` skips `--migrate-only`. `SSH_KEY_FILE` selects the SSH
 key.
 
+Candidate files are extracted into a unique hidden directory and atomically
+renamed to the commit path. A same-commit redeploy reuses the published directory
+only when its normalized tree is identical; an interrupted or mismatched transfer
+leaves `current` and the prior rollback files untouched. The shared refresh still
+creates its production timestamped backup. Dev seed validates and removes that
+redundant copy; dev swap verifies it matches the attempt-directory rollback copy
+before removing it. Successful swaps also remove only generated dev result and
+failed-container log files older than 14 days; unknown operator files are not
+matched.
+
 Expected last line from the VM: `OK <commit> drain_s=0 start_to_ready_s=<n>`.
 The first deploy has no previous image; a failed first attempt removes its
 candidate container and restores the pre-deploy env, tooling and link state.

@@ -33,7 +33,8 @@ public final class ClusterBootstrapListener: @unchecked Sendable {
     public func cancel() { socket.cancel() }
 
     public func accept(processID: Int32, identity: ClusterBootstrapIdentity,
-                       deadlineUptimeNanoseconds: UInt64) throws -> ClusterBootstrapConnection {
+                       deadlineUptimeNanoseconds: UInt64,
+                       mode: ClusterBootstrapMode = .mesh2) throws -> ClusterBootstrapConnection {
         do {
             try lock.withLock {
                 guard !attempted, processID > 1, deadlineUptimeNanoseconds <= socket.deadline else {
@@ -50,7 +51,7 @@ public final class ClusterBootstrapListener: @unchecked Sendable {
                 let accepted = try BootstrapSocket(taking: fd, deadline: deadlineUptimeNanoseconds)
                 try accepted.requirePeer(processID: processID)
                 socket.cancel()
-                return .init(socket: accepted, identity: identity, worker: false)
+                return .init(socket: accepted, identity: identity, worker: false, mode: mode)
             }
         } catch { socket.cancel(); throw error }
     }

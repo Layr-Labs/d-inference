@@ -14,6 +14,7 @@ from owned_process import invoke_controller
 
 HERE = Path(__file__).resolve().parent
 RUNTIME = HERE.parent.parent / 'Sources/DarkbloomClusterSecurity'
+BOOTSTRAP = HERE.parent.parent / 'Sources/DarkbloomClusterBootstrap'
 
 
 def digest(path):
@@ -62,22 +63,37 @@ def main():
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     runtime = sorted(RUNTIME.glob('*.swift'))
-    if len(runtime) != 8:
+    bootstrap = sorted(BOOTSTRAP.glob('*.swift'))
+    if len(runtime) != 12 or len(bootstrap) != 6:
         raise ValueError('Update the CPU check source closure when changing the record module')
     groups = [('codec', sorted((HERE / 'Codec').glob('*.swift')), [str(HERE / 'Codec/vectors.json')]),
               ('adapter', sorted((HERE / 'Adapter').glob('*.swift')), [])]
-    paths = runtime + [path for _, sources, _ in groups for path in sources]
+    paths = runtime + bootstrap + [path for _, sources, _ in groups for path in sources]
     paths += [HERE / 'Codec/vectors.json', HERE / 'owned_process.py', HERE / 'run.py']
     before = snapshot(paths)
     (output / 'source-snapshot.json').write_text(json.dumps(before, indent=2, sort_keys=True) + '\n')
     (output / 'module-cache').mkdir(mode=0o700)
     receipts = []
     try:
+        # The record authority's prelude types consume the bootstrap module;
+        # build it first so the closure stays exact about the dependency.
+        bootstrap_command = ['xcrun', 'swiftc', '-j', '2', '-swift-version', '6', '-warnings-as-errors',
+                     '-target', platform.machine() + '-apple-macos14.0',
+                     '-module-cache-path', str(output / 'module-cache'),
+                     '-emit-library', '-emit-module', '-module-name', 'DarkbloomClusterBootstrap',
+                     '-emit-module-path', str(output / 'DarkbloomClusterBootstrap.swiftmodule')] \
+                    + [str(path) for path in bootstrap] \
+                    + ['-o', str(output / 'libDarkbloomClusterBootstrap.dylib')]
+        receipts.append(run_owned(bootstrap_command, output, 'bootstrap-compile', 60))
+        if snapshot(paths) != before:
+            raise ValueError('Sources changed while compiling')
         for name, sources, arguments in groups:
             binary = output / (name + '-check')
             command = ['xcrun', 'swiftc', '-j', '2', '-swift-version', '6', '-warnings-as-errors',
                        '-target', platform.machine() + '-apple-macos14.0', '-parse-as-library',
-                       '-module-cache-path', str(output / 'module-cache')]
+                       '-module-cache-path', str(output / 'module-cache'),
+                       '-I', str(output), '-L', str(output), '-lDarkbloomClusterBootstrap',
+                       '-Xlinker', '-rpath', '-Xlinker', str(output)]
             receipts.append(run_owned(command + [str(path) for path in runtime + sources]
                                       + ['-o', str(binary)], output, name + '-compile', 60))
             if snapshot(paths) != before:

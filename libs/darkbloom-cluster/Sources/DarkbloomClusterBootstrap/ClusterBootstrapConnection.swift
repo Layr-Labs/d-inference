@@ -8,18 +8,22 @@ public final class ClusterBootstrapConnection: @unchecked Sendable {
     public let deadlineUptimeNanoseconds: UInt64
     private let socket: BootstrapSocket
     private let worker: Bool
+    private let authorization: BootstrapAuthorization
     private let lock = NSLock()
     private var busy = false, failed = false
     private var sequence: UInt64 = 0
     private var pending: ClusterBootstrapRound?
 
-    init(socket: BootstrapSocket, identity: ClusterBootstrapIdentity, worker: Bool) {
+    init(socket: BootstrapSocket, identity: ClusterBootstrapIdentity, worker: Bool,
+         mode: ClusterBootstrapMode = .mesh2) {
         self.socket = socket; self.identity = identity; self.worker = worker
+        authorization = .init(worker: worker, mode: mode)
         deadlineUptimeNanoseconds = socket.deadline
     }
 
     public static func connect(path: String, ownerProcessID: Int32, identity: ClusterBootstrapIdentity,
-                               deadlineUptimeNanoseconds: UInt64) throws -> ClusterBootstrapConnection {
+                               deadlineUptimeNanoseconds: UInt64,
+                               mode: ClusterBootstrapMode = .mesh2) throws -> ClusterBootstrapConnection {
         guard ownerProcessID == getppid(), ownerProcessID > 1 else { throw ClusterBootstrapError.peer }
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
         var directoryMetadata = stat()
@@ -48,7 +52,7 @@ public final class ClusterBootstrapConnection: @unchecked Sendable {
             }
         }
         try socket.requirePeer(processID: ownerProcessID)
-        return .init(socket: socket, identity: identity, worker: true)
+        return .init(socket: socket, identity: identity, worker: true, mode: mode)
     }
 
     public func cancel() { lock.withLock { failed = true }; socket.cancel() }
@@ -68,6 +72,7 @@ public final class ClusterBootstrapConnection: @unchecked Sendable {
 
     public func exchange(sequence: UInt64, contribution: Data) throws -> Data {
         try operation {
+            try authorization.requireMesh()
             guard worker, sequence == self.sequence else { throw ClusterBootstrapError.invalid("Unexpected worker round") }
             let round = try ClusterBootstrapRound(identity: identity, sequence: sequence, contribution: contribution)
             try socket.write(BootstrapHeader(round: round, reply: false).encoded()); try socket.write(contribution)
@@ -82,6 +87,7 @@ public final class ClusterBootstrapConnection: @unchecked Sendable {
 
     public func receiveRound() throws -> ClusterBootstrapRound {
         try operation {
+            try authorization.requireMesh()
             guard !worker, pending == nil else { throw ClusterBootstrapError.invalid("Unexpected owner read") }
             let header = try BootstrapHeader(socket.readExactly(BootstrapHeader.byteCount))
             guard !header.reply, header.identity == identity, header.sequence == sequence else {
@@ -95,11 +101,53 @@ public final class ClusterBootstrapConnection: @unchecked Sendable {
 
     public func reply(to round: ClusterBootstrapRound, gathered: Data) throws {
         try operation {
+            try authorization.requireMesh()
             guard !worker, pending == round else { throw ClusterBootstrapError.invalid("Unexpected owner reply") }
             try requireEcho(gathered, round: round)
             try socket.write(BootstrapHeader(round: round, reply: true).encoded()); try socket.write(gathered)
             pending = nil; sequence += 1
         }
+    }
+
+    /// Only the actual native-side PID-authenticated connection can mint this
+    /// context. Public start bytes alone cannot initialize a native key holder.
+    public func beginNativeKeyPrelude(expecting start: Data) throws -> ClusterNativePreludeContext {
+        try operation {
+            guard worker else { throw ClusterBootstrapError.peer }
+            try authorization.nativeStart(start, socket: socket, identity: identity)
+            return .init(connection: self, start: start)
+        }
+    }
+
+    /// The caller must already own a current coordinator start grant and actual
+    /// child. This local transport does not approve native code or membership.
+    public func beginOwnerKeyPrelude(start: Data) throws -> ClusterOwnerPreludeContext {
+        try operation {
+            guard !worker else { throw ClusterBootstrapError.peer }
+            try authorization.ownerStart(start, socket: socket, identity: identity)
+            return .init(connection: self)
+        }
+    }
+
+    func nativeKeyExchange(_ bytes: Data, confirmation: Bool) throws -> Data {
+        try operation { try authorization.nativeExchange(bytes, confirmation: confirmation,
+            socket: socket, identity: identity) }
+    }
+    func nativeKeyComplete(_ digest: Data) throws {
+        try operation { try authorization.nativeComplete(digest, socket: socket, identity: identity) }
+    }
+    func ownerKeyRead(confirmation: Bool) throws -> Data {
+        try operation { try authorization.ownerRead(confirmation: confirmation, socket: socket, identity: identity) }
+    }
+    func ownerKeyWrite(_ bytes: Data, confirmation: Bool) throws {
+        try operation { try authorization.ownerWrite(bytes, confirmation: confirmation, socket: socket, identity: identity) }
+    }
+    func ownerKeyComplete(_ digest: Data) throws {
+        try operation { try authorization.ownerComplete(digest, socket: socket, identity: identity) }
+    }
+    func checkKeyPrelude() throws {
+        guard !lock.withLock({ failed }) else { throw ClusterBootstrapError.closed }
+        try socket.check()
     }
 
     private func requireEcho(_ bytes: Data, round: ClusterBootstrapRound) throws {

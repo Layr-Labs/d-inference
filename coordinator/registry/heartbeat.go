@@ -95,7 +95,14 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// unrelated model's activity. A stale sequence never changes these clocks.
 	p.reconcileDeadlineApplicabilityLocked(msg.BackendCapacity, systemMetrics, now)
 	prevHB := p.LastHeartbeat
-	p.reconcileFirstContentMeasurementsLocked(backendCapacity, now)
+	decodeObservations := p.reconcileFirstContentMeasurementsLocked(backendCapacity, now)
+	if len(decodeObservations) > 0 {
+		ref := r.gates.ReferenceForSession(p.gateSession, p.ID)
+		for _, observation := range decodeObservations {
+			r.gates.RecordFirstContentDecodeObservation(ref, observation.Model, observation.Rate,
+				r.tpsRegistry.Median(observation.Model, p.Hardware.ChipFamily), now)
+		}
+	}
 	p.reconcileWarmPoolWorkLocked(backendCapacity, now, warmController, workModels)
 	p.reconcileCapacitySamplesLocked(backendCapacity, now)
 	p.LastHeartbeat = now
@@ -164,6 +171,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 				if soloEligible && slot.NumRunning > 0 {
 					r.tpsRegistry.RecordSolo(slot.Model, chipClass, slot.ObservedDecodeTPS)
 				}
+			}
+			if prefill, ok := slotIsolatedPrefillTPS(&slot); ok {
+				r.tpsRegistry.RecordPrefill(slot.Model, chipFamily, prefill)
 			}
 		}
 	}

@@ -288,7 +288,12 @@ the image by these rules:
    the fallback too: the expanded outbox check is schema-compatible with older
    readers, but an older scrub loses the contact email before creating a
    cleanup obligation. Do not narrow the target check while `resend_contact`
-   rows remain.
+   or `privy_user` rows remain. A fallback built before version 29 does not
+   know `privy_user`: its scrub replaces the Privy user ID without a
+   `privy_user` row, and its outbox worker moves such a row to `manual_action` with
+   `unknown outbox target privy_user`, or, in mock billing mode, marks it
+   `done` without a Privy call (`deliverOutbox` at
+   [5036c940](https://github.com/Layr-Labs/d-inference/blob/5036c940/coordinator/api/accounts/erasure/outbox.go)).
    `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false` only blocks new HTTP
    confirmations and provider removals; pending scrub/outbox work continues.
    It neither clears prior tombstones nor relaxes these fallback requirements.

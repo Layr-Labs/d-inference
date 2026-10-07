@@ -3851,6 +3851,14 @@ database, just like the store suites.
 The marker fixture in `coordinator/tests/store/postgres/erasure_marker_test.go`
 seeds every personal-data rule, including frozen legacy MDM cohort and saved
 hardware interest, and verifies another account's markers survive.
+`coordinator/tests/store/contracts/erasure_cancel_credentials_test.go` checks
+that a cancel restores only the API keys and provider tokens that the confirm
+revoked; `coordinator/tests/store/postgres/erasure_wallet_hash_test.go` checks
+that a cancel clears `wallet_hash`.
+`coordinator/tests/internal/testkit/privy_users.go` (`NewPrivyUsers`) connects a
+real `auth.PrivyAuth` to an in-process Privy delete-user API through its HTTP
+client, so `coordinator/tests/api/accounts/contracts/erasure_outbox_privy_test.go`
+exercises the `privy_user` outbox row without calls to `auth.privy.io`.
 
 The route batching tracer in
 `coordinator/tests/store/postgres/route_telemetry_batch_test.go` distinguishes

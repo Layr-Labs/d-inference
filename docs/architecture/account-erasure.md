@@ -1,6 +1,6 @@
 # Account erasure
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 This page explains how the coordinator erases the personal data of one
 consumer or provider account (GDPR Article 17): the request states, the scrub
@@ -15,7 +15,7 @@ HTTP shapes are in [API contracts](../reference/api-contracts.md#account-erasure
 A person can ask Darkbloom to erase their personal data. The coordinator holds
 that data in Postgres rows (email, Stripe IDs, host names, serial numbers,
 locations, App Attest proofs, referrer codes, wallet addresses), in in-memory
-caches, and at Stripe. Erasure here means: remove or replace every value that
+caches, at Stripe and at Privy. Erasure here means: remove or replace every value that
 identifies the person, keep the financial records the platform must keep, and
 make sure no later write brings the data back.
 
@@ -60,6 +60,7 @@ flowchart TB
   DB -- "outbox rows" --> W["Outbox worker<br/>StartErasureOutboxLoop"]:::loop
   W --> S["Stripe<br/>Connect, Global Payouts,<br/>Redaction Jobs"]:::ext
   W --> D["Datadog Logs<br/>(erasure_log:true)"]:::ext
+  W --> PV["Privy<br/>user deletion"]:::ext
 ```
 
 Blue: HTTP handlers. Green: background work. Purple: the store and its
@@ -76,8 +77,8 @@ cache.
 | Rule table | One rule per personal column or row kind; each backend maps every rule name to its own statements | `coordinator/internal/store/erasure/rules.go` (`Rules`); `coordinator/store/postgres/erasure_rules.go` (`erasureStatements`); `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`) |
 | `CachedStore` | Drops the cached users after each erasure write | `coordinator/store/cached.go` (`RequestAccountErasure`, `CancelAccountErasure`, `ScrubAccount`) |
 | Post-commit clears | Registry, trust-reuse cache, MDM scheduler, ledger usage, API key cache | `coordinator/api/accounts/erasure/loop.go` (`scrub`), through `Hooks` (`coordinator/api/accounts/erasure/owner.go`) |
-| Outbox | Stripe cleanup rows, one `resend_contact` row for a nonblank account email, and one `erasure_log` row, written by the scrub | `coordinator/internal/store/erasure/keys.go` (`Keys.OutboxRows`) |
-| Outbox worker | Delivers Stripe and Datadog rows with retries; moves `resend_contact` to `manual_action`, including in mock billing mode | `coordinator/api/accounts/erasure/outbox.go` (`Owner.StartOutboxLoop`, `deliverOutbox`, `outboxResult`), `coordinator/api/accounts/erasure/outbox_redaction.go` |
+| Outbox | Stripe cleanup rows, one `resend_contact` row for a nonblank account email, one `privy_user` row for the Privy user ID, and one `erasure_log` row, written by the scrub | `coordinator/internal/store/erasure/keys.go` (`Keys.OutboxRows`) |
+| Outbox worker | Delivers Stripe, Privy and Datadog rows with retries; moves `resend_contact` to `manual_action`, including in mock billing mode | `coordinator/api/accounts/erasure/outbox.go` (`Owner.StartOutboxLoop`, `deliverOutbox`, `outboxResult`, `deletePrivyUser`), `coordinator/api/accounts/erasure/outbox_redaction.go` |
 
 Resend deletion is not automated; an operator completes the
 [manual cleanup](../operations/account-erasure.md#resend-contact-cleanup).
@@ -137,13 +138,34 @@ matches, ignoring case and outer spaces (`erasure.NormalizeEmail`); the wallet
 list hash matches; and no withdrawal is open (`openWithdrawals`). Then, in the
 same transaction, it sets `deleted_at` on the user and its providers, sets
 `active = false` and `deleted_at` on its API keys and provider tokens, and
-moves the request to `pending` with `scrub_after` = now + grace.
+moves the request to `pending` with `scrub_after` = now + grace. A key or token
+that is live at confirm gets `deleted_at` = `requested_at`. One that was
+already revoked gets `requested_at` minus one microsecond
+(`erasure.AlreadyRevokedAt`, `coordinator/internal/store/erasure/confirm.go`;
+`SoftDeleteAPIKeys`, `SoftDeleteProviderTokens`). The two stamps let a cancel
+tell them apart.
 
 After the commit the handler clears the API key cache and disconnects the
 account's live providers (`registry.DisconnectAccount`). The tokens are already
 revoked, so a provider that reconnects comes back unlinked. While the request
 is `pending`, every read of a live user, key, provider or token skips the row
 ([soft-deleted rows](storage.md#soft-deleted-rows)).
+
+### Cancel
+
+`CancelAccountErasure` runs only while the request is `pending` and before
+`scrub_after`. It clears `deleted_at` on the user and on the providers stamped
+`requested_at` (`RestoreUser`, `RestoreProviders`). It clears `deleted_at` on
+API keys and provider tokens stamped `requested_at` or
+`erasure.AlreadyRevokedAt` (`RestoreAPIKeys`, `RestoreProviderTokens`), and
+sets `active = true` only on the ones stamped `requested_at`. A credential that
+the confirm revoked works again; one revoked before the confirm stays revoked
+and is listed again as disabled. `MarkErasureCanceled` clears
+`wallet_addresses` and `wallet_hash`. After the commit `HandleCancel` clears
+the API key cache (`InvalidateAllAPIKeyCache`), so no cached refusal remains
+(`TestErasureCancelRestoresOnlyCredentialsItRevoked`, `TestAdminErasureHTTPFlow`).
+The confirm disconnected the account's providers; a provider token that the
+cancel restores is valid again (`GetProviderToken`).
 
 ### Grace loop
 
@@ -197,7 +219,7 @@ sequenceDiagram
       end
     end
     S->>DB: InsertErasureOutbox (each Stripe object, one erasure_log)
-    S->>DB: MarkErasureErased (applied counts, wallet list cleared)
+    S->>DB: MarkErasureErased (applied counts, wallet list and hash cleared)
     S->>DB: COMMIT
   end
   C->>C: users.Invalidate()
@@ -220,7 +242,8 @@ sequenceDiagram
    (from providers, sessions and log reports), App Attest key IDs, the
    referrer code, Checkout Session IDs, every Express account and Global
    Payouts recipient in the user row and its withdrawals, `mda_serial` alias
-   digests, and the wallet addresses stored at confirm. It also draws the
+   digests, the wallet addresses stored at confirm, and the original Privy
+   user ID (`Keys.PrivyUserID`). It also draws the
    random replacements (`erased:<uuid>` for the Privy ID, `erased-<uuid>` for
    the referrer code and for each wallet address).
 4. **Forfeit.** `forfeitBalance` locks `balances`, sets both columns to 0, and
@@ -234,15 +257,16 @@ sequenceDiagram
 6. **Write the outbox.** One `erasure_outbox` row per Express account, per
    Global Payouts recipient, per batch of up to `ErasureCheckoutBatch`
    Checkout Session IDs, one `resend_contact` row for a nonblank account email,
-   and one `erasure_log` row (`Keys.OutboxRows`). Both backends capture the email
-   before the users rule clears it. The normalized contact remains only in
+   one `privy_user` row for a non-empty Privy user ID, and one `erasure_log` row
+   (`Keys.OutboxRows`). Both backends capture the email and the Privy user ID
+   before the users rule replaces them. The normalized contact remains only in
    `external_id`, excluded from status JSON and Stripe plan fields. No local
    export history proves contact absence, so even a non-provider account gets
    this obligation when it has an email. The row commits atomically with the
    scrub; repeat scrubs are refused rather than duplicating it. Resend removal
    is manual; see the [runbook](../operations/account-erasure.md#resend-contact-cleanup).
 7. **Mark erased.** `MarkErasureErased` stores the planned and applied counts,
-   clears `wallet_addresses`, `lease_until` and `last_error`. The transaction
+   clears `wallet_addresses`, `wallet_hash`, `lease_until` and `last_error`. The transaction
    reads and decodes the result before committing, then returns that retained
    result so cancellation immediately after commit cannot skip runtime cleanup.
 8. **Clear in-memory copies.** `CachedStore` drops its cached users. Then
@@ -275,7 +299,7 @@ unverified serial claims or X25519 session keys.
 
 ### Outbox delivery
 
-The scrub cannot call Stripe inside its transaction, so it writes the
+The scrub cannot call Stripe or Privy inside its transaction, so it writes the
 external deletions to `erasure_outbox`, and a worker delivers them later.
 `StartErasureOutboxLoop` runs once at start and then every
 `erasureOutboxInterval`. Each pass handles up to `erasureOutboxBatch` rows
@@ -336,7 +360,7 @@ the 6-hour cap is not reached. A Stripe 4xx is definitive except 409, 429 and
 a Global Payouts error is definitive for 400, 401, 403, 404 and 422 unless it
 is an idempotency error (`globalpayouts.Error.Definitive`). Network errors and
 5xx answers are retried. In billing mock mode every Stripe row ends `done`
-without a call.
+without a call; a `privy_user` row still calls Privy.
 
 | `target` | Stripe or Datadog call | `done` when | `manual_action` when |
 |---|---|---|---|
@@ -345,6 +369,7 @@ without a call.
 | `checkout_sessions` | A Stripe Redaction Job with the Checkout key (`coordinator/billing/stripe_redaction.go`) | The job reaches `succeeded` | Feature not enabled, other validation errors, a canceled job, a failed job without validation errors, a stuck job, the 105-day deadline, or sessions Stripe cannot find |
 | `erasure_log` | One Datadog Logs API event (`datadog.Client.SendLog`); without `DD_API_KEY` a `slog` line | Datadog accepted it, or no Datadog is configured | Never directly; 8 failed sends exhaust the retries |
 | `resend_contact` | No external call | Only after verified operator cleanup | Always, including mock billing mode; the private email remains until cleanup is confirmed |
+| `privy_user` | `DELETE https://auth.privy.io/api/v1/users/<did>` with Basic auth (app ID, app secret) and the `privy-app-id` header (`auth.PrivyAuth.DeleteUser`, `coordinator/auth/privy_delete_user.go`) | 204 (deleted) or 404 (no such user) | Never directly; any other status, a transport error, no Privy (`Privy is not configured`) or no app secret retries, and 8 failures exhaust the retries. The error text never holds the DID |
 
 A redaction job moves through these steps, one per worker pass
 (`redactCheckoutSessions`):
@@ -417,7 +442,8 @@ during the grace period still apply, because the erasure can be canceled.
 | A delayed provider session opens or backfills a serial | Open and touch serialize with scrub and reject erased account/session ownership, including blank rows | `coordinator/store/postgres/provider_sessions.go` (`OpenProviderSession`, `TouchProviderSession`); memory mirrors the checks |
 | An API key keeps working from the cache | Keys are revoked, and the handler clears the key cache | `SoftDeleteAPIKeys`; `InvalidateAllAPIKeyCache` |
 | A Privy login during the grace period creates a second account | 403 `account_pending_deletion` | `coordinator/auth/privy.go` (`GetOrCreateUser`, `ErrAccountPendingDeletion`); `coordinator/api/access/auth.go` (`writePrivyUserError`) |
-| A Privy login after the scrub finds the old account | The stored Privy ID is random, so the login makes a new, empty account | `ScrubUsersRow` |
+| A Privy login after the scrub finds the old account | The stored Privy ID is random, and the outbox deletes the Privy user, so the login makes a new, empty account | `ScrubUsersRow`; `deletePrivyUser` |
+| A late App Attest shadow event of an erased session | `RecordAppAttestEvent` takes the shared privacy fence and returns `ErrErasureConflict` | `coordinator/store/postgres/machine_inventory.go`, `coordinator/store/memory/machine_inventory.go` (`RecordAppAttestEvent`) |
 | A cached user keeps authenticating | `CachedStore` overrides the three writers | `coordinator/store/cached.go` |
 | A Checkout Session completes after the scrub | `ErrCheckoutErased`: the webhook answers 200 and credits nothing | `coordinator/store/postgres/stripe_settlement.go` (`CompleteStripeCheckout`); `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) |
 | A late credit refills the balance | The refused-credit triggers | `00025_erasure_refuse_credits.sql` |
@@ -466,6 +492,13 @@ Outside the live database:
   it. A redacted Checkout transaction can no longer be refunded or disputed.
   Checkout Sessions made on the earlier Stripe account are not reachable with
   the current key and end in `manual_action`.
+- **Privy** deletes the user permanently, but it does not erase the embedded
+  wallet: Privy soft deletes it (disassociates and archives the data)
+  ([Privy: deleting users](https://docs.privy.io/user-management/users/managing-users/deleting-users)).
+- **MicroMDM** keeps the device records of the account's Macs. Removal is not
+  automated; the operator collects the serials and UDIDs before the scrub and
+  removes the devices after it, and some MicroMDM data stays
+  ([runbook](../operations/account-erasure.md#micromdm-device-cleanup)).
 - **Resend** contact data, segment membership and scheduled broadcasts require
   [manual cleanup](../operations/account-erasure.md#resend-contact-cleanup).
   `provideremail.ReadSnapshot` suppresses deleted owners' emails after ranking
@@ -491,8 +524,9 @@ Outside the live database:
 6. **An erased account's balance stays zero.** The migration 25 triggers and
    `refuseErasedCreditLocked` (`TestErasedAccountRefusesCredits`).
 7. **Confirmation data has a bounded lifetime.** The plan token and wallet
-   list are hashed. The confirmed raw `wallet_addresses` are cleared by
-   `MarkErasureErased` and `MarkErasureCanceled`; the confirmed email is not
+   list are hashed. The confirmed raw `wallet_addresses` and `wallet_hash` are
+   cleared by `MarkErasureErased` and `MarkErasureCanceled`
+   (`TestErasureCancelClearsWalletHash`); the confirmed email is not
    stored in the request. Lifecycle/audit identifiers and the freeform reason
    remain, so the reason must not contain personal details.
 8. **Another account's rows survive.** Shared keys and aliases are removed
@@ -543,16 +577,16 @@ Outside the live database:
 | Postgres steps | `coordinator/store/postgres/erasure.go` (`PlanAccountErasure`, `RequestAccountErasure`, `ScrubAccount`, `forfeitBalance`); `coordinator/store/postgres/erasure_rules.go` (`erasureStatements`, `applyRules`); `coordinator/store/postgres/erasure_keys.go` (`collectErasureKeys`); `coordinator/store/postgres/erasure_outbox.go` (`LeaseDueErasureOutbox`, `SaveErasureOutboxResult`) |
 | SQL | `coordinator/store/postgres/queries/erasure.sql` (sqlc input), `coordinator/store/postgres/storedb/erasure.sql.go` (generated) |
 | Memory steps | `coordinator/store/memory/erasure.go` (`PlanAccountErasure`, `ScrubAccount`, `refuseErasedCreditLocked`), `coordinator/store/memory/erasure_keys.go` (`collectErasureKeysLocked`), `coordinator/store/memory/erasure_rules.go` (`memoryErasureRules`, `runMemoryRulesLocked`), `coordinator/store/memory/erasure_outbox.go` |
-| Schema | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`, `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 23, 24) |
+| Schema | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql`, `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`, `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql`, `coordinator/store/postgres/schema/migrations/00029_erasure_outbox_privy_user.sql`, `coordinator/store/postgres/migration_indexes.go` (versions 23, 24) |
 | Cache invalidation | `coordinator/store/cached.go` |
 | HTTP | `coordinator/api/accounts/erasure/handlers.go`; owner built in `coordinator/api/server.go` (`NewRuntime`); routes in `coordinator/api/routes.go` |
 | Loop, post-commit clears | `coordinator/api/accounts/erasure/loop.go` (`Owner.StartLoop`, `scrub`); `coordinator/api/accounts/erasure/owner.go` (`Hooks`); `coordinator/api/accounts_lifecycle.go` (`StartAccountErasureLoop`), called from `coordinator/app/lifecycle.go` |
 | Outbox worker | `coordinator/api/accounts/erasure/outbox.go` (`Owner.StartOutboxLoop`, `runOutbox`, `outboxResult`, `deliverOutbox`, `writeErasureLog`); `coordinator/api/accounts/erasure/outbox_redaction.go` (`redactCheckoutSessions`, `splitMissingSessions`, `failedRedactionJob`, `redactionAPIOutcome`); `coordinator/api/accounts_lifecycle.go` (`StartErasureOutboxLoop`), called from `coordinator/app/lifecycle.go`; store `LeaseDueErasureOutbox`, `SaveErasureOutboxResult` |
-| Stripe and Datadog clients | `coordinator/billing/stripe_connect.go` (`DeleteAccount`), `coordinator/billing/globalpayouts/client.go` (`CloseRecipient`), `coordinator/billing/stripe_redaction.go`, `coordinator/datadog/logs_send.go` (`SendLog`) |
+| Stripe, Privy and Datadog clients | `coordinator/billing/stripe_connect.go` (`DeleteAccount`), `coordinator/billing/globalpayouts/client.go` (`CloseRecipient`), `coordinator/billing/stripe_redaction.go`, `coordinator/auth/privy_delete_user.go` (`DeleteUser`; set by `Server.SetPrivyAuth` through `Owner.SetPrivyUsers`), `coordinator/datadog/logs_send.go` (`SendLog`) |
 | In-memory forgets | `coordinator/registry/provider_lifecycle.go` (`DisconnectAccount`); `coordinator/api/provider/trust/erasure.go` (`ForgetErasedKeys`), which calls `coordinator/internal/provider/authority/trust_reuse_state.go` (`ForgetTrustReuse`), `coordinator/internal/provider/reuse/trust_reuse_records.go` (`Cache.Forget`) and `coordinator/internal/provider/verification/queue.go` (`Scheduler.Forget`); `coordinator/payments/payments.go` (`ForgetConsumer`) |
 | Login block | `coordinator/auth/privy.go` (`GetOrCreateUser`), `coordinator/api/access/auth.go` (`writePrivyUserError`) |
 | Late Checkout | `coordinator/store/stripe_settlement.go` (`ErrCheckoutErased`), `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) |
-| Tests | `coordinator/tests/store/contracts/erasure_test.go`, `coordinator/tests/store/contracts/erasure_credits_test.go`, `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go`, `coordinator/tests/store/contracts/erasure_outbox_test.go`, `coordinator/tests/store/contracts/erasure_outbox_staging_test.go`, `coordinator/tests/store/postgres/erasure_marker_test.go`, `coordinator/tests/store/postgres/erasure_lock_order_test.go`, `coordinator/tests/store/memory/erasure_marker_test.go`, `coordinator/tests/api/accounts/contracts/erasure_test.go`, `coordinator/tests/api/accounts/contracts/erasure_outbox_test.go` (fake Stripe and Datadog intake in `erasure_outbox_fixture_test.go`), `coordinator/tests/api/billing/contracts/stripe_checkout_erased_test.go`, `coordinator/tests/api/provider/trust/reuse_forget_test.go`, `coordinator/tests/api/provider/trust/verification/forget_test.go`, `coordinator/tests/auth/privy_test.go`, `coordinator/tests/datadog/logs_send_test.go`; seed helpers `coordinator/tests/internal/erasurefixture/account.go` |
+| Tests | `coordinator/tests/store/contracts/erasure_test.go`, `coordinator/tests/store/contracts/erasure_credits_test.go`, `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go`, `coordinator/tests/store/contracts/erasure_outbox_test.go`, `coordinator/tests/store/contracts/erasure_outbox_staging_test.go`, `coordinator/tests/store/postgres/erasure_marker_test.go`, `coordinator/tests/store/postgres/erasure_lock_order_test.go`, `coordinator/tests/store/memory/erasure_marker_test.go`, `coordinator/tests/api/accounts/contracts/erasure_test.go`, `coordinator/tests/api/accounts/contracts/erasure_outbox_test.go` (fake Stripe and Datadog intake in `erasure_outbox_fixture_test.go`), `coordinator/tests/api/accounts/contracts/erasure_outbox_privy_test.go` (in-process Privy API in `coordinator/tests/internal/testkit/privy_users.go`), `coordinator/tests/store/contracts/erasure_cancel_credentials_test.go`, `coordinator/tests/store/postgres/erasure_wallet_hash_test.go`, `coordinator/tests/api/billing/contracts/stripe_checkout_erased_test.go`, `coordinator/tests/api/provider/trust/reuse_forget_test.go`, `coordinator/tests/api/provider/trust/verification/forget_test.go`, `coordinator/tests/auth/privy_test.go`, `coordinator/tests/datadog/logs_send_test.go`; seed helpers `coordinator/tests/internal/erasurefixture/account.go` |
 
 ### Concurrent writes and late external results
 
@@ -586,7 +620,8 @@ provider-session ownership before storing proof bytes; completion checks that
 original session again. Shared App Attest keys do not permit an erased account's
 transcript to return. Receipt renewal and queued APNs proof persistence instead
 check the key's owners and remain valid while another owner is live. Both reject
-writes after the last owner is erased. Delayed log uploads return 409
+writes after the last owner is erased. `RecordAppAttestEvent` refuses a shadow
+event of an erased account's session under the same fence (`checkPersonalSession`). Delayed log uploads return 409
 `account_deleted` after scrub, even if authentication ran before reading the body
 (`coordinator/store/postgres/erasure_personal_writes.go`,
 `coordinator/store/postgres/app_attest_archive.go`,

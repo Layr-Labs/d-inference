@@ -87,8 +87,8 @@ UPDATE providers SET deleted_at = $2 WHERE account_id = $1 AND deleted_at IS NUL
 
 -- A credential that is live at confirm gets revoked_at (the request's
 -- requested_at). One that was already revoked gets the earlier
--- already_revoked_at. Cancel shows both again and makes only the first kind
--- active.
+-- already_revoked_at. Cancel clears deleted_at on both and makes only the
+-- first kind active.
 
 -- name: SoftDeleteAPIKeys :execrows
 UPDATE api_keys

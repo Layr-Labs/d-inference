@@ -1,8 +1,9 @@
 // Package erasure owns the account erasure (GDPR) admin API, the loop that
 // scrubs requests whose grace period has ended, and the outbox worker that
-// delivers the scrub's Stripe and Privy deletions and erasure_log record. The flow is
-// plan (dry run + confirm token), confirm (soft delete, grace period starts),
-// then a background scrub after the grace period, or at once with force.
+// delivers the scrub's Stripe and Privy deletions and erasure_log record.
+// The flow is plan (dry run + confirm token), confirm (soft delete, grace
+// period starts), then a background scrub after the grace period, or at once
+// with force.
 // Runbook: docs/operations/account-erasure.md.
 package erasure
 

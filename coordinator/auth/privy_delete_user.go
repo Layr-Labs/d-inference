@@ -9,17 +9,15 @@ import (
 	"net/url"
 )
 
-// ErrPrivyUserNotFound is DeleteUser's result when Privy has no user with the
-// ID: Privy answers 404.
+// ErrPrivyUserNotFound is DeleteUser's result when Privy answers 404: Privy
+// has no user with the ID.
 var ErrPrivyUserNotFound = errors.New("privy: user not found")
 
 // DeleteUser deletes the Privy user with the Privy user ID (DID). Privy
-// documents DELETE https://auth.privy.io/api/v1/users/<did> with Basic auth
-// (app ID and app secret) and the privy-app-id header; 204 means deleted and
-// 404 means no such user
+// answers 204 when it deleted the user
 // (https://docs.privy.io/user-management/users/managing-users/deleting-users).
 // The returned error never holds the user ID, because the erasure status API
-// shows it.
+// shows the error.
 func (p *PrivyAuth) DeleteUser(ctx context.Context, privyUserID string) error {
 	if p.appSecret == "" {
 		return errors.New("privy: app_secret required for REST API calls")
@@ -27,6 +25,7 @@ func (p *PrivyAuth) DeleteUser(ctx context.Context, privyUserID string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		"https://auth.privy.io/api/v1/users/"+url.PathEscape(privyUserID), nil)
 	if err != nil {
+		// The parse error names the URL, which holds the user ID.
 		return errors.New("privy: build delete user request")
 	}
 	req.SetBasicAuth(p.appID, p.appSecret)

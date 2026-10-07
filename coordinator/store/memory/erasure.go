@@ -181,7 +181,7 @@ func (s *MemoryStore) CancelAccountErasure(ctx context.Context, accountID, actor
 	if r == nil {
 		return nil, store.ErrNotFound
 	}
-	if r.State != store.ErasurePending || r.ScrubAfter == nil || !now.Before(*r.ScrubAfter) {
+	if r.State != store.ErasurePending || r.RequestedAt == nil || r.ScrubAfter == nil || !now.Before(*r.ScrubAfter) {
 		return nil, store.ErrErasureConflict
 	}
 	u := s.usersByAccountID[accountID]
@@ -194,24 +194,30 @@ func (s *MemoryStore) CancelAccountErasure(ctx context.Context, accountID, actor
 	u.DeletedAt = nil
 	s.usersByPrivyID[u.PrivyUserID] = u
 	// As RestoreProviders, RestoreAPIKeys and RestoreProviderTokens.
-	revokedBy := func(deletedAt *time.Time, at time.Time) bool { return deletedAt != nil && deletedAt.Equal(at) }
-	var revoked, alreadyRevoked time.Time
-	if r.RequestedAt != nil {
-		revoked, alreadyRevoked = *r.RequestedAt, erasure.AlreadyRevokedAt(*r.RequestedAt)
+	revoked := *r.RequestedAt
+	alreadyRevoked := erasure.AlreadyRevokedAt(revoked)
+	// removedByConfirm reports whether the confirm stamped deletedAt, and
+	// whether the credential was live before the confirm.
+	removedByConfirm := func(deletedAt *time.Time) (removed, live bool) {
+		if deletedAt == nil {
+			return false, false
+		}
+		live = deletedAt.Equal(revoked)
+		return live || deletedAt.Equal(alreadyRevoked), live
 	}
 	for _, p := range s.providerRecords {
-		if p.AccountID == accountID && revokedBy(p.DeletedAt, revoked) {
+		if p.AccountID == accountID && p.DeletedAt != nil && p.DeletedAt.Equal(revoked) {
 			p.DeletedAt = nil
 		}
 	}
 	for _, rec := range s.keyRecords {
-		if rec.OwnerAccountID == accountID && (revokedBy(rec.DeletedAt, revoked) || revokedBy(rec.DeletedAt, alreadyRevoked)) {
-			rec.Disabled, rec.DeletedAt = !revokedBy(rec.DeletedAt, revoked), nil
+		if removed, live := removedByConfirm(rec.DeletedAt); rec.OwnerAccountID == accountID && removed {
+			rec.Disabled, rec.DeletedAt = !live, nil
 		}
 	}
 	for _, pt := range s.providerTokens {
-		if pt.AccountID == accountID && (revokedBy(pt.DeletedAt, revoked) || revokedBy(pt.DeletedAt, alreadyRevoked)) {
-			pt.Active, pt.DeletedAt = revokedBy(pt.DeletedAt, revoked), nil
+		if removed, live := removedByConfirm(pt.DeletedAt); pt.AccountID == accountID && removed {
+			pt.Active, pt.DeletedAt = live, nil
 		}
 	}
 	at := now

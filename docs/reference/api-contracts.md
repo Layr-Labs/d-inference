@@ -538,7 +538,7 @@ grace period or expiry; frozen membership remains a separate prerequisite.
 | POST | `/v1/admin/accounts/{account_id}/erasure/plan` | `HandlePlan` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Dry run plus a 15-minute confirm token; changes no account data. [Erasure plan](#erasure-plan) |
 | POST | `/v1/admin/accounts/{account_id}/erasure` | `HandleRequest` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Soft delete, revoke keys and provider tokens, disconnect providers; `force` scrubs at once. [Erasure confirm](#erasure-confirm) |
 | GET | `/v1/admin/accounts/{account_id}/erasure` | `HandleStatus` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Newest request, its outbox rows and refused credits. [Erasure status](#erasure-status) |
-| POST | `/v1/admin/accounts/{account_id}/erasure/cancel` | `HandleCancel` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Grace period only; keys and tokens stay revoked. [Erasure cancel](#erasure-cancel) |
+| POST | `/v1/admin/accounts/{account_id}/erasure/cancel` | `HandleCancel` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Grace period only; restores the keys and tokens the confirm revoked. [Erasure cancel](#erasure-cancel) |
 | PUT | `/v1/admin/users/platform-fee` | `HandleAdminSetUserPlatformFee` (`coordinator/api/accounts/admin_users.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
 | POST | `/v1/admin/models/register` | `HandleRegisterModel` (`coordinator/api/catalog/model_registry_handlers.go`) | `publishing` | Publish a model build; optional `cache_read_price` beside `input_price`/`output_price` (`modelprice.Input`); the response (`registerModelResponse`) quotes the effective platform rates |
 | POST | `/v1/admin/models/` | `HandleAdminModelRegistryAction` (`coordinator/api/catalog/registry_actions.go`) | `publishing` | Registry actions selected by path suffix, including `publish-revision` (version plus optional pinned `hugging_face_artifact`) and `retire-revision` (version); publication returns 503 if its committed promotion has not reached live policy or desired-state delivery to a provider fails; [revision contracts](model-registry-format.md#admin-actions) |
@@ -1318,10 +1318,13 @@ Response 200: `{"request": ErasureRequest}` in `canceled`, with
 | 404 | `not_found` | No user, or no `planned` or `pending` request (also after the scrub) |
 | 409 | `erasure_conflict` | The open request is `planned`, or `scrub_after` has passed |
 
-Side effects: `deleted_at` cleared on the user and its providers; the
-request's wallet list cleared; log `account erasure canceled`. API keys and
-provider tokens stay revoked, and disconnected providers stay disconnected
-until they link again.
+Side effects: `deleted_at` cleared on the user and on the providers, API keys
+and provider tokens that the confirm stamped; the request's wallet list and
+`wallet_hash` cleared; the API key cache cleared (`InvalidateAllAPIKeyCache`);
+log `account erasure canceled`. API keys and provider tokens that the confirm
+revoked work again. Ones revoked before the confirm stay revoked and are
+listed again as disabled
+([soft delete](soft-delete.md#writers-of-deleted_at)).
 
 ### Erasure shapes
 
@@ -1353,10 +1356,10 @@ All in `coordinator/store/erasure_types.go`. Times are RFC 3339. Fields marked
 | `ErasureWalletCount` | `address` | string | A named wallet address |
 | | `payments_consumer_rows`, `payments_provider_rows`, `provider_payouts_rows` | integer | Rows that hold it; all 0 means the address is wrong |
 | `ErasureOutboxItem` | `id`, `request_id` | string | Row and request |
-| | `target` | string | `stripe_account`, `global_recipient`, `checkout_sessions`, `erasure_log`, `resend_contact` (manual cleanup; contact email is not exposed) |
+| | `target` | string | `stripe_account`, `global_recipient`, `checkout_sessions`, `erasure_log`, `resend_contact` (manual cleanup; contact email is not exposed), `privy_user` (Privy user deletion; the Privy user ID is not exposed) |
 | | `state` | string | `pending`, `done`, `manual_action` |
 | | `attempts`, `next_at`, `last_error`, `done_at`, `created_at` | | Delivery bookkeeping; `last_error` and `done_at` omitted when empty |
-| | `has_external_id` | bool | The row still holds an external cleanup identifier (Stripe ID or Resend contact email; false once `done`); the identifier itself is never returned |
+| | `has_external_id` | bool | The row still holds an external cleanup identifier (Stripe ID, Resend contact email or Privy user ID; false once `done`); the identifier itself is never returned |
 | | `has_stripe_job` | bool | A Stripe redaction job is in progress for a `checkout_sessions` row; the job ID is never returned |
 | `ErasureRefusedCredit` | `id`, `account_id`, `entry_type`, `amount_micro_usd`, `reference`, `created_at` | | A credit kept out of an erased account ([schema](personal-data-rules.md#erasure_refused_credits)) |
 
@@ -1371,7 +1374,8 @@ All in `coordinator/store/erasure_types.go`. Times are RFC 3339. Fields marked
   the stored Privy ID is random, and the same login creates a new, empty
   account.
 - The account's API keys answer 401 `authentication_error` from the confirm
-  on; they stay revoked after a cancel.
+  on. A cancel makes the keys that the confirm revoked work again; keys
+  revoked before the confirm stay revoked.
 - `POST /v1/billing/stripe/webhook`: a `checkout.session.completed` event for
   an erased account's session, or a replay for a session the scrub cleared,
   answers 200 and credits nothing (`store.ErrCheckoutErased`).

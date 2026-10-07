@@ -286,11 +286,11 @@ revokes keys and tokens), and, after the grace period, one scrub transaction
 that applies every rule in `erasure.Rules` (`coordinator/internal/store/erasure/rules.go`)
 with each statement's affected rows checked against a count. It uses four
 tables: `erasure_requests` (state, counts, and retained audit
-metadata), `erasure_outbox` (worker-delivered Stripe deletions and the Datadog
+metadata), `erasure_outbox` (worker-delivered Stripe and Privy deletions and the Datadog
 `erasure_log` record, plus private manual Resend contact cleanup), `erasure_refused_credits`
 (credits that triggers keep out of an erased account), and `erasure_se_owners`
 (pseudonymous key digests and account IDs that fence delayed device writes). Goose versions 22 to 26
-add them and their indexes:
+and 29 add them and their indexes:
 
 | Version | Source | What it does |
 |---|---|---|
@@ -298,6 +298,7 @@ add them and their indexes:
 | 23–24 | Go: `indexMigrations` | `CONCURRENTLY` indexes `billing_sessions(referral_code)` and `users(privy_user_id) WHERE deleted_at IS NOT NULL`. |
 | 25 | `00025_erasure_refuse_credits.sql` | `erasure_refused_credits` and the triggers that keep credits out of an erased account (`erasure_keep_balance_insert`, `erasure_keep_balance_update` on `balances`; `erasure_refuse_ledger_credit` on `ledger_entries`). |
 | 26 | `00026_erasure_outbox_stripe_job.sql` | Adds the redaction-job columns of `erasure_outbox` (`stripe_job_id`, its status, status time and generation) for `checkout_sessions` rows, plus the independent `lease_generation BIGINT` that fences delivery result commits. |
+| 29 | `00029_erasure_outbox_privy_user.sql` | `NO TRANSACTION`: adds the target check `erasure_outbox_target_allowed` (which also allows `privy_user`) `NOT VALID`, validates it, then drops `erasure_outbox_target_check`. |
 
 `CachedStore` overrides the three erasure writers (`RequestAccountErasure`,
 `CancelAccountErasure`, `ScrubAccount`) to drop cached users.
@@ -370,7 +371,7 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Memory-store pruner, every 15 minutes | `coordinator/app/store.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/app/store.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
-| Account erasure outbox, every minute | `coordinator/api/accounts/erasure/outbox.go` (`Owner.StartOutboxLoop`, started by `StartErasureOutboxLoop` from `coordinator/app/lifecycle.go`) | Delivers Stripe and Datadog rows; moves `resend_contact` to `manual_action`. A `done` row loses its external cleanup identifier ([outbox delivery](account-erasure.md#outbox-delivery)). |
+| Account erasure outbox, every minute | `coordinator/api/accounts/erasure/outbox.go` (`Owner.StartOutboxLoop`, started by `StartErasureOutboxLoop` from `coordinator/app/lifecycle.go`) | Delivers Stripe, Privy and Datadog rows; moves `resend_contact` to `manual_action`. A `done` row loses its external cleanup identifier ([outbox delivery](account-erasure.md#outbox-delivery)). |
 | Account erasure scrub, every hour | `coordinator/api/accounts/erasure/loop.go` (`Owner.StartLoop`, started by `StartAccountErasureLoop` from `coordinator/app/lifecycle.go`) | Scrubs the personal data of each `pending` erasure request whose `scrub_after` has passed ([account erasure](account-erasure.md#grace-loop)). The user row, IDs and financial records stay ([retained data](../reference/personal-data-rules.md#retained-data)). |
 
 The existing nullable `request_rejections.could_have_served` column stores NULL

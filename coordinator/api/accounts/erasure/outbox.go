@@ -147,14 +147,16 @@ func outboxResult(row store.ErasureOutboxWork, out outboxOutcome, now time.Time)
 }
 
 func (s *Owner) deliverOutbox(ctx context.Context, row store.ErasureOutboxWork) outboxOutcome {
-	if row.Target == store.ErasureTargetResendContact {
+	switch row.Target {
+	case store.ErasureTargetResendContact:
 		return outboxOutcome{kind: outboxManual, err: "Resend contact removal requires operator confirmation"}
-	}
-	// Stripe mock mode does not cover Privy.
-	if row.Target == store.ErasureTargetPrivyUser {
+	case store.ErasureTargetPrivyUser:
 		return s.deletePrivyUser(ctx, row.ExternalID)
+	case store.ErasureTargetErasureLog:
+		return s.writeErasureLog(ctx, row)
 	}
-	if row.Target != store.ErasureTargetErasureLog && s.billing != nil && s.billing.MockMode() {
+	// Stripe mock mode skips only the Stripe targets below.
+	if s.billing != nil && s.billing.MockMode() {
 		return outboxOutcome{kind: outboxDone}
 	}
 	switch row.Target {
@@ -164,8 +166,6 @@ func (s *Owner) deliverOutbox(ctx context.Context, row store.ErasureOutboxWork) 
 		return s.closeGlobalRecipient(ctx, row.ExternalID)
 	case store.ErasureTargetCheckoutSessions:
 		return s.redactCheckoutSessions(row)
-	case store.ErasureTargetErasureLog:
-		return s.writeErasureLog(ctx, row)
 	}
 	return outboxOutcome{kind: outboxManual, err: "unknown outbox target " + string(row.Target)}
 }
@@ -197,17 +197,6 @@ func stripeAccountNotFound(err error) bool {
 	return apiErr.Code == "resource_missing"
 }
 
-func (s *Owner) deletePrivyUser(ctx context.Context, id string) outboxOutcome {
-	if s.privy == nil {
-		return outboxOutcome{kind: outboxRetry, err: "Privy is not configured"}
-	}
-	err := s.privy.DeleteUser(ctx, id)
-	if err == nil || errors.Is(err, auth.ErrPrivyUserNotFound) {
-		return outboxOutcome{kind: outboxDone}
-	}
-	return outboxOutcome{kind: outboxRetry, err: err.Error()}
-}
-
 func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutcome {
 	if s.billing == nil || s.billing.GlobalPayouts() == nil {
 		return outboxOutcome{kind: outboxRetry, err: "Stripe Global Payouts is not configured"}
@@ -221,6 +210,19 @@ func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutco
 		return outboxOutcome{kind: outboxDone}
 	case errors.As(err, &apiErr) && apiErr.Definitive():
 		return outboxOutcome{kind: outboxManual, err: err.Error()}
+	}
+	return outboxOutcome{kind: outboxRetry, err: err.Error()}
+}
+
+// deletePrivyUser treats a user that Privy does not have as deleted. Every
+// other failure is retried.
+func (s *Owner) deletePrivyUser(ctx context.Context, id string) outboxOutcome {
+	if s.privy == nil {
+		return outboxOutcome{kind: outboxRetry, err: "Privy is not configured"}
+	}
+	err := s.privy.DeleteUser(ctx, id)
+	if err == nil || errors.Is(err, auth.ErrPrivyUserNotFound) {
+		return outboxOutcome{kind: outboxDone}
 	}
 	return outboxOutcome{kind: outboxRetry, err: err.Error()}
 }

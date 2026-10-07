@@ -63,6 +63,7 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 
 ## Unreleased — account erasure
 
+- Cancel now restores the API keys and provider tokens that the confirm revoked; keys and tokens revoked before the confirm stay revoked. The scrub queues a `privy_user` outbox row that deletes the Privy user (schema version 29). It also clears API key model lists, App Attest shadow events and revocation reasons, rejected-request model names and parameters, Stripe withdrawal failure reasons, matched payment transaction hashes and memos, provider model prices, and the request's wallet hash. Late App Attest shadow events of an erased account are refused. MicroMDM device removal stays a manual runbook step.
 - Keep upstream error text out of erasure-outbox manual-action logs; retain safe correlation IDs, target, state and attempt count, with details available in restricted outbox records.
 - Exclude pending-erasure users from provider-email exports after machine-owner ranking, and retain a private `resend_contact` cleanup obligation before clearing the account email. Resend contact, segment and scheduled-broadcast cleanup remains manual.
 - Route late memory-store referral settlement credits through the erasure-aware credit path, matching PostgreSQL: erased referrers stay at zero balance and receive a refused-credit audit record instead.

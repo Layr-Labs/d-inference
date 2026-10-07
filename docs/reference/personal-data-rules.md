@@ -36,7 +36,7 @@ predicate as the apply query. "Unshared" means no other account uses the key
 | # | Rule (`Name`) | Table | Column: rule | Link to the account | Count / apply query |
 |---|---|---|---|---|---|
 | 1 | `users` | `users` | `email`: empty; `privy_user_id`: unique random; `stripe_account_id`, `stripe_account_status`, `stripe_account_country`, `stripe_destination_type`, `stripe_destination_last4`: empty; `stripe_instant_eligible`: `FALSE` (not listed in the rule's columns) | `account_id` | `CountUsersRow` / `ScrubUsersRow` |
-| 2 | `api_keys` | `api_keys` | `name`: empty | `owner_account_id` | `CountAPIKeysRows` / `ScrubAPIKeysRows` |
+| 2 | `api_keys` | `api_keys` | `name`, `allowed_models`: empty (an empty list means all models; the keys are revoked at confirm, so this gives no access) | `owner_account_id` | `CountAPIKeysRows` / `ScrubAPIKeysRows` |
 | 3 | `provider_tokens` | `provider_tokens` | `label` (host name): empty | `account_id` | `CountProviderTokensRows` / `ScrubProviderTokensRows` |
 | 4 | `device_codes` | `device_codes` | delete row | `account_id` | `CountDeviceCodesRows` / `DeleteDeviceCodesRows` |
 | 5 | `providers` | `providers` | `serial_number`: empty; `location`, `attestation_result`, `mda_cert_chain`: NULL | `account_id` | `CountProvidersRows` / `ScrubProvidersRows` |
@@ -50,38 +50,49 @@ predicate as the apply query. "Unshared" means no other account uses the key
 | 13 | `machine_aliases_mda_serial` | `darkbloom_machine_aliases` | delete row | `kind` `mda_serial`, `scope` `''`, `digest` = SHA-256 of `mda_serial\x00<serial>` for the account's serials (`MDASerialDigest`), machine not used by another account | `CountMDASerialAliasesRows` / `DeleteMDASerialAliasesRows` |
 | 14 | `app_attest_evidence_blobs` | `app_attest_evidence_blobs` | delete row | `evidence_id` of evidence whose `session_id` is one of the account's provider IDs | `CountAppAttestEvidenceBlobsRows` / `DeleteAppAttestEvidenceBlobsRows` |
 | 15 | `app_attest_evidence` | `app_attest_evidence` | `context`: `{}` | `session_id` in the account's provider IDs | `CountAppAttestEvidenceRows` / `ScrubAppAttestEvidenceRows` |
-| 16 | `app_attest_receipt_jobs` | `app_attest_receipt_jobs` | delete row | `key_id` in the account's unshared App Attest key IDs | `CountAppAttestReceiptJobsRows` / `DeleteAppAttestReceiptJobsRows` |
-| 17 | `app_attest_receipt_blobs` | `app_attest_receipt_blobs` | delete row | `receipt_id` of receipts with those key IDs | `CountAppAttestReceiptBlobsRows` / `DeleteAppAttestReceiptBlobsRows` |
-| 18 | `app_attest_receipts` | `app_attest_receipts` | `context`: `{}` | `key_id` in those key IDs | `CountAppAttestReceiptsRows` / `ScrubAppAttestReceiptsRows` |
-| 19 | `usage_request_location` | `usage` | `request_location`: NULL | `consumer_key_hash` = SHA-256 hex of the account ID (`store.HashKey`), rows with a location | `CountUsageLocationRows` / `ScrubUsageLocationRows` |
-| 20 | `inference_routes_consumer_region` | `inference_routes` | `consumer_region`: NULL | `consumer_key_hash`, as 19 | `CountConsumerRegionRows` / `ScrubConsumerRegionRows` |
-| 21 | `inference_routes_provider_region` | `inference_routes` | `provider_region`: NULL | `provider_id` in the account's provider IDs | `CountProviderRegionRows` / `ScrubProviderRegionRows` |
-| 22 | `referrers` | `referrers` | `code`: unique random; `referrals.referrer_code` follows through `ON UPDATE CASCADE` | `account_id` | `CountReferrersRow` / `ScrubReferrersRow` |
-| 23 | `billing_sessions_referral_code` | `billing_sessions` | `referral_code`: the new code from 22 | `referral_code` = the account's old code, in any account's sessions | `CountReferralCodeCopies` / `ScrubReferralCodeCopies` |
-| 24 | `billing_sessions` | `billing_sessions` | `external_id` (Checkout Session ID): empty; `status` `pending` becomes `erased` | `account_id` | `CountBillingSessionsRows` / `ScrubBillingSessionsRows` |
-| 25 | `ledger_entries_stripe_reference` | `ledger_entries` | `reference` `stripe:<session>`: fixed value `stripe:erased` | `account_id`, `reference LIKE 'stripe:%'` | `CountStripeLedgerReferences` / `ScrubStripeLedgerReferences` |
-| 26 | `ledger_entries_admin_note` | `ledger_entries` | `reference`: fixed value, the entry type (drops the admin note) | `account_id`, `entry_type` `admin_credit` or `admin_reward` | `CountAdminNoteLedgerReferences` / `ScrubAdminNoteLedgerReferences` |
-| 27 | `global_payout_recipients` | `global_payout_recipients` | `country`: empty; `data`: tombstone (a new `GlobalRecipient` with only `id` and `account_id`, as `RemoveGlobalRecipient`) | `account_id` | `CountGlobalRecipientRow` / `TombstoneGlobalRecipientRow` |
-| 28 | `global_payout_withdrawals` | `global_payout_withdrawals` | `data.recipient_id`, `data.payout_method_id`: empty; `data.request`: `{}` | `account_id` | `CountGlobalPayoutRows` / `ScrubGlobalPayoutRows` |
-| 29 | `stripe_withdrawals` | `stripe_withdrawals` | `stripe_account_id`: empty | `account_id` | `CountStripeWithdrawalRows` / `ScrubStripeWithdrawalRows` |
-| 30 | `payments_consumer_address` | `payments` | `consumer_address`: random per wallet | `consumer_address` = a wallet address named in the request | `CountPaymentConsumerAddress` / `ScrubPaymentConsumerAddress` |
-| 31 | `payments_provider_address` | `payments` | `provider_address`: random per wallet | `provider_address` = a named wallet address | `CountPaymentProviderAddress` / `ScrubPaymentProviderAddress` |
-| 32 | `provider_payouts_address` | `provider_payouts` | `provider_address`: random per wallet | `provider_address` = a named wallet address | `CountProviderPayoutAddress` / `ScrubProviderPayoutAddress` |
-
-| 33 | `legacy_mdm_cohort` | `legacy_mdm_cohort` | delete row | `account_id` | `CountLegacyMDMCohortRows` / `DeleteLegacyMDMCohortRows` |
-| 34 | `small_models_interest` | `small_models_interest` | delete row | `account_id` | `CountSmallModelsInterestRows` / `DeleteSmallModelsInterestRows` |
+| 16 | `app_attest_shadow_events` | `app_attest_shadow_events` | delete row (`fields` copies runtime diagnostics such as boot time and launch session) | `session_id` in the account's provider IDs | `CountAppAttestShadowEventsRows` / `DeleteAppAttestShadowEventsRows` |
+| 17 | `app_attest_receipt_jobs` | `app_attest_receipt_jobs` | delete row | `key_id` in the account's unshared App Attest key IDs | `CountAppAttestReceiptJobsRows` / `DeleteAppAttestReceiptJobsRows` |
+| 18 | `app_attest_receipt_blobs` | `app_attest_receipt_blobs` | delete row | `receipt_id` of receipts with those key IDs | `CountAppAttestReceiptBlobsRows` / `DeleteAppAttestReceiptBlobsRows` |
+| 19 | `app_attest_receipts` | `app_attest_receipts` | `context`: `{}` | `key_id` in those key IDs | `CountAppAttestReceiptsRows` / `ScrubAppAttestReceiptsRows` |
+| 20 | `app_attest_key_revocations` | `app_attest_key_revocations` | `reason` (admin free text): empty; the row stays, so the key stays revoked | `account_id` | `CountAppAttestKeyRevocationsRows` / `ScrubAppAttestKeyRevocationsRows` |
+| 21 | `usage_request_location` | `usage` | `request_location`: NULL | `consumer_key_hash` = SHA-256 hex of the account ID (`store.HashKey`), rows with a location | `CountUsageLocationRows` / `ScrubUsageLocationRows` |
+| 22 | `inference_routes_consumer_region` | `inference_routes` | `consumer_region`: NULL | `consumer_key_hash`, as 21 | `CountConsumerRegionRows` / `ScrubConsumerRegionRows` |
+| 23 | `inference_routes_provider_region` | `inference_routes` | `provider_region`: NULL | `provider_id` in the account's provider IDs | `CountProviderRegionRows` / `ScrubProviderRegionRows` |
+| 24 | `request_rejections` | `request_rejections` | `requested_model`, `resolved_model` (raw client strings): empty; `params`: NULL | `consumer_key_hash`, as 21 | `CountRequestRejectionsRows` / `ScrubRequestRejectionsRows` |
+| 25 | `referrers` | `referrers` | `code`: unique random; `referrals.referrer_code` follows through `ON UPDATE CASCADE` | `account_id` | `CountReferrersRow` / `ScrubReferrersRow` |
+| 26 | `billing_sessions_referral_code` | `billing_sessions` | `referral_code`: the new code from 25 | `referral_code` = the account's old code, in any account's sessions | `CountReferralCodeCopies` / `ScrubReferralCodeCopies` |
+| 27 | `billing_sessions` | `billing_sessions` | `external_id` (Checkout Session ID): empty; `status` `pending` becomes `erased` | `account_id` | `CountBillingSessionsRows` / `ScrubBillingSessionsRows` |
+| 28 | `ledger_entries_stripe_reference` | `ledger_entries` | `reference` `stripe:<session>`: fixed value `stripe:erased` | `account_id`, `reference LIKE 'stripe:%'` | `CountStripeLedgerReferences` / `ScrubStripeLedgerReferences` |
+| 29 | `ledger_entries_admin_note` | `ledger_entries` | `reference`: fixed value, the entry type (drops the admin note) | `account_id`, `entry_type` `admin_credit` or `admin_reward` | `CountAdminNoteLedgerReferences` / `ScrubAdminNoteLedgerReferences` |
+| 30 | `global_payout_recipients` | `global_payout_recipients` | `country`: empty; `data`: tombstone (a new `GlobalRecipient` with only `id` and `account_id`, as `RemoveGlobalRecipient`) | `account_id` | `CountGlobalRecipientRow` / `TombstoneGlobalRecipientRow` |
+| 31 | `global_payout_withdrawals` | `global_payout_withdrawals` | `data.recipient_id`, `data.payout_method_id`: empty; `data.request`: `{}` | `account_id` | `CountGlobalPayoutRows` / `ScrubGlobalPayoutRows` |
+| 32 | `stripe_withdrawals` | `stripe_withdrawals` | `stripe_account_id`, `failure_reason` (Stripe free text): empty | `account_id` | `CountStripeWithdrawalRows` / `ScrubStripeWithdrawalRows` |
+| 33 | `payments_consumer_address` | `payments` | `consumer_address`: random per wallet; a non-NULL `tx_hash`: fixed value `erased:<id>` (the column is `UNIQUE`); a non-NULL `memo`: empty | `consumer_address` = a wallet address named in the request | `CountPaymentConsumerAddress` / `ScrubPaymentConsumerAddress` |
+| 34 | `payments_provider_address` | `payments` | `provider_address`: random per wallet; `tx_hash` and `memo` as 33 | `provider_address` = a named wallet address | `CountPaymentProviderAddress` / `ScrubPaymentProviderAddress` |
+| 35 | `provider_payouts_address` | `provider_payouts` | `provider_address`: random per wallet | `provider_address` = a named wallet address | `CountProviderPayoutAddress` / `ScrubProviderPayoutAddress` |
+| 36 | `legacy_mdm_cohort` | `legacy_mdm_cohort` | delete row | `account_id` | `CountLegacyMDMCohortRows` / `DeleteLegacyMDMCohortRows` |
+| 37 | `small_models_interest` | `small_models_interest` | delete row | `account_id` | `CountSmallModelsInterestRows` / `DeleteSmallModelsInterestRows` |
+| 38 | `model_prices` | `model_prices` | delete row (a provider's custom prices name its models in free text) | `account_id` | `CountModelPricesRows` / `DeleteModelPricesRows` |
 
 Notes:
 
-- Rules 8 to 11, 13 to 18 and 21 run only when the account has keys of
-  that kind (`byKeys`); rule 23 runs only when the account has a referrer
+- Rules 8 to 11, 13 to 19 and 23 run only when the account has keys of
+  that kind (`byKeys`); rule 26 runs only when the account has a referrer
   code. A rule with no statement reports 0 rows.
-- Rules 30 to 32 run one statement per wallet address (`walletStatements`).
+- Rules 33 to 35 run one statement per wallet address (`walletStatements`).
   `payments` and `provider_payouts` have no account column, so the admin names
   the addresses in the plan and confirm calls.
+- Rule 32 can clear `failure_reason` safely. A withdrawal that waits for a
+  confirmed-rejection refund (`failure_reason` starts with
+  `store.StripeConfirmedRejectionPrefix`) counts as open
+  (`CountOpenStripeWithdrawals`), so the scrub refuses to run. `''` never
+  matches the prefix, so refund recovery (`ListStripeRefundsToRecover`,
+  `StripeRefundRecoverable`, `RefundRejectedStripeWithdrawal`) does not select
+  a scrubbed row.
 - `MemoryStore` maps every rule name to a function in `memoryErasureRules`
-  (`coordinator/store/memory/erasure_rules.go`). It has no `payments` or
-  `provider_payouts` tables, so rules 30 to 32 are `memoryNoTable` there.
+  (`coordinator/store/memory/erasure_rules.go`). It has no App Attest receipt
+  tables, no revocation reason, and no `payments` or `provider_payouts` tables,
+  so rules 17 to 20 and 33 to 35 are `memoryNoTable` there.
 - Before the rules, `forfeitBalance` sets `balances.balance_micro_usd` and
   `withdrawable_micro_usd` to 0 and writes one `erasure_forfeit` ledger entry
   (`coordinator/store/postgres/erasure.go`).
@@ -97,16 +108,16 @@ The scrub keeps these on purpose. The marker tests allow only
 |---|---|---|
 | IDs: account, provider, machine, request, key and session IDs; Secure Enclave and App Attest public keys | Not personal data alone; ledger, earnings and audit rows need them | `coordinator/internal/store/erasure/rules.go` (file comment) |
 | Ledger entries, balances, provider earnings, floor draws, usage token counts | Financial records. The forfeit is an `erasure_forfeit` entry, so the ledger sums to the zero balance | `forfeitBalance` |
-| `stripe_withdrawals` transfer and payout IDs and amounts; `global_payout_withdrawals` amount, status, country and payment ID | Financial records of the platform's own payments; the connected account, recipient, payout method and request are cleared | rules 28, 29 |
+| `stripe_withdrawals` transfer and payout IDs and amounts; `global_payout_withdrawals` amount, status, country and payment ID | Financial records of the platform's own payments; the connected account, failure reason, recipient, payout method and request are cleared | rules 31, 32 |
 | `darkbloom_machine_sessions` and machine observations | Chip, OS version and IDs; no serial or key. The marker test searches them | `TestErasureMarkerPostgres` |
-| App Attest shadow keys, enrollments, revocations and rotations | Key IDs, public keys and owner hashes keep a used or revoked key from being accepted again; proofs, receipts and evidence context are removed | rules 14 to 18 |
+| App Attest shadow keys, enrollments, revocations and rotations | Key IDs, public keys and owner hashes keep a used or revoked key from being accepted again; proofs, receipts, evidence context, shadow events and revocation reasons are removed | rules 14 to 20 |
 | An `mda_serial` alias of a machine another account also used | Deleting it would break that account's machine identity | `retainedSharedMDAAlias` |
 | Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key another account's provider has; their trust-reuse cache entries and MDM jobs | They belong to the other account too | `retainedSharedSEKey` |
 | App Attest receipts, receipt blobs and receipt jobs of a key another account's session used | They belong to the other account too | `retainedSharedAppAttestKey` |
 | `erasure_se_owners`: domain-separated SE-key digests and account IDs | Retained pseudonymous ownership rejects delayed trust/job/proof writes after aliases are deleted; these hashes are not anonymous | `RetainErasureSEOwners`, `checkPersonalSEOwner` |
-| `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token or wallet address after the scrub | `MarkErasureErased` |
+| `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token, wallet address or wallet hash after the scrub | `MarkErasureErased` |
 | `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00025_erasure_refuse_credits.sql` |
-| `erasure_outbox.external_id` | The Stripe ID or normalized Resend contact email needed for external cleanup; cleared only after verified completion. A `manual_action` row retains it until an operator clears it | `Keys.OutboxRows`; `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
+| `erasure_outbox.external_id` | The Stripe ID, normalized Resend contact email or original Privy user ID needed for external cleanup; cleared only after verified completion. A `manual_action` row retains it until an operator clears it | `Keys.OutboxRows`; `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
 | The Datadog `erasure_log` record | Request ID, account ID and `erased_at`: the list to replay after a restore | `writeErasureLog` |
 
 The plan and the applied summary list the three shared kinds in `retained`
@@ -119,7 +130,7 @@ The plan and the applied summary list the three shared kinds in `retained`
 `ErasureTarget` (`coordinator/store/erasure_types.go`). The scrub writes the rows
 (`Keys.OutboxRows`, `coordinator/internal/store/erasure/keys.go`) with `state`
 `pending` and `next_at` = the scrub time; the worker in
-`coordinator/api/accounts/erasure/outbox.go` delivers Stripe and Datadog rows
+`coordinator/api/accounts/erasure/outbox.go` delivers Stripe, Privy and Datadog rows
 ([outbox delivery](../architecture/account-erasure.md#outbox-delivery)).
 
 | `target` | One row per | `external_id` holds | Calls (key) |
@@ -129,6 +140,7 @@ The plan and the applied summary list the three shared kinds in `retained`
 | `checkout_sessions` | Batch of up to `ErasureCheckoutBatch` (10) Checkout Session IDs from `billing_sessions.external_id` (`payment_method = 'stripe'`) | comma-separated `cs_…` IDs | `POST /v1/privacy/redaction_jobs` (`validation_behavior=fix`, `objects[checkout_sessions][]`, `Idempotency-Key: erasure-redaction-<row id>-<generation>`); `GET /v1/privacy/redaction_jobs/{id}`; `POST /v1/privacy/redaction_jobs/{id}/run`; `GET /v1/privacy/redaction_jobs/{id}/validation_errors?limit=100`; `GET /v1/checkout/sessions/{id}` when a batch must be split (Checkout key; `coordinator/billing/stripe_redaction.go`) |
 | `erasure_log` | Erasure (always one) | `''` | Datadog Logs API, one unbatched event (`DD_API_KEY`; `datadog.Client.SendLog`) |
 | `resend_contact` | Account with a nonblank email at scrub, regardless of current provider status or known export history | Trimmed, lowercased email captured before the users rule clears it | No automated deletion; worker moves it to `manual_action`, even in mock billing mode. An operator removes the contact, segment memberships and scheduled-broadcast exposure |
+| `privy_user` | Account with a non-empty `users.privy_user_id` at scrub | The original Privy user ID (DID), captured by `collectErasureKeys` (memory: `collectErasureKeysLocked`) before the users rule replaces it | `DELETE https://auth.privy.io/api/v1/users/<did>`, Basic auth with the app ID and app secret (`EIGENINFERENCE_PRIVY_APP_ID`, `EIGENINFERENCE_PRIVY_APP_SECRET`) and the `privy-app-id` header (`auth.PrivyAuth.DeleteUser`, `coordinator/auth/privy_delete_user.go`). 204 or 404 is `done`; any other status or a transport error retries, and the eighth failure moves the row to `manual_action`. Without Privy the row retries with `Privy is not configured`. Mock billing mode does not skip it. The error text never holds the DID |
 
 A split adds a `checkout_sessions` row in `manual_action` with the sessions
 Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
@@ -152,7 +164,7 @@ Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
 | `plan` | `JSONB` | `ErasureSummary`: `planned` and `applied` counts |
 | `confirm_token_hash` | `TEXT` | SHA-256 of `erasure-confirm-v1:<token>` (`TokenHash`); cleared at confirm |
 | `confirm_expires_at` | `TIMESTAMPTZ` | Token expiry; cleared at confirm |
-| `wallet_hash` | `TEXT` | SHA-256 of the normalized wallet list (`WalletHash`) |
+| `wallet_hash` | `TEXT` | SHA-256 of the normalized wallet list (`WalletHash`); cleared to `''` by the scrub (`MarkErasureErased`) or a cancel (`MarkErasureCanceled`) |
 | `wallet_addresses` | `TEXT[]` | The wallet list, stored at confirm, cleared by the scrub or a cancel |
 | `requested_at`, `scrub_after`, `erased_at`, `canceled_at` | `TIMESTAMPTZ` | Step times |
 | `lease_until` | `TIMESTAMPTZ` | Grace-loop lease |
@@ -181,8 +193,8 @@ ownership links before deleting aliases; it stores no serial, UDID or APNs token
 |---|---|---|
 | `id` | `TEXT` PK | Row ID (UUID) |
 | `request_id` | `TEXT` FK `erasure_requests(id)` | The request |
-| `target` | `TEXT` | [Outbox target](#outbox-targets) (`CHECK`) |
-| `external_id` | `TEXT` | Stripe IDs or Resend contact email, never serialized by the status API; see [outbox targets](#outbox-targets) |
+| `target` | `TEXT` | [Outbox target](#outbox-targets) (`CHECK` `erasure_outbox_target_allowed`, from migration 29) |
+| `external_id` | `TEXT` | Stripe IDs, Resend contact email or Privy user ID, never serialized by the status API; see [outbox targets](#outbox-targets) |
 | `state` | `TEXT` | `pending`, `done`, `manual_action` (`CHECK`, default `pending`) |
 | `attempts` | `INTEGER` | Delivery attempts |
 | `next_at` | `TIMESTAMPTZ` | When the row is due |
@@ -198,6 +210,9 @@ ownership links before deleting aliases; it stores no serial, UDID or APNs token
 
 The Stripe job columns and `lease_generation` come from
 `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql`.
+`coordinator/store/postgres/schema/migrations/00029_erasure_outbox_privy_user.sql`
+replaces the target check `erasure_outbox_target_check` with
+`erasure_outbox_target_allowed`, which also allows `privy_user`.
 
 Indexes: `erasure_outbox_request` (`request_id`), `erasure_outbox_due`
 (`next_at` where `pending`).
@@ -233,7 +248,7 @@ first.
 
 | Version | Index | Used by |
 |---|---|---|
-| 23 | `idx_billing_sessions_referral_code` on `billing_sessions (referral_code) WHERE referral_code <> ''` | Rule 23 |
+| 23 | `idx_billing_sessions_referral_code` on `billing_sessions (referral_code) WHERE referral_code <> ''` | Rule 26 |
 | 24 | `idx_users_privy_deleted` on `users (privy_user_id) WHERE deleted_at IS NOT NULL` | `PrivyUserPendingErasure` |
 
 ## Configuration and constants

@@ -1,10 +1,10 @@
 # Erase an account (GDPR)
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Runbook for erasing the personal data of one consumer or provider account:
-plan, confirm, grace period, scrub, automated Stripe deletions, manual Resend
-cleanup, other `manual_action` cases, review of refused credits, replay after a database
+plan, confirm, grace period, scrub, automated Stripe and Privy deletions,
+manual Resend and MicroMDM cleanup, other `manual_action` cases, review of refused credits, replay after a database
 restore, and cancel. How erasure works is in
 [account erasure](../architecture/account-erasure.md); the route shapes are
 in [API contracts](../reference/api-contracts.md#account-erasure); what the
@@ -40,7 +40,7 @@ flowchart TD
   F -- "yes" --> L
   L --> T["Step 5: status<br/>GET .../erasure"]:::step
   T -- "pending with last_error" --> L
-  T -- "erased" --> X["Step 6: outbox worker<br/>Stripe and Datadog delivery"]:::ext
+  T -- "erased" --> X["Step 6: outbox worker<br/>Stripe, Privy and Datadog delivery"]:::ext
   X -- "resend_contact" --> M
   X -- "manual_action" --> M["Resolve manual_action<br/>(decision tree)"]:::stop
   M -- "re-queue" --> X
@@ -49,8 +49,8 @@ flowchart TD
 ```
 
 Blue: an API call or wait. Yellow: a check you make. Red: stop, roll back,
-or operator work. Orange: the worker's calls to Stripe and Datadog. Green:
-done.
+or operator work. Orange: the worker's calls to Stripe, Privy and Datadog.
+Green: done.
 
 ## Prerequisites
 
@@ -96,6 +96,13 @@ done.
   process log line.
 - Resend dashboard access to every organization used for provider email
   campaigns, plus approval to cancel affected broadcasts and remove contacts.
+- Privy configured on the coordinator: `EIGENINFERENCE_PRIVY_APP_ID` and
+  `EIGENINFERENCE_PRIVY_APP_SECRET`
+  ([configuration](../reference/configuration.md)). Without them every
+  `privy_user` row retries and then needs manual action.
+- For a provider account: access to MicroMDM in the coordinator container
+  (`mdmctl` and the MicroMDM API key) and separate approval for the device
+  removal in [MicroMDM device cleanup](#micromdm-device-cleanup).
 
 ## Steps
 
@@ -145,7 +152,9 @@ done.
    keys and provider tokens, and disconnects the account's providers. A
    provider that reconnects comes back unlinked. A Privy login of the account
    gets 403 `account_pending_deletion`. `reason` is kept: write the ticket
-   number, not personal data. Errors are listed in
+   number, not personal data. For a provider account, do step 1 of
+   [MicroMDM device cleanup](#micromdm-device-cleanup) now: the scrub deletes
+   the serials and UDIDs. With `force`, do it before this step. Errors are listed in
    [erasure confirm](../reference/api-contracts.md#erasure-confirm).
 
 4. Wait for the grace period. The default is 30 days
@@ -189,6 +198,7 @@ done.
    | `checkout_sessions` | Redacts up to 10 sessions with a Stripe Redaction Job; `has_stripe_job` is true while the job runs |
    | `erasure_log` | Sends one Datadog event with tag `erasure_log:true` (request ID, account ID, `erased_at`) |
    | `resend_contact` | Moves the row to `manual_action`, even in mock billing mode; requires [Resend contact cleanup](#resend-contact-cleanup), not automated deletion |
+   | `privy_user` | Deletes the Privy user (`DELETE https://auth.privy.io/api/v1/users/<did>`); a 404 also counts as done. Mock billing mode does not skip it |
 
    | `outbox[].state` | Meaning |
    |---|---|
@@ -243,7 +253,7 @@ done.
    | B. Redaction Jobs not enabled | `stripe 400: …not enabled…` (`checkout_sessions`) | Ask Stripe to enable Redaction Jobs for the platform account. When it is on, re-queue every such row |
    | C. Sessions of the old account | `Checkout Session not found with the current Stripe key; it may belong to the earlier Stripe account. Redact it by hand` | The `cs_…` IDs in `external_id` were made on the Stripe account used before the [Stripe migration](stripe-migration.md). Redact them with that account (its dashboard or a Redaction Job made with its key), then close the row by hand. If that account is no longer reachable, record that in the ticket and close the row |
    | D. Job stuck or past the deadline | `redaction job prj_… has been <status> since <time>` (31 days in one status), or `still too recent to redact 2520h0m0s after the scrub: …` | Look up `stripe_job_id` in Stripe. A job that ended `succeeded`: close the row by hand. A job still running: cancel it in Stripe or ask Stripe support, then re-queue (a new job is made). Sessions still too recent: wait until they pass 90 days, then re-queue |
-   | E. Retries exhausted | `retries exhausted after 8 attempts: <cause>` | Read the cause. `Stripe Connect is not configured`, `Stripe Global Payouts is not configured` or `Stripe Checkout is not configured`: the coordinator lacks that key; set it through the [deploy runbook](coordinator-deploy.md) (approval required), then re-queue. A network error, 5xx or Datadog error: check the Stripe or Datadog status page, then re-queue |
+   | E. Retries exhausted | `retries exhausted after 8 attempts: <cause>` | Read the cause. `Stripe Connect is not configured`, `Stripe Global Payouts is not configured`, `Stripe Checkout is not configured`, `Privy is not configured` or `privy: app_secret required for REST API calls`: the coordinator lacks that key; set it through the [deploy runbook](coordinator-deploy.md) (approval required), then re-queue. `privy: delete user returned status <code>`: a 401 or 403 means a wrong app ID or secret; fix it, then re-queue. A network error, 5xx or Datadog error: check the Stripe, Privy or Datadog status page, then re-queue. To delete a Privy user by hand, use the Privy dashboard with the `external_id`, then close the row by hand |
    | F. Other refusal | Any other Stripe 4xx, `redaction job prj_… was canceled`, `redaction job prj_… failed without validation errors`, or a validation code such as `locked_by_other_job` | For `stripe_account` permission errors, `account_invalid`, or ambiguous 404 responses without `resource_missing`, use the retained `external_id` to verify the owning Stripe platform and restore access before re-queuing; those errors do not prove the account was deleted. For other causes, fix the cause in Stripe (for example wait for or cancel the other job), then re-queue; or verify deletion in the Stripe dashboard and close the row by hand |
 
 3. Re-queue a row so the worker tries again (with approval). This also starts
@@ -258,7 +268,7 @@ done.
    ```
 
 4. Or close a row that you finished by hand (with approval). This removes
-   the external cleanup identifier (Stripe ID or Resend email):
+   the external cleanup identifier (Stripe ID, Resend email or Privy user ID):
 
    ```sql
    UPDATE erasure_outbox
@@ -304,6 +314,58 @@ Never copy the email into `last_error`, the request reason, logs, public status,
 or an ordinary ticket. Record only request/outbox IDs and a nonpersonal outcome.
 During the grace period, use the same campaign controls if sends must stop
 immediately; the durable cleanup row is created at scrub, not at confirmation.
+
+### MicroMDM device cleanup
+
+MicroMDM removal is not automated. The scrub deletes the serial numbers and
+UDIDs from the coordinator database, so collect them during the grace period.
+
+1. Before the scrub, in an approved private database session, list the
+   account's serials and UDIDs. Leave out a device that another account also
+   uses; the plan's `retained[]` shows shared machines and keys:
+
+   ```sql
+   \set acct '<account_id>'
+   SELECT DISTINCT serial_number FROM (
+     SELECT serial_number FROM providers WHERE account_id = :'acct'
+     UNION SELECT serial_number FROM provider_sessions WHERE account_id = :'acct'
+   ) s
+   WHERE serial_number <> ''
+     AND NOT EXISTS (SELECT 1 FROM providers o WHERE o.serial_number = s.serial_number AND o.account_id <> :'acct')
+     AND NOT EXISTS (SELECT 1 FROM provider_sessions o WHERE o.serial_number = s.serial_number AND o.account_id <> :'acct');
+
+   SELECT DISTINCT udid FROM (
+     SELECT se_pubkey, mda_udid AS udid FROM provider_trust_reuse
+     UNION SELECT se_pubkey, udid FROM provider_verification_jobs
+   ) u
+   WHERE udid <> ''
+     AND se_pubkey IN (SELECT se_public_key FROM providers WHERE account_id = :'acct')
+     AND NOT EXISTS (SELECT 1 FROM providers o WHERE o.se_public_key = u.se_pubkey AND o.account_id <> :'acct');
+   ```
+
+   Keep the lists only in a restricted record. Never put them in the request
+   reason, logs or an ordinary ticket.
+2. After the scrub, with approval, remove the devices with `mdmctl`
+   (MicroMDM v1.13.1, `coordinator/Dockerfile.base`):
+
+   ```bash
+   mdmctl remove devices -serials '<serial1>,<serial2>' -udid '<udid1>,<udid2>'
+   ```
+
+   The API call is the same: `DELETE /v1/devices` with body
+   `{"Opts":{"udids":["<udid>"],"serials":["<serial>"]}}`, Basic auth user
+   `micromdm` and the MicroMDM API key as the password. An unknown serial
+   returns HTTP 500 `not found`, not 404.
+3. Record what stays. The removal deletes only the BoltDB buckets
+   `mdm.Devices` and `mdm.DeviceIdx`. These keep the UDID: `mdm.UDIDCertAuth`,
+   `mdm.PushInfo`, `mdm.DeviceCommands` (with the command history),
+   `mdm.RemoveDevice`, `mdm.Users` and `mdm.UserIdx`, and the device identity
+   certificate in `scep_certificates`. Clearing them needs an offline BoltDB
+   operation with MicroMDM stopped, which is a production mutation that needs
+   separate human approval. Earlier [state exports](state-export.md) keep the
+   old database.
+4. If the Mac is still enrolled, its next MDM `Authenticate` check-in creates
+   the device record again. Repeat step 2 after the Mac is unenrolled.
 
 ### Refused credits
 
@@ -388,8 +450,8 @@ The Datadog `erasure_log` records are the list of erasures to replay.
       WHERE account_id = :'acct' AND (email <> '' OR privy_user_id NOT LIKE 'erased:%'
         OR stripe_account_id <> '' OR stripe_account_status <> '' OR stripe_account_country <> ''
         OR stripe_destination_type <> '' OR stripe_destination_last4 <> '')
-     UNION ALL SELECT 'api_keys.name', COUNT(*) FROM api_keys
-      WHERE owner_account_id = :'acct' AND name <> ''
+     UNION ALL SELECT 'api_keys: name, allowed models', COUNT(*) FROM api_keys
+      WHERE owner_account_id = :'acct' AND (name <> '' OR allowed_models <> '')
      UNION ALL SELECT 'provider_tokens.label', COUNT(*) FROM provider_tokens
       WHERE account_id = :'acct' AND label <> ''
      UNION ALL SELECT 'device_codes rows', COUNT(*) FROM device_codes
@@ -414,6 +476,13 @@ The Datadog `erasure_log` records are the list of erasures to replay.
      UNION ALL SELECT 'app_attest_evidence_blobs rows', COUNT(*) FROM app_attest_evidence_blobs
       WHERE evidence_id IN (SELECT e.id FROM app_attest_evidence e
         JOIN providers p ON p.id = e.session_id WHERE p.account_id = :'acct')
+     UNION ALL SELECT 'app_attest_shadow_events rows', COUNT(*) FROM app_attest_shadow_events
+      WHERE session_id IN (SELECT id FROM providers WHERE account_id = :'acct')
+     UNION ALL SELECT 'app_attest_key_revocations.reason', COUNT(*) FROM app_attest_key_revocations
+      WHERE account_id = :'acct' AND reason <> ''
+     UNION ALL SELECT 'request_rejections: models, params', COUNT(*) FROM request_rejections
+      WHERE consumer_key_hash = encode(sha256(convert_to(:'acct', 'UTF8')), 'hex')
+        AND (COALESCE(requested_model, '') <> '' OR COALESCE(resolved_model, '') <> '' OR params IS NOT NULL)
      UNION ALL SELECT 'usage.request_location', COUNT(*) FROM usage
       WHERE consumer_key_hash = encode(sha256(convert_to(:'acct', 'UTF8')), 'hex') AND request_location IS NOT NULL
      UNION ALL SELECT 'inference_routes.consumer_region', COUNT(*) FROM inference_routes
@@ -433,12 +502,14 @@ The Datadog `erasure_log` records are the list of erasures to replay.
      UNION ALL SELECT 'global_payout_withdrawals: recipient, method, request', COUNT(*) FROM global_payout_withdrawals
       WHERE account_id = :'acct' AND (COALESCE(data->>'recipient_id', '') <> ''
         OR COALESCE(data->>'payout_method_id', '') <> '' OR COALESCE(data->'request', '{}'::jsonb) <> '{}'::jsonb)
-     UNION ALL SELECT 'stripe_withdrawals.stripe_account_id', COUNT(*) FROM stripe_withdrawals
-      WHERE account_id = :'acct' AND stripe_account_id <> ''
+     UNION ALL SELECT 'stripe_withdrawals: account, failure reason', COUNT(*) FROM stripe_withdrawals
+      WHERE account_id = :'acct' AND (stripe_account_id <> '' OR failure_reason <> '')
+     UNION ALL SELECT 'model_prices rows', COUNT(*) FROM model_prices
+      WHERE account_id = :'acct'
      UNION ALL SELECT 'balances not zero', COUNT(*) FROM balances
       WHERE account_id = :'acct' AND (balance_micro_usd <> 0 OR withdrawable_micro_usd <> 0)
-     UNION ALL SELECT 'erasure_requests: wallet list kept', COUNT(*) FROM erasure_requests
-      WHERE account_id = :'acct' AND wallet_addresses <> '{}'
+     UNION ALL SELECT 'erasure_requests: wallet list or hash kept', COUNT(*) FROM erasure_requests
+      WHERE account_id = :'acct' AND state = 'erased' AND (wallet_addresses <> '{}' OR wallet_hash <> '')
    ) checks
    ORDER BY check_name;
    ```
@@ -471,9 +542,11 @@ curl -sS -X POST "$COORD/v1/admin/accounts/$ACCOUNT/erasure/cancel" \
 ```
 
 The user and its provider rows are live again, and `request.state` is
-`canceled`. API keys and provider tokens stay revoked: the user makes new keys
-and links the machines again. A 409 `erasure_conflict` means `scrub_after`
-has passed or the request was never confirmed.
+`canceled`. The API keys and provider tokens that the confirm revoked work
+again. Keys and tokens that were revoked before the confirm stay revoked; the
+key list shows them again as disabled. The handler clears the API key cache.
+A 409 `erasure_conflict` means `scrub_after` has passed or the request was
+never confirmed.
 
 After the scrub there is no rollback. The data is gone from the live
 database by design. Do not restore a backup to undo an erasure.

@@ -205,15 +205,23 @@ then does step 1 of the production runbook: the checkout is `origin/master`,
 `dev-build` builds `deploy/gcp/cloudbuild-prod.yaml`, a SUCCESS build of the
 commit exists (it waits up to 20 minutes), and it reads the image digest. It
 requires the complete paginated GitHub check-run and status-context inventories.
-Every reported check-run conclusion and every status must be `success`;
-`skipped`, `neutral`, null, pending, duplicate or truncated results fail closed.
-A human may explicitly name a legitimately optional skipped or neutral check in
-a waiver, but GitHub Actions cannot use waivers. It then rereads both
+It waits until each required check run is complete and each status context is
+not pending. This wait ends 20 minutes after the build wait starts
+(`CI_WAIT_S`, default 1200); the two waits overlap. If a required check run or
+status context is not complete at that time, the script stops and nothing
+changes. `--dry-run` does not wait. The script does not wait for other check
+runs, for example its own deploy job or E2E Integration Tests; it prints them
+in a `REPORT not required and not finished` line. A completed check run passes
+when its conclusion is `success`, `neutral` or `skipped`, as in GitHub branch
+protection: `ci.yml` skips jobs that the changed paths do not need. Each other
+conclusion, null included, and each `error` or `failure` status is a failure.
+Duplicate, malformed or truncated results fail closed. It then rereads both
 `origin/master` and the live pause variable immediately before SSH. A human may
 waive only exact currently failing context names with repeated
 `--allow-ci-failure "<name>"` flags plus a nonblank single-line
 `--ci-waiver-reason`; stale, misspelled, pending or unlisted failures still stop.
-Automatic workflows must never pass a CI waiver. Then it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the commit to
+The script prints a `REPORT CI waiver for <commit> by <account> (<user>@<host>): <reason>`
+line. Automatic workflows must never pass a CI waiver. Then it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the commit to
 `/usr/local/lib/darkbloom-deploy/<commit>` and runs `swap.sh` under
 `systemd-run`. [`deploy/gcp/dev/swap.sh`](../../deploy/gcp/dev/swap.sh) does
 steps 2 to 4, Verification and Rollback: the root-owned seed gate, database
@@ -391,6 +399,7 @@ a Terraform change in darkbloom-devnet-infra.
 | `FAIL candidate not ready within 180 s; rolled back to ...` | The new coordinator did not start or did not report the commit | Read the saved container log on the VM |
 | `FAIL the running image is not the last verified image ...` | Someone changed the container by hand | Find out why. After review, write the running image ID to `/var/lib/darkbloom-deploy/last-good-image` |
 | `candidate ... is not origin/master` / `is no longer origin/master` | `master` moved before or during build wait | Deploy the new head |
+| `CI is not complete for ... after 1200 s: ...` | A required check run or a status context did not finish in time. `(not reported)` marks a required name that GitHub does not have | Wait for CI, then deploy again |
 | `CI failure is not explicitly waived: ...` | A GitHub check/status failed | Fix/re-run it. Only a human owner may name that exact known baseline failure with `--allow-ci-failure` and a one-line `--ci-waiver-reason` |
 
 ## DevNet checklist

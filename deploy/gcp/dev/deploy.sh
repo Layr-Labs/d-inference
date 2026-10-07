@@ -25,7 +25,8 @@
 # Environment: SSH_KEY_FILE (key for gcloud compute ssh), MIGRATE_ONLY (1 =
 # run --migrate-only before the drain, the default; 0 = skip),
 # ON_SUPERSEDED=skip (exit 0 when the candidate is no longer origin/master),
-# BUILD_WAIT_S (default 1200), GITHUB_OUTPUT (gets deployed=true|false).
+# BUILD_WAIT_S and CI_WAIT_S (default 1200 each; both count from the start of
+# step 1, so the two waits overlap), GITHUB_OUTPUT (gets deployed=true|false).
 set -euo pipefail
 
 MODE=deploy
@@ -79,6 +80,7 @@ REQUIRED_STATUSES=(
     "Vercel – eigen-homepages-darkbloom"
 )
 BUILD_WAIT_S=${BUILD_WAIT_S:-1200}
+CI_WAIT_S=${CI_WAIT_S:-1200}
 MIGRATE_ONLY=${MIGRATE_ONLY:-1}
 SHIP=(deploy/gcp/prod deploy/gcp/dev deploy/environments/prod.env)
 SSH=(gcloud compute ssh "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --tunnel-through-iap
@@ -108,9 +110,15 @@ if [ "${GITHUB_ACTIONS:-false}" = true ] && [ "${#CI_FAILURE_ALLOWLIST[@]}" -gt 
     die "CI failure waivers are human-only and cannot run under GitHub Actions" 2
 fi
 
+operator_identity() {
+    local account
+    account=${GITHUB_ACTOR:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1)}
+    echo "${account:-unknown} ($(id -un)@$(hostname))"
+}
+
 pause_override_reported=0
 enforce_pause() { # <initial|live>; live always rereads GitHub immediately before mutation
-    local phase=$1 paused pause_source actor
+    local phase=$1 paused pause_source
     if [ "$phase" = initial ] && [ -n "${DEV_DEPLOY_PAUSED+set}" ]; then
         paused=$DEV_DEPLOY_PAUSED
         pause_source=environment
@@ -126,8 +134,7 @@ enforce_pause() { # <initial|live>; live always rereads GitHub immediately befor
     fi
     if [ -n "$OVERRIDE_REASON" ]; then
         if [ "$pause_override_reported" = 0 ]; then
-            actor=${GITHUB_ACTOR:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1)}
-            echo "REPORT pause override by ${actor:-unknown} ($(id -un)@$(hostname)): $OVERRIDE_REASON"
+            echo "REPORT pause override by $(operator_identity): $OVERRIDE_REASON"
             pause_override_reported=1
         fi
     elif [ "$DRY_RUN" = 1 ]; then
@@ -192,7 +199,9 @@ CANDIDATE_IMAGE="$REPO:${CANDIDATE_COMMIT:0:7}"
     die "trigger $TRIGGER does not build $BUILD_FILE" 2
 TRIGGER_ID=$(gcloud builds triggers describe "$TRIGGER" --project="$PROJECT" --format='value(id)')
 FILTER="buildTriggerId=$TRIGGER_ID AND substitutions.COMMIT_SHA=$CANDIDATE_COMMIT"
-deadline=$(( $(date +%s) + BUILD_WAIT_S ))
+step1_start=$(date +%s)
+deadline=$(( step1_start + BUILD_WAIT_S ))
+ci_deadline=$(( step1_start + CI_WAIT_S ))
 while :; do
     built=$(gcloud builds list --project="$PROJECT" --limit=1 --sort-by=~createTime \
         --filter="$FILTER AND status=SUCCESS" --format='value(id)')
@@ -212,9 +221,10 @@ CANDIDATE_DIGEST=$(gcloud artifacts docker images describe "$CANDIDATE_IMAGE" \
 [[ "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die "no digest for $CANDIDATE_IMAGE" 2
 echo "build=$built image=$CANDIDATE_IMAGE digest=$CANDIDATE_DIGEST version=$CANDIDATE_VERSION"
 
-verify_ci() {
-    local checks statuses check_count total_count status_count status_total_count duplicate_statuses
-    local reported_checks reported_statuses pending failures name allowed found
+# read_ci: set checks and statuses to the complete check-run and status-context
+# inventories of the candidate; a malformed or truncated answer stops the run.
+read_ci() {
+    local check_count total_count status_count status_total_count duplicate_statuses
     checks=$(gh api --paginate --slurp "repos/$GITHUB_REPO/commits/$CANDIDATE_COMMIT/check-runs?filter=latest&per_page=100") ||
         die "cannot read GitHub check runs for $CANDIDATE_COMMIT; nothing changed" 3
     statuses=$(gh api --paginate --slurp \
@@ -251,25 +261,52 @@ verify_ci() {
         die "invalid GitHub status-context names for $CANDIDATE_COMMIT; nothing changed" 3
     [ -z "$duplicate_statuses" ] ||
         die "GitHub status-context response contains duplicate contexts: $(printf '%s' "$duplicate_statuses" | paste -sd, -); nothing changed" 3
-    pending=$(
-        {
-            printf '%s' "$checks" | jq -r '.[].check_runs[] | select(.status != "completed") | .name'
-            printf '%s' "$statuses" | jq -r '.[].statuses[] | select(.state == "pending") | .context'
-        } | LC_ALL=C sort -u
-    )
-    [ -z "$pending" ] || die "CI is not complete for $CANDIDATE_COMMIT: $(printf '%s' "$pending" | paste -sd, -)"
-    reported_checks=$(printf '%s' "$checks" | jq -r '.[].check_runs[].name' | LC_ALL=C sort -u)
-    reported_statuses=$(printf '%s' "$statuses" | jq -r '.[].statuses[].context' | LC_ALL=C sort -u)
-    for name in "${REQUIRED_CHECKS[@]}"; do
-        grep -Fxq "$name" <<< "$reported_checks" || die "required CI check did not report: $name"
+}
+
+# unfinished_required_ci: the required check runs that have not reported or
+# not completed, the required status contexts that have not reported, and
+# every pending status context.
+unfinished_required_ci() {
+    {
+        printf '%s' "$checks" | jq -r --args '[.[].check_runs[]] as $runs | $ARGS.positional[] as $name |
+            [$runs[] | select(.name == $name)] as $matching |
+            if ($matching | length) == 0 then "\($name) (not reported)"
+            elif any($matching[]; .status != "completed") then $name
+            else empty end' "${REQUIRED_CHECKS[@]}"
+        printf '%s' "$statuses" | jq -r --args '[.[].statuses[]] as $all |
+            ($ARGS.positional[] as $name | select(all($all[]; .context != $name)) | "\($name) (not reported)"),
+            ($all[] | select(.state == "pending") | .context)' "${REQUIRED_STATUSES[@]}"
+    } | LC_ALL=C sort -u
+}
+
+# verify_ci waits for the required check runs and for every status context,
+# but not for other check runs: the job that runs this script is an unfinished
+# check run of the same commit, and optional workflows such as E2E Integration
+# Tests can run longer than the deploy job. Conclusions
+# success, neutral and skipped pass, as in GitHub branch protection: ci.yml
+# skips path-gated jobs, and a skip caused by a failed dependency shows as the
+# failure of that dependency.
+verify_ci() {
+    local checks statuses pending running failures name allowed found
+    while :; do
+        read_ci
+        pending=$(unfinished_required_ci) ||
+            die "invalid GitHub CI response for $CANDIDATE_COMMIT; nothing changed" 3
+        [ -n "$pending" ] || break
+        pending=$(printf '%s\n' "$pending" | paste -sd, -)
+        [ "$DRY_RUN" = 0 ] || die "CI is not complete for $CANDIDATE_COMMIT: $pending"
+        [ "$(date +%s)" -lt "$ci_deadline" ] ||
+            die "CI is not complete for $CANDIDATE_COMMIT after $CI_WAIT_S s: $pending"
+        echo "waiting for CI: $pending"
+        sleep 15
     done
-    for name in "${REQUIRED_STATUSES[@]}"; do
-        grep -Fxq "$name" <<< "$reported_statuses" || die "required status context did not report: $name"
-    done
+    running=$(printf '%s' "$checks" | jq -r '.[].check_runs[] | select(.status != "completed") | .name' |
+        LC_ALL=C sort -u | paste -sd, -)
+    [ -z "$running" ] || echo "REPORT not required and not finished: $running"
     failures=$(
         {
-            printf '%s' "$checks" | jq -r \
-                '.[].check_runs[] | select(.status == "completed" and .conclusion != "success") | .name'
+            printf '%s' "$checks" | jq -r '.[].check_runs[] |
+                select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not)) | .name'
             printf '%s' "$statuses" | jq -r '.[].statuses[] | select(.state != "success" and .state != "pending") | .context'
         } | LC_ALL=C sort -u
     )
@@ -279,17 +316,17 @@ verify_ci() {
         echo "REPORT GitHub CI/check contexts are green for $CANDIDATE_COMMIT"
         return 0
     fi
-    for name in "${CI_FAILURE_ALLOWLIST[@]}"; do
+    for name in ${CI_FAILURE_ALLOWLIST[@]+"${CI_FAILURE_ALLOWLIST[@]}"}; do
         found=0
         while IFS= read -r allowed; do [ "$name" != "$allowed" ] || found=1; done <<< "$failures"
         [ "$found" = 1 ] || die "CI waiver is stale or misspelled: '$name' is not a current failure"
     done
     while IFS= read -r name; do
         allowed=0
-        for found in "${CI_FAILURE_ALLOWLIST[@]}"; do [ "$name" != "$found" ] || allowed=1; done
+        for found in ${CI_FAILURE_ALLOWLIST[@]+"${CI_FAILURE_ALLOWLIST[@]}"}; do [ "$name" != "$found" ] || allowed=1; done
         [ "$allowed" = 1 ] || die "CI failure is not explicitly waived: $name"
     done <<< "$failures"
-    echo "REPORT CI waiver for $CANDIDATE_COMMIT by ${GITHUB_ACTOR:-unknown}: $CI_WAIVER_REASON"
+    echo "REPORT CI waiver for $CANDIDATE_COMMIT by $(operator_identity): $CI_WAIVER_REASON"
     while IFS= read -r name; do echo "REPORT waived CI failure: $name"; done <<< "$failures"
 }
 

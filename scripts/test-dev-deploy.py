@@ -99,6 +99,9 @@ if name == "psql" and os.environ.get("STUB_EXPECT_PGDATABASE"):
         sys.exit(97)
     if not passfile or not os.path.isfile(passfile) or (os.stat(passfile).st_mode & 0o777) != 0o600:
         sys.exit(98)
+if name == "psql" and os.environ.get("STUB_EXPECT_PGSSLMODE"):
+    if os.environ.get("PGSSLMODE") != os.environ["STUB_EXPECT_PGSSLMODE"]:
+        sys.exit(99)
 state_path = os.environ["STUB_STATE"]
 try:
     state = json.load(open(state_path))
@@ -174,8 +177,8 @@ class Sandbox:
         if hasattr(self, "state_file"):
             self.state_file.write_text("{}")
 
-    def run(self, argv, extra=None, cwd=ROOT):
-        return subprocess.run(["bash", *map(str, argv)], env={**self.env, **(extra or {})}, cwd=cwd,
+    def run(self, argv, extra=None, cwd=ROOT, shell="bash"):
+        return subprocess.run([shell, *map(str, argv)], env={**self.env, **(extra or {})}, cwd=cwd,
                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
     def calls(self, name=None):
@@ -655,8 +658,9 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stale or misspelled", result.stderr)
 
-    def test_required_checks_must_conclude_success(self):
-        for conclusion in ("skipped", "neutral", None):
+    def test_required_checks_with_a_failing_conclusion_stop(self):
+        for conclusion in (None, "failure", "cancelled", "timed_out", "action_required", "stale",
+                           "startup_failure"):
             with self.subTest(conclusion=conclusion):
                 runs = [
                     {"name": name, "status": "completed",
@@ -738,6 +742,117 @@ class ZeroMutationTests(unittest.TestCase):
             result = box.run([DEV / "deploy.sh", "--override-pause", reason])
             self.assertEqual(result.returncode, 2)
         self.assertEqual(box.calls("gcloud"), [])
+
+    @staticmethod
+    def check_runs(conclusions=None, extra=()):
+        """The required check runs, all successful unless conclusions names another one."""
+        runs = [{"name": name, "status": "completed", "conclusion": (conclusions or {}).get(name, "success")}
+                for name in REQUIRED_CHECKS]
+        runs += list(extra)
+        return json.dumps([{"total_count": len(runs), "check_runs": runs}])
+
+    @staticmethod
+    def set_rule(rules, name, pattern, output):
+        for rule in rules:
+            if rule[0] == name and rule[1] == pattern:
+                rule[2] = output
+                return
+        raise AssertionError(f"no {name} rule {pattern}")
+
+    def full_deploy_rules(self):
+        return self.deploy_rules() + [
+            ["gcloud", "^compute ssh.*journalctl", f"REPORT fixture\nOK {COMMIT} drain_s=0 start_to_ready_s=1\n", 0],
+            ["git", "^archive", "archive", 0],
+        ]
+
+    def test_ci_gate_does_not_wait_for_checks_outside_the_required_set(self):
+        # deploy-dev.yml runs on the candidate commit, so its own job is an
+        # unfinished check run of that commit, as is a long optional workflow.
+        rules = self.deploy_rules()
+        self.set_rule(rules, "gh", "^api .*check-runs", self.check_runs(extra=[
+            {"name": "Deploy dev coordinator", "status": "in_progress", "conclusion": None},
+            {"name": "E2E Integration Tests", "status": "queued", "conclusion": None},
+        ]))
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh", "--dry-run"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("REPORT not required and not finished: Deploy dev coordinator,E2E Integration Tests",
+                      result.stdout)
+        self.assertIn("REPORT GitHub CI/check contexts are green", result.stdout)
+        self.assert_read_only(box)
+
+    def test_ci_gate_waits_for_unfinished_required_checks(self):
+        statuses = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+        statuses[0]["state"] = "pending"
+        early = [{"name": name, "status": "completed", "conclusion": "success"}
+                 for name in REQUIRED_CHECKS if name != "Swift Build + Cache"]
+        early[2]["status"], early[2]["conclusion"] = "in_progress", None
+        rules = self.full_deploy_rules()
+        self.set_rule(rules, "gh", "^api .*check-runs", [
+            [json.dumps([{"total_count": len(early), "check_runs": early}]), 0], [self.check_runs(), 0]])
+        self.set_rule(rules, "gh", "^api .*commits/.*/status", [
+            [json.dumps([{"total_count": len(statuses), "statuses": statuses}]), 0],
+            [json.dumps([{"total_count": len(statuses), "statuses": [
+                {"context": name, "state": "success"} for name in REQUIRED_STATUSES]}]), 0]])
+        box = Sandbox(self, MUTATORS + ["sleep"], rules)
+        result = box.run([DEV / "deploy.sh"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"waiting for CI: {early[2]['name']},Swift Build + Cache (not reported),"
+                      f"{REQUIRED_STATUSES[0]}", result.stdout)
+        self.assertEqual(box.calls("sleep"), [["sleep", "15"]])
+        self.assertIn(f"OK {COMMIT}", result.stdout)
+        self.assertEqual(len([c for c in box.calls("gcloud") if c[1:3] == ["compute", "ssh"]]), 3)
+
+    def test_ci_gate_stops_when_required_checks_do_not_finish_in_time(self):
+        rules = self.full_deploy_rules()
+        pages = json.loads(self.check_runs())
+        for run in pages[0]["check_runs"]:
+            if run["name"] == "Coordinator Tests":
+                run["status"], run["conclusion"] = "queued", None
+        self.set_rule(rules, "gh", "^api .*check-runs", json.dumps(pages))
+        box = Sandbox(self, MUTATORS + ["sleep"], rules)
+        result = box.run([DEV / "deploy.sh"], {"CI_WAIT_S": "0"})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"CI is not complete for {COMMIT} after 0 s: Coordinator Tests", result.stderr)
+        self.assertEqual(box.calls("sleep"), [])
+        self.assertEqual([c for c in box.calls("gcloud") if c[1:3] == ["compute", "ssh"]], [])
+
+    def test_skipped_and_neutral_conclusions_are_not_failures(self):
+        # ci.yml skips path-gated required jobs, for example the provider lanes
+        # on a coordinator-only commit. GitHub branch protection accepts the
+        # same three conclusions.
+        rules = self.deploy_rules()
+        self.set_rule(rules, "gh", "^api .*check-runs", self.check_runs(
+            {"Provider Unit Tests": "skipped", "Console UI Lint & Build": "neutral"},
+            extra=[{"name": "Landing Lint, Build & Test", "status": "completed", "conclusion": "skipped"}]))
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh", "--dry-run"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("REPORT GitHub CI/check contexts are green", result.stdout)
+        self.assert_read_only(box)
+
+    def test_unwaived_ci_failure_is_named_under_macos_bash(self):
+        # macOS /bin/bash 3.2 treats "${empty[@]}" as unbound under set -u.
+        rules = self.deploy_rules()
+        self.set_rule(rules, "gh", "^api .*check-runs", self.check_runs({"Coordinator Tests": "failure"}))
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh", "--dry-run"], shell="/bin/bash")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("CI failure is not explicitly waived: Coordinator Tests", result.stderr)
+        self.assertNotIn("unbound variable", result.stderr)
+
+    def test_ci_waiver_audit_names_the_operator(self):
+        rules = self.deploy_rules()
+        self.set_rule(rules, "gh", "^api .*check-runs", self.check_runs({"Coordinator Tests": "failure"}))
+        rules += [["id", "^-un$", "operator\n", 0], ["hostname", "", "workstation\n", 0]]
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh", "--dry-run", "--allow-ci-failure", "Coordinator Tests",
+                          "--ci-waiver-reason", "owner reviewed base failure"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"REPORT CI waiver for {COMMIT} by dev@example.invalid (operator@workstation): "
+                      "owner reviewed base failure", result.stdout)
+        self.assertIn("REPORT waived CI failure: Coordinator Tests", result.stdout)
+        self.assert_read_only(box)
 
     def seeded_swap_box(self, with_current=True):
         stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install", "chown"]

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -36,10 +36,14 @@ This setting does not grant sandbox permissions or change snapshot binding check
 |---|---|---|
 | `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` | `production`; only `production` or `development`, unknown values fail startup | `coordinator/config/deployment.go` (`CheckDeploymentEnvironment`, `RequiresProductionAppAttest`); `coordinator/internal/startup/legacy_mdm.go` (`InitializeLegacyMDMPolicy`) |
 
-Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
-and freezes the legacy cohort. Explicit `development`, or actual memory-store
+Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites).
+`AppConfig.Check` calls the pure `Config.CheckProductionServing`
+(`coordinator/appattest/service/config.go`) before opening the database or
+running migrations; `Policy.Initialize` checks again before the legacy cohort
+freeze. The database-only `--migrate-only` command does not require serving
+configuration. Explicit `development`, or actual memory-store
 fallback (`EIGENINFERENCE_ALLOW_MEMORY_STORE=true` with no database URL), skips
-that startup freeze. Allowing memory fallback does not exempt a configured
+the serving preflight and startup freeze. Allowing memory fallback does not exempt a configured
 Postgres store. `DD_ENV`, the App Attest proof environment, base URL and client
 claims do not classify deployment security. A later production startup freezes
 then-current eligible membership; dev startup does not establish a cutoff.
@@ -141,6 +145,9 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 |---|---|---|---|---|
 | `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/app/store.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
 | `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
+| `EIGENINFERENCE_MIGRATION_TIMEOUT` | positive Go duration | `15m` | `coordinator/store/config.go` (`ReadConfig`, `Check`); `coordinator/internal/command/coordinator/maintenance.go` (`Maintenance`) | Total deadline for `--migrate-only`, not ordinary serving startup. Explicit empty, malformed or nonpositive values fail validation before database access; programmatic zero uses the default. |
+| `EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` | positive Go duration, `1ms` to `2147483647ms` | `1m` | `coordinator/store/config.go` (`ReadConfig`, `Check`); `coordinator/store/postgres/migration_indexes.go` | Lock wait on dedicated connections for all concurrent index builders, including legacy versions 3, 4, 5 and 9. Overrides URL `lock_timeout` only there; SQL DDL keeps its separate 3-second default and existing URL overrides. Explicit empty, malformed or out-of-range values fail before database access; programmatic zero uses the default. |
+| `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/accounts/delete_provider.go`; `coordinator/api/accounts/erasure/handlers.go` | Enables new erasure confirmations (including `force`) and owned-provider removal. Disabled calls return 503 `soft_delete_mutations_disabled` after authorization/ownership checks. Plan/status/cancel and existing scrub/outbox work continue; read filters and credit fences remain. This is not a rollback switch. |
 | `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`); `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
 | `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
 | `EIGENINFERENCE_ERASURE_GRACE` | Go duration ≥ 0 | `720h` (`defaultGrace`, 30 days) | `coordinator/api/accounts/erasure/loop.go` (`graceFromEnv`) | Time between an account erasure's soft delete and its scrub; an invalid or negative value logs a warning and uses the default. Related erasure constants: [personal-data rules](personal-data-rules.md#configuration-and-constants); procedure: [`../operations/account-erasure.md`](../operations/account-erasure.md). |
@@ -668,6 +675,13 @@ provider or model command is running. Code:
 
 ### Engine and scheduler
 
+Serving acceptance is config-backed, not an environment override. Its default
+and rollback are defined in the [provider configuration reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+
+| Config key | Default | Read in | Effect |
+|---|---|---|---|
+| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
+
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the `provider.toml` setting. The [owned Flash-Next candidate](qwen4-next-support.md#identity-and-serving-policy) joins the exact automatic policy; a default is not runtime qualification. |
@@ -684,6 +698,7 @@ provider or model command is running. Code:
 | `DARKBLOOM_NEMOTRON35_MTP_KV_ONLY_HISTORY` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Trusted-history replay may compute only the embedded assistant's K/V. Prefix save/restore uses the separate typed history codec. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS` | integer `1`…`7` | `7` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Upper proposal limit for adaptive depth; invalid selected limits fall back to seven. This is not a fixed proposal count. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_MTP_VERIFICATION_MODE` | `rectangular`, `serial`, `serial_target`, `automatic` | `automatic` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` | MTP verification strategy (benchmark session). |
+| `DARKBLOOM_MTP_ACCEPTANCE` | `exact`, `typical`, `typical:<delta>` (finite positive delta) | `exact` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift`; `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`benchmarkOverride`) | MTP draft acceptance rule (benchmark session only). An unrecognized value uses `exact`. Serving reads no environment variable for this rule; it reads `[backend] mtp_acceptance` and `mtp_acceptance_by_model` in [`provider.toml`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
 | `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
@@ -964,3 +979,10 @@ These library controls apply to foreground processes and benchmark runs; they ar
 | `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL` | `1` enables, other explicit values disable | enabled only on physical `applegpu_g16s` | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/quantized.cpp` (`gather_qmv`): width-2880 MXFP4 gathered matrix-vector path with a masked 320-element tail. Exact shape/dtype gates retain the general fallback. |
 | `MLX_GPTOSS_MXFP4_PREFILL_TILE` | `m32n32k32`; other values use legacy | legacy | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/gptoss_mxfp4_policy.h` (`gptoss_mxfp4_prefill_tile`): optional 32-row tile for matching sorted expert prefill shapes. Small workstation gains do not establish a universal default. |
 | `DARKBLOOM_GPTOSS_COMPILED_EXPERTS` | `1` enables | disabled | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS+CompiledExperts.swift` (`GPTOSSCompiledExpertsPolicy`): compile single-token B=1/2/4 expert graphs for exact 20B shapes. The global `MLX_COMPILED_DECODE=0` rollback still disables this path. Batch-dependent timing is mixed; weights remain live through weak updatable state. |
+
+## Archived public analytics
+
+| Variable | Type | Default | Owner | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH` | absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`) | Enables validated snapshot reads for leaderboard, network totals and network series; missing/stale snapshots return 503 and never trigger database fallback. See [snapshot operations](../operations/analytics-snapshots.md). |
+| `EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH` | distinct absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`); `coordinator/analyticssnapshot` (`LoadPersistent`) | Required when snapshot mode is enabled. Points to the operator-initialized, private accepted-generation record on a persistent writable mount; missing or corrupt state fails closed across restarts. See [snapshot operations](../operations/analytics-snapshots.md). |

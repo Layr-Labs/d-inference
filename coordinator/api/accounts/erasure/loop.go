@@ -38,6 +38,8 @@ func graceFromEnv() (time.Duration, bool) {
 
 // StartLoop scrubs pending erasure requests whose grace period
 // has ended: once at start, then every erasureScrubInterval.
+// Accepted erasures remain obligations even when new soft-delete mutations
+// are disabled. Their tombstones have already crossed the rollback boundary.
 func (s *Owner) StartLoop(ctx context.Context) {
 	saferun.Go(s.logger, "api.accountErasureLoop", func() {
 		ticker := time.NewTicker(erasureScrubInterval)

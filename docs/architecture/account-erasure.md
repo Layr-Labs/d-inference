@@ -34,6 +34,12 @@ can cancel.
 
 ## Mechanism
 
+New confirmations, including immediate `force` scrubs, pass the default-off
+[soft-delete mutation gate](../reference/soft-delete.md#writers-of-deleted_at)
+after admin authorization. It also gates ordinary provider removal, but not
+planning, status, cancellation or workers completing accepted erasures.
+Disabling it cannot make an older, erasure-unaware fallback safe.
+
 ### Components
 
 ```mermaid

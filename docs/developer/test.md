@@ -1203,6 +1203,110 @@ the configured database. CI provides a
 a substitute for the complete coordinator runner and explicit race/database
 validation; run the full set before merging.
 
+#### Idle-provider routing recovery
+
+The routing regression suites use real registry reservations, injected
+measurement histories and virtual-clock heartbeat feedback. Run the focused
+selection and two-hour starvation simulations before the complete coordinator
+suite:
+
+```bash
+go test ./coordinator/tests/registry ./coordinator/tests/registry/routingsim \
+  -run 'TestIdleDecode|TestExploredIdleProvider|TestClosedLoop' -count=1
+```
+
+The simulation's idle-wait bound applies to its fixed fleet and arrival schedule;
+it is not a promise that every production provider receives traffic. Keep the
+exploration-backoff and inference-outcome tests in the full suite as well:
+recovering an idle provider must not repeatedly select a genuinely slow one.
+All tests stay under `coordinator/tests/`; no live coordinator or provider model
+is needed for these routing checks.
+
+#### Offline OpenRouter caller conformance
+
+Scenarios, fixtures and observers live in `coordinator/tests/internal/conformance/`.
+The thin `coordinator/tests/api/inference/contracts/openrouter_conformance_test.go`
+adapter (`conformanceSuite`) retains the existing 22 test entry points. It binds
+the real composed runtime together with the ledger and reservation controller it
+constructs, without adding production exports; the outstanding service hold is
+measured at that controller's admission boundary, not read from private state, by
+`coordinator/tests/internal/conformance/service_hold.go` (`OutstandingServiceHold`).
+Run the inference contract tests below: the support package is not itself a
+test entry point and is not imported by production.
+Streaming providers emit the concrete build ID; the HTTP assertions require
+the caller's alias, so bypassing the coordinator's model rewrite fails.
+Current-wire fixtures send typed `invalid_request` errors and use explicit
+template readiness for the unsupported-tool fence; they do not reintroduce
+upstream's retired version-based tool heuristic. The test-support package
+also exposes shared fixture helpers for the separate composed cache tests.
+
+`TestOpenRouterConformance` exercises `Server.Handler` with synthetic catalog
+records, account-owned API keys, memory storage and encrypted loopback provider
+WebSockets. It needs Go and no provider binary, model, database or external account.
+Use the repository-pinned Go toolchain. Prepare module dependencies separately
+in dedicated `GOMODCACHE`, `GOCACHE` and `GOTMPDIR` directories before the offline
+run; leave `HOME` unchanged. Clear inherited service, database, authentication,
+telemetry and proxy variables from the test process environment.
+
+From the repository root, with those isolated caches prepared:
+
+```bash
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -json -count=1 -timeout=3m \
+  -run '^TestOpenRouterConformance' > conformance.jsonl
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -race -json -count=1 -timeout=5m \
+  -run '^TestOpenRouterConformance' > conformance-race.jsonl
+```
+
+Require nonzero execution of Auth, Feed, Chat, AccountSLA, Drain, Retry,
+PostContentFailure, ClientError, Cancellation, CompletionFirst, Tools, Observer
+and Transport under that prefix. The incident and readiness additions also require
+IncidentProvenance, IncidentEnvelope, IncidentRefusal, Scenario,
+ScenarioFragmentation, ScenarioBounds, ScenarioChoiceShape, ReadinessFeed and
+ReadinessCapabilities. Retain every failure and unexpected skip across all
+22 groups. The combined family has 197 leaf cases, 64 of them in the thirteen
+groups named first. `OR_REPORT` log lines contain bounded synthetic status, attempts,
+terminal, timing, usage and balance evidence.
+Repeat with `-count=2` to compare semantic fields, excluding timing values;
+assert generated identities within each request before normalizing reports.
+
+The observer measures headers at `Client.Do` return, then first complete event,
+semantic payload and terminal while consuming the body. Role, usage and DONE
+are not semantic output; unavailable timing is null. It rejects malformed or
+truncated events, in-band errors, missing or duplicate DONE, changed identity,
+trailing payload and read errors. A provider drain acknowledgement joins prior
+completion workers before duplicate-terminal and no-stray-cancel assertions.
+The transport permits only its fixture address and rejects redirects and proxies.
+
+The OpenRouter cancellation fixture observes the existing completed-write profile
+stamp before canceling a dispatched request. Receiving provider bytes alone does
+not prove that the writer has finished; cancellation during an in-flight write
+may correctly abort that connection. Registry writer tests cover that separate
+outcome, while this fixture continues to require a matching cancel frame and
+exact settlement cleanup.
+
+The incident-envelope and scenario cases preserve the two curated Boston weather
+requests with reasoning disabled and tool choice omitted or auto. Added model
+identity is an explicit synthetic fixture wrapper. They check the complete
+forwarded schema/control fields and distinguish transport validity from the
+expected function, arguments, call IDs, indexes, cardinality and finish reason.
+A well-formed refusal ending in `stop` fails the weather scenario even when
+transport succeeds; a correct authored call may retain permitted pre-call text.
+These scripts do not prove actual Nemotron tool selection or native prompt parity.
+
+Readiness cases use authenticated metadata registration and normal `models_update`
+WebSocket messages to check staged/ready/staged feed visibility and capability
+enable/revoke, legacy omission, hash rejection and wrong-model fencing. A feed
+flag or advertised capability does not establish actual model loading or serving.
+`OR_INCIDENT`, `OR_SCENARIO` and `OR_READINESS` log records state these limits.
+
+These tests qualify the authored HTTP/transport and memory-accounting fixtures.
+Test-only trust and capacity state are explicit; tool declarations are synthetic.
+Real-model qualification and hosted OpenRouter qualification are not run by this
+command. Synthetic timings do not measure production latency, and no live request,
+model download or provider operation follows from an offline pass.
+
 #### Coordinator startup and reconnect recovery
 
 `TestSupervisorRestartsChildAndBecomesReady` allows a five-second helper startup
@@ -1891,6 +1995,44 @@ both targets compile the same test without depending on target-local helpers.
 Passing these operator cases does not replace full-model trajectory, cache,
 batching or performance validation.
 
+#### Sampled MTP acceptance controls
+
+Build the [candidate radix executable](build.md#prefix-cache-benchmark-executable)
+with `RADIX_CANDIDATE_BUILD=1`. Both `scripts/benchmarks/run_radix_engine.py`
+and `radix-engine` accept `--mtp-acceptance exact|typical`. The wrapper forwards
+the option only when explicitly supplied, preserving old baseline command lines;
+omission leaves the candidate on `exact`. Historical baseline builds reject the
+explicit flag. Values are the exact lowercase strings, not `typical:<delta>`.
+This flag selects acceptance, not MTP activation: pass `--mtp on` separately.
+
+For an eligible target-prefix model, compare `exact` and `typical` using the same
+candidate binary, target/assistant hashes, backend, grant, prompt, seed, sampling
+knobs and output budget. Use sampled inputs and
+`--generation-comparison-policy record`, retaining full outputs and structural,
+capacity, cancellation and retirement checks. Typical output is not
+distribution-exact; token differences are not a greedy parity failure, and a
+higher acceptance ratio alone proves neither quality nor throughput. Keep strict
+greedy controls separate. Native MiMo does not apply this preference and remains
+exact; do not report it as a typical-acceptance arm.
+
+The candidate SSD route passes `mtpAcceptanceConfig: String = "exact"` through
+`EngineV2Factory.makeBenchmarkSession` (`@_spi(Benchmarking)`) to the ordinary
+slot factory. The resident route sets the same engine rule directly. Actual MTP
+metrics report `acceptance`, the installed rule, rather than merely the requested
+flag (`scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift`,
+`mtpRecord`). Production serving still uses TOML; the separate benchmark-session
+environment override is documented in the
+[configuration reference](../reference/configuration.md#engine-and-scheduler).
+
+Run `python3 -m unittest discover -s scripts/benchmarks -p test_run_radix_engine.py`
+for wrapper omission/forwarding and invalid-value coverage. With the same source
+root and candidate define used for the build, run the radix package's
+`BenchmarkMTPAcceptanceTests` for default/configuration, invalid/duplicate flags,
+and installed configuration/metric serialization. Also run provider
+`MTPAcceptanceConfigTests` for optional TOML round trips, per-model precedence,
+unknown-value fallback and the separate benchmark override. These tests are not
+real-model quality or performance measurements.
+
 <a id="resident-prefix-benchmark-validation"></a>
 
 #### Explicit Gemma verifier and projection controls
@@ -2480,6 +2622,8 @@ makes no network request, writes no login token and updates no host.
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
 ./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
+python3 scripts/check-go-toolchain.py # exact local/container pins satisfy go.mod
+python3 scripts/test-go-toolchain.py  # old production mismatch, patch minimum, drift and digest regressions
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
@@ -2490,7 +2634,24 @@ python3 scripts/test-provider-release-resolution.py # signed-validation and publ
 Version checks, release routing, installer parity and production environment refresh
 run in CI job "Release Integrity". The production env refresh test checks automatic
 payout activation, preservation of an explicit off switch, and rejection of missing
-payout prerequisites before the live env is changed.
+payout prerequisites before the live env is changed. It also verifies that the
+required soft-delete mutation flag bootstraps to `false` while preserving explicit
+`false` and `true` choices. These tests use temporary env files, not production.
+
+The Go toolchain guard runs without Docker or a Go download. Its regression suite
+rejects the former Go 1.25 builder with the Go 1.26 module, mismatched local pins,
+an insufficient patch version and an absent digest; it also executes the guard
+against the checkout. This is not a substitute for the full production Docker
+build in [the build guide](build.md#9-coordinator-container-image).
+
+For a provider version-only preparation, run source/fallback parity and the
+release-script tests without cold-building Swift/MLX. Inspect existing caches
+first; reuse Go's content-addressed caches and only compatible Swift/Metal
+caches. Do not point a separate worktree at another active Swift scratch path or
+present an old binary as the new candidate. A changed checkout path, SDK,
+compiler or dependency pin can invalidate Swift build reuse. Exact signed-bundle
+runtime, numerical and upgrade checks remain required by the
+[0.9.18 rollout gates](../operations/provider-release.md#0918-candidate-rollout).
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle
@@ -3443,6 +3604,33 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Telemetry archive validation
+
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. Accounting tests cover signed micro-USD values, sums beyond INT64, backdated timestamps, sparse IDs, late commits, destination separation, and exact restoration of all four accounting tables. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+Analytics preview tests reject mixed datasets, injected catalog identifiers,
+missing coverage, unbounded series and excessive scan budgets. Optional
+SELECT-only BigQuery semantics tests use synthetic CTE fixtures, creating no
+cloud datasets or tables: set `TEST_ARCHIVE_BIGQUERY_PROJECT` explicitly and
+run `uv run pytest -q tests/test_analytics_bigquery.py`. They exercise provider
+versus reward-only cohorts, anonymous network earnings, signed corrections,
+base-reward exclusion from tokens/jobs, ties/limits, empty windows, exact time
+boundaries and sums beyond INT64. CI skips these credentialed tests; their live
+results must be recorded separately from the local suite.
+
+Backfill regressions cover explicit recapture generations, legacy plan identity,
+large sharded completion catalogs and deadline enforcement during saved-checkpoint
+replay. Publication tests verify reused catalog schema and content, not only row
+counts. Async-query tests use real BigQuery SDK value objects with local transport
+fixtures to check dry-run rejection, pinned sources, idempotent named submission,
+bounded polling/pagination, exact decimal results and owned cancellation; they do
+not establish live BigQuery or IAM correctness. Run the complete locked suite
+with `uv run --locked pytest -q` after `uv sync --locked`.
+
+Archived snapshot validation and no-scan HTTP tests live in `coordinator/tests/analyticssnapshot` and `coordinator/tests/api/reporting/analytics_snapshot_test.go`; run `go test -race ./coordinator/tests/analyticssnapshot ./coordinator/tests/api/reporting ./coordinator/tests/api`. The snapshot tests exercise the exported decoder and cache APIs; HTTP tests exercise the reporting owner and retain the separate database-backed core stats refresh. Python `test_snapshot_sync.py` tests generation/hash/scope validation and atomic file replacement. See [snapshot operations](../operations/analytics-snapshots.md).
+
+Leaderboard cache tests cover concurrent callers with different limits and aliases sharing one top-200 query, and failed queries retaining only their cooldown. Store tests cover closed pools and scan overflow after a valid first row returning an error with no partial ranking; the latter uses the isolated PostgreSQL test database.
 
 ## Account erasure regressions
 

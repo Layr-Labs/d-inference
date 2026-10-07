@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -430,6 +430,30 @@ constraints retain their ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
+When neither a global nor a per-model acceptance value is configured, serving
+defaults to typical acceptance for eligible sampled target-prefix rows:
+a draft is kept when the sampler-filtered target row gives it probability above
+`min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
+position and the bonus position still commit the keyed target sample. Output
+is approximate, not distribution-exact for the target. Greedy rows keep the exact
+walk. Explicit `"exact"` opts out; invalid values warn and safely resolve to
+exact, including an invalid per-model override rather than falling back to the
+global value (`MTPAcceptancePolicy.resolve`;
+`CBv2MTPAcceptance` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`;
+`mtp_acceptance` in slot posture telemetry). Design record:
+[`../design/typical-mtp-acceptance.md`](../design/typical-mtp-acceptance.md).
+Configuration precedence and exact rollback are in the
+[CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+The benchmark session and default `--mtp-acceptance exact` are unchanged
+(`provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift`). The
+[recorded benchmarks](../reports/2026-10-07-typical-mtp-acceptance-benchmarks.md)
+cover only single-host B=1 runs; they do not qualify sampled-output quality or
+fleet-wide speed.
+Native MiMo remains exact: its separately owned slot construction does not
+apply this preference, so `typical` is unsupported on that path
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`,
+`nativeMiMoMTPConfig`). The setting does not enable MTP or widen model eligibility.
 Nemotron's assistant uses one speculative request and adaptive depth up to
 seven proposed tokens. Captured target verification, batched M=1 projections
 and KV-only trusted-history priming default on, with separate rollback controls.

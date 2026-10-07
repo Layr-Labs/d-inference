@@ -207,6 +207,9 @@ the api_keys and account erasure queries from it. The versions,
 locks, timeouts, sqlc and failure modes are in
 [schema lifecycle](schema-lifecycle.md); adding a migration is
 [Add a database migration](../developer/database-migrations.md).
+The concurrent-index helpers preserve invalid indexes for operator inspection;
+they do not automatically drop them. Their dedicated connection timeout is
+separate from ordinary migration DDL, without changing schema versions.
 
 ```mermaid
 flowchart LR
@@ -214,10 +217,11 @@ flowchart LR
   classDef check fill:#fef3c7,stroke:#b45309,color:#1f1300
   classDef ok fill:#dcfce7,stroke:#15803d,color:#052e16
   classDef fail fill:#fee2e2,stroke:#b91c1c,color:#450a0a
-  A["ReadAppConfig"]:::step --> B{"EIGENINFERENCE_DATABASE_URL set?"}:::check
+  A["ReadAppConfig + Check<br/>(production-serving preflight)"]:::step --> B{"EIGENINFERENCE_DATABASE_URL set?"}:::check
+  A -- "invalid config; no database access" --> X["exit 1"]:::fail
   B -- "yes" --> C["NewPostgres: connect, Ping,<br/>apply pending goose versions"]:::step
   C -- "ok" --> G["SeedKey admin key, serve"]:::ok
-  C -- "error" --> X["exit 1"]:::fail
+  C -- "error" --> X
   B -- "no, ALLOW_MEMORY_STORE=true" --> H["NewMemory + 15 min pruner"]:::ok
   B -- "no" --> X
 ```
@@ -234,6 +238,9 @@ late external creation results retain cleanup IDs in the erasure outbox.
 Historical accounting and revocation paths remain available. The model is in
 [schema lifecycle](schema-lifecycle.md#soft-delete); the exact read and write
 behavior is in the [soft-delete reference](../reference/soft-delete.md).
+The default-off HTTP mutation gate prevents new account-erasure confirmations
+and provider removals, not existing scrub/outbox obligations. It does not change
+the stored schema, read filters or rollback requirements for prior tombstones.
 
 ### Provider earnings and history
 
@@ -464,7 +471,7 @@ KV blocks under a per-model key, not tokens.
 | Concern | Location |
 |---|---|
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
-| Earnings rankings and startup time index | `coordinator/store/postgres/leaderboard.go` (`Leaderboard`), `coordinator/store/postgres/earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres/startup.go` (`ensureConcurrentIndex`) |
+| Earnings rankings and startup time index | `coordinator/store/postgres/leaderboard.go` (`Leaderboard`), `coordinator/store/postgres/earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres/migration_indexes.go` (`ensureConcurrentIndex`) |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/app/store.go` |
 | Postgres pool | `coordinator/store/postgres/postgres.go` |
 | Migrations | `coordinator/store/postgres/migrations.go`, `coordinator/store/postgres/schema/migrations/`, `coordinator/store/postgres/schema/schema.sql`; full map in [schema lifecycle](schema-lifecycle.md#code-map) |
@@ -567,3 +574,16 @@ An unchanged decision can age outside the admin endpoint's recent-events window
 while the current tick summary remains fresh. Proposals are not dispatched
 commands, residency changes or live capacity evidence; see the
 [API contract](../reference/api-contracts.md#experimental-model-autopilot).
+
+## Optional archived public analytics reader
+
+The [operational/history design](../design/operational-history-retention.md)
+targets a bounded recent-detail database with full durable historical storage.
+This is not an active source-retention policy: current pruning, balances,
+settlement identities and historical readers are unchanged. The separate
+[historical query CLI](../operations/history-queries.md) submits bounded async
+SELECT jobs over captured data, not live transactional state.
+
+`coordinator/analyticssnapshot` validates and atomically caches a private local generation. A separate private persistent file records accepted source cutoffs and generation checksums before the cache serves them, so a coordinator restart cannot accept a rolled-back pointer when the record survives. `coordinator/api/reporting/analytics_snapshot.go` polls the file; when configured, leaderboard, network totals and network series bypass PostgreSQL and its totals refresher. Financial amounts retain integer semantics and IDs remain pseudonymized by the API. The copy-only archive cannot qualify production snapshots; continuous capture and reconciliation remain rollout gates. See [operations and rollback](../operations/analytics-snapshots.md). Source-retention behavior is unchanged.
+
+In default database mode, `coordinator/internal/api/reporting/ranking/leaderboard_cache.go` coalesces concurrent requests and shares one top-200 ranking per metric/canonical window across limits and aliases, retaining the failure cooldown. `PostgresStore.Leaderboard` returns errors on query, scan or iteration failure; the handler never caches a partial ranking. Network totals refresh every 5 minutes with a 15-minute maximum success TTL. Network series caches successful results for 5 minutes. Core stats retain their independent 30-second cadence and 5-minute safety TTL.

@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -50,9 +50,10 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/access` | Credential policy/cache, principal context and rate middleware; key and device handlers live in child packages. |
 | `coordinator/api/inference` | Shared admission, dispatch, cancellation and settlement; request lowering and response encoding are separate leaves. |
 | `coordinator/api/provider` | WebSocket sessions and typed inference-event handoff; `provider/trust` owns legacy verification and revocation state. |
-| `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. |
+| `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. Release composition injects the source `LatestProviderVersion` display fallback from `coordinator/api/server.go`; the store still owns registered releases. A source version bump is not publication (see [release contracts](../../reference/api-contracts.md#release-and-install-5)). |
 | `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the `accounts/erasure` child owns the account erasure admin routes and scrub loop; the payouts child owns provider payout workflows, not a second ledger. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
+| `coordinator/analyticssnapshot` | Validates optional local public analytics snapshots and persists acceptance continuity. `ServerConfig` supplies the snapshot and state paths through reporting dependencies; the reporting owner polls and serves them without database fallback. See [snapshot operations](../../operations/analytics-snapshots.md). |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
 | `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
 | `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, non-streaming response limits, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
@@ -114,7 +115,11 @@ failure in any step marked *fatal* exits the process before it listens.
 2. **Configuration** (*fatal*). `config.ReadAppConfig` reads every package's
    environment, then `Check` rejects invalid combinations (no DSN without the
    memory-store opt-in, mock billing with a live Stripe key, malformed media
-   fetch or cache-routing values, an unknown trust level). Every variable is
+   fetch or cache-routing values, an unknown trust level). For production
+   serving, it also calls the pure `service.Config.CheckProductionServing`
+   before database access; the same validator runs later in `Policy.Initialize`
+   before the freeze. [Deployment classification](../../reference/configuration.md#deployment-environment)
+   defines the development and actual-memory-store exceptions. Every variable is
    listed in [`../../reference/configuration.md`](../../reference/configuration.md).
 3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, apply pending
    goose migrations ([schema lifecycle](../schema-lifecycle.md)), seed the
@@ -148,7 +153,9 @@ failure in any step marked *fatal* exits the process before it listens.
    runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`) and
    outbox worker (`StartErasureOutboxLoop`, which runs `Owner.StartOutboxLoop`
    in `coordinator/api/accounts/erasure/outbox.go`;
-   [account erasure](../account-erasure.md)); the prompt sidecar supervisor
+   [account erasure](../account-erasure.md)). These workers complete existing
+   obligations even when `SoftDeleteMutationsEnabled` blocks new confirmations
+   and provider removals in the HTTP owners; the prompt sidecar supervisor
    and preloader.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
@@ -158,6 +165,11 @@ failure in any step marked *fatal* exits the process before it listens.
     sidecar, wait up to `EIGENINFERENCE_DRAIN_GRACE` for in-flight requests,
     then `Shutdown` with a 15 s backstop; deferred closes stop Datadog and the
     Postgres pool.
+
+The database-only `Maintenance` path
+(`coordinator/internal/command/coordinator/maintenance.go`) validates store
+configuration and applies migrations under `Config.MigrationTimeout`, without
+full application validation, a cohort freeze, listeners or workers.
 
 The dependency direction is `cmd -> app -> api composition -> domain owners ->
 focused internal components`.

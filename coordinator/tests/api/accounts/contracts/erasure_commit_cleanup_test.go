@@ -49,7 +49,7 @@ func TestErasureRuntimeCleanupAfterCommittedCancellation(t *testing.T) {
 			logger := slog.New(slog.DiscardHandler)
 			reg := registry.New(logger)
 			ledger := payments.NewLedger(cached)
-			srv := api.NewRuntime(api.RuntimeDependencies{Registry: reg, Store: cached, Ledger: ledger, ReadCache: readcache.New(), Logger: logger}, api.ServerConfig{}).Server
+			srv := api.NewRuntime(api.RuntimeDependencies{Registry: reg, Store: cached, Ledger: ledger, ReadCache: readcache.New(), Logger: logger}, api.ServerConfig{SoftDeleteMutationsEnabled: step == "confirm"}).Server
 			t.Cleanup(srv.Close)
 			srv.SetAdminKey("admin-key")
 			provider := reg.Register(a.ProviderID, nil, &protocol.RegisterMessage{})

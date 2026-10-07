@@ -10,6 +10,10 @@ release, account, billing, reporting and operations owners described in the
 [code navigation guide](../developer/navigation.md). Package boundaries do not
 change HTTP paths, middleware ordering, status codes or wire shapes.
 
+Offline caller conformance is exercised through the real handler by
+`coordinator/tests/internal/conformance/`, including concrete-provider-model to
+public-alias rewriting. See the [conformance test entry points](../developer/test.md#offline-openrouter-caller-conformance).
+
 The public model catalog optionally includes `hugging_face_artifact` for direct
 provider downloads; the admin registration accepts the same object. See the
 [registry artifact contract](model-registry-format.md#hugging-face-download-artifact).
@@ -24,6 +28,21 @@ waiting or observing; enrollment alone does not change the operator's selected
 models. This uses `Provider.ServingModelsLocked` in
 `coordinator/registry/autopilot_inventory.go`; see
 [model Autopilot](../architecture/model-autopilot.md).
+
+## Provider-bound caller fields
+
+The coordinator accepts top-level `user`, generic `metadata`, `safety_identifier`
+and caller `prompt_cache_key` on the four inference endpoints but removes them from provider-bound bodies before encryption.
+The shared `parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`)
+runs `Parser.Parse`, which calls `stripProviderCallerIdentity`
+(`coordinator/internal/inference/prelude/request_prelude.go`,
+`coordinator/internal/inference/prelude/provider_body_privacy.go`),
+so direct dispatch, queueing, retries and endpoint/model rewrites use the same
+minimized body. Nested messages, tool arguments, schema properties and media are
+unchanged. `metadata_details` remains the separate coordinator response-metadata
+opt-in. Authentication, billing ownership and cache scopes remain context-derived.
+This is field minimization, not anonymity; see the
+[privacy boundary](../architecture/security/encryption.md#provider-bound-field-minimization).
 
 ## Small-model interest
 
@@ -257,7 +276,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/summary` | `HandleMySummary` (`coordinator/api/accounts/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `HandleMyProviders` (`coordinator/api/accounts/providers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `HandleMySelfRouteModels` (`coordinator/api/accounts/self_route.go`) | `user` | — | Models the account's own machines can serve |
-| DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine |
+| DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine; requires the [soft-delete mutation gate](soft-delete.md#writers-of-deleted_at). After authentication, record existence and ownership checks, a disabled gate returns 503 `soft_delete_mutations_disabled` without mutation |
 | GET | `/v1/pricing` | `HandleGetPricing` (`coordinator/api/billing/pricing.go`) | `—` | — | Public price table, `types.PricingResponse` `{prices: [{model, input_price, output_price, cache_read_price, input_usd, output_usd, cache_read_usd}], fallback_input_price, fallback_output_price, fallback_cache_read_price, fallback_*_usd}`; `cache_read_price` is the effective rate (derived when the row sets none); see [`pricing-model.md`](pricing-model.md) |
 | PUT | `/v1/pricing` | `HandleSetPricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelprice.Input`, `coordinator/api/modelprice/price.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
 | DELETE | `/v1/pricing` | `HandleDeletePricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Revert to defaults |
@@ -342,12 +361,18 @@ referral service returns 503 `billing_error`
 |---|---|---|---|---|
 | GET | `/v1/stats` | `HandleStats` (`coordinator/api/reporting/stats_handler.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
 | GET | `/v1/leaderboard` | `HandleLeaderboard` (`coordinator/api/reporting/leaderboard.go`) | `—` | Successful top-200 rankings, including genuinely empty windows, cached 5 min per metric/canonical window; caller limits and aliases share one fill. Query, scan, or iteration failures return 503 `service_unavailable` with `Retry-After`; only a 10 s failure cooldown is retained, never empty/partial data |
-| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/totals_handler.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
+| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/totals_handler.go`) | `—` | Database-backed totals refreshed every 5 min with a 15 min stale-success ceiling; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
 | GET | `/v1/network/model-demand` | `HandleModelDemand` (`coordinator/api/`) | `—` | Recorded public model demand; `window=24h` (default), `7d`, `30d`; cached up to 5 min; 400 for other windows; 503 on unavailable aggregation |
-| GET | `/v1/network/series` | `HandleNetworkSeries` (`coordinator/api/reporting/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
+| GET | `/v1/network/series` | `HandleNetworkSeries` (`coordinator/api/reporting/network_series.go`) | `—` | Time series for `30m`, `24h`, `7d`, `30d`, successful database results cached 5 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `HandleHealth` (`coordinator/api/operations/health.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
 A successful empty analytics window returns 200 with empty arrays or zero totals.
+When configured, the [archived snapshot mode](../operations/analytics-snapshots.md)
+replaces leaderboard, network totals and all four network series reads with
+validated local data. `updated_at` reports the source `as_of` time. Missing,
+unqualified or expired data returns 503 without a SQL fallback or an ordinary
+cache hit. Only the totals background queries are disabled; core stats and
+geography retain their independent database-backed refreshes.
 Core stats query failures retain the unexpired success or return 503; request
 geography never blocks core stats. Geography refreshes on its own
 `statsRefreshInterval` loop, using `statsGeographyCacheKey`. Core snapshots
@@ -435,11 +460,11 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `HandleLatestRelease` (`coordinator/api/releases/read_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `HandleReadyz` (`coordinator/api/operations/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.16 candidate sets `LatestProviderVersion` in
+The 0.9.18 prepared candidate sets `LatestProviderVersion` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
-exists (`coordinator/api/releases/release_handlers.go`, `HandleLatestRelease`).
+exists (`coordinator/api/releases/read_handlers.go`, `HandleLatestRelease`).
 
 `POST /v1/releases` accepts additive `code_directory_hash`, `source_commit`, `ci_run_id`, and `require_app_attest_qualification`. The production workflow requires durable approval; enabled production App Attest serving also enforces the gate server-side. The scoped release key cannot create approval. Missing or conflicting approval returns 409 without advancing latest; unavailable qualification returns 503. Both the legacy version path and a bundle-hash-qualified `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-<PLATFORM>.tar.gz` path are accepted only on the configured R2 origin. Code: `coordinator/api/releases/app_attest_publication.go` (`persistReleaseForPublication`), `coordinator/api/releases/artifact_metadata.go` (`trustedReleaseArtifactURL`).
 
@@ -809,6 +834,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `ApplyResolvedModelReasoningPolicy` (`coordinator/api/inference/request/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `StripProviderRoutingFields` (`coordinator/api/inference/request/request_introspection.go`) |
+| `user`, `metadata`, `safety_identifier`, `prompt_cache_key` (top level) | Accepted, then removed before the body is forwarded to a provider (the coordinator may add its own protocol-0 `prompt_cache_key` afterwards); see [provider-bound caller fields](#provider-bound-caller-fields) |
 | `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`Bridge.Resolve`, `coordinator/internal/inference/media/media_resolve.go`) |
 
 ### Chat Completions response (`ChatCompletionResponse`, `coordinator/api/types/types.go`)
@@ -1122,6 +1148,13 @@ Authorization: Bearer admin-key
 `POST /v1/admin/accounts/{account_id}/erasure`. Soft deletes the account and starts the grace period. Handler
 `HandleRequest`; store `RequestAccountErasure`.
 
+Requires `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=true` (default `false`).
+After admin authorization, a disabled gate returns 503 with error `type` and
+`code` `soft_delete_mutations_disabled`, before body parsing or mutation,
+including when `force` is requested. Plan, status and cancel remain available;
+already-pending scrub and outbox delivery continue. Disabling the gate does not
+undo deletion or remove read/credit fences.
+
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `account_id` | string | yes | Must equal the path's account ID |
@@ -1146,7 +1179,7 @@ Response 200: `{"request": ErasureRequest}`, the request in `pending`, or in
 | 409 | `erasure_conflict` | The request is already `pending`, or the user is already soft deleted |
 | 409 or 500 | — (not the error envelope) | `force` only: the soft delete committed but the scrub failed. Body `{"request": ErasureRequest, "scrub_error": "<error text>"}`; 409 for an open withdrawal, 500 otherwise. The request stays `pending` and the loop retries |
 
-The checks run in this order: body, token present, account ID, then the
+The checks run in this order: admin authorization, mutation gate, body, token present, account ID, then the
 store checks (user, request state, token, email, wallets, withdrawals).
 
 Side effects, in one transaction: `deleted_at` on the user and its providers;

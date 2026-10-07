@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — Bedrock review and conditional merge clearance
+
+- Support an explicitly approved ongoing OpenRouter budget with daily and per-attempt caps, retaining historical charges and unknown reservations. Preflight now rejects exhausted budget capacity even when provider funding is available.
+
+- Limit scanner checkouts to trusted scripts and threat definitions so preflight does not spend its timeout fetching unrelated repository content.
+- Preserve exact source coordinates in review excerpts and keep summaries below strict output limits. Require human review when the final model still reports uncertainty.
+
+- Add attributed Bedrock review with bounded OpenRouter fallback, explicit usage reporting, and optional current-revision merge clearance. Medium/high findings, incomplete scans, and review-control changes require an independent formal security override. Cloud and merge-policy activation remain a separate verified rollout.
+- Validate the enabled Sonnet 5.5 profile for the first pass and matching OpenRouter backup, retaining Opus 5.5 and Sol 6.1. Exercise the full production response schema in the bounded Bedrock smoke test and record the deployed configuration.
+
 ## 0.9.19 - prepared candidate (not published)
 
 This candidate contains the SSD write-endurance correction below. The version

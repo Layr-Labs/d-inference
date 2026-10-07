@@ -2,6 +2,7 @@
 
 > Last updated: 2026-10-07
 
+
 ## SSD write endurance
 
 Run `bash scripts/test-ssd-write-budget.sh` on macOS with Xcode to exercise the
@@ -568,6 +569,15 @@ Set `MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE` to the verified video file emitted by
 the fixture preparation script.
 Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
 its public codec download is about 1.87 GB and is checked against fixed hashes.
+
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback,
+Sonnet 5.5 fallback identity, production smoke schema validation (including the
+boolean `needs_deeper_review`), and conditional merge clearance without cloud calls.
+The smoke script calls `budget_scan.py` (`Scanner.call`, `Scanner.integrate`) with
+caching disabled, one source pass and one integration pass per model. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
 
 ## Provider lifecycle regression checks
 
@@ -3561,6 +3571,12 @@ production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
 
+The threat-review preflight checks the configured OpenRouter budget mode and
+remaining normal-attempt capacity as well as writer access and funding. Offline
+budget regressions cover migration without resetting charges, daily caps,
+unknown reservations and exhausted-pilot detection; see
+[review configuration](threat-model-review.md#openrouter-budget-behavior-and-recovery).
+
 Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
 OpenRouter response validation, credential isolation, pagination, stale-head and
 comment lifecycle tests. The suite opens a temporary loopback HTTP server and
@@ -3669,3 +3685,7 @@ boundary statements; duplicates still split into ordered chunks. Outcome
 updates retain their single pipelined batch. The memory marker fixture also
 freezes real MDM eligibility and stores hardware-interest markers before
 scrubbing, so every memory-backed personal-data rule has observed coverage.
+
+The scanner regressions also verify numbered source reconstruction, annotation
+capacity, original citation coordinates, and that final-reviewer uncertainty cannot
+grant conditional merge clearance.

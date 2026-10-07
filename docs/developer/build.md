@@ -226,6 +226,22 @@ The revision publisher accepts optional per-version HF repo, commit and path-pre
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
 
+## Bedrock review workflow
+
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+Review, preflight and smoke checkouts fetch only the trusted scanner scripts and
+threat definitions, avoiding unrelated repository blobs before verification.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback
+and conditional merge clearance without cloud calls. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
+
+The threat-review preflight checks the configured OpenRouter budget mode and
+remaining normal-attempt capacity as well as writer access and funding. Offline
+budget regressions cover migration without resetting charges, daily caps,
+unknown reservations and exhausted-pilot detection; see
+[review configuration](threat-model-review.md#openrouter-budget-behavior-and-recovery).
+
 ## Standalone SSD accounting check
 
 `bash scripts/test-ssd-write-budget.sh` compiles only the production

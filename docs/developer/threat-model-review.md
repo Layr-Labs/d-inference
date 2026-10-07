@@ -1,19 +1,22 @@
-# Configure budgeted advisory threat-model review
+# Configure threat-model review and merge clearance
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-07
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
-show coverage, cost, reuse and failures. Reviews never block merges. Paid scanning
-is **disabled by default**, including when legacy model variables remain set.
+show coverage, cost, reuse and failures. The default remains advisory. Optional
+conditional clearance allows a completed scan without medium/high findings, or an
+independent formal manual override, to satisfy the security workflow requirement.
+See [Bedrock and merge-policy rollout](../operations/threat-review-rollout.md).
+Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 
 ## Prerequisites
 
 - Actions administration and a reviewed workflow on the default branch.
 - An OpenRouter key with access to `anthropic/claude-sonnet-5.5`,
   `anthropic/claude-opus-5.5` and `openai/gpt-6.1-sol`. Retain a provider-side key
-  spending limit as an independent backstop. This change does not add credits,
-  raise a limit or enable paid scanning.
+  spending limit as an independent backstop. Provider credits and key limits are
+  managed separately from the durable repository budget policy.
 - A writer permitted to update `codex/threat-review-state` under branch
   restrictions and signed-commit rules. Contents write permission alone does
   not bypass repository rules.
@@ -60,11 +63,16 @@ is **disabled by default**, including when legacy model variables remain set.
 6. When authorized to start the pilot, set `THREAT_REVIEW_ENABLED=true`. This
    repository variable can be set before merge so activation takes effect as
    soon as the workflow lands on the default branch. It admits
-   at most **ten distinct PRs** and **$25 total**, with no automatic renewal.
-7. Keep **Threat Model Review (advisory)** out of required checks. Opening,
+   at most **ten distinct PRs** and **$25 total** by default. For an approved
+   ongoing rollout, set `THREAT_REVIEW_BUDGET_MODE=daily`: this removes only the
+   lifetime dollar and PR-count limits while retaining every per-day and
+   per-attempt cap. Unset or `pilot` retains the pilot; other values fail closed.
+7. In advisory mode, keep **Threat Model Review (advisory)** out of required checks. Opening,
    reopening, marking ready or retargeting a PR starts immediately. Follow-up
    pushes wait 75 seconds; another push cancels the older job. Drafts and
-   title/body-only edits are skipped before entering the cancellation group.
+   title/body-only edits are skipped before entering the cancellation group in
+   advisory mode. Conditional-clearance mode reevaluates edits so a skipped run
+   cannot replace a failed required workflow.
 
 Maintainers can request depth through **Actions → Threat Model Review (advisory)
 → Run workflow**, supplying a PR number targeting the default branch. Current
@@ -79,9 +87,10 @@ python3 .github/scripts/test-threat-model-review.py
 python3 .github/scripts/test-threat-full-scan.py
 python3 .github/scripts/test-threat-ensemble.py
 python3 .github/scripts/test-threat-budget.py
+python3 .github/scripts/test-threat-bedrock.py
 ```
 
-Release Integrity runs all four suites using Python 3.9+ and loopback sockets,
+Release Integrity runs all five suites using Python 3.9+ and loopback sockets,
 without external services, real keys or paid calls. The budget suite exercises
 real local HTTP, conflicting SHA writes, reconciliation, permissions, cache
 invalidation, escalation, partial failures and comment delivery. Earlier suites
@@ -102,7 +111,36 @@ Compare actual spend, useful findings, false positives, deferred coverage and
 second-opinion value across the ten PRs before proposing a larger rollout. A
 green workflow is not evidence that scanning completed.
 
-## Budget behavior and recovery
+## Bedrock primary and OpenRouter backup
+
+`BEDROCK_SCAN_ENABLED=true` selects `.github/scripts/threat_review/bedrock.py`
+(`BedrockCalls`). Configure exactly three application profile aliases in
+`BEDROCK_SCAN_PROFILES`: `sonnet`, `opus`, and `sol`. Model selection remains
+Sonnet 5.5 with selective Opus 5.5 and Sol 6.1; legacy model variables do not
+override that strategy. The default limit is 12 Bedrock calls per attempt and
+4,096 output tokens per call (bounded configuration: 1–100 calls, 256–16,384
+tokens). These workload bounds are not a repository-wide dollar cap. AWS charges
+are reconciled through dedicated profile tags and the usage metadata artifact.
+Fork PRs keep the capped OpenRouter route unless a maintainer explicitly sets
+`BEDROCK_SCAN_ALLOW_FORKS=true` or manually dispatches their review; they do not
+receive AWS capacity by default.
+
+Explicit availability rejections or unavailable AWS credentials can invoke the
+same model once through OpenRouter, with its existing durable caps below. Each
+switch is recorded and visible in the comment. Whole-scan deadlines, ambiguous
+transport failures, refusals, truncation and invalid model responses never
+trigger fallback. Budget exhaustion cannot be bypassed through the backup.
+Source, prompts, reasoning and keys are excluded from AWS usage records.
+Unknown usage stays unknown; Bedrock token totals are not presented as actual
+dollars. No external gateway or long-lived AWS credential is used.
+
+Conditional clearance disables reuse of prior cached verdicts. It evaluates a
+result file produced by the current trusted scan, not public comments, artifacts
+from PR jobs, or state-branch cache entries. Human overrides also reread current
+GitHub reviews and permissions. See the rollout runbook for author auto-merge
+and the exact override format.
+
+## OpenRouter budget behavior and recovery
 
 | Limit | Amount |
 |---|---:|
@@ -110,7 +148,22 @@ green workflow is not evidence that scanning completed.
 | Opus and Sol 6.1 combined per attempt | $3 |
 | PR per UTC day across attempts and pushes | $5 |
 | Repository per UTC day across PRs | $25 |
-| Entire pilot, no automatic reset | $25 and ten distinct PRs |
+| Default `pilot` mode, no automatic reset | $25 and ten distinct PRs |
+| Approved `daily` mode | No lifetime/PR-count cap; all other caps above remain |
+
+`THREAT_REVIEW_BUDGET_MODE` is a trusted repository Actions variable used by
+preflight and both OpenRouter routes (direct reviews and Bedrock backup). Moving
+to `daily` preserves the existing ledger, all charges, unknown reservations and
+the circuit breaker. Returning to `pilot` restores its lifetime limits against
+the full retained history; it does not restart the pilot. The ledger remains
+bounded to 1,000 requests and 500,000 bytes; reaching capacity stops spending
+and needs maintainer maintenance, never an automatic reset.
+
+Preflight checks writer access, signatures, provider funding and room for a new
+PR's $1 normal attempt under the selected policy. This is a read-only capacity
+snapshot, not a reservation or proof that a whole scan fits. Every actual request
+rechecks the budget atomically. Preflight fails on an exhausted pilot even when
+the provider has credits.
 
 `state.py` reserves integer microdollars in one ledger **before** transport.
 GitHub Contents SHA compare-and-swap rejects stale concurrent writes; retries
@@ -124,7 +177,8 @@ allowance. Reservations assume cold cache and allow two times the input price fo
 cache writes. Oversized requests are deferred. Response `usage.cost` settles the
 reservation; missing or invalid usage saves valid findings but stops more calls
 in that run. Charges above the reservation open a persistent circuit breaker.
-Sol 6.1 uses price ceilings of $2 input and $10 output per million tokens,
+Sonnet 5.5 uses price ceilings of $2 input and $10 output per million tokens;
+Sol 6.1 uses $2 input and $10 output per million tokens,
 verified against the [OpenRouter model catalog](https://openrouter.ai/api/v1/models).
 Price/provider behavior changes require review; retain the independent key cap.
 Never delete or reset the ledger to work around a limit.
@@ -170,12 +224,13 @@ oversized reports use a bounded summary with finding/manual-review counts
 and that link, retaining full details in the saved report. If storage fails, old
 findings stay inline when they fit, and local results remain in the Actions summary. Raw responses, keys
 and prompts are not stored in ledger/reports. Cached analyses and findings are
-public like the PR. OpenRouter and its provider receive source and threat context.
+public like the PR. Bedrock receives source and threat context in primary mode;
+OpenRouter and its provider receive them when that route is used.
 
 Implementation: `.github/workflows/threat-model-review.yml`,
 `.github/scripts/threat-model-review.py`, and `.github/scripts/threat_review/`:
 `budget_runner.py`, `budget_scan.py`, `context.py`, `paid.py`, `state.py`,
-`preflight.py`, plus shared
+`preflight.py`, `bedrock.py`, `merge_policy.py`, plus shared
 source, validation, transport and rendering helpers. The scan deadline is 15
 minutes inside a 20-minute workflow timeout.
 
@@ -186,3 +241,9 @@ minutes inside a 20-minute workflow timeout.
 - [GitHub Contents API](https://docs.github.com/en/rest/repos/contents).
 - [GitHub trusted-base PR event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target).
 - [Build](build.md), [test](test.md), and [canonical threat model](../threat-model.yaml).
+
+Source excerpts include original line numbers, with annotation size included in the
+batch limit. Review summaries target 2,000 characters below the unchanged 4,000
+character validation limit. An unresolved `needs_deeper_review` request from the
+final Sol reviewer makes coverage incomplete and requires independent human review;
+a zero-finding response alone cannot clear that uncertainty.

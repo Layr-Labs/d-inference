@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-07
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -200,6 +200,24 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | Attention donation floor | `prefixTokens > adoptionBoundTokens + minEffectiveTokens`, whole blocks only; `defaultMinEffectiveTokens = 1024`, raised to 1_536 for `.frozenFullReplay` with bound ≥ 25_600 | `SSDPrefixCache.swift` (`donate`), `PrefixCachePolicy.swift` |
 | Write-behind queue | `writeQueueMaxJobs = 2`, `writeQueueMaxBytes = 512 * 1_048_576`, `writeQueueSlackBytes = 256 * 1_048_576`; overflow drops the donation | `SSDPrefixCachePolicy.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift` |
 | Staging RAM | Reserved per staged entry in `GlobalKVCacheBudget`; the engine keeps its full slot grant | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
+
+The production factories attach one persistent, root-wide rolling-day accounting
+domain through `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBudget.swift`.
+Its 25 hourly buckets retain each charge for at least 24 hours, with up to one
+extra hour of conservatism at bucket boundaries. Cache reconstruction and process
+restart do not replenish this budget. Charges
+precede writes and are not refunded on failure or eviction. Attention blocks,
+window sidecars and complete checkpoints charge their complete serialized DBK3
+size, not just plaintext. Exhaustion reports `write_rate_limited`; existing cache
+reads remain available. Corrupt or inaccessible accounting fails closed rather
+than restoring a full allowance. The ledger records only time buckets and byte
+counts, never cache keys, tokens or model identifiers.
+
+This bounds application cache-file writes, not total physical SSD wear: filesystem
+metadata, the small accounting ledger, swap and device write amplification are
+outside that byte count. Existing writes from before the ledger was installed
+cannot be reconstructed from the surviving cache files because eviction deletes
+history. The first installation starts a new accounting window.
 
 ## Per-family reuse capability
 

@@ -298,6 +298,36 @@ struct SSDPrefixCacheFactoryRefusalTests {
 @Suite("SSD prefix cache factory: construction")
 struct SSDPrefixCacheFactoryConstructionTests {
 
+    @Test("only an explicit unlimited cap bypasses an unavailable ledger", arguments: ["0", "1"])
+    func unavailableWriteBudget(cap: String) async throws {
+        let parent = try factoryParent("write-budget")
+        let root = parent.appendingPathComponent("kv3", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".write-budget"), withIntermediateDirectories: true)
+        defer {
+            SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: root)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let recorder = ConstructionFailureRecorder()
+        let capability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: fullLayers, backendSelection: .paged)
+        let cache = await SSDPrefixCacheFactory.make(
+            modelId: "budget-model", promptContractID: "test-contract",
+            weightHash: "test-weights", layerKinds: fullLayers,
+            prefixReuseCapability: capability, kvBudget: nil,
+            environment: isolatedEnvironment(root: root, extra: [
+                SSDPrefixCachePolicy.writeCapEnvironmentFlag: cap,
+            ]), onConstructionFailure: { recorder.record($0) })
+        if cap == "0" {
+            #expect(cache != nil)
+            #expect(recorder.snapshot.isEmpty)
+        } else {
+            #expect(cache == nil)
+            #expect(recorder.snapshot == [.writeBudgetUnavailable])
+        }
+        await cache?.closeAndWait()
+    }
+
     @Test("isolated root builds a cache with the environment knobs applied")
     func buildsCacheUnderIsolatedRoot() async throws {
         let parent = try factoryParent("build")

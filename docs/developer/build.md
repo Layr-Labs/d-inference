@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -225,6 +225,30 @@ Provider signing, R2 staging and publication run in separate jobs in `.github/wo
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
+## Bedrock review workflow
+
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+Review, preflight and smoke checkouts fetch only the trusted scanner scripts and
+threat definitions, avoiding unrelated repository blobs before verification.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback
+and conditional merge clearance without cloud calls. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
+
+The threat-review preflight checks the configured OpenRouter budget mode and
+remaining normal-attempt capacity as well as writer access and funding. Offline
+budget regressions cover migration without resetting charges, daily caps,
+unknown reservations and exhausted-pilot detection; see
+[review configuration](threat-model-review.md#openrouter-budget-behavior-and-recovery).
+
+## Standalone SSD accounting check
+
+`bash scripts/test-ssd-write-budget.sh` compiles only the production
+`SSDWriteBudget.swift` and `SSDWriteRateLimiter.swift` sources, then links their
+Swift Testing suites with Xcode's testing framework. It needs no MLX submodule
+build or GPU work and removes its temporary build output on exit. See the
+[SSD endurance tests](test.md#ssd-write-endurance) for scope and limitations.
 
 ## Nightly Linear workflow
 
@@ -1101,3 +1125,11 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Telemetry archive worker
+
+The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. The same worker supports isolated accounting archives and indexed ID batches; deploy each archive job with its own destination permissions. See [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+`telemetry-archive analytics-preview` compiles catalog-pinned accounting analytics SQL locally; `--execute` runs capped SELECT-only BigQuery checks. `query-submit`, `query-status` and `query-cancel` provide bounded asynchronous custom queries; see [query operations](../operations/history-queries.md). These commands require no coordinator build or deploy. The [operational/history design](../design/operational-history-retention.md) defines the broader storage boundary.
+
+The opt-in analytics reader is built with the coordinator; its private `sync-analytics-snapshot` adapter is part of the Python worker. Neither command enables a producer or schedule. See [analytics snapshots](../operations/analytics-snapshots.md).

@@ -11,7 +11,7 @@ import Testing
 
 @Suite("MTP acceptance config")
 struct MTPAcceptanceConfigTests {
-    @Test("absent keys decode to nil and an empty table, and resolve to exact")
+    @Test("absent keys decode to nil and an empty table, and resolve to typical")
     func absentKeys() {
         let config = ConfigManager.parse(
             """
@@ -27,7 +27,7 @@ struct MTPAcceptanceConfigTests {
             global: config.backend.mtpAcceptance,
             byModel: config.backend.mtpAcceptanceByModel,
             modelID: "gemma-4-26b-qat-4bit")
-        #expect(resolved.acceptance == .exact)
+        #expect(resolved.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
         #expect(resolved.unrecognized == nil)
     }
 
@@ -59,6 +59,22 @@ struct MTPAcceptanceConfigTests {
             modelID: "qwen3.8-flash-next")
         #expect(other.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
         #expect(other.unrecognized == nil)
+    }
+
+    @Test("explicit exact settings opt out of the typical default")
+    func exactOptOut() {
+        let global = MTPAcceptancePolicy.resolve(global: "exact", byModel: [:], modelID: "m")
+        #expect(global.acceptance == .exact)
+        #expect(global.unrecognized == nil)
+
+        let perModel = MTPAcceptancePolicy.resolve(
+            global: nil, byModel: ["m": "exact"], modelID: "m")
+        #expect(perModel.acceptance == .exact)
+        #expect(perModel.unrecognized == nil)
+
+        let other = MTPAcceptancePolicy.resolve(
+            global: nil, byModel: ["m": "exact"], modelID: "other")
+        #expect(other.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
     }
 
     @Test("an unknown value resolves to exact and is reported")

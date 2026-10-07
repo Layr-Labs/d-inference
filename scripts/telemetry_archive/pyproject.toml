@@ -1,0 +1,38 @@
+[project]
+name = "darkbloom-telemetry-archive"
+version = "0.1.0"
+description = "Copy-only PostgreSQL telemetry snapshots with GCS and BigQuery verification"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "psycopg[binary]>=3.2,<4",
+  "pyarrow>=20,<24",
+  "google-cloud-storage>=3,<4",
+  "google-cloud-bigquery>=3,<4",
+  "google-crc32c>=1.6,<2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.12,<1"]
+
+[project.scripts]
+telemetry-archive = "telemetry_archive.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/telemetry_archive"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

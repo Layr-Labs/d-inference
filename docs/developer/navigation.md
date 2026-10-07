@@ -28,6 +28,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Accounts, account erasure, billing HTTP and payouts | `coordinator/api/accounts/`, `accounts/erasure/`, `coordinator/api/billing/`, `billing/payouts/`; account HTTP owners gate new soft-delete mutations, not existing scrub/outbox obligations |
 | Earn-page hardware interest: registration, own readback and admin export | `coordinator/api/accounts/small_models_interest.go`; contract in `coordinator/store/small_models_interest.go`, backends in `coordinator/store/memory/small_models_interest.go` and `coordinator/store/postgres/small_models_interest.go` |
 | Public projections and operational endpoints | `coordinator/api/reporting/` and `coordinator/api/operations/` |
+| Optional archived public analytics | `coordinator/analyticssnapshot/` owns validation and durable acceptance; `coordinator/api/reporting/analytics_snapshot.go` owns polling and HTTP integration; `coordinator/tests/analyticssnapshot/` mirrors decoder/cache coverage |
 | Profiles, request outcomes and route sinks | `coordinator/api/observation/`; separate bounded queues retain their own loss/flush rules |
 | Prompt accounting and planning | `coordinator/api/promptwork/` and the inference owner |
 | Pure deadline calibration | `coordinator/registry/firstcontent/`; runtime adapters remain in `coordinator/registry/` |

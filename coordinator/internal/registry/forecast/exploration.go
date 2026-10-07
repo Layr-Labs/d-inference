@@ -33,6 +33,22 @@ func EvidenceExplorable(estimate Estimate, loaded bool, work Workload, pending i
 	default:
 		return false
 	}
+	return IdleEvidenceGap(loaded, work, pending, gapAge)
+}
+
+// IdleEvidenceGap is the provider-state half of EvidenceExplorable: the model
+// is loaded, the Mac is idle, and the evidence gap has reached the bound.
+func IdleEvidenceGap(loaded bool, work Workload, pending int, gapAge int32) bool {
 	return loaded && work.WholeMacKnown && !work.WholeMacBusy && work.PartialPrefillRows == 0 &&
 		pending == 0 && gapAge >= 0 && time.Duration(gapAge)*time.Millisecond >= EvidenceExplorationAfter
+}
+
+// ExplorationReplacesRate reports whether an explored provider's own rate
+// gives way to the fleet median. The rate gives way when it is missing, or when
+// it is dated and at least EvidenceExplorationAfter old. An undated rate is the
+// first value after the provider connected, for example the legacy EWMA from
+// its first served request, so it counts as the provider's own evidence. A
+// negative age means undated.
+func ExplorationReplacesRate(present bool, ageMs int32) bool {
+	return !present || (ageMs >= 0 && time.Duration(ageMs)*time.Millisecond >= EvidenceExplorationAfter)
 }

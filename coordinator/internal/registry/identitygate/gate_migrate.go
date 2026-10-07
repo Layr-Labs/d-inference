@@ -28,6 +28,7 @@ func (g *State) resolve() *State {
 func (g *State) mergeLocked(src *State) {
 	g.version.Merge(&src.version)
 	g.inference.Merge(&src.inference)
+	g.mergeExplorationLocked(src)
 	for model, expiry := range src.dispatchLoadCooldowns {
 		if cur, ok := g.dispatchLoadCooldowns[model]; !ok || expiry.After(cur) {
 			g.dispatchLoadCooldowns[model] = expiry
@@ -109,6 +110,7 @@ func (g *State) resetLocked() {
 	g.capacityCooldownTrips = make(map[string]int)
 	g.budgetClamps = make(map[string]*budgetClampEntry)
 	g.capacityRateHistory = NewRateHistory()
+	g.exploration = nil
 }
 
 // bindStableFaultKey binds a live session to its stable identity so every

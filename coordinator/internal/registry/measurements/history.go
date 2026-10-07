@@ -22,6 +22,17 @@ type Sample struct {
 	ContendedObservedAfter time.Time
 }
 
+// DecodeObservation carries validated rate evidence and its producer provenance.
+// Epoch is empty for legacy EWMAs. Identity-local memory deduplicates explicit
+// epoch/counts across reconnects and serving-set resets of this history.
+type DecodeObservation struct {
+	Model         string
+	Rate          float64
+	Epoch         string
+	SampleCount   int64
+	ObservedAfter time.Time
+}
+
 // History is serialized by its provider's existing critical section. Reconcile
 // replaces the serving set so eviction and omitted capacity discard evidence.
 type History struct {
@@ -51,10 +62,10 @@ func (h *History) Reset() {
 
 // Reconcile uses explicit age/count/epoch metadata when available. Legacy
 // providers cannot prove recency with a first report or an unchanged EWMA.
-func (h *History) Reconcile(capacity *protocol.BackendCapacity, previousAcceptedAt, now time.Time, handoff time.Duration) {
+func (h *History) Reconcile(capacity *protocol.BackendCapacity, previousAcceptedAt, now time.Time, handoff time.Duration) []DecodeObservation {
 	if capacity == nil {
 		h.Reset()
-		return
+		return nil
 	}
 	next := make(map[string]Sample, len(capacity.Slots))
 	for _, slot := range capacity.Slots {
@@ -82,6 +93,13 @@ func (h *History) Reconcile(capacity *protocol.BackendCapacity, previousAccepted
 				if explicit.ContendedPrefill != nil {
 					measurement.ContendedRate = explicit.ContendedPrefill.TokensPerSecond
 				}
+			} else if exists {
+				// Invalid metadata withdraws freshness, not the producer high-water
+				// marks: replaying a prior valid report must not mint new evidence.
+				measurement.Epoch = old.Epoch
+				measurement.PrefillCount = old.PrefillCount
+				measurement.DecodeCount = old.DecodeCount
+				measurement.ContendedCount = old.ContendedCount
 			}
 			next[slot.Model] = measurement
 			continue
@@ -109,7 +127,26 @@ func (h *History) Reconcile(capacity *protocol.BackendCapacity, previousAccepted
 		}
 		next[slot.Model] = measurement
 	}
+	var observed []DecodeObservation
+	for model, sample := range next {
+		if !capacityvalue.FinitePositive(sample.DecodeRate) {
+			continue
+		}
+		previous, exists := h.samples[model]
+		if sample.Epoch != "" {
+			// Explicit evidence must pass the same age/count/epoch validation
+			// as its freshness clock. Changed-rate replays are not new samples.
+			if sample.DecodeObservedAfter.IsZero() || (exists && previous.Epoch == sample.Epoch && sample.DecodeCount <= previous.DecodeCount) {
+				continue
+			}
+		} else if exists && previous.DecodeRate == sample.DecodeRate {
+			continue
+		}
+		observed = append(observed, DecodeObservation{Model: model, Rate: sample.DecodeRate,
+			Epoch: sample.Epoch, SampleCount: sample.DecodeCount, ObservedAfter: sample.DecodeObservedAfter})
+	}
 	h.samples = next
+	return observed
 }
 
 // Unchanged samples can only get older. Changed rates with unchanged counts
@@ -117,6 +154,9 @@ func (h *History) Reconcile(capacity *protocol.BackendCapacity, previousAccepted
 func explicitMeasurementTime(o *protocol.PerformanceRateObservation, oldCount int64, oldRate float64,
 	oldAt, now time.Time, sameEpoch bool, handoff time.Duration) (time.Time, int64) {
 	if !capacityvalue.ValidPerformanceObservation(o) {
+		if sameEpoch {
+			return time.Time{}, oldCount
+		}
 		return time.Time{}, 0
 	}
 	at := now.Add(-time.Duration(o.SampleAgeMS)*time.Millisecond - handoff)

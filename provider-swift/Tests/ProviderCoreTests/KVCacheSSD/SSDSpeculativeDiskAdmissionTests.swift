@@ -396,10 +396,10 @@ struct SSDSpeculativeDiskAdmissionTests {
     // MARK: Failed and cancelled writes give their room back
 
     /// A first-sight write in store A ended without a file. With room for
-    /// exactly one more file over what the indexes hold, store B's is
-    /// written only if A's write no longer holds any.
-    private func expectRoomIsFree(_ pair: Pair, _ b: SSDHybridCheckpointStore, room: Int) async throws {
-        pair.disk.bytes = pair.ledger.totalBytes + room
+    /// exactly one more file over the two incumbents, store B's is
+    /// written only if A's write no longer holds any. Keep the original
+    /// budget: closing A moves its older entry to unowned bytes, not off disk.
+    private func expectRoomIsFree(_ pair: Pair, _ b: SSDHybridCheckpointStore) async throws {
         #expect(try await donate(pair.b, b, Self.firstSight, receipt: 99, position: 256) == [256])
         #expect(count(pair.outcomesB, .writeSpeculativeLimited) == 0)
         #expect(pair.ledger.evictionCount == 0)
@@ -441,7 +441,7 @@ struct SSDSpeculativeDiskAdmissionTests {
         #expect(a.stats().filesWritten == 1)
         #expect(tempFiles(under: pair.a.root).isEmpty)
         #expect(a.lock.withLock { a.writing.isEmpty })
-        try await expectRoomIsFree(pair, b, room: next.file)
+        try await expectRoomIsFree(pair, b)
         #expect(exists(pair.a.file(a, position: 512)))
         #expect(exists(pair.b.file(b, position: 512)))
         await a.closeAndWait()
@@ -553,55 +553,42 @@ struct SSDSpeculativeDiskAdmissionTests {
         #expect(count(pair.outcomesA, .cacheClosed) == 1)
         #expect(!exists(target))
         #expect(tempFiles(under: pair.a.root).isEmpty)
-        // Store A's older entry is still on disk. The two stores of this
-        // test have a cache root each, so it is outside what store B is
-        // held to; the probe below sets the budget from what is indexed now.
+        // Store A's older entry is still on disk and counted as unowned
+        // under its root. The original shared budget still holds both
+        // incumbents and one more file, whatever owns their bytes now.
         #expect(exists(pair.a.file(a, position: 512)))
-        try await expectRoomIsFree(pair, b, room: next.file)
+        try await expectRoomIsFree(pair, b)
         await b.closeAndWait()
     }
 
     // MARK: Bytes no registered index counts
 
-    /// A store built as production builds it: registered with the shared
-    /// budget, with the real whole-root pass after every write and once at
-    /// start, after the scan.
+    /// A store with production's real whole-root pass after every write and
+    /// once at start, after the scan. An owned ledger keeps the test's fixed
+    /// budget independent of other suites and their closed-store files.
     private func productionLikeStore(
         _ fixture: SSDHybridCheckpointTestFixture, disk: DiskBudget, outcomes: PrefixCacheDonationTelemetry,
         passes: PassResults
     ) -> SSDHybridCheckpointStore {
         let root = fixture.root
+        let ledger = SSDDiskBudget()
         let maintain: @Sendable () -> Void = {
             passes.record(SSDWholeRootMaintainer().maintain(
                 root: root, ttlSeconds: 3600, nowSeconds: Int64(Date().timeIntervalSince1970),
-                budgetBytes: disk.bytes))
+                budgetBytes: disk.bytes, budget: ledger))
         }
-        // Other suites register stores with the shared budget while this
-        // one runs. Their bytes are added to this store's budget, so the
-        // room a test sets is the room of its own store. A write of
-        // theirs in flight at the instant of a check here is not covered.
-        let own = OwnBytes()
         let store = SSDHybridCheckpointStore(config: .init(
             modelId: "fixture-model", identity: fixture.identity, backendLayout: fixture.backendLayout,
             root: fixture.modelRoot, dedicatedRoot: fixture.root, epochStore: nil, maxReadBytes: 16 << 20,
             maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, strictFsync: false,
             nowSeconds: { Int64(Date().timeIntervalSince1970) },
-            diskBudgetBytes: { disk.bytes + max(0, SSDDiskBudget.shared.totalBytes - own.bytes) },
+            diskBudgetBytes: { disk.bytes },
             maintainWholeRoot: maintain),
-            kekKey: fixture.key, kvBudget: fixture.budget, diskBudget: .shared, maxWriteBytesPerDay: 0,
+            kekKey: fixture.key, kvBudget: fixture.budget, diskBudget: ledger, maxWriteBytesPerDay: 0,
             donationRecorder: outcomes)
-        own.follow { [weak store] in store?.index.totalBytes ?? 0 }
         store.scanOnDisk()
         maintain()
         return store
-    }
-
-    /// What one store's index holds, read while the store runs.
-    private final class OwnBytes: @unchecked Sendable {
-        private let lock = NSLock()
-        private var read: @Sendable () -> Int = { 0 }
-        func follow(_ body: @escaping @Sendable () -> Int) { lock.withLock { read = body } }
-        var bytes: Int { lock.withLock { read }() }
     }
 
     /// A readable checkpoint file of a model that is not loaded.
@@ -688,7 +675,7 @@ struct SSDSpeculativeDiskAdmissionTests {
         // with one byte less than both files need.
         let result = SSDWholeRootMaintainer().maintain(
             root: fixture.root, ttlSeconds: 3600, nowSeconds: Int64(Date().timeIntervalSince1970),
-            budgetBytes: disk.bytes - 1)
+            budgetBytes: disk.bytes - 1, budget: store.diskBudget)
         #expect(result.budgetEvicted == 0)
         #expect(exists(existing))
         #expect(store.stats().entries == 1)

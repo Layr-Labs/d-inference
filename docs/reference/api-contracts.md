@@ -10,6 +10,10 @@ release, account, billing, reporting and operations owners described in the
 [code navigation guide](../developer/navigation.md). Package boundaries do not
 change HTTP paths, middleware ordering, status codes or wire shapes.
 
+Offline caller conformance is exercised through the real handler by
+`coordinator/tests/internal/conformance/`, including concrete-provider-model to
+public-alias rewriting. See the [conformance test entry points](../developer/test.md#offline-openrouter-caller-conformance).
+
 The public model catalog optionally includes `hugging_face_artifact` for direct
 provider downloads; the admin registration accepts the same object. See the
 [registry artifact contract](model-registry-format.md#hugging-face-download-artifact).
@@ -24,6 +28,21 @@ waiting or observing; enrollment alone does not change the operator's selected
 models. This uses `Provider.ServingModelsLocked` in
 `coordinator/registry/autopilot_inventory.go`; see
 [model Autopilot](../architecture/model-autopilot.md).
+
+## Provider-bound caller fields
+
+The coordinator accepts top-level `user`, generic `metadata`, `safety_identifier`
+and caller `prompt_cache_key` on the four inference endpoints but removes them from provider-bound bodies before encryption.
+The shared `parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`)
+runs `Parser.Parse`, which calls `stripProviderCallerIdentity`
+(`coordinator/internal/inference/prelude/request_prelude.go`,
+`coordinator/internal/inference/prelude/provider_body_privacy.go`),
+so direct dispatch, queueing, retries and endpoint/model rewrites use the same
+minimized body. Nested messages, tool arguments, schema properties and media are
+unchanged. `metadata_details` remains the separate coordinator response-metadata
+opt-in. Authentication, billing ownership and cache scopes remain context-derived.
+This is field minimization, not anonymity; see the
+[privacy boundary](../architecture/security/encryption.md#provider-bound-field-minimization).
 
 ## Small-model interest
 
@@ -809,6 +828,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `ApplyResolvedModelReasoningPolicy` (`coordinator/api/inference/request/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `StripProviderRoutingFields` (`coordinator/api/inference/request/request_introspection.go`) |
+| `user`, `metadata`, `safety_identifier`, `prompt_cache_key` (top level) | Accepted, then removed before the body is forwarded to a provider (the coordinator may add its own protocol-0 `prompt_cache_key` afterwards); see [provider-bound caller fields](#provider-bound-caller-fields) |
 | `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`Bridge.Resolve`, `coordinator/internal/inference/media/media_resolve.go`) |
 
 ### Chat Completions response (`ChatCompletionResponse`, `coordinator/api/types/types.go`)

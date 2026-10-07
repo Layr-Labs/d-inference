@@ -54,6 +54,7 @@ components for the specific invariant:
 | Concern | Internal owner |
 |---|---|
 | Middleware, projections and reporting calculations | `coordinator/internal/api/` |
+| Shared request prelude and provider-bound caller-field minimization | `coordinator/internal/inference/prelude/request_prelude.go` (`Parser.Parse`), `coordinator/internal/inference/prelude/provider_body_privacy.go` (`stripProviderCallerIdentity`); bound to the key policy by `coordinator/api/inference/prelude_parser.go` (`NewPreludeParser`) |
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
 | Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |

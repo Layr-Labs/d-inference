@@ -10,9 +10,11 @@ let package = Package(
     products: [
         .library(name: "DarkbloomClusterSecurity", targets: ["DarkbloomClusterSecurity"]),
         .library(name: "DarkbloomClusterProtocol", targets: ["DarkbloomClusterProtocol"]),
+        .library(name: "DarkbloomClusterBootstrap", targets: ["DarkbloomClusterBootstrap"]),
     ],
     targets: [
         .target(name: "DarkbloomClusterSecurity"),
         .target(name: "DarkbloomClusterProtocol"),
+        .target(name: "DarkbloomClusterBootstrap"),
     ]
 )

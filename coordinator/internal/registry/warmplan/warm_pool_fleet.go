@@ -22,6 +22,10 @@ const (
 	WarmColdStateRestoring ColdReason = "state_restoring"
 	WarmColdDwell          ColdReason = "placement_dwell"
 	WarmColdAutopilot      ColdReason = "autopilot_managed"
+	// WarmColdMemberOnly: cluster-member connections are never warm/cold load
+	// candidates; WarmColdPairReserved: the device is held by a verified pair.
+	WarmColdMemberOnly   ColdReason = "member_only"
+	WarmColdPairReserved ColdReason = "pair_reserved"
 )
 
 // warmColdReasonStrings converts a reason tally to a string-keyed map for

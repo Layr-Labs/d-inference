@@ -1088,6 +1088,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	pm.Type = msgType
 
 	switch msgType {
+	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+		msg, err := DecodeNativePairMessage(data)
+		if err != nil {
+			return err
+		}
+		pm.Payload = msg
 	case TypeRegister:
 		var msg RegisterMessage
 		if err := json.Unmarshal(data, &msg); err != nil {

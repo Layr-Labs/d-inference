@@ -1395,7 +1395,17 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 	return (&ProviderEligibility{registry: r}).routingLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown)
 }
 
+// The pair revalidation path may pass only its own exact hold. All ordinary
+// dispatch/plan/preflight callers pass nil and remain excluded.
+func (r *Registry) providerRoutingGateReasonAllowPairLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
+	return (&ProviderEligibility{registry: r}).routingAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, pair, pairEligibility)
+}
+
 func (e *ProviderEligibility) routingLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
+	return e.routingAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil, false)
+}
+
+func (e *ProviderEligibility) routingAllowPairLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
 	// Catalog membership + dedicated-box isolation: a request for a dedicated
 	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
 	// advertised catalog is that family. This single gate is shared by the
@@ -1406,13 +1416,17 @@ func (e *ProviderEligibility) routingLocked(p *Provider, model string, traits Re
 	if ok, reason := e.catalogReasonLocked(p, model, selfRouteOwner); !ok {
 		return false, reason
 	}
-	return e.postCatalogLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown)
+	return e.postCatalogAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, pair, pairEligibility)
 }
 
 // Shared trust, liveness and request-shape checks. Autopilot planning supplies
 // its separate inventory permission before entering here; it never changes a
 // provider's ordinary routing permission to ask a hypothetical question.
 func (e *ProviderEligibility) postCatalogLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
+	return e.postCatalogAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil, false)
+}
+
+func (e *ProviderEligibility) postCatalogAllowPairLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
 	r := e.registry
 	// The identity's fault-tracker gates (gate_state.go): cached on the
 	// connected provider, so the five reads are atomic loads for a provider
@@ -1433,7 +1447,7 @@ func (e *ProviderEligibility) postCatalogLocked(p *Provider, model string, trait
 	if selfRouteOwner {
 		minTrust = TrustNone
 	}
-	if ok, reason := e.livenessLocked(p, minTrust, selfRouteOwner, now); !ok {
+	if ok, reason := e.livenessAllowPairLocked(p, minTrust, selfRouteOwner, now, pair, pairEligibility); !ok {
 		return false, reason
 	}
 	// Trait eligibility: a render-broken build is fenced for EVERY request shape

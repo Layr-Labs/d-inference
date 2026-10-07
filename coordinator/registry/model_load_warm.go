@@ -79,6 +79,12 @@ func (s *ModelLoadPreparation) warmLocked(p *Provider, model string, now time.Ti
 // would lose the distinct warm-pool reason buckets and interleaved load gates.
 func (s *ModelLoadPreparation) coldCandidateLocked(p *Provider, model string, now time.Time) (warmplan.Candidate, warmplan.ColdReason) {
 	r := s.registry
+	if !p.executionRolePermitsLocked(false) {
+		return warmplan.Candidate{}, warmplan.WarmColdMemberOnly
+	}
+	if r.providerPairHeldLocked(p, now, nil) {
+		return warmplan.Candidate{}, warmplan.WarmColdPairReserved
+	}
 	if providerLegacyModelChangesBlockedLocked(p) {
 		return warmplan.Candidate{}, warmplan.WarmColdAutopilot
 	}

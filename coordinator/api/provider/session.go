@@ -21,6 +21,7 @@ import (
 
 func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
+	var nativeConnection *registry.NativePairConnection
 	var terminalWork session.CompletionBarrier
 	var drainAcks session.DrainAcker
 	var appAttestShadow *attestservice.Session
@@ -37,6 +38,9 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
+		if s.nativePairs != nil {
+			s.nativePairs.Detach(nativeConnection)
+		}
 		loopCancel()
 		// Protocol-error exits can bypass closeSessionOffline. Never leave a
 		// closed connection routable while its completion workers drain.
@@ -70,6 +74,10 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 	for {
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
+			// Stop pair admission before any slow session-store disconnect stamp.
+			if s.nativePairs != nil {
+				s.nativePairs.Detach(nativeConnection)
+			}
 			closing := s.providerSocketsClosing()
 			closeStatus := session.ShutdownCloseStatus(websocket.CloseStatus(err), closing)
 			oomSuspected := false
@@ -423,6 +431,21 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 
 			appAttestShadow = s.trust.StartAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+
+			if s.nativePairs != nil && regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
+				var attachErr error
+				nativeConnection, attachErr = s.nativePairs.Attach(provider, regMsg.MemberRegistrationNonce, r.TLS)
+				if attachErr != nil {
+					_ = conn.Close(websocket.StatusPolicyViolation, "native pair transport refused")
+					return
+				}
+			}
+
+		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
+			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")
+				return
+			}
 
 		case protocol.TypeAppAttestShadow:
 			if appAttestShadow != nil {

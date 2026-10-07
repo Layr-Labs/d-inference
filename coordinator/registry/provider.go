@@ -58,9 +58,12 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // Provider represents a connected provider agent.
 type Provider struct {
-	ID       string
-	Hardware protocol.Hardware
-	Models   []protocol.ModelInfo
+	// Immutable per connection; never restored from durable provider history.
+	executionRole protocol.ExecutionRole
+	memberNonce   string // immutable nonce of the negotiated control-only registration
+	ID            string
+	Hardware      protocol.Hardware
+	Models        []protocol.ModelInfo
 	// CapacityModelIDs is the catalog/capability-accepted inventory used by
 	// the last applied heartbeat to canonicalize warm models and slots.
 	// Guarded by mu; nil until the first applied heartbeat.
@@ -328,7 +331,9 @@ type Provider struct {
 	runtimeCapabilitiesReconciled     bool
 	lastReconciledRuntimeCapabilities []string
 	lastDesiredModels                 []protocol.DesiredModelEntry
-	desiredModelsSendMu               sync.Mutex
+	// Counts command writes that could race pair preparation, under mu.
+	pairModelCommandsInFlight int
+	desiredModelsSendMu       sync.Mutex
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest

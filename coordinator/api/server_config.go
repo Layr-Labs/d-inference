@@ -13,6 +13,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/internal/provider/journal"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration applied
@@ -43,7 +44,11 @@ type ServerConfig struct {
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
 	TrustReuseJournalPath string
-	MDMScheduler          MDMSchedulerConfig
+	// NativePairCatalog must come from NewNativeRuntimeCatalog with explicitly
+	// approved native runtime entries. Nil keeps every native-pair handler
+	// disabled: member attachment, reservation and relay all fail closed.
+	NativePairCatalog *registry.NativeRuntimeCatalog
+	MDMScheduler      MDMSchedulerConfig
 	// FirstContentDeadlineBase is the ordinary-model fixed term in the
 	// request-absolute first-content budget for selected accounts. Model policy may override it;
 	// zero keeps the ordinary coordinator default.

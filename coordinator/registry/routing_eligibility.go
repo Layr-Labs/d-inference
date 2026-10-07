@@ -57,7 +57,17 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 }
 
 func (e *ProviderEligibility) livenessLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) (bool, GateReason) {
+	return e.livenessAllowPairLocked(p, minTrust, allowPrivate, now, nil, false)
+}
+
+func (e *ProviderEligibility) livenessAllowPairLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
 	r := e.registry
+	if !p.executionRolePermitsLocked(pairEligibility) {
+		return false, GateMemberOnly
+	}
+	if r.providerPairHeldLocked(p, now, pair) {
+		return false, GatePairReserved
+	}
 	if p.Status == StatusOffline {
 		return false, GateOffline
 	}

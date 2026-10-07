@@ -105,6 +105,11 @@ func (r *Registry) SetReleasePolicyGeneration(
 	stillApproved func(ApplicationEvidence) bool,
 ) (needChallenge []string) {
 	r.mu.Lock()
+	if generation != r.releasePolicyGeneration {
+		for state := range r.verifiedPairs.states {
+			r.endVerifiedPairLocked(state)
+		}
+	}
 	// The same release snapshot generation binds both authorization paths.
 	// App Attest is re-evaluated by the API under the refreshed qualification
 	// and revocation policy; carrying a stale verdict forward is not safe.

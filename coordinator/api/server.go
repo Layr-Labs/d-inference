@@ -100,6 +100,7 @@ type Server struct {
 	inference   *infer.Owner
 	providers   *providerapi.Owner
 	trust       *trustapi.Owner
+	nativePairs *registry.NativePairCoordinator // nil unless startup supplies an explicit native approval catalog
 
 	operations.Drain
 	operations *operations.Handler
@@ -208,8 +209,10 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		},
 		ResolveBaseURL: s.resolveBaseURL,
 	}}, trustapi.Config{AppAttest: cfg.AppAttestShadow, MDMScheduler: cfg.MDMScheduler, MinProviderVersion: cfg.MinProviderVersion, DurableTrustReuse: cfg.DurableTrustReuse, TrustReuseJournalPath: cfg.TrustReuseJournalPath})
+	s.nativePairs = registry.NewNativePairCoordinator(reg, cfg.NativePairCatalog)
 	s.providers = providerapi.New(providerapi.Dependencies{Registry: reg, Store: st, Trust: s.trust, Releases: s.releases, Catalog: s.catalog, Geo: s.geoResolver, Observation: s.observation, Logger: logger,
-		Inference: providerapi.InferenceEvents{Chunk: s.inference.HandleChunk, Accepted: s.inference.HandleInferenceAccepted, CompleteAt: s.inference.HandleCompleteAt, Error: s.inference.HandleInferenceError}})
+		Inference:   providerapi.InferenceEvents{Chunk: s.inference.HandleChunk, Accepted: s.inference.HandleInferenceAccepted, CompleteAt: s.inference.HandleCompleteAt, Error: s.inference.HandleInferenceError},
+		NativePairs: s.nativePairs})
 
 	s.accounts = accounts.New(accounts.Dependencies{
 		Store: st, Registry: reg, Access: s.access, Logger: logger, ReadCache: s.readCache,
@@ -280,6 +283,9 @@ func (s *Server) Close() {
 	s.observation.FlushRoutes()
 	s.trust.CloseAuthority()
 	s.observation.CloseProfilesAndOutcomes()
+	if s.nativePairs != nil {
+		s.nativePairs.Close()
+	}
 }
 
 // 64 MiB

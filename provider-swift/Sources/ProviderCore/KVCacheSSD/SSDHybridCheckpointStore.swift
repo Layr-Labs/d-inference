@@ -88,6 +88,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
 
     init(config: Config, kekKey: SymmetricKey, kvBudget: GlobalKVCacheBudget?,
          diskBudget: SSDDiskBudget = .shared, maxWriteBytesPerDay: Int, usesEphemeralKey: Bool = true,
+         writeBudget: SSDWriteBudget? = nil,
          donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
          writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
         self.config = config
@@ -99,7 +100,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         self.diskBudget = diskBudget
         self.donationRecorder = donationRecorder
         self.rateLimiter = SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay,
-            repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction, nowSeconds: writeNowSeconds)
+            repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
+            writeBudget: writeBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: 1,

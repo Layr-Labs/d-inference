@@ -250,7 +250,8 @@ extension SSDHybridCheckpointStore {
                         result.outcome = .diskSpaceInsufficient; return
                     }
                 }
-                if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: envelope.plaintextBytes, repeated: job.repeated)) {
+                let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: metadata)
+                if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: budgetBytes, repeated: job.repeated)) {
                     result.outcome = refusal; return
                 }
                 let written = try SSDBlockStore.writeStreaming(

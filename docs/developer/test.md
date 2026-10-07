@@ -18,6 +18,17 @@ provider, model or epoch replacement. The connected live fixture also compares
 the original capability when eviction is first observed and after refreshing
 the report; it still requires its ordinary model, host and disk admission gates.
 
+## SSD write endurance
+
+Run `bash scripts/test-ssd-write-budget.sh` on macOS with Xcode to exercise the
+unchanged production accounting sources without building MLX. It covers an
+accelerated full day, hourly cache reconstruction, concurrent accounting,
+separate-process persistence, clock rollback and damaged/unsafe ledger files.
+Only small temporary accounting files are written; no model, provider process,
+production cache or credentials are used. This focused check does not replace
+the full `ProviderCoreTests` integration suites, including `SSDBlockStreamingTests`
+and `LaunchAgentPathsAndErrorsTests`.
+
 ## Pull-request restacking
 
 Run `python3 scripts/test-restack-after-squash.py` for the regression suite of
@@ -185,6 +196,7 @@ capability-generation and accepted-write cutoff regressions. Byte refusal must
 remain nil-error cold inference, with no cache metadata or calibration exclusion.
 These are logical state/ownership tests, not physical-memory measurements,
 native SSD hit-rate benchmarks or hosted certification.
+
 `TestPlanningClientTracksConfiguredWorkers`, `TestPlanAdmission*`,
 `TestPlannerBurstWaitsForWorkersWithoutBlockingHealth` and
 `TestQueuedPlanCancellationNeverReachesSidecar` check configured capacity,
@@ -751,6 +763,15 @@ Set `MIMO_V26_MANAGED_AAC_VIDEO_FIXTURE` to the verified video file emitted by
 the fixture preparation script.
 Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
 its public codec download is about 1.87 GB and is checked against fixed hashes.
+
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback,
+Sonnet 5.5 fallback identity, production smoke schema validation (including the
+boolean `needs_deeper_review`), and conditional merge clearance without cloud calls.
+The smoke script calls `budget_scan.py` (`Scanner.call`, `Scanner.integrate`) with
+caching disabled, one source pass and one integration pass per model. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
 
 ## Provider lifecycle regression checks
 
@@ -4002,6 +4023,12 @@ production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
 
+The threat-review preflight checks the configured OpenRouter budget mode and
+remaining normal-attempt capacity as well as writer access and funding. Offline
+budget regressions cover migration without resetting charges, daily caps,
+unknown reservations and exhausted-pilot detection; see
+[review configuration](threat-model-review.md#openrouter-budget-behavior-and-recovery).
+
 Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
 OpenRouter response validation, credential isolation, pagination, stale-head and
 comment lifecycle tests. The suite opens a temporary loopback HTTP server and
@@ -4055,6 +4082,33 @@ Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
 
+## Telemetry archive validation
+
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. Accounting tests cover signed micro-USD values, sums beyond INT64, backdated timestamps, sparse IDs, late commits, destination separation, and exact restoration of all four accounting tables. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+Analytics preview tests reject mixed datasets, injected catalog identifiers,
+missing coverage, unbounded series and excessive scan budgets. Optional
+SELECT-only BigQuery semantics tests use synthetic CTE fixtures, creating no
+cloud datasets or tables: set `TEST_ARCHIVE_BIGQUERY_PROJECT` explicitly and
+run `uv run pytest -q tests/test_analytics_bigquery.py`. They exercise provider
+versus reward-only cohorts, anonymous network earnings, signed corrections,
+base-reward exclusion from tokens/jobs, ties/limits, empty windows, exact time
+boundaries and sums beyond INT64. CI skips these credentialed tests; their live
+results must be recorded separately from the local suite.
+
+Backfill regressions cover explicit recapture generations, legacy plan identity,
+large sharded completion catalogs and deadline enforcement during saved-checkpoint
+replay. Publication tests verify reused catalog schema and content, not only row
+counts. Async-query tests use real BigQuery SDK value objects with local transport
+fixtures to check dry-run rejection, pinned sources, idempotent named submission,
+bounded polling/pagination, exact decimal results and owned cancellation; they do
+not establish live BigQuery or IAM correctness. Run the complete locked suite
+with `uv run --locked pytest -q` after `uv sync --locked`.
+
+Archived snapshot validation and no-scan HTTP tests live in `coordinator/tests/analyticssnapshot` and `coordinator/tests/api/reporting/analytics_snapshot_test.go`; run `go test -race ./coordinator/tests/analyticssnapshot ./coordinator/tests/api/reporting ./coordinator/tests/api`. The snapshot tests exercise the exported decoder and cache APIs; HTTP tests exercise the reporting owner and retain the separate database-backed core stats refresh. Python `test_snapshot_sync.py` tests generation/hash/scope validation and atomic file replacement. See [snapshot operations](../operations/analytics-snapshots.md).
+
+Leaderboard cache tests cover concurrent callers with different limits and aliases sharing one top-200 query, and failed queries retaining only their cooldown. Store tests cover closed pools and scan overflow after a valid first row returning an error with no partial ranking; the latter uses the isolated PostgreSQL test database.
+
 ## Account erasure regressions
 
 `coordinator/tests/internal/erasurefixture/account.go` seeds an account's
@@ -4083,3 +4137,7 @@ boundary statements; duplicates still split into ordered chunks. Outcome
 updates retain their single pipelined batch. The memory marker fixture also
 freezes real MDM eligibility and stores hardware-interest markers before
 scrubbing, so every memory-backed personal-data rule has observed coverage.
+
+The scanner regressions also verify numbered source reconstruction, annotation
+capacity, original citation coordinates, and that final-reviewer uncertainty cannot
+grant conditional merge clearance.

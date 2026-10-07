@@ -4241,13 +4241,25 @@ struct SSDWindowSidecarTests {
         let dir = tempDir("sidecar-endurance")
         defer { try? FileManager.default.removeItem(at: dir) }
         let tokens = Array(0 ..< tokenCount)
-        // Fixture bytes: a full-attention block is 512 B (one layer × K/V ×
-        // 256 B); a sidecar is 1024 B (two sliding layers). The whole job
-        // wants 8 × 512 + 2 × 1024 = 6,144 B. Allow 4,608 — every block plus
-        // one block's slack, and less than one sidecar beyond them.
+        // Measure the required block files, including their encryption framing.
+        // The remaining 512 B cannot fund even one 1024 B sidecar payload.
+        let baselineDir = tempDir("sidecar-endurance-baseline")
+        defer { try? FileManager.default.removeItem(at: baselineDir) }
+        let baseline = makeSidecarCache(
+            dir: baselineDir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000))
+        defer { baseline.close() }
+        baseline.donate(
+            tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        try #require(await waitForIndexCount(baseline, atLeast: 8))
+        await baseline.waitForWritesForTesting()
+        let requiredBlockBytes = baseline.stats().bytesWritten
+        try #require(baseline.stats().blocksWritten == 8)
+        await baseline.closeAndWait()
         let cache = makeSidecarCache(
             dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
-            maxWriteBytesPerDay: 8 * 512 + 512)
+            maxWriteBytesPerDay: requiredBlockBytes + 512)
         defer { cache.close() }
         cache.donate(
             requestID: nil, tokens: tokens,
@@ -4260,9 +4272,10 @@ struct SSDWindowSidecarTests {
         // `SSDWriteBehind.consume` charges the bucket per entry IN ARRAY
         // ORDER, so whoever is queued first spends the allowance. The prefix
         // blocks are the thing the sidecars can only accelerate, so they win:
-        // all 8 land. Queued the other way round, two sidecars would have
-        // taken 2,048 B and starved three of them.
+        // all 8 land. Queued the other way round, the sidecars would spend
+        // bytes that belong to the required block run.
         #expect(cache.stats().blocksWritten == 8, "every required block is funded")
+        #expect(cache.stats().bytesWritten == requiredBlockBytes)
         #expect(
             cache.stats().windowSidecarsWritten == 0,
             "the optional accelerator yields to the blocks it depends on")

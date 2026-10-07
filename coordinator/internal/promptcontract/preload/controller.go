@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -348,21 +349,35 @@ func (c *PreloadController) finishAttemptLocked(
 	} else {
 		c.resetRetryLocked()
 	}
-	if err != nil {
-		successful = nil
-	}
 	backoff := c.failureBackoff
 	if backoff == 0 {
 		backoff = c.config.FailureBackoffMin // Defensive invalid reports still fail closed.
 	}
 	var accepted bool
-	if errors.Is(err, sidecar.ErrSidecarUnavailable) && len(report.Results) == 0 && c.retainPublicationLocked(key) {
+	transportUncertain := errors.Is(err, sidecar.ErrSidecarUnavailable) &&
+		(len(report.Results) == 0 || errors.Is(err, sidecar.ErrControlTransport))
+	if err != nil && len(report.Results) > 0 && !transportUncertain {
+		c.clearPublicationLocked("readiness confirmation failed")
+	}
+	if transportUncertain && c.retainPublicationLocked(key) {
 		retained := make([]string, 0, len(c.contracts))
 		for id := range c.contracts {
+			// A validated partial report can withdraw an incumbent, but a failed
+			// readiness exchange cannot acknowledge any successful newcomer.
+			if len(report.Results) > 0 && !slices.Contains(successful, id) {
+				delete(c.contracts, id)
+				continue
+			}
 			retained = append(retained, id)
+		}
+		if !c.retainPublicationLocked(key) {
+			c.clearPublicationLocked("preload_failed")
 		}
 		accepted = c.selection.CompleteUncertainAttempt(c.policyNow(), lease, retained, backoff)
 	} else {
+		if err != nil {
+			successful = nil
+		}
 		accepted = c.selection.CompleteAttempt(c.policyNow(), lease, successful, backoff)
 	}
 	if !accepted {

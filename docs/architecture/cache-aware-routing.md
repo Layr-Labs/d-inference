@@ -127,6 +127,10 @@ model and its exact contract: unrelated pending or failed artifacts do not close
 an acknowledged healthy member. Current catalog/child/verified-set identity
 and actual runtime readiness still gate participation; see
 [per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
+Negotiated preload transport uncertainty preserves only current incumbent
+acknowledgements. After a validated partial report, a failed readiness probe
+cannot admit newcomers or retain explicit failures; see
+[continuity during retry](prompt-contract-sidecar.md#negotiated-continuity-during-preload-retry).
 See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
 
 Current tokenizer acknowledgement and current routing participation are distinct.

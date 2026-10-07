@@ -216,8 +216,8 @@ Go client and Rust submissions above the configured contract capacity are still
 rejected; the controller submits only the bounded set described below.
 
 Go retains independent failure backoff while acknowledged healthy members
-remain usable. Changed catalog/child/verified-set identities, uncertain control
-responses and controller close fence stale publication. Failed/partial batches
+remain usable. Changed catalog/child/verified-set identities, invalid control
+reports and controller close fence stale publication. Failed/partial batches
 increment `Failures`, full successful batches increment `Runs`, and acknowledged
 warm/cold members contribute their returned counts; Rust preload counters remain
 batch counters (`PreloadController.finishAttemptLocked`, `prepareAttempt`,
@@ -237,15 +237,16 @@ publication even if selection changed while the response was in flight. Stale
 success never grants a new acknowledgement. Child replacement clears negotiation.
 Transport failures retain only already acknowledged members within the same
 verified catalog, child and capacity; controller shutdown closes participation.
-Above capacity that retention lasts only until the next reconcile: the selection
-policy records every member of the failed attempt as failed and not retained, and
-then keeps a member selected only while it has demand inside the five-minute
-demand lifetime. A loaded contract with no recent request is therefore dropped
-and reloads on its next request, and while the transport keeps failing each
-replacement interval can trade a loaded member for a candidate that cannot load
-(`PreloadActiveSet.CompleteAttempt`, `PreloadActiveSet.Reconcile`,
-`coordinator/internal/promptcontract/preload/active_set.go`). Within capacity
-nothing is dropped.
+This includes interrupted or timed-out HTTP response bodies after successful
+headers: `ErrControlTransport` distinguishes failed reads from completed invalid
+JSON, markers or report contents. A transport failure in the readiness probe
+after a validated partial report retains only prior acknowledgements that the
+report still identifies as successful. It never acknowledges a newcomer or
+retains an explicit failed member. Invalid or negative completed readiness
+responses fail closed. Retained incumbents keep their admission/residence metadata
+through `CompleteUncertainAttempt`, so a later capacity rotation does not mistake
+them for failed newcomers (`PreloadController.finishAttemptLocked`,
+`Client.Ready`, `Client.preloadAt`).
 The design assumes the supervisor's single controller owns preload mutations
 (`Client.PreloadContinuous`, `coordinator/internal/promptcontract/sidecar/client_control.go`;
 `PreloadController.finishAttemptLocked`, `coordinator/internal/promptcontract/preload/controller.go`;
@@ -290,7 +291,12 @@ The controller carries the provisioner’s configured model limit as
 `PreloadControllerConfig.MaxCatalogModels`; full verified membership and public
 availability advice use that limit. The separate cache-routing projection and
 demand limit remains `preloadActiveSetMaxTuples = 128`, applied after Registry
-allowlist projection rather than to the full catalog. Native preload capacity
+allowlist projection rather than to the full catalog. Preload model identifiers
+use the registration request's 64 MiB upper bound, rather than the explicit
+artifact allowlist's narrower 512-byte limit. An already accepted 513-byte model
+ID therefore does not invalidate unrelated verified contracts; explicit
+allowlist validation and all model-count/capacity bounds remain unchanged.
+Native preload capacity
 remains the configured client/supervisor capacity. The selector expires
 demand after `preloadDemandExpiry = 5 * time.Minute`, gives admitted members
 `preloadMinimumResidence = 30 * time.Second`, and allows at most one ordinary

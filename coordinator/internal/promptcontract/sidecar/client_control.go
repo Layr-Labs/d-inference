@@ -18,6 +18,9 @@ var (
 	// ErrContinuityProtocol means a continuity response cannot be trusted: its
 	// marker, its report or its endpoint-absence body is missing or malformed.
 	ErrContinuityProtocol = errors.New("prompt sidecar continuity protocol invalid")
+	// ErrControlTransport distinguishes an unfinished control exchange from a
+	// completed response whose JSON or protocol contents failed validation.
+	ErrControlTransport = errors.New("prompt sidecar control transport failed")
 )
 
 const (
@@ -39,7 +42,10 @@ func (c *Client) Ready(ctx context.Context) (bool, error) {
 	}
 	var status ReadinessStatus
 	if err := decodeBoundedJSON(response.Body, c.config.MaxResponseBytes, &status); err != nil {
-		return false, fmt.Errorf("%w: readiness: %v", ErrSidecarUnavailable, err)
+		if isTimeoutError(err) {
+			c.healthTimeouts.Add(1)
+		}
+		return false, fmt.Errorf("%w: readiness: %w", ErrSidecarUnavailable, err)
 	}
 	return response.StatusCode == http.StatusOK && status.Ready, nil
 }
@@ -109,7 +115,7 @@ func (c *Client) preloadAt(ctx context.Context, contractIDs []string, endpoint s
 		if isTimeoutError(err) {
 			c.preloadTimeouts.Add(1)
 		}
-		return PreloadReport{}, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
+		return PreloadReport{}, fmt.Errorf("%w: %w: %w", ErrSidecarUnavailable, ErrControlTransport, err)
 	}
 	defer response.Body.Close()
 	continuity := endpoint == continuityPreloadPath
@@ -125,6 +131,12 @@ func (c *Client) preloadAt(ctx context.Context, contractIDs []string, endpoint s
 	}
 	var report PreloadReport
 	if err := decodeBoundedJSON(response.Body, c.config.MaxResponseBytes, &report); err != nil {
+		if errors.Is(err, ErrControlTransport) {
+			if isTimeoutError(err) {
+				c.preloadTimeouts.Add(1)
+			}
+			return PreloadReport{}, fmt.Errorf("%w: %w", ErrSidecarUnavailable, err)
+		}
 		if continuity {
 			return PreloadReport{}, fmt.Errorf("%w: %w", ErrContinuityProtocol, err)
 		}
@@ -197,7 +209,7 @@ func (c *Client) healthGet(ctx context.Context, path string) (*http.Response, er
 		if isTimeoutError(err) {
 			c.healthTimeouts.Add(1)
 		}
-		return nil, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrSidecarUnavailable, ErrControlTransport, err)
 	}
 	response.Body = &cancelOnCloseReadCloser{ReadCloser: response.Body, cancel: cancel}
 	return response, nil
@@ -217,7 +229,7 @@ func (r *cancelOnCloseReadCloser) Close() error {
 func decodeBoundedJSON(reader io.Reader, maximum int64, target any) error {
 	encoded, err := io.ReadAll(io.LimitReader(reader, maximum+1))
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrControlTransport, err)
 	}
 	if int64(len(encoded)) > maximum {
 		return ErrPlanTooLarge

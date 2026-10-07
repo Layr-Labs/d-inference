@@ -193,6 +193,8 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 
 ## Unreleased — cache reliability
 
+- Preserve negotiated healthy preload incumbents across interrupted response bodies and readiness-probe transport failures. Keep malformed completed reports fail-closed, and do not acknowledge newcomers or retain explicitly failed members after an uncertain partial attempt.
+- Align preload model-ID validation with the registration request bound so an already accepted long identifier cannot disable unrelated verified contracts. Keep the explicit artifact allowlist and tokenizer capacity limits unchanged.
 - Preserve negotiated preload incumbents through uncertain control transport completion, and keep configured catalogs above 128 models usable without expanding cache-routing allowlists or native tokenizer capacity.
 
 - Remove caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and `prompt_cache_key` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.

@@ -1581,6 +1581,21 @@ and `TestCachePreloadConfiguredCatalogControllerFlow` cover 129 verified models
 sharing eight contracts with one allowlisted model; selection retains the full
 verified catalog without raising native capacity.
 
+`coordinator/tests/promptcontract/preload_transport_uncertainty_test.go` uses the
+actual Unix-socket client and controller to cover truncated/timed-out HTTP 200
+bodies, readiness-probe failures after validated partial reports, and the next
+capacity rotation. Completed malformed reports still withdraw authority; failed
+members and unconfirmed newcomers never inherit an incumbent acknowledgement.
+Run these with `go test -race ./coordinator/tests/promptcontract -count=3 -run
+'TestPreloadContinuity(ResponseBodyFailure|ReadinessTimeout|ReadyFailure)'`.
+
+`TestPreloadLongModelIDAuthenticatedRegistration`, `TestPreloadProvisionedLongModelID`
+and `TestCachePreloadLongModelIDDoesNotPoisonCatalog` cover accepted 513-byte model
+IDs through registration, actual artifact verification, Registry projection and
+bounded selection. The short-model-only allowlist control proves an unrelated
+accepted model cannot invalidate that model's preload selection. Oversized-ID
+and existing explicit-allowlist rejection controls retain their bounds.
+
 
 The pure `coordinator/tests/promptcontract/preload_active_set*_test.go` cases cover
 full verified-set preservation, deduplication, eligible demand, expiry, residence,

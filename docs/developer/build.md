@@ -541,6 +541,10 @@ evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
 Documentation-impact checks also cover the contact-export and legacy-cohort
 store owners; see the [soft-delete reference](../reference/soft-delete.md#documentation-coverage).
 
+The [idle-provider routing regressions](test.md#idle-provider-routing-recovery)
+run without a Swift provider binary or downloaded model. Use those focused
+checks before `make coordinator-test` when changing exploration or rate ranking.
+
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → coordinator/coordinator-linux

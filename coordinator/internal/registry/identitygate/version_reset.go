@@ -6,9 +6,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// Version changes clear only disconnect-flush faults, at most once per
-// identityVersionResetMinInterval. Reset history and fault mutations share
-// gate.mu so a trailing old-session 502 cannot re-poison a new binary.
+// Version changes clear exploration memory and only disconnect-flush faults.
+// Fault resets run at most once per identityVersionResetMinInterval. Reset
+// history and fault mutations share gate.mu so a trailing old-session 502
+// cannot re-poison a new binary.
 const disconnectFlushStatusCode = 502
 const identityVersionResetMinInterval = 10 * time.Minute
 
@@ -101,6 +102,9 @@ func (g *State) noteIdentityVersionLocked(r *Directory, version string) {
 	if !observation.Changed {
 		return
 	}
+	// Exploration memory describes the old binary, even when fault resets
+	// are throttled after a rapid version change.
+	g.exploration = nil
 	if observation.Throttled {
 		r.logger.Warn("provider version changed again within the reset interval: disconnect-flush strikes retained",
 			"stable_id", g.key, "previous_version", observation.Previous, "version", observation.Version, "since_last_reset", observation.SinceLastReset)

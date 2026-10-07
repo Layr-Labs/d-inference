@@ -20,5 +20,13 @@ func firstContentEvidenceExplorable(c *routingCandidate) bool {
 	s := &c.snapshot
 	return forecast.EvidenceExplorable(c.firstContent, s.modelLoaded, forecast.Workload{
 		WholeMacKnown: s.wholeMacWorkKnown, WholeMacBusy: s.wholeMacBusy, PartialPrefillRows: s.partialPrefillRows,
-	}, s.totalPending, s.evidenceGapAgeMs)
+	}, s.totalPending, s.evidenceGapAgeMs) && !s.exploration.Suppressed && !s.exploration.RememberedSlow(s.fleetMedianTPS)
+}
+
+// firstContentIdleEvidenceGap is the provider-state half of
+// firstContentEvidenceExplorable.
+func firstContentIdleEvidenceGap(s *routingSnapshot) bool {
+	return forecast.IdleEvidenceGap(s.modelLoaded, forecast.Workload{
+		WholeMacKnown: s.wholeMacWorkKnown, WholeMacBusy: s.wholeMacBusy, PartialPrefillRows: s.partialPrefillRows,
+	}, s.totalPending, s.evidenceGapAgeMs) && !s.exploration.Suppressed && !s.exploration.RememberedSlow(s.fleetMedianTPS)
 }

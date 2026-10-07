@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -120,6 +120,11 @@ observed value has unknown sample age. An unchanged EWMA never becomes
 fresh merely because another heartbeat arrives. Provider sample-age/count and
 workload profiles remain the separate provider delivery in the design.
 
+Invalid explicit metadata withdraws freshness without forgetting the previous
+producer counters. Replaying an earlier valid report therefore cannot create
+new freshness or corroborating slow-rate observations
+(`coordinator/internal/registry/measurements/history.go`, `History.Reconcile`).
+
 The existing coordinator and provider validation envelopes both accept prefill
 rates through `maxPrefillTPS = 20000.0` tokens/s. Invalid rates retain their
 diagnostics and fallback behavior (`coordinator/registry/heartbeat.go`,
@@ -149,10 +154,70 @@ exception (`fillFirstContentSnapshot`,
 service fields and still qualify using their existing slot telemetry. Reservation
 rechecks the exception under the provider lock and rescans if eligibility changed.
 The candidate stays `unknown`, so hedge and fresh-feasible requests still exclude
-it. Ordinary ranking need not select it, and a served request need not refresh
-both measurements: cache reuse can leave isolated-prefill evidence unchanged, as
-can an unchanged legacy EWMA. Exploration offers an opportunity, not guaranteed
-selection or recovery.
+it. Its forecast uses the fleet median isolated-prefill rate while its own
+isolated-prefill evidence is missing or at least 5 minutes old, and the fleet
+median decode rate while its own decode evidence is missing or at least 5
+minutes old. Each rate is checked on its own. Explicit missing or invalid
+measurements cannot borrow a retained positive EWMA as an undated own rate;
+the legacy first-observation fallback remains separate. A provider that sent no rates at
+registration, or whose last measurement was slow, is therefore priced like a
+typical peer and can enter the 100 ms band. A reviewed profile point still comes
+first, and a missing median keeps the ordinary fallback ([rate
+order](routing.md#historical-cost-diagnostics), which also lists the known
+limits). A served request brings back the provider's own value for each rate
+that it renewed. Ordinary ranking need not select it, and a served request need
+not refresh both measurements: cache reuse can leave isolated-prefill evidence
+unchanged, as can an unchanged legacy EWMA. Exploration offers an opportunity,
+not guaranteed selection or recovery.
+
+### Exploration feedback
+
+Two per-model guards on the stable-identity gate prevent a genuinely slow
+provider from repeatedly winning as if it were a typical peer. They suppress
+the idle evidence exception and exploration median pricing, not ordinary
+feasible selection or the existing unknown-provider fallback.
+
+| Guard | Policy |
+|---|---|
+| Failed exploration | First-content timeout, `deadline_unreachable`, or an otherwise attributable provider fault advances suppression through 5, 10, 20, 40, 80 and 120 minutes, capped at 120. A delivered exploration removes one backoff level without extending the current suppression; a short successful request does not reset the whole history. |
+| Remembered decode | Keep up to eight newly observed rates for the model. At least five observations whose upper median is below 0.25 times the model/chip-family fleet median suppress exploration. A new observation at or above 0.5 times the fleet median clears only the decode samples, not failure backoff. One slow observation cannot suppress exploration. |
+| Lifetime | State survives evidence clearing and reconnects for the same stable identity. Identity migration retains the stricter state, a provider version change resets it, and unused state expires after 6 hours. |
+
+`coordinator/internal/registry/identitygate/` owns the state;
+`coordinator/registry/heartbeat.go` binds newly observed decode measurements,
+and `coordinator/registry/first_content_exploration_outcome.go` binds
+`RecordFirstContentExplorationOutcome` to it. These values are
+bounded routing policy, not measured performance guarantees.
+
+Healthy observations retain a dated clear marker even if the identity has no
+earlier slow samples. Identity migration selects rate history or a clear by
+observation time, independently of outcome/backoff updates. An older delayed
+observation cannot repopulate samples after a newer clear or clear newer slow
+evidence. Tombstone-only identities retain the lock-free routing-read path;
+recording a new healthy observation uses the ordinary identity lock.
+
+The identity also retains up to eight producer watermarks per model for the
+memory lifetime: explicit epoch/sample-count maxima, or distinct legacy EWMA
+values when the producer has no counters. Reconnects and serving-set history
+resets do not turn a replay into corroboration. The bounded store does not evict
+an unexpired watermark to admit another slow sample. A merge that cannot retain
+every watermark fences unknown producers until the omitted marks expire;
+chronologically newer healthy recovery can still clear samples. This favors
+missing corroboration over falsely suppressing a provider when provenance
+storage is saturated.
+
+`ReservationSelection.commit` tags an attempt when it uses the evidence
+exception or actually uses an exploration median. This includes median-priced
+no-deadline and vision requests, but excludes reviewed-profile predictions that
+take precedence over a median. The inference owner feeds delivered results,
+eligible errors and first-content timeouts back through
+`coordinator/internal/inference/providerhealth/` and
+`coordinator/internal/inference/cancellation/`. Each explored attempt contributes
+at most one terminal observation, including when timeout cancellation also
+reports an attributable provider stall. Capacity sheds, client-shaped outcomes
+and neutral terminal causes do not contribute. Existing health-breaker
+classification remains unchanged: exploration eligibility is separate from
+provider health.
 
 ### Automatic MiMo calibration
 
@@ -496,7 +561,8 @@ does not represent a random sample of all outcomes.
 | Generated deadline catalog and posture | `coordinator/internal/registry/deadline/catalog_data.go` (`CompiledProfilesJSON`); `coordinator/internal/registry/deadline/posture.go` (`PosturePolicy`, `Posture.Allows`) |
 | Existing work ownership | `coordinator/registry/first_content_calibrated_work.go` — `fillCalibratedWorkSnapshot` |
 | Pending prefill and whole-Mac service accounting | `coordinator/internal/registry/forecast/prefill.go` (`ReservePrefill`, `PrefillQueue`); `coordinator/internal/registry/forecast/work.go` (`WorkBuilder`, `PendingServiceMS`); registry adapters in `coordinator/registry/first_content_pending.go` and `coordinator/registry/first_content_snapshot.go` |
-| Idle evidence exploration | `coordinator/internal/registry/forecast/exploration.go` (`EvidenceGapAgeMS`, `EvidenceExplorable`); `coordinator/registry/first_content_exploration.go` (`firstContentEvidenceExplorable`) |
+| Idle evidence exploration | `coordinator/internal/registry/forecast/exploration.go` (`EvidenceGapAgeMS`, `EvidenceExplorable`, `IdleEvidenceGap`); `coordinator/registry/first_content_exploration.go` (`firstContentEvidenceExplorable`, `firstContentIdleEvidenceGap`) |
+| Explored provider pricing | `coordinator/internal/registry/forecast/exploration.go` (`ExplorationReplacesRate`); `coordinator/internal/registry/performance/rates.go` (`Rates.ExploredPrefill`, `Rates.ExploredDecode`); `coordinator/registry/first_content_exploration_pricing.go` (`fillExplorationRates`, `firstContentExplorationAdmitted`); `coordinator/registry/tps_prefill.go` (`TPSRegistry.RecordPrefill`, `TPSRegistry.PrefillMedian`) |
 | Candidate selection | `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity` |
 | Physical reservation | `coordinator/registry/scheduler.go` — `commitProviderReservation` |
 | Cache-aware preflight | `coordinator/registry/first_content_preflight.go` — `QuickFirstContentCapacityForRequest` |

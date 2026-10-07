@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -430,9 +430,12 @@ replaced rate on the snapshot, and the snapshot passes it to
 `performance.Rates` as `ExploredDecode` or `ExploredPrefill`
 (`coordinator/internal/registry/performance/rates.go`). Step 2 checks each rate
 on its own (`forecast.ExplorationReplacesRate`). A rate is old when its
-measurement is dated and at least 5 minutes old. A rate that has a value but no date is the first value after the
-provider connected, for example the legacy EWMA from its first served request.
-It counts as the provider's own evidence. So one served request brings back the
+measurement is dated and at least 5 minutes old. A legacy rate that has a value
+but no date can be the first value after the provider connected; it counts as
+the provider's own evidence. When the slot declares `performance_measurements`,
+each own rate instead requires independently validated history. An explicitly
+missing or invalid observation is missing for exploration pricing even when
+the slot retains an older positive EWMA. So one served request brings back the
 provider's own value for each rate that the request renewed. Step 2 applies only
 when the median exists. Both medians are per model and chip family. The
 heartbeat records every reported decode EWMA and every usable isolated prefill

@@ -22,10 +22,23 @@ func (r *Registry) fillExplorationRates(s *routingSnapshot, p *Provider, now tim
 		return
 	}
 	decodeAgeMs, prefillAgeMs := firstContentRateAgesMs(p.firstContentMeasurements, s.model, now)
-	if s.fleetMedianTPS > 0 && forecast.ExplorationReplacesRate(s.observedDecodeTPS > 0, decodeAgeMs) {
+	ownDecode := s.observedDecodeTPS > 0
+	ownPrefill := s.isolatedPrefillInitialized && capacityvalue.FinitePositive(s.isolatedPrefillTPS)
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model != s.model {
+			continue
+		}
+		if slot.PerformanceMeasurements != nil {
+			// Explicitly missing or rejected evidence cannot borrow a retained
+			// legacy EWMA. Valid explicit observations are independently dated.
+			ownDecode = ownDecode && decodeAgeMs >= 0
+			ownPrefill = ownPrefill && prefillAgeMs >= 0
+		}
+		break
+	}
+	if s.fleetMedianTPS > 0 && forecast.ExplorationReplacesRate(ownDecode, decodeAgeMs) {
 		s.explorationDecodeTPS = s.fleetMedianTPS
 	}
-	ownPrefill := s.isolatedPrefillInitialized && capacityvalue.FinitePositive(s.isolatedPrefillTPS)
 	if median := r.tpsRegistry.PrefillMedian(s.model, s.chipFamily); capacityvalue.FinitePositive(median) &&
 		forecast.ExplorationReplacesRate(ownPrefill, prefillAgeMs) {
 		s.explorationPrefillTPS = median

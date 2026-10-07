@@ -99,7 +99,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	if len(decodeObservations) > 0 {
 		ref := r.gates.ReferenceForSession(p.gateSession, p.ID)
 		for _, observation := range decodeObservations {
-			r.gates.RecordFirstContentDecodeObservation(ref, observation.Model, observation.Rate,
+			r.gates.RecordFirstContentDecodeObservation(ref, observation,
 				r.tpsRegistry.Median(observation.Model, p.Hardware.ChipFamily), now)
 		}
 	}

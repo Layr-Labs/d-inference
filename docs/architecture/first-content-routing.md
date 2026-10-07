@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -157,7 +157,9 @@ The candidate stays `unknown`, so hedge and fresh-feasible requests still exclud
 it. Its forecast uses the fleet median isolated-prefill rate while its own
 isolated-prefill evidence is missing or at least 5 minutes old, and the fleet
 median decode rate while its own decode evidence is missing or at least 5
-minutes old. Each rate is checked on its own. A provider that sent no rates at
+minutes old. Each rate is checked on its own. Explicit missing or invalid
+measurements cannot borrow a retained positive EWMA as an undated own rate;
+the legacy first-observation fallback remains separate. A provider that sent no rates at
 registration, or whose last measurement was slow, is therefore priced like a
 typical peer and can enter the 100 ms band. A reviewed profile point still comes
 first, and a missing median keeps the ordinary fallback ([rate
@@ -186,6 +188,23 @@ feasible selection or the existing unknown-provider fallback.
 and `coordinator/registry/first_content_exploration_outcome.go` binds
 `RecordFirstContentExplorationOutcome` to it. These values are
 bounded routing policy, not measured performance guarantees.
+
+Healthy observations retain a dated clear marker even if the identity has no
+earlier slow samples. Identity migration selects rate history or a clear by
+observation time, independently of outcome/backoff updates. An older delayed
+observation cannot repopulate samples after a newer clear or clear newer slow
+evidence. Tombstone-only identities retain the lock-free routing-read path;
+recording a new healthy observation uses the ordinary identity lock.
+
+The identity also retains up to eight producer watermarks per model for the
+memory lifetime: explicit epoch/sample-count maxima, or distinct legacy EWMA
+values when the producer has no counters. Reconnects and serving-set history
+resets do not turn a replay into corroboration. The bounded store does not evict
+an unexpired watermark to admit another slow sample. A merge that cannot retain
+every watermark fences unknown producers until the omitted marks expire;
+chronologically newer healthy recovery can still clear samples. This favors
+missing corroboration over falsely suppressing a provider when provenance
+storage is saturated.
 
 `ReservationSelection.commit` tags an attempt when it uses the evidence
 exception or actually uses an exploration median. This includes median-priced

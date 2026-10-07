@@ -4,6 +4,8 @@ import (
 	"math"
 	"slices"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/measurements"
 )
 
 // Exploration memory survives idle evidence clearing and reconnects, but gates
@@ -19,10 +21,22 @@ const (
 )
 
 type firstContentExplorationEntry struct {
-	level     int
-	until     time.Time
-	decode    []float64 // most recent measured rates, oldest first
-	touchedAt time.Time
+	level           int
+	until           time.Time
+	decode          []float64 // most recent measured rates, oldest first
+	decodeUpdatedAt time.Time // actual observation or healthy clear, never an outcome touch
+	touchedAt       time.Time
+	decodeMarks     []decodeWatermark // at most eight producer epochs or legacy EWMA values
+	// A merge may have more known producers than fit. Do not treat an omitted
+	// producer as new until every omitted watermark could have expired.
+	unknownProducerUntil time.Time
+}
+
+type decodeWatermark struct {
+	epoch  string
+	count  int64
+	rate   float64 // legacy producers have no count; deduplicate their exact EWMA
+	seenAt time.Time
 }
 
 func firstContentExplorationBackoff(level int) time.Duration {
@@ -81,45 +95,92 @@ func (r *Directory) RecordFirstContentExplorationOutcome(providerID, model strin
 	g.updatedLocked(now)
 }
 
-// RecordFirstContentDecodeObservation remembers one newly measured decode rate.
+// RecordFirstContentDecodeObservation remembers one distinct decode observation.
 // Heartbeats capture ReferenceForSession under the provider lock, avoiding an
 // index lookup on the common path. Validated locking follows stale references
 // through rebinding or retirement rather than retaining a raw gate pointer.
-func (r *Directory) RecordFirstContentDecodeObservation(ref Reference, model string, decode, fleetMedian float64, now time.Time) {
-	if model == "" || !(decode > 0) || math.IsInf(decode, 0) {
+// Explicit sample time orders rate evidence; legacy EWMAs have only arrival
+// order and are conservatively deduplicated by value. Healthy writes retain a
+// tombstone even without prior slow evidence, so later identity merges honor it.
+func (r *Directory) RecordFirstContentDecodeObservation(ref Reference, observation measurements.DecodeObservation, fleetMedian float64, now time.Time) {
+	if observation.Model == "" || !(observation.Rate > 0) || math.IsInf(observation.Rate, 0) {
 		return
 	}
-	healthy := fleetMedian > 0 && decode >= firstContentExplorationHealthyFraction*fleetMedian
-	if healthy {
-		var has bool
-		ref, has = r.refHasPairState(ref, gateFlagExploration)
-		if !has {
+	at := now
+	if observation.Epoch != "" {
+		at = observation.ObservedAfter
+		if len(observation.Epoch) > 64 || observation.SampleCount <= 0 || at.IsZero() || at.After(now) || now.Sub(at) >= firstContentExplorationMemoryTTL {
 			return
 		}
+	} else if observation.SampleCount != 0 {
+		return
 	}
+	healthy := fleetMedian > 0 && observation.Rate >= firstContentExplorationHealthyFraction*fleetMedian
 	hold := r.lockGate(ref, "first_content_decode_observation")
 	defer hold.unlock()
 	g := hold.g
 	if g == nil {
 		return
 	}
-	if healthy {
-		if e := g.exploration[model]; e != nil {
-			e.decode = nil
-			e.touchedAt = now
-			g.updatedLocked(now)
+	e := g.explorationEntryLocked(observation.Model)
+	e.pruneDecode(now)
+	defer g.publishLocked()
+	mark := decodeWatermark{epoch: observation.Epoch, count: observation.SampleCount, rate: observation.Rate, seenAt: now}
+	index := slices.IndexFunc(e.decodeMarks, func(m decodeWatermark) bool { return m.sameProducer(mark) })
+	if index >= 0 {
+		previous := &e.decodeMarks[index]
+		if mark.epoch == "" || mark.count <= previous.count {
+			return
 		}
+		*previous = mark
+	} else if len(e.decodeMarks) < firstContentExplorationRateSamples && !now.Before(e.unknownProducerUntil) {
+		e.decodeMarks = append(e.decodeMarks, mark)
+	} else if !healthy || at.Before(e.decodeUpdatedAt) {
+		// Saturation cannot manufacture corroboration by evicting and replaying
+		// old epochs. Known producers can still advance, and recovery can clear.
+		return
+	} else {
+		e.unknownProducerUntil = maxTime(e.unknownProducerUntil, now.Add(firstContentExplorationMemoryTTL))
+	}
+	e.touchedAt = now
+	g.touched = now
+	if at.Before(e.decodeUpdatedAt) {
 		return
 	}
-	e := g.explorationEntryLocked(model)
-	e.touchedAt = now
+	e.decodeUpdatedAt = at
+	if healthy {
+		e.decode = nil
+		return
+	}
 	if len(e.decode) == firstContentExplorationRateSamples {
 		copy(e.decode, e.decode[1:])
-		e.decode[len(e.decode)-1] = decode
+		e.decode[len(e.decode)-1] = observation.Rate
 	} else {
-		e.decode = append(e.decode, decode)
+		e.decode = append(e.decode, observation.Rate)
 	}
-	g.updatedLocked(now)
+}
+
+func (m decodeWatermark) sameProducer(other decodeWatermark) bool {
+	return m.epoch == other.epoch && (m.epoch != "" || m.rate == other.rate)
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+func (e *firstContentExplorationEntry) pruneDecode(now time.Time) {
+	e.decodeMarks = slices.DeleteFunc(e.decodeMarks, func(m decodeWatermark) bool {
+		return now.Sub(m.seenAt) >= firstContentExplorationMemoryTTL
+	})
+	if !now.Before(e.unknownProducerUntil) {
+		e.unknownProducerUntil = time.Time{}
+	}
+	if !e.decodeUpdatedAt.IsZero() && now.Sub(e.decodeUpdatedAt) >= firstContentExplorationMemoryTTL {
+		e.decode, e.decodeUpdatedAt = nil, time.Time{}
+	}
 }
 
 // ExplorationView is an immutable snapshot of one identity/model's memory.
@@ -161,6 +222,7 @@ func (v ExplorationView) RememberedSlow(fleetMedian float64) bool {
 
 func (g *State) pruneExplorationLocked(now time.Time) bool {
 	for model, e := range g.exploration {
+		e.pruneDecode(now)
 		if !now.Before(e.until) && now.Sub(e.touchedAt) >= firstContentExplorationMemoryTTL {
 			delete(g.exploration, model)
 		}
@@ -177,8 +239,21 @@ func (g *State) mergeExplorationLocked(src *State) {
 		if s.until.After(e.until) {
 			e.until = s.until
 		}
-		if len(s.decode) > 0 && (len(e.decode) == 0 || s.touchedAt.After(e.touchedAt)) {
+		if s.decodeUpdatedAt.After(e.decodeUpdatedAt) {
 			e.decode = slices.Clone(s.decode)
+			e.decodeUpdatedAt = s.decodeUpdatedAt
+		}
+		e.unknownProducerUntil = maxTime(e.unknownProducerUntil, s.unknownProducerUntil)
+		for _, mark := range s.decodeMarks {
+			index := slices.IndexFunc(e.decodeMarks, func(m decodeWatermark) bool { return m.sameProducer(mark) })
+			if index >= 0 {
+				e.decodeMarks[index].count = max(e.decodeMarks[index].count, mark.count)
+				e.decodeMarks[index].seenAt = maxTime(e.decodeMarks[index].seenAt, mark.seenAt)
+			} else if len(e.decodeMarks) < firstContentExplorationRateSamples {
+				e.decodeMarks = append(e.decodeMarks, mark)
+			} else {
+				e.unknownProducerUntil = maxTime(e.unknownProducerUntil, mark.seenAt.Add(firstContentExplorationMemoryTTL))
+			}
 		}
 		if s.touchedAt.After(e.touchedAt) {
 			e.touchedAt = s.touchedAt

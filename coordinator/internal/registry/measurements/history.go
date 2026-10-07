@@ -22,11 +22,15 @@ type Sample struct {
 	ContendedObservedAfter time.Time
 }
 
-// DecodeObservation is a newly measured rate, not a repeated heartbeat value.
-// Identity-local exploration memory retains these beyond serving-set resets.
+// DecodeObservation carries validated rate evidence and its producer provenance.
+// Epoch is empty for legacy EWMAs. Identity-local memory deduplicates explicit
+// epoch/counts across reconnects and serving-set resets of this history.
 type DecodeObservation struct {
-	Model string
-	Rate  float64
+	Model         string
+	Rate          float64
+	Epoch         string
+	SampleCount   int64
+	ObservedAfter time.Time
 }
 
 // History is serialized by its provider's existing critical section. Reconcile
@@ -138,7 +142,8 @@ func (h *History) Reconcile(capacity *protocol.BackendCapacity, previousAccepted
 		} else if exists && previous.DecodeRate == sample.DecodeRate {
 			continue
 		}
-		observed = append(observed, DecodeObservation{Model: model, Rate: sample.DecodeRate})
+		observed = append(observed, DecodeObservation{Model: model, Rate: sample.DecodeRate,
+			Epoch: sample.Epoch, SampleCount: sample.DecodeCount, ObservedAfter: sample.DecodeObservedAfter})
 	}
 	h.samples = next
 	return observed

@@ -78,7 +78,7 @@ func TestFirstContentExplorationMemoryDecodeCorroborationAndCap(t *testing.T) {
 	ref := gates.ReferenceForSession(session, "session")
 	view := gates.ViewForSession(session, "session")
 	for i, rate := range []float64{10, 11, 12, 13, 14, 15, 16, 17, 30, 31, 32, 33} {
-		gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, rate, 80, clock.Now())
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, rate, int64(i+1), clock.Now()), 80, clock.Now())
 		got := view.Exploration(explorationMemoryModel, clock.Now())
 		if want := min(i+1, 8); got.DecodeSamples != want {
 			t.Fatalf("observation %d: samples=%d, want %d", i+1, got.DecodeSamples, want)
@@ -110,9 +110,9 @@ func TestFirstContentExplorationMemoryDecodeCorroborationAndCap(t *testing.T) {
 		}
 	}
 	for _, rate := range []float64{0, -1, math.NaN(), math.Inf(1), math.Inf(-1)} {
-		gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, rate, 80, clock.Now())
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, rate, 20, clock.Now()), 80, clock.Now())
 	}
-	gates.RecordFirstContentDecodeObservation(ref, "", 10, 80, clock.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation("", 10, 20, clock.Now()), 80, clock.Now())
 	if after := view.Exploration(explorationMemoryModel, clock.Now()); after != got {
 		t.Fatalf("invalid measurements changed memory: before=%+v after=%+v", got, after)
 	}
@@ -125,18 +125,18 @@ func TestFirstContentExplorationMemoryHealthyDecodeClearsOnlyRates(t *testing.T)
 	gates, clock := newExplorationMemoryDirectory()
 	session := gates.Attach("session")
 	ref := gates.ReferenceForSession(session, "session")
-	for range 5 {
-		gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 10, 80, clock.Now())
-		gates.RecordFirstContentDecodeObservation(ref, "other-model", 11, 80, clock.Now())
+	for i := range 5 {
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 10, int64(i+1), clock.Now()), 80, clock.Now())
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation("other-model", 11, int64(i+1), clock.Now()), 80, clock.Now())
 	}
 	gates.RecordFirstContentExplorationOutcome("session", explorationMemoryModel, false)
 	view := gates.ViewForSession(nil, "session")
 	before := view.Exploration(explorationMemoryModel, clock.Now())
-	gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 39.9, 80, clock.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 39.9, 6, clock.Now()), 80, clock.Now())
 	if got := view.Exploration(explorationMemoryModel, clock.Now()); got.DecodeSamples != 6 {
 		t.Fatalf("below-half-fleet observation cleared memory: %+v", got)
 	}
-	gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 40, 80, clock.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 40, 7, clock.Now()), 80, clock.Now())
 	if got := view.Exploration(explorationMemoryModel, clock.Now()); got.DecodeSamples != 0 || got.DecodeMedian != 0 || !got.Suppressed {
 		t.Fatalf("healthy decode must clear rates, not failure backoff: %+v", got)
 	}
@@ -147,7 +147,7 @@ func TestFirstContentExplorationMemoryHealthyDecodeClearsOnlyRates(t *testing.T)
 		t.Fatal("the copied exploration view changed with its gate")
 	}
 	// Without a fleet baseline even a fast rate is evidence, not recovery proof.
-	gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 100, 0, clock.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 100, 8, clock.Now()), 0, clock.Now())
 	if got := view.Exploration(explorationMemoryModel, clock.Now()); got.DecodeSamples != 1 {
 		t.Fatalf("unknown fleet median discarded a valid observation: %+v", got)
 	}
@@ -158,8 +158,8 @@ func TestFirstContentExplorationMemorySweepTTL(t *testing.T) {
 	session := gates.Attach("session")
 	gates.Bind(session, "serial:explore", "")
 	ref := gates.ReferenceForSession(session, "session")
-	for range 5 {
-		gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 10, 80, clock.Now())
+	for i := range 5 {
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 10, int64(i+1), clock.Now()), 80, clock.Now())
 	}
 	clock.Advance(6*time.Hour - time.Nanosecond)
 	gates.Maintain(clock.Now())
@@ -204,18 +204,18 @@ func TestFirstContentExplorationMemoryMigrationKeepsStricterStateAndNewerRates(t
 			for range 3 {
 				gates.RecordFirstContentExplorationOutcome("source", explorationMemoryModel, false)
 			}
-			for range 5 {
-				gates.RecordFirstContentDecodeObservation(sourceRef, explorationMemoryModel, 10, 100, clock.Now())
+			for i := range 5 {
+				gates.RecordFirstContentDecodeObservation(sourceRef, explicitDecodeObservation(explorationMemoryModel, 10, int64(i+1), clock.Now()), 100, clock.Now())
 			}
 			clock.Advance(18 * time.Minute)
 			gates.RecordFirstContentExplorationOutcome("destination", explorationMemoryModel, false)
-			for range 5 {
-				gates.RecordFirstContentDecodeObservation(gates.ReferenceForSession(destination, "destination"), explorationMemoryModel, 30, 100, clock.Now())
+			for i := range 5 {
+				gates.RecordFirstContentDecodeObservation(gates.ReferenceForSession(destination, "destination"), explicitDecodeObservation(explorationMemoryModel, 30, int64(i+1), clock.Now()), 100, clock.Now())
 			}
 			clock.Advance(time.Second)
 			wantMedian, wantSamples := 30.0, 5
 			if newerSource {
-				gates.RecordFirstContentDecodeObservation(sourceRef, explorationMemoryModel, 10, 100, clock.Now())
+				gates.RecordFirstContentDecodeObservation(sourceRef, explicitDecodeObservation(explorationMemoryModel, 10, 6, clock.Now()), 100, clock.Now())
 				wantMedian, wantSamples = 10, 6
 			}
 			gates.Bind(source, "serial:explore", "v1")
@@ -248,8 +248,8 @@ func TestFirstContentExplorationMemoryRetainedReferencesFollowRebind(t *testing.
 			}
 			ref := gates.ReferenceForSession(session, "session")
 			stale := gates.ViewForSession(session, "session")
-			for range 5 {
-				gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 10, 80, clock.Now())
+			for i := range 5 {
+				gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 10, int64(i+1), clock.Now()), 80, clock.Now())
 			}
 			gates.RecordFirstContentExplorationOutcome("session", explorationMemoryModel, false)
 			gates.Bind(session, "serial:explore", "v1")
@@ -264,12 +264,12 @@ func TestFirstContentExplorationMemoryRetainedReferencesFollowRebind(t *testing.
 			} else if stale.Exploration(explorationMemoryModel, clock.Now()) != target.Exploration(explorationMemoryModel, clock.Now()) {
 				t.Fatal("stale routing view did not follow the orphan forward")
 			}
-			gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 11, 80, clock.Now())
+			gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 11, 6, clock.Now()), 80, clock.Now())
 			if got := target.Exploration(explorationMemoryModel, clock.Now()); got.DecodeSamples != 6 {
 				t.Fatalf("stale observation missed the rebound identity: %+v", got)
 			}
 			// A cleared source flag must not short-circuit recovery on its new identity.
-			gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 40, 80, clock.Now())
+			gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 40, 7, clock.Now()), 80, clock.Now())
 			if got := target.Exploration(explorationMemoryModel, clock.Now()); got.DecodeSamples != 0 || !got.Suppressed {
 				t.Fatalf("stale recovery did not clear the live gate's rates: %+v", got)
 			}
@@ -298,14 +298,14 @@ func TestFirstContentExplorationMemoryDisconnectedReferencesFollowEnrichment(t *
 		gates.Bind(s, "sekey:explore", "v1")
 	}
 	liveRef := gates.ReferenceForSession(session, "session")
-	for range 5 {
-		gates.RecordFirstContentDecodeObservation(liveRef, explorationMemoryModel, 10, 80, clock.Now())
+	for i := range 5 {
+		gates.RecordFirstContentDecodeObservation(liveRef, explicitDecodeObservation(explorationMemoryModel, 10, int64(i+1), clock.Now()), 80, clock.Now())
 	}
 	gates.Detach(session, "sekey:explore")
 	cachedRef := gates.ResolveSession("session", false)
 	gates.Bind(enriched, "serial:explore", "v1")
-	for _, ref := range []identitygate.Reference{liveRef, cachedRef} {
-		gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 11, 80, clock.Now())
+	for i, ref := range []identitygate.Reference{liveRef, cachedRef} {
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 11, int64(6+i), clock.Now()), 80, clock.Now())
 	}
 	if got := gates.ViewForSession(nil, "enriched").Exploration(explorationMemoryModel, clock.Now()); got.DecodeSamples != 7 {
 		t.Fatalf("disconnected reference lost the enrichment redirect: %+v", got)
@@ -323,12 +323,12 @@ func TestFirstContentExplorationMemoryRetiredReferenceResolvesAgain(t *testing.T
 	gates, clock := newExplorationMemoryDirectory()
 	ref := gates.ResolveIdentity("serial:explore")
 	stale := gates.ViewReference(ref)
-	gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 10, 80, clock.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 10, 1, clock.Now()), 80, clock.Now())
 	clock.Advance(6 * time.Hour)
 	if report := gates.Maintain(clock.Now()); report.Retired != 1 || report.Retained != 0 {
 		t.Fatalf("setup did not retire the expired identity: %+v", report)
 	}
-	gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 11, 80, clock.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 11, 2, clock.Now()), 80, clock.Now())
 	current := gates.ViewIdentity("serial:explore")
 	if !current.Present() || current.SameIdentity(stale) || current.Exploration(explorationMemoryModel, clock.Now()).DecodeSamples != 1 {
 		t.Fatal("recorder wrote to retired memory instead of the indexed identity")
@@ -343,8 +343,8 @@ func TestFirstContentExplorationMemoryReconnectAndVersionReset(t *testing.T) {
 	session := gates.Attach("session")
 	gates.Bind(session, "serial:explore", "v1")
 	ref := gates.ReferenceForSession(session, "session")
-	for range 5 {
-		gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 10, 80, clock.Now())
+	for i := range 5 {
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 10, int64(i+1), clock.Now()), 80, clock.Now())
 	}
 	gates.RecordFirstContentExplorationOutcome("session", explorationMemoryModel, false)
 	gates.Detach(session, "serial:explore")
@@ -370,11 +370,11 @@ func TestFirstContentExplorationMemoryReconnectAndVersionReset(t *testing.T) {
 		gates.RecordFirstContentExplorationOutcome("reconnected", explorationMemoryModel, false)
 		assertExplorationSuppression(t, view, clock.Now(), 5*time.Minute)
 		ref = gates.ReferenceForSession(session, "reconnected")
-		gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 10, 80, clock.Now())
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 10, 1, clock.Now()), 80, clock.Now())
 	}
 }
 
-func TestFirstContentExplorationMemoryHealthyEmptyFastPath(t *testing.T) {
+func TestFirstContentExplorationMemoryHealthyReadFastPath(t *testing.T) {
 	for _, reset := range []string{"new", "version", "sweep"} {
 		t.Run(reset, func(t *testing.T) {
 			var block atomic.Bool
@@ -393,13 +393,16 @@ func TestFirstContentExplorationMemoryHealthyEmptyFastPath(t *testing.T) {
 			ref := gates.ReferenceForSession(session, "session")
 			now := time.Now()
 			if reset != "new" {
-				gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 10, 80, now.Add(-6*time.Hour))
+				gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 10, 1, now.Add(-6*time.Hour)), 80, now.Add(-6*time.Hour))
 				if reset == "version" {
 					gates.ObserveVersion(session, "v2")
 				} else {
 					gates.Maintain(now)
 				}
 			}
+			// Healthy writes retain a mergeable tombstone and replay watermark.
+			// These require serialization, but must not slow down routing reads.
+			gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationMemoryModel, 40, 2, now), 80, now)
 			view := gates.ViewForSession(session, "session")
 			var waits atomic.Int32
 			gates.SetGateWaitObserver(func(string, time.Duration) { waits.Add(1) })
@@ -416,16 +419,15 @@ func TestFirstContentExplorationMemoryHealthyEmptyFastPath(t *testing.T) {
 			}()
 			done := make(chan identitygate.ExplorationView, 1)
 			go func() {
-				gates.RecordFirstContentDecodeObservation(ref, explorationMemoryModel, 40, 80, now)
 				done <- view.Exploration(explorationMemoryModel, now)
 			}()
 			select {
 			case got := <-done:
 				if got != (identitygate.ExplorationView{}) || waits.Load() != 0 {
-					t.Fatalf("healthy empty path allocated memory or waited: %+v, waits=%d", got, waits.Load())
+					t.Fatalf("healthy-only routing view waited: %+v, waits=%d", got, waits.Load())
 				}
 			case <-time.After(5 * time.Second):
-				t.Fatal("healthy observation or empty snapshot blocked on the held gate")
+				t.Fatal("healthy-only routing snapshot blocked on the held gate")
 			}
 		})
 	}
@@ -435,7 +437,7 @@ func TestFirstContentExplorationMemoryEmptyInputs(t *testing.T) {
 	gates, clock := newExplorationMemoryDirectory()
 	gates.RecordFirstContentExplorationOutcome("", explorationMemoryModel, false)
 	gates.RecordFirstContentExplorationOutcome("session", "", false)
-	gates.RecordFirstContentDecodeObservation(identitygate.Reference{}, explorationMemoryModel, 10, 80, clock.Now())
+	gates.RecordFirstContentDecodeObservation(identitygate.Reference{}, explicitDecodeObservation(explorationMemoryModel, 10, 1, clock.Now()), 80, clock.Now())
 	if got := gates.ViewForSession(nil, "session").Exploration(explorationMemoryModel, clock.Now()); got != (identitygate.ExplorationView{}) {
 		t.Fatalf("invalid input created memory: %+v", got)
 	}

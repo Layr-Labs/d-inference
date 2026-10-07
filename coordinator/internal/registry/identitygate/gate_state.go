@@ -117,8 +117,12 @@ func (g *State) publishLocked() {
 	if len(g.budgetClamps) > 0 {
 		flags |= gateFlagBudgetClamp
 	}
-	if len(g.exploration) > 0 {
-		flags |= gateFlagExploration
+	for _, e := range g.exploration {
+		// Replay watermarks and healthy tombstones do not affect routing reads.
+		if e.level > 0 || len(e.decode) > 0 {
+			flags |= gateFlagExploration
+			break
+		}
 	}
 	g.pairFlags.Store(flags)
 	g.newestRateRejectNS.Store(g.capacityRateHistory.newestRejectNS())

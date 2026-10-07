@@ -80,14 +80,14 @@ func TestFirstContentExplorationBackoffRecheckedByEveryReservationPath(t *testin
 func TestFirstContentExplorationRememberedSlowDecodeAffectsSelection(t *testing.T) {
 	f, gates := backoffExplorationPair(t)
 	ref := gates.ResolveSession(f.idle.ID, true)
-	for _, rate := range []float64{10, 11.7, 10.1, 11.7} {
-		gates.RecordFirstContentDecodeObservation(ref, explorationBackoffModel, rate, 80, time.Now())
+	for i, rate := range []float64{10, 11.7, 10.1, 11.7} {
+		gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationBackoffModel, rate, int64(i+1), time.Now()), 80, time.Now())
 	}
 	// Four low observations cannot recreate the single-slow-sample lockout.
 	reserveExploration(t, f, f.idle, true)
-	gates.RecordFirstContentDecodeObservation(ref, explorationBackoffModel, 12, 80, time.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationBackoffModel, 12, 5, time.Now()), 80, time.Now())
 	reserveExploration(t, f, f.qualified, false)
-	gates.RecordFirstContentDecodeObservation(ref, explorationBackoffModel, 40, 80, time.Now())
+	gates.RecordFirstContentDecodeObservation(ref, explicitDecodeObservation(explorationBackoffModel, 40, 6, time.Now()), 80, time.Now())
 	reserveExploration(t, f, f.idle, true)
 }
 

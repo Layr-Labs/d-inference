@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -937,6 +937,14 @@ components that changed.
 | | Swift | skipped — no enforced formatter |
 | [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` over `coordinator/`, then `go test ./coordinator/...` from the repository root: ordinary discovery includes every mirrored package and production package, with no package exclusion. Use `make coordinator-test` for runner guards, isolated shards and production coverage |
 | | any `console-ui/` change | `npx eslint --quiet src/` and `npm run build` |
+
+Dev coordinator publication is SHA-bound twice: `deploy/gcp/dev/deploy.sh`
+requires the checkout and a successful `dev-build` image to match the full
+`origin/master` commit, validates the immutable image digest, requires completed
+GitHub checks/statuses, then rereads master and the fail-closed pause immediately
+before shipping files over IAP SSH. Any human CI exception names every exact
+currently failing context and supplies a one-line reason; automatic deploys do
+not waive CI.
 
 CI runs the fuller set (`gofmt`, `golangci-lint`, `-race` tests, Swift, Rust,
 docs lint); see [test.md](test.md).

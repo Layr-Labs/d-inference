@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 ## Nightly Linear package
 
@@ -2461,7 +2461,15 @@ of `deploy/gcp/prod/required-env-keys.txt` has no dev source (overlay, release
 default or `prod.env`). It runs `deploy/gcp/dev/seed-env.sh` against stub `gcloud`
 and metadata commands, and proves that the `--check`, `--dry-run` and preflight
 paths, a paused deploy and a refused project make no state-changing call: every
-such command is a stub that records its arguments.
+such command is a stub that records its arguments. Failure fixtures also prove
+that host setup cannot format a blank or signed disk without the exact one-shot
+authorization; the seed ownership gate precedes mutation; pause and master are
+reread before SSH; CI waivers match every and only current failure; database
+credentials reach `psql` through nonsecret libpq environment fields plus a
+root-only temporary `PGPASSFILE`, never argv/output; and an
+unexpected post-swap command failure preserves its original status while the
+exit trap restores first-deploy env, tooling and link state. The fixtures use no
+real block device, SSH connection, secret, cloud API or database.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

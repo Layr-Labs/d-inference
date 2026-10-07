@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Runbook for the Darkbloom dev coordinator in the GCP project `darkbloom-dev`.
 Dev uses the production env contract, the production build file and the
@@ -49,7 +49,7 @@ production (`darkbloom-mainnet`).
 | Image | `us-east4-docker.pkg.dev/darkbloom-dev/coordinator/coordinator:<SHORT_SHA>`, built by the trigger `dev-build` with [`deploy/gcp/cloudbuild-prod.yaml`](../../deploy/gcp/cloudbuild-prod.yaml). Only `_IMAGE` is different | the same file, trigger `prod-build` |
 | `/health` | `version` = `LatestProviderVersion`, `build_commit` = the full commit | the same |
 | Container | `coordinator`, the production flags (`--stop-timeout 75`, `EIGENINFERENCE_DRAIN_GRACE=45s`) | the same |
-| Env file | `/etc/d-inference/env`, root `0600`, boot disk. Seeded once by [`deploy/gcp/dev/seed-env.sh`](../../deploy/gcp/dev/seed-env.sh), then kept by the production refresh | Written by hand, kept by the production refresh |
+| Env file | `/etc/d-inference/env`, root:root `0600` in a root:root `0700` directory on the boot disk. Seeded once by [`deploy/gcp/dev/seed-env.sh`](../../deploy/gcp/dev/seed-env.sh), then kept by the production refresh | Written by hand, kept by the production refresh |
 | Boot refresh | [`deploy/gcp/prod/darkbloom-env-refresh.service`](../../deploy/gcp/prod/darkbloom-env-refresh.service) | the same |
 | Database | Cloud SQL `d-inference-dev-db` (PostgreSQL 17, private IP only, `sslmode=require`) | Cloud SQL, private IP |
 | Data disk | `/mnt/disks/userdata` (MicroMDM BoltDB, prompt artifacts) | the same |
@@ -116,9 +116,12 @@ changes anything. It uses the environment variable `DEV_DEPLOY_PAUSED` when it
 is set (a workflow passes `vars.DEV_DEPLOY_PAUSED`), else
 `gh variable get DEV_DEPLOY_PAUSED -R Layr-Labs/d-inference`. It continues only
 when the value is `false`. The value `true`, an empty value or a failed read
-stops it with exit code 3, and nothing changes. A rollback obeys the same rule.
+stops it with exit code 3, and nothing changes. Immediately before the first
+SSH/file mutation, it reads the repository variable again; an environment value
+cannot satisfy this live gate. A rollback obeys the same rule.
 
-A human can pass `--override-pause "<reason>"`. The script then prints a
+A human can pass `--override-pause "<reason>"`. The reason must be a nonblank
+single line. The script then prints a
 `REPORT pause override by <account> (<user>@<host>): <reason>` line and
 continues. An automatic workflow must pass the variable and must not use the
 override. `--dry-run` reports the pause state and does not stop.
@@ -156,12 +159,17 @@ lines fail. Fix every other `FAIL` line first.
 SSH=(gcloud compute ssh d-inference-dev --zone=us-east4-a --project=darkbloom-dev --tunnel-through-iap --ssh-key-expire-after=1h)
 git archive --format=tar.gz HEAD deploy | "${SSH[@]}" --command='rm -rf ~/setup && mkdir ~/setup && tar -xz -C ~/setup'
 "${SSH[@]}" --command='sudo ~/setup/deploy/gcp/host-setup.sh --apply'
+# A new verified-blank disk stops above. After confirming the exact by-id device:
+"${SSH[@]}" --command='sudo ~/setup/deploy/gcp/host-setup.sh --apply --format-data-disk'
 ```
 
 [`deploy/gcp/host-setup.sh`](../../deploy/gcp/host-setup.sh) installs Docker,
-Caddy, `google-cloud-cli`, `jq` and `postgresql-client`; sets the Docker
-credentials for `us-east4-docker.pkg.dev`; formats the data disk once and
-mounts it at `/mnt/disks/userdata`; installs the production refresh script,
+Caddy, `google-cloud-cli`, `jq`, `python3` and `postgresql-client`; sets the Docker
+credentials for `us-east4-docker.pkg.dev`; enables Docker and Caddy; and mounts
+the expected ext4 data disk at `/mnt/disks/userdata`. It formats only the fixed
+by-id device, only after proving it is an unmounted, unpartitioned, signature-free
+blank disk, and only with the one-shot `--format-data-disk` authorization. It
+installs the production refresh script,
 manifests and boot unit as in step 3 of the production runbook; writes the
 Caddyfile for `DOMAIN`. It writes no env value and starts no container.
 Without `--apply` it only checks. It refuses to run outside `darkbloom-dev`.
@@ -195,23 +203,34 @@ deploy/gcp/dev/deploy.sh --override-pause "first deploy DBLM-559"
 [`deploy/gcp/dev/deploy.sh`](../../deploy/gcp/dev/deploy.sh) checks the pause,
 then does step 1 of the production runbook: the checkout is `origin/master`,
 `dev-build` builds `deploy/gcp/cloudbuild-prod.yaml`, a SUCCESS build of the
-commit exists (it waits up to 20 minutes), and it reads the image digest. Then
-it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the commit to
+commit exists (it waits up to 20 minutes), and it reads the image digest. It
+requires every GitHub check run and status context to be complete and successful,
+then rereads both `origin/master` and the live pause variable immediately before
+SSH. A human may waive only exact currently failing context names with repeated
+`--allow-ci-failure "<name>"` flags plus a nonblank single-line
+`--ci-waiver-reason`; stale, misspelled, pending or unlisted failures still stop.
+Automatic workflows must never pass a CI waiver. Then it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the commit to
 `/usr/local/lib/darkbloom-deploy/<commit>` and runs `swap.sh` under
 `systemd-run`. [`deploy/gcp/dev/swap.sh`](../../deploy/gcp/dev/swap.sh) does
-steps 2 to 4, Verification and Rollback: the database lock checks, `docker
-pull` by digest, the label checks, `coordinator --migrate-only`, the refresh,
+steps 2 to 4, Verification and Rollback: the root-owned seed gate, database
+lock checks (the database URI is parsed without entering argv; nonsecret fields
+use libpq environment variables and the password is held only in a temporary
+root-only `PGPASSFILE` removed on exit), `docker pull` by digest, the label checks,
+`coordinator --migrate-only`, a pre-mutation env/tooling snapshot, the refresh,
 the rollback state, the rename to `coordinator_fallback_<ts>`, `docker stop -t
 75`, `docker run`, and the `/health` and `/readyz` checks. A failed hard check
-rolls back by itself. The output has `REPORT` lines, one `OK` or `FAIL` line,
-and `deployed=true` or `deployed=false`.
+rolls back by itself. A phase-aware exit trap also restores the env, refresh
+tooling and prior `current` link after an unexpected post-mutation command
+failure while preserving its original exit status. The output has `REPORT`
+lines, one `OK` or `FAIL` line, and `deployed=true` or `deployed=false`.
 
 `--dry-run` does the read-only part of step 1 and prints what it would ship and
 run. `MIGRATE_ONLY=0` skips `--migrate-only`. `SSH_KEY_FILE` selects the SSH
 key.
 
 Expected last line from the VM: `OK <commit> drain_s=0 start_to_ready_s=<n>`.
-The first deploy has no fallback and no rollback target.
+The first deploy has no previous image; a failed first attempt removes its
+candidate container and restores the pre-deploy env, tooling and link state.
 
 ### 5. Second deploy
 
@@ -350,7 +369,7 @@ provider is attached and a model is registered. Its fixture checks are in
 |---|---|
 | A deploy failed a hard check | Nothing. `swap.sh` rolled back and printed `FAIL ...; rolled back to ...`. The container log is in `/var/lib/darkbloom-deploy/failed-coordinator-<UTC>.log` on the VM (root only) |
 | A deploy passed, but the commit is bad | `deploy/gcp/dev/deploy.sh rollback` from a clean `origin/master` checkout (add `--override-pause "<reason>"` while paused). It restores the image and env file of the last verified swap. Then revert the commit on `master` |
-| The first deploy is bad (no previous image) | `"${SSH[@]}" --command='sudo docker stop -t 75 coordinator && sudo docker rm coordinator'` |
+| The first deploy is bad (no previous image) | `deploy/gcp/dev/deploy.sh rollback --override-pause "first-deploy rollback <ticket>"`; it removes the candidate and restores the pre-first-deploy env/tooling/link state |
 | A bad reseed | Copy `/etc/d-inference/env.pre-reseed.<UTC>` back to `/etc/d-inference/env`, then deploy |
 | A bad provider bundle | Deactivate the release (`scripts/admin.sh releases deactivate <version>`), then `deploy/provider-fleet/update-fleet.sh dev`; see [`provider-release.md`](provider-release.md) |
 
@@ -367,7 +386,8 @@ a Terraform change in darkbloom-devnet-infra.
 | `FAIL --migrate-only failed; the current coordinator still serves` | A migration of the commit fails | Read the journal of the unit (`sudo journalctl -u 'darkbloom-dev-swap-*'`). Fix the migration on `master` |
 | `FAIL candidate not ready within 180 s; rolled back to ...` | The new coordinator did not start or did not report the commit | Read the saved container log on the VM |
 | `FAIL the running image is not the last verified image ...` | Someone changed the container by hand | Find out why. After review, write the running image ID to `/var/lib/darkbloom-deploy/last-good-image` |
-| `candidate ... is not origin/master` | `master` moved | Deploy the new head |
+| `candidate ... is not origin/master` / `is no longer origin/master` | `master` moved before or during build wait | Deploy the new head |
+| `CI failure is not explicitly waived: ...` | A GitHub check/status failed | Fix/re-run it. Only a human owner may name that exact known baseline failure with `--allow-ci-failure` and a one-line `--ci-waiver-reason` |
 
 ## DevNet checklist
 

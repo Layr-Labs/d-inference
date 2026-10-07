@@ -24,6 +24,17 @@ DEFAULTS = ROOT / "deploy/gcp/prod/release-env-defaults"
 PROD_ENV = ROOT / "deploy/environments/prod.env"
 COMMIT = "a" * 40
 DIGEST = "sha256:" + "b" * 64
+REQUIRED_CHECKS = [
+    "Release Integrity", "Docs Lint", "Coordinator Tests", "Coordinator Lint",
+    "Prompt Sidecar Tests", "Provider Unit Tests", "Provider SDK Tests",
+    "Provider Prompt Parity", "Provider Tests", "Console UI Lint & Build",
+    "Swift Build + Cache",
+]
+REQUIRED_STATUSES = [
+    "Vercel – d-inference", "Vercel – d-inference-console-ui-dev",
+    "Vercel – d-inference-landing", "Vercel – darkbloom-status",
+    "Vercel – eigen-homepages-darkbloom",
+]
 
 # A stub reads its rules from STUB_RULES: [name, regex over the joined
 # arguments, stdout, exit code]. The first matching rule wins; no match prints
@@ -36,8 +47,71 @@ with open(os.environ["STUB_LOG"], "a") as log:
     log.write(json.dumps([name] + args) + "\n")
 if name == "gcloud" and args[:2] == ["compute", "ssh"] and not any(a == "--command=true" for a in args):
     sys.stdin.read()
-for rule_name, pattern, out, code in json.load(open(os.environ["STUB_RULES"])):
+if name == "install" and os.environ.get("STUB_INSTALL_REAL") == "1":
+    from pathlib import Path
+    root = Path(os.environ["STUB_ROOT"]).resolve()
+    mode = None
+    directory = "-d" in args
+    positional = []
+    skip = False
+    for index, arg in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if arg in ("-m", "-o", "-g"):
+            if arg == "-m":
+                mode = int(args[index + 1], 8)
+            skip = True
+        elif arg.startswith("-m") and len(arg) > 2:
+            mode = int(arg[2:], 8)
+        elif arg in ("-d", "-D"):
+            continue
+        elif not arg.startswith("-"):
+            positional.append(arg)
+    targets = positional if directory else positional[-1:]
+    for target in targets:
+        if target == "/dev/stdin":
+            continue
+        resolved = Path(target).resolve(strict=False)
+        if root not in resolved.parents and resolved != root:
+            sys.exit(96)
+    if directory:
+        for target in positional:
+            Path(target).mkdir(parents=True, exist_ok=True)
+            if mode is not None:
+                os.chmod(target, mode)
+    else:
+        source, target = positional[-2], Path(positional[-1])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = sys.stdin.buffer.read() if source == "/dev/stdin" else Path(source).read_bytes()
+        target.write_bytes(data)
+        if mode is not None:
+            os.chmod(target, mode)
+    sys.exit(0)
+if name == "stat" and args[:2] == ["-c", "%U:%G:%a"]:
+    mode = os.stat(args[-1]).st_mode & 0o777
+    sys.stdout.write(f"root:root:{mode:o}\n")
+    sys.exit(0)
+if name == "psql" and os.environ.get("STUB_EXPECT_PGDATABASE"):
+    passfile = os.environ.get("PGPASSFILE", "")
+    if os.environ.get("PGDATABASE") != os.environ["STUB_EXPECT_PGDATABASE"]:
+        sys.exit(97)
+    if not passfile or not os.path.isfile(passfile) or (os.stat(passfile).st_mode & 0o777) != 0o600:
+        sys.exit(98)
+state_path = os.environ["STUB_STATE"]
+try:
+    state = json.load(open(state_path))
+except (FileNotFoundError, json.JSONDecodeError):
+    state = {}
+for index, (rule_name, pattern, out, code) in enumerate(json.load(open(os.environ["STUB_RULES"]))):
     if rule_name == name and re.search(pattern, " ".join(args)):
+        if isinstance(out, list):
+            position = state.get(str(index), 0)
+            selected = out[min(position, len(out) - 1)]
+            state[str(index)] = position + 1
+            with open(state_path, "w") as state_file:
+                json.dump(state, state_file)
+            out, code = selected
         sys.stdout.write(out)
         sys.exit(code)
 '''
@@ -47,7 +121,7 @@ for rule_name, pattern, out, code in json.load(open(os.environ["STUB_RULES"])):
 MUTATORS = ["apt-get", "blkid", "caddy", "chmod", "chown", "cp", "dd", "docker", "dpkg", "gcloud",
             "gpg", "install", "ln", "mkdir", "mkfs.ext4", "mount", "mountpoint", "mv", "psql",
             "pg_isready", "rm", "sudo", "systemctl", "systemd-run", "tee", "usermod", "findmnt",
-            "curl", "id", "dig", "git", "gh", "hostname"]
+            "lsblk", "wipefs", "stat", "curl", "id", "dig", "git", "gh", "hostname"]
 
 
 class Sandbox:
@@ -60,6 +134,8 @@ class Sandbox:
         self.log = self.root / "calls.jsonl"
         self.log.touch()
         self.rules_file = self.root / "rules.json"
+        self.state_file = self.root / "state.json"
+        self.state_file.write_text("{}")
         self.set_rules(rules)
         for name in stubs:
             path = self.bin / name
@@ -71,6 +147,8 @@ class Sandbox:
             "TMPDIR": str(self.root),
             "STUB_LOG": str(self.log),
             "STUB_RULES": str(self.rules_file),
+            "STUB_STATE": str(self.state_file),
+            "STUB_ROOT": str(self.root),
             "SKIP_PERSISTENCE_CHECK": "1",
             "LC_ALL": "C",
         }
@@ -78,6 +156,8 @@ class Sandbox:
 
     def set_rules(self, rules):
         self.rules_file.write_text(json.dumps(rules))
+        if hasattr(self, "state_file"):
+            self.state_file.write_text("{}")
 
     def run(self, argv, extra=None, cwd=ROOT):
         return subprocess.run(["bash", *map(str, argv)], env={**self.env, **(extra or {})}, cwd=cwd,
@@ -157,7 +237,7 @@ class DevEnvContractTests(unittest.TestCase):
 
 class SeedEnvTests(unittest.TestCase):
     def sandbox(self, **rules):
-        box = Sandbox(self, ["id", "curl", "gcloud"], dev_host_rules(**rules))
+        box = Sandbox(self, ["id", "curl", "gcloud", "stat"], dev_host_rules(**rules))
         box.env_dir = box.root / "etc"
         box.env["ENV_DIR"] = str(box.env_dir)
         return box
@@ -274,8 +354,10 @@ def read_only(call):
     """True when a recorded call cannot change state."""
     name, args = call[0], call[1:]
     joined = " ".join(args)
-    if name in ("id", "dig", "findmnt", "pg_isready", "hostname"):
+    if name in ("id", "dig", "findmnt", "pg_isready", "hostname", "lsblk", "stat"):
         return True
+    if name == "wipefs":
+        return args[:1] == ["-n"]
     if name == "curl":
         return "metadata.google.internal" in joined
     if name == "mountpoint":
@@ -287,7 +369,7 @@ def read_only(call):
     if name == "docker":
         return args[:1] in (["inspect"], ["ps"], ["image"]) and "prune" not in args
     if name == "gh":
-        return args[:2] == ["variable", "get"]
+        return args[:2] == ["variable", "get"] or args[:1] == ["api"]
     if name == "git":
         return args[:1] in (["rev-parse"], ["status"], ["ls-remote"], ["archive"])
     if name == "sudo":
@@ -329,6 +411,25 @@ class ZeroMutationTests(unittest.TestCase):
         result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply"])
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([c[0] for c in box.calls()], ["id", "curl"])
+
+    def test_host_setup_never_formats_without_one_shot_blank_disk_authorization(self):
+        base = dev_host_rules() + [
+            ["lsblk", "-o TYPE", "disk\n", 0],
+            ["lsblk", "-o FSTYPE", "\n", 0],
+            ["findmnt", "-S /dev/disk/by-id/google-darkbloom-coordinator-data", "", 1],
+            ["wipefs", "^-n", "", 0],
+        ]
+        box = Sandbox(self, MUTATORS, base)
+        result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("verified blank", result.stderr)
+        self.assertEqual(box.calls("mkfs.ext4"), [])
+
+        box = Sandbox(self, MUTATORS, base[:-1] + [["wipefs", "^-n", "gpt\n", 0]])
+        result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply", "--format-data-disk"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing signature", result.stderr)
+        self.assertEqual(box.calls("mkfs.ext4"), [])
 
     def test_preflight_makes_no_mutating_call(self):
         rules = [
@@ -377,8 +478,18 @@ class ZeroMutationTests(unittest.TestCase):
         self.assert_read_only(box)
 
     def deploy_rules(self, master=COMMIT, paused="false\n", paused_code=0):
+        green_runs = [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in REQUIRED_CHECKS
+        ]
+        green_checks = json.dumps([{"total_count": len(green_runs), "check_runs": green_runs}])
+        green_statuses = json.dumps({"statuses": [
+            {"context": name, "state": "success"} for name in REQUIRED_STATUSES
+        ]})
         return [
             ["gh", "^variable get DEV_DEPLOY_PAUSED", paused, paused_code],
+            ["gh", "^api .*check-runs", green_checks, 0],
+            ["gh", "^api .*commits/.*/status", green_statuses, 0],
             ["gcloud", "^auth list", "dev@example.invalid\n", 0],
             ["git", "^ls-remote", f"{master}\trefs/heads/master\n", 0],
             ["git", "^rev-parse", COMMIT + "\n", 0],
@@ -421,11 +532,11 @@ class ZeroMutationTests(unittest.TestCase):
         for argv in ([], ["rollback"]):
             result = box.run([DEV / "deploy.sh", *argv], {"GITHUB_OUTPUT": str(out)})
             self.assert_paused_refusal(box, result)
-            self.assertIn("REPORT DEV_DEPLOY_PAUSED=true (from gh variable get)", result.stdout)
+            self.assertIn("REPORT DEV_DEPLOY_PAUSED=true (from gh variable get; initial gate)", result.stdout)
         self.assertEqual(out.read_text(), "deployed=false\ndeployed=false\n")
         result = box.run([DEV / "deploy.sh"], {"DEV_DEPLOY_PAUSED": "true"})
         self.assert_paused_refusal(box, result)
-        self.assertIn("REPORT DEV_DEPLOY_PAUSED=true (from environment)", result.stdout)
+        self.assertIn("REPORT DEV_DEPLOY_PAUSED=true (from environment; initial gate)", result.stdout)
 
     def test_deploy_refuses_when_the_pause_state_is_unknown(self):
         box = Sandbox(self, MUTATORS, self.deploy_rules(paused="", paused_code=1))
@@ -474,6 +585,181 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(box.calls("gcloud"), [])
         result = box.run([DEV / "deploy.sh"])
         self.assertEqual(result.returncode, 2)
+
+    def test_deploy_rechecks_live_pause_before_ssh(self):
+        rules = self.deploy_rules()
+        rules[0][2] = [["false\n", 0], ["true\n", 0]]
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh"])
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("live gate", result.stdout)
+        self.assertEqual([c for c in box.calls("gcloud") if c[1:3] == ["compute", "ssh"]], [])
+
+    def test_deploy_rechecks_master_before_ssh(self):
+        rules = self.deploy_rules()
+        for rule in rules:
+            if rule[0] == "git" and rule[1] == "^ls-remote":
+                rule[2] = [[f"{COMMIT}\trefs/heads/master\n", 0], [f"{'c' * 40}\trefs/heads/master\n", 0]]
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh"], {"ON_SUPERSEDED": "skip"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no longer origin/master", result.stdout)
+        self.assertEqual([c for c in box.calls("gcloud") if c[1:3] == ["compute", "ssh"]], [])
+
+    def test_ci_failures_require_an_exact_nonstale_waiver(self):
+        failed_runs = [
+            {"name": name, "status": "completed",
+             "conclusion": "failure" if name == "Coordinator Tests" else "success"}
+            for name in REQUIRED_CHECKS
+        ]
+        failed_checks = json.dumps([{"total_count": len(failed_runs), "check_runs": failed_runs}])
+        rules = self.deploy_rules()
+        for rule in rules:
+            if rule[0] == "gh" and "check-runs" in rule[1]:
+                rule[2] = failed_checks
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not explicitly waived: Coordinator Tests", result.stderr)
+        self.assertEqual([c for c in box.calls("gcloud") if c[1:3] == ["compute", "ssh"]], [])
+
+        result = box.run([DEV / "deploy.sh", "--allow-ci-failure", "Wrong Check",
+                          "--ci-waiver-reason", "owner reviewed base failure"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("stale or misspelled", result.stderr)
+
+    def test_override_reasons_must_be_nonblank_single_lines(self):
+        box = Sandbox(self, MUTATORS, self.deploy_rules(paused="true\n"))
+        for reason in ("   ", "line one\nline two", "line one\rline two"):
+            result = box.run([DEV / "deploy.sh", "--override-pause", reason])
+            self.assertEqual(result.returncode, 2)
+        self.assertEqual(box.calls("gcloud"), [])
+
+    def seeded_swap_box(self):
+        stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install"]
+        box = Sandbox(self, stubs, dev_host_rules())
+        env_dir = box.root / "etc-d-inference"
+        env_dir.mkdir(mode=0o700)
+        box.env["ENV_DIR"] = str(env_dir)
+        seeded = box.run([SEED, "--seed"])
+        self.assertEqual(seeded.returncode, 0, seeded.stdout + seeded.stderr)
+        env_file = env_dir / "env"
+        env_file.write_text(env_file.read_text().replace(
+            "EIGENINFERENCE_DATABASE_URL=SECRET-FIXTURE-VALUE",
+            "EIGENINFERENCE_DATABASE_URL=postgresql://coordinator:fixture-password@192.0.2.5:5432/eigeninference?sslmode=require",
+        ))
+        box.log.write_text("")
+        state = box.root / "state"
+        deploy_root = box.root / "deploy-root"
+        envlib = box.root / "envlib"
+        refresh_bin = box.root / "sbin/darkbloom-refresh-env"
+        deploy_root.mkdir()
+        envlib.mkdir()
+        refresh_bin.parent.mkdir()
+        old = deploy_root / "old"
+        old.mkdir()
+        (deploy_root / "current").symlink_to(old)
+        refresh_bin.write_text("old refresh\n")
+        (envlib / "required-env-keys.txt").write_text("old required\n")
+        (envlib / "release-env-defaults").write_text("old defaults\n")
+        extra = {
+            "LIB": str(ROOT), "RESULT": str(box.root / "result"),
+            "ENV_FILE": str(env_dir / "env"), "STATE": str(state),
+            "DEPLOY_ROOT": str(deploy_root), "ENVLIB": str(envlib),
+            "REFRESH_BIN": str(refresh_bin), "MIGRATE_ONLY": "0",
+            "CANDIDATE_COMMIT": COMMIT, "CANDIDATE_VERSION": "0.9.17",
+            "CANDIDATE_DIGEST": DIGEST, "STUB_EXPECT_PGDATABASE": "eigeninference",
+            "STUB_INSTALL_REAL": "1",
+        }
+        return box, extra, (refresh_bin, envlib, deploy_root)
+
+    def test_swap_seed_failure_precedes_every_mutation(self):
+        box, extra, _ = self.seeded_swap_box()
+        env_file = Path(extra["ENV_FILE"])
+        env_file.write_text("\n".join(
+            line for line in env_file.read_text().splitlines()
+            if not line.startswith("EIGENINFERENCE_DATABASE_URL=")
+        ) + "\n")
+        box.set_rules(dev_host_rules())
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("seed-env.sh --check failed", Path(extra["RESULT"]).read_text())
+        self.assertEqual(box.calls("psql"), [])
+        self.assertEqual(box.calls("docker"), [])
+        self.assertEqual(box.calls("install"), [])
+
+    def test_swap_psql_uses_pgdatabase_not_argv(self):
+        box, extra, _ = self.seeded_swap_box()
+        rules = dev_host_rules() + [["psql", "select 1", "", 1]]
+        box.set_rules(rules)
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(box.calls("psql"))
+        for call in box.calls("psql"):
+            self.assertNotIn("fixture-password", " ".join(call))
+            self.assertNotIn("postgresql://", " ".join(call))
+        self.assertNotIn("fixture-password", result.stdout + result.stderr)
+        self.assertEqual(list(Path(extra["STATE"]).glob(".pg.*")), [])
+
+    def test_unexpected_post_swap_failure_triggers_first_deploy_restoration(self):
+        box, extra, paths = self.seeded_swap_box()
+        refresh_bin, envlib, deploy_root = paths
+        env_file = Path(extra["ENV_FILE"])
+        before_env = env_file.read_bytes()
+        before_tools = [refresh_bin.read_bytes(), (envlib / "required-env-keys.txt").read_bytes(),
+                        (envlib / "release-env-defaults").read_bytes()]
+        state = Path(extra["STATE"])
+        state.mkdir()
+        prior_rollback = state / "rollback-state"
+        prior_rollback.write_text("prior rollback fixture\n")
+        prior_rollback.chmod(0o600)
+        rules = dev_host_rules() + [
+            ["psql", "select count", "0\n", 0],
+            ["docker", "^pull", "", 0],
+            ["docker", "image inspect.*image.revision", COMMIT + "\n", 0],
+            ["docker", "image inspect.*image.version", "0.9.17\n", 0],
+            ["docker", "^container inspect coordinator", [["", 1], ["{}\n", 0]], 0],
+            ["docker", "^run", "candidate-container\n", 0],
+            ["docker", "^inspect coordinator --format.*Config.Env", "EIGENINFERENCE_DRAIN_GRACE=45s\n", 0],
+            ["date", r"^\+%s$", [["100\n", 0], ["101\n", 0], ["", 42]], 0],
+            ["curl", "localhost:8080/health", json.dumps({"status": "ok", "build_commit": COMMIT,
+                                                            "build_date": "fixture", "version": "0.9.17"}), 0],
+            ["curl", "localhost:8080/readyz", "", 0],
+        ]
+        box.set_rules(rules)
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+        self.assertIn("automatic cleanup restored", result.stdout)
+        self.assertEqual(env_file.read_bytes(), before_env)
+        self.assertEqual(refresh_bin.read_bytes(), before_tools[0])
+        self.assertEqual((envlib / "required-env-keys.txt").read_bytes(), before_tools[1])
+        self.assertEqual((envlib / "release-env-defaults").read_bytes(), before_tools[2])
+        self.assertEqual((deploy_root / "current").resolve(), deploy_root / "old")
+        self.assertEqual(prior_rollback.read_text(), "prior rollback fixture\n")
+        self.assertIn("automatic cleanup status=0", Path(extra["RESULT"]).read_text())
+
+    def test_automatic_cleanup_reports_rollback_command_failure(self):
+        box, extra, _ = self.seeded_swap_box()
+        rules = dev_host_rules() + [
+            ["psql", "select count", "0\n", 0],
+            ["docker", "^pull", "", 0],
+            ["docker", "image inspect.*image.revision", COMMIT + "\n", 0],
+            ["docker", "image inspect.*image.version", "0.9.17\n", 0],
+            ["docker", "^container inspect coordinator", [["", 1], ["{}\n", 0]], 0],
+            ["docker", "^run", "candidate-container\n", 0],
+            ["docker", "^inspect coordinator --format.*Config.Env", "EIGENINFERENCE_DRAIN_GRACE=45s\n", 0],
+            ["docker", "^stop", "", 55],
+            ["date", r"^\+%s$", [["100\n", 0], ["101\n", 0], ["", 42]], 0],
+            ["curl", "localhost:8080/health", json.dumps({"status": "ok", "build_commit": COMMIT,
+                                                            "build_date": "fixture", "version": "0.9.17"}), 0],
+            ["curl", "localhost:8080/readyz", "", 0],
+        ]
+        box.set_rules(rules)
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+        self.assertNotIn("automatic cleanup restored", result.stdout)
+        self.assertIn("automatic cleanup failed", result.stderr)
+        self.assertIn("could not stop coordinator during rollback", Path(extra["RESULT"]).read_text())
 
     def test_swap_refuses_other_project(self):
         box = Sandbox(self, MUTATORS, dev_host_rules(project="darkbloom-mainnet"))

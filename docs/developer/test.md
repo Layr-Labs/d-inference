@@ -3667,3 +3667,7 @@ boundary statements; duplicates still split into ordered chunks. Outcome
 updates retain their single pipelined batch. The memory marker fixture also
 freezes real MDM eligibility and stores hardware-interest markers before
 scrubbing, so every memory-backed personal-data rule has observed coverage.
+
+The scanner regressions also verify numbered source reconstruction, annotation
+capacity, original citation coordinates, and that final-reviewer uncertainty cannot
+grant conditional merge clearance.

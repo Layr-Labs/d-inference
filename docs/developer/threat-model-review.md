@@ -1,6 +1,6 @@
 # Configure threat-model review and merge clearance
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-07
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
@@ -223,3 +223,9 @@ minutes inside a 20-minute workflow timeout.
 - [GitHub Contents API](https://docs.github.com/en/rest/repos/contents).
 - [GitHub trusted-base PR event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target).
 - [Build](build.md), [test](test.md), and [canonical threat model](../threat-model.yaml).
+
+Source excerpts include original line numbers, with annotation size included in the
+batch limit. Review summaries target 2,000 characters below the unchanged 4,000
+character validation limit. An unresolved `needs_deeper_review` request from the
+final Sol reviewer makes coverage incomplete and requires independent human review;
+a zero-finding response alone cannot clear that uncertainty.

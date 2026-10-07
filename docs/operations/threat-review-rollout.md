@@ -1,6 +1,6 @@
 # Activate Bedrock review and conditional merge clearance
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-07
 
 This runbook provisions repository-specific Bedrock access and enables author
 auto-merge after complete security review and ordinary CI. Substantial findings
@@ -12,6 +12,16 @@ Use after the implementation has been reviewed and merged under the existing
 approval policy. Do not relax the blanket approval requirement before the exact
 trusted workflow rule and live acceptance tests are in place. The implementation
 does not change cloud permissions, branch rules or auto-merge settings by itself.
+
+## Provisioning status
+
+The [October 3 deployment handoff](../../infra/threat-review/DEPLOYMENT-20261003.md)
+records the applied dedicated role, exact-workflow OIDC migration, profile ARNs,
+six production-schema model calls and negative permission tests. The three profile
+ARNs and requested source models were independently read back on October 7.
+A local SSO invocation was denied before a response; it does not validate GitHub
+role assumption. Resume with the master-only smoke after merge, then the PR-flow
+and fallback acceptance tests below. Do not recreate the provisioned resources.
 
 ## Prerequisites
 
@@ -97,6 +107,7 @@ does not change cloud permissions, branch rules or auto-merge settings by itself
 | Reviewer permission revoked or latest approval dismissed | No manual override. |
 | Authorized reviewer requests changes | No clearance until that review is addressed. |
 | New commit | Old approval and scan cannot clear the new head. |
+| Final reviewer still requests deeper review | Incomplete; independent human review required. |
 | Provider timeout, refusal, truncation or invalid JSON | Incomplete; no resampling through the backup. |
 | Bedrock unavailable | One explicit OpenRouter route under existing durable backup caps. |
 | Usage recording failure | Stop before the next model request. |

@@ -391,6 +391,17 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(result["findings"])
         self.assertTrue(self.service.state.read("ledger.json")[0]["halted"])
 
+    def test_final_reviewer_uncertainty_cannot_clear_merge(self):
+        from threat_review.merge_policy import clean
+        self.service.reply = lambda body: self.service.completion(body, [], uncertain=body["model"] == SOL)
+        result, _ = self.scan(force=True)
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL])
+        self.assertEqual(result["depth_batches_pending"], 0)
+        self.assertIn("Final reviewer requests further review", result["errors"][0])
+        report = {"head": fixtures.HEAD, "base": fixtures.BASE, "review": result}
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertTrue(self.checkpoints[-1]["errors"])
+
     def test_followup_push_reuses_unaffected_batches_but_reintegrates(self):
         self.files = [{"filename": name, "status": "modified", "source_complete": True,
                        "base_text": "old\n" * 7000, "head_text": "new\n" * 7000,

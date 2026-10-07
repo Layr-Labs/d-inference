@@ -174,6 +174,8 @@ class Scanner:
                     # Independent source assessment, without the earlier verdict.
                     result = self.call(model, "source", batch)
                     self.depth_pending -= 1
+                    if model == SOL and result["needs_deeper_review"]:
+                        self.errors.append("Final reviewer requests further review; independent human review required")
                     if model == OPUS and (result["needs_deeper_review"] or any(
                             f["severity"] == "high" for f in result["findings"]) or
                             (first_results[digest(batch)] and result["findings"] != first_results[digest(batch)])) and batch not in critical:

@@ -4,7 +4,9 @@
 # deploy-dev.yml runs it; a human runs it for the first deploy. Run it from a
 # clean checkout of origin/master.
 #
-#   deploy/gcp/dev/deploy.sh [deploy|rollback] [--dry-run] [--override-pause "<reason>"]
+#   deploy/gcp/dev/deploy.sh [deploy|rollback] [--dry-run]
+#       [--override-pause "<reason>"]
+#       [--allow-ci-failure "<exact check/context>"]... [--ci-waiver-reason "<reason>"]
 #
 # Pause: before any change, the script reads the repository variable
 # DEV_DEPLOY_PAUSED (the DEV_DEPLOY_PAUSED environment variable when it is set,
@@ -29,7 +31,13 @@ set -euo pipefail
 MODE=deploy
 DRY_RUN=0
 OVERRIDE_REASON=""
-usage() { echo "usage: $0 [deploy|rollback] [--dry-run] [--override-pause \"<reason>\"]" >&2; exit 2; }
+CI_WAIVER_REASON=""
+CI_FAILURE_ALLOWLIST=()
+usage() {
+    echo "usage: $0 [deploy|rollback] [--dry-run] [--override-pause \"<reason>\"]" \
+        "[--allow-ci-failure \"<exact check/context>\"]... [--ci-waiver-reason \"<reason>\"]" >&2
+    exit 2
+}
 while [ "$#" -gt 0 ]; do
     case "$1" in
         deploy|rollback) MODE=$1 ;;
@@ -37,6 +45,14 @@ while [ "$#" -gt 0 ]; do
         --override-pause)
             [ -n "${2:-}" ] || usage
             OVERRIDE_REASON=$2
+            shift ;;
+        --allow-ci-failure)
+            [ -n "${2:-}" ] || usage
+            CI_FAILURE_ALLOWLIST+=("$2")
+            shift ;;
+        --ci-waiver-reason)
+            [ -n "${2:-}" ] || usage
+            CI_WAIVER_REASON=$2
             shift ;;
         *) usage ;;
     esac
@@ -51,6 +67,17 @@ BUILD_FILE=deploy/gcp/cloudbuild-prod.yaml
 REPO=us-east4-docker.pkg.dev/darkbloom-dev/coordinator/coordinator
 REMOTE=/usr/local/lib/darkbloom-deploy
 GITHUB_REPO=Layr-Labs/d-inference
+REQUIRED_CHECKS=(
+    "Release Integrity" "Docs Lint" "Coordinator Tests" "Coordinator Lint"
+    "Prompt Sidecar Tests" "Provider Unit Tests" "Provider SDK Tests"
+    "Provider Prompt Parity" "Provider Tests" "Console UI Lint & Build"
+    "Swift Build + Cache"
+)
+REQUIRED_STATUSES=(
+    "Vercel – d-inference" "Vercel – d-inference-console-ui-dev"
+    "Vercel – d-inference-landing" "Vercel – darkbloom-status"
+    "Vercel – eigen-homepages-darkbloom"
+)
 BUILD_WAIT_S=${BUILD_WAIT_S:-1200}
 MIGRATE_ONLY=${MIGRATE_ONLY:-1}
 SHIP=(deploy/gcp/prod deploy/gcp/dev deploy/environments/prod.env)
@@ -64,28 +91,54 @@ trap output EXIT
 die() { echo "FAIL $1" >&2; exit "${2:-1}"; }
 
 [[ "$MIGRATE_ONLY" =~ ^[01]$ ]] || die "MIGRATE_ONLY must be 0 or 1" 2
-
-# The pause gate comes before any change and fails closed.
-if [ -n "${DEV_DEPLOY_PAUSED+set}" ]; then
-    paused=$DEV_DEPLOY_PAUSED
-    pause_source=environment
-elif paused=$(gh variable get DEV_DEPLOY_PAUSED -R "$GITHUB_REPO" 2>/dev/null); then
-    pause_source="gh variable get"
-else
-    paused="<unreadable>"
-    pause_source="gh variable get"
+single_line_reason() {
+    [ -n "$1" ] && [[ "$1" != *$'\n'* ]] && [[ "$1" != *$'\r'* ]] && [[ "$1" =~ [^[:space:]] ]]
+}
+[ -z "$OVERRIDE_REASON" ] || single_line_reason "$OVERRIDE_REASON" ||
+    die "--override-pause reason must be a nonblank single line" 2
+[ -z "$CI_WAIVER_REASON" ] || single_line_reason "$CI_WAIVER_REASON" ||
+    die "--ci-waiver-reason must be a nonblank single line" 2
+if [ "${#CI_FAILURE_ALLOWLIST[@]}" -gt 0 ] && [ -z "$CI_WAIVER_REASON" ]; then
+    die "--allow-ci-failure requires --ci-waiver-reason" 2
 fi
-echo "REPORT DEV_DEPLOY_PAUSED=${paused:-<empty>} (from $pause_source)"
-if [ "$paused" != false ]; then
+if [ -n "$CI_WAIVER_REASON" ] && [ "${#CI_FAILURE_ALLOWLIST[@]}" -eq 0 ]; then
+    die "--ci-waiver-reason requires at least one --allow-ci-failure" 2
+fi
+if [ "${GITHUB_ACTIONS:-false}" = true ] && [ "${#CI_FAILURE_ALLOWLIST[@]}" -gt 0 ]; then
+    die "CI failure waivers are human-only and cannot run under GitHub Actions" 2
+fi
+
+pause_override_reported=0
+enforce_pause() { # <initial|live>; live always rereads GitHub immediately before mutation
+    local phase=$1 paused pause_source actor
+    if [ "$phase" = initial ] && [ -n "${DEV_DEPLOY_PAUSED+set}" ]; then
+        paused=$DEV_DEPLOY_PAUSED
+        pause_source=environment
+    elif paused=$(gh variable get DEV_DEPLOY_PAUSED -R "$GITHUB_REPO" 2>/dev/null); then
+        pause_source="gh variable get"
+    else
+        paused="<unreadable>"
+        pause_source="gh variable get"
+    fi
+    echo "REPORT DEV_DEPLOY_PAUSED=${paused:-<empty>} (from $pause_source; $phase gate)"
+    if [ "$paused" = false ]; then
+        return 0
+    fi
     if [ -n "$OVERRIDE_REASON" ]; then
-        actor=${GITHUB_ACTOR:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1)}
-        echo "REPORT pause override by ${actor:-unknown} ($(id -un)@$(hostname)): $OVERRIDE_REASON"
+        if [ "$pause_override_reported" = 0 ]; then
+            actor=${GITHUB_ACTOR:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1)}
+            echo "REPORT pause override by ${actor:-unknown} ($(id -un)@$(hostname)): $OVERRIDE_REASON"
+            pause_override_reported=1
+        fi
     elif [ "$DRY_RUN" = 1 ]; then
         echo "REPORT a real run stops here: deploys are paused or the pause state is unknown"
     else
         die "deploys are paused or the pause state is unknown (DEV_DEPLOY_PAUSED=${paused:-<empty>}); nothing changed. A human can pass --override-pause \"<reason>\"" 3
     fi
-fi
+}
+
+# The first pause gate comes before every other action and fails closed.
+enforce_pause initial
 
 # remote_run <unit> <script> <NAME=value>...: start the script under
 # systemd-run, so a dropped SSH session does not stop it, then wait for its
@@ -114,6 +167,7 @@ sudo cat $REMOTE/$unit.result 2>/dev/null || echo 'FAIL no result from unit $uni
 }
 
 if [ "$MODE" = rollback ]; then
+    enforce_pause live
     [ "$DRY_RUN" = 1 ] || "${SSH[@]}" --command="sudo test -f $REMOTE/current/deploy/gcp/dev/swap.sh" ||
         die "no verified swap on the VM ($REMOTE/current); nothing to roll back to"
     remote_run "darkbloom-dev-rollback-$(date +%s)" "$REMOTE/current/deploy/gcp/dev/swap.sh" \
@@ -157,6 +211,97 @@ CANDIDATE_DIGEST=$(gcloud artifacts docker images describe "$CANDIDATE_IMAGE" \
     --project="$PROJECT" --format='value(image_summary.digest)')
 [[ "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die "no digest for $CANDIDATE_IMAGE" 2
 echo "build=$built image=$CANDIDATE_IMAGE digest=$CANDIDATE_DIGEST version=$CANDIDATE_VERSION"
+
+verify_ci() {
+    local checks statuses check_count total_count status_count status_total_count duplicate_statuses
+    local reported_checks reported_statuses pending failures name allowed found
+    checks=$(gh api --paginate --slurp "repos/$GITHUB_REPO/commits/$CANDIDATE_COMMIT/check-runs?filter=latest&per_page=100") ||
+        die "cannot read GitHub check runs for $CANDIDATE_COMMIT; nothing changed" 3
+    statuses=$(gh api --paginate --slurp \
+        "repos/$GITHUB_REPO/commits/$CANDIDATE_COMMIT/status?per_page=100") ||
+        die "cannot read GitHub status contexts for $CANDIDATE_COMMIT; nothing changed" 3
+    check_count=$(printf '%s' "$checks" | jq -r '[.[].check_runs[]] | length') ||
+        die "invalid GitHub check-run response for $CANDIDATE_COMMIT; nothing changed" 3
+    total_count=$(printf '%s' "$checks" | jq -r 'first(.[].total_count)') ||
+        die "invalid GitHub check-run count for $CANDIDATE_COMMIT; nothing changed" 3
+    printf '%s' "$statuses" | jq -e '
+        type == "array" and length > 0 and
+        all(.[];
+            (.statuses | type == "array") and
+            (.total_count | type == "number") and
+            .total_count >= 0 and .total_count == (.total_count | floor)) and
+        ([.[].total_count] | unique | length == 1) and
+        all(.[].statuses[];
+            (.context | type == "string") and (.context | length > 0) and
+            (.state | type == "string") and (.state | IN("error", "failure", "pending", "success")))
+    ' >/dev/null ||
+        die "invalid GitHub status-context response for $CANDIDATE_COMMIT; nothing changed" 3
+    [[ "$check_count" =~ ^[0-9]+$ ]] && [[ "$total_count" =~ ^[0-9]+$ ]] &&
+        [ "$check_count" -gt 0 ] && [ "$check_count" -eq "$total_count" ] ||
+        die "GitHub check-run response is empty or truncated ($check_count/$total_count); nothing changed" 3
+    status_count=$(printf '%s' "$statuses" | jq -r '[.[].statuses[]] | length') ||
+        die "invalid GitHub status-context count for $CANDIDATE_COMMIT; nothing changed" 3
+    status_total_count=$(printf '%s' "$statuses" | jq -r 'first(.[].total_count)') ||
+        die "invalid GitHub status-context total for $CANDIDATE_COMMIT; nothing changed" 3
+    [[ "$status_count" =~ ^[0-9]+$ ]] && [[ "$status_total_count" =~ ^[0-9]+$ ]] &&
+        [ "$status_count" -gt 0 ] && [ "$status_count" -eq "$status_total_count" ] ||
+        die "GitHub status-context response is empty or truncated ($status_count/$status_total_count); nothing changed" 3
+    duplicate_statuses=$(printf '%s' "$statuses" | jq -r \
+        '[.[].statuses[].context | ascii_downcase] | sort | group_by(.)[] | select(length > 1) | .[0]') ||
+        die "invalid GitHub status-context names for $CANDIDATE_COMMIT; nothing changed" 3
+    [ -z "$duplicate_statuses" ] ||
+        die "GitHub status-context response contains duplicate contexts: $(printf '%s' "$duplicate_statuses" | paste -sd, -); nothing changed" 3
+    pending=$(
+        {
+            printf '%s' "$checks" | jq -r '.[].check_runs[] | select(.status != "completed") | .name'
+            printf '%s' "$statuses" | jq -r '.[].statuses[] | select(.state == "pending") | .context'
+        } | LC_ALL=C sort -u
+    )
+    [ -z "$pending" ] || die "CI is not complete for $CANDIDATE_COMMIT: $(printf '%s' "$pending" | paste -sd, -)"
+    reported_checks=$(printf '%s' "$checks" | jq -r '.[].check_runs[].name' | LC_ALL=C sort -u)
+    reported_statuses=$(printf '%s' "$statuses" | jq -r '.[].statuses[].context' | LC_ALL=C sort -u)
+    for name in "${REQUIRED_CHECKS[@]}"; do
+        grep -Fxq "$name" <<< "$reported_checks" || die "required CI check did not report: $name"
+    done
+    for name in "${REQUIRED_STATUSES[@]}"; do
+        grep -Fxq "$name" <<< "$reported_statuses" || die "required status context did not report: $name"
+    done
+    failures=$(
+        {
+            printf '%s' "$checks" | jq -r \
+                '.[].check_runs[] | select(.status == "completed" and .conclusion != "success") | .name'
+            printf '%s' "$statuses" | jq -r '.[].statuses[] | select(.state != "success" and .state != "pending") | .context'
+        } | LC_ALL=C sort -u
+    )
+    if [ -z "$failures" ]; then
+        [ "${#CI_FAILURE_ALLOWLIST[@]}" -eq 0 ] ||
+            die "CI waiver is stale: no checks fail, but --allow-ci-failure was supplied"
+        echo "REPORT GitHub CI/check contexts are green for $CANDIDATE_COMMIT"
+        return 0
+    fi
+    for name in "${CI_FAILURE_ALLOWLIST[@]}"; do
+        found=0
+        while IFS= read -r allowed; do [ "$name" != "$allowed" ] || found=1; done <<< "$failures"
+        [ "$found" = 1 ] || die "CI waiver is stale or misspelled: '$name' is not a current failure"
+    done
+    while IFS= read -r name; do
+        allowed=0
+        for found in "${CI_FAILURE_ALLOWLIST[@]}"; do [ "$name" != "$found" ] || allowed=1; done
+        [ "$allowed" = 1 ] || die "CI failure is not explicitly waived: $name"
+    done <<< "$failures"
+    echo "REPORT CI waiver for $CANDIDATE_COMMIT by ${GITHUB_ACTOR:-unknown}: $CI_WAIVER_REASON"
+    while IFS= read -r name; do echo "REPORT waived CI failure: $name"; done <<< "$failures"
+}
+
+# Recheck mutable authority immediately before the first SSH/file mutation.
+verify_ci
+LIVE_MASTER=$(git ls-remote origin refs/heads/master | cut -f1)
+if [ "$LIVE_MASTER" != "$CANDIDATE_COMMIT" ]; then
+    echo "candidate $CANDIDATE_COMMIT is no longer origin/master ($LIVE_MASTER)"
+    [ "${ON_SUPERSEDED:-fail}" = skip ] && exit 0
+    exit 2
+fi
+enforce_pause live
 
 # Shell variables do not cross SSH: ship the candidate's files and pass the values.
 LIB=$REMOTE/$CANDIDATE_COMMIT

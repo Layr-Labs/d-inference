@@ -99,10 +99,12 @@ if [ "$MODE" = --check ]; then
         exit 1
     fi
     echo "PASS $ENV_FILE exists"
-    if [ -n "$(find "$ENV_FILE" -maxdepth 0 -perm 0600)" ] && [ -n "$(find "$ENV_DIR" -maxdepth 0 -perm 0700)" ]; then
-        echo "PASS $ENV_FILE has mode 0600 in a 0700 directory"
+    file_security=$(stat -c '%U:%G:%a' "$ENV_FILE" 2>/dev/null || true)
+    dir_security=$(stat -c '%U:%G:%a' "$ENV_DIR" 2>/dev/null || true)
+    if [ "$file_security" = root:root:600 ] && [ "$dir_security" = root:root:700 ]; then
+        echo "PASS $ENV_FILE is root:root 0600 in a root:root 0700 directory"
     else
-        echo "FAIL $ENV_FILE must have mode 0600 and $ENV_DIR mode 0700. Fix: chmod 0600 $ENV_FILE; chmod 0700 $ENV_DIR"
+        echo "FAIL $ENV_FILE must be root:root 0600 and $ENV_DIR root:root 0700. Fix: chown root:root $ENV_DIR $ENV_FILE; chmod 0700 $ENV_DIR; chmod 0600 $ENV_FILE"
         status=1
     fi
     while IFS=$'\t' read -r kind key value; do

@@ -4,9 +4,11 @@
 # commit. It is not a startup script. It is idempotent.
 #
 #   host-setup.sh [--check]  read only: print PASS or FAIL for each item (default)
-#   host-setup.sh --apply    make each item true
+#   host-setup.sh --apply    make each item true; refuses to format a blank disk
+#   host-setup.sh --apply --format-data-disk
+#                            one-shot authorization to format the verified blank data disk
 #
-# Items: packages (docker, caddy, google-cloud-cli, jq, postgresql-client),
+# Items: packages (docker, caddy, google-cloud-cli, jq, postgresql-client, python3),
 # Docker credentials for Artifact Registry, the data disk at
 # /mnt/disks/userdata, the production env refresh unit and manifests (installed
 # as in docs/operations/coordinator-deploy.md step 3), the host Caddyfile, and
@@ -18,7 +20,20 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-MODE=${1:---check}
+MODE=--check
+FORMAT_DATA_DISK=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check|--apply) MODE=$1 ;;
+        --format-data-disk) FORMAT_DATA_DISK=1 ;;
+        *) echo "usage: $0 [--check|--apply] [--format-data-disk]" >&2; exit 2 ;;
+    esac
+    shift
+done
+[ "$FORMAT_DATA_DISK" = 0 ] || [ "$MODE" = --apply ] || {
+    echo "--format-data-disk requires --apply" >&2
+    exit 2
+}
 PROJECT=darkbloom-dev
 METADATA_URL=http://metadata.google.internal/computeMetadata/v1/project/project-id
 REGISTRY=us-east4-docker.pkg.dev
@@ -31,11 +46,6 @@ UNIT=/etc/systemd/system/darkbloom-env-refresh.service
 CADDYFILE=/etc/caddy/Caddyfile
 PROD=$SCRIPT_DIR/prod
 OVERRIDES=$SCRIPT_DIR/dev/env-overrides
-
-case "$MODE" in
-    --check|--apply) ;;
-    *) echo "usage: $0 [--check|--apply]" >&2; exit 2 ;;
-esac
 
 die() {
     echo "FAIL $*" >&2
@@ -98,7 +108,7 @@ env_has_value() {
 if [ "$MODE" = --apply ]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ca-certificates curl gnupg jq postgresql-client
+    apt-get install -y ca-certificates curl gnupg jq postgresql-client python3
     install -m 0755 -d /etc/apt/keyrings
     if ! command -v gcloud >/dev/null || ! command -v docker-credential-gcloud >/dev/null; then
         curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg |
@@ -126,11 +136,43 @@ if [ "$MODE" = --apply ]; then
     fi
 
     gcloud auth configure-docker "$REGISTRY" --quiet
+    systemctl enable --now docker
 
     install -d -m 0755 "$DATA_MOUNT"
-    blkid "$DATA_DEV" >/dev/null 2>&1 || mkfs.ext4 -F "$DATA_DEV"
-    grep -q "^$DATA_DEV " /etc/fstab || echo "$DATA_DEV $DATA_MOUNT ext4 noatime,discard 0 2" >> /etc/fstab
-    mountpoint -q "$DATA_MOUNT" || mount "$DATA_MOUNT"
+    device_layout=$(lsblk -nr -o TYPE "$DATA_DEV" 2>/dev/null) || die "cannot inspect expected data device $DATA_DEV"
+    [ "$device_layout" = disk ] || die "$DATA_DEV is not one unpartitioned block disk (layout: ${device_layout:-unknown})"
+    mounted_at=$(lsblk -dn -o MOUNTPOINTS "$DATA_DEV" 2>/dev/null) ||
+        die "cannot determine whether $DATA_DEV is mounted"
+    mounted_at=$(printf '%s\n' "$mounted_at" | awk 'NF { print }')
+    [ -z "$mounted_at" ] || [ "$mounted_at" = "$DATA_MOUNT" ] ||
+        die "$DATA_DEV is already mounted at $mounted_at, not $DATA_MOUNT"
+    fs_type=$(lsblk -dn -o FSTYPE "$DATA_DEV" 2>/dev/null) || die "cannot read the filesystem type of $DATA_DEV"
+    signatures=$(wipefs -n --noheadings -o TYPE "$DATA_DEV" 2>/dev/null) ||
+        die "cannot prove the existing signatures on $DATA_DEV"
+    if [ -z "$fs_type" ]; then
+        [ -z "${signatures//[[:space:]]/}" ] ||
+            die "$DATA_DEV has an unrecognized existing signature; refusing to format"
+        [ "$FORMAT_DATA_DISK" = 1 ] ||
+            die "$DATA_DEV is verified blank; rerun once with --apply --format-data-disk to authorize mkfs"
+        [ -z "$mounted_at" ] || die "$DATA_DEV is mounted; refusing to format"
+        mkfs.ext4 "$DATA_DEV"
+        fs_type=ext4
+    fi
+    [ "$fs_type" = ext4 ] || die "$DATA_DEV contains $fs_type, not ext4; refusing to format or mount"
+    unexpected_signatures=$(printf '%s\n' "$signatures" | awk 'NF && $1 != "ext4" { print }')
+    [ -z "$unexpected_signatures" ] || die "$DATA_DEV has signatures in addition to ext4; refusing to mount"
+    fstab_entries=$(awk -v dev="$DATA_DEV" '$1 == dev { print }' /etc/fstab)
+    if [ -n "$fstab_entries" ]; then
+        [ "$fstab_entries" = "$DATA_DEV $DATA_MOUNT ext4 noatime,discard 0 2" ] ||
+            die "$DATA_DEV has a conflicting /etc/fstab entry; refusing to append another"
+    else
+        echo "$DATA_DEV $DATA_MOUNT ext4 noatime,discard 0 2" >> /etc/fstab
+    fi
+    if mountpoint -q "$DATA_MOUNT"; then
+        [ "$mounted_at" = "$DATA_MOUNT" ] || die "$DATA_MOUNT is occupied by another filesystem"
+    else
+        mount "$DATA_MOUNT"
+    fi
 
     # docs/operations/coordinator-deploy.md step 3: the refresh script, the
     # manifests and, the first time on a host, the boot unit.
@@ -147,9 +189,9 @@ if [ "$MODE" = --apply ]; then
         caddyfile > "$CADDYFILE.new"
         caddy validate --adapter caddyfile --config "$CADDYFILE.new"
         mv -f "$CADDYFILE.new" "$CADDYFILE"
-        systemctl enable caddy
-        systemctl restart caddy
     fi
+    systemctl enable --now caddy
+    systemctl restart caddy
 
     if env_has_value DD_API_KEY; then
         if ! dpkg -s datadog-agent >/dev/null 2>&1; then
@@ -167,11 +209,15 @@ if [ "$MODE" = --apply ]; then
     echo "host setup: --apply done; the checks follow"
 fi
 
-for cmd in docker caddy gcloud docker-credential-gcloud jq psql pg_isready findmnt; do
+for cmd in docker caddy gcloud docker-credential-gcloud jq psql pg_isready python3 findmnt lsblk wipefs; do
     if command -v "$cmd" >/dev/null; then pass "command $cmd"; else miss "command $cmd is missing. Fix: host-setup.sh --apply"; fi
 done
 for svc in docker caddy; do
-    if systemctl is-active --quiet "$svc"; then pass "service $svc is active"; else miss "service $svc is not active. Fix: host-setup.sh --apply"; fi
+    if systemctl is-active --quiet "$svc" && systemctl is-enabled --quiet "$svc"; then
+        pass "service $svc is active and enabled"
+    else
+        miss "service $svc is not active and enabled. Fix: host-setup.sh --apply"
+    fi
 done
 if [ -f /root/.docker/config.json ] && jq -e --arg r "$REGISTRY" '.credHelpers[$r] == "gcloud"' /root/.docker/config.json >/dev/null 2>&1; then
     pass "Docker uses gcloud credentials for $REGISTRY"

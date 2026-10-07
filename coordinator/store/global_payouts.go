@@ -24,8 +24,10 @@ type GlobalPayoutStore interface {
 	GetGlobalPayoutByExternalID(id string) (*GlobalPayout, error)
 	ExpireGlobalPayoutQuote(accountID, id string, now time.Time) (*GlobalPayout, error)
 	BeginGlobalPayout(accountID, id string, now time.Time) (*GlobalPayout, error)
-	ClaimGlobalPayout(id string, now time.Time) (bool, error)
-	RecordGlobalPayoutRejection(id string, attempt int, code string) error
+	ClaimGlobalPayout(id string, now time.Time) (*GlobalPayout, error)
+	StartGlobalPayoutDispatch(id string, leaseUntil, now time.Time) error
+	StartUnsentGlobalPayout(id string, leaseUntil time.Time, request json.RawMessage, fees json.RawMessage, destinationAmount int64, expiresAt, now time.Time) error
+	RecordGlobalPayoutRejection(id string, attempt int, code string, leaseUntil time.Time) error
 	ApplyGlobalPayout(id string, result GlobalPayoutResult, now time.Time) error
 	PruneExpiredGlobalPayoutQuotes(now time.Time, limit int) (int64, error)
 	ListGlobalPayouts(accountID string, limit int) ([]GlobalPayout, error)
@@ -45,6 +47,8 @@ type GlobalRecipient struct {
 type GlobalPayout struct {
 	QuoteInvalidated    bool                   `json:"quote_invalidated,omitempty"`
 	EstimatedStripeFees json.RawMessage        `json:"estimated_stripe_fees,omitempty"`
+	FundingGeneration   int                    `json:"funding_generation,omitempty"`
+	DispatchStartedAt   time.Time              `json:"dispatch_started_at,omitempty"`
 	DispatchAttempts    int                    `json:"dispatch_attempts"`
 	Rejection           *GlobalPayoutRejection `json:"rejection,omitempty"`
 	ID                  string                 `json:"id"`
@@ -56,8 +60,8 @@ type GlobalPayout struct {
 	AmountMicroUSD      int64                  `json:"amount_micro_usd"`
 	DestinationAmount   int64                  `json:"destination_amount"`
 	Currency            string                 `json:"currency"`
-	Request             json.RawMessage        `json:"request"` // immutable request, no API credentials
-	Status              string                 `json:"status"`  // quoted -> pending -> processing -> posted; or terminal refund
+	Request             json.RawMessage        `json:"request"` // frozen once dispatched; queued requests may refresh their quote
+	Status              string                 `json:"status"`  // quoted -> pending/queued -> processing -> posted; or terminal refund
 	ExternalID          string                 `json:"external_id"`
 	FailureCode         string                 `json:"failure_code"`
 	Refunded            bool                   `json:"refunded"`
@@ -77,6 +81,7 @@ type GlobalPayoutRejection struct {
 }
 
 type GlobalPayoutResult struct {
+	ExpectedLease     time.Time // nonzero fences a delayed reconciler against a newer claim
 	ExternalID        string
 	Status            string
 	FailureCode       string
@@ -89,4 +94,13 @@ type GlobalPayoutResult struct {
 // Attaching a verified external payment ID permits readback reconciliation again.
 func (p GlobalPayout) RequiresManualReconciliation() bool {
 	return p.ExternalID == "" && p.Rejection == nil && p.FailureCode == GlobalPayoutManualReview
+}
+
+// ReconciliationWindowStart excludes the funding wait from posted-payment
+// protection. Historical payments without a dispatch timestamp use confirmation.
+func (p GlobalPayout) ReconciliationWindowStart() time.Time {
+	if !p.DispatchStartedAt.IsZero() {
+		return p.DispatchStartedAt
+	}
+	return p.SubmittedAt
 }

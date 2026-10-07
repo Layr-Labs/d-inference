@@ -13,7 +13,8 @@ import (
 var ErrPreloadRejected = errors.New("prompt sidecar preload rejected")
 
 // Ready checks readiness over the health-only connection pool. A 503 is an
-// expected not-ready result, not an overload and not a liveness failure.
+// expected not-ready result, not an overload and not a liveness failure. Runtime
+// readiness alone does not acknowledge every member of a requested preload set.
 func (c *Client) Ready(ctx context.Context) (bool, error) {
 	response, err := c.healthGet(ctx, "/ready")
 	if err != nil {
@@ -30,9 +31,18 @@ func (c *Client) Ready(ctx context.Context) (bool, error) {
 	return response.StatusCode == http.StatusOK && status.Ready, nil
 }
 
+// MaxPreloadIDs is the largest contract set Preload accepts. The preload
+// controller never publishes a verified set larger than this capacity.
+func (c *Client) MaxPreloadIDs() int {
+	if c == nil {
+		return 0
+	}
+	return c.config.MaxPreloadIDs
+}
+
 // Preload loads the exact, ordered active contract set. A degraded 200 report
-// is returned to the caller so it can keep cache routing gated without killing
-// or restarting an otherwise-live child.
+// is returned unchanged to the caller. Its Ready field still means every
+// submitted member succeeded, not that the runtime has no usable subset.
 func (c *Client) Preload(ctx context.Context, contractIDs []string) (PreloadReport, error) {
 	if c == nil || len(contractIDs) == 0 || len(contractIDs) > c.config.MaxPreloadIDs {
 		return PreloadReport{}, ErrPreloadRejected

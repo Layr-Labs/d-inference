@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -197,9 +197,11 @@ Choose your country of residence in bank setup and use a bank account in that co
 
 For international bank withdrawals, enter a USD amount and select **Review withdrawal**. Review the estimated local deposit, destination, withdrawal fee and expected timing, then select **Confirm withdrawal**. Reviewing does not deduct earnings. An expired estimate must be refreshed. If a response is interrupted, **Check withdrawal** resolves the existing withdrawal before allowing another. The same browser remembers that confirmation when you reload or reopen the page, including when your remaining balance is zero.
 
-If history shows **Needs review**, contact support with the withdrawal ID. Its funds remain reserved until the outcome is established; do not submit another payment for that withdrawal.
+If history shows **Queued**, payout funding is temporarily low. Your requested earnings are reserved and the withdrawal retries automatically when funding returns. Do not submit another withdrawal for the same amount. If Stripe temporarily cannot verify the saved destination, the coordinator retries after a short backoff. Bank arrival timing starts after the queued payment is sent; a queued international exchange estimate is refreshed then.
 
-In history, **Sent to bank** means the transfer left Stripe; it can take additional time for your bank to credit it. **Returned to balance** means the transfer was returned and your withdrawable earnings were restored. Your bank can charge additional fees. Existing Connect withdrawals keep their current payout schedule. See the [pricing reference](../reference/pricing-model.md#global-payouts-withdrawals).
+If history shows **Needs review**, contact support with the withdrawal ID. This includes a queue that could not be saved reliably. Its funds remain reserved until the outcome is established; do not submit another payment for that withdrawal.
+
+In history, **Sent to bank** means the transfer left Stripe; it can take additional time for your bank to credit it. **Returned to balance** means the transfer was returned and your withdrawable earnings were restored. Darkbloom continues checking for bank returns after sending, even when the withdrawal spent a long time queued. Your bank can charge additional fees. Existing Connect withdrawals keep their current payout schedule. See the [pricing reference](../reference/pricing-model.md#global-payouts-withdrawals).
 
 The form shows the bank's published deposit minimum and maximum in local currency. If an amount is outside those limits, adjust the USD withdrawal and review again; Stripe confirms the exchange rate. When new withdrawals are paused, an unsubmitted confirmation is released. Already-submitted withdrawals can still be checked.
 
@@ -279,8 +281,8 @@ Your Darkbloom login, provider setup, earned balance and withdrawal history stay
 with your account. Already configured bank-payout users need no migration step.
 The migrated flow offers standard bank payouts; the former Connect instant-card
 option is not part of it. **Reset bank setup** clears the current destination,
-not your history, and requires you to link a bank again. A funding-unavailable
-message before confirmation leaves earnings untouched. An uncertain submitted
+not your history, and requires you to link a bank again. A **Queued** confirmation reserves the requested earnings until payout funding
+returns and retries automatically. An uncertain submitted
 withdrawal must be checked using its existing confirmation, not submitted again
 as a new withdrawal.
 

@@ -70,7 +70,13 @@ the same request from the same account remains in or out of the cohort.
   ([`EIGENINFERENCE_PROMPT_SIDECAR_ENABLED`](../reference/configuration.md#prompt-sidecar-and-media-fetch);
   `curl -fsS localhost:8080/v1/cache/status | jq -e .sidecar.ready`). Without
   it every request gets a non-participating plan and routing `on` changes
-  nothing.
+  nothing. This aggregate means the runtime has some usable tokenizer
+  membership, not complete catalog readiness or current Go participation for
+  every model. Verify the intended model's artifact and current-generation
+  preload acknowledgement as described in
+  [per-contract readiness](../architecture/prompt-contract-sidecar.md#process-and-lifecycle);
+  `.preload.ready` and `.preload.contract_count` are subset diagnostics, not
+  proof of a particular contract or a native KV hit.
 - Datadog open on the `exact_cache.*` gauges
   (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`) and the
   `routing.cache_selection_terminal`, `routing.cache_selection_precision` and

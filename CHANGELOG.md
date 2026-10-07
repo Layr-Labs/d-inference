@@ -6,6 +6,10 @@
 - Report live-cohort, acknowledged-live and shadow populations separately, with live and shadow proposal counts. Machine selection is startup-only and does not deploy or activate a production cohort by itself.
 - Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
 
+## Unreleased - withdrawal funding queue
+
+- Queue confirmed withdrawals when Stripe payout funding is insufficient. Earnings stay reserved, the coordinator retries automatically, and Billing shows a Queued status. International exchange estimates refresh when queued payments are sent; uncertain Stripe outcomes keep their existing payment identity and funds reserved. Funding waits do not shorten the return-check and account-erasure protection windows after Global Payouts dispatch.
+
 ## Unreleased — Bedrock review and conditional merge clearance
 
 - Support an explicitly approved ongoing OpenRouter budget with daily and per-attempt caps, retaining historical charges and unknown reservations. Preflight now rejects exhausted budget capacity even when provider funding is available.
@@ -200,6 +204,10 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 ## Unreleased — cache reliability
 
 - Remove caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and `prompt_cache_key` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.
+- Bound retained cache-attempt bookkeeping by logical bytes as well as record count. Detach retained metadata, preserve receipt and dispatch ownership checks, and fall back to ordinary inference when the optional cache record cannot be admitted. Under byte pressure, reclaim up to 64 completed attempts' late-receipt grace records, never live ones, before refusing, and report retained bytes, refusals and reclamations as aggregate cache status fields and gauges.
+- Preserve healthy verified prompt contracts when unrelated artifacts or preload members fail. Bind Go participation to the current catalog, child and exact verified set; keep strict preload reports, fresh partial-readiness confirmation, bounded retries and Rust replacement/cancellation ownership.
+- Account for optional cache-planning decisions across the inference endpoints, recorded when a request's plan is first computed (during admission preflight for public requests), and keep planning within the original first-content deadline. Preserve eligibility, inference contexts and independent retry/receipt ownership. Legacy plan metrics keep their definitions; one population grows: a media request to a verified, preloaded model is now counted once as `ineligible` in `exact_cache_plan_total` / `exact_cache.plan` because the planner is consulted to record its decision, with no routing or billing effect.
+- Align cache-planning client concurrency with sidecar workers and reserve health/control connection headroom under nondefault worker configurations. Bound waiting requests and payload bytes within the original deadline, preserving cancellation, independent health/control traffic, exact prefix identities and fail-cold behavior.
 
 ## Unreleased — provider 0.9.17
 

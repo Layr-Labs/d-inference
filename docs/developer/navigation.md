@@ -11,6 +11,9 @@ type, or test name you are investigating.
 Run the commands below from the repository root with `rg` installed.
 Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 
+
+Payout funding queues remain within the billing domain. `coordinator/api/billing/payouts/stripe_dispatch.go` (`dispatchStripeWithdrawal`) shares Connect dispatch between HTTP confirmation and `stripe_withdrawal_queue.go` (`ProcessStripeWithdrawalQueue`). `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`) owns Global Payouts balance checks and safe quote refresh. Memory and PostgreSQL queue implementations own durable claims and transitions; shared Global Payouts guards live in `coordinator/internal/store/shared/global_payouts_queue.go`.
+
 ## Steps
 
 ### 1. Choose the owning subsystem
@@ -59,6 +62,7 @@ components for the specific invariant:
 | Middleware, projections and reporting calculations | `coordinator/internal/api/` |
 | Shared request prelude and provider-bound caller-field minimization | `coordinator/internal/inference/prelude/request_prelude.go` (`Parser.Parse`), `coordinator/internal/inference/prelude/provider_body_privacy.go` (`stripProviderCallerIdentity`); bound to the key policy by `coordinator/api/inference/prelude_parser.go` (`NewPreludeParser`) |
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
+| Optional cache-planning decisions and their bounded metric reasons | `coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`), `coordinator/internal/inference/routeplan/cache_planning_telemetry.go` (`CachePlanner.EmitDecision`); bound by `coordinator/api/inference/cache_planner.go` (`NewCachePlanner`) and called from `coordinator/api/inference/prompt_work.go` (`planPromptRoute`) |
 | Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
 | APNs proof, challenge and budget erasure; publication generation fences | `coordinator/internal/provider/identity/erasure.go`; `coordinator/api/provider/trust/erasure.go` connects the account scrub to runtime cleanup |
@@ -69,6 +73,7 @@ components for the specific invariant:
 | Live connection membership and advertisement counts | `coordinator/registry/provider_directory.go` (`ProviderDirectory`) shares `Registry.mu`; `coordinator/internal/registry/modelindex/counts.go` (`Counts`) owns live-advertisement counts |
 | Restore publication and pending service charges | `coordinator/registry/provider_persistence.go` (`ProviderPersistence`), `coordinator/registry/service_reservations.go` (`ServiceReservations`); both retain the provider's existing lock boundaries |
 | Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |
+| Cache receipt attempts and their retained-byte budget | `coordinator/internal/registry/cachetracker/attempt_budget.go` (`CacheAttemptCharge`, `AttemptBudget`), `coordinator/internal/registry/cachetracker/cache_receipts_kernel.go` (`Tracker.StoreAttemptLocked` admits, `RemoveAttemptLocked` refunds), `coordinator/internal/registry/cachetracker/attempt_pressure.go` (reclaims finished requests' records under byte pressure); `coordinator/registry/cache_receipts_v2.go` (`PreparePrefixCacheV2Attempt`) publishes an owner only for an admitted record |
 | Cache-routing artifact allowlist and stale-entry reporting | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist`); configured instance in `coordinator/registry/cache_artifact_allowlist.go`; status count and one-time warning in `coordinator/api/inference/exact_cache_allowlist_staleness.go` |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
 | Routing scan candidate storage | `coordinator/internal/registry/candidatearena/` (`Arena`, `Storage`, `ChunkSize`); private ownership in `coordinator/registry/reservation_storage.go`, compact retained evidence in `coordinator/registry/candidate_snapshot.go`; chunk size and retained public lifetimes are guarded by `coordinator/tests/registry/candidate_arena_test.go`, `candidate_storage_test.go` and `reservation_storage_test.go` |
@@ -77,6 +82,7 @@ components for the specific invariant:
 | Cache generations, memory history, shared records, account erasure rules and SQL helpers | `coordinator/internal/store/`; erasure rules and keys in `coordinator/internal/store/erasure/` |
 | Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
+| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`PreloadController.ReadyFor`, `Reconcile`) |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
 | Command bodies: coordinator lifecycle, payout audit and DevNet seed data | `coordinator/internal/command/coordinator/`, `payoutaudit/`, `devnetseed/`; each `coordinator/cmd/<name>/main.go` is a thin entry point |

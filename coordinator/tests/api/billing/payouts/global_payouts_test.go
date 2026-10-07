@@ -28,6 +28,10 @@ type fakeGlobalStripe struct {
 	country, currency, quoteError string
 	rate                          int64
 	quoteCalls                    int
+	availableUSD                  *int64
+	fundingReject                 bool
+	fundingReadFailures           int
+	quoteFeeValue                 json.Number
 }
 
 func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +39,17 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/v2/money_management/financial_accounts/"):
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": strings.TrimPrefix(r.URL.Path, "/v2/money_management/financial_accounts/"), "status": "open", "balance": map[string]any{"available": map[string]any{"usd": globalpayouts.Amount{Value: 100_000_000, Currency: "usd"}}}})
+		if f.fundingReadFailures > 0 {
+			f.fundingReadFailures--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"code":"temporarily_unavailable"}}`))
+			return
+		}
+		available := int64(100_000_000)
+		if f.availableUSD != nil {
+			available = *f.availableUSD
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": strings.TrimPrefix(r.URL.Path, "/v2/money_management/financial_accounts/"), "status": "open", "balance": map[string]any{"available": map[string]any{"usd": globalpayouts.Amount{Value: available, Currency: "usd"}}}})
 
 	case r.URL.Path == "/v2/core/accounts" || strings.HasPrefix(r.URL.Path, "/v2/core/accounts/"):
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "acct_gp", "identity": map[string]string{"country": f.country}, "defaults": map[string]any{"payout_methods": map[string]string{f.currency: "pm_gp"}}, "configuration": map[string]any{"recipient": map[string]any{"capabilities": map[string]any{"bank_accounts": map[string]any{"local": map[string]string{"status": "active"}, "wire": map[string]string{"status": "active"}}}}}})
@@ -67,9 +81,18 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		var req globalpayouts.PaymentRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		q := globalpayouts.Quote{EstimatedFees: []globalpayouts.EstimatedFee{{Type: "standard_payout_fee", Amount: globalpayouts.EstimatedFeeAmount{Currency: "usd", Value: json.Number("150")}}}, ID: "obpq_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * f.rate, Currency: f.currency}}}
+		fee := f.quoteFeeValue
+		if fee == "" {
+			fee = json.Number("150")
+		}
+		q := globalpayouts.Quote{EstimatedFees: []globalpayouts.EstimatedFee{{Type: "standard_payout_fee", Amount: globalpayouts.EstimatedFeeAmount{Currency: "usd", Value: fee}}}, ID: "obpq_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * f.rate, Currency: f.currency}}}
 		_ = json.NewEncoder(w).Encode(q)
 	case r.URL.Path == "/v2/money_management/outbound_payments":
+		if f.fundingReject {
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":{"code":"insufficient_funds"}}`))
+			return
+		}
 		if f.rejectRequests {
 			w.WriteHeader(403)
 			_, _ = w.Write([]byte(`{"error":{"code":"forbidden"}}`))
@@ -218,6 +241,14 @@ func TestGlobalPayoutUnknownOutcomeStopsResubmitting(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.BeginGlobalPayout(u.AccountID, p.ID, time.Now().Add(-13*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	oldSend := time.Now().Add(-13 * time.Hour)
+	if _, err := st.ClaimGlobalPayout(p.ID, oldSend); err != nil {
+		t.Fatal(err)
+	}
+	claimed, _ := st.GetGlobalPayout(p.ID)
+	if err := st.StartGlobalPayoutDispatch(p.ID, claimed.LeaseUntil, oldSend); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.syncGlobalPayout(httptest.NewRequest("GET", "/", nil).Context(), p.ID); err != nil {

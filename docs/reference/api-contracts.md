@@ -292,7 +292,7 @@ All six `/v1/me/*` routes are wrapped in `RequirePrivyAuth`, so they are Privy-J
 | GET | `/v1/billing/stripe/session` | `HandleStripeSessionStatus` (`coordinator/api/billing/checkout.go`) | `key` | — | Poll a checkout session |
 | POST | `/v1/billing/stripe/onboard` | `HandleStripeOnboard` (`coordinator/api/billing/payouts/connect_onboarding.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
 | GET | `/v1/billing/stripe/status` | `HandleStripeStatus` (`coordinator/api/billing/payouts/connect_status.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `migration_required` (self-service bank setup needed), `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
-| POST | `/v1/billing/withdraw/stripe` | `HandleStripeWithdraw` (`coordinator/api/billing/payouts/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
+| POST | `/v1/billing/withdraw/stripe` | `HandleStripeWithdraw` (`coordinator/api/billing/payouts/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; low funding accepts a reserved `queued` withdrawal with HTTP 202 on either rail; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
 | GET | `/v1/billing/stripe/withdrawals` | `HandleStripeWithdrawals` (`coordinator/api/billing/payouts/history.go`) | `user` | — | Withdrawal history |
 | POST | `/v1/billing/stripe/dashboard` | `HandleStripeDashboardLink` (`coordinator/api/billing/payouts/connect_dashboard.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
 | DELETE | `/v1/billing/stripe/account` | `HandleStripeUnlink` (`coordinator/api/billing/payouts/connect_unlink.go`) | `user` (Privy-only wrapper) | — | Resets Global Payouts to a fresh empty generation while retaining its routing fence. During cutover, preserves the legacy Connect mapping; before cutover, an unmigrated Connect user can still unlink it. Does not close Stripe accounts or cancel withdrawals. |
@@ -618,6 +618,9 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
+| `lifecycle.attempt_bytes` | Logical bytes of retained cache-attempt records, against the 64 MiB attempt budget | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`AttemptLifecycle`) |
+| `lifecycle.attempt_budget_refused` | Attempts dispatched without a cache scope because the byte budget refused their record: live records fill it, reclaiming at most 64 of the earliest-expiring completed attempts' grace records would not make room, or the record alone exceeds the budget. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/cache_receipts_kernel.go` (`StoreAttemptLocked`) |
+| `lifecycle.attempt_grace_reclaimed` | Completed attempts' records reclaimed inside their two-minute terminal grace to admit another; each forfeits only a late write-behind READY. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`reclaimTerminalGraceLocked`, `terminalBudgetVictimsLocked`) |
 
 The persistence field names are unchanged. Routing reads remain in memory;
 write-behind, restore and overflow guarantees are defined in
@@ -637,6 +640,10 @@ The fence fields have Prometheus gauges `exact_cache_fence{event}`
 (`event` ∈ `applied`, `expired`) and `exact_cache_fenced_capabilities`, and
 Datadog gauges `exact_cache.fence` tagged `event:applied|expired` and
 `exact_cache.fenced_capabilities` (same file).
+The attempt fields have Prometheus gauges `exact_cache_attempt_bytes`,
+`exact_cache_attempt_budget_refused` and `exact_cache_attempt_grace_reclaimed`,
+and Datadog gauges `exact_cache.attempt_bytes`, `exact_cache.attempt_budget_refused`
+and `exact_cache.attempt_grace_reclaimed` (same file).
 The existing `prefix_cache_statuses` state/reason aggregates retain their SSD
 meaning; resident routing uses the separate memory capability and bounded holder
 receipts described in [cache-aware routing](../architecture/cache-aware-routing.md).
@@ -912,6 +919,13 @@ outputs; accepting a Responses image for inference does not establish exact
 coordinator cache-routing eligibility. Native model codec, media-size, context
 and tool-capability checks still apply.
 
+A Responses, Completions or Messages body that cannot be lowered for cache
+planning is still served on its own endpoint, without a cache plan. The
+coordinator counts that decision as `lowering_unsupported` in the cache-planning
+decision telemetry (`CachePlanner.EmitDecision`, called from
+`handleGenericInference` in `coordinator/api/inference/consumer.go`). The
+response shape, status and error codes do not change.
+
 Bodies are lowered into the chat pipeline (`coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesStreamEmitter`, `coordinator/api/inference/response/responses_stream.go`).
 
 `usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
@@ -1034,7 +1048,7 @@ See the [Device-code flow](#device-code-flow-3) table for the three bodies. `ver
 
 ### International withdrawal confirmation
 
-For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Global states are `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/billing/payouts/global_payouts_withdraw.go`, `maybeGlobalWithdraw`).
+For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Confirmed withdrawal states are `queued`, `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/billing/payouts/global_payouts_withdraw.go`, `maybeGlobalWithdraw`).
 
 `DELETE /v1/billing/stripe/account` removes a Global Payouts recipient mapping first, when present, and preserves any stored Connect destination; that older destination may become visible again. Otherwise it clears the Connect mapping. Responses are `{unlinked:true}` when a mapping was removed and `{unlinked:false}` when neither exists. Stripe accounts remain open and submitted withdrawals keep their recorded destination (`coordinator/api/billing/payouts/connect_unlink.go`, `HandleStripeUnlink`).
 
@@ -1500,8 +1514,17 @@ All returned countries use `rail=global`; users enter their own bank details via
 an unsupported destination returns 400 `country_unavailable`, and paused bank
 setup returns 503 `payouts_paused`. No error falls through to Connect.
 
-Before first confirmation, unavailable funding (including estimated fees) returns
-503 `payout_funding_unavailable` without debit. Already-confirmed quote retries
+Confirmation reserves the gross amount once. Low funding (including estimated
+platform-paid fees) returns HTTP 202 with `status="queued"`, the same
+`withdrawal_id`, and the remaining balance. Withdrawal history includes `queued`
+with `failure_reason="awaiting_funding"`; the minute reconciliation loop retries
+automatically. Temporarily unavailable Connect destinations back off for five
+minutes without consuming a send or blocking newer eligible withdrawals. A bank-arrival `eta` is returned only after an external payout
+is processing or posted; an unsent `pending` response explains that earnings
+remain reserved while confirmation is in progress. If persisting the Connect queue fails, the response and history
+remain `pending` with `funding_queue_persistence_failed` and the UI shows **Needs
+review** while retaining the debit. A Global Payouts exchange estimate may be refreshed after a funding
+wait, while USD principal and bank destination stay fixed. Already-confirmed quote retries
 remain available while paused. Bank reset never re-enables Connect or mutates
 historical payouts (`coordinator/api/billing/payouts/global_payouts_withdraw.go`,
 `maybeGlobalWithdraw`; `coordinator/api/billing/payouts/global_payouts_status.go`, `maybeGlobalStatus`).

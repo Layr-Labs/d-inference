@@ -39,6 +39,8 @@ func (s *PostgresStore) indexMigrations() []*goose.Migration {
 		// (PrivyUserPendingErasure); idx_users_privy_live does not cover
 		// deleted rows.
 		index(24, "idx_users_privy_deleted", `CREATE INDEX CONCURRENTLY idx_users_privy_deleted ON users (privy_user_id) WHERE deleted_at IS NOT NULL`),
+		// Include funding queues without dropping the existing reconciliation index.
+		index(28, "global_payout_funding_reconcile", `CREATE INDEX CONCURRENTLY global_payout_funding_reconcile ON global_payout_withdrawals (checked_at) WHERE status IN ('queued','pending','processing','posted')`),
 	}
 }
 

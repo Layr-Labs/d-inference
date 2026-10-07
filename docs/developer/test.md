@@ -2676,8 +2676,11 @@ step. It reports the exact test and skip counts/reasons, then fails if temporary
 fixtures remain or the checkout changes (including untracked files). GNU-only
 publication and rollback cases run on Ubuntu and are explicitly skipped with a
 reason on macOS; a macOS skip is not Linux evidence. The `push` and
-`pull_request` triggers share one YAML-anchored path list. A test of the suite
-fails when the suite reads a repository file that the list does not match.
+`pull_request` triggers share one YAML-anchored path list. A test fails when
+the list does not match a file that the suite names as a `ROOT / "<path>"`
+literal, a file in `deploy/gcp/dev` or `deploy/gcp/prod`,
+`coordinator/api/server.go` (`deploy.sh` reads it) or the suite itself. The
+test does not find other forms of a read.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

@@ -29,13 +29,13 @@ REFRESH=$SCRIPT_DIR/../prod/refresh-env.sh
 REQUIRED_FILE=$SCRIPT_DIR/../prod/required-env-keys.txt
 DEFAULTS_FILE=$SCRIPT_DIR/../prod/release-env-defaults
 export ENV_DIR REQUIRED_FILE DEFAULTS_FILE
-# shellcheck source=deploy/gcp/dev/refresh-backup.sh
-. "$SCRIPT_DIR/refresh-backup.sh"
 
 fail() {
     echo "FAIL dev env seed: $*" >&2
     exit 1
 }
+# shellcheck source=deploy/gcp/dev/refresh-backup.sh
+. "$SCRIPT_DIR/refresh-backup.sh" || fail "cannot read $SCRIPT_DIR/refresh-backup.sh"
 
 case "$MODE" in
     --check|--seed|--reseed) ;;
@@ -183,6 +183,7 @@ if [ -e "$ENV_FILE" ]; then
     echo "REPORT the old file is kept as $backup"
     [ -z "$dropped" ] || echo "REPORT keys of the old file that the new file does not have: $dropped"
 fi
+written_sha256=$(sha256sum "$tmp" | cut -d' ' -f1)
 mv -f "$tmp" "$ENV_FILE"
 trap - EXIT
 sync "$ENV_FILE" "$ENV_DIR" 2>/dev/null || sync
@@ -191,9 +192,12 @@ if ! refresh_out=$(ENV_FILE="$ENV_FILE" "$REFRESH" --apply); then
 fi
 printf '%s\n' "$refresh_out" | sed 's/^/REPORT /'
 # The env file is in place and refreshed. A backup that stays is reported, not
-# a failure: a second --seed finds the file and does nothing.
+# a failure: a second --seed finds the file and does nothing. A backup that is
+# not the file the seed wrote holds a change made since then, so it stays.
 if ! refresh_backup=$(reported_refresh_backup "$ENV_FILE" "$refresh_out"); then
     echo "REPORT the refresh did not report one regular timestamped backup; nothing removed"
+elif ! refresh_backup_is_copy_of "$refresh_backup" "$written_sha256"; then
+    echo "REPORT the refresh backup $refresh_backup is not the file the seed wrote; it is kept"
 elif ! rm -f -- "$refresh_backup"; then
     echo "REPORT could not remove the redundant post-seed refresh backup $refresh_backup"
 fi

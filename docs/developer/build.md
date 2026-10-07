@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-06
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -1103,10 +1103,6 @@ concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
 
 ## Telemetry archive worker
-
-The bonus-aware worker requires migration 27 for new `provider_floor_draws`
-captures; old receipt verification remains supported. Coordinate worker upgrades
-and reader republication through the [accounting runbook](../operations/accounting-history.md).
 
 The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. The same worker supports isolated accounting archives and indexed ID batches; deploy each archive job with its own destination permissions. See [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
 

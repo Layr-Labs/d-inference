@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-04
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -278,14 +278,6 @@ use the bounded priority enqueue path, so stalled sockets cannot block the
 controller tick or delay another provider's control renewal. Enqueue acceptance
 retains pending ownership; only terminal heartbeat reconciliation releases it.
 No causal improvement is inferred from command success alone.
-
-### Opt-in base-reward bonus
-
-Valid enrollment also qualifies an otherwise base-reward-eligible machine for
-the [separately funded bonus](billing.md#base-rewards-implemented-disabled-by-default).
-The reward snapshot uses `Consented` independently of controller activation,
-observation or pause. Opt-out removes bonus eligibility at settlement.
-Code: `coordinator/registry/provider_snapshot.go` (`providerRewardSnapshotLocked`).
 
 ## Invariants
 

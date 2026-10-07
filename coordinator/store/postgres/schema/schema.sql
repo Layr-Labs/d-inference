@@ -1336,8 +1336,7 @@ CREATE TABLE public.provider_floor_draws (
     earned_micro_usd bigint DEFAULT 0 NOT NULL,
     uptime_frac double precision DEFAULT 0 NOT NULL,
     memory_gb integer DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    autopilot_bonus_micro_usd bigint DEFAULT 0 NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 

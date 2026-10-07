@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-04
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved live rollout. Startup opt-in records interest/consent, not
@@ -115,17 +115,6 @@ liveness, loaded models, authorization and shadow/live mode.
   suppress the saved idle policy, and cannot authorize residency commands.
 - Verify the exact released builds separately. Local tests and completed load
   commands do not establish production improvement.
-
-### Opt-in reward bonus
-
-When base rewards are enabled, inspect `GET /v1/admin/base-rewards` with the
-existing admin credential. `pool_used` remains base-only; compare
-`autopilot_bonus_pool_used` with `autopilot_bonus_pool_budget`, and inspect each
-draw's `autopilot_bonus_micro_usd`. Enrollment is sampled at settlement; a
-controller pause or observation mode retains consent. Opt-out stops bonuses on
-new settlements, and past draws stay final. See the
-[reward accounting contract](../architecture/billing.md#base-rewards-implemented-disabled-by-default)
-and `coordinator/payments/baserewards/engine.go` (`Status`).
 
 ## Rollback
 

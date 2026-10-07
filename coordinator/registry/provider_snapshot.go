@@ -12,7 +12,6 @@ type ProviderSnapshot struct {
 	MachineID           string // verified canonical machine; never a client-supplied serial
 	AppAttestAuthorized bool   // complete, current independent serving authorization
 	AppAttestOSVersion  string // authenticated app claim from the current lease only
-	AutopilotOptedIn    bool   // explicit enrollment; independent of controller activation or pause
 	ServingAuthorized   bool   // complete public authorization through either path
 	ProviderKey         string // base64 X25519 public key — earnings/session identity
 	SerialNumber        string
@@ -87,7 +86,6 @@ func (r *Registry) providerRewardSnapshotLocked(p *Provider, now time.Time) Prov
 		MachineID:           machineID,
 		AppAttestAuthorized: appAttestAuthorized,
 		AppAttestOSVersion:  osVersion,
-		AutopilotOptedIn:    providerAutopilotConsentedLocked(p),
 		ServingAuthorized:   !p.PrivateOnly && (appAttestAuthorized || r.providerLegacyServingAuthorizedLocked(p, now)),
 		ProviderKey:         p.PublicKey,
 		SerialNumber:        serial,

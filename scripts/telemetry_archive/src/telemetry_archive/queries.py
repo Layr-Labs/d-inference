@@ -50,7 +50,7 @@ def verify_query(client, published: dict, *, maximum_bytes_billed: int = 1024**3
         labels={"purpose": "telemetry-archive-verify", "mode": "copy-only"},
         query_parameters=parameters,
     )
-    aggregates = query_aggregates(receipt["table"], receipt["stats"].get("accounting_totals", {}))
+    aggregates = query_aggregates(receipt["table"])
     query = VERIFY_SQL
     if isinstance(window, IDWindow):
         query = query.replace(

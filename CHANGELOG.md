@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased - Autopilot base-reward bonus
-
-- Pay eligible Autopilot-enrolled machines an extra 10% of their allocated base rewards from a separately accounted bonus pot. Base allocations stay unchanged; base and bonus settle atomically and are withdrawable. Existing settled epochs are not retroactively topped up.
-
 ## Unreleased - typical MTP acceptance
 
 - Default eligible sampled target-prefix MTP requests to typical acceptance (delta `0.2`) when `[backend] mtp_acceptance` and the model override are absent. Sampled output is approximate, not distribution-exact; explicit `exact` restores exact acceptance and invalid values remain safely exact. Greedy behavior, native MiMo exact acceptance, disabled MTP and model eligibility are unchanged. Benchmark acceptance still defaults to `exact`; the recorded single-host B=1 runs do not qualify sampled quality or fleet-wide speed.

@@ -5,7 +5,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -41,15 +40,12 @@ func (s *MemoryStore) SumProviderEarningsByKey(_ context.Context, providerKey st
 }
 
 // settleProviderFloorDrawLocked inserts the idempotent draw row and, when the
-// row is newly inserted with a positive amount, credits the account's balance
-// and withdrawable amount with separate base and bonus ledger entries.
-// Idempotent on (provider_key, epoch_id): a re-settle returns credited=false
-// and changes nothing. A zero-amount draw records the audit row but credits
-// nothing. The caller holds s.mu.
+// row is newly inserted with a positive amount, credits the account's balance +
+// withdrawable with a LedgerFloorDraw entry. Idempotent on (provider_key,
+// epoch_id): a re-settle returns credited=false and changes nothing. A
+// zero-amount draw records the audit row but credits nothing. The caller holds
+// s.mu.
 func (s *MemoryStore) settleProviderFloorDrawLocked(draw *store.ProviderFloorDraw) (bool, error) {
-	if err := shared.ValidateFloorDrawAmounts(draw); err != nil {
-		return false, err
-	}
 	key := floorDrawKey(draw.ProviderKey, draw.EpochID)
 	if _, exists := s.floorDrawKeys[key]; exists {
 		return false, nil // already settled this epoch
@@ -68,13 +64,10 @@ func (s *MemoryStore) settleProviderFloorDrawLocked(draw *store.ProviderFloorDra
 		if s.creditLocked(cp.AccountID, cp.AmountMicroUSD, store.LedgerFloorDraw, cp.EpochID, cp.CreatedAt) {
 			s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
 		}
-		if cp.AutopilotBonusMicroUSD > 0 {
-			if s.creditLocked(cp.AccountID, cp.AutopilotBonusMicroUSD, store.LedgerAutopilotBonus, cp.EpochID, cp.CreatedAt) {
-				s.withdrawable[cp.AccountID] += cp.AutopilotBonusMicroUSD
-			}
-		}
-		// Show the combined income once in earnings history and summaries.
-		// Model "base_reward" keeps both amounts out of organic earnings.
+		// Surface the draw in the provider's earnings history/summary. Model
+		// "base_reward" keeps it out of organic earning sums while
+		// GetAccountEarnings* (which sum all rows) show
+		// it, so the payout isn't an unexplained balance jump in the UI.
 		s.providerEarningsSeq++
 		s.history.ProviderEarnings = append(s.history.ProviderEarnings, store.ProviderEarning{
 			ID:             s.providerEarningsSeq,
@@ -82,7 +75,7 @@ func (s *MemoryStore) settleProviderFloorDrawLocked(draw *store.ProviderFloorDra
 			ProviderKey:    cp.ProviderKey,
 			JobID:          "floor:" + cp.EpochID + ":" + cp.ProviderKey,
 			Model:          "base_reward",
-			AmountMicroUSD: cp.AmountMicroUSD + cp.AutopilotBonusMicroUSD,
+			AmountMicroUSD: cp.AmountMicroUSD,
 			CreatedAt:      cp.CreatedAt,
 		})
 	}

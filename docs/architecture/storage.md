@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-06
 
 What the coordinator persists, through which interface and in which backend;
 then what a provider keeps on its own disk and in its Keychain. How the schema
@@ -243,15 +243,6 @@ and provider removals, not existing scrub/outbox obligations. It does not change
 the stored schema, read filters or rollback requirements for prior tombstones.
 
 ### Provider earnings and history
-
-`provider_floor_draws.autopilot_bonus_micro_usd` records the separately funded
-Autopilot bonus; `amount_micro_usd` continues to count only against the base
-pool. Both share the existing unique machine/epoch key. Settlement atomically
-credits the combined balance, separate `provider_floor_draw` and
-`provider_autopilot_bonus` ledger entries, and one combined `base_reward`
-earnings row. Existing rows have zero bonus. Code:
-`coordinator/store/postgres/base_rewards.go` (`settleProviderFloorDraw`),
-`coordinator/store/memory/base_rewards.go` (`settleProviderFloorDrawLocked`).
 
 `RecordProviderEarning` and `CreditProviderAccount` maintain new summaries from
 inserted earning rows, so duplicate non-empty job IDs never increment twice.

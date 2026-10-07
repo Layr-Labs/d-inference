@@ -13,7 +13,7 @@ import (
 // settleCandidatePlan runs under the epoch lock. A remaining allocation is one
 // atomic batch, including partial and zero waitlisted rows. On a late rejection
 // nothing from that plan is frozen: reread actual spending and verified aliases,
-// refresh consent or remove the rejected session, and allocate again.
+// remove the rejected session, and apply the unchanged allocation policy again.
 func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, end time.Time, candidates []candidate, result *SettleResult) error {
 	batchStore, ok := store.As[store.FloorDrawBatchStore](e.store)
 	if !ok {
@@ -29,9 +29,8 @@ func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, e
 	counted := make(map[string]bool)
 	verifiedBindings := make(map[string]store.MachineRewardBinding)
 	periodBudget := rewardpolicy.PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end)
-	// Retries can join aliases, exclude failed sessions, or refresh changed
-	// consent. Keep the attempt bound for unstable consent; no retry admits a
-	// session that was absent from the original plan.
+	// Each retry either joins previously separate aliases or excludes a failed
+	// original session; neither operation admits a new session into this run.
 	for attempt := 0; attempt <= 2*len(initial); attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -56,7 +55,7 @@ func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, e
 			spent += d.AmountMicroUSD
 		}
 		pending := make([]candidate, 0, len(candidates))
-		sessions := make([]registry.ProviderSnapshot, 0, len(candidates))
+		sessions := make([]string, 0, len(candidates))
 		pure := make([]rewardpolicy.Candidate, 0, len(candidates))
 		for _, c := range candidates {
 			c.live = remainingRewardSessions(c.live, initial, blocked)
@@ -85,18 +84,14 @@ func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, e
 		items := make([]store.FloorDrawBatchItem, len(allocations))
 		for i, allocation := range allocations {
 			c := pending[i]
-			items[i] = store.FloorDrawBatchItem{SessionID: sessions[i].ID, MachineID: c.machineID, Draw: store.ProviderFloorDraw{
+			items[i] = store.FloorDrawBatchItem{SessionID: sessions[i], MachineID: c.machineID, Draw: store.ProviderFloorDraw{
 				ProviderKey: allocation.ProviderKey, AccountID: allocation.AccountID, EpochID: epoch,
 				AmountMicroUSD: allocation.Granted, FloorMicroUSD: c.c.Floor, EarnedMicroUSD: c.c.Earned,
 				UptimeFrac: c.uptimeFrac, MemoryGB: c.c.MemGB,
 			}}
-			if sessions[i].AutopilotOptedIn {
-				items[i].Draw.AutopilotBonusMicroUSD = allocation.Granted / 10
-			}
 		}
 		batch, err := batchStore.SettleProviderFloorDrawBatch(ctx, items, func(i int) bool {
-			current, eligible := e.candidateSessionSnapshot(pending[i], sessions[i].ID)
-			return eligible && current.AutopilotOptedIn == sessions[i].AutopilotOptedIn
+			return e.candidateSessionAuthorized(pending[i], sessions[i])
 		})
 		if err != nil {
 			return err
@@ -104,8 +99,7 @@ func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, e
 		if batch.Committed {
 			result.Settled += len(items)
 			for _, item := range items {
-				result.TotalDrawMicroUSD += item.Draw.AmountMicroUSD + item.Draw.AutopilotBonusMicroUSD
-				result.TotalAutopilotBonusMicroUSD += item.Draw.AutopilotBonusMicroUSD
+				result.TotalDrawMicroUSD += item.Draw.AmountMicroUSD
 			}
 			return nil
 		}
@@ -121,16 +115,11 @@ func (e *Engine) settleCandidatePlan(ctx context.Context, epoch string, start, e
 					return errors.New("base rewards: invalid duplicate identity")
 				}
 				for _, i := range []int{rejection.Index, rejection.DuplicateOf} {
-					verifiedBindings[sessions[i].ID] = store.MachineRewardBinding{MachineID: rejection.CanonicalMachineID, AccountID: items[i].Draw.AccountID, MachineAliases: []string{rejection.CanonicalMachineID}}
+					verifiedBindings[sessions[i]] = store.MachineRewardBinding{MachineID: rejection.CanonicalMachineID, AccountID: items[i].Draw.AccountID, MachineAliases: []string{rejection.CanonicalMachineID}}
 				}
 				continue
 			}
-			// Consent can change without losing ordinary reward eligibility.
-			// Rebuild that plan instead of dropping the machine's base grant.
-			if rejection.Reason == store.FloorDrawUnauthorized && e.candidateSessionAuthorized(pending[rejection.Index], sessions[rejection.Index].ID) {
-				continue
-			}
-			blocked[sessions[rejection.Index].ID] = true
+			blocked[sessions[rejection.Index]] = true
 			key := pending[rejection.Index].c.ProviderKey
 			if rejection.Reason == store.FloorDrawAlreadyPaid && !counted[key] {
 				result.AlreadySettled++

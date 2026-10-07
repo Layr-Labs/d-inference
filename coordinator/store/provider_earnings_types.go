@@ -19,20 +19,18 @@ type ProviderEarning struct {
 
 // ProviderFloorDraw is one epoch's base-reward settlement for one machine.
 // Idempotent on (ProviderKey, EpochID). AmountMicroUSD is the new money printed
-// from the base pool (max(0, floor − k·earned), after allocation). The Autopilot
-// bonus comes from a separate pot and never consumes the base pool.
+// (max(0, floor − k·earned)); the audit columns record how it was derived.
 type ProviderFloorDraw struct {
-	ID                     int64     `json:"id"`
-	ProviderKey            string    `json:"provider_key"`
-	AccountID              string    `json:"account_id"`
-	EpochID                string    `json:"epoch_id"` // "YYYY-MM" UTC
-	AmountMicroUSD         int64     `json:"amount_micro_usd"`
-	AutopilotBonusMicroUSD int64     `json:"autopilot_bonus_micro_usd"`
-	FloorMicroUSD          int64     `json:"floor_micro_usd"`  // scaled floor used
-	EarnedMicroUSD         int64     `json:"earned_micro_usd"` // organic earned snapshot
-	UptimeFrac             float64   `json:"uptime_frac"`
-	MemoryGB               int       `json:"memory_gb"` // verified tier
-	CreatedAt              time.Time `json:"created_at"`
+	ID             int64     `json:"id"`
+	ProviderKey    string    `json:"provider_key"`
+	AccountID      string    `json:"account_id"`
+	EpochID        string    `json:"epoch_id"` // "YYYY-MM" UTC
+	AmountMicroUSD int64     `json:"amount_micro_usd"`
+	FloorMicroUSD  int64     `json:"floor_micro_usd"`  // scaled floor used
+	EarnedMicroUSD int64     `json:"earned_micro_usd"` // organic earned snapshot
+	UptimeFrac     float64   `json:"uptime_frac"`
+	MemoryGB       int       `json:"memory_gb"` // verified tier
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // ProviderEarningsSummary captures lifetime payout aggregates independent of

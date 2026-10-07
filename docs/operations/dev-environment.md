@@ -177,7 +177,9 @@ installs the production refresh script,
 manifests and boot unit as in step 3 of the production runbook; writes the
 Caddyfile for `DOMAIN`. It writes no env value and starts no container.
 Without `--apply` it only checks. It refuses to run outside `darkbloom-dev`.
-Do not run `--apply` during a swap: a Caddy restart reconnects every provider.
+`--apply` reloads Caddy only when the Caddyfile changes, and starts Caddy when
+it does not run. Do not run `--apply` during a swap: a Caddy reload reconnects
+every provider.
 
 ### 3. Seed the env file (once)
 

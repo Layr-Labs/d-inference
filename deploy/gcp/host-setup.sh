@@ -14,8 +14,9 @@
 # as in docs/operations/coordinator-deploy.md step 3), the host Caddyfile, and
 # the Datadog Agent when /etc/d-inference/env has DD_API_KEY.
 #
-# It writes no env value and starts no coordinator container. Do not run
-# --apply during a swap: a Caddy reload reconnects every provider. It refuses
+# It writes no env value and starts no coordinator container. --apply reloads
+# Caddy only when the Caddyfile changes. Do not run --apply during a swap: a
+# Caddy reload reconnects every provider. It refuses
 # to run outside the GCP project darkbloom-dev.
 set -euo pipefail
 
@@ -184,14 +185,22 @@ if [ "$MODE" = --apply ]; then
     systemctl daemon-reload
     systemctl enable darkbloom-env-refresh.service
 
+    # A reload reconnects every provider, so it runs only when a running Caddy
+    # must read a changed Caddyfile.
+    caddyfile_changed=0
     if ! cmp -s <(caddyfile) "$CADDYFILE"; then
         install -d -m 0755 "$(dirname "$CADDYFILE")"
         caddyfile > "$CADDYFILE.new"
         caddy validate --adapter caddyfile --config "$CADDYFILE.new"
         mv -f "$CADDYFILE.new" "$CADDYFILE"
+        caddyfile_changed=1
     fi
+    caddy_was_active=0
+    if systemctl is-active --quiet caddy; then caddy_was_active=1; fi
     systemctl enable --now caddy
-    systemctl restart caddy
+    if [ "$caddyfile_changed" = 1 ] && [ "$caddy_was_active" = 1 ]; then
+        systemctl reload caddy
+    fi
 
     if env_has_value DD_API_KEY; then
         if ! dpkg -s datadog-agent >/dev/null 2>&1; then

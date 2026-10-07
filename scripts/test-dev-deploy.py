@@ -460,6 +460,61 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("cannot determine whether", result.stderr)
         self.assertEqual(box.calls("mkfs.ext4"), [])
 
+    def host_setup_apply_box(self, caddy_active=True):
+        """host-setup.sh --apply on a verified ext4 data disk. A copy of the
+        script writes /etc/fstab, the Caddyfile and the env file paths inside
+        the sandbox; every command that changes the host is a stub."""
+        rules = dev_host_rules() + [
+            ["lsblk", "-o TYPE", "disk\n", 0],
+            ["lsblk", "-o FSTYPE", "ext4\n", 0],
+            ["lsblk", "-o MOUNTPOINTS", "/mnt/disks/userdata\n", 0],
+            ["wipefs", "^-n", "ext4\n", 0],
+        ]
+        if not caddy_active:
+            rules.append(["systemctl", "^is-active --quiet caddy$", "", 3])
+        box = Sandbox(self, MUTATORS, rules)
+        gcp = box.root / "deploy/gcp"
+        gcp.mkdir(parents=True)
+        for name in ("prod", "dev"):
+            (gcp / name).symlink_to(ROOT / "deploy/gcp" / name)
+        text = (ROOT / "deploy/gcp/host-setup.sh").read_text()
+        box.caddyfile = box.root / "caddy/Caddyfile"
+        for old, new in (("/etc/fstab", str(box.root / "fstab")),
+                         ("CADDYFILE=/etc/caddy/Caddyfile", f"CADDYFILE={box.caddyfile}"),
+                         ("ENV_FILE=/etc/d-inference/env", f"ENV_FILE={box.root / 'env'}")):
+            self.assertIn(old, text)
+            text = text.replace(old, new)
+        self.assertNotIn("/etc/fstab", text)
+        box.script = gcp / "host-setup.sh"
+        box.script.write_text(text)
+        (box.root / "fstab").write_text(
+            "/dev/disk/by-id/google-darkbloom-coordinator-data /mnt/disks/userdata ext4 noatime,discard 0 2\n")
+        box.caddyfile.parent.mkdir()
+        return box
+
+    def caddy_service_calls(self, box):
+        return [call[1:] for call in box.calls("systemctl")
+                if call[-1] == "caddy" and call[1] not in ("is-active", "is-enabled")]
+
+    def test_host_setup_apply_reloads_caddy_only_when_the_caddyfile_changes(self):
+        box = self.host_setup_apply_box()
+        box.run([box.script, "--apply"])
+        self.assertEqual(self.caddy_service_calls(box), [["enable", "--now", "caddy"], ["reload", "caddy"]])
+        self.assertTrue(box.caddyfile.with_name("Caddyfile.new").is_file())
+
+        box.caddyfile.write_text(box.caddyfile.with_name("Caddyfile.new").read_text())
+        box.log.write_text("")
+        result = box.run([box.script, "--apply"])
+        self.assertIn("host setup: --apply done", result.stdout, result.stdout + result.stderr)
+        self.assertEqual(self.caddy_service_calls(box), [["enable", "--now", "caddy"]])
+        self.assertEqual(box.calls("caddy"), [])
+
+    def test_host_setup_apply_starts_an_inactive_caddy_without_a_reload(self):
+        box = self.host_setup_apply_box(caddy_active=False)
+        result = box.run([box.script, "--apply"])
+        self.assertIn("host setup: --apply done", result.stdout, result.stdout + result.stderr)
+        self.assertEqual(self.caddy_service_calls(box), [["enable", "--now", "caddy"]])
+
     def test_preflight_makes_no_mutating_call(self):
         rules = [
             ["git", "^ls-remote", f"{COMMIT}\trefs/heads/master\n", 0],

@@ -1,0 +1,276 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Dedicated d-inference threat review role and attributed Bedrock profiles",
+  "Parameters": {
+    "SubjectPrefix": {
+      "Type": "String",
+      "Default": "repo:Layr-Labs/d-inference",
+      "AllowedPattern": "^repo:Layr-Labs(@92827658)?/d-inference(@1182082906)?$",
+      "Description": "Exact sub_claim_prefix read from GitHub OIDC configuration; never a wildcard"
+    }
+  },
+  "Resources": {
+    "SonnetProfile": {
+      "Type": "AWS::Bedrock::ApplicationInferenceProfile",
+      "Properties": {
+        "InferenceProfileName": "d-inference-threat-review-us-anthropic-claude-sonnet-5-5",
+        "ModelSource": {
+          "CopyFrom": {
+            "Fn::Sub": "arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-5-5"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "d-inference-threat-review"
+          },
+          {
+            "Key": "GithubRepo",
+            "Value": "Layr-Labs/d-inference"
+          },
+          {
+            "Key": "Agent",
+            "Value": "threat-review"
+          },
+          {
+            "Key": "CostCenter",
+            "Value": "security-engineering"
+          },
+          {
+            "Key": "Model",
+            "Value": "us.anthropic.claude-sonnet-5-5"
+          }
+        ]
+      }
+    },
+    "OpusProfile": {
+      "Type": "AWS::Bedrock::ApplicationInferenceProfile",
+      "Properties": {
+        "InferenceProfileName": "d-inference-threat-review-us-anthropic-claude-opus-5-5",
+        "ModelSource": {
+          "CopyFrom": {
+            "Fn::Sub": "arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-opus-5-5"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "d-inference-threat-review"
+          },
+          {
+            "Key": "GithubRepo",
+            "Value": "Layr-Labs/d-inference"
+          },
+          {
+            "Key": "Agent",
+            "Value": "threat-review"
+          },
+          {
+            "Key": "CostCenter",
+            "Value": "security-engineering"
+          },
+          {
+            "Key": "Model",
+            "Value": "us.anthropic.claude-opus-5-5"
+          }
+        ]
+      }
+    },
+    "SolProfile": {
+      "Type": "AWS::Bedrock::ApplicationInferenceProfile",
+      "Properties": {
+        "InferenceProfileName": "d-inference-threat-review-us-openai-gpt-6-1-sol",
+        "ModelSource": {
+          "CopyFrom": {
+            "Fn::Sub": "arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.openai.gpt-6.1-sol"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "d-inference-threat-review"
+          },
+          {
+            "Key": "GithubRepo",
+            "Value": "Layr-Labs/d-inference"
+          },
+          {
+            "Key": "Agent",
+            "Value": "threat-review"
+          },
+          {
+            "Key": "CostCenter",
+            "Value": "security-engineering"
+          },
+          {
+            "Key": "Model",
+            "Value": "us.openai.gpt-6.1-sol"
+          }
+        ]
+      }
+    },
+    "ReviewRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "d-inference-threat-review",
+        "MaxSessionDuration": 3600,
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "d-inference-threat-review"
+          },
+          {
+            "Key": "GithubRepo",
+            "Value": "Layr-Labs/d-inference"
+          },
+          {
+            "Key": "Agent",
+            "Value": "threat-review"
+          },
+          {
+            "Key": "CostCenter",
+            "Value": "security-engineering"
+          }
+        ],
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": {
+                  "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+                }
+              },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                  "token.actions.githubusercontent.com:sub": [
+                    {
+                      "Fn::Sub": "${SubjectPrefix}:workflow_ref:Layr-Labs/d-inference/.github/workflows/threat-model-review.yml@refs/heads/master"
+                    },
+                    {
+                      "Fn::Sub": "${SubjectPrefix}:workflow_ref:Layr-Labs/d-inference/.github/workflows/bedrock-smoke.yml@refs/heads/master"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "InvokeAttributedReviewProfiles",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:InvokeModel"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "SonnetProfile",
+                        "InferenceProfileArn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OpusProfile",
+                        "InferenceProfileArn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "SolProfile",
+                        "InferenceProfileArn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:InvokeModel"
+                  ],
+                  "Resource": [
+                    "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5",
+                    "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5",
+                    "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-6.1-sol",
+                    "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-5-5",
+                    "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5-5",
+                    "arn:aws:bedrock:us-east-2::foundation-model/openai.gpt-6.1-sol",
+                    "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5-5",
+                    "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5-5",
+                    "arn:aws:bedrock:us-west-2::foundation-model/openai.gpt-6.1-sol"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "bedrock:InferenceProfileArn": [
+                        {
+                          "Fn::GetAtt": [
+                            "SonnetProfile",
+                            "InferenceProfileArn"
+                          ]
+                        },
+                        {
+                          "Fn::GetAtt": [
+                            "OpusProfile",
+                            "InferenceProfileArn"
+                          ]
+                        },
+                        {
+                          "Fn::GetAtt": [
+                            "SolProfile",
+                            "InferenceProfileArn"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "RoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ReviewRole",
+          "Arn"
+        ]
+      }
+    },
+    "SonnetProfileArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "SonnetProfile",
+          "InferenceProfileArn"
+        ]
+      }
+    },
+    "OpusProfileArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "OpusProfile",
+          "InferenceProfileArn"
+        ]
+      }
+    },
+    "SolProfileArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "SolProfile",
+          "InferenceProfileArn"
+        ]
+      }
+    }
+  }
+}

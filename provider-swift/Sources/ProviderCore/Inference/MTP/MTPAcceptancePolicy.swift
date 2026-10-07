@@ -5,7 +5,7 @@ import MLXLMCommon
 /// provider configuration.
 ///
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
-/// then `[backend] mtp_acceptance`, then the built-in `exact`. A value that
+/// then `[backend] mtp_acceptance`, then the built-in `typical`. A value that
 /// names no known rule is reported and resolves to `exact`, so a typo can
 /// never install a lossy rule. The typical threshold is the engine constant
 /// `CBv2MTPAcceptance.defaultTypicalDelta`; it is not a production key.
@@ -32,7 +32,11 @@ public enum MTPAcceptancePolicy {
         global: String?, byModel: [String: String], modelID: String
     ) -> Resolution {
         let raw = byModel[modelID] ?? global
-        guard let raw else { return Resolution(acceptance: .exact, unrecognized: nil) }
+        guard let raw else {
+            return Resolution(
+                acceptance: .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta),
+                unrecognized: nil)
+        }
         guard let parsed = parse(raw) else {
             return Resolution(acceptance: .exact, unrecognized: raw)
         }

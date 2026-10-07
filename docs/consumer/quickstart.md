@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -157,6 +157,11 @@ zero demand. Data is delayed by at least one hour. A 429 count overlaps outcomes
 and is not itself a capacity rejection count.
 The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
 defines refresh intervals, maximum cached staleness, and window aliases.
+
+Public leaderboard and network charts can use archived snapshots. In that mode,
+`updated_at` reports the source snapshot time, and missing or expired results
+return 503 rather than an empty ranking. See [public analytics contracts](../reference/api-contracts.md#public-stats-and-health-5)
+for refresh and retry behavior.
 
 ## Troubleshooting
 

@@ -55,6 +55,7 @@ enum SSDHybridCheckpointStoreFactory {
                 _ = SSDWholeRootMaintainer.shared.maintain(root: wholeRoot, ttlSeconds: ttl,
                     nowSeconds: Int64(Date().timeIntervalSince1970), budgetBytes: budget())
             }
+            let maxWriteBytesPerDay = SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment)
             let cache = SSDHybridCheckpointStore(config: .init(
                 modelId: modelId, identity: identity, backendLayout: backendLayout,
                 nativePrefillChunkSize: nativePrefillChunkSize,
@@ -65,8 +66,9 @@ enum SSDHybridCheckpointStoreFactory {
                 ttlSeconds: ttl, strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
                 nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: budget,
                 maintainWholeRoot: maintain), kekKey: material.key, kvBudget: kvBudget,
-                maxWriteBytesPerDay: SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment),
-                usesEphemeralKey: material.ephemeral)
+                maxWriteBytesPerDay: maxWriteBytesPerDay,
+                usesEphemeralKey: material.ephemeral,
+                writeBudget: maxWriteBytesPerDay > 0 ? try SSDWriteBudget(root: wholeRoot) : nil)
             await Task.detached(priority: .utility) {
                 cache.scanOnDisk()
                 maintain()

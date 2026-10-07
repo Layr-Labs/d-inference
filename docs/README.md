@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -114,7 +114,7 @@
 - [`developer/database-migrations.md`](developer/database-migrations.md): choose the migration kind, add a numbered goose migration, change a column while preserving rollback compatibility, regenerate the checked-in schema.
 - [`developer/sqlc.md`](developer/sqlc.md): add a store query with sqlc, convert a hand-written store domain, `make sqlc-generate` and `make sqlc-check`.
 - [`developer/personal-data.md`](developer/personal-data.md): add a personal column, table or writer so account erasure still removes it; marker and parity tests.
-- [`developer/threat-model-review.md`](developer/threat-model-review.md): configure full PR text scans against the threat model and non-blocking author feedback.
+- [`developer/threat-model-review.md`](developer/threat-model-review.md): configure PR text scans, provider fallback, and optional conditional merge clearance.
 - [`developer/serving-performance-qualification.md`](developer/serving-performance-qualification.md): measure and review exact serving profiles before promoting concurrency limits or prefill policy.
 
 ## Operations runbooks (production; human approval per mutation)

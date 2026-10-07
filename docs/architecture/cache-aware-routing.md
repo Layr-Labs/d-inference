@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -11,6 +11,12 @@ procedure for turning it on is
 [`../operations/cache-routing-rollout.md`](../operations/cache-routing-rollout.md).
 
 ## Context
+
+SSD donations also pass the persistent root-wide write budget before publication
+(`SSDWriteRateLimiter`, `SSDWriteBudget`). Reloading a model or restarting the
+provider does not create a new allowance. Budget refusal leaves existing durable
+receipts and cache reads intact; it does not advertise a newly refused write.
+See the [SSD accounting contract](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 A provider that already holds a request's exact token prefix in its local
 prefix cache ([`prefix-cache.md`](prefix-cache.md)) can skip that prefill,

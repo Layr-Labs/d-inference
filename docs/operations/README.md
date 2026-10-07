@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -11,6 +11,12 @@ shapes under [`../reference/README.md`](../reference/README.md).
 
 | Runbook | Scope |
 |---|---|
+| [telemetry-history.md](telemetry-history.md) | Copy and verify retained telemetry into queryable history before coordinator changes |
+| [accounting-history.md](accounting-history.md) | Copy exact accounting history into isolated storage and query it with BigQuery |
+| [history-queries.md](history-queries.md) | Submit, poll, page and cancel bounded custom queries over pinned historical catalogs |
+| [analytics-snapshots.md](analytics-snapshots.md) | Serve qualified public analytics snapshots without history scans |
+| [telemetry-archive.md](telemetry-archive.md) | Capture and verify bounded Parquet snapshots |
+| [telemetry-backfill.md](telemetry-backfill.md) | Run resumable, finite copy-only backfills |
 | [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |
 | [app-attest-build-qualification.md](app-attest-build-qualification.md) | Approve exact signed builds, retry publication without rebuilding, and revoke durable qualifications |
 | [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
@@ -52,3 +58,5 @@ follow both rules: [`provider-release.md`](provider-release.md).
 - [App Attest recovery rollout](app-attest-rollout.md) — fixed-provider cohorts, receipt recovery, qualification and gates for later MDM retirement.
 
 - [Stripe account migration](stripe-migration.md) — activate self-service Global Payouts, retain old settlement and move Checkout.
+
+- [Threat review rollout](threat-review-rollout.md): provision attributed Bedrock access and activate conditional author auto-merge.

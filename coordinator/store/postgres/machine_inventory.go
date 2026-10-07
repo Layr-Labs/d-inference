@@ -147,7 +147,19 @@ func (s *PostgresStore) ObserveMachine(ctx context.Context, o store.MachineObser
 	return result, tx.Commit(ctx)
 }
 
+// RecordAppAttestEvent refuses an event of an erased account's session: its
+// fields copy runtime diagnostics that the scrub deleted.
 func (s *PostgresStore) RecordAppAttestEvent(ctx context.Context, e store.AppAttestEvent) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO app_attest_shadow_events VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, e.ID, e.SessionID, e.At, e.Stage, e.Outcome, e.Fields)
-	return err
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err = checkPersonalSession(ctx, tx, e.SessionID, ""); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO app_attest_shadow_events VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, e.ID, e.SessionID, e.At, e.Stage, e.Outcome, e.Fields); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

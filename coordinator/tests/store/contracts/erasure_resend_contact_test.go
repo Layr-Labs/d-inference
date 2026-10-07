@@ -51,8 +51,9 @@ func TestErasureRetainsResendContactPrivatelyOnce(t *testing.T) {
 				if strings.TrimSpace(email) != "" {
 					want = 1
 				}
-				if count != want || len(outbox) != want+1 {
-					t.Fatalf("Resend rows = %d, total = %d; want %d and %d", count, len(outbox), want, want+1)
+				// Each scrub also queues the erasure_log and privy_user rows.
+				if count != want || len(outbox) != want+2 {
+					t.Fatalf("Resend rows = %d, total = %d; want %d and %d", count, len(outbox), want, want+2)
 				}
 				raw, err := json.Marshal(struct {
 					Request *store.ErasureRequest

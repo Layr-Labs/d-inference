@@ -55,6 +55,9 @@ var erasureStatements = map[string]func(k *erasure.Keys) []piiStatement{
 	"small_models_interest": func(k *erasure.Keys) []piiStatement {
 		return byKey(k.AccountID, (*storedb.Queries).CountSmallModelsInterestRows, (*storedb.Queries).DeleteSmallModelsInterestRows)
 	},
+	"model_prices": func(k *erasure.Keys) []piiStatement {
+		return byKey(k.AccountID, (*storedb.Queries).CountModelPricesRows, (*storedb.Queries).DeleteModelPricesRows)
+	},
 	"users": func(k *erasure.Keys) []piiStatement {
 		return one(
 			func(ctx context.Context, q *storedb.Queries) (int64, error) { return q.CountUsersRow(ctx, k.AccountID) },
@@ -104,6 +107,9 @@ var erasureStatements = map[string]func(k *erasure.Keys) []piiStatement{
 	"app_attest_evidence": func(k *erasure.Keys) []piiStatement {
 		return byKeys(k.ProviderIDs, (*storedb.Queries).CountAppAttestEvidenceRows, (*storedb.Queries).ScrubAppAttestEvidenceRows)
 	},
+	"app_attest_shadow_events": func(k *erasure.Keys) []piiStatement {
+		return byKeys(k.ProviderIDs, (*storedb.Queries).CountAppAttestShadowEventsRows, (*storedb.Queries).DeleteAppAttestShadowEventsRows)
+	},
 	"app_attest_receipt_jobs": func(k *erasure.Keys) []piiStatement {
 		return byKeys(k.AppAttestKeyIDs, (*storedb.Queries).CountAppAttestReceiptJobsRows, (*storedb.Queries).DeleteAppAttestReceiptJobsRows)
 	},
@@ -113,6 +119,9 @@ var erasureStatements = map[string]func(k *erasure.Keys) []piiStatement{
 	"app_attest_receipts": func(k *erasure.Keys) []piiStatement {
 		return byKeys(k.AppAttestKeyIDs, (*storedb.Queries).CountAppAttestReceiptsRows, (*storedb.Queries).ScrubAppAttestReceiptsRows)
 	},
+	"app_attest_key_revocations": func(k *erasure.Keys) []piiStatement {
+		return byKey(k.AccountID, (*storedb.Queries).CountAppAttestKeyRevocationsRows, (*storedb.Queries).ScrubAppAttestKeyRevocationsRows)
+	},
 	"usage_request_location": func(k *erasure.Keys) []piiStatement {
 		return byKey(k.ConsumerKeyHash, (*storedb.Queries).CountUsageLocationRows, (*storedb.Queries).ScrubUsageLocationRows)
 	},
@@ -121,6 +130,9 @@ var erasureStatements = map[string]func(k *erasure.Keys) []piiStatement{
 	},
 	"inference_routes_provider_region": func(k *erasure.Keys) []piiStatement {
 		return byKeys(k.ProviderIDs, (*storedb.Queries).CountProviderRegionRows, (*storedb.Queries).ScrubProviderRegionRows)
+	},
+	"request_rejections": func(k *erasure.Keys) []piiStatement {
+		return byKey(k.ConsumerKeyHash, (*storedb.Queries).CountRequestRejectionsRows, (*storedb.Queries).ScrubRequestRejectionsRows)
 	},
 	"referrers": func(k *erasure.Keys) []piiStatement {
 		return one(

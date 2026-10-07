@@ -31,5 +31,11 @@ func (s *MemoryStore) ObserveMachine(ctx context.Context, o store.MachineObserva
 func (s *MemoryStore) RecordAppAttestEvent(ctx context.Context, e store.AppAttestEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.erasedProviderLocked(e.SessionID) {
+		return store.ErrErasureConflict
+	}
+	if s.machineInventory == nil {
+		s.machineInventory = inventory.New(s.history)
+	}
 	return s.machineInventory.RecordAppAttestEvent(ctx, e)
 }

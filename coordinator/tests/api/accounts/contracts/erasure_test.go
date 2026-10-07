@@ -99,6 +99,13 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 	t.Cleanup(ts.Close)
 	account, email, rawKey := seedErasureHTTPAccount(t, srv, st)
 	base := "/v1/admin/accounts/" + account + "/erasure"
+	revokedKey, _, err := st.CreateAPIKey(account, store.APIKeyCreate{Name: "old key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.RevokeKey(revokedKey) {
+		t.Fatal("revoke the old key")
+	}
 
 	// The key works before the erasure (and is now in the server key cache).
 	if code, _ := erasureCall(t, ts, http.MethodGet, "/v1/payments/balance", rawKey, nil); code != http.StatusOK {
@@ -157,6 +164,14 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 	if _, err := st.GetUserByAccountID(account); err != nil {
 		t.Fatalf("user after cancel: %v", err)
 	}
+	// The key that the confirm revoked works again; the key revoked before
+	// the erasure stays revoked.
+	if code, _ := erasureCall(t, ts, http.MethodGet, "/v1/payments/balance", rawKey, nil); code != http.StatusOK {
+		t.Fatalf("balance with the restored key = %d", code)
+	}
+	if code, _ := erasureCall(t, ts, http.MethodGet, "/v1/payments/balance", revokedKey, nil); code != http.StatusUnauthorized {
+		t.Fatalf("balance with the key revoked before the erasure = %d", code)
+	}
 
 	// force=true scrubs at once.
 	_, plan = erasureCall(t, ts, http.MethodPost, base+"/plan", "admin-key", nil)
@@ -169,7 +184,7 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 		t.Fatalf("status after scrub = %d", code)
 	}
 	outbox := status["outbox"].([]any)
-	if len(outbox) != 2 {
+	if len(outbox) != 3 {
 		t.Fatalf("outbox = %v", outbox)
 	}
 	targets := map[string]bool{}
@@ -180,7 +195,7 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 			t.Fatal("outbox exposed external identifier")
 		}
 	}
-	if !targets[string(store.ErasureTargetErasureLog)] || !targets[string(store.ErasureTargetResendContact)] {
+	if !targets[string(store.ErasureTargetErasureLog)] || !targets[string(store.ErasureTargetResendContact)] || !targets[string(store.ErasureTargetPrivyUser)] {
 		t.Fatalf("outbox targets = %v", targets)
 	}
 	if st.GetBalance(account) != 0 {

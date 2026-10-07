@@ -27,9 +27,9 @@ const (
 
 // erasureMarkerAllowList is the personal data that may stay after a scrub.
 var erasureMarkerAllowList = map[string]string{
-	// The outbox carries each Stripe ID until Stripe confirms the deletion;
-	// the outbox worker then clears it.
-	"erasure_outbox.external_id": "Stripe object IDs wait here for the Stripe deletion",
+	// The outbox carries each Stripe ID, the Resend contact and the Privy user
+	// ID until the deletion is confirmed; the outbox worker then clears it.
+	"erasure_outbox.external_id": "external IDs wait here for their deletion",
 }
 
 // erasureMarkerFixture inserts rows for account acct-A (markers) and
@@ -40,7 +40,7 @@ var erasureMarkerFixture = []string{
 	 VALUES ('acct-A', 'did:privy:PIIMARK', 'PIIMARK@example.com', 'acct_PIIMARK', 'PIIMARK', 'PIIMARK', 'PIIMARK', 'PIIMARK')`,
 	`INSERT INTO legacy_mdm_cohort (account_id,se_public_key,serial_number) VALUES ('acct-A','se-A','PIIMARK-SERIAL')`,
 	`INSERT INTO small_models_interest (account_id,mac_type,chip,ram_gb) VALUES ('acct-A','PIIMARK-hardware','PIIMARK-chip',16)`,
-	`INSERT INTO api_keys (key_hash, raw_prefix, owner_account_id, id, name) VALUES ('kh-A', 'sk-db-', 'acct-A', 'key-A', 'PIIMARK key name')`,
+	`INSERT INTO api_keys (key_hash, raw_prefix, owner_account_id, id, name, allowed_models) VALUES ('kh-A', 'sk-db-', 'acct-A', 'key-A', 'PIIMARK key name', 'PIIMARK-model')`,
 	`INSERT INTO provider_tokens (token_hash, account_id, label) VALUES ('th-A', 'acct-A', 'PIIMARK-hostname')`,
 	`INSERT INTO device_codes (device_code, user_code, account_id, status, expires_at) VALUES ('dc-A', 'PIIMARK-UC', 'acct-A', 'approved', NOW() + interval '1 hour')`,
 	`INSERT INTO providers (id, hardware, models, backend, location, attestation_result, se_public_key, serial_number, mda_cert_chain, account_id)
@@ -61,6 +61,10 @@ var erasureMarkerFixture = []string{
 	 ('mda_serial', '', '` + erasure.MDASerialDigest("PIIMARK-SERIAL2") + `', 'm-shared', NOW())`,
 	`INSERT INTO app_attest_evidence (id, session_id, key_id, received_at, action, sha256, context) VALUES ('ev-A', 'prov-A', 'kid-A', NOW(), 'attestation', 'abc', '{"boot_time": "PIIMARK"}')`,
 	`INSERT INTO app_attest_evidence_blobs (evidence_id, proof_field, proof) VALUES ('ev-A', 'PIIMARK-proof-field', 'PIIMARK proof'::bytea)`,
+	`INSERT INTO app_attest_shadow_events (id, session_id, observed_at, stage, outcome, fields)
+	 VALUES ('se-ev-A', 'prov-A', NOW(), 'attestation', 'ok', '{"boot_time": "PIIMARK", "launch_session": "PIIMARK"}')`,
+	`INSERT INTO app_attest_shadow_keys (key_id, owner, evidence) VALUES ('kid-A', 'prov-A', '{"account_id": "acct-A"}')`,
+	`INSERT INTO app_attest_key_revocations (key_id, account_id, reason) VALUES ('kid-A', 'acct-A', 'PIIMARK admin note')`,
 	`INSERT INTO app_attest_receipts (id, key_id, evidence_id, parent_id, received_at, outcome, http_status, details, context, next_at, expires_at)
 	 VALUES ('rc-A', 'kid-A', 'ev-A', '', NOW(), 'ok', 200, '{}', '{"note": "PIIMARK"}', NOW(), NOW())`,
 	`INSERT INTO app_attest_receipt_blobs (receipt_id, body, response_body) VALUES ('rc-A', 'PIIMARK body'::bytea, 'PIIMARK response'::bytea)`,
@@ -69,6 +73,9 @@ var erasureMarkerFixture = []string{
 	 VALUES ('prov-X', '` + store.HashKey("acct-A") + `', 'm', 1, 1, '{"city": "PIIMARK"}')`,
 	`INSERT INTO inference_routes (request_id, model, consumer_key_hash, consumer_region) VALUES ('req-A1', 'm', '` + store.HashKey("acct-A") + `', 'PIIMARK-region')`,
 	`INSERT INTO inference_routes (request_id, model, provider_id, provider_region) VALUES ('req-A2', 'm', 'prov-A', 'PIIMARK-region')`,
+	`INSERT INTO request_rejections (consumer_key_hash, requested_model, resolved_model, params)
+	 VALUES ('` + store.HashKey("acct-A") + `', 'PIIMARK-model', 'PIIMARK-resolved', '{"temperature": "PIIMARK"}')`,
+	`INSERT INTO model_prices (account_id, model, input_price, output_price) VALUES ('acct-A', 'PIIMARK-model', 1, 1)`,
 	`INSERT INTO referrers (account_id, code) VALUES ('acct-A', 'PIIMARK-code')`,
 	`INSERT INTO billing_sessions (id, account_id, payment_method, amount_micro_usd, external_id, status) VALUES ('bs-A', 'acct-A', 'stripe', 1, 'cs_PIIMARK1', 'completed')`,
 	`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference) VALUES
@@ -87,8 +94,10 @@ var erasureMarkerFixture = []string{
 	`INSERT INTO stripe_withdrawals (id, account_id, stripe_account_id, amount_micro_usd, net_micro_usd, method, status, updated_at) VALUES
 	 ('sw-A', 'acct-A', 'acct_PIIMARK', 1, 1, 'standard', 'paid', NOW() - interval '60 days'),
 	 ('sw-A2', 'acct-A', 'acct_PIIMARKold', 1, 1, 'standard', 'paid', NOW() - interval '400 days')`,
-	`INSERT INTO payments (consumer_address, provider_address, amount_usd, model, prompt_tokens, completion_tokens) VALUES
-	 ('PIIMARK-wallet', '0xKEEPMARK', '1', 'm', 1, 1), ('0xKEEPMARK', 'PIIMARK-wallet', '1', 'm', 1, 1)`,
+	`UPDATE stripe_withdrawals SET status = 'failed', failure_reason = 'payout_failed PIIMARK bank message' WHERE id = 'sw-A2'`,
+	`INSERT INTO payments (consumer_address, provider_address, amount_usd, model, prompt_tokens, completion_tokens, tx_hash, memo) VALUES
+	 ('PIIMARK-wallet', '0xKEEPMARK', '1', 'm', 1, 1, '0xPIIMARK-tx1', 'PIIMARK memo'), ('0xKEEPMARK', 'PIIMARK-wallet', '1', 'm', 1, 1, '0xPIIMARK-tx2', 'PIIMARK memo'),
+	 ('0xKEEPMARK', '0xKEEPMARK2', '1', 'm', 1, 1, '0xKEEPMARK-tx', 'KEEPMARK memo')`,
 	`INSERT INTO provider_payouts (provider_address, amount_micro_usd) VALUES ('PIIMARK-wallet', 1), ('0xKEEPMARK', 1)`,
 
 	// Account B shares machine m-shared, was referred by A and copied A's code.
@@ -103,6 +112,15 @@ var erasureMarkerFixture = []string{
 	 VALUES ('prov-B', 'm-shared', 'm-shared', 'acct-B', NOW(), NOW(), '{}')`,
 	`INSERT INTO referrals (referred_account, referrer_code) VALUES ('acct-B', 'PIIMARK-code')`,
 	`INSERT INTO billing_sessions (id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code) VALUES ('bs-B', 'acct-B', 'stripe', 1, 'cs_KEEPMARK', 'completed', 'PIIMARK-code')`,
+	`INSERT INTO app_attest_shadow_events (id, session_id, observed_at, stage, outcome, fields)
+	 VALUES ('se-ev-B', 'prov-B', NOW(), 'attestation', 'ok', '{"boot_time": "KEEPMARK"}')`,
+	`INSERT INTO app_attest_shadow_keys (key_id, owner, evidence) VALUES ('kid-B', 'prov-B', '{"account_id": "acct-B"}')`,
+	`INSERT INTO app_attest_key_revocations (key_id, account_id, reason) VALUES ('kid-B', 'acct-B', 'KEEPMARK admin note')`,
+	`INSERT INTO request_rejections (consumer_key_hash, requested_model, resolved_model, params)
+	 VALUES ('` + store.HashKey("acct-B") + `', 'KEEPMARK-model', 'KEEPMARK-resolved', '{"temperature": "KEEPMARK"}')`,
+	`INSERT INTO model_prices (account_id, model, input_price, output_price) VALUES ('acct-B', 'KEEPMARK-model', 1, 1)`,
+	`INSERT INTO stripe_withdrawals (id, account_id, stripe_account_id, amount_micro_usd, net_micro_usd, method, status, failure_reason, updated_at)
+	 VALUES ('sw-B', 'acct-B', 'acct_KEEPMARK', 1, 1, 'standard', 'failed', 'KEEPMARK bank message', NOW() - interval '400 days')`,
 }
 
 // markerHit is one column that still holds a marker.
@@ -225,7 +243,7 @@ func TestErasureMarkerPostgres(t *testing.T) {
 	for _, o := range outbox {
 		queued[string(o.Target)+":"+o.ExternalID] = true
 	}
-	for _, want := range []string{"stripe_account:acct_PIIMARK", "stripe_account:acct_PIIMARKold", "global_recipient:acct_PIIMARKrecipient", "global_recipient:acct_PIIMARKoldrecipient"} {
+	for _, want := range []string{"stripe_account:acct_PIIMARK", "stripe_account:acct_PIIMARKold", "global_recipient:acct_PIIMARKrecipient", "global_recipient:acct_PIIMARKoldrecipient", "privy_user:did:privy:PIIMARK"} {
 		if !queued[want] {
 			t.Errorf("outbox lacks %s; got %v", want, queued)
 		}
@@ -239,6 +257,31 @@ func TestErasureMarkerPostgres(t *testing.T) {
 	keepAfter := findMarker(t, ctx, s, keepMarker)
 	if fmt.Sprint(keepAfter) != fmt.Sprint(keepBefore) {
 		t.Errorf("the other account's data changed:\nbefore %v\nafter  %v", keepBefore, keepAfter)
+	}
+
+	// The wallet list hash goes with the wallet list.
+	var walletHash string
+	if err := s.pool.QueryRow(ctx, `SELECT wallet_hash FROM erasure_requests WHERE id = $1`, req.ID).Scan(&walletHash); err != nil {
+		t.Fatal(err)
+	}
+	if walletHash != "" {
+		t.Fatalf("wallet_hash after scrub = %q; want empty", walletHash)
+	}
+	// The revocation keeps the key revoked; only its reason goes.
+	var revoked int64
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM app_attest_key_revocations WHERE key_id = 'kid-A' AND reason = ''`).Scan(&revoked); err != nil {
+		t.Fatal(err)
+	}
+	if revoked != 1 {
+		t.Fatalf("revocation rows of kid-A with an empty reason = %d; want 1", revoked)
+	}
+	// Each matched payment gets its own erased transaction hash.
+	var hashes int64
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT tx_hash) FROM payments WHERE tx_hash LIKE 'erased:%'`).Scan(&hashes); err != nil {
+		t.Fatal(err)
+	}
+	if hashes != 2 {
+		t.Fatalf("erased transaction hashes = %d; want 2", hashes)
 	}
 
 	// The unshared mda_serial alias is gone; the shared one stays.

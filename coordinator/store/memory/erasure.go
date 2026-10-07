@@ -145,14 +145,24 @@ func (s *MemoryStore) RequestAccountErasure(ctx context.Context, in store.Erasur
 			p.DeletedAt = &now
 		}
 	}
+	// As SoftDeleteAPIKeys: a credential already revoked gets the earlier stamp.
+	alreadyRevoked := erasure.AlreadyRevokedAt(now)
 	for _, rec := range s.keyRecords {
 		if rec.OwnerAccountID == in.AccountID && rec.DeletedAt == nil {
-			rec.Disabled, rec.DeletedAt = true, &now
+			at := now
+			if rec.Disabled {
+				at = alreadyRevoked
+			}
+			rec.Disabled, rec.DeletedAt = true, &at
 		}
 	}
 	for _, pt := range s.providerTokens {
 		if pt.AccountID == in.AccountID && pt.DeletedAt == nil {
-			pt.Active, pt.DeletedAt = false, &now
+			at := now
+			if !pt.Active {
+				at = alreadyRevoked
+			}
+			pt.Active, pt.DeletedAt = false, &at
 		}
 	}
 	scrubAfter := now.Add(in.Grace)
@@ -183,13 +193,29 @@ func (s *MemoryStore) CancelAccountErasure(ctx context.Context, accountID, actor
 	}
 	u.DeletedAt = nil
 	s.usersByPrivyID[u.PrivyUserID] = u
+	// As RestoreProviders, RestoreAPIKeys and RestoreProviderTokens.
+	revokedBy := func(deletedAt *time.Time, at time.Time) bool { return deletedAt != nil && deletedAt.Equal(at) }
+	var revoked, alreadyRevoked time.Time
+	if r.RequestedAt != nil {
+		revoked, alreadyRevoked = *r.RequestedAt, erasure.AlreadyRevokedAt(*r.RequestedAt)
+	}
 	for _, p := range s.providerRecords {
-		if p.AccountID == accountID && p.DeletedAt != nil && r.RequestedAt != nil && p.DeletedAt.Equal(*r.RequestedAt) {
+		if p.AccountID == accountID && revokedBy(p.DeletedAt, revoked) {
 			p.DeletedAt = nil
 		}
 	}
+	for _, rec := range s.keyRecords {
+		if rec.OwnerAccountID == accountID && (revokedBy(rec.DeletedAt, revoked) || revokedBy(rec.DeletedAt, alreadyRevoked)) {
+			rec.Disabled, rec.DeletedAt = !revokedBy(rec.DeletedAt, revoked), nil
+		}
+	}
+	for _, pt := range s.providerTokens {
+		if pt.AccountID == accountID && (revokedBy(pt.DeletedAt, revoked) || revokedBy(pt.DeletedAt, alreadyRevoked)) {
+			pt.Active, pt.DeletedAt = revokedBy(pt.DeletedAt, revoked), nil
+		}
+	}
 	at := now
-	r.State, r.CanceledBy, r.CanceledAt, r.wallets, r.leaseUntil = store.ErasureCanceled, actor, &at, nil, time.Time{}
+	r.State, r.CanceledBy, r.CanceledAt, r.wallets, r.walletHash, r.leaseUntil = store.ErasureCanceled, actor, &at, nil, "", time.Time{}
 	return r.copyOut(), nil
 }
 
@@ -243,7 +269,7 @@ func (s *MemoryStore) ScrubAccount(ctx context.Context, requestID string, now ti
 		s.erasureOutbox = append(s.erasureOutbox, o)
 	}
 	at := now
-	r.State, r.ErasedAt, r.wallets, r.leaseUntil, r.LastError = store.ErasureErased, &at, nil, time.Time{}, ""
+	r.State, r.ErasedAt, r.wallets, r.walletHash, r.leaseUntil, r.LastError = store.ErasureErased, &at, nil, "", time.Time{}, ""
 	r.Summary.Applied = &applied
 	s.erasedAccounts[r.AccountID] = true
 	return &store.ErasureResult{Request: r.copyOut(), SEKeys: k.SEKeys, ProviderIDs: k.ProviderIDs}, nil

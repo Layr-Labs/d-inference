@@ -33,12 +33,12 @@ WHERE id = $1;
 
 -- name: MarkErasureCanceled :exec
 UPDATE erasure_requests
-SET state = 'canceled', canceled_by = $2, canceled_at = $3, wallet_addresses = '{}', lease_until = NULL
+SET state = 'canceled', canceled_by = $2, canceled_at = $3, wallet_addresses = '{}', wallet_hash = '', lease_until = NULL
 WHERE id = $1;
 
 -- name: MarkErasureErased :exec
 UPDATE erasure_requests
-SET state = 'erased', erased_at = $2, plan = $3, wallet_addresses = '{}', lease_until = NULL, last_error = ''
+SET state = 'erased', erased_at = $2, plan = $3, wallet_addresses = '{}', wallet_hash = '', lease_until = NULL, last_error = ''
 WHERE id = $1;
 
 -- name: RecordErasureFailure :exec
@@ -85,11 +85,32 @@ UPDATE users SET deleted_at = $2 WHERE account_id = $1 AND deleted_at IS NULL;
 -- name: SoftDeleteProviders :execrows
 UPDATE providers SET deleted_at = $2 WHERE account_id = $1 AND deleted_at IS NULL;
 
+-- A credential that is live at confirm gets revoked_at (the request's
+-- requested_at). One that was already revoked gets the earlier
+-- already_revoked_at. Cancel shows both again and makes only the first kind
+-- active.
+
 -- name: SoftDeleteAPIKeys :execrows
-UPDATE api_keys SET active = FALSE, deleted_at = $2 WHERE owner_account_id = $1 AND deleted_at IS NULL;
+UPDATE api_keys
+SET active = FALSE,
+    deleted_at = CASE WHEN active THEN sqlc.arg('revoked_at')::timestamptz ELSE sqlc.arg('already_revoked_at')::timestamptz END
+WHERE owner_account_id = sqlc.arg('owner_account_id') AND deleted_at IS NULL;
 
 -- name: SoftDeleteProviderTokens :execrows
-UPDATE provider_tokens SET active = FALSE, deleted_at = $2 WHERE account_id = $1 AND deleted_at IS NULL;
+UPDATE provider_tokens
+SET active = FALSE,
+    deleted_at = CASE WHEN active THEN sqlc.arg('revoked_at')::timestamptz ELSE sqlc.arg('already_revoked_at')::timestamptz END
+WHERE account_id = sqlc.arg('account_id') AND deleted_at IS NULL;
+
+-- name: RestoreAPIKeys :execrows
+UPDATE api_keys SET active = (deleted_at = sqlc.arg('revoked_at')::timestamptz), deleted_at = NULL
+WHERE owner_account_id = sqlc.arg('owner_account_id')
+  AND deleted_at IN (sqlc.arg('revoked_at')::timestamptz, sqlc.arg('already_revoked_at')::timestamptz);
+
+-- name: RestoreProviderTokens :execrows
+UPDATE provider_tokens SET active = (deleted_at = sqlc.arg('revoked_at')::timestamptz), deleted_at = NULL
+WHERE account_id = sqlc.arg('account_id')
+  AND deleted_at IN (sqlc.arg('revoked_at')::timestamptz, sqlc.arg('already_revoked_at')::timestamptz);
 
 -- name: RestoreUser :execrows
 UPDATE users SET deleted_at = NULL WHERE account_id = $1 AND deleted_at IS NOT NULL;
@@ -245,7 +266,7 @@ WHERE account_id = sqlc.arg('account_id');
 SELECT COUNT(*) FROM api_keys WHERE owner_account_id = $1;
 
 -- name: ScrubAPIKeysRows :execrows
-UPDATE api_keys SET name = '' WHERE owner_account_id = $1;
+UPDATE api_keys SET name = '', allowed_models = '' WHERE owner_account_id = $1;
 
 -- name: CountProviderTokensRows :one
 SELECT COUNT(*) FROM provider_tokens WHERE account_id = $1;
@@ -331,6 +352,12 @@ SELECT COUNT(*) FROM app_attest_evidence WHERE session_id = ANY(sqlc.arg('sessio
 -- name: ScrubAppAttestEvidenceRows :execrows
 UPDATE app_attest_evidence SET context = '{}' WHERE session_id = ANY(sqlc.arg('session_ids')::text[]);
 
+-- name: CountAppAttestShadowEventsRows :one
+SELECT COUNT(*) FROM app_attest_shadow_events WHERE session_id = ANY(sqlc.arg('session_ids')::text[]);
+
+-- name: DeleteAppAttestShadowEventsRows :execrows
+DELETE FROM app_attest_shadow_events WHERE session_id = ANY(sqlc.arg('session_ids')::text[]);
+
 -- name: CountAppAttestReceiptJobsRows :one
 SELECT COUNT(*) FROM app_attest_receipt_jobs WHERE key_id = ANY(sqlc.arg('key_ids')::text[]);
 
@@ -351,6 +378,12 @@ SELECT COUNT(*) FROM app_attest_receipts WHERE key_id = ANY(sqlc.arg('key_ids'):
 -- name: ScrubAppAttestReceiptsRows :execrows
 UPDATE app_attest_receipts SET context = '{}' WHERE key_id = ANY(sqlc.arg('key_ids')::text[]);
 
+-- name: CountAppAttestKeyRevocationsRows :one
+SELECT COUNT(*) FROM app_attest_key_revocations WHERE account_id = $1;
+
+-- name: ScrubAppAttestKeyRevocationsRows :execrows
+UPDATE app_attest_key_revocations SET reason = '' WHERE account_id = $1;
+
 -- name: CountUsageLocationRows :one
 SELECT COUNT(*) FROM usage WHERE consumer_key_hash = $1 AND request_location IS NOT NULL;
 
@@ -370,6 +403,13 @@ WHERE provider_id = ANY(sqlc.arg('provider_ids')::text[]) AND provider_region IS
 -- name: ScrubProviderRegionRows :execrows
 UPDATE inference_routes SET provider_region = NULL
 WHERE provider_id = ANY(sqlc.arg('provider_ids')::text[]) AND provider_region IS NOT NULL;
+
+-- name: CountRequestRejectionsRows :one
+SELECT COUNT(*) FROM request_rejections WHERE consumer_key_hash = sqlc.arg('consumer_key_hash')::text;
+
+-- name: ScrubRequestRejectionsRows :execrows
+UPDATE request_rejections SET requested_model = '', resolved_model = '', params = NULL
+WHERE consumer_key_hash = sqlc.arg('consumer_key_hash')::text;
 
 -- name: CountReferrersRow :one
 SELECT COUNT(*) FROM referrers WHERE account_id = $1;
@@ -423,19 +463,25 @@ WHERE account_id = $1;
 SELECT COUNT(*) FROM stripe_withdrawals WHERE account_id = $1;
 
 -- name: ScrubStripeWithdrawalRows :execrows
-UPDATE stripe_withdrawals SET stripe_account_id = '' WHERE account_id = $1;
+UPDATE stripe_withdrawals SET stripe_account_id = '', failure_reason = '' WHERE account_id = $1;
 
 -- name: CountPaymentConsumerAddress :one
 SELECT COUNT(*) FROM payments WHERE consumer_address = $1;
 
 -- name: ScrubPaymentConsumerAddress :execrows
-UPDATE payments SET consumer_address = sqlc.arg('replacement') WHERE consumer_address = sqlc.arg('address');
+UPDATE payments SET consumer_address = sqlc.arg('replacement'),
+    tx_hash = CASE WHEN tx_hash IS NOT NULL THEN 'erased:' || id::text END,
+    memo = CASE WHEN memo IS NOT NULL THEN '' END
+WHERE consumer_address = sqlc.arg('address');
 
 -- name: CountPaymentProviderAddress :one
 SELECT COUNT(*) FROM payments WHERE provider_address = $1;
 
 -- name: ScrubPaymentProviderAddress :execrows
-UPDATE payments SET provider_address = sqlc.arg('replacement') WHERE provider_address = sqlc.arg('address');
+UPDATE payments SET provider_address = sqlc.arg('replacement'),
+    tx_hash = CASE WHEN tx_hash IS NOT NULL THEN 'erased:' || id::text END,
+    memo = CASE WHEN memo IS NOT NULL THEN '' END
+WHERE provider_address = sqlc.arg('address');
 
 -- name: CountProviderPayoutAddress :one
 SELECT COUNT(*) FROM provider_payouts WHERE provider_address = $1;
@@ -484,6 +530,12 @@ SELECT COUNT(*) FROM small_models_interest WHERE account_id = $1;
 
 -- name: DeleteSmallModelsInterestRows :execrows
 DELETE FROM small_models_interest WHERE account_id = $1;
+
+-- name: CountModelPricesRows :one
+SELECT COUNT(*) FROM model_prices WHERE account_id = $1;
+
+-- name: DeleteModelPricesRows :execrows
+DELETE FROM model_prices WHERE account_id = $1;
 
 -- Outbox delivery.
 

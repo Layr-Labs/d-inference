@@ -1,12 +1,13 @@
 // Package erasure owns the account erasure (GDPR) admin API, the loop that
 // scrubs requests whose grace period has ended, and the outbox worker that
-// delivers the scrub's Stripe deletions and erasure_log record. The flow is
+// delivers the scrub's Stripe and Privy deletions and erasure_log record. The flow is
 // plan (dry run + confirm token), confirm (soft delete, grace period starts),
 // then a background scrub after the grace period, or at once with force.
 // Runbook: docs/operations/account-erasure.md.
 package erasure
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -37,6 +38,12 @@ type Hooks struct {
 	ForgetConsumer func(accountID string)
 }
 
+// PrivyUsers deletes a Privy user; *auth.PrivyAuth implements it. It returns
+// auth.ErrPrivyUserNotFound when Privy has no such user.
+type PrivyUsers interface {
+	DeleteUser(ctx context.Context, privyUserID string) error
+}
+
 type Dependencies struct {
 	Store                      store.AccountErasureStore
 	Access                     Authorizer
@@ -59,6 +66,8 @@ type Owner struct {
 	datadog                    func() *datadog.Client
 	// billing holds the Stripe clients the outbox worker deletes through.
 	billing *billing.Service
+	// privy deletes the Privy user of a privy_user outbox row.
+	privy PrivyUsers
 	// grace is the time from the soft delete to the scrub
 	// (EIGENINFERENCE_ERASURE_GRACE).
 	grace time.Duration
@@ -76,3 +85,7 @@ func New(d Dependencies) *Owner {
 
 // SetBilling is called during application assembly, before the outbox loop starts.
 func (s *Owner) SetBilling(service *billing.Service) { s.billing = service }
+
+// SetPrivyUsers is called during application assembly, before the outbox loop
+// starts. Without it, privy_user rows retry until they need manual action.
+func (s *Owner) SetPrivyUsers(privy PrivyUsers) { s.privy = privy }

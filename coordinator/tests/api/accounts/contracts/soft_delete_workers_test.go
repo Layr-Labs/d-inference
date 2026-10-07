@@ -69,6 +69,7 @@ func TestSoftDeleteGateContinuesAcceptedWorkers(t *testing.T) {
 			previous := billing.SetStripeAPIBaseForTest(fake.URL)
 			defer billing.SetStripeAPIBaseForTest(previous)
 			disabled.SetBilling(billing.NewService(st, payments.NewLedger(st), logger, billing.Config{StripeConnectSecretKey: "sk_test_connect"}))
+			privy := testkit.NewPrivyUsers(t, disabled, st)
 
 			ctx, stop := context.WithCancel(context.Background())
 			defer stop()
@@ -102,13 +103,23 @@ func TestSoftDeleteGateContinuesAcceptedWorkers(t *testing.T) {
 						done++
 					}
 				}
-				if len(items) == 2 && done == len(items) {
+				if len(items) == 3 && done == len(items) {
 					break
 				}
 				if time.Now().After(deadline) {
 					t.Fatalf("disabled gate stalled accepted outbox: %+v", items)
 				}
 				time.Sleep(10 * time.Millisecond)
+			}
+			// The shared database can hold other tests' rows; count this account's.
+			deletions := 0
+			for _, id := range privy.Deleted() {
+				if id == "did:privy:"+account {
+					deletions++
+				}
+			}
+			if deletions != 1 {
+				t.Fatalf("Privy user deletions of the account = %d, want 1", deletions)
 			}
 			if calls := stripe.count("DELETE /v1/accounts/" + stripeID); calls != 1 {
 				t.Fatalf("Stripe account deletion calls = %d, want 1", calls)

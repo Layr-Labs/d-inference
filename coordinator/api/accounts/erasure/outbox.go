@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/billing/globalpayouts"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
@@ -16,7 +17,8 @@ import (
 
 // The erasure outbox worker delivers the external deletions that
 // ScrubAccount queued: Stripe account deletion, Global Payouts recipient
-// close, Checkout Session redaction and the durable erasure_log record.
+// close, Checkout Session redaction, Privy user deletion and the durable
+// erasure_log record.
 // Each row ends done, or manual_action with the error stored. "Not found"
 // counts as done.
 
@@ -148,6 +150,10 @@ func (s *Owner) deliverOutbox(ctx context.Context, row store.ErasureOutboxWork) 
 	if row.Target == store.ErasureTargetResendContact {
 		return outboxOutcome{kind: outboxManual, err: "Resend contact removal requires operator confirmation"}
 	}
+	// Stripe mock mode does not cover Privy.
+	if row.Target == store.ErasureTargetPrivyUser {
+		return s.deletePrivyUser(ctx, row.ExternalID)
+	}
 	if row.Target != store.ErasureTargetErasureLog && s.billing != nil && s.billing.MockMode() {
 		return outboxOutcome{kind: outboxDone}
 	}
@@ -189,6 +195,17 @@ func stripeAccountNotFound(err error) bool {
 		return false
 	}
 	return apiErr.Code == "resource_missing"
+}
+
+func (s *Owner) deletePrivyUser(ctx context.Context, id string) outboxOutcome {
+	if s.privy == nil {
+		return outboxOutcome{kind: outboxRetry, err: "Privy is not configured"}
+	}
+	err := s.privy.DeleteUser(ctx, id)
+	if err == nil || errors.Is(err, auth.ErrPrivyUserNotFound) {
+		return outboxOutcome{kind: outboxDone}
+	}
+	return outboxOutcome{kind: outboxRetry, err: err.Error()}
 }
 
 func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutcome {

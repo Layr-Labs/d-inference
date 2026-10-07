@@ -24,10 +24,11 @@ const (
 	keepMarker = "KEEPMARK"
 )
 
-// memoryRulesWithoutTable are the rules whose tables the memory store does
-// not keep: App Attest receipts, payments and provider payouts.
+// memoryRulesWithoutTable are the rules whose tables or columns the memory
+// store does not keep: App Attest receipts and revocation reasons, payments
+// and provider payouts.
 var memoryRulesWithoutTable = map[string]bool{
-	"app_attest_receipt_jobs": true, "app_attest_receipt_blobs": true, "app_attest_receipts": true,
+	"app_attest_receipt_jobs": true, "app_attest_receipt_blobs": true, "app_attest_receipts": true, "app_attest_key_revocations": true,
 	"payments_consumer_address": true, "payments_provider_address": true, "provider_payouts_address": true,
 }
 
@@ -103,7 +104,7 @@ func seedMemoryMarkers(t *testing.T, s *memory.MemoryStore, account, marker stri
 	if err := s.SetUserStripeAccount(account, "acct_"+m("stripe"), m("status"), m("country"), m("dest"), m("last4"), true); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.CreateAPIKey(account, store.APIKeyCreate{Name: m("key")}); err != nil {
+	if _, _, err := s.CreateAPIKey(account, store.APIKeyCreate{Name: m("key"), AllowedModels: []string{m("allowed-model")}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateProviderToken(&store.ProviderToken{TokenHash: store.HashKey(m("token")), AccountID: account, Label: m("hostname"), Active: true}); err != nil {
@@ -148,6 +149,17 @@ func seedMemoryMarkers(t *testing.T, s *memory.MemoryStore, account, marker stri
 		ProofField: m("proof-field"), Proof: []byte(m("proof")), SHA256: "abc", Context: json.RawMessage(`{"boot":"` + m("boot") + `"}`)}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.RecordAppAttestEvent(ctx, store.AppAttestEvent{ID: "se-ev-" + account, SessionID: provider, At: now, Stage: "attestation", Outcome: "ok",
+		Fields: json.RawMessage(`{"boot_time":"` + m("boot-time") + `","launch_session":"` + m("launch") + `"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordRejection(&store.RejectionRecord{ConsumerKeyHash: store.HashKey(account), RequestedModel: m("requested-model"), ResolvedModel: m("resolved-model"),
+		Params: json.RawMessage(`{"temperature":"` + m("params") + `"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetModelPrice(store.ModelPrice{AccountID: account, Model: m("priced-model"), InputPrice: 1, OutputPrice: 1}); err != nil {
+		t.Fatal(err)
+	}
 	s.RecordUsage(store.UsageRecord{ProviderID: "prov-x", ConsumerKey: account, Model: "m", RequestLocation: &store.ProviderLocation{City: m("usage-city")}})
 	if err := s.RecordInferenceRoute(&store.InferenceRouteRecord{RequestID: "r1-" + account, Model: "m", ConsumerKeyHash: store.HashKey(account), ConsumerRegion: m("region")}); err != nil {
 		t.Fatal(err)
@@ -178,7 +190,7 @@ func seedMemoryMarkers(t *testing.T, s *memory.MemoryStore, account, marker stri
 	if err := s.CreateStripeWithdrawalWithDebit(wd, store.LedgerStripePayout, "stripe_withdraw:"+wd.ID); err != nil {
 		t.Fatal(err)
 	}
-	wd.Status = "paid"
+	wd.Status, wd.FailureReason = "paid", m("stripe-failure")
 	if err := s.UpdateStripeWithdrawal(wd); err != nil {
 		t.Fatal(err)
 	}

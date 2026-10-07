@@ -243,6 +243,8 @@ func (s *Owner) HandleCancel(w http.ResponseWriter, r *http.Request) {
 		writeErasureError(w, err)
 		return
 	}
+	// The keys this request revoked are live again; drop any cached refusal.
+	s.access.InvalidateAllAPIKeyCache()
 	s.logger.Info("account erasure canceled", "request_id", req.ID, "account_id", accountID, "actor", req.CanceledBy)
 	httpx.WriteJSON(w, http.StatusOK, erasureRequestResponse{Request: req})
 }

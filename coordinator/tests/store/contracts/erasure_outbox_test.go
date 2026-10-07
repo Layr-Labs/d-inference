@@ -23,8 +23,8 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 			}
 
 			rows, err := s.LeaseDueErasureOutbox(ctx, now, now, time.Minute, 10)
-			if err != nil || len(rows) != 4 {
-				t.Fatalf("lease = %d rows, %v; want 4", len(rows), err)
+			if err != nil || len(rows) != 5 {
+				t.Fatalf("lease = %d rows, %v; want 5", len(rows), err)
 			}
 			byTarget := map[store.ErasureTarget]store.ErasureOutboxWork{}
 			for _, r := range rows {
@@ -42,6 +42,14 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 				t.Fatalf("resend_contact external id = %q", contact.ExternalID)
 			}
 			if err := s.SaveErasureOutboxResult(ctx, contact.ID, store.ErasureOutboxResult{LeaseGeneration: contact.LeaseGeneration, State: store.ErasureOutboxDone, NextAt: now}); err != nil {
+				t.Fatal(err)
+			}
+
+			privy := byTarget[store.ErasureTargetPrivyUser]
+			if privy.ExternalID != a.PrivyID {
+				t.Fatalf("privy_user external id = %q", privy.ExternalID)
+			}
+			if err := s.SaveErasureOutboxResult(ctx, privy.ID, store.ErasureOutboxResult{LeaseGeneration: privy.LeaseGeneration, State: store.ErasureOutboxDone, NextAt: now}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -79,6 +87,10 @@ func TestErasureOutboxLeaseAndResult(t *testing.T) {
 				case store.ErasureTargetResendContact:
 					if it.State != store.ErasureOutboxDone || it.HasExternalID || it.ExternalID != "" || it.DoneAt == nil {
 						t.Errorf("done contact row = %+v; the email must be cleared", it)
+					}
+				case store.ErasureTargetPrivyUser:
+					if it.State != store.ErasureOutboxDone || it.HasExternalID || it.ExternalID != "" || it.DoneAt == nil {
+						t.Errorf("done Privy row = %+v; the Privy user ID must be cleared", it)
 					}
 				case store.ErasureTargetStripeAccount:
 					if it.State != store.ErasureOutboxDone || it.HasExternalID || it.ExternalID != "" || it.DoneAt == nil {

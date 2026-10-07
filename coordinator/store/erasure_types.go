@@ -31,6 +31,7 @@ const (
 	ErasureTargetCheckoutSessions ErasureTarget = "checkout_sessions" // up to ErasureCheckoutBatch Checkout Session IDs, comma separated
 	ErasureTargetErasureLog       ErasureTarget = "erasure_log"       // durable log record of the erasure
 	ErasureTargetResendContact    ErasureTarget = "resend_contact"    // contact email for manual Resend removal
+	ErasureTargetPrivyUser        ErasureTarget = "privy_user"        // Privy user ID (DID) to delete in Privy
 )
 
 // ErasureOutboxState is the delivery state of an erasure_outbox row.
@@ -245,8 +246,10 @@ type AccountErasureStore interface {
 	// tokens are revoked and get deleted_at) and starts the grace period.
 	RequestAccountErasure(ctx context.Context, in ErasureConfirm) (*ErasureRequest, error)
 
-	// CancelAccountErasure ends a pending request before scrub_after. Users
-	// and providers are live again; API keys and provider tokens stay revoked.
+	// CancelAccountErasure ends a pending request before scrub_after. The
+	// user is live again, and so are the providers, API keys and provider
+	// tokens that the confirm removed. Credentials that were already revoked
+	// stay revoked.
 	CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*ErasureRequest, error)
 
 	// ScrubAccount applies every rule in erasure.Rules in one transaction,

@@ -222,11 +222,11 @@ func TestSoftDeleteGateAllowsCancelOfPriorErasure(t *testing.T) {
 			if _, err := st.GetProviderRecord(context.Background(), a.ProviderID); err != nil {
 				t.Fatalf("canceled provider was not restored: %v", err)
 			}
-			if token, err := st.GetProviderToken(a.ProviderToken); err == nil || token != nil {
-				t.Fatalf("cancel restored revoked provider token: %v", err)
+			if _, err := st.GetProviderToken(a.ProviderToken); err != nil {
+				t.Fatalf("cancel did not restore the provider token: %v", err)
 			}
-			if _, err := st.AuthenticateKey(a.RawKey); err == nil {
-				t.Fatal("cancel restored revoked API key")
+			if _, err := st.AuthenticateKey(a.RawKey); err != nil {
+				t.Fatalf("cancel did not restore the API key: %v", err)
 			}
 		})
 	}

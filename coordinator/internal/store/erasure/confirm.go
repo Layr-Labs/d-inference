@@ -20,6 +20,13 @@ const (
 	StripePayoutBounceWindow = 30 * 24 * time.Hour
 )
 
+// AlreadyRevokedAt is the deleted_at that confirm gives an API key or a
+// provider token that was already revoked. It is one microsecond (the
+// PostgreSQL timestamp unit) before requestedAt. Cancel makes a credential
+// stamped requestedAt active again and leaves one stamped AlreadyRevokedAt
+// revoked.
+func AlreadyRevokedAt(requestedAt time.Time) time.Time { return requestedAt.Add(-time.Microsecond) }
+
 // WalletHash binds the confirm call to the planned wallet list.
 func WalletHash(wallets []string) string {
 	h := sha256.Sum256([]byte("erasure-wallets-v1:" + strings.Join(NormalizeWallets(wallets), "\n")))

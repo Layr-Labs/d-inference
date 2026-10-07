@@ -16,6 +16,8 @@ type Keys struct {
 	AccountID       string
 	ConsumerKeyHash string
 	ResendEmail     string
+	// PrivyUserID is the Privy user ID before the users rule replaces it.
+	PrivyUserID string
 	// StripeAccountIDs are the current Express account and every earlier one
 	// the account's withdrawals used.
 	StripeAccountIDs []string
@@ -121,7 +123,8 @@ func (k *Keys) StripeObjects() []store.ErasureStripeObject {
 }
 
 // OutboxRows retains external cleanup identifiers separately from public status:
-// Stripe objects, a Resend contact email when present, and one erasure_log row.
+// Stripe objects, a Resend contact email and a Privy user ID when present, and
+// one erasure_log row.
 func (k *Keys) OutboxRows() []store.ErasureOutboxItem {
 	var out []store.ErasureOutboxItem
 	add := func(t store.ErasureTarget, id string) {
@@ -140,6 +143,9 @@ func (k *Keys) OutboxRows() []store.ErasureOutboxItem {
 	add(store.ErasureTargetErasureLog, "")
 	if email := NormalizeEmail(k.ResendEmail); email != "" {
 		add(store.ErasureTargetResendContact, email)
+	}
+	if k.PrivyUserID != "" {
+		add(store.ErasureTargetPrivyUser, k.PrivyUserID)
 	}
 	return out
 }

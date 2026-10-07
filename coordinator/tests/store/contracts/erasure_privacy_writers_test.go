@@ -67,6 +67,13 @@ func TestErasureFencesDelayedPersonalWrites(t *testing.T) {
 					_, err = s.StoreLogReport(a.AccountID, []byte("personal logs"))
 					check("log report", err)
 					check("queued code proof", s.UpsertCodeAttestation(ctx, store.CodeAttestation{AccountID: a.AccountID, SEPubKey: a.SEKey, AttestedAt: now, APNsToken: "personal-token"}))
+					inventory, ok := store.As[store.MachineInventoryStore](s)
+					if !ok {
+						t.Fatal("machine inventory unavailable")
+					}
+					// Shadow event fields copy runtime diagnostics of the session.
+					check("shadow event", inventory.RecordAppAttestEvent(ctx, store.AppAttestEvent{ID: erasurefixture.UniqueID("shadow-event"), SessionID: a.ProviderID,
+						At: now, Stage: "attestation", Outcome: "observed", Fields: json.RawMessage(`{"boot_time":"personal"}`)}))
 				})
 			}
 		})

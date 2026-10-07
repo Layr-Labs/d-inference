@@ -86,7 +86,7 @@ func TestAccountErasureLifecycle(t *testing.T) {
 				t.Fatalf("plan while pending: %v", err)
 			}
 
-			// Cancel restores the user; the key stays revoked.
+			// Cancel restores the user and the credentials that the confirm revoked.
 			if _, err := s.CancelAccountErasure(ctx, a.AccountID, "admin_key", now.Add(2*time.Hour)); !errors.Is(err, store.ErrErasureConflict) {
 				t.Fatalf("cancel after grace: %v", err)
 			}
@@ -97,8 +97,11 @@ func TestAccountErasureLifecycle(t *testing.T) {
 			if u, err := s.GetUserByAccountID(a.AccountID); err != nil || u.Email != a.Email {
 				t.Fatalf("user after cancel = %+v, %v", u, err)
 			}
-			if _, err := s.AuthenticateKey(a.RawKey); err == nil {
-				t.Fatal("cancel revived the API key")
+			if _, err := s.AuthenticateKey(a.RawKey); err != nil {
+				t.Fatalf("API key after cancel: %v", err)
+			}
+			if _, err := s.GetProviderToken(a.ProviderToken); err != nil {
+				t.Fatalf("provider token after cancel: %v", err)
 			}
 			if pending, _ := s.PrivyUserPendingErasure(ctx, a.PrivyID); pending {
 				t.Fatal("canceled account still pending")
@@ -152,7 +155,8 @@ func TestAccountErasureLifecycle(t *testing.T) {
 				}
 				targets[o.Target] = o.ExternalID
 			}
-			if targets[store.ErasureTargetStripeAccount] != a.Stripe || targets[store.ErasureTargetCheckoutSessions] != a.Checkout || targets[store.ErasureTargetResendContact] != erasure.NormalizeEmail(a.Email) || len(targets) != 4 {
+			if targets[store.ErasureTargetStripeAccount] != a.Stripe || targets[store.ErasureTargetCheckoutSessions] != a.Checkout || targets[store.ErasureTargetResendContact] != erasure.NormalizeEmail(a.Email) ||
+				targets[store.ErasureTargetPrivyUser] != a.PrivyID || len(targets) != 5 {
 				t.Fatalf("outbox targets = %+v", targets)
 			}
 			if _, ok := targets[store.ErasureTargetErasureLog]; !ok {

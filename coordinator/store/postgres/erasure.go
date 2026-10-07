@@ -212,10 +212,11 @@ func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.Eras
 		if _, err := q.SoftDeleteProviders(ctx, storedb.SoftDeleteProvidersParams{AccountID: in.AccountID, DeletedAt: &now}); err != nil {
 			return err
 		}
-		if _, err := q.SoftDeleteAPIKeys(ctx, storedb.SoftDeleteAPIKeysParams{OwnerAccountID: in.AccountID, DeletedAt: &now}); err != nil {
+		alreadyRevoked := erasure.AlreadyRevokedAt(now)
+		if _, err := q.SoftDeleteAPIKeys(ctx, storedb.SoftDeleteAPIKeysParams{OwnerAccountID: in.AccountID, RevokedAt: now, AlreadyRevokedAt: alreadyRevoked}); err != nil {
 			return err
 		}
-		if _, err := q.SoftDeleteProviderTokens(ctx, storedb.SoftDeleteProviderTokensParams{AccountID: in.AccountID, DeletedAt: &now}); err != nil {
+		if _, err := q.SoftDeleteProviderTokens(ctx, storedb.SoftDeleteProviderTokensParams{AccountID: in.AccountID, RevokedAt: now, AlreadyRevokedAt: alreadyRevoked}); err != nil {
 			return err
 		}
 		scrubAfter := now.Add(in.Grace)
@@ -234,7 +235,9 @@ func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.Eras
 	return result, nil
 }
 
-// CancelAccountErasure restores the user and providers of a pending request.
+// CancelAccountErasure restores the user of a pending request and the
+// providers, API keys and provider tokens that its confirm removed. API keys
+// and provider tokens that were revoked before the confirm stay revoked.
 func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*store.ErasureRequest, error) {
 	var result *store.ErasureRequest
 	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
@@ -250,13 +253,21 @@ func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, act
 		if err != nil {
 			return err
 		}
-		if open.State != string(store.ErasurePending) || open.ScrubAfter == nil || !now.Before(*open.ScrubAfter) {
+		if open.State != string(store.ErasurePending) || open.RequestedAt == nil || open.ScrubAfter == nil || !now.Before(*open.ScrubAfter) {
 			return store.ErrErasureConflict
 		}
 		if _, err := q.RestoreUser(ctx, accountID); err != nil {
 			return fmt.Errorf("store: restore user: %w", err)
 		}
 		if _, err := q.RestoreProviders(ctx, storedb.RestoreProvidersParams{AccountID: accountID, DeletedAt: open.RequestedAt}); err != nil {
+			return err
+		}
+		revoked := *open.RequestedAt
+		alreadyRevoked := erasure.AlreadyRevokedAt(revoked)
+		if _, err := q.RestoreAPIKeys(ctx, storedb.RestoreAPIKeysParams{OwnerAccountID: accountID, RevokedAt: revoked, AlreadyRevokedAt: alreadyRevoked}); err != nil {
+			return err
+		}
+		if _, err := q.RestoreProviderTokens(ctx, storedb.RestoreProviderTokensParams{AccountID: accountID, RevokedAt: revoked, AlreadyRevokedAt: alreadyRevoked}); err != nil {
 			return err
 		}
 		if err := q.MarkErasureCanceled(ctx, storedb.MarkErasureCanceledParams{ID: open.ID, CanceledBy: actor, CanceledAt: &now}); err != nil {

@@ -35,6 +35,7 @@ func TestErasureOutboxStagingSurvivesCancellation(t *testing.T) {
 			}
 			want := map[store.ErasureTarget]map[string]bool{
 				store.ErasureTargetResendContact:    {strings.ToLower(a.Email): true},
+				store.ErasureTargetPrivyUser:        {a.PrivyID: true},
 				store.ErasureTargetStripeAccount:    {a.Stripe: true},
 				store.ErasureTargetGlobalRecipient:  {recipient.RecipientID: true},
 				store.ErasureTargetCheckoutSessions: {a.Checkout: true},

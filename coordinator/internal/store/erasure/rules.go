@@ -74,8 +74,10 @@ var Rules = []Rule{
 		},
 	},
 	{
+		// allowed_models is free text the user typed. The keys are revoked
+		// at confirm, so the empty list (all models) gives them no access.
 		Name: "api_keys", Table: "api_keys", Link: "owner_account_id",
-		Columns: []Column{{"name", SetEmpty}},
+		Columns: []Column{{"name", SetEmpty}, {"allowed_models", SetEmpty}},
 	},
 	{
 		Name: "provider_tokens", Table: "provider_tokens", Link: "account_id",
@@ -135,6 +137,11 @@ var Rules = []Rule{
 		Columns: []Column{{"context", SetEmptyJSON}},
 	},
 	{
+		// The shadow events copy the same runtime diagnostics (boot time,
+		// launch session) into fields.
+		Name: "app_attest_shadow_events", Table: "app_attest_shadow_events", Link: "session_id in the account's provider IDs", Delete: true,
+	},
+	{
 		// No more Apple receipt refreshes for the erased account's keys.
 		Name: "app_attest_receipt_jobs", Table: "app_attest_receipt_jobs", Link: "key_id of the account's App Attest keys", Delete: true,
 	},
@@ -145,6 +152,12 @@ var Rules = []Rule{
 	{
 		Name: "app_attest_receipts", Table: "app_attest_receipts", Link: "key_id of the account's App Attest keys",
 		Columns: []Column{{"context", SetEmptyJSON}},
+	},
+	{
+		// The reason is admin free text. The row stays: it keeps the key
+		// revoked.
+		Name: "app_attest_key_revocations", Table: "app_attest_key_revocations", Link: "account_id",
+		Columns: []Column{{"reason", SetEmpty}},
 	},
 	{
 		// IP-derived location of the account's requests as a consumer.
@@ -158,6 +171,11 @@ var Rules = []Rule{
 	{
 		Name: "inference_routes_provider_region", Table: "inference_routes", Link: "provider_id in the account's provider IDs",
 		Columns: []Column{{"provider_region", SetNull}},
+	},
+	{
+		// The model names are raw client strings.
+		Name: "request_rejections", Table: "request_rejections", Link: "consumer_key_hash = sha256(account_id)",
+		Columns: []Column{{"requested_model", SetEmpty}, {"resolved_model", SetEmpty}, {"params", SetNull}},
 	},
 	{
 		// A referrer code is chosen by the user. referrals.referrer_code
@@ -200,19 +218,24 @@ var Rules = []Rule{
 	},
 	{
 		// Transfer and payout IDs and amounts stay as the financial record.
+		// failure_reason holds Stripe free text. A withdrawal that still
+		// waits for a confirmed-rejection refund blocks the scrub, so no
+		// cleared reason can hide one.
 		Name: "stripe_withdrawals", Table: "stripe_withdrawals", Link: "account_id",
-		Columns: []Column{{"stripe_account_id", SetEmpty}},
+		Columns: []Column{{"stripe_account_id", SetEmpty}, {"failure_reason", SetEmpty}},
 	},
 	{
 		// payments and provider_payouts have no account column and no reader
 		// since #1208. The admin request names the wallet addresses; each
 		// address gets one random value for all its rows in both tables.
+		// A matched payment also loses its transaction hash (unique, so it
+		// becomes "erased:<id>") and its memo.
 		Name: "payments_consumer_address", Table: "payments", Link: "consumer_address in the request's wallet addresses",
-		Columns: []Column{{"consumer_address", SetRandom}},
+		Columns: []Column{{"consumer_address", SetRandom}, {"tx_hash", Rewrite}, {"memo", SetEmpty}},
 	},
 	{
 		Name: "payments_provider_address", Table: "payments", Link: "provider_address in the request's wallet addresses",
-		Columns: []Column{{"provider_address", SetRandom}},
+		Columns: []Column{{"provider_address", SetRandom}, {"tx_hash", Rewrite}, {"memo", SetEmpty}},
 	},
 	{
 		Name: "provider_payouts_address", Table: "provider_payouts", Link: "provider_address in the request's wallet addresses",
@@ -220,6 +243,8 @@ var Rules = []Rule{
 	},
 	{Name: "legacy_mdm_cohort", Table: "legacy_mdm_cohort", Link: "account_id", Delete: true},
 	{Name: "small_models_interest", Table: "small_models_interest", Link: "account_id", Delete: true},
+	// A provider's custom prices name its models in free text.
+	{Name: "model_prices", Table: "model_prices", Link: "account_id", Delete: true},
 }
 
 // These reasons explain the personal-looking data the scrub keeps.

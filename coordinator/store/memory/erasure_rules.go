@@ -79,7 +79,7 @@ var memoryErasureRules = map[string]memoryRule{
 			if rec.OwnerAccountID == k.AccountID {
 				n++
 				if apply {
-					rec.Name = ""
+					rec.Name, rec.AllowedModels = "", nil
 				}
 			}
 		}
@@ -278,9 +278,30 @@ var memoryErasureRules = map[string]memoryRule{
 		}
 		return n
 	},
+	"app_attest_shadow_events": func(s *MemoryStore, k *erasure.Keys, _ time.Time, apply bool) int64 {
+		if s.machineInventory == nil {
+			return 0
+		}
+		providers := stringSet(k.ProviderIDs)
+		var n int64
+		kept := s.machineInventory.Events[:0:0]
+		for _, e := range s.machineInventory.Events {
+			if providers[e.SessionID] {
+				n++
+				continue
+			}
+			kept = append(kept, e)
+		}
+		if apply {
+			s.machineInventory.Events = kept
+		}
+		return n
+	},
 	"app_attest_receipt_jobs":  memoryNoTable,
 	"app_attest_receipt_blobs": memoryNoTable,
 	"app_attest_receipts":      memoryNoTable,
+	// The memory store keeps no revocation reason.
+	"app_attest_key_revocations": memoryNoTable,
 	"usage_request_location": func(s *MemoryStore, k *erasure.Keys, _ time.Time, apply bool) int64 {
 		var n int64
 		for i := range s.history.Usage {
@@ -314,6 +335,19 @@ var memoryErasureRules = map[string]memoryRule{
 				n++
 				if apply {
 					s.inferenceRoutes[i].ProviderRegion = ""
+				}
+			}
+		}
+		return n
+	},
+	"request_rejections": func(s *MemoryStore, k *erasure.Keys, _ time.Time, apply bool) int64 {
+		var n int64
+		for i := range s.inferenceRejections {
+			r := &s.inferenceRejections[i]
+			if r.ConsumerKeyHash == k.ConsumerKeyHash {
+				n++
+				if apply {
+					r.RequestedModel, r.ResolvedModel, r.Params = "", "", nil
 				}
 			}
 		}
@@ -425,7 +459,19 @@ var memoryErasureRules = map[string]memoryRule{
 			if w := s.stripeWithdrawalsByID[id]; w != nil {
 				n++
 				if apply {
-					w.StripeAccountID = ""
+					w.StripeAccountID, w.FailureReason = "", ""
+				}
+			}
+		}
+		return n
+	},
+	"model_prices": func(s *MemoryStore, k *erasure.Keys, _ time.Time, apply bool) int64 {
+		var n int64
+		for key, mp := range s.modelPrices {
+			if mp.AccountID == k.AccountID {
+				n++
+				if apply {
+					delete(s.modelPrices, key)
 				}
 			}
 		}

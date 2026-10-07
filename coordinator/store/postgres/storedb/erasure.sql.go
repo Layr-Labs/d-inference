@@ -67,6 +67,17 @@ func (q *Queries) CountAppAttestEvidenceRows(ctx context.Context, sessionIds []s
 	return count, err
 }
 
+const countAppAttestKeyRevocationsRows = `-- name: CountAppAttestKeyRevocationsRows :one
+SELECT COUNT(*) FROM app_attest_key_revocations WHERE account_id = $1
+`
+
+func (q *Queries) CountAppAttestKeyRevocationsRows(ctx context.Context, accountID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countAppAttestKeyRevocationsRows, accountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countAppAttestReceiptBlobsRows = `-- name: CountAppAttestReceiptBlobsRows :one
 SELECT COUNT(*) FROM app_attest_receipt_blobs
 WHERE receipt_id IN (SELECT id FROM app_attest_receipts WHERE key_id = ANY($1::text[]))
@@ -96,6 +107,17 @@ SELECT COUNT(*) FROM app_attest_receipts WHERE key_id = ANY($1::text[])
 
 func (q *Queries) CountAppAttestReceiptsRows(ctx context.Context, keyIds []string) (int64, error) {
 	row := q.db.QueryRow(ctx, countAppAttestReceiptsRows, keyIds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAppAttestShadowEventsRows = `-- name: CountAppAttestShadowEventsRows :one
+SELECT COUNT(*) FROM app_attest_shadow_events WHERE session_id = ANY($1::text[])
+`
+
+func (q *Queries) CountAppAttestShadowEventsRows(ctx context.Context, sessionIds []string) (int64, error) {
+	row := q.db.QueryRow(ctx, countAppAttestShadowEventsRows, sessionIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -196,6 +218,17 @@ WHERE kind = 'mda_serial' AND scope = '' AND digest = ANY($1::text[])
 
 func (q *Queries) CountMDASerialAliasesRows(ctx context.Context, digests []string) (int64, error) {
 	row := q.db.QueryRow(ctx, countMDASerialAliasesRows, digests)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countModelPricesRows = `-- name: CountModelPricesRows :one
+SELECT COUNT(*) FROM model_prices WHERE account_id = $1
+`
+
+func (q *Queries) CountModelPricesRows(ctx context.Context, accountID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countModelPricesRows, accountID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -378,6 +411,17 @@ func (q *Queries) CountReferrersRow(ctx context.Context, accountID string) (int6
 	return count, err
 }
 
+const countRequestRejectionsRows = `-- name: CountRequestRejectionsRows :one
+SELECT COUNT(*) FROM request_rejections WHERE consumer_key_hash = $1::text
+`
+
+func (q *Queries) CountRequestRejectionsRows(ctx context.Context, consumerKeyHash string) (int64, error) {
+	row := q.db.QueryRow(ctx, countRequestRejectionsRows, consumerKeyHash)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSmallModelsInterestRows = `-- name: CountSmallModelsInterestRows :one
 SELECT COUNT(*) FROM small_models_interest WHERE account_id = $1
 `
@@ -496,6 +540,18 @@ func (q *Queries) DeleteAppAttestReceiptJobsRows(ctx context.Context, keyIds []s
 	return result.RowsAffected(), nil
 }
 
+const deleteAppAttestShadowEventsRows = `-- name: DeleteAppAttestShadowEventsRows :execrows
+DELETE FROM app_attest_shadow_events WHERE session_id = ANY($1::text[])
+`
+
+func (q *Queries) DeleteAppAttestShadowEventsRows(ctx context.Context, sessionIds []string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAppAttestShadowEventsRows, sessionIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteCodeAttestPushBudgetsRows = `-- name: DeleteCodeAttestPushBudgetsRows :execrows
 DELETE FROM code_attest_push_budgets WHERE se_pubkey = ANY($1::text[])
 `
@@ -551,6 +607,18 @@ WHERE kind = 'mda_serial' AND scope = '' AND digest = ANY($1::text[])
 
 func (q *Queries) DeleteMDASerialAliasesRows(ctx context.Context, digests []string) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteMDASerialAliasesRows, digests)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteModelPricesRows = `-- name: DeleteModelPricesRows :execrows
+DELETE FROM model_prices WHERE account_id = $1
+`
+
+func (q *Queries) DeleteModelPricesRows(ctx context.Context, accountID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteModelPricesRows, accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -1699,7 +1767,7 @@ func (q *Queries) LockUserForErasure(ctx context.Context, accountID string) (Loc
 
 const markErasureCanceled = `-- name: MarkErasureCanceled :exec
 UPDATE erasure_requests
-SET state = 'canceled', canceled_by = $2, canceled_at = $3, wallet_addresses = '{}', lease_until = NULL
+SET state = 'canceled', canceled_by = $2, canceled_at = $3, wallet_addresses = '{}', wallet_hash = '', lease_until = NULL
 WHERE id = $1
 `
 
@@ -1716,7 +1784,7 @@ func (q *Queries) MarkErasureCanceled(ctx context.Context, arg MarkErasureCancel
 
 const markErasureErased = `-- name: MarkErasureErased :exec
 UPDATE erasure_requests
-SET state = 'erased', erased_at = $2, plan = $3, wallet_addresses = '{}', lease_until = NULL, last_error = ''
+SET state = 'erased', erased_at = $2, plan = $3, wallet_addresses = '{}', wallet_hash = '', lease_until = NULL, last_error = ''
 WHERE id = $1
 `
 
@@ -1771,6 +1839,46 @@ type RecordErasureFailureParams struct {
 func (q *Queries) RecordErasureFailure(ctx context.Context, arg RecordErasureFailureParams) error {
 	_, err := q.db.Exec(ctx, recordErasureFailure, arg.ID, arg.LastError)
 	return err
+}
+
+const restoreAPIKeys = `-- name: RestoreAPIKeys :execrows
+UPDATE api_keys SET active = (deleted_at = $1::timestamptz), deleted_at = NULL
+WHERE owner_account_id = $2
+  AND deleted_at IN ($1::timestamptz, $3::timestamptz)
+`
+
+type RestoreAPIKeysParams struct {
+	RevokedAt        time.Time
+	OwnerAccountID   string
+	AlreadyRevokedAt time.Time
+}
+
+func (q *Queries) RestoreAPIKeys(ctx context.Context, arg RestoreAPIKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreAPIKeys, arg.RevokedAt, arg.OwnerAccountID, arg.AlreadyRevokedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const restoreProviderTokens = `-- name: RestoreProviderTokens :execrows
+UPDATE provider_tokens SET active = (deleted_at = $1::timestamptz), deleted_at = NULL
+WHERE account_id = $2
+  AND deleted_at IN ($1::timestamptz, $3::timestamptz)
+`
+
+type RestoreProviderTokensParams struct {
+	RevokedAt        time.Time
+	AccountID        string
+	AlreadyRevokedAt time.Time
+}
+
+func (q *Queries) RestoreProviderTokens(ctx context.Context, arg RestoreProviderTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreProviderTokens, arg.RevokedAt, arg.AccountID, arg.AlreadyRevokedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const restoreProviders = `-- name: RestoreProviders :execrows
@@ -1868,7 +1976,7 @@ func (q *Queries) SaveErasureOutboxResult(ctx context.Context, arg SaveErasureOu
 }
 
 const scrubAPIKeysRows = `-- name: ScrubAPIKeysRows :execrows
-UPDATE api_keys SET name = '' WHERE owner_account_id = $1
+UPDATE api_keys SET name = '', allowed_models = '' WHERE owner_account_id = $1
 `
 
 func (q *Queries) ScrubAPIKeysRows(ctx context.Context, ownerAccountID string) (int64, error) {
@@ -1898,6 +2006,18 @@ UPDATE app_attest_evidence SET context = '{}' WHERE session_id = ANY($1::text[])
 
 func (q *Queries) ScrubAppAttestEvidenceRows(ctx context.Context, sessionIds []string) (int64, error) {
 	result, err := q.db.Exec(ctx, scrubAppAttestEvidenceRows, sessionIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const scrubAppAttestKeyRevocationsRows = `-- name: ScrubAppAttestKeyRevocationsRows :execrows
+UPDATE app_attest_key_revocations SET reason = '' WHERE account_id = $1
+`
+
+func (q *Queries) ScrubAppAttestKeyRevocationsRows(ctx context.Context, accountID string) (int64, error) {
+	result, err := q.db.Exec(ctx, scrubAppAttestKeyRevocationsRows, accountID)
 	if err != nil {
 		return 0, err
 	}
@@ -1957,7 +2077,10 @@ func (q *Queries) ScrubGlobalPayoutRows(ctx context.Context, accountID string) (
 }
 
 const scrubPaymentConsumerAddress = `-- name: ScrubPaymentConsumerAddress :execrows
-UPDATE payments SET consumer_address = $1 WHERE consumer_address = $2
+UPDATE payments SET consumer_address = $1,
+    tx_hash = CASE WHEN tx_hash IS NOT NULL THEN 'erased:' || id::text END,
+    memo = CASE WHEN memo IS NOT NULL THEN '' END
+WHERE consumer_address = $2
 `
 
 type ScrubPaymentConsumerAddressParams struct {
@@ -1974,7 +2097,10 @@ func (q *Queries) ScrubPaymentConsumerAddress(ctx context.Context, arg ScrubPaym
 }
 
 const scrubPaymentProviderAddress = `-- name: ScrubPaymentProviderAddress :execrows
-UPDATE payments SET provider_address = $1 WHERE provider_address = $2
+UPDATE payments SET provider_address = $1,
+    tx_hash = CASE WHEN tx_hash IS NOT NULL THEN 'erased:' || id::text END,
+    memo = CASE WHEN memo IS NOT NULL THEN '' END
+WHERE provider_address = $2
 `
 
 type ScrubPaymentProviderAddressParams struct {
@@ -2092,6 +2218,19 @@ func (q *Queries) ScrubReferrersRow(ctx context.Context, arg ScrubReferrersRowPa
 	return result.RowsAffected(), nil
 }
 
+const scrubRequestRejectionsRows = `-- name: ScrubRequestRejectionsRows :execrows
+UPDATE request_rejections SET requested_model = '', resolved_model = '', params = NULL
+WHERE consumer_key_hash = $1::text
+`
+
+func (q *Queries) ScrubRequestRejectionsRows(ctx context.Context, consumerKeyHash string) (int64, error) {
+	result, err := q.db.Exec(ctx, scrubRequestRejectionsRows, consumerKeyHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const scrubStripeLedgerReferences = `-- name: ScrubStripeLedgerReferences :execrows
 UPDATE ledger_entries SET reference = 'stripe:erased' WHERE account_id = $1 AND reference LIKE 'stripe:%'
 `
@@ -2105,7 +2244,7 @@ func (q *Queries) ScrubStripeLedgerReferences(ctx context.Context, accountID str
 }
 
 const scrubStripeWithdrawalRows = `-- name: ScrubStripeWithdrawalRows :execrows
-UPDATE stripe_withdrawals SET stripe_account_id = '' WHERE account_id = $1
+UPDATE stripe_withdrawals SET stripe_account_id = '', failure_reason = '' WHERE account_id = $1
 `
 
 func (q *Queries) ScrubStripeWithdrawalRows(ctx context.Context, accountID string) (int64, error) {
@@ -2149,16 +2288,25 @@ func (q *Queries) ScrubUsersRow(ctx context.Context, arg ScrubUsersRowParams) (i
 }
 
 const softDeleteAPIKeys = `-- name: SoftDeleteAPIKeys :execrows
-UPDATE api_keys SET active = FALSE, deleted_at = $2 WHERE owner_account_id = $1 AND deleted_at IS NULL
+
+UPDATE api_keys
+SET active = FALSE,
+    deleted_at = CASE WHEN active THEN $1::timestamptz ELSE $2::timestamptz END
+WHERE owner_account_id = $3 AND deleted_at IS NULL
 `
 
 type SoftDeleteAPIKeysParams struct {
-	OwnerAccountID string
-	DeletedAt      *time.Time
+	RevokedAt        time.Time
+	AlreadyRevokedAt time.Time
+	OwnerAccountID   string
 }
 
+// A credential that is live at confirm gets revoked_at (the request's
+// requested_at). One that was already revoked gets the earlier
+// already_revoked_at. Cancel shows both again and makes only the first kind
+// active.
 func (q *Queries) SoftDeleteAPIKeys(ctx context.Context, arg SoftDeleteAPIKeysParams) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteAPIKeys, arg.OwnerAccountID, arg.DeletedAt)
+	result, err := q.db.Exec(ctx, softDeleteAPIKeys, arg.RevokedAt, arg.AlreadyRevokedAt, arg.OwnerAccountID)
 	if err != nil {
 		return 0, err
 	}
@@ -2166,16 +2314,20 @@ func (q *Queries) SoftDeleteAPIKeys(ctx context.Context, arg SoftDeleteAPIKeysPa
 }
 
 const softDeleteProviderTokens = `-- name: SoftDeleteProviderTokens :execrows
-UPDATE provider_tokens SET active = FALSE, deleted_at = $2 WHERE account_id = $1 AND deleted_at IS NULL
+UPDATE provider_tokens
+SET active = FALSE,
+    deleted_at = CASE WHEN active THEN $1::timestamptz ELSE $2::timestamptz END
+WHERE account_id = $3 AND deleted_at IS NULL
 `
 
 type SoftDeleteProviderTokensParams struct {
-	AccountID string
-	DeletedAt *time.Time
+	RevokedAt        time.Time
+	AlreadyRevokedAt time.Time
+	AccountID        string
 }
 
 func (q *Queries) SoftDeleteProviderTokens(ctx context.Context, arg SoftDeleteProviderTokensParams) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteProviderTokens, arg.AccountID, arg.DeletedAt)
+	result, err := q.db.Exec(ctx, softDeleteProviderTokens, arg.RevokedAt, arg.AlreadyRevokedAt, arg.AccountID)
 	if err != nil {
 		return 0, err
 	}

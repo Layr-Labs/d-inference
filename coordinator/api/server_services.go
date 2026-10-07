@@ -123,9 +123,11 @@ func (s *Server) SetAllowDuplicateProviderSerialsForTesting(allow bool) {
 	s.trust.SetAllowDuplicateProviderSerialsForTesting(allow)
 }
 
-// SetPrivyAuth configures Privy JWT authentication for consumer endpoints.
+// SetPrivyAuth configures Privy JWT authentication for consumer endpoints
+// and the Privy user deletion of the erasure outbox.
 func (s *Server) SetPrivyAuth(pa *auth.PrivyAuth) {
 	s.access.SetPrivyAuth(pa)
+	s.erasure.SetPrivyUsers(pa)
 }
 
 // SetAdminEmails configures which Privy accounts have admin access.

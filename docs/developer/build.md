@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -403,16 +403,23 @@ The provider consumes the local packages through immutable Git submodule pins:
 
 | Package | Revision | Included update |
 |---|---|---|
-| `libs/mlx` | `725859207e4bc0db16e447b198e1c171574321e4` | [mlx PR #13](https://github.com/Layr-Labs/mlx/pull/13) head: Gemma 4 Metal kernel work. It is the same revision as the `libs/mlx-swift` nested `Source/Cmlx/mlx` pin |
-| `libs/mlx-swift` | `9fb219219738ed2203f900b21ce3b52b9c1e9439` | [PR #19](https://github.com/Layr-Labs/mlx-swift/pull/19) head: Gemma 4 kernel pins, merged with the [PR #26](https://github.com/Layr-Labs/mlx-swift/pull/26) per-kernel Metal math modes. It contains the [PR #27](https://github.com/Layr-Labs/mlx-swift/pull/27) Hadamard layers and [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) (`0f4fe403`), exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `ccea27406e2fb449636b6323e4d5faddcbf392a1` | [PR #138](https://github.com/Layr-Labs/mlx-swift-lm/pull/138) head: Gemma 4 MLXFast kernels and cache fast paths, merged with SDK `main` `94dc1976` ([PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290)) |
+| `libs/mlx` | `ac97252e68d4cce305e9c19eefc67bc70d41cbaa` | [mlx PR #13](https://github.com/Layr-Labs/mlx/pull/13) head: Gemma 4 Metal kernel work, merged with MLX `main` `cb77239b` (the `gather_mm` / `gather_qmm` row-tile backport) |
+| `libs/mlx-swift/Source/Cmlx/mlx` | `ac97252e68d4cce305e9c19eefc67bc70d41cbaa` | Same MLX source used by Cmlx and the provider metallib |
+| `libs/mlx-swift` | `17bbcba7bf45303d235df6f2d71aae8c93053559` | [PR #19](https://github.com/Layr-Labs/mlx-swift/pull/19) head: Gemma 4 kernel pins and regenerated kernel sources, merged with [PR #26](https://github.com/Layr-Labs/mlx-swift/pull/26) (per-kernel Metal math modes) and Swift `main` `6923a80f` ([PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34)). It contains [PR #27](https://github.com/Layr-Labs/mlx-swift/pull/27) (Hadamard layers) and [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) (`0f4fe403`) |
+| `libs/mlx-swift-lm` | `4c9d3422d672894a2f1d9dbdf6ed9262be1d9ab8` | [PR #138](https://github.com/Layr-Labs/mlx-swift-lm/pull/138) head: Gemma 4 MLXFast kernels and cache fast paths, merged with SDK `main` `94dc1976` ([PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290)) |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
 procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
-Swift gitlink. The `libs/mlx-swift` revision
-pins the C wrapper at `ad3799cb`, the `codex/gemma4-kernel-math-mode` head that
-adds explicit math modes for custom Metal kernels on top of `02cf6f4d`.
+Swift gitlink. Keep `libs/mlx` and `libs/mlx-swift/Source/Cmlx/mlx` on the same
+MLX commit. The Swift pin includes kernel sources regenerated from that nested
+MLX revision, including the signed integer floor-division corrections from
+[MLX PR #32](https://github.com/Layr-Labs/mlx/pull/32) in the generated
+binary-operations and CPU preamble sources. Build `mlx.metallib` from the nested source with
+`scripts/fetch-metallib.sh`; changing only the top-level MLX gitlink does not
+change provider bytes. The `libs/mlx-swift` revision pins the C wrapper at
+`ad3799cb`, the `codex/gemma4-kernel-math-mode` head that adds explicit math
+modes for custom Metal kernels on top of `02cf6f4d`.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
 All three pins are open pull-request heads, not merged `main` history. The SDK

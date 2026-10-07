@@ -495,9 +495,10 @@ class ZeroMutationTests(unittest.TestCase):
             for name in REQUIRED_CHECKS
         ]
         green_checks = json.dumps([{"total_count": len(green_runs), "check_runs": green_runs}])
-        green_statuses = json.dumps({"statuses": [
-            {"context": name, "state": "success"} for name in REQUIRED_STATUSES
-        ]})
+        status_values = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+        green_statuses = json.dumps([{
+            "total_count": len(status_values), "statuses": status_values,
+        }])
         return [
             ["gh", "^variable get DEV_DEPLOY_PAUSED", paused, paused_code],
             ["gh", "^api .*check-runs", green_checks, 0],
@@ -656,6 +657,38 @@ class ZeroMutationTests(unittest.TestCase):
                 result = box.run([DEV / "deploy.sh", "--dry-run"])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("CI failure is not explicitly waived: Coordinator Tests", result.stderr)
+
+    def test_status_inventory_is_complete_and_has_unique_contexts(self):
+        required = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+        extras = [{"context": f"optional-{index}", "state": "success"} for index in range(25)]
+        cases = (
+            ("omitted later status", [{"total_count": 31, "statuses": required + extras}],
+             "status-context response is empty or truncated"),
+            ("later failure", [
+                {"total_count": 31, "statuses": required + extras},
+                {"total_count": 31, "statuses": [{"context": "hidden-failure", "state": "failure"}]},
+             ], "CI failure is not explicitly waived: hidden-failure"),
+            ("later pending", [
+                {"total_count": 31, "statuses": required + extras},
+                {"total_count": 31, "statuses": [{"context": "hidden-pending", "state": "pending"}]},
+             ], "CI is not complete for"),
+            ("malformed total", [{"total_count": "31", "statuses": required}],
+             "invalid GitHub status-context response"),
+            ("case-variant duplicate", [{"total_count": len(required) + 1,
+                "statuses": required + [{"context": REQUIRED_STATUSES[0].lower(), "state": "success"}]}],
+             "contains duplicate contexts"),
+        )
+        for label, pages, expected in cases:
+            with self.subTest(label=label):
+                rules = self.deploy_rules()
+                for rule in rules:
+                    if rule[0] == "gh" and "commits/.*/status" in rule[1]:
+                        rule[2] = json.dumps(pages)
+                box = Sandbox(self, MUTATORS, rules)
+                result = box.run([DEV / "deploy.sh", "--dry-run"])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertEqual([call for call in box.calls("gcloud") if call[1:3] == ["compute", "ssh"]], [])
 
     def test_ci_waivers_are_rejected_under_github_actions(self):
         box = Sandbox(self, MUTATORS, self.deploy_rules())

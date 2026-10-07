@@ -204,9 +204,13 @@ deploy/gcp/dev/deploy.sh --override-pause "first deploy DBLM-559"
 then does step 1 of the production runbook: the checkout is `origin/master`,
 `dev-build` builds `deploy/gcp/cloudbuild-prod.yaml`, a SUCCESS build of the
 commit exists (it waits up to 20 minutes), and it reads the image digest. It
-requires every GitHub check run and status context to be complete and successful,
-then rereads both `origin/master` and the live pause variable immediately before
-SSH. A human may waive only exact currently failing context names with repeated
+requires the complete paginated GitHub check-run and status-context inventories.
+Every reported check-run conclusion and every status must be `success`;
+`skipped`, `neutral`, null, pending, duplicate or truncated results fail closed.
+A human may explicitly name a legitimately optional skipped or neutral check in
+a waiver, but GitHub Actions cannot use waivers. It then rereads both
+`origin/master` and the live pause variable immediately before SSH. A human may
+waive only exact currently failing context names with repeated
 `--allow-ci-failure "<name>"` flags plus a nonblank single-line
 `--ci-waiver-reason`; stale, misspelled, pending or unlisted failures still stop.
 Automatic workflows must never pass a CI waiver. Then it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the commit to

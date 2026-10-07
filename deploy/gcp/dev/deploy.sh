@@ -213,29 +213,53 @@ CANDIDATE_DIGEST=$(gcloud artifacts docker images describe "$CANDIDATE_IMAGE" \
 echo "build=$built image=$CANDIDATE_IMAGE digest=$CANDIDATE_DIGEST version=$CANDIDATE_VERSION"
 
 verify_ci() {
-    local checks statuses check_count total_count reported_checks reported_statuses pending failures name allowed found
+    local checks statuses check_count total_count status_count status_total_count duplicate_statuses
+    local reported_checks reported_statuses pending failures name allowed found
     checks=$(gh api --paginate --slurp "repos/$GITHUB_REPO/commits/$CANDIDATE_COMMIT/check-runs?filter=latest&per_page=100") ||
         die "cannot read GitHub check runs for $CANDIDATE_COMMIT; nothing changed" 3
-    statuses=$(gh api "repos/$GITHUB_REPO/commits/$CANDIDATE_COMMIT/status") ||
+    statuses=$(gh api --paginate --slurp \
+        "repos/$GITHUB_REPO/commits/$CANDIDATE_COMMIT/status?per_page=100") ||
         die "cannot read GitHub status contexts for $CANDIDATE_COMMIT; nothing changed" 3
     check_count=$(printf '%s' "$checks" | jq -r '[.[].check_runs[]] | length') ||
         die "invalid GitHub check-run response for $CANDIDATE_COMMIT; nothing changed" 3
     total_count=$(printf '%s' "$checks" | jq -r 'first(.[].total_count)') ||
         die "invalid GitHub check-run count for $CANDIDATE_COMMIT; nothing changed" 3
-    printf '%s' "$statuses" | jq -e '.statuses | type == "array"' >/dev/null ||
+    printf '%s' "$statuses" | jq -e '
+        type == "array" and length > 0 and
+        all(.[];
+            (.statuses | type == "array") and
+            (.total_count | type == "number") and
+            .total_count >= 0 and .total_count == (.total_count | floor)) and
+        ([.[].total_count] | unique | length == 1) and
+        all(.[].statuses[];
+            (.context | type == "string") and (.context | length > 0) and
+            (.state | type == "string"))
+    ' >/dev/null ||
         die "invalid GitHub status-context response for $CANDIDATE_COMMIT; nothing changed" 3
     [[ "$check_count" =~ ^[0-9]+$ ]] && [[ "$total_count" =~ ^[0-9]+$ ]] &&
         [ "$check_count" -gt 0 ] && [ "$check_count" -eq "$total_count" ] ||
         die "GitHub check-run response is empty or truncated ($check_count/$total_count); nothing changed" 3
+    status_count=$(printf '%s' "$statuses" | jq -r '[.[].statuses[]] | length') ||
+        die "invalid GitHub status-context count for $CANDIDATE_COMMIT; nothing changed" 3
+    status_total_count=$(printf '%s' "$statuses" | jq -r 'first(.[].total_count)') ||
+        die "invalid GitHub status-context total for $CANDIDATE_COMMIT; nothing changed" 3
+    [[ "$status_count" =~ ^[0-9]+$ ]] && [[ "$status_total_count" =~ ^[0-9]+$ ]] &&
+        [ "$status_count" -gt 0 ] && [ "$status_count" -eq "$status_total_count" ] ||
+        die "GitHub status-context response is empty or truncated ($status_count/$status_total_count); nothing changed" 3
+    duplicate_statuses=$(printf '%s' "$statuses" | jq -r \
+        '[.[].statuses[].context | ascii_downcase] | sort | group_by(.)[] | select(length > 1) | .[0]') ||
+        die "invalid GitHub status-context names for $CANDIDATE_COMMIT; nothing changed" 3
+    [ -z "$duplicate_statuses" ] ||
+        die "GitHub status-context response contains duplicate contexts: $(printf '%s' "$duplicate_statuses" | paste -sd, -); nothing changed" 3
     pending=$(
         {
             printf '%s' "$checks" | jq -r '.[].check_runs[] | select(.status != "completed") | .name'
-            printf '%s' "$statuses" | jq -r '.statuses[] | select(.state == "pending") | .context'
+            printf '%s' "$statuses" | jq -r '.[].statuses[] | select(.state == "pending") | .context'
         } | LC_ALL=C sort -u
     )
     [ -z "$pending" ] || die "CI is not complete for $CANDIDATE_COMMIT: $(printf '%s' "$pending" | paste -sd, -)"
     reported_checks=$(printf '%s' "$checks" | jq -r '.[].check_runs[].name' | LC_ALL=C sort -u)
-    reported_statuses=$(printf '%s' "$statuses" | jq -r '.statuses[].context' | LC_ALL=C sort -u)
+    reported_statuses=$(printf '%s' "$statuses" | jq -r '.[].statuses[].context' | LC_ALL=C sort -u)
     for name in "${REQUIRED_CHECKS[@]}"; do
         grep -Fxq "$name" <<< "$reported_checks" || die "required CI check did not report: $name"
     done
@@ -246,7 +270,7 @@ verify_ci() {
         {
             printf '%s' "$checks" | jq -r \
                 '.[].check_runs[] | select(.status == "completed" and .conclusion != "success") | .name'
-            printf '%s' "$statuses" | jq -r '.statuses[] | select(.state != "success" and .state != "pending") | .context'
+            printf '%s' "$statuses" | jq -r '.[].statuses[] | select(.state != "success" and .state != "pending") | .context'
         } | LC_ALL=C sort -u
     )
     if [ -z "$failures" ]; then

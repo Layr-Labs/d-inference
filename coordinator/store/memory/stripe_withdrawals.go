@@ -41,6 +41,9 @@ func (s *MemoryStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawal,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if u := s.usersByAccountID[w.AccountID]; u != nil && u.DeletedAt != nil {
+		return store.ErrErasureConflict
+	}
 	if _, exists := s.stripeWithdrawalsByID[w.ID]; exists {
 		return fmt.Errorf("stripe withdrawal %q already exists", w.ID)
 	}

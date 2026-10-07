@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -183,6 +183,7 @@ have different populations and must not be summed together.
 | `profiler.fleet_snapshot` | count | `status:written`, `write_failed` | each fleet sample |
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
 | `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/observation/fleet_gauge_loop.go`), which also pushes the `exact_cache.*` gauges (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
+| `exact_cache.artifact_allowlist.stale_models` | gauge | — | every gauge-loop tick; catalog models the cache-routing allowlist names only under a superseded artifact, `0` unless routing is `on`. Aggregate only: the tuple to append is named in the coordinator log, never in a metric (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`; `missingAllowlistEntries`, `coordinator/api/inference/exact_cache_allowlist_staleness.go`) |
 | `request_queue.depth_by_model`, `request_queue.oldest_age_ms` | gauge | `model` | every gauge-loop tick for served or queued models; a disappearing model gets one final zero for both series and is then forgotten (`coordinator/internal/observation/fleet/fleet_gauges.go`, `emitPerModelQueueGauges`) |
 
 ### In-process registry (not Datadog)
@@ -220,6 +221,21 @@ Datadog's; nothing is stored locally.
 | `inference failed after N attempt(s)` | error · `inference_error` | `reason:dispatch_exhausted`, `attempt`, `status_code`, `last_error` (the sanitized closed message) | `dispatch.go` |
 | `warm_pool_tick` | info · `custom` | Per-model latest-state sample: `model`, `target_warm`, `warm`, `eligible_cold`, `cold_ineligible`, `warm_saturated`, `warm_foreign_blocked`, `occupancy_ramp`, `headroom_providers`, `running`, `waiting`, `queue_depth`, `oldest_queue_age_ms`, `spill_arrival_rate`, `service_time_ms`, `quality_concurrency`, `demand_concurrency`, `capacity_rejects`, `ttft_misses`, `speculative_started`, `speculative_won`, `cold_dispatches`, `load_duration_ewma_ms`, `actions`, `observe_only`, plus scalar `cold_disq_<reason>` counts. Polled every 15 s and deduplicated by controller snapshot timestamp; intermediate controller ticks can be skipped. No provider or request identity; no Postgres record. | `coordinator/api/observation/warm_pool_telemetry.go` (`StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields`) |
 | `panic in handler <method> <path>: <value>` | fatal · `panic` | `handler`, `endpoint`, plus `stack` | `coordinator/internal/api/middleware/middleware.go` recovery middleware |
+
+## Account erasure log
+
+One record per erased account, written by the erasure outbox worker
+(`writeErasureLog`, `coordinator/api/accounts/erasure/outbox.go`) through
+`datadog.Client.SendLog` (`coordinator/datadog/logs_send.go`): one
+unbatched Logs API post whose failure is retried (up to 8 attempts, then the
+outbox row is `manual_action`), not dropped. `ddsource` `coordinator`, service
+`d-inference-coordinator`, the three attributes under `attributes`. Message
+`account erased`, kind `erasure_log`, severity `info`, ddtags
+`kind:erasure_log,severity:info,erasure_log:true`, attributes `request_id`,
+`account_id`, `erased_at` only; no personal data. Without `DD_API_KEY` the
+record is the `slog` line `erasure_log`. It is the list of completed erasures
+to replay after a database restore, so it must reach a Datadog log archive
+that outlives the database backups ([runbook](../operations/account-erasure.md#after-a-database-restore)).
 
 ## Coordinator per-request records (Postgres)
 

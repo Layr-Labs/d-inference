@@ -21,7 +21,16 @@ func (s *PostgresStore) ObserveMachine(ctx context.Context, o store.MachineObser
 	if err != nil {
 		return result, err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, o.AccountID); err != nil {
+		return result, err
+	}
+	if err := lockPersonalDataWrite(ctx, tx); err != nil {
+		return result, err
+	}
+	if err := checkPersonalSession(ctx, tx, o.SessionID, o.AccountID); err != nil {
+		return result, err
+	}
 	// A short DB transaction serializes alias creation/merges across processes.
 	// It runs on the inventory worker, never under a provider lock or WS reader.
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(9952701)`); err != nil {

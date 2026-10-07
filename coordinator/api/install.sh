@@ -11,7 +11,7 @@ set -euo pipefail
 #   2. Downloads the provider app (binaries, metallib, SwiftPM resources)
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
-#   5. Uses App Attest setup on macOS 27+, legacy MDM on older macOS
+#   5. Explains App Attest setup or defers legacy enrollment to the signed CLI flow
 #   6. Optionally downloads a starter model
 #
 # Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
@@ -25,6 +25,11 @@ set -euo pipefail
 COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
+PROVIDER_CONFIG="$HOME/.config/darkbloom/provider.toml"
+# The provider connects here when provider.toml sets no [coordinator] url
+# (CoordinatorSettings in provider-swift ProviderConfig.swift), so the
+# production installer removes that url instead of writing one.
+PRODUCTION_COORD_URL="https://api.darkbloom.dev"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
@@ -290,14 +295,100 @@ install_bundle_atomically() {
     rm -rf "$stage"
 }
 
+# Accept only a bare host[:port]: the value is written into TOML. Plain
+# http:// (ws://) is accepted only for a coordinator on this Mac.
+provider_websocket_url() {
+    local base=${1%/} scheme host
+    local host_pattern='^[A-Za-z0-9.-]+(:[0-9]+)?$'
+    case "$base" in
+        https://*) scheme=wss; host=${base#https://} ;;
+        http://*) scheme=ws; host=${base#http://} ;;
+        *) return 1 ;;
+    esac
+    [[ $host =~ $host_pattern ]] || return 1
+    if [ "$scheme" = ws ]; then
+        case "${host%%:*}" in
+            localhost|127.0.0.1) ;;
+            *) return 1 ;;
+        esac
+    fi
+    printf '%s://%s/ws/provider\n' "$scheme" "$host"
+}
+
+# Bind the provider to the coordinator that served this installer, so that
+# start, login, update and the LaunchAgent use it. For production, remove any
+# [coordinator] url so the provider uses its built-in production default
+# (this also moves a Mac back from dev); a missing file stays missing. For any
+# other coordinator, write its url. Every other line is kept.
+bind_provider_coordinator() {
+    local coord_url=${1%/}
+    local config=$2
+    local ws_url=""
+    if [ "$coord_url" = "$PRODUCTION_COORD_URL" ]; then
+        [ -f "$config" ] || return 0
+    else
+        ws_url=$(provider_websocket_url "$coord_url") || {
+            fail_install "Coordinator URL must be https://<host>[:port], or http:// for localhost (got $coord_url)."
+            return 1
+        }
+        mkdir -p "$(dirname "$config")" || return 1
+    fi
+    local line=""
+    [ -n "$ws_url" ] && line="url = \"$ws_url\""
+    local tmp="$config.install-$$"
+    if [ -f "$config" ]; then
+        # An empty line value removes the url instead of writing one; awk then
+        # exits 3 when there was no url to remove, and the file is not touched.
+        local status=0
+        awk -v line="$line" '
+            /^[[:space:]]*\[/ {
+                if (in_coordinator && !written && line != "") { print line; written = 1 }
+                in_coordinator = ($0 ~ /^[[:space:]]*\[coordinator\][[:space:]]*(#.*)?$/)
+                print
+                next
+            }
+            in_coordinator && /^[[:space:]]*url[[:space:]]*=/ {
+                if (!written && line != "") { print line; written = 1 }
+                removed = 1
+                next
+            }
+            { print }
+            END {
+                if (line == "") exit(removed ? 0 : 3)
+                if (in_coordinator && !written) { print line; written = 1 }
+                if (!written) { print ""; print "[coordinator]"; print line }
+            }
+        ' "$config" > "$tmp" || status=$?
+        [ "$status" -eq 0 ] || [ "$status" -eq 3 ] || { rm -f "$tmp"; return 1; }
+        if [ "$status" -eq 3 ] || cmp -s "$tmp" "$config"; then
+            rm -f "$tmp"
+            [ -z "$ws_url" ] || echo "  Coordinator: $ws_url (already set in $config)"
+            return 0
+        fi
+    else
+        printf '[coordinator]\n%s\n' "$line" > "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+    mv "$tmp" "$config" || { rm -f "$tmp"; return 1; }
+    if [ -n "$ws_url" ]; then
+        echo "  Coordinator: $ws_url (set in $config)"
+    else
+        echo "  Coordinator: production default (removed [coordinator] url from $config)"
+    fi
+    echo "  A provider that is already running keeps its old coordinator until darkbloom start."
+}
+
 # Setup routing is independent of serving authorization. App Attest failures
 # must not silently send a macOS 27+ user into MDM enrollment.
 configure_device_verification() {
+    echo "  New providers require macOS 27+ and qualified current App Attest."
+    echo "  Grandfathered legacy providers may temporarily serve without base rewards."
+    echo "  All base rewards require macOS 27+ and qualified current App Attest."
     local macos_major=${MACOS%%.*}
     case "$macos_major" in
         ''|*[!0-9]*)
             echo "  Could not determine the macOS version; no MDM profile was downloaded."
-            echo "  Run darkbloom enroll to select the verification setup for this Mac."
+            echo "  Run darkbloom login with your existing account, then darkbloom enroll"
+            echo "  to select the verification setup for this Mac."
             return
             ;;
     esac
@@ -314,57 +405,16 @@ configure_device_verification() {
         return
     fi
 
-    echo "  Upgrade to macOS 27 or later to avoid Darkbloom MDM enrollment."
-    ALREADY_ENROLLED=false
+    echo "  Upgrade to macOS 27 or later for App Attest."
     if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
-        ALREADY_ENROLLED=true
-    fi
-
-    if [ "$ALREADY_ENROLLED" = true ]; then
         echo "  An MDM profile is already installed; keep existing management in place."
         echo "  Run darkbloom doctor to check Darkbloom verification."
-    else
-        echo "  Requesting enrollment profile from coordinator..."
-        PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX")"
-        PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"
-        if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
-            -H "Content-Type: application/json" \
-            -d '{}' \
-            -o "$PROFILE_PATH" 2>/dev/null; then
-            echo ""
-            echo "  ┌──────────────────────────────────────────────────┐"
-            echo "  │ ACTION REQUIRED: Install the enrollment profile  │"
-            echo "  │                                                  │"
-            echo "  │ This profile lets the coordinator verify:        │"
-            echo "  │  • SIP, Secure Boot, system integrity            │"
-            echo "  │  • Your Secure Enclave is genuine Apple silicon  │"
-            echo "  │  • Device identity signed by Apple's Root CA     │"
-            echo "  │                                                  │"
-            echo "  │ Darkbloom CANNOT erase, lock, or control         │"
-            echo "  │ your Mac. Remove anytime in System Settings.     │"
-            echo "  └──────────────────────────────────────────────────┘"
-            echo ""
-            open "$PROFILE_PATH"
-            sleep 1
-            open "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
-
-            echo "  System Settings opened — click Install and enter your password."
-            if [ "$INTERACTIVE" = true ]; then
-                echo ""
-                read -p "  Press Enter once you have installed the profile..." || true
-            else
-                echo "  After installing, the provider will verify on first start."
-                sleep 3
-            fi
-            if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
-                echo "  Enrollment verified ✓"
-            else
-                echo "  Enrollment pending ⚠ (complete it in System Settings, or run: darkbloom enroll)"
-            fi
-        else
-            echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
-        fi
     fi
+    echo "  Legacy re-enrollment is deferred; this installer downloads no MDM profile."
+    echo "  If you need legacy re-enrollment, after installation run:"
+    echo "    darkbloom login   # sign in to your existing account"
+    echo "    darkbloom enroll  # performs the current signed eligibility check"
+    echo "  Only eligible grandfathered providers can re-enroll; installation continues."
 }
 
 if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
@@ -373,6 +423,15 @@ if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
         exit 64
     }
     verify_staged_app_signature "$2" "$3"
+    exit $?
+fi
+
+if [ "${1:-}" = "--bind-coordinator-test" ]; then
+    [ "$#" -eq 2 ] || {
+        echo "usage: COORD_URL=<url> $0 --bind-coordinator-test <provider-toml>" >&2
+        exit 64
+    }
+    bind_provider_coordinator "$COORD_URL" "$2"
     exit $?
 fi
 
@@ -498,6 +557,11 @@ set -eu
 
 echo "  Binaries installed ✓"
 echo "  Shortcut: darkbloom"
+
+if ! bind_provider_coordinator "$COORD_URL" "$PROVIDER_CONFIG"; then
+    echo "  Could not write the coordinator URL to $PROVIDER_CONFIG."
+    exit 1
+fi
 
 # ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""

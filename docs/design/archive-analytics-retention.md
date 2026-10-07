@@ -8,7 +8,7 @@ Status: Superseded by [Fourteen-day operational storage and durable history](ope
 
 Preserve full records in private compressed Cloud Storage. Use BigQuery for historical analysis and asynchronous analytics computation. Serve leaderboard and public totals from small, durable snapshots cached in the API, refreshed every **5 minutes**. Keep authoritative balances, settlement/refund identities and active workflows in PostgreSQL.
 
-The draft [retention policy](../../scripts/telemetry_archive/retention-policy.proposed.json) records the requested **rolling 30-day target** for five telemetry detail tables, with deletion disabled. The four exact accounting tables are separately archived but excluded from this retirement proposal until their scope and financial safeguards are settled. This file is a design artifact, not runtime configuration. Every existing archive receipt still has `retention_eligible=false`. A completed snapshot plan alone cannot enable deletion.
+The draft [retention policy](https://github.com/Layr-Labs/d-inference/blob/130579aa294cdbc0cd3fb21cd60f982dbb0c1cbb/scripts/telemetry_archive/retention-policy.proposed.json) records the requested **rolling 30-day target** for five telemetry detail tables, with deletion disabled. The four exact accounting tables are separately archived but excluded from this retirement proposal until their scope and financial safeguards are settled. This file is a design artifact, not runtime configuration. Every existing archive receipt still has `retention_eligible=false`. A completed snapshot plan alone cannot enable deletion.
 
 ```mermaid
 flowchart TB

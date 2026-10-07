@@ -33,23 +33,28 @@ class StageTestMetallibTests(unittest.TestCase):
         return subprocess.run([str(self.stage), str(self.bin)], capture_output=True, text=True,
                               env=self.env)
 
-    def fake_copy_platform(self, system, copy_body=None):
-        tools = self.root / "tools"
-        tools.mkdir(exist_ok=True)
-        uname = tools / "uname"
+    def install_cp(self, body, system="Darwin"):
+        commands = self.root / "commands"
+        commands.mkdir(exist_ok=True)
+        uname = commands / "uname"
         uname.write_text(f"#!/bin/bash\nprintf '%s\\n' {shlex.quote(system)}\n")
         uname.chmod(0o755)
-        calls = tools / "copy-calls"
-        calls.write_text("")
-        cp = tools / "cp"
+        self.cp_log = self.root / "cp.log"
+        self.cp_log.write_text("")
+        shim = commands / "cp"
+        shim.write_text('#!/bin/bash\nset -eu\nprintf "%s\\n" "$1" >> "$CP_LOG"\n' + body)
+        shim.chmod(0o755)
+        self.env.update(PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                        REAL_CP=shutil.which("cp"), CP_LOG=str(self.cp_log))
+
+    def fake_copy_platform(self, system, copy_body=None):
         flags = '[ "$1" = -c ]; shift' if system == "Darwin" else '[ "$1" != -c ]'
         if copy_body is None:
-            copy_body = f'exec {shlex.quote(shutil.which("cp"))} "$@"'
-        cp.write_text(f"#!/bin/bash\nset -eu\nprintf 'copy\\n' >> {shlex.quote(str(calls))}\n"
-                      f"{flags}\n{copy_body}\n")
-        cp.chmod(0o755)
-        self.env["PATH"] = str(tools) + os.pathsep + os.environ["PATH"]
-        return calls
+            copy_body = 'exec "$REAL_CP" "$@"'
+        elif system == "Darwin":
+            flags = 'if [[ "$1" == -c ]]; then shift; fi'
+        self.install_cp(f"{flags}\n{copy_body}\n", system)
+        return self.cp_log
 
     def assert_stages_every_bundle(self, bundle_names):
         paths = []
@@ -70,6 +75,33 @@ class StageTestMetallibTests(unittest.TestCase):
 
     def test_replaces_both_resource_layouts_for_every_per_target_bundle(self):
         self.assert_stages_every_bundle(["ProviderCoreTests.xctest", "DarkbloomCLITests.xctest"])
+
+    def test_supported_clone_does_not_retry_plain_copy(self):
+        self.install_cp('test "$1" = -c\nshift\nexec "$REAL_CP" "$@"\n')
+        self.assert_stages_every_bundle(["FirstPackageTests.xctest", "SecondPackageTests.xctest"])
+        self.assertEqual(self.cp_log.read_text().splitlines(), ["-c"] * 4)
+
+    def test_unsupported_clone_falls_back_for_every_bundle_and_layout(self):
+        self.install_cp('if [[ "$1" == -c ]]; then exit 64; fi\nexec "$REAL_CP" "$@"\n')
+        self.assert_stages_every_bundle(["ProviderCoreTests.xctest", "DarkbloomCLITests.xctest"])
+        self.assertEqual(self.cp_log.read_text().splitlines(),
+                         ["-c", str(self.bin / "mlx.metallib")] * 4)
+
+    def test_failed_or_corrupt_fallback_preserves_prior_runtime(self):
+        path = self.bin / "OnlyPackageTests.xctest/Contents/MacOS/mlx.metallib"
+        path.parent.mkdir(parents=True)
+        for copy_status in (9, 0):
+            with self.subTest(copy_status=copy_status):
+                path.write_text("prior-runtime")
+                self.install_cp('if [[ "$1" == -c ]]; then exit 64; fi\n'
+                                'printf partial-copy > "$2"\n'
+                                f'exit {copy_status}\n')
+                result = self.run_stage()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(path.read_text(), "prior-runtime")
+                self.assertEqual(self.cp_log.read_text().splitlines(),
+                                 ["-c", str(self.bin / "mlx.metallib")])
+                self.assertFalse(list(self.bin.rglob(".mlx-metallib.*")))
 
     def test_stages_per_target_bundle_without_prior_library(self):
         bundle = self.bin / "ProviderCoreTests.xctest"
@@ -100,7 +132,10 @@ class StageTestMetallibTests(unittest.TestCase):
                     self.assertEqual(result.returncode, copy_exit or 1, result.stderr)
                     self.assertEqual(path.read_text(), "prior-runtime")
                     self.assertFalse(list(self.bin.rglob(".mlx-metallib.*")))
-                    self.assertEqual(calls.read_text(), "copy\n")
+                    expected = ["-c"] if system == "Darwin" else [str(self.bin / "mlx.metallib")]
+                    if system == "Darwin" and copy_exit:
+                        expected.append(str(self.bin / "mlx.metallib"))
+                    self.assertEqual(calls.read_text().splitlines(), expected)
 
     def test_no_runner_cannot_be_reported_as_success(self):
         self.assertNotEqual(self.run_stage().returncode, 0)

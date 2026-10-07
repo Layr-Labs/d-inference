@@ -66,6 +66,7 @@ func TestExactCacheDatadogGaugesAreAggregateAndPrivacySafe(t *testing.T) {
 	for _, metric := range []string{
 		"exact_cache.artifact_allowlist.configured",
 		"exact_cache.artifact_allowlist.count",
+		"exact_cache.artifact_allowlist.stale_models",
 		"exact_cache.memory_ready_models",
 		"exact_cache.eligibility_state",
 		"exact_cache.eligibility_reason",

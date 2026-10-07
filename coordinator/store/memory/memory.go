@@ -119,7 +119,9 @@ type MemoryStore struct {
 	// codeAttestations: lost on restart in the memory store (same as the in-memory
 	// cache it backs), but the methods exist so the store seam is uniform and
 	// Postgres persists for real as the production backend.
-	providerTrustReuse map[string]store.ProviderTrustReuse
+	providerTrustReuse    map[string]store.ProviderTrustReuse
+	legacyMDMCohortCutoff time.Time
+	legacyMDMCohort       []store.LegacyMDMMachine
 
 	// Durable scheduler parity for tests/development. Key is SE key + task kind.
 	verificationJobs map[string]store.VerificationJob
@@ -147,6 +149,16 @@ type MemoryStore struct {
 	floorDrawSeq  int64
 	floorDrawKeys map[string]struct{} // "providerKey|epochID" → settled marker
 
+	// Account erasure requests and their outbox rows.
+	erasureSEOwners    map[string]map[string]bool
+	erasureRequests    map[string]*memoryErasureRequest
+	erasureOutbox      []store.ErasureOutboxItem
+	erasureOutboxLease map[string]time.Time // outbox row ID → lease end
+	// Erased accounts refuse credits; refused ones are kept for review.
+	erasedAccounts           map[string]bool
+	erasureRefusedCredits    []store.ErasureRefusedCredit
+	erasureRefusedSeq        int64
+	erasureRefusedIdentities map[refusedCreditIdentity]bool
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -162,6 +174,10 @@ func NewMemory(scfg store.Config) *MemoryStore {
 		history:                       memoryhistory.New(),
 		smallModelsInterest:           make(map[string]store.SmallModelsInterest),
 		modelDemandStartedAt:          time.Now().UTC(),
+		erasureSEOwners:               make(map[string]map[string]bool),
+		erasureRequests:               make(map[string]*memoryErasureRequest),
+		erasureOutboxLease:            make(map[string]time.Time),
+		erasedAccounts:                make(map[string]bool),
 		keyRecords:                    make(map[string]*store.APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),

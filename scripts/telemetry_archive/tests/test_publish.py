@@ -1,5 +1,6 @@
 """Publication separates exact source-window coverage from unique scan files."""
 
+import hashlib
 from datetime import timedelta, timezone
 from types import SimpleNamespace
 
@@ -8,7 +9,9 @@ from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 from telemetry_archive import publish as publisher
+from telemetry_archive.artifact import json_bytes
 from telemetry_archive.backfill_plan import make_plan
+from telemetry_archive.catalog import merge_files
 from telemetry_archive.model import utc
 
 from .catalog_fixtures import coverage_row
@@ -23,16 +26,37 @@ class Job:
 
 
 class BigQuery:
-    def __init__(self, prior):
-        self.prior = prior
+    def __init__(self, prior=()):
         self.tables, self.loaded, self.statements = {}, [], []
+        self.aliases = {}
+        if prior:
+            self.install_legacy(prior)
+
+    def install_legacy(self, entries, dataset="telemetry_history"):
+        entries = merge_files(entries)
+        digest = hashlib.sha256(json_bytes(entries)).hexdigest()
+        catalog_id = f"archive-test.{dataset}.catalog_{digest[:16]}"
+        table = bigquery.Table(catalog_id, schema=publisher.CATALOG_SCHEMA)
+        table.description = "Verified archive catalog sha256=" + digest
+        self.create_table(table, exists_ok=True)
+        self.load_table_from_json(
+            entries,
+            catalog_id,
+            bigquery.LoadJobConfig(
+                schema=publisher.CATALOG_SCHEMA, write_disposition="WRITE_EMPTY"
+            ),
+        )
+        self.aliases[f"archive-test.{dataset}.archive_coverage"] = f"SELECT * FROM `{catalog_id}`"
+        return self.tables[catalog_id]
 
     def get_dataset(self, _):
         return SimpleNamespace(location="us-east4")
 
     def get_table(self, name):
-        if name.endswith(".archive_coverage"):
-            return SimpleNamespace()
+        if name in self.aliases:
+            return SimpleNamespace(
+                table_type="VIEW", view_use_legacy_sql=False, view_query=self.aliases[name]
+            )
         if name not in self.tables:
             raise NotFound(name)
         return self.tables[name]
@@ -47,6 +71,7 @@ class BigQuery:
         self.tables.setdefault(
             key,
             SimpleNamespace(
+                table_type="EXTERNAL" if table.external_data_configuration else "TABLE",
                 description=table.description,
                 labels=table.labels,
                 num_rows=0,
@@ -75,13 +100,22 @@ class BigQuery:
 
     def query(self, sql, job_config=None):
         self.statements.append(sql)
+        if sql.startswith("CREATE OR REPLACE VIEW"):
+            name = sql.split("`")[1]
+            self.aliases[name] = sql.split(" AS ", 1)[1]
+            return Job()
         if sql.startswith("SELECT *") and ".catalog_" in sql:
             assert job_config.maximum_bytes_billed == 64 * 1024**2
             assert job_config.use_query_cache is False
             name = sql.split("`")[1]
             limit = int(sql.rsplit(" LIMIT ", 1)[1])
             return Job(self.tables[name].rows[:limit])
-        return Job(self.prior if sql.startswith("SELECT *") else [])
+        if sql.startswith("SELECT *"):
+            # Follow the real published pointer, including on subsequent calls.
+            name = sql.split("`")[1]
+            target = self.aliases[name].split("`")[1]
+            return Job(self.tables[target].rows)
+        raise AssertionError(f"unexpected SQL: {sql}")
 
 
 def test_publisher_recovers_empty_window_coverage_and_deduplicates_manifest(monkeypatch):
@@ -102,8 +136,6 @@ def test_publisher_recovers_empty_window_coverage_and_deduplicates_manifest(monk
     )
     # The previous file-only catalog retained just the last of two empty hours.
     prior = dict(second)
-    for field in ("observed_at", "window_start", "window_end"):
-        prior[field] = utc(prior[field])
     client = BigQuery([prior])
     bucket = SimpleNamespace(labels={}, get_blob=lambda *a, **k: SimpleNamespace(generation="1"))
     monkeypatch.setattr(publisher.cloud, "storage_client", lambda *_: object())

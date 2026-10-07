@@ -8,6 +8,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	failure "github.com/eigeninference/d-inference/coordinator/internal/inference/failure"
 	rejection "github.com/eigeninference/d-inference/coordinator/internal/inference/rejection"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/identitygate"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -49,6 +50,14 @@ func (s Policy) RecordError(providerID string, pr *registry.PendingRequest, stat
 	if providerID == "" || pr == nil {
 		return
 	}
+	class, _ := failure.ClassifyTerminalCause(terminalCause)
+	// A deadline refusal backs off only the exploration that produced it, never
+	// provider health. Typed neutral/capacity terminals take precedence.
+	if failure.IsDeadlineUnreachableErrorReason(errReason) &&
+		class != failure.CauseClassNeutral && class != failure.CauseClassCapacity &&
+		pr.ClaimFirstContentExplorationOutcome() {
+		s.Registry.RecordFirstContentExplorationOutcome(providerID, pr.Model, false)
+	}
 	// Structured health-neutral outcomes (isProviderHealthNeutralErrorReason:
 	// jinja_* template-render failures, tool_noncompliance, and the
 	// request-clock-specific deadline_unreachable refusal) never feed provider
@@ -82,7 +91,7 @@ func (s Policy) RecordError(providerID string, pr *registry.PendingRequest, stat
 	// absent (legacy/synthetic), engine_error, the fault causes
 	// (prefill_stall / decode_stall / watchdog), and unknown drift values —
 	// fall through to the unchanged legacy funnels.
-	switch class, _ := failure.ClassifyTerminalCause(terminalCause); class {
+	switch class {
 	case failure.CauseClassNeutral:
 		return
 	case failure.CauseClassCapacity:
@@ -115,6 +124,9 @@ func (s Policy) RecordError(providerID string, pr *registry.PendingRequest, stat
 	// fault-503ing ~all of its requests gets quarantined fleet-wide. errStr lets
 	// the breaker tell a capacity-503 (ignored) from a fault-503 (counted). Both
 	// breakers coexist.
+	if identitygate.ProviderOutcomeIsFault(statusCode, errStr) && pr.ClaimFirstContentExplorationOutcome() {
+		s.Registry.RecordFirstContentExplorationOutcome(providerID, pr.Model, false)
+	}
 	if opened, _ := s.Registry.RecordProviderOutcome(providerID, false, statusCode, errStr, causes...); opened {
 		s.Observation.Incr("routing.provider_breaker_open", []string{"model:" + pr.Model})
 	}
@@ -240,6 +252,9 @@ func (s Policy) Success(pr *registry.PendingRequest) {
 		return
 	}
 	s.Registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
+	if pr.ClaimFirstContentExplorationOutcome() {
+		s.Registry.RecordFirstContentExplorationOutcome(pr.ProviderID, pr.Model, true)
+	}
 	// A clean completion is an ACCEPT for the capacity-reject cooldown: clear
 	// the pair's reject streak, any active capacity cooldown, and the re-trip
 	// backoff. Belt-and-braces with the commit-time accept (commitFirstContent)

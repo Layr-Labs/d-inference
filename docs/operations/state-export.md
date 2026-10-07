@@ -1,6 +1,6 @@
 # State export
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 How to pull the coordinator's sealed on-disk state — the MicroMDM enrollment
 database and everything else on the persistent disk that is not in Postgres —
@@ -60,7 +60,7 @@ Code: `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`,
    `attachment; filename="darkbloom-state-<epoch>.zip.age"` (or `.zip` when
    plaintext was allowed). The staging directory is removed afterwards.
 
-Logs carry counts, the remote address and the outcome only.
+Logs carry counts and the outcome only.
 
 ## Prerequisites
 

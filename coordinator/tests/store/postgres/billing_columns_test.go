@@ -32,6 +32,7 @@ func TestPostgresBillingColumnMigrationFailureAbortsStartup(t *testing.T) {
 			if _, err := s.pool.Exec(ctx, "ALTER TABLE "+tc.table+" DROP COLUMN "+tc.column); err != nil {
 				t.Fatalf("drop %s.%s: %v", tc.table, tc.column, err)
 			}
+			forgetMigrationVersions(t, s)
 			s.Close()
 
 			// A long reader holds the table, so the ADD COLUMN cannot take its

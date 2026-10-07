@@ -1,12 +1,17 @@
 package identity
 
 func (t *Throttle) RecordChallengeForIdentity(
+	generation uint64,
 	seKey, nonce, token, nodeKey string,
-) {
+) bool {
 	if seKey == "" {
-		return
+		return false
 	}
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.publicationCurrentLocked(seKey, generation) {
+		return false
+	}
 	now := t.Now()
 	old := t.outstanding[seKey]
 	kept := old[:0]
@@ -18,7 +23,7 @@ func (t *Throttle) RecordChallengeForIdentity(
 	t.outstanding[seKey] = append(kept, pushChallenge{
 		Nonce: nonce, At: now, Token: token, NodeKey: nodeKey,
 	})
-	t.mu.Unlock()
+	return true
 }
 
 func (t *Throttle) MatchChallengeForIdentity(

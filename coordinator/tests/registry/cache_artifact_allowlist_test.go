@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,39 @@ func TestCacheArtifactConfigurationOwnsMembershipAndClearsEvidence(t *testing.T)
 	}
 	if r.CacheRoutingConfigSnapshot().AllowedArtifacts != nil {
 		t.Fatal("unrestricted configuration became empty")
+	}
+}
+
+// A revision changes a model's tuple. The list keeps naming the model, so the
+// live artifact is declined until an operator appends it; only that entry is missing.
+func TestCacheArtifactAllowlistMissingEntriesAreLiveArtifactsOfListedModels(t *testing.T) {
+	listed := artifactTestIdentity()
+	revisedWeights, revisedTemplate, neverListed := listed, listed, listed
+	revisedWeights.ModelAggregateSHA256 = strings.Repeat("c", 64)
+	revisedTemplate.PromptContractID = strings.Repeat("c", 64)
+	neverListed.ModelID = "unlisted-model"
+	live := []production.CacheRoutingArtifact{listed, revisedWeights, revisedTemplate, neverListed}
+
+	for _, tc := range []struct {
+		name      string
+		allowlist []production.CacheRoutingArtifact
+		missing   []production.CacheRoutingArtifact
+	}{
+		{name: "unrestricted list has no stale entries"},
+		{name: "empty list names no model", allowlist: []production.CacheRoutingArtifact{}},
+		{name: "revisions of a listed model", allowlist: []production.CacheRoutingArtifact{listed},
+			missing: []production.CacheRoutingArtifact{revisedWeights, revisedTemplate}},
+		{name: "appended revision is covered", allowlist: []production.CacheRoutingArtifact{listed, revisedWeights},
+			missing: []production.CacheRoutingArtifact{revisedTemplate}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := production.New(testLogger())
+			if err := r.ConfigureCacheRouting(artifactTestConfig(tc.allowlist)); err != nil {
+				t.Fatal(err)
+			}
+			if missing := r.MissingCacheRoutingAllowlistEntries(live); !slices.Equal(missing, tc.missing) {
+				t.Fatalf("missing=%+v, want %+v", missing, tc.missing)
+			}
+		})
 	}
 }

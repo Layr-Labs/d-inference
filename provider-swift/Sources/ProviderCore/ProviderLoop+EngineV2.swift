@@ -699,6 +699,8 @@ extension ProviderLoop {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                mtpAcceptanceConfig: loopConfig.config.backend.mtpAcceptance,
+                mtpAcceptanceConfigByModel: loopConfig.config.backend.mtpAcceptanceByModel,
                 prefillDeadlineMode:
                     loopConfig.config.backend.prefillDeadlineMode,
                 // The loaded artifact's profile identity is independent of

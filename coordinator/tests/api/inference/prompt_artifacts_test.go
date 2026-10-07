@@ -20,14 +20,23 @@ import (
 )
 
 func TestCatalogReconcileProvisionsPromptArtifacts(t *testing.T) {
+	server := inference.New(inference.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, inference.Config{})
+	status := provisionPromptArtifact(t, server, "fixture-model")
+	if status.PromptContractID == "" || status.Path == "" {
+		t.Fatalf("ready status omitted identity or path: %+v", status)
+	}
+}
+
+// provisionPromptArtifact reconciles one catalog model whose only prompt file
+// is served by a local origin, and returns its status once it is ready.
+func provisionPromptArtifact(t *testing.T, server *inference.Owner, modelID string) promptcontract.ProvisionStatus {
+	t.Helper()
 	const (
-		modelID  = "fixture-model"
 		r2Prefix = "models/fixture"
 		filePath = "tokenizer.json"
 	)
 	body := []byte(`{"version":"1.0"}`)
 	digest := sha256.Sum256(body)
-	digestHex := hex.EncodeToString(digest[:])
 	aggregate := sha256.Sum256(digest[:])
 
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +46,7 @@ func TestCatalogReconcileProvisionsPromptArtifacts(t *testing.T) {
 		}
 		_, _ = w.Write(body)
 	}))
-	defer origin.Close()
+	t.Cleanup(origin.Close)
 	baseURL, err := url.Parse(origin.URL + "/")
 	if err != nil {
 		t.Fatal(err)
@@ -68,9 +77,8 @@ func TestCatalogReconcileProvisionsPromptArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer provisioner.Close()
+	t.Cleanup(provisioner.Close)
 
-	server := inference.New(inference.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, inference.Config{})
 	server.SetPromptArtifactProvisioner(provisioner)
 	server.ReconcilePromptArtifacts([]store.ModelRegistryRecord{{
 		ModelRegistryEntry: store.ModelRegistryEntry{ID: modelID},
@@ -79,21 +87,18 @@ func TestCatalogReconcileProvisionsPromptArtifacts(t *testing.T) {
 			AggregateSHA256: hex.EncodeToString(aggregate[:]),
 		},
 		Files: []store.ModelVersionFile{{
-			Path: filePath, SizeBytes: int64(len(body)), SHA256: digestHex, Role: "tokenizer",
+			Path: filePath, SizeBytes: int64(len(body)), SHA256: hex.EncodeToString(digest[:]), Role: "tokenizer",
 		}},
 	}})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		status, ok := server.PromptArtifactStatus(modelID)
-		if ok && status.ArtifactReady {
-			if status.PromptContractID == "" || status.Path == "" {
-				t.Fatalf("ready status omitted identity or path: %+v", status)
-			}
-			return
+		if status, ok := server.PromptArtifactStatus(modelID); ok && status.ArtifactReady {
+			return status
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	status, _ := server.PromptArtifactStatus(modelID)
 	t.Fatalf("catalog prompt artifacts did not become ready: %+v", status)
+	return promptcontract.ProvisionStatus{}
 }

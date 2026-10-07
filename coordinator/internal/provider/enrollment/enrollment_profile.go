@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// generateCombinedProfile creates a .mobileconfig with two payloads:
+// Profile creates a .mobileconfig with two payloads:
 //  1. SCEP — MDM identity certificate (for enrollment)
 //  2. MDM — enrolls with MicroMDM (SecurityInfo verification)
 //

@@ -35,6 +35,10 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
+	// SoftDeleteMutationsEnabled permits new provider removals and account
+	// erasure confirmations. False preserves the initial rollback window; it
+	// does not undo tombstones or stop cleanup of already accepted erasures.
+	SoftDeleteMutationsEnabled bool
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -75,20 +79,21 @@ func ReadServerConfig() ServerConfig {
 		NonStreamingResponseMaxBytes:  env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_BYTES", responselimit.DefaultMaxBytes),
 		NonStreamingResponseMaxChunks: env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_CHUNKS", responselimit.DefaultMaxChunks),
 
-		AppAttestShadow:         attestservice.ConfigFromEnvironment(),
-		Port:                    env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
-		ConsoleURL:              os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
-		CORSOrigin:              os.Getenv("CORS_ORIGIN"),
-		BaseURL:                 os.Getenv(env.EnvPrefix + "_BASE_URL"),
-		R2CDNURL:                os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
-		MinProviderVersion:      os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
-		AdminKey:                os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
-		AdminEmails:             ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:              os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
-		ServiceReservations:     env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
-		FirstContentSLAAccounts: ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
-		TrustReuseJournalPath:   journal.ResolveTrustReuseRevocationJournalPath(),
-		MDMScheduler:            trustapi.ReadMDMSchedulerConfig(),
+		AppAttestShadow:            attestservice.ConfigFromEnvironment(),
+		Port:                       env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		ConsoleURL:                 os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
+		CORSOrigin:                 os.Getenv("CORS_ORIGIN"),
+		BaseURL:                    os.Getenv(env.EnvPrefix + "_BASE_URL"),
+		R2CDNURL:                   os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
+		MinProviderVersion:         os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
+		AdminKey:                   os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
+		AdminEmails:                ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:                 os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
+		ServiceReservations:        env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		SoftDeleteMutationsEnabled: env.EnvBool(env.EnvPrefix+"_SOFT_DELETE_MUTATIONS_ENABLED", false),
+		FirstContentSLAAccounts:    ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
+		TrustReuseJournalPath:      journal.ResolveTrustReuseRevocationJournalPath(),
+		MDMScheduler:               trustapi.ReadMDMSchedulerConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

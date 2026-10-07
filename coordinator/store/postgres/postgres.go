@@ -15,7 +15,8 @@ var _ store.Store = (*PostgresStore)(nil)
 
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool                       *pgxpool.Pool
+	concurrentIndexLockTimeout time.Duration
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
@@ -30,8 +31,11 @@ type cachedPrice struct {
 }
 
 // NewPostgres creates a new PostgresStore connected to the given database URL.
-// It runs schema migrations on startup.
+// It applies pending schema migrations before it returns.
 func NewPostgres(ctx context.Context, scfg store.Config) (*PostgresStore, error) {
+	if err := scfg.Check(); err != nil {
+		return nil, err
+	}
 	cfg, err := pgxpool.ParseConfig(scfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse postgres config: %w", err)
@@ -65,6 +69,9 @@ func NewPostgres(ctx context.Context, scfg store.Config) (*PostgresStore, error)
 	}
 
 	s := NewPostgresWithPool(pool)
+	if scfg.ConcurrentIndexLockTimeout != 0 {
+		s.concurrentIndexLockTimeout = scfg.ConcurrentIndexLockTimeout
+	}
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
@@ -79,7 +86,8 @@ func NewPostgres(ctx context.Context, scfg store.Config) (*PostgresStore, error)
 // separately managed migration and query connections, including read-only
 // connections and instrumented transports. Close closes the supplied pool.
 func NewPostgresWithPool(pool *pgxpool.Pool) *PostgresStore {
-	return &PostgresStore{pool: pool, priceCache: make(map[string]cachedPrice)}
+	return &PostgresStore{pool: pool, priceCache: make(map[string]cachedPrice),
+		concurrentIndexLockTimeout: store.DefaultConcurrentIndexLockTimeout}
 }
 
 // Close shuts down the connection pool.

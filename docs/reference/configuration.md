@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -12,6 +12,41 @@ read once at process start and a restart applies a change.
 [App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default `100`) selects the separate account cohort for coordinator-requested [dead-key rotation](app-attest-shadow.md#dead-key-rotation). [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
 
 Autopilot `selected_models` is the cached planning inventory; `backend.enabled_models` and explicit startup overrides remain ordinary serving permission in waiting/shadow mode. See [the protocol and activation boundary](../architecture/model-autopilot.md).
+
+## Runtime metallib snapshots
+
+The provider creates an anonymous snapshot before binding the runtime metallib.
+
+| Variable | Default / accepted values | Consumer |
+|---|---|---|
+| `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
+
+Set `TMPDIR` in the environment of the process that serves inference. A shell
+export applies to `darkbloom start --foreground` and `darkbloom start --local`.
+For background `darkbloom start`, it applies to the invoking CLI's startup
+snapshot, but is not copied into the installed provider's launchd environment:
+`TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
+(`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
+`passthroughEnvironment`). See [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough).
+This setting does not grant sandbox permissions or change snapshot binding checks.
+
+## Deployment environment
+
+| Setting | Default / bounds | Consumer |
+|---|---|---|
+| `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` | `production`; only `production` or `development`, unknown values fail startup | `coordinator/config/deployment.go` (`CheckDeploymentEnvironment`, `RequiresProductionAppAttest`); `coordinator/internal/startup/legacy_mdm.go` (`InitializeLegacyMDMPolicy`) |
+
+Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites).
+`AppConfig.Check` calls the pure `Config.CheckProductionServing`
+(`coordinator/appattest/service/config.go`) before opening the database or
+running migrations; `Policy.Initialize` checks again before the legacy cohort
+freeze. The database-only `--migrate-only` command does not require serving
+configuration. Explicit `development`, or actual memory-store
+fallback (`EIGENINFERENCE_ALLOW_MEMORY_STORE=true` with no database URL), skips
+the serving preflight and startup freeze. Allowing memory fallback does not exempt a configured
+Postgres store. `DD_ENV`, the App Attest proof environment, base URL and client
+claims do not classify deployment security. A later production startup freezes
+then-current eligible membership; dev startup does not establish a cutoff.
 
 ## Provider drain deadline
 
@@ -110,8 +145,12 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 |---|---|---|---|---|
 | `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/app/store.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
 | `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
+| `EIGENINFERENCE_MIGRATION_TIMEOUT` | positive Go duration | `15m` | `coordinator/store/config.go` (`ReadConfig`, `Check`); `coordinator/internal/command/coordinator/maintenance.go` (`Maintenance`) | Total deadline for `--migrate-only`, not ordinary serving startup. Explicit empty, malformed or nonpositive values fail validation before database access; programmatic zero uses the default. |
+| `EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` | positive Go duration, `1ms` to `2147483647ms` | `1m` | `coordinator/store/config.go` (`ReadConfig`, `Check`); `coordinator/store/postgres/migration_indexes.go` | Lock wait on dedicated connections for all concurrent index builders, including legacy versions 3, 4, 5 and 9. Overrides URL `lock_timeout` only there; SQL DDL keeps its separate 3-second default and existing URL overrides. Explicit empty, malformed or out-of-range values fail before database access; programmatic zero uses the default. |
+| `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/accounts/delete_provider.go`; `coordinator/api/accounts/erasure/handlers.go` | Enables new erasure confirmations (including `force`) and owned-provider removal. Disabled calls return 503 `soft_delete_mutations_disabled` after authorization/ownership checks. Plan/status/cancel and existing scrub/outbox work continue; read filters and credit fences remain. This is not a rollback switch. |
 | `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`); `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
 | `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
+| `EIGENINFERENCE_ERASURE_GRACE` | Go duration ≥ 0 | `720h` (`defaultGrace`, 30 days) | `coordinator/api/accounts/erasure/loop.go` (`graceFromEnv`) | Time between an account erasure's soft delete and its scrub; an invalid or negative value logs a warning and uses the default. Related erasure constants: [personal-data rules](personal-data-rules.md#configuration-and-constants); procedure: [`../operations/account-erasure.md`](../operations/account-erasure.md). |
 | `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
 | `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
 | `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Allows an unencrypted zip when no recipient is configured. |
@@ -652,6 +691,7 @@ provider or model command is running. Code:
 | `DARKBLOOM_NEMOTRON35_MTP_KV_ONLY_HISTORY` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Trusted-history replay may compute only the embedded assistant's K/V. Prefix save/restore uses the separate typed history codec. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS` | integer `1`…`7` | `7` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Upper proposal limit for adaptive depth; invalid selected limits fall back to seven. This is not a fixed proposal count. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_MTP_VERIFICATION_MODE` | `rectangular`, `serial`, `serial_target`, `automatic` | `automatic` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` | MTP verification strategy (benchmark session). |
+| `DARKBLOOM_MTP_ACCEPTANCE` | `exact`, `typical`, `typical:<delta>` (finite positive delta) | `exact` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift`; `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`benchmarkOverride`) | MTP draft acceptance rule (benchmark session only). An unrecognized value uses `exact`. Serving reads no environment variable for this rule; it reads `[backend] mtp_acceptance` and `mtp_acceptance_by_model` in [`provider.toml`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
 | `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |

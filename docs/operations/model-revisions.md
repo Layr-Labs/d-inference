@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-09-28
+> Last updated: 2026-10-05
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -108,7 +108,10 @@ Overwriting an already published R2 revision is rejected.
    runbook's separately approved deployment step. Keep tuples for retained
    approved revisions during convergence and rollback. Promotion does not update
    the allowlist, and a changed weight hash needs a new tuple even when its
-   tokenizer and prompt contract remain identical.
+   tokenizer and prompt contract remain identical. Until it is appended the
+   model has no cache routing: `artifact_allowlist.stale_models` in
+   `GET /v1/cache/status` counts it and the coordinator log names the exact
+   tuple ([stale entries](cache-routing-rollout.md#stale-entries-after-a-model-revision)).
 
 ## Verification
 

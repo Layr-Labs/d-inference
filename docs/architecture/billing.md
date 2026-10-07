@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -11,7 +11,7 @@ routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
 how-to is [`consumer/billing.md`](../consumer/billing.md).
 
-Qualified App Attest-only providers can receive base rewards through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards). `coordinator/payments/baserewards/machine_candidates.go` unions known-machine uptime, aggregates account-matching organic earnings and rechecks current serving authorization before credit. Historical balances and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
+Base rewards require macOS 27 or later and current qualified App Attest authorization for every provider, old or new, through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards), whether or not the machine also has legacy MDM. `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`) checks this when building candidates and immediately before credit. Grandfathered legacy-MDM-only machines may still serve and earn completed-inference work payments, but cannot receive new base rewards. Expired, revoked or unqualified App Attest authorization cannot use legacy serving eligibility as a reward fallback. Historical balances, finalized base rewards, reserved withdrawals and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
 
 The remaining epoch allocation commits as one transaction in `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`) and `coordinator/store/floor_draw_batch.go` (`FloorDrawBatchStore`). If authorization or canonical identity changes before commit, the pending plan rolls back and the engine reallocates its unspent budget. This includes partial and zero-value waitlisted rows, so a rejected provider cannot permanently reduce another provider's payment. Previously finalized rows remain unchanged.
 
@@ -85,6 +85,18 @@ sequenceDiagram
 | 6. Pay out | `HandleCompleteAt` | Normally use the collected amount returned by settlement for fee and provider-payout arithmetic. If an unreserved, non-service request not marked free self-route is uncollected, retain the quoted cost and platform-covered payout (`coordinator/api/inference/consumer_settlement.go`, `settleCompletedConsumer`, `platformCovered` / `settledCost`). Uncollected service requests and requests that lose free-self-route eligibility instead have zero cost and payout; no uncollected charge earns a referral reward. `feePercent` is the consumer override, else the global default (invariant 4). `CreditProviderAccount` credits `totalCost − platformFee` to a linked provider account as withdrawable earnings; `Credit("platform", …)` credits the full platform fee. The referral reward is already credited by settlement and reduces neither amount. |
 | 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
 
+### Rejected Stripe withdrawal refunds
+
+`RefundRejectedStripeWithdrawal` in `coordinator/store/postgres/stripe_settlement.go`
+locks the withdrawal and shares the refund advisory lock with
+`CreditWithdrawableOnce`. It sums debit and refund rows for the account and
+`stripe_withdraw:<id>` reference without comparing coordinator and database
+timestamps. The net debit must equal the negative gross withdrawal amount; the net
+refund must be zero or equal that amount. A legacy full refund only repairs the flag;
+otherwise the credit, ledger row and flag commit together. Repeated recovery does
+not pay again. The [storage contract](storage.md#stripe-migration-settlement)
+describes the concurrent account/reference index that bounds this lookup.
+
 ### PostgreSQL debit cancellation
 
 `PostgresStore.Debit` runs the balance update and ledger insert inside an
@@ -131,6 +143,7 @@ and which balance column moves:
 | `admin_reward` | `HandleAdminReward` → `handleAdminBalanceAdjustment` → `CreditWithdrawable` | both |
 | `provider_floor_draw` | `coordinator/store/postgres/floor_draw_batch.go` `SettleProviderFloorDrawBatch` → `settleProviderFloorDraw` (`coordinator/store/postgres/base_rewards.go`) | both |
 | `migration` | `coordinator/store/postgres/` `MigrateAccountBalance` (balance moved between account identities) | both |
+| `erasure_forfeit` | `ScrubAccount` → `forfeitBalance` (`coordinator/store/postgres/erasure.go`); one entry for the whole balance, see [account erasure](account-erasure.md#the-scrub-transaction) | both set to 0 |
 | `deposit`, `withdrawal` | declared for legacy (pre-Stripe) deposit and on-chain withdrawal paths; no current handler writes them | — |
 
 `RewardLedgerTypes = {referral_reward, admin_reward}` is the set the
@@ -170,7 +183,8 @@ The platform fee follows the same per-user override as everyone else.
 1. `POST /v1/billing/stripe/create-session` (`HandleStripeCreateSession`;
    auth + financial limiter) requires `amount_usd` at or above the [Stripe deposit minimum](../reference/pricing-model.md#constants), validates an
    optional `referral_code`, creates a Checkout Session whose metadata carries
-   `billing_session_id`, `consumer_key`, and `referral_code`
+   `billing_session_id` and `consumer_key`; the personal referral code stays
+   in the local session
    (`coordinator/billing/stripe.go` `CreateCheckoutSession`), stores a
    `billing_sessions` row with `status = pending`, and returns
    `{session_id, stripe_session, url, amount_usd, amount_micro_usd}`.
@@ -183,7 +197,8 @@ The platform fee follows the same per-user override as everyone else.
    non-withdrawable funds and completes the session under a row lock. Duplicate
    events from either the current or retained legacy signing secret cannot credit
    twice. A pre-existing matching ledger credit is recognized without adding it
-   again. Referral attribution retries independently; the same normalized code is idempotent, and inapplicable codes (different pre-existing attribution, self-referral or a missing code) are acknowledged without retrying the settled payment. Database failures remain retryable.
+   again. Referral attribution reads the canonical local session, not historical
+   Stripe metadata, and retries independently; the same normalized code is idempotent, and inapplicable codes (different pre-existing attribution, self-referral or a missing code) are acknowledged without retrying the settled payment. Database failures remain retryable.
 4. `GET /v1/billing/stripe/session?id=<session_id>` polls the row;
    `GET /v1/billing/methods` (public) lists configured methods — Stripe only
    (`coordinator/billing/billing.go` `SupportedMethods`).
@@ -337,7 +352,8 @@ per-epoch base income on top of organic earnings. It is wired in
 `Engine.Run`. Per closed `SettlementPeriod = 5 * time.Minute` epoch
 (`epoch.go`), for each machine that passes every gate in
 `machine_candidates.go` `buildCandidates` — current complete public serving
-authorization through legacy verification or qualified App Attest; online with the
+authorization through qualified App Attest with a macOS 27-or-later OS claim
+bound to that same authorization (legacy verification alone is insufficient); online with the
 model loaded; `MemoryPressure < 0.8` and thermal state not `critical`; a
 provider key; uptime from `provider_sessions` ≥ `MinUptimeFrac` (`0.90`, open
 sessions accrue to `last_seen + defaultGraceSeconds = 90`); hardware model in
@@ -373,9 +389,15 @@ by a per-epoch lock (an advisory lock in PostgreSQL).
 the design record is [`design/base-rewards.md`](../design/base-rewards.md).
 
 The base-reward model memory ceiling lives in `coordinator/hardware/mac_models.go`
-(`ModelMaxMemoryGB`). Moving that static catalog out of MDM does not change any
-cap, eligibility rule, serial/accounting key, or payout. App Attest hardware claims are observational in
-this release; they do not replace the existing reward inputs or eligibility gates.
+(`ModelMaxMemoryGB`). The current App Attest authorization binds the model and
+memory inputs used by `coordinator/registry/provider_snapshot.go`
+(`providerRewardSnapshotLocked`); the static catalog still caps those inputs.
+The reward OS claim also comes from that current authorization, carried in
+`ProviderSnapshot.AppAttestOSVersion`; an unsigned registration or inventory
+version cannot replace it. Missing, malformed or below-27 versions fail the
+reward gate. The App Attest assertion and qualified executable authenticate this
+claim; it is not an independently Apple-certified OS measurement. This
+reward-only gate does not change temporary frozen legacy serving eligibility.
 The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max Mac
 Studio. The M5 Ultra Studio identifier remains excluded because Apple's model
 pages also assign it to the lower-memory M5 Pro mini; see the
@@ -643,6 +665,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`); `coordinator/api/billing/checkout.go`, `coordinator/api/billing/methods.go`, `coordinator/api/billing/checkout.go`, `coordinator/api/billing/methods.go`, `coordinator/api/billing/wallet.go` (`HandleStripeCreateSession`, `HandleStripeSessionStatus`, `HandleWalletBalance`, `HandleBillingMethods`); `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Stripe response projection | `coordinator/billing/stripe_connect.go` (`parsePayout`, `parseAccount`) | Payout creation and reconciliation share the same decoded fields and parse errors. Account responses select the first currency-default destination, falling back to the first destination. |
 | Payouts | `coordinator/billing/stripe_connect.go` (`MinWithdrawMicroUSD`, `InstantFeeBps`, `InstantFeeMinMicroUSD`, `FeeForMethodMicroUSD`); `coordinator/billing/stripe_regions.go` (`RequiredServiceAgreement`); `coordinator/api/billing/payouts/connect_dashboard.go`, `coordinator/api/billing/payouts/connect_helpers.go`, `coordinator/api/billing/payouts/connect_onboarding.go`, `coordinator/api/billing/payouts/connect_status.go`, `coordinator/api/billing/payouts/connect_unlink.go`, `coordinator/api/billing/payouts/connect_dashboard.go`, `coordinator/api/billing/payouts/connect_helpers.go`, `coordinator/api/billing/payouts/connect_onboarding.go`, `coordinator/api/billing/payouts/connect_status.go`, `coordinator/api/billing/payouts/connect_unlink.go`, `coordinator/api/billing/payouts/history.go` (`HandleStripeOnboard`, `HandleStripeStatus`, `HandleStripeWithdrawals`, `HandleStripeDashboardLink`, `HandleStripeUnlink`, `microUSDToCents`); `coordinator/api/billing/payouts/stripe_withdraw.go` (`HandleStripeWithdraw`, `creditRefundOnceWithRetry`); `coordinator/api/billing/payouts/stripe_payouts_webhooks.go` (`HandleStripeConnectWebhook`, `stripeRecipientTransferDelay`); `coordinator/api/billing/payouts/stripe_reconcile.go` (`StartStripePayoutReconciler`); `coordinator/store/postgres/` (`CreateStripeWithdrawalWithDebit`) | `POST /v1/billing/stripe/onboard`, `GET /v1/billing/stripe/status`, `POST /v1/billing/withdraw/stripe`, `GET /v1/billing/stripe/withdrawals`, `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account`, `POST /v1/billing/stripe/connect/webhook` |
+| Account erasure deletions | `coordinator/billing/stripe_connect.go` (`DeleteAccount`); `coordinator/billing/globalpayouts/client.go` (`CloseRecipient`); `coordinator/billing/stripe_redaction.go` (`CreateRedactionJob`, `GetRedactionJob`, `RunRedactionJob`, `RedactionValidationErrors`, `CheckoutSessionExists`, `IsNotFoundAPIErr`). The [erasure outbox worker](account-erasure.md#outbox-delivery) calls them after a scrub. | — (outbound only: `DELETE /v1/accounts/{id}`, `POST /v2/core/accounts/{id}/close`, `/v1/privacy/redaction_jobs`) |
 | Referral | `coordinator/billing/referral.go` (`ReferralService`, `Register`, `Apply`, `validateReferralCode`); `coordinator/api/billing/referrals.go` (`HandleReferralRegister`, `HandleReferralApply`, `HandleReferralInfo`, `HandleReferralStats`); `coordinator/store/postgres/consumer_settlement.go` (`FinalizeConsumerCharge`) | `POST /v1/referral/register`, `POST /v1/referral/apply`, `GET /v1/referral/stats`, `GET /v1/referral/info` |
 | Invite codes and admin credits | `coordinator/api/access/authorize.go`, `coordinator/api/access/authorize.go`, `coordinator/api/accounts/invite_handlers.go` (`HandleAdminCreateInviteCode`, `HandleAdminListInviteCodes`, `HandleAdminDeactivateInviteCode`, `HandleRedeemInviteCode`, `RequireAdminKey`); `coordinator/store/postgres/` (`RedeemInviteCode`); `coordinator/api/billing/admin_balance_adjustment.go` (`HandleAdminCredit`, `HandleAdminReward`) | `POST /v1/admin/invite-codes`, `GET /v1/admin/invite-codes`, `DELETE /v1/admin/invite-codes`, `POST /v1/invite/redeem`, `POST /v1/admin/credit`, `POST /v1/admin/reward` |
 | Roles and fee overrides | `coordinator/api/accounts/admin_users.go` (`HandleAdminSetUserRole`, `HandleAdminSetUserPlatformFee`); `coordinator/store/postgres/` (`SetUserRole`, `SetUserPlatformFeePercent`) | `PUT /v1/admin/users/role`, `PUT /v1/admin/users/platform-fee` |
@@ -650,6 +673,22 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Base rewards | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`); `coordinator/payments/baserewards/` (`floor.go`, `alloc.go`, `epoch.go`, `engine.go`); `coordinator/store/postgres/floor_draw_batch.go` (`SettleProviderFloorDrawBatch`); `coordinator/store/postgres/base_rewards.go` (`settleProviderFloorDraw`, `SumProviderEarningsByKey`); `coordinator/api/billing/base_rewards_handlers.go` (`HandleAdminBaseRewards`); `coordinator/api/server_services.go` (`BaseRewards`) | `GET /v1/admin/base-rewards` |
 | Admin auth | `coordinator/api/access/authorize.go` (`IsAdminAuthorized`); `coordinator/api/access/authorize.go` (`RequireAdminKey`); `coordinator/api/access/publishing.go` (`RequirePublishingAPIKey`) | — |
 | Rate limits | `coordinator/ratelimit/config.go` (`Financial`, `Service`) | — |
+
+### Account erasure during billing work
+
+Checkout revalidates the captured referrer account after Stripe responds, under
+the personal-data scrub fence. If that referrer was erased, the live payer's
+session keeps its payment details and drops the obsolete code
+(`coordinator/store/postgres/billing_erasure.go`, `fenceBillingSession`).
+
+Account deletion fences new withdrawal admission before balances are changed.
+Scrub locks existing payment rows before balances, allowing settlement callbacks
+to finish without reversing their lock order. Late Stripe account, recipient
+and Checkout creation results become durable cleanup work; they cannot restore
+local personal fields or return a usable Checkout URL. Once-only credits retain
+a hashed reference identity in the refused-credit audit, while ordinary repeatable
+credits keep their existing semantics. Mechanism and code ownership:
+[concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
 
 ## Related
 

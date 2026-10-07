@@ -78,6 +78,46 @@ QUALIFY ROW_NUMBER() OVER (
 ) = 1"""
 
 
+def _read_catalog(client, catalog_id, row_count, digest, *, legacy=False):
+    # Metadata is mutable: bound the physical read and verify its content, not
+    # merely the claimed count. Never query the movable coverage alias here.
+    if type(row_count) is not int or row_count < 0:
+        raise ArchiveError("existing catalog row count mismatch")
+    rows = client.query(
+        f"SELECT * FROM `{catalog_id}` LIMIT {row_count + 1}",
+        job_config=bigquery.QueryJobConfig(
+            maximum_bytes_billed=64 * 1024**2, use_query_cache=False
+        ),
+    ).result(timeout=120)
+    entries = []
+    for row in rows:
+        entry = dict(row.items())
+        for field in ("observed_at", "window_start", "window_end"):
+            if entry[field] is not None:
+                entry[field] = entry[field].isoformat()
+        entries.append(entry)
+    normalized = merge_files(entries) if legacy else merge_coverage(entries)
+    if len(entries) != row_count or len(normalized) != row_count:
+        raise ArchiveError("existing catalog row count mismatch")
+    payload = normalized if legacy else {"coverage_format": 2, "entries": normalized}
+    if hashlib.sha256(json_bytes(payload)).hexdigest() == digest:
+        return normalized
+    if legacy:
+        # The file-only writer omitted null ID fields on fresh time windows;
+        # BigQuery materializes them on read. Its republish path retained them.
+        without_null_ids = [
+            {k: v for k, v in row.items() if k not in ("id_start", "id_end") or v is not None}
+            for row in normalized
+        ]
+        if hashlib.sha256(json_bytes(without_null_ids)).hexdigest() == digest:
+            return normalized
+        raise ArchiveError(
+            "legacy catalog content mismatch; republish all relevant checkpoint plans "
+            "into a fresh dedicated dataset and verify coverage before switching readers"
+        )
+    raise ArchiveError("existing catalog content mismatch")
+
+
 def publish(args):
     validate_destination(args.project, args.dataset)
     storage = cloud.storage_client(args.project)
@@ -100,19 +140,42 @@ def publish(args):
         raise ArchiveError("BigQuery dataset must be colocated with the archive")
     coverage_id = f"{args.project}.{args.dataset}.archive_coverage"
     try:
-        client.get_table(coverage_id)
+        coverage = client.get_table(coverage_id)
     except NotFound:
         pass
     else:
-        prior = client.query(
-            f"SELECT * FROM `{coverage_id}`",
-            job_config=bigquery.QueryJobConfig(maximum_bytes_billed=64 * 1024**2),
-        ).result(timeout=120)
-        for row in prior:
-            entry = dict(row.items())
-            for field in ("observed_at", "window_start", "window_end"):
-                if entry[field] is not None:
-                    entry[field] = entry[field].isoformat()
+        pointer = re.fullmatch(
+            rf"SELECT \* FROM `({re.escape(args.project + '.' + args.dataset)}"
+            r"\.catalog_([0-9a-f]{16}))`",
+            coverage.view_query or "",
+        )
+        if (
+            coverage.table_type != "VIEW"
+            or coverage.view_use_legacy_sql is not False
+            or not pointer
+        ):
+            raise ArchiveError("existing archive_coverage pointer mismatch")
+        prior_id, prior_version = pointer.groups()
+        prior = client.get_table(prior_id)
+        identity = re.fullmatch(
+            r"Verified archive catalog sha256=([0-9a-f]{64})", prior.description or ""
+        )
+        coverage_format = (prior.labels or {}).get("archive_coverage")
+        if (
+            not identity
+            or identity[1][:16] != prior_version
+            or prior.table_type != "TABLE"
+            or prior.external_data_configuration is not None
+            or coverage_format not in (None, "plan_windows_v2")
+        ):
+            raise ArchiveError("existing catalog identity mismatch")
+        if tuple((f.name, f.field_type, f.mode) for f in prior.schema) != tuple(
+            (f.name, f.field_type, f.mode) for f in CATALOG_SCHEMA
+        ):
+            raise ArchiveError("existing catalog schema mismatch")
+        for entry in _read_catalog(
+            client, prior_id, prior.num_rows, identity[1], legacy=coverage_format is None
+        ):
             require_dataset_scope(args.dataset, [entry["table_name"]])
             require_bucket_scope(bucket, [entry["table_name"]])
             if not entry["source_uri"].startswith(f"gs://{args.bucket}/data/v1/"):
@@ -155,28 +218,7 @@ def publish(args):
         ).result(timeout=120)
     elif existing.num_rows != len(entries):
         raise ArchiveError("existing catalog row count mismatch")
-    # Metadata is mutable, so verify the rows even on a retry or after loading.
-    # Bound both scan cost and returned rows; bypass cached query results.
-    rows = client.query(
-        f"SELECT * FROM `{catalog_id}` LIMIT {len(entries) + 1}",
-        job_config=bigquery.QueryJobConfig(
-            maximum_bytes_billed=64 * 1024**2, use_query_cache=False
-        ),
-    ).result(timeout=120)
-    actual_entries = []
-    for row in rows:
-        entry = dict(row.items())
-        for field in ("observed_at", "window_start", "window_end"):
-            if entry[field] is not None:
-                entry[field] = entry[field].isoformat()
-        actual_entries.append(entry)
-    if len(actual_entries) != len(entries):
-        raise ArchiveError("existing catalog row count mismatch")
-    actual_digest = hashlib.sha256(
-        json_bytes({"coverage_format": 2, "entries": merge_coverage(actual_entries)})
-    ).hexdigest()
-    if actual_digest != digest:
-        raise ArchiveError("existing catalog content mismatch")
+    _read_catalog(client, catalog_id, len(entries), digest)
     published = []
     with tempfile.TemporaryDirectory(prefix="archive-catalog-") as scratch:
         for table in TABLES:

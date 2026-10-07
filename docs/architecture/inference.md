@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-06
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -101,6 +101,11 @@ engine retirement, not when a caller merely requests cancellation. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
 remain owned until that acknowledgement completes.
+
+For queued native requests, `CBv2NativeBlockEngine.pump` makes one cancellation
+decision for both `finishWaiting` and queue removal, so a concurrent cancellation
+cannot remove a request without retiring its reservation. Completion remains
+exactly once (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/NativeBlockEngine.swift`).
 
 The optional `CBv2SchedulerConfig.mixedStepPrefillTokenCap` is per engine and
 feeds the same scheduler plan used by execution and first-token projection.
@@ -425,6 +430,21 @@ constraints retain their ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
+`[backend] mtp_acceptance = "typical"`, or the `mtp_acceptance_by_model`
+table, installs typical acceptance for eligible sampled target-prefix rows of
+that model: a draft is kept when the sampler-filtered target row gives it probability above
+`min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
+position and the bonus position still commit the keyed target sample. Output
+is then not distribution-exact for the target. Greedy rows keep the exact
+walk, and the default is `exact` (`MTPAcceptancePolicy.resolve`;
+`CBv2MTPAcceptance` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`;
+`mtp_acceptance` in slot posture telemetry). Design record:
+[`../design/typical-mtp-acceptance.md`](../design/typical-mtp-acceptance.md).
+Native MiMo remains exact: its separately owned slot construction does not
+apply this preference, so `typical` is unsupported on that path
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`,
+`nativeMiMoMTPConfig`). The setting does not enable MTP or widen model eligibility.
 Nemotron's assistant uses one speculative request and adaptive depth up to
 seven proposed tokens. Captured target verification, batched M=1 projections
 and KV-only trusted-history priming default on, with separate rollback controls.

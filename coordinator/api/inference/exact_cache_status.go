@@ -26,9 +26,11 @@ type ExactCacheStatus struct {
 
 // ExactCacheArtifactAllowlistStatus distinguishes unrestricted from configured-empty
 // without exposing model IDs or artifact hashes. Count is the number of exact tuples.
+// StaleModels counts catalog models the list names only under a superseded artifact.
 type ExactCacheArtifactAllowlistStatus struct {
-	Configured bool `json:"configured"`
-	Count      int  `json:"count"`
+	Configured  bool `json:"configured"`
+	Count       int  `json:"count"`
+	StaleModels int  `json:"stale_models"`
 }
 
 type ExactCacheSidecarStatus struct {
@@ -125,6 +127,11 @@ func (s *Owner) ExactCacheStatusSnapshot() ExactCacheStatus {
 		counts := s.promptArtifacts.Counts()
 		status.PromptArtifacts = ExactCachePromptArtifactStatus{
 			Ready: counts.Ready, Pending: counts.Pending, Failed: counts.Failed,
+		}
+		if routingMode == registry.CacheRoutingOn {
+			missing := s.missingAllowlistEntries()
+			s.warnNewlyMissingAllowlistEntries(missing)
+			status.ArtifactAllowlist.StaleModels = len(missing)
 		}
 	}
 	return status

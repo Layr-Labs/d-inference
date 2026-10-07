@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -18,7 +18,55 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
-The **0.9.17** candidate separates normal model selection from Autopilot's
+### 0.9.18 candidate rollout
+
+**0.9.18 is prepared, not published or qualified.** The latest published release
+at preparation is 0.9.17. The [changelog](../../CHANGELOG.md) identifies the
+merged provider, pinned SDK and nested MLX changes; pending PRs are excluded.
+The paired version constants do not change `GET /v1/releases/latest` until
+registration succeeds.
+
+1. Verify Release Integrity, including `python3 scripts/check-go-toolchain.py`
+   and its regression tests, and the final source's component CI gates. The
+   coordinator Docker builder and `mise.toml` now satisfy the unchanged module
+   minimum; require a successful production image build before any swap.
+2. Plan the separately approved coordinator bridge using the
+   [schema migration cut-over](schema-migration.md#first-production-cut-over-to-goose)
+   and [rollback rules](schema-migration.md#rollback). Do not jump directly from
+   pre-goose production to current master. A versions-1-to-9 bridge is not a
+   lasting compatible fallback once soft-deleted data exists: ordinary
+   `DELETE /v1/me/providers/{id}` writes `deleted_at`, not just account erasure.
+   Keep `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false` until a fallback
+   implements the required soft-delete and erasure semantics. This blocks new
+   erasure confirmations and provider removals, not accepted scrub/outbox work;
+   prior tombstones or erasures still require a compatible fallback. Review the
+   [migration budgets and invalid-index procedure](schema-migration.md#steps)
+   before online preparation. Preserve active App Attest, removal, payout and
+   cache controls; the bridge is not permission to reset production policy.
+3. Coordinate authenticated legacy reenrollment with the signed provider and
+   embedded installer. Existing 0.9.17 providers do not send the new signed
+   `/v1/enroll` contract, so an upgraded coordinator can preserve eligible
+   serving while old-client reenrollment remains unavailable. Do not describe
+   that interval as uninterrupted recovery. Keep the frozen cohort, current
+   qualified App Attest requirements and existing management intact; never
+   restore anonymous enrollment as a workaround. Follow the
+   [MDM-optional gates](#mdm-optional-onboarding-candidate).
+4. For a separately authorized tag/signing run, reuse compatible release caches,
+   but build and qualify the exact retained signed artifact. Check launchd
+   replacement/removal failure, subprocess output
+   saturation, explicit valid/invalid `TMPDIR`, default versus opt-in free-only
+   memory admission, authenticated legacy eligibility, and queued-cancel
+   retirement. Requalify the compiled nested MLX gather/numerical paths with
+   source-matched Metal on supported Macs; prior-pin benchmarks are not evidence
+   for this artifact. Retain the SDK numerical, lifecycle and existing model
+   runtime gates rather than replacing them with version-parity checks.
+5. Only after the bridge, compatible fallback and exact-artifact qualification
+   are ready, authorize publication through the existing workflow.
+   Signing/staging may precede publication approval; deployment,
+   registration, aliases and GitHub publication remain distinct operations.
+   This preparation performs none of them.
+
+Released **0.9.17** separates normal model selection from Autopilot's
 verified cached inventory using protocol 3. Version preparation does not publish
 the release; tag only the reviewed merged commit and qualify the retained signed
 artifact before production registration. Validate a one-model selection with
@@ -180,8 +228,13 @@ Deploy the coordinator containing the native SSD-offload capacity accounting and
 ### MDM-optional onboarding candidate
 
 The installer and `darkbloom enroll` select App Attest setup on macOS 27+ without
-requesting an MDM profile. Older macOS keeps legacy enrollment and sees the
-upgrade/upcoming deactivation notice. Follow the
+requesting an MDM profile. On older macOS the installer defers eligible legacy
+reenrollment to account login and the signed `darkbloom enroll` check, while
+showing the upgrade/upcoming deactivation notice. Verify with
+`scripts/test-install-onboarding.py` that no installer branch posts an anonymous
+profile request or opens profile setup, and existing management stays untouched.
+Installer success is not serving authorization; new providers require macOS 27+
+and current qualified App Attest. Follow the
 [MDM-optional rollout runbook](mdm-optional-rollout.md) to coordinate the embedded
 installer, signed provider, setup page and serving cohort. A disabled or
 unqualified coordinator leaves new macOS 27+ providers pending; the notice does
@@ -476,6 +529,13 @@ Without a tag the version is read from `ProviderCore.swift` (or
 without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
+
+Dev and production builds carry the same version string. A Mac reaches the dev
+release only through the dev installer
+(`curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash`), which writes
+the dev `[coordinator] url` into `provider.toml`
+(`scripts/install.sh`, `bind_provider_coordinator`); updates then come from the
+dev coordinator. See [dev-environment.md](dev-environment.md), step 9.
 
 ### Signed validation bundle
 

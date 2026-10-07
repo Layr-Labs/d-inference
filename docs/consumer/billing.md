@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -98,6 +98,12 @@ Dashboard earnings windows include every row in each window, without the old
 lag by the per-account cache interval
 (`coordinator/api/accounts/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
+If you also operate a provider, distinguish completed-inference earnings from
+[base rewards](../reference/pricing-model.md#base-rewards): base rewards require
+macOS 27 or later and current qualified App Attest authorization for every
+provider, old or new, not legacy MDM alone. This does not
+remove previously earned balances or change payment for completed inference.
+
 ### 4. Understand what a request costs you
 
 Each request is charged
@@ -158,7 +164,9 @@ basis and eligibility rules are defined in
 [pricing formulas](../reference/pricing-model.md#formulas).
 
 A `referral_code` on a Checkout session (step 1) still applies after a successful
-deposit. For attribution before the first request, apply the code in Open Sales Program
+deposit using the saved local attribution. If the referrer is erased while
+Checkout is being created, the deposit remains usable and the obsolete referral
+code is omitted. For attribution before the first request, apply the code in Open Sales Program
 before using the API.
 
 ### 7. Redeem an invite code
@@ -228,6 +236,16 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 
 Mechanism for each error, including the exact functions, is in
 [`architecture/billing.md` → Failure modes](../architecture/billing.md#failure-modes).
+
+## Checkout interrupted by account deletion
+
+If account deletion starts while Stripe creates a Checkout session, the
+coordinator responds with 409 `account_deleted` and does not return the
+Checkout URL. The created Stripe object remains queued for cleanup after
+irreversible erasure. If an administrator cancels deletion during the grace
+period, start a new Checkout request. Contract:
+[Checkout](../reference/api-contracts.md); implementation:
+`coordinator/api/billing/checkout.go` (`HandleStripeCreateSession`).
 
 ## Related
 

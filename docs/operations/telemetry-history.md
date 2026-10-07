@@ -1,6 +1,6 @@
 # Queryable telemetry history
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Copy and verify retained PostgreSQL telemetry into private Cloud Storage, then
 publish BigQuery views without changing coordinator writes, retention, or
@@ -65,6 +65,14 @@ primary's current position. The approved <30-second gate remains mandatory.
    `archive_coverage` pointer changes last, after every table is ready. Run only
    one publisher at a time.
 
+   Before retaining prior coverage, the publisher pins the same-dataset
+   `catalog_<version>` named by `archive_coverage` and validates its native table,
+   schema, digest identity and bounded, uncached physical rows. Unsupported
+   pointers, duplicate rows, mismatched content or unverifiable legacy digests
+   stop publication before any reader alias changes. Legacy file-only catalogs
+   are retained only when their historical digest can be verified; a valid
+   object generation alone does not establish catalog integrity.
+
    Coverage-format 2 catalogs preserve one row per plan/window identity, including
    distinct empty windows sharing the same Parquet object. File manifests remain
    deduplicated by URI, and reader SQL groups catalog observations per file before
@@ -125,6 +133,12 @@ this stage never authorizes source deletion, partition retirement, or disk shrin
 Stop executing the archive worker and publisher. Keep verified files, receipts,
 and checkpoints. Published views can be pointed back to a prior immutable
 catalog generation. No coordinator rollout or source-database rollback is needed.
+
+If prior-catalog validation fails, never edit or relabel the catalog or its
+digest to bypass the check. With approval for the new destination and consumer
+switch, republish every relevant trusted checkpoint plan into a fresh dedicated
+archive dataset. Verify its coverage and readers before switching consumers;
+preserve the old dataset, archive files and checkpoints.
 
 ## Related
 

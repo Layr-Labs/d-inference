@@ -313,7 +313,7 @@ func (a *Controller) applyLocked(p *registry.Provider, record *Record, state sto
 		AccountID: e.Binding.Account, MachineID: e.Binding.Machine, CredentialID: e.Binding.Credential,
 		ConnectionID: p.ID, ProofSessionID: proof.session, Endpoint: e.Binding.Endpoint,
 		PolicyGeneration: snapshot.Generation, QualificationGeneration: qualificationGeneration, IssuedAt: e.AssertionAt, ValidUntil: until,
-		MachineModel: status.MachineModel,
+		MachineModel: status.MachineModel, OSVersion: status.OSVersion,
 	}
 	lease.MemoryGB, _ = strconv.Atoi(status.MemoryGB)
 	if !a.deps.Registry.GrantAppAttestServingAuthorization(p, lease) {

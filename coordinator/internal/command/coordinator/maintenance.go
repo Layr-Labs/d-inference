@@ -16,10 +16,13 @@ func Maintenance(args []string) error {
 		return fmt.Errorf("usage: coordinator [--migrate-only]")
 	}
 	cfg := store.ReadConfig()
+	if err := cfg.Check(); err != nil {
+		return err
+	}
 	if cfg.DatabaseURL == "" {
 		return fmt.Errorf("--migrate-only requires EIGENINFERENCE_DATABASE_URL")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.MigrationTimeout)
 	defer cancel()
 	started := time.Now()
 	st, err := postgresstore.NewPostgres(ctx, cfg)

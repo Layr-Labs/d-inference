@@ -22,6 +22,12 @@ Follow the [authenticated registration steps](../consumer/authentication.md#6-re
 
 ## Minimum requirements
 
+New network providers require macOS 27 or later and current qualified App Attest
+authorization. The binary build floor below is not network eligibility. Only
+the [frozen legacy cohort](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort)
+may temporarily retain legacy serving; an old OS or installed profile cannot
+create membership. These are provider requirements, not consumer requirements.
+
 Native DiffusionGemma retains its vision tower and applies the existing per-frame
 allocation checks and shared process budget; enabling media discovery does not
 lower load, activation or KV reserves. See the [native block memory and media

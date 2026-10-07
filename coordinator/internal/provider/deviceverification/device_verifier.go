@@ -20,13 +20,14 @@ type Backend struct {
 }
 
 type Dependencies struct {
-	Registry        *registry.Registry
-	Store           store.Store
-	Observation     *observation.Owner
-	Logger          *slog.Logger
-	Backend         *Backend
-	Authority       *trustauthority.Service
-	SendTrustStatus func(*registry.Provider, registry.TrustLevel, string, string)
+	Registry         *registry.Registry
+	Store            store.Store
+	Observation      *observation.Owner
+	Logger           *slog.Logger
+	Backend          *Backend
+	Authority        *trustauthority.Service
+	SendTrustStatus  func(*registry.Provider, registry.TrustLevel, string, string)
+	LegacyMDMAllowed func(*registry.Provider) bool
 }
 
 type Verifier struct {
@@ -37,11 +38,13 @@ type Verifier struct {
 	verificationBackend *Backend
 	authority           *trustauthority.Service
 	sendTrustStatus     func(*registry.Provider, registry.TrustLevel, string, string)
+	legacyMDMAllowed    func(*registry.Provider) bool
 }
 
 func New(d Dependencies) *Verifier {
 	return &Verifier{
 		registry: d.Registry, store: d.Store, observation: d.Observation, logger: d.Logger,
 		verificationBackend: d.Backend, authority: d.Authority, sendTrustStatus: d.SendTrustStatus,
+		legacyMDMAllowed: d.LegacyMDMAllowed,
 	}
 }

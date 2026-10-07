@@ -14,15 +14,16 @@ import (
 )
 
 type Dependencies struct {
-	Registry        *registry.Registry
-	Store           trustreuse.Store
-	Cache           *trustreuse.Cache
-	Coverage        *trustcoverage.Tracker
-	Journal         trustjournal.Journal
-	Logger          *slog.Logger
-	Observation     *observation.Owner
-	MDMConfigured   func() bool
-	SendTrustStatus func(*registry.Provider, registry.TrustLevel, string, string)
+	Registry         *registry.Registry
+	Store            trustreuse.Store
+	Cache            *trustreuse.Cache
+	Coverage         *trustcoverage.Tracker
+	Journal          trustjournal.Journal
+	Logger           *slog.Logger
+	Observation      *observation.Owner
+	MDMConfigured    func() bool
+	LegacyMDMAllowed func(*registry.Provider) bool
+	SendTrustStatus  func(*registry.Provider, registry.TrustLevel, string, string)
 }
 
 // trustAuthority serializes durable revocations and grants against one cache.
@@ -36,6 +37,7 @@ type Service struct {
 	logger              *slog.Logger
 	observation         *observation.Owner
 	mdmConfigured       func() bool
+	legacyMDMAllowed    func(*registry.Provider) bool
 	sendTrustStatus     func(*registry.Provider, registry.TrustLevel, string, string)
 	trustReuseCache     *trustreuse.Cache
 	trustReuseJournal   trustjournal.Journal
@@ -54,8 +56,9 @@ func New(d Dependencies) *Service {
 		Tracker:  d.Coverage,
 		registry: d.Registry, store: d.Store, logger: d.Logger,
 		observation: d.Observation, mdmConfigured: d.MDMConfigured,
-		sendTrustStatus: d.SendTrustStatus,
-		trustReuseCache: d.Cache, trustReuseJournal: d.Journal,
+		legacyMDMAllowed: d.LegacyMDMAllowed,
+		sendTrustStatus:  d.SendTrustStatus,
+		trustReuseCache:  d.Cache, trustReuseJournal: d.Journal,
 	}
 	if d.Journal != nil {
 		s.trustReplayCtx, s.trustReplayCancel = context.WithCancel(context.Background())

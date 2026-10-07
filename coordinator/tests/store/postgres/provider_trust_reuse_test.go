@@ -30,12 +30,8 @@ func TestPostgresProviderTrustReuseLegacyMigrationIsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert legacy row: %v", err)
 	}
-	if err := st.reopen(ctx); err != nil {
-		t.Fatalf("first migration: %v", err)
-	}
-	if err := st.reopen(ctx); err != nil {
-		t.Fatalf("second migration: %v", err)
-	}
+	replayMigrations(t, st)
+	replayMigrations(t, st)
 	rows, err := st.ListProviderTrustReuse(ctx)
 	if err != nil {
 		t.Fatalf("list migrated row: %v", err)

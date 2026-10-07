@@ -7,7 +7,7 @@ Attest authorization. The [provider trust overview](provider-trust.md) owns the
 shared decision model and threat boundaries; this page details the checks,
 legacy levels and flags, refresh behavior, and routing gates.
 
-The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
+The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`InferenceHandoff.Authorize`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
 
 Model weight challenges accept the desired hash or a previously promoted,
 non-retired revision of that same model (`CatalogAcceptsWeightHash` in
@@ -46,7 +46,7 @@ two authorization paths, owner compatibility lease and live account/status under
 one registry/provider lock observation; unsupported App Attest protocol versions
 never appear pending. It exports only bounded public states and timestamps.
 Legacy hardware trust is preserved as evidence, not
-rewritten by App Attest. `authorizeInferenceHandoff` captures the verdict on the
+rewritten by App Attest. `InferenceHandoff.Authorize` captures the verdict on the
 pending request at the final writer check. The response metadata uses that
 immutable winning-attempt snapshot, not a later live grant.
 
@@ -226,6 +226,16 @@ keeps its level but is excluded from routing until a later check passes.
 | Override | `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` ([configuration](../../reference/configuration.md#release-policy-version-floor-and-binary-hashes)) replaces the store-built manifest at boot; the next successful sync (a registration or deactivation) rebuilds from the store and discards it | `coordinator/app/runtime_policy.go` |
 
 ### Layer 3 — MDM SecurityInfo (the `hardware` grant)
+
+Under the upcoming [frozen legacy policy](enrollment.md#frozen-legacy-authorization-cohort),
+`Policy.Initialize` (`coordinator/internal/provider/legacymdm/policy.go`) freezes durable
+authenticated account + SE key + serial membership after revocation replay on
+the first upgraded startup. `Policy.RegistrationAllowed` and `Policy.ProviderAllowed` gate registration identity
+recovery, scheduler submission, live verification, late callbacks and cached
+trust reuse. The grant/retry/reuse descriptions below apply only to allowed
+identities: an outstanding command or saved evidence cannot admit a nonmember.
+New identities require qualified App Attest, not an unsupported-OS fallback.
+No grace period has been selected and no cohort expiry is implemented.
 
 The coordinator asks Apple's MDM subsystem on the Mac, via MicroMDM, for a
 `SecurityInfo` report and grants `hardware` only when that report agrees with
@@ -416,7 +426,7 @@ signature itself is not an independent posture measurement.
 the two authorization alternatives. The final writer repeats the live gates and
 endpoint/account/machine binding checks after queueing, then captures the dispatch
 verification snapshot: `coordinator/registry/inference_authorization.go`
-(`authorizeInferenceHandoff`). Later revocation blocks subsequent handoffs; it
+(`InferenceHandoff.Authorize`). Later revocation blocks subsequent handoffs; it
 cannot recall an already committed request or plaintext already delivered.
 
 ### Trust status messages to providers

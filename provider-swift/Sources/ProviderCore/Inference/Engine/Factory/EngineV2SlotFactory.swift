@@ -256,11 +256,6 @@ enum EngineV2SlotFactory {
                 assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
             modelID: modelId,
             hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
-        let mtpAcceptance = MTPAcceptancePolicy.resolve(
-            byModel: mtpAcceptanceConfigByModel, modelID: modelId)
-        if let warning = mtpAcceptance.unrecognizedWarning(modelID: modelId) {
-            logWarning(warning)
-        }
         var mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
             maxDraftTokens: draftDepth.maximum,
@@ -272,7 +267,7 @@ enum EngineV2SlotFactory {
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
         }
         installMTPAcceptance(
-            mtpAcceptance.acceptance, into: &mtpConfig, drafter: assistantHandle?.drafter,
+            byModel: mtpAcceptanceConfigByModel, into: &mtpConfig, drafter: assistantHandle?.drafter,
             modelID: modelId, logInfo: logInfo, logWarning: logWarning)
         let mtpPerformanceConfiguration = ServingMTPConfiguration.resolve(
             config: mtpConfig, artifact: prepared.mtpArtifact)

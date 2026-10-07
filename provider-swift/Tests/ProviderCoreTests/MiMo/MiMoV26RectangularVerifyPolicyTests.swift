@@ -53,14 +53,14 @@ final class MiMoV26RectangularVerifyPolicyTests: XCTestCase {
         XCTAssertTrue(CBv2MTPConfig().allowsAdaptiveSerialRounds, "SDK default is unchanged")
     }
     func testNativeMTPConfigInstallsExactWhenTypicalCannotApply() {
-        let typical = CBv2MTPAcceptance.typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)
         for wantsMTP in [true, false] {
             for mode in [CBv2MTPVerificationMode.serialTarget, .rectangular] {
                 var config = EngineV2SlotFactory.nativeMiMoMTPConfig(
                     wantsMTP: wantsMTP, verificationMode: mode)
                 var warnings: [String] = []
                 EngineV2SlotFactory.installMTPAcceptance(
-                    typical, into: &config, drafter: wantsMTP ? NativeMiMoShapedDrafter() : nil,
+                    byModel: ["mimo-v2.6": "typical"], into: &config,
+                    drafter: wantsMTP ? NativeMiMoShapedDrafter() : nil,
                     modelID: "mimo-v2.6", logInfo: { _ in }, logWarning: { warnings.append($0) })
                 XCTAssertEqual(config.acceptance, .exact)
                 XCTAssertEqual(warnings.count, 1)
@@ -72,7 +72,7 @@ final class MiMoV26RectangularVerifyPolicyTests: XCTestCase {
         var exact = EngineV2SlotFactory.nativeMiMoMTPConfig(wantsMTP: true, verificationMode: .serialTarget)
         var warnings: [String] = []
         EngineV2SlotFactory.installMTPAcceptance(
-            .exact, into: &exact, drafter: NativeMiMoShapedDrafter(), modelID: "mimo-v2.6",
+            byModel: [:], into: &exact, drafter: NativeMiMoShapedDrafter(), modelID: "mimo-v2.6",
             logInfo: { _ in }, logWarning: { warnings.append($0) })
         XCTAssertEqual(exact.acceptance, .exact)
         XCTAssertTrue(warnings.isEmpty, "the exact default never warns")

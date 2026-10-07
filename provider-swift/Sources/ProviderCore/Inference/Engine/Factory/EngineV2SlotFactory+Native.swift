@@ -171,16 +171,13 @@ extension EngineV2SlotFactory {
                 prepared = try await prepareNativeMiMo(container: target, load: load,
                     status: specDecPreparation.status)
             }
-            let mtpAcceptance = MTPAcceptancePolicy.resolve(
-                byModel: mtpAcceptanceConfigByModel, modelID: modelId)
-            if let warning = mtpAcceptance.unrecognizedWarning(modelID: modelId) { logWarning(warning) }
             return try await makeNativeMiMoBundle(modelId: modelId, tokenizer: tokenizer, sizing: sizing,
                 prepared: prepared, kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
                 constructionPurpose: constructionPurpose, kvBudget: kvBudget,
                 backend: kvBackendConfigByModel[modelId] ?? kvBackendConfig,
-                mtpAcceptance: mtpAcceptance.acceptance,
+                mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
                 prefillDeadlineMode: prefillDeadlineMode, environment: environment,
                 modelDirectory: modelDirectory, modelArtifactSHA256: modelArtifactSHA256, weightHash: weightHash,
                 persistentTestNamespace: persistentTestNamespace,
@@ -261,7 +258,7 @@ extension EngineV2SlotFactory {
         modelId: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
         prepared: MiMoV26ServingPreparation, kvBytesCapacity: Int, maxConcurrentRequests: Int,
         automaticallySelectConcurrency: Bool, constructionPurpose: EngineV2Factory.ConstructionPurpose,
-        kvBudget: GlobalKVCacheBudget?, backend: String, mtpAcceptance: CBv2MTPAcceptance,
+        kvBudget: GlobalKVCacheBudget?, backend: String, mtpAcceptanceConfigByModel: [String: String],
         prefillDeadlineMode: PrefillDeadlineMode?,
         environment: [String: String], modelDirectory: URL?, modelArtifactSHA256: String?, weightHash: String?,
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, startServingTelemetry: Bool,
@@ -278,7 +275,7 @@ extension EngineV2SlotFactory {
                 maxConcurrentRequests: maxConcurrentRequests,
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
                 constructionPurpose: constructionPurpose, kvBudget: kvBudget,
-                mtpAcceptance: mtpAcceptance,
+                mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
                 prefillDeadlineMode: prefillDeadlineMode, environment: environment,
                 modelDirectory: modelDirectory, modelArtifactSHA256: modelArtifactSHA256, weightHash: weightHash,
                 persistentTestNamespace: persistentTestNamespace,
@@ -353,8 +350,8 @@ extension EngineV2SlotFactory {
                         try transaction.registerAssistant(assistant)
                     }
                     var engineMTPConfig = mtpConfig
-                    installMTPAcceptance(mtpAcceptance, into: &engineMTPConfig, drafter: binding.assistant,
-                        modelID: modelId, logInfo: logInfo, logWarning: logWarning)
+                    installMTPAcceptance(byModel: mtpAcceptanceConfigByModel, into: &engineMTPConfig,
+                        drafter: binding.assistant, modelID: modelId, logInfo: logInfo, logWarning: logWarning)
                     let probe = try binding.adapter.probeNativeKVTypes(retaining: scope)
                     let config = model.nativeConfiguration
                     let geometry = try MiMoV26AdmissionGeometry(layerKinds: binding.adapter.layerKinds,
@@ -525,7 +522,7 @@ extension EngineV2SlotFactory {
         modelId: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
         prepared: MiMoV26ServingPreparation, kvBytesCapacity: Int, maxConcurrentRequests: Int,
         automaticallySelectConcurrency: Bool, constructionPurpose: EngineV2Factory.ConstructionPurpose,
-        kvBudget: GlobalKVCacheBudget?, mtpAcceptance: CBv2MTPAcceptance,
+        kvBudget: GlobalKVCacheBudget?, mtpAcceptanceConfigByModel: [String: String],
         prefillDeadlineMode: PrefillDeadlineMode?,
         environment: [String: String], modelDirectory: URL?, modelArtifactSHA256: String?, weightHash: String?,
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, startServingTelemetry: Bool,
@@ -607,8 +604,8 @@ extension EngineV2SlotFactory {
                         try transaction.registerAssistant(assistant)
                     }
                     var engineMTPConfig = mtpConfiguration
-                    installMTPAcceptance(mtpAcceptance, into: &engineMTPConfig, drafter: binding.assistant,
-                        modelID: modelId, logInfo: logInfo, logWarning: logWarning)
+                    installMTPAcceptance(byModel: mtpAcceptanceConfigByModel, into: &engineMTPConfig,
+                        drafter: binding.assistant, modelID: modelId, logInfo: logInfo, logWarning: logWarning)
                     let probe = try binding.adapter.probeNativeKVTypes(retaining: scope)
                     let config = model.nativeConfiguration
                     let geometry = try MiMoV26AdmissionGeometry(layerKinds: binding.adapter.layerKinds,

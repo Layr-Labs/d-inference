@@ -261,10 +261,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var mtpAcceptanceByModel: [String: String]
     /// RETIRED `[backend]` keys found in the decoded provider.toml
     /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
-    /// `legacy_compiled_decode`, `kv_quant`, `mtp`, `mtp_acceptance`). The keys parse cleanly — an
-    /// old config must never brick a provider — but their values are
-    /// IGNORED; startup emits one WARN per entry so operators notice the
-    /// knob no longer exists. Not encoded back out.
+    /// `legacy_compiled_decode`, `kv_quant`, `mtp`, `mtp_acceptance`). The
+    /// keys parse cleanly — an old config must never brick a provider — but
+    /// their values are IGNORED; startup emits one WARN per entry so operators
+    /// notice the knob no longer exists. Not encoded back out.
     public internal(set) var retiredKeysPresent: [String] = []
 
     /// The box-wide concurrency cap, and the single source for BOTH the

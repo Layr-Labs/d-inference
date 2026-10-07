@@ -11,7 +11,8 @@ import Testing
 
 @testable import ProviderCore
 
-/// Construction-only drafter. A nil capability leaves the protocol default.
+/// Construction-only drafter on the protocol default: no target-prefix
+/// acceptance.
 private final class PolicyDrafter: CBv2MTPDrafter {
     private final class Capture: CBv2MTPPreparedCapture {}
     func prepare(rows: [CBv2MTPRowCapture]) -> any CBv2MTPPreparedCapture { Capture() }

@@ -42,6 +42,8 @@ pub enum PreloadError {
     TooManyContracts,
     #[error("a preload is already running")]
     AlreadyRunning,
+    #[error("legacy preload is disabled after continuity negotiation")]
+    LegacyDisabled,
     #[error("preload worker terminated")]
     Worker,
 }

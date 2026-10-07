@@ -520,7 +520,11 @@ CREATE TABLE public.darkbloom_machines (
     assurance text NOT NULL,
     merged_into text,
     first_seen timestamp with time zone NOT NULL,
-    last_seen timestamp with time zone NOT NULL
+    last_seen timestamp with time zone NOT NULL,
+    autopilot_desired_mode text DEFAULT 'shadow'::text NOT NULL,
+    autopilot_revision bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT darkbloom_machines_autopilot_desired_mode_check CHECK ((autopilot_desired_mode = ANY (ARRAY['shadow'::text, 'live'::text]))),
+    CONSTRAINT darkbloom_machines_autopilot_revision_check CHECK ((autopilot_revision >= 0))
 );
 
 

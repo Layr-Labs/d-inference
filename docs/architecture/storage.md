@@ -543,6 +543,42 @@ withdrawals retain their immutable destination and source data. Legacy Connect
 user IDs remain available for old payout events. The maintenance tool uses an
 existing pool through `StripeSettlementForMaintenance` without startup migrations.
 
+## Autopilot machine settings
+
+`MachineAutopilotStore` (`coordinator/store/machine_autopilot.go`) is an optional
+capability implemented by memory and PostgreSQL, discovered through `store.As`.
+It is independent of the observation-only `MachineInventoryStore` and the
+operation ledger. These writes change neither cached users nor model records,
+so `CachedStore` needs no additional invalidation or forwarding override.
+
+| Persisted field on `darkbloom_machines` | Contract |
+|---|---|
+| `autopilot_desired_mode` | Non-null text, default `shadow`, restricted to `shadow` or `live`. Applies to existing and new rows, including offline machines. It is desired policy, never restored live authority. |
+| `autopilot_revision` | Non-null bigint, default 0, constrained nonnegative. The same atomic update increments it only when the desired mode changes. Repeated same-mode edits preserve it. |
+
+`SetMachineAutopilotDesiredMode` updates only the exact existing row with
+`merged_into IS NULL`. PostgreSQL's row lock and predicate recheck serialize it
+with a concurrent merge; a missing or merged-away target returns `ErrNotFound`.
+No setter creates inventory or follows an alias. A survivor keeps its own
+setting, even when a retired identity was live. Observation and reconnect writes
+preserve these columns. Migrations 29 and 30 add and validate the fields without
+resetting existing values; see [schema lifecycle](schema-lifecycle.md#versions).
+
+The memory backend holds its existing transaction mutex and stores settings
+alongside inventory state, separately from the reconstructed `MachineIdentity`.
+It removes a loser's setting on merge without transferring it. An existing
+machine with no explicit setting reads `shadow`, revision 0. Memory settings last
+for that store instance; PostgreSQL settings survive coordinator/store restarts.
+
+`ListMachineAutopilotSettings` keyset-pages unmerged IDs in ascending order,
+defaulting to 100 rows and clamping to 200. `LiveMachineAutopilotSettings` returns
+all unmerged live rows for controller synchronization, without the admin page
+limit. Both backends implement these methods in their `machine_autopilot.go`.
+Actual verified sessions, grants and accepted-operation ownership remain in the
+registry, not these fields. The [machine API](../reference/api-contracts.md#autopilot-machine-settings)
+exposes desired and effective state separately; [Autopilot synchronization](model-autopilot.md#machine-selected-live-control)
+defines publication, revocation and failure behavior.
+
 ## Autopilot operation ledger
 
 The baseline (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`)

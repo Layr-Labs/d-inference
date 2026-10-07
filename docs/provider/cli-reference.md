@@ -613,8 +613,11 @@ target-only serving without an Autopilot download. Files stay on disk.
 A valid shadow lease produces `shadow`, explicitly not activated, with
 `active=false` and `observe_only=true`. `waiting` means no valid lease is
 acknowledged. Consent and shadow control retain ordinary loading and idle behavior.
-Only a matching live lease after an operator switches the rollout can produce
-`active`; providers have no shadow/live mode command. `paused` retains ready
+Only a matching live lease after an operator permits live rollout and selects
+the verified machine can produce `active`; providers have no shadow/live mode
+command. The coordinator-issued `Machine ID` in `darkbloom status` is the cohort
+selector, not a provider connection ID or serial. An unselected machine stays
+shadow even when other machines are live. `paused` retains ready
 models; `recovering` means an accepted transition is still settling. Policy changes
 are consumed at the next capacity poll. `models` uses the existing safe restart.
 See [architecture](../architecture/model-autopilot.md) and

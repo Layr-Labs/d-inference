@@ -25,7 +25,7 @@ unpromoted or explicitly retired hash is not accepted. Catalog size uses the
 largest retained revision as a conservative admission bound during convergence.
 [Model revisions](model-revisions.md) defines this transition policy.
 
-Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. See [model Autopilot](model-autopilot.md).
+Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. Only the explicit verified-machine cohort can acquire live leases. Nonmembers retain ordinary routing behavior, and their hypothetical permissions or placements cannot protect live donor capacity. See [model Autopilot](model-autopilot.md#machine-selected-live-control).
 
 ## Provider lifecycle drain boundary
 
@@ -537,7 +537,11 @@ request's avoidable prefill work with the confirmed endpoint's restore cost.
 Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[`cache-aware-routing.md`](cache-aware-routing.md). Cache planning first requires
+an acknowledged tokenizer and current exact Registry eligibility. If verified
+contracts exceed sidecar capacity, bounded authenticated demand selects the
+preloaded subset without waiting for tokenizer preload or raising that capacity;
+see [tokenizer selection](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
 
 ### Native model capacity and registry identity
 

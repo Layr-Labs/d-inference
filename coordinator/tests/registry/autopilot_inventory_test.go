@@ -54,35 +54,31 @@ func TestAutopilotInventoryShadowIsNotServingPermission(t *testing.T) {
 }
 
 func TestAutopilotInventoryRequiresAcknowledgedUnexpiredLiveControl(t *testing.T) {
-	var planner *production.ReservationPlanner
-	r, _, now := newAutopilotControllerTest(t, false, func(deps *production.Dependencies) {
-		deps.Reservations = func(actual *production.ReservationPlanner) production.ReservationPreparation {
-			planner = actual
-			return actual
-		}
-	})
-	p := autopilotControllerProvider(t, r, "live", now, autopilotTestTarget)
-	p.Mu().Lock()
-	// Establish cached inventory, then clear the serving hash as in the original
-	// gate input. Observer classification survives an attestation hash refresh.
-	p.Models[0].WeightHash = "cached"
-	r.states[p.ID].RegisterInventory(p.Models[1:], []protocol.ModelInfo{p.Models[0]}, p.ModelAutopilot)
-	p.Mu().Unlock()
-	r.UpdateModelWeightHashes(p.ID, map[string]string{autopilotTestTarget: ""})
-	eligibility := planner.PrepareEligibility()
-	serves := eligibility.ServesCatalog(p.ID, autopilotTestTarget)
-	eligibility.Close()
-	if !serves {
-		t.Fatal("acknowledged live control cannot serve resident candidate")
-	}
 	for _, mode := range []string{"expired", "shadow", "unacknowledged", "paused", "disabled"} {
 		t.Run(mode, func(t *testing.T) {
+			var planner *production.ReservationPlanner
+			r, _, now := newAutopilotControllerTest(t, false, func(deps *production.Dependencies) {
+				deps.Reservations = func(actual *production.ReservationPlanner) production.ReservationPreparation {
+					planner = actual
+					return actual
+				}
+			})
+			p := autopilotControllerProvider(t, r, "live", now, autopilotTestTarget)
 			p.Mu().Lock()
-			control := protocol.ModelAutopilotControl{Revision: "test", ExpiresAtMS: now.Add(time.Hour).UnixMilli()}
-			p.ModelAutopilot.Active = true
-			p.ModelAutopilot.ObserveOnly = false
-			p.ModelAutopilot.Paused = false
-			p.ModelAutopilot.Enabled = true
+			// Establish cached inventory, then clear the serving hash as in the original
+			// gate input. Observer classification survives an attestation hash refresh.
+			p.Models[0].WeightHash = "cached"
+			r.states[p.ID].RegisterInventory(p.Models[1:], []protocol.ModelInfo{p.Models[0]}, p.ModelAutopilot)
+			p.Mu().Unlock()
+			r.UpdateModelWeightHashes(p.ID, map[string]string{autopilotTestTarget: ""})
+			eligibility := planner.PrepareEligibility()
+			serves := eligibility.ServesCatalog(p.ID, autopilotTestTarget)
+			eligibility.Close()
+			if !serves {
+				t.Fatal("acknowledged live control cannot serve resident candidate")
+			}
+			p.Mu().Lock()
+			control := protocol.ModelAutopilotControl{Enabled: true, Revision: "test", ExpiresAtMS: now.Add(time.Hour).UnixMilli()}
 			consent := *p.ModelAutopilot
 			switch mode {
 			case "expired":
@@ -98,8 +94,8 @@ func TestAutopilotInventoryRequiresAcknowledgedUnexpiredLiveControl(t *testing.T
 			}
 			r.states[p.ID].AcceptControl(&consent, control)
 			p.Mu().Unlock()
-			eligibility := planner.PrepareEligibility()
-			serves := eligibility.ServesCatalog(p.ID, autopilotTestTarget) || eligibility.ServesOwned(p.ID, autopilotTestTarget)
+			eligibility = planner.PrepareEligibility()
+			serves = eligibility.ServesCatalog(p.ID, autopilotTestTarget) || eligibility.ServesOwned(p.ID, autopilotTestTarget)
 			eligibility.Close()
 			if serves {
 				t.Fatal("inactive control leaked serving permission")

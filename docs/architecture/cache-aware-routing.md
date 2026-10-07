@@ -127,7 +127,21 @@ model and its exact contract: unrelated pending or failed artifacts do not close
 an acknowledged healthy member. Current catalog/child/verified-set identity
 and actual runtime readiness still gate participation; see
 [per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
+Negotiated preload transport uncertainty preserves only current incumbent
+acknowledgements. After a validated partial report, a failed readiness probe
+cannot admit newcomers or retain explicit failures; see
+[continuity during retry](prompt-contract-sidecar.md#negotiated-continuity-during-preload-retry).
 See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
+
+Current tokenizer acknowledgement and current routing participation are distinct.
+The API uses the Registry's read-only canonical pre-activation classification
+without consuming sampling, QPS or counters. It preserves existing `off` and
+`ineligible` outcomes only after confirming native acknowledgement; stopped,
+stale or never-acknowledged contracts remain `preload_not_ready`. A fresh check
+before commitment handles policy drift conservatively, and the actual Registry
+plan revalidates authority before consuming activation once
+(`CachePlanRejection`, `coordinator/registry/cache_plan_preflight.go`;
+`CachePlanner.commitCachePlanning`, `coordinator/internal/inference/routeplan/cache_preload_selection.go`).
 
 An optional exact-artifact list runs before the cohort, QPS gate and sidecar
 plan. `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` matches the resolved model
@@ -143,6 +157,13 @@ and the coordinator log names each live tuple once, so the missing entry is
 reported instead of appearing only as a model whose hits stopped
 (`ArtifactAllowlist.StaleFor`; `coordinator/api/inference/exact_cache_allowlist_staleness.go`,
 `missingAllowlistEntries`).
+
+An authenticated eligible request can record bounded demand for its exact resolved
+artifact tuple before tokenizer readiness, without waiting for tokenizer preload
+or changing its original deadline. Overflow selection retains the full verified
+catalog and never raises the sidecar's configured capacity. See the canonical
+[tokenizer preload policy](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
+Advisory public provider availability is neither cache ownership nor authorization.
 
 Without authenticated scope, `RemotePrefixCacheContext.cacheEnabled` is false
 and the provider forwards `prefixCacheEnabled=false` to the engine. This gates

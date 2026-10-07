@@ -795,6 +795,12 @@ watchdog goroutine per connection (`writedeadline.Watchdog.Watch`,
 deadline it closes the socket and the writer surfaces a timeout rather than
 a generic closed-connection error. When the writer stops, queued frames fail
 with `providerWriteDrainErrorString = "provider websocket writer stopped"`.
+`Writer.Close` publishes stopped admission under its short admission lock, then
+releases that lock before closing the transport. A concurrent socket close can
+wait without trapping lease enqueue or its registry/provider locks; callers that
+raced the first liveness check recheck stopped state before queue admission.
+All `Close` callers still wait for transport closure before in-flight cancellation
+may return; they do not wait for `Writer.Run`, which can itself call `Close`.
 Transport limits and fragmentation live in
 `coordinator/internal/registry/writertransport/transport.go` (`Timeout`, `Write`):
 messages larger than `fragmentBytes = 256 << 10` use continuation frames so

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
-	"github.com/eigeninference/d-inference/coordinator/internal/inference/firstcontent"
 	"github.com/eigeninference/d-inference/coordinator/internal/observation/cachemetrics"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -29,6 +28,9 @@ type CachePlanner struct {
 	Contract    *promptcontract.Client
 	Preloader   *promptcontract.PreloadController
 	Observation *observation.Owner
+	// PreloadPlanning, when set, answers planning's demand and observation
+	// calls in place of Preloader, which it must wrap. Nil uses Preloader.
+	PreloadPlanning PreloadPlanning
 }
 
 // PlanResult is the cache planning adapter. Production request memoization
@@ -52,23 +54,32 @@ func (p CachePlanner) PlanResult(ctx context.Context, input CachePlanningInput) 
 		reason = artifactReason
 		return registry.CachePlanResult{}
 	}
-	if !p.Preloader.ReadyFor(status.PromptContractID) {
+	identity, verified := p.cachePreloadIdentity(input.Model, status)
+	if !verified {
 		reason = CachePlanningPreloadNotReady
 		return registry.CachePlanResult{}
 	}
-
-	// Preserve the original receipt-time budget, including exempt/zero-clock
-	// behavior. Only optional planning receives this child, never dispatch.
-	planningCtx, cancel := firstcontent.FirstTokenWriteContext(ctx, input.ReceivedAt, input.FirstContentBudget)
-	defer cancel()
-	result := p.Registry.PlanCacheRouteWithResult(planningCtx, p.Contract, registry.CachePlanInput{
+	planInput := registry.CachePlanInput{
 		Account:              input.Account,
 		Model:                input.Model,
 		PromptContractID:     status.PromptContractID,
 		ModelAggregateSHA256: status.ModelAggregateSHA256,
 		Body:                 input.Body,
 		HasMedia:             input.HasMedia,
-	})
+	}
+	preload := p.preloadPlanning()
+	_, rejected := p.Registry.CachePlanRejection(p.Contract, planInput)
+	if !rejected && CachePreloadDemandWithinDeadline(ctx, input) {
+		// Once per memoized authenticated candidate body, before the
+		// readiness gate. No QPS/sample debit, waiting, or request data retention.
+		preload.NoteDemand(identity)
+	}
+	state := preload.PlanningState(identity)
+	result, decided := p.commitCachePlanning(ctx, input, planInput, identity, rejected, state)
+	if !decided {
+		reason = CachePlanningPreloadNotReady
+		return registry.CachePlanResult{}
+	}
 	// Registry still owns eligibility, sampling and outcome precedence. Keep
 	// legacy accounting distinct from the broader API decision population.
 	p.Observation.EmitExactCachePlan(result)

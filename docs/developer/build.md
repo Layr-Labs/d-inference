@@ -9,7 +9,16 @@ post-push verification. Branch updates still require the affected CI gates.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
-operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+operator's live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+The Autopilot E2E harness creates canonical inventory records and persists live
+desired mode only for its running, authenticated, suite-owned provider handles
+before starting control (`e2e/testbed/autopilot_cohort.go`,
+`bindAutopilotFixtureMachines`). It uses the same isolated test store as the
+coordinator, not an environment allowlist or arbitrary UUID insertion.
+These isolated trusted inputs replace Apple attestation only in the testbed;
+they do not disable the production cohort gate or the real provider's live-lease
+acknowledgement. See [cohort validation](test.md#autopilot-machine-cohorts).
 
 CI and Integration Tests cancel an older run only when a newer revision of the
 same pull request starts in that workflow. Concurrency groups include the
@@ -557,6 +566,13 @@ its test binary after helper or lifecycle changes. The CPU-only
 types to prepare canonical catalog entries before a physical run. The helper waits within the existing
 five-minute prelaunch bound for GPU ≤42°C and load1 ≤4, under the same control
 lease used after launch. See the [test procedure](test.md#connected-coordinatorprovider-http-cache-gate).
+
+Rebuild the E2E test executable after shared sidecar lifecycle or release-default
+fixture changes. `startExactCacheSidecar` and the restart fixtures install the
+API preload controller before starting it, matching coordinator startup. The
+CPU-only API-readiness regression in the linked procedure uses a verified
+Rust sidecar and immutable prompt artifacts; compiling it does not execute the
+provider/API cache smoke or qualify model restoration.
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).

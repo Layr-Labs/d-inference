@@ -27,11 +27,15 @@ func TestAutopilotNeverDispatchesWithoutDurableIntent(t *testing.T) {
 	r, c, now := newAutopilotControllerTest(t, false, func(d *production.Dependencies) {
 		d.AutopilotSender = func(string, protocol.ModelAutopilotMessage) error { sent++; return nil }
 	})
-	r.SetStore(&unavailableAutopilotStore{memory.NewMemory(store.Config{})})
+	backend, ok := store.As[*memory.MemoryStore](r.store)
+	if !ok {
+		t.Fatal("fixture store is not the real memory backend")
+	}
+	r.SetStore(&unavailableAutopilotStore{backend})
 	p := autopilotControllerProvider(t, r, "provider", now)
 	s := c.Tick(now)
-	if sent != 0 || s.Issued != 0 {
-		t.Fatal("dispatch occurred without persisted intent")
+	if sent != 0 || s.Issued != 0 || s.LiveProposed != 1 {
+		t.Fatalf("durable intent failure did not stop a live proposal: %+v sent=%d", s, sent)
 	}
 	p.Mu().Lock()
 	_, pending := r.states[p.ID].PrepareDelivery()

@@ -257,6 +257,7 @@ func TestAutopilotControllerConcurrentReservationsHonorBudgetWithObservedLegacyL
 	cfg.Enabled, cfg.ObserveOnly = true, false
 	cfg.MaxConcurrentOperations = 2
 	reg, c, now := newAutopilotControllerTestConfig(t, cfg)
+	reg.selectLiveMachines(t, 0, 1, 2, 3)
 	for _, id := range []string{"a", "b", "c", "d"} {
 		autopilotControllerProvider(t, reg, id, now)
 	}

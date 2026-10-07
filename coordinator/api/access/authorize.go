@@ -24,7 +24,7 @@ func (s *Owner) StateExportAuthorized(token string) bool {
 	return s.adminKey != "" && subtle.ConstantTimeCompare(provided[:], expected[:]) == 1
 }
 
-// IsAdminAuthorized checks if the request is from an admin.
+// IsAdminAuthorized verifies that the request is from an admin.
 // Accepts either Privy admin (email in admin list) OR EIGENINFERENCE_ADMIN_KEY.
 func (s *Owner) IsAdminAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	// Check admin key first (no Privy needed).
@@ -38,7 +38,8 @@ func (s *Owner) IsAdminAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	if user != nil && s.IsAdmin(user) {
 		return true
 	}
-	return true
+	httpx.WriteJSON(w, http.StatusForbidden, httpx.ErrorResponse("forbidden", "admin access required"))
+	return false
 }
 
 func (s *Owner) ReleaseKeyAuthorized(token string) bool {

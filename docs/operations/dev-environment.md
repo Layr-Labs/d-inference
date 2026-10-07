@@ -395,7 +395,7 @@ Cadence:
 - The run is skipped when the deployed commit is the last tested commit. A
   dispatch with `-f force=true` always runs.
 - The deployed commit is `build_commit` of the public `/health`. If `/health`
-  does not answer, the run is skipped with a notice.
+  does not answer, the run is skipped with a notice, also with `force=true`.
 - The last tested commit is in the artifact `devnet-suite-tested-commit` of
   the newest successful run (kept 90 days). If there is no artifact, the
   suite runs.
@@ -410,6 +410,8 @@ Checks:
 | `active_providers` >= 1 | report only |
 | `scripts/smoke-dev.sh` with the authenticated chat test, only when the repository secret `DEVNET_SMOKE_API_KEY` is set | hard when it runs |
 
+`smoke-dev.sh` also fails when no provider is attached.
+
 The job summary shows the tested commit, each check, pass or fail, and the
 duration. When the repository secret `DEVNET_SUITE_SLACK_WEBHOOK` is set, the
 job also posts the result to Slack.
@@ -417,7 +419,7 @@ job also posts the result to Slack.
 No existing e2e target can test a remote coordinator: the `e2e/` suites start
 their own coordinator.
 
-Enable the suite after DBLM-559 (a repository admin):
+A repository admin enables the suite after DBLM-559:
 
 ```bash
 gh variable set DEVNET_SUITE_ENABLED -R Layr-Labs/d-inference --body true

@@ -10,7 +10,8 @@
 #   1. /health: status ok and build_commit = EXPECTED_COMMIT. Hard.
 #   2. /v1/stats: active_providers >= 1. Report only.
 #   3. scripts/smoke-dev.sh with the authenticated chat test, only when API_KEY
-#      is set. Hard when it runs. The chat test needs an attached provider.
+#      is set. Hard when it runs. smoke-dev.sh also fails when no provider is
+#      attached.
 # Writes a Markdown report to GITHUB_STEP_SUMMARY when it is set, else to
 # stdout. Exit 1 when a hard check fails, 2 on a usage error.
 
@@ -28,32 +29,35 @@ REPORT=${GITHUB_STEP_SUMMARY:-/dev/stdout}
 start=$(date +%s)
 rows=()
 hard_fail=0
-check() { rows+=("| $1 | $2 | $3 |"); }
+add_row() { rows+=("| $1 | $2 | $3 |"); }
 
+label="/health status ok, build_commit is the tested commit"
 body=$(curl -fsS --max-time 10 "$COORD/health" 2>/dev/null) || body=""
-if [ -n "$body" ] && jq -e --arg c "$EXPECTED_COMMIT" '.status == "ok" and .build_commit == $c' <<< "$body" >/dev/null 2>&1; then
-    check "/health status ok, build_commit is the tested commit" hard pass
+if jq -e --arg c "$EXPECTED_COMMIT" '.status == "ok" and .build_commit == $c' <<< "$body" >/dev/null 2>&1; then
+    add_row "$label" hard pass
 else
-    check "/health status ok, build_commit is the tested commit" hard fail
+    add_row "$label" hard fail
     hard_fail=1
     echo "::error::/health does not report $EXPECTED_COMMIT: ${body:-no answer}"
 fi
 
-providers=$(curl -fsS --max-time 10 "$COORD/v1/stats" 2>/dev/null | jq -r '.active_providers // 0' 2>/dev/null) || providers=unknown
+providers=$(curl -fsS --max-time 10 "$COORD/v1/stats" 2>/dev/null | jq -r '.active_providers // 0' 2>/dev/null) || providers=""
+providers=${providers:-unknown}
 if [[ "$providers" =~ ^[0-9]+$ ]] && [ "$providers" -ge 1 ]; then
-    check "active_providers >= 1 (now $providers)" report pass
+    add_row "active_providers >= 1 (now $providers)" report pass
 else
-    check "active_providers >= 1 (now ${providers:-unknown})" report fail
-    echo "::warning::no attached provider (active_providers=${providers:-unknown})"
+    add_row "active_providers >= 1 (now $providers)" report fail
+    echo "::warning::no attached provider (active_providers=$providers)"
 fi
 
+label="scripts/smoke-dev.sh with the authenticated chat test"
 if [ -z "$API_KEY" ]; then
-    check "scripts/smoke-dev.sh with the authenticated chat test" hard skipped
+    add_row "$label" hard skipped
     echo "::notice::DEVNET_SMOKE_API_KEY is not set; the authenticated chat test is skipped"
 elif COORD="$COORD" API_KEY="$API_KEY" "$ROOT/scripts/smoke-dev.sh"; then
-    check "scripts/smoke-dev.sh with the authenticated chat test" hard pass
+    add_row "$label" hard pass
 else
-    check "scripts/smoke-dev.sh with the authenticated chat test" hard fail
+    add_row "$label" hard fail
     hard_fail=1
 fi
 

@@ -7,8 +7,9 @@ name: DevNet Suite
 #
 # Cadence: every 3 hours, or after MERGE_THRESHOLD first-parent master commits
 # since the last tested commit, whichever comes first. A run is skipped when
-# the deployed commit is the last tested commit. workflow_dispatch with
-# force=true always runs.
+# the deployed commit is the last tested commit; workflow_dispatch with
+# force=true runs then too. A run is always skipped when the public /health
+# gives no build_commit.
 #
 # Master switch: every job runs only when vars.DEVNET_SUITE_ENABLED is "true".
 # Runbook: docs/operations/dev-environment.md, step 13.
@@ -84,6 +85,7 @@ jobs:
             exit 0
           fi
           echo "commit=$deployed" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" = true ]; then decide true "force, deployed $deployed"; exit 0; fi
 
           last=""
           artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$TESTED_ARTIFACT&per_page=100" \
@@ -93,19 +95,15 @@ jobs:
             last=$(unzip -p "$RUNNER_TEMP/tested.zip" commit.txt | tr -d '[:space:]')
           fi
 
-          if [ "$FORCE" = true ]; then decide true "force, deployed $deployed"; exit 0; fi
           if [[ ! "$last" =~ ^[0-9a-f]{40}$ ]]; then decide true "no last tested commit, deployed $deployed"; exit 0; fi
           if [ "$deployed" = "$last" ]; then decide false "deployed $deployed is the last tested commit"; exit 0; fi
           if [ "$GITHUB_EVENT_NAME" != workflow_run ]; then decide true "deployed $deployed, last tested $last"; exit 0; fi
           if ! merges=$(git rev-list --first-parent --count "$last..$deployed" 2>/dev/null); then
-            decide true "cannot count master commits from $last to $deployed"
+            decide false "cannot count master commits from $last to $deployed; the schedule tests it"
             exit 0
           fi
-          if [ "$merges" -ge "$MERGE_THRESHOLD" ]; then
-            decide true "$merges master commits since the last tested $last (threshold $MERGE_THRESHOLD)"
-          else
-            decide false "$merges master commits since the last tested $last (threshold $MERGE_THRESHOLD)"
-          fi
+          reason="$merges master commits since the last tested $last (threshold $MERGE_THRESHOLD)"
+          if [ "$merges" -ge "$MERGE_THRESHOLD" ]; then decide true "$reason"; else decide false "$reason"; fi
 
   suite:
     name: DevNet suite
@@ -151,8 +149,7 @@ jobs:
             echo "::notice::DEVNET_SUITE_SLACK_WEBHOOK is not set; no Slack post"
             exit 0
           fi
-          result=fail
-          [ "$OUTCOME" != success ] || result=pass
+          case "$OUTCOME" in success) result=pass ;; failure) result=fail ;; *) result=$OUTCOME ;; esac
           text="DevNet suite: $result, commit ${EXPECTED_COMMIT::12}. $RUN_URL"
           jq -n --arg text "$text" '{text: $text}' |
             curl -fsS --max-time 10 -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK" >/dev/null

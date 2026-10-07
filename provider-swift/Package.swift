@@ -22,6 +22,10 @@ let package = Package(
     dependencies: [
         .package(path: "../libs/mlx-swift"),
         .package(path: "../libs/mlx-swift-lm"),
+        // Private cluster foundation (slice 1 staging): MLX-free membership
+        // protocol module mirrored by the native-pair public control codec.
+        // Build-graph only; no serving call site consumes it yet.
+        .package(path: "../libs/darkbloom-cluster"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -129,6 +133,7 @@ let package = Package(
                 "ProviderAppAttest",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
+                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),

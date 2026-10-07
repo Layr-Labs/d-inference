@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/autopilotcontrol"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/kvbudget"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 
 	memorypolicy "github.com/eigeninference/d-inference/coordinator/internal/registry/memorypolicy"
@@ -43,7 +44,12 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 		}
 	}
 	f.LegacyPending = r.pendingLoads.CountStartedBeforeExpiry(now)
+	providers := make([]*Provider, 0, len(r.providers))
 	for _, p := range r.providers {
+		providers = append(providers, p)
+	}
+	estimates := r.coldKVEstimatesLocked(providers, "", now)
+	for _, p := range providers {
 		p.mu.Lock()
 		placement := p.autopilotState.Placement(p.ModelAutopilot, now, c.config.CommandWatchdog)
 		observeOnly := !c.liveMachineLocked(p)
@@ -109,7 +115,7 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 				if !servingShape && !hypotheticalShape {
 					continue
 				}
-				fit := r.autopilotModelFitLocked(p, model.ID, d, c.config)
+				fit := r.autopilotModelFitLocked(p, model.ID, d, c.config, estimates)
 				if fit.Rate > 0 {
 					if servingShape {
 						n.Fits[key] = fit
@@ -120,7 +126,7 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 				}
 			}
 			if !found {
-				fit := r.autopilotModelFitLocked(p, model.ID, autopilot.DemandView{}, c.config)
+				fit := r.autopilotModelFitLocked(p, model.ID, autopilot.DemandView{}, c.config, estimates)
 				if serving {
 					n.Fits[model.ID] = fit
 				}
@@ -158,7 +164,7 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 	return f
 }
 
-func (r *Registry) autopilotModelFitLocked(p *Provider, model string, d autopilot.DemandView, cfg autopilot.Config) autopilot.ModelFit {
+func (r *Registry) autopilotModelFitLocked(p *Provider, model string, d autopilot.DemandView, cfg autopilot.Config, estimates coldKVEstimates) autopilot.ModelFit {
 	solo := r.resolvedSoloModelTPSLocked(p, model)
 	_, prefill := resolvedModelTPSLocked(p, model)
 	cap := r.effectiveMaxConcurrencyForModelRateLocked(p, model, solo)
@@ -193,13 +199,20 @@ func (r *Registry) autopilotModelFitLocked(p *Provider, model string, d autopilo
 			weights = offload
 		}
 		_, sampleCount := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware))
+		rate := estimates.Rate(p, model)
+		for _, slot := range evidence.Slots {
+			if slot.Model == model && slot.KVBytesPerToken > 0 {
+				rate = kvbudget.ClampRate(slot.KVBytesPerToken)
+				break
+			}
+		}
 		// Structural KV is only a cold-model prefilter; a completed load must
 		// still report actual usable budgets before receiving capacity credit.
 		return autopilotcontrol.FitLimits{
 			WeightsGiB: weights, Restricted: len(entry.RequiredProviderCapabilities) > 0,
 			Measured:        sampleCount >= r.qualityPolicyLocked().MinSamples(),
 			HardwareFits:    modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), float64(p.Hardware.MemoryGB)),
-			ColdTokenBudget: memorypolicy.ColdTokenBudgetWithOffload(float64(p.Hardware.MemoryGB), r.catalogSizeGBLocked(model), offload, 0, model),
+			ColdTokenBudget: memorypolicy.ColdTokenBudgetWithOffload(float64(p.Hardware.MemoryGB), r.catalogSizeGBLocked(model), offload, rate, model),
 		}
 	})
 }

@@ -349,25 +349,33 @@ coordinator-pending tokens, in bytes when every budget slot reports
 for a cold model that has no slot yet, and a grant that a re-slice shrank
 below its live use. A cold request is charged against the same pool.
 
-Native MiMo capacity in 0.9.13 also accounts for fixed request workspace.
+Native MiMo and ordinary `EngineV2` bridges with fixed request overhead account
+for workspace before advertising concurrency. This includes recurrent state and
+MTP allocation overhead in Qwen and Nemotron, not just native MiMo workspace.
 `EngineV2Bridge.memoryLimitedConcurrency`
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`)
 reduces the configured concurrency to what the current admission ceiling can
 hold while retaining `UnifiedMemoryCap.minimumLoadKVBytes`. The provider
 deducts fixed workspace only for the resulting available slots, reports that
-same `MaxConcurrency`, and enforces it before local or remote submission.
-The ceiling includes the real engine watermark and fleet clamp; live native
-reservations remain charged through retirement. A zero budget still means
-unavailable, and raw `kv_bytes_capacity` must not override it.
+same `MaxConcurrency`, and enforces it against active and pending submissions
+before local or remote admission. The ceiling includes the real engine watermark,
+backend limit and fleet clamp. Already accepted work keeps its reservations when
+the grant shrinks; native reservations remain charged through retirement.
+Ordinary engines without fixed or auxiliary allocation overhead retain their
+existing concurrency behavior. A zero budget still means unavailable, and raw
+`kv_bytes_capacity` must not override it.
 
 Before a new model loads or an advertised serving set raises its reserve,
 `resliceMeetsServiceabilityFloor`
 (`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`)
-preserves one native request's fixed workspace, the watermark and minimum KV
-allowance for existing slots. The new native contiguous engine is checked
-against the same floor before publication. Ordinary engines keep their existing
-floor. These are provider-side changes; the coordinator's existing per-model
-concurrency and token-budget checks consume the corrected heartbeat.
+uses `EngineV2Bridge.minimumServiceableGrantBytes` for existing native and
+ordinary fixed-workspace slots. The [total slot floor](hardware-support.md#kv-slot-grants)
+includes one request's workspace, the actual admission policy, minimum KV and
+private cache carve. Ordinary stateless engines retain their base floor.
+`EngineV2SlotFactory.makeProductionBundle` refuses an ordinary fixed-workspace
+newcomer that cannot serve even one request before publishing the bridge; native
+publication retains its transaction-owned gate. The coordinator's existing
+per-model concurrency and token-budget checks consume the corrected heartbeat.
 The standalone/local server applies the same per-engine minimum to native and
 ordinary newcomer loads and serving-set reserve raises through
 `StandaloneServer.resliceKeepsSlotsServiceable`
@@ -375,8 +383,14 @@ ordinary newcomer loads and serving-set reserve raises through
 
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's
-KV estimate (`tokens × kvCacheBytesPerToken / bytesPerGB`; the fallback
-`kvCacheBytesPerToken` is in [`routing.md` → Cost model](routing.md#cost-model)). An idle on-disk provider with nothing in flight is judged against
+KV estimate (`tokens × estimatedBytesPerToken / bytesPerGB`). For cold models,
+the estimate can use the largest fresh native rate observed for the same artifact
+and verified runtime; see [cold KV forecasts](routing.md#cold-model-kv-forecasts)
+for evidence requirements and the unknown-model fallback. This estimated rate
+does not create a reported slot budget, change pool capacity or make an unknown
+legacy slot eligible for byte accounting. Incoming and pending cold work use the
+operation's current estimate rather than retaining a historical rate. An idle
+on-disk provider with nothing in flight is judged against
 its reported `FreeForLoadGB` when present, otherwise against
 `modelSizeGB + kvCacheGB + osReserveGB ≤ totalMemoryGB` with
 `osReserveGB = 4.0`; a busy provider must satisfy

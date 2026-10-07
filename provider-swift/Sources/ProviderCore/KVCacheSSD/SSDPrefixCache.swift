@@ -1165,8 +1165,13 @@ public final class SSDPrefixCache:
         let elementSize = geometry.layers.lazy
             .compactMap { windows[$0.index]?.keys.dtype.size }.first ?? 0
         let sidecarBytes = geometry.bytesPerBlock(elementSize: elementSize)
+        // The required blocks spend their complete file sizes, not just their
+        // payloads. The optional sidecar quote must leave that allowance intact.
         guard sidecarBytes > 0,
-            writeBehind.mightAcceptWrite(bytes: totalBytes + sidecarBytes)
+            let queuedFileBytes = try? blocks.reduce(0, {
+                try $0 + SSDBlockStore.serializedByteCount(metadata: $1.metadata)
+            }),
+            writeBehind.mightAcceptWrite(bytes: queuedFileBytes + sidecarBytes)
         else { return }
 
         var claimed: [(block: Int, tag16: Data, fullTag: Data)] = []

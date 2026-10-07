@@ -172,6 +172,7 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 - Allow one bounded, fully authenticated shorter complete-checkpoint restore after a proven pre-allocation capacity refusal. Retire failed native/host owners before retrying, retain request/epoch fences and original remaining read/time budgets, and leave generic allocation, corruption and cancellation cold. No capture-cap, precision, encryption or first-attempt admission change.
 - Reject substituted FIFO cache entries without blocking encrypted-cache read or touch operations; preserve descriptor-based path checks and regular-file behavior.
 - Preserve surviving encrypted SSD checkpoints and routing announcements during routine active-store capacity/TTL eviction. Coordinate durable writes and index commits with retirement to prevent rename-to-index races without global invalidation. Keep destructive epoch fencing for unsafe changes, native authentication and bounded stale-hint invalidation.
+- Refuse and retry SSD epoch checks when parent-directory opens or metadata status probes fail transiently, preserving the existing store's ownership. Continue disowning proven missing, substituted, malformed or oversized records; verify the original capability again when connected retirement observes an eviction.
 
 ## Unreleased — provider 0.9.17
 

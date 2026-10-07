@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -21,6 +22,15 @@ func TestIntegrationConnectedCacheRetirement(t *testing.T) {
 
 func verifyConnectedRetirement(t *testing.T, suite *testbed.Suite, model string, report *connectedReport) {
 	t.Helper()
+	var originalCapability *protocol.PrefixCacheV2Capability
+	providerID := report.Cases[0].HTTP.ProviderID
+	for _, slot := range report.Cases[0].SlotsBefore {
+		if slot.ProviderID == providerID && slot.Model == model && slot.Capability != nil {
+			copy := *slot.Capability
+			originalCapability = &copy
+		}
+	}
+	require.NotNil(t, originalCapability, "original provider/model cache capability is required")
 	var restored []int
 	for i, row := range report.Cases {
 		var before, after string
@@ -61,22 +71,44 @@ func verifyConnectedRetirement(t *testing.T, suite *testbed.Suite, model string,
 	// Prove that disk pressure actually retired data; a passing repeat without
 	// any eviction would not exercise this regression. Do not lower refresh
 	// intervals or conflate these delayed counters with per-request timings.
+	var observationError error
 	require.Eventually(t, func() bool {
-		for _, slot := range connectedSlots(suite, model) {
-			if slot.ProviderID != report.Cases[0].HTTP.ProviderID || slot.Capacity == nil {
-				continue
-			}
-			if maintenance := slot.Capacity.PrefixCacheMaintenance; maintenance != nil && maintenance.BudgetEvictedTotal > 0 {
-				return true
-			}
-			for _, modelSlot := range slot.Capacity.Slots {
-				if modelSlot.Model == model && modelSlot.PrefixCache != nil && modelSlot.PrefixCache.EvictionsTotal > 0 {
-					return true
-				}
+		snapshot := connectedSlots(suite, model)
+		evicted, err := connectedRetirementObserved(snapshot, providerID, model, *originalCapability)
+		observationError = err
+		// A changed identity ends the wait so the original failure is reported,
+		// rather than silently waiting for another epoch to report an eviction.
+		return err != nil || evicted
+	}, 150*time.Second, 250*time.Millisecond, "no observed active-store eviction; pressure gate not exercised")
+	require.NoError(t, observationError)
+	refreshed := connectedSlots(suite, model)
+	evicted, err := connectedRetirementObserved(refreshed, providerID, model, *originalCapability)
+	require.NoError(t, err, "refreshed post-eviction identity must still match the original")
+	require.True(t, evicted, "refreshed snapshot must retain the observed eviction")
+	report.Cases[2].SlotsAfter = refreshed
+	t.Logf("CACHE_RETIREMENT connected=true native_cached=%v ready_accepted=true epoch=preserved eviction_observed=true natural_routing=true", restored)
+}
+
+func connectedRetirementObserved(slots []connectedSlot, providerID, model string, original protocol.PrefixCacheV2Capability) (bool, error) {
+	for _, slot := range slots {
+		if slot.ProviderID != providerID || slot.Model != model {
+			continue
+		}
+		if slot.Capability == nil || *slot.Capability != original {
+			return false, fmt.Errorf("routine retirement changed the original provider/model cache capability")
+		}
+		if slot.Capacity == nil {
+			return false, nil
+		}
+		if maintenance := slot.Capacity.PrefixCacheMaintenance; maintenance != nil && maintenance.BudgetEvictedTotal > 0 {
+			return true, nil
+		}
+		for _, modelSlot := range slot.Capacity.Slots {
+			if modelSlot.Model == model && modelSlot.PrefixCache != nil && modelSlot.PrefixCache.EvictionsTotal > 0 {
+				return true, nil
 			}
 		}
-		return false
-	}, 150*time.Second, 250*time.Millisecond, "no observed active-store eviction; pressure gate not exercised")
-	report.Cases[2].SlotsAfter = connectedSlots(suite, model)
-	t.Logf("CACHE_RETIREMENT connected=true native_cached=%v ready_accepted=true epoch=preserved eviction_observed=true natural_routing=true", restored)
+		return false, nil
+	}
+	return false, fmt.Errorf("original provider/model cache capability is missing after retirement")
 }

@@ -158,6 +158,33 @@ struct SSDCacheEpochStoreRecoveryTests {
         #expect(store.takeNextSequence(expectedEpoch: rotated) == 1)
     }
 
+    @Test("failed parent opens and status probes preserve ownership until retry", arguments: [0o000, 0o400])
+    func transientStatusLookupFailureDoesNotDisown(_ permissions: Int) throws {
+        let f = try EpochRecordFixture()
+        let store = try f.open()
+        let epoch = try #require(store.current)
+        let original = try f.recordBytes()
+        // Mode000 fails the no-follow parent open. Mode400 permits its read
+        // descriptor but denies the subsequent fstatat lookup (no search bit).
+        try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: f.root.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: f.root.path)
+        }
+
+        for _ in 0 ..< 3 {
+            #expect(!retires(store), "uncertain lookup must refuse destructive work")
+            #expect(store.rotate() == nil)
+            #expect(store.takeNextSequence(expectedEpoch: epoch) == nil)
+            #expect(store.current == epoch, "a failed status lookup does not refute the record")
+        }
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: f.root.path)
+        #expect(try f.recordBytes() == original)
+        #expect(retires(store), "the same store must recover without reconstruction")
+        #expect(store.current == epoch)
+        #expect(store.takeNextSequence(expectedEpoch: epoch) == 1)
+    }
+
     @Test("repeated failures keep ownership, issue nothing and change nothing on disk")
     func repeatedFailuresKeepOwnership() throws {
         let f = try EpochRecordFixture()

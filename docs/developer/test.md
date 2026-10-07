@@ -2,6 +2,22 @@
 
 > Last updated: 2026-10-07
 
+## SSD epoch status lookup and retirement snapshots
+
+Run the rebuilt provider's `SSDCacheEpochStoreRecoveryTests` with
+`scripts/run-nested-suite.sh` and Swift Testing enabled. The non-root permission
+regression exercises both failed parent-directory opens and failed status
+lookups, verifies refused retirement/rotation/sequence operations, and then
+requires the same store to recover without changing its persisted epoch.
+Existing missing, substituted and malformed record cases retain their refusal
+and ownership-revocation checks.
+
+Run `go test ./e2e -run '^TestConnectedRetirementObservationRejectsIdentityReplacement$'`
+for the retirement snapshot oracle. This test rejects delayed evictions after
+provider, model or epoch replacement. The connected live fixture also compares
+the original capability when eviction is first observed and after refreshing
+the report; it still requires its ordinary model, host and disk admission gates.
+
 ## Pull-request restacking
 
 Run `python3 scripts/test-restack-after-squash.py` for the regression suite of

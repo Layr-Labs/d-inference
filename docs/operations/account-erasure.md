@@ -62,6 +62,14 @@ done.
 
 - Explicit human approval for this erasure. Every step from step 3 on
   changes production data.
+- Before confirmation, separately approve setting
+  `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=true` and recreating the
+  coordinator through the [deploy procedure](coordinator-deploy.md). It defaults
+  to `false`; confirmation (including `force`) then returns 503
+  `soft_delete_mutations_disabled`. Planning, status and cancellation remain
+  available. This flag also enables owned-provider removal. Turning it off
+  later neither pauses accepted scrub/outbox work nor restores older-image
+  compatibility; retain the fallback requirements above.
 - Admin access to the coordinator: the admin key
   (`EIGENINFERENCE_ADMIN_KEY`) or a Privy session of an email in
   `EIGENINFERENCE_ADMIN_EMAILS`. The request records `admin_key` or

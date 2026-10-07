@@ -2033,6 +2033,44 @@ both targets compile the same test without depending on target-local helpers.
 Passing these operator cases does not replace full-model trajectory, cache,
 batching or performance validation.
 
+#### Sampled MTP acceptance controls
+
+Build the [candidate radix executable](build.md#prefix-cache-benchmark-executable)
+with `RADIX_CANDIDATE_BUILD=1`. Both `scripts/benchmarks/run_radix_engine.py`
+and `radix-engine` accept `--mtp-acceptance exact|typical`. The wrapper forwards
+the option only when explicitly supplied, preserving old baseline command lines;
+omission leaves the candidate on `exact`. Historical baseline builds reject the
+explicit flag. Values are the exact lowercase strings, not `typical:<delta>`.
+This flag selects acceptance, not MTP activation: pass `--mtp on` separately.
+
+For an eligible target-prefix model, compare `exact` and `typical` using the same
+candidate binary, target/assistant hashes, backend, grant, prompt, seed, sampling
+knobs and output budget. Use sampled inputs and
+`--generation-comparison-policy record`, retaining full outputs and structural,
+capacity, cancellation and retirement checks. Typical output is not
+distribution-exact; token differences are not a greedy parity failure, and a
+higher acceptance ratio alone proves neither quality nor throughput. Keep strict
+greedy controls separate. Native MiMo does not apply this preference and remains
+exact; do not report it as a typical-acceptance arm.
+
+The candidate SSD route passes `mtpAcceptanceConfig: String = "exact"` through
+`EngineV2Factory.makeBenchmarkSession` (`@_spi(Benchmarking)`) to the ordinary
+slot factory. The resident route sets the same engine rule directly. Actual MTP
+metrics report `acceptance`, the installed rule, rather than merely the requested
+flag (`scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift`,
+`mtpRecord`). Production serving still uses TOML; the separate benchmark-session
+environment override is documented in the
+[configuration reference](../reference/configuration.md#engine-and-scheduler).
+
+Run `python3 -m unittest discover -s scripts/benchmarks -p test_run_radix_engine.py`
+for wrapper omission/forwarding and invalid-value coverage. With the same source
+root and candidate define used for the build, run the radix package's
+`BenchmarkMTPAcceptanceTests` for default/configuration, invalid/duplicate flags,
+and installed configuration/metric serialization. Also run provider
+`MTPAcceptanceConfigTests` for optional TOML round trips, per-model precedence,
+unknown-value fallback and the separate benchmark override. These tests are not
+real-model quality or performance measurements.
+
 <a id="resident-prefix-benchmark-validation"></a>
 
 #### Explicit Gemma verifier and projection controls
@@ -2622,6 +2660,8 @@ makes no network request, writes no login token and updates no host.
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
 ./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
+python3 scripts/check-go-toolchain.py # exact local/container pins satisfy go.mod
+python3 scripts/test-go-toolchain.py  # old production mismatch, patch minimum, drift and digest regressions
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
@@ -2632,7 +2672,24 @@ python3 scripts/test-provider-release-resolution.py # signed-validation and publ
 Version checks, release routing, installer parity and production environment refresh
 run in CI job "Release Integrity". The production env refresh test checks automatic
 payout activation, preservation of an explicit off switch, and rejection of missing
-payout prerequisites before the live env is changed.
+payout prerequisites before the live env is changed. It also verifies that the
+required soft-delete mutation flag bootstraps to `false` while preserving explicit
+`false` and `true` choices. These tests use temporary env files, not production.
+
+The Go toolchain guard runs without Docker or a Go download. Its regression suite
+rejects the former Go 1.25 builder with the Go 1.26 module, mismatched local pins,
+an insufficient patch version and an absent digest; it also executes the guard
+against the checkout. This is not a substitute for the full production Docker
+build in [the build guide](build.md#9-coordinator-container-image).
+
+For a provider version-only preparation, run source/fallback parity and the
+release-script tests without cold-building Swift/MLX. Inspect existing caches
+first; reuse Go's content-addressed caches and only compatible Swift/Metal
+caches. Do not point a separate worktree at another active Swift scratch path or
+present an old binary as the new candidate. A changed checkout path, SDK,
+compiler or dependency pin can invalidate Swift build reuse. Exact signed-bundle
+runtime, numerical and upgrade checks remain required by the
+[0.9.18 rollout gates](../operations/provider-release.md#0918-candidate-rollout).
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

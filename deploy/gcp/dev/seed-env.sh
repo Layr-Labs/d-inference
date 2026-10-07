@@ -184,5 +184,14 @@ fi
 mv -f "$tmp" "$ENV_FILE"
 trap - EXIT
 sync "$ENV_FILE" "$ENV_DIR" 2>/dev/null || sync
-ENV_FILE="$ENV_FILE" "$REFRESH" --apply | sed 's/^/REPORT /'
+if ! refresh_out=$(ENV_FILE="$ENV_FILE" "$REFRESH" --apply); then
+    fail "the written file could not be refreshed: $refresh_out"
+fi
+printf '%s\n' "$refresh_out" | sed 's/^/REPORT /'
+refresh_backup=${refresh_out##*backup=}
+case "$refresh_backup" in "$ENV_FILE".bak.*) suffix=${refresh_backup#"$ENV_FILE".bak.} ;; *) suffix="" ;; esac
+if ! [[ "$suffix" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] ||
+    [ ! -f "$refresh_backup" ] || [ -L "$refresh_backup" ] || ! rm -f -- "$refresh_backup"; then
+    fail "the redundant post-seed refresh backup could not be safely removed"
+fi
 echo "OK wrote $ENV_FILE"

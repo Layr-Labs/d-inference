@@ -2471,6 +2471,14 @@ unexpected post-swap command failure preserves its original status while the
 exit trap restores first-deploy env, tooling and link state. The fixtures use no
 real block device, SSH connection, secret, cloud API or database.
 
+The path-filtered [Dev Deploy Safety workflow](../../.github/workflows/dev-deploy-safety.yml)
+runs this suite independently of Release Integrity on Ubuntu 24.04 and macOS 27
+with `contents: read`, no persisted checkout credential and no cloud or deploy
+step. It reports the exact test and skip counts/reasons, then fails if temporary
+fixtures remain or the checkout changes (including untracked files). GNU-only
+publication and rollback cases run on Ubuntu and are explicitly skipped with a
+reason on macOS; a macOS skip is not Linux evidence.
+
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle
 Apple Silicon host; the runner executes one cell process at a time and records

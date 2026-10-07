@@ -23,6 +23,8 @@ OVERRIDES = DEV / "env-overrides"
 REQUIRED = ROOT / "deploy/gcp/prod/required-env-keys.txt"
 DEFAULTS = ROOT / "deploy/gcp/prod/release-env-defaults"
 PROD_ENV = ROOT / "deploy/environments/prod.env"
+DEV_DEPLOY_WORKFLOW = ROOT / ".github/workflows/dev-deploy-safety.yml"
+DEV_DEPLOY_CI_RUNNER = ROOT / "scripts/run-dev-deploy-safety-ci.sh"
 COMMIT = "a" * 40
 DIGEST = "sha256:" + "b" * 64
 REQUIRED_CHECKS = [
@@ -118,6 +120,9 @@ for index, (rule_name, pattern, out, code) in enumerate(json.load(open(os.enviro
             out, code = selected
         sys.stdout.write(out)
         sys.exit(code)
+if name == "date" and args == ["-u", "+%Y%m%dT%H%M%SZ"]:
+    sys.stdout.write("20261007T000000Z\n")
+    sys.exit(0)
 '''
 
 # Every command that the scripts can use to change state. Read-only tools
@@ -138,6 +143,19 @@ def gnu_ln_available():
 
 requires_gnu_ln = unittest.skipUnless(
     gnu_ln_available(), "swap.sh uses GNU ln -T (the Ubuntu VM has it; macOS ln does not)")
+
+
+def gnu_publication_tools_available():
+    """The remote dev VM publishes with GNU tar and coreutils mv -T."""
+    tar_probe = subprocess.run(["tar", "--version"], capture_output=True, text=True)
+    mv_probe = subprocess.run(["mv", "--version"], capture_output=True, text=True)
+    return (tar_probe.returncode == 0 and "GNU" in tar_probe.stdout and
+            mv_probe.returncode == 0 and "GNU" in mv_probe.stdout)
+
+
+requires_gnu_publication_tools = unittest.skipUnless(
+    gnu_publication_tools_available(),
+    "publication command uses GNU tar normalization and mv -T on the Ubuntu VM")
 
 
 class Sandbox:
@@ -225,6 +243,54 @@ def manifest_keys(path):
 
 
 class DevEnvContractTests(unittest.TestCase):
+    def test_dedicated_workflow_runs_offline_suite_on_supported_platforms(self):
+        text = DEV_DEPLOY_WORKFLOW.read_text()
+        self.assertIn("permissions:\n  contents: read\n", text)
+        self.assertIn("runner: blacksmith-4vcpu-ubuntu-2404", text)
+        self.assertIn("runner: blacksmith-12vcpu-macos-27", text)
+        self.assertIn('run: scripts/run-dev-deploy-safety-ci.sh "${{ matrix.platform }}"', text)
+        runner = DEV_DEPLOY_CI_RUNNER.read_text()
+        self.assertIn("pipeline_status=(\"${PIPESTATUS[@]}\")", runner)
+        self.assertIn("if ! initial_status=$(git status", runner)
+        self.assertIn("if ! find \"$fixture_root\"", runner)
+        self.assertIn("persist-credentials: false", text)
+        self.assertIn("git status --porcelain --untracked-files=all", runner)
+        self.assertIn("Fixture containment:", runner)
+        self.assertNotIn("id-token:", text)
+        self.assertNotIn("secrets:", text)
+        self.assertNotIn("gcloud ", text)
+
+    def test_ci_runner_fails_closed_on_git_tee_and_find_errors(self):
+        for failure in ("git", "tee", "find"):
+            with self.subTest(failure=failure):
+                git_code = 73 if failure == "git" else 0
+                box = Sandbox(self, ["git"], [["git", "^status", "", git_code]])
+                runner_temp = box.root / "runner"
+                runner_temp.mkdir()
+                summary = runner_temp / "summary"
+                python = box.bin / "python3"
+                python.write_text("#!/bin/sh\necho 'Ran 1 test in 0.001s'\necho OK\n")
+                python.chmod(0o755)
+                if failure == "tee":
+                    tee = box.bin / "tee"
+                    tee.write_text("#!/bin/sh\ncat >/dev/null\nexit 74\n")
+                    tee.chmod(0o755)
+                if failure == "find":
+                    find = box.bin / "find"
+                    find.write_text("#!/bin/sh\nexit 75\n")
+                    find.chmod(0o755)
+                result = box.run(
+                    [DEV_DEPLOY_CI_RUNNER, "fixture"],
+                    {"RUNNER_TEMP": str(runner_temp), "GITHUB_STEP_SUMMARY": str(summary)},
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                if failure == "git":
+                    self.assertIn("Could not inspect the source tree before tests", result.stderr)
+                elif failure == "tee":
+                    self.assertIn("Test log capture: failed", summary.read_text())
+                else:
+                    self.assertIn("Could not inspect temporary fixture containment", result.stderr)
+
     def test_every_required_key_has_a_dev_source(self):
         overlay = env_lines(OVERRIDES)
         prod = {k for k in env_lines(PROD_ENV) if k.startswith("EIGENINFERENCE_")}
@@ -271,6 +337,7 @@ class SeedEnvTests(unittest.TestCase):
         env_file = box.env_dir / "env"
         self.assertEqual(stat.S_IMODE(env_file.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(box.env_dir.stat().st_mode), 0o700)
+        self.assertEqual(list(box.env_dir.glob("env.bak.*")), [])
         env = env_lines(env_file)
         overlay = env_lines(OVERRIDES)
         self.assertEqual(env["EIGENINFERENCE_BASE_URL"], "https://" + overlay["DOMAIN"])
@@ -909,6 +976,59 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("REPORT waived CI failure: Coordinator Tests", result.stdout)
         self.assert_read_only(box)
 
+    @requires_gnu_publication_tools
+    def test_candidate_publication_is_atomic_and_same_sha_is_immutable(self):
+        box = Sandbox(self, MUTATORS, self.deploy_rules())
+        dry_run = box.run([DEV / "deploy.sh", "--dry-run"])
+        self.assertEqual(dry_run.returncode, 0, dry_run.stdout + dry_run.stderr)
+        marker = "DRY-RUN ssh: /bin/bash -c 'set -euo pipefail\n"
+        start = dry_run.stdout.index(marker) + len("DRY-RUN ssh: ")
+        end = dry_run.stdout.index("\nDRY-RUN ssh: sudo systemd-run", start)
+        command = dry_run.stdout[start:end]
+
+        remote = box.root / "remote"
+        command = command.replace("/usr/local/lib/darkbloom-deploy", str(remote))
+        command = command.replace("sudo ", "")
+        archive = subprocess.run(
+            ["tar", "-czf", "-", "deploy/gcp/prod", "deploy/gcp/dev",
+             "deploy/environments/prod.env"],
+            cwd=ROOT, capture_output=True, check=True,
+        ).stdout
+
+        def publish(payload, selected_command=command):
+            return subprocess.run(
+                ["bash", "-c", selected_command], input=payload, cwd=ROOT,
+                capture_output=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"},
+            )
+
+        first = publish(archive)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        published = remote / COMMIT
+        current = remote / "current"
+        current.symlink_to(published)
+        before = snapshot(published)
+        inode = published.stat().st_ino
+
+        repeated = publish(archive)
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        self.assertEqual(published.stat().st_ino, inode)
+        self.assertEqual(snapshot(published), before)
+
+        hash_failure = publish(archive, command.replace("sha256sum", "false"))
+        self.assertNotEqual(hash_failure.returncode, 0)
+        self.assertIn(b"could not hash staged candidate files", hash_failure.stderr)
+        self.assertEqual(published.stat().st_ino, inode)
+        self.assertEqual(snapshot(published), before)
+        self.assertEqual(list(remote.glob(f".incoming-{COMMIT}.*")), [])
+
+        interrupted = publish(archive[:max(1, len(archive) // 2)])
+        self.assertNotEqual(interrupted.returncode, 0)
+        self.assertTrue(current.is_symlink())
+        self.assertEqual(current.resolve(), published.resolve())
+        self.assertEqual(published.stat().st_ino, inode)
+        self.assertEqual(snapshot(published), before)
+        self.assertEqual(list(remote.glob(f".incoming-{COMMIT}.*")), [])
+
     def seeded_swap_box(self, with_current=True):
         stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install", "chown"]
         box = Sandbox(self, stubs, dev_host_rules())
@@ -947,6 +1067,117 @@ class ZeroMutationTests(unittest.TestCase):
             "STUB_INSTALL_REAL": "1",
         }
         return box, extra, (refresh_bin, envlib, deploy_root)
+
+    def candidate_swap_rules(self, commit, digest, candidate_image_id, current_image=None):
+        candidate = f"us-east4-docker.pkg.dev/darkbloom-dev/coordinator/coordinator@{digest}"
+        rules = dev_host_rules() + [
+            ["psql", "select count", "0\n", 0],
+            ["docker", "^pull", "", 0],
+            ["docker", "image inspect.*image.revision", commit + "\n", 0],
+            ["docker", "image inspect.*image.version", "0.9.17\n", 0],
+            ["date", r"^\+%s$", "100\n", 0],
+            ["curl", "localhost:8080/health", json.dumps({
+                "status": "ok", "build_commit": commit,
+                "build_date": "fixture", "version": "0.9.17",
+            }), 0],
+            ["curl", "localhost:8080/readyz", "", 0],
+            ["curl", "localhost:8080/v1/cache/status", json.dumps({
+                "routing_mode": "off", "activation": {"percent": 1, "max_plan_qps": 1},
+                "sidecar": {}, "preload": {}, "prompt_artifacts": {},
+            }), 0],
+            ["docker", "^run", "container-id\n", 0],
+            ["docker", r"^inspect --format \{\{\.Config\.Image\}\} coordinator", candidate + "\n", 0],
+            ["docker", "^logs", "", 0],
+            ["docker", "^ps -a", "", 0],
+            ["docker", "^image prune", "", 0],
+        ]
+        if current_image is None:
+            rules += [
+                ["docker", "^container inspect coordinator", "", 1],
+                ["docker", r"^inspect --format \{\{\.Image\}\} coordinator", candidate_image_id + "\n", 0],
+            ]
+        else:
+            rules += [
+                ["docker", "^container inspect coordinator", "{}\n", 0],
+                ["docker", "^inspect coordinator --format.*Config.Env", "EIGENINFERENCE_DRAIN_GRACE=45s\n", 0],
+                ["docker", r"^inspect --format \{\{\.Image\}\} coordinator",
+                 [[current_image + "\n", 0], [candidate_image_id + "\n", 0]], 0],
+                ["docker", "^rename", "", 0],
+                ["docker", "^stop", "", 0],
+            ]
+        return rules
+
+    @requires_gnu_ln
+    def test_first_second_deploy_rollback_and_second_refusal(self):
+        first_commit, second_commit = "a" * 40, "d" * 40
+        first_digest, second_digest = "sha256:" + "b" * 64, "sha256:" + "f" * 64
+        first_image_id, second_image_id = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+        box, extra, paths = self.seeded_swap_box(with_current=False)
+        _, _, deploy_root = paths
+        first_lib, second_lib = deploy_root / first_commit, deploy_root / second_commit
+        first_lib.mkdir()
+        (first_lib / "deploy").symlink_to(ROOT / "deploy")
+
+        extra.update({"LIB": str(first_lib), "CANDIDATE_COMMIT": first_commit,
+                      "CANDIDATE_DIGEST": first_digest})
+        box.set_rules(self.candidate_swap_rules(first_commit, first_digest, first_image_id))
+        first = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        state = Path(extra["STATE"])
+        self.assertEqual((deploy_root / "current").resolve(), first_lib.resolve())
+        self.assertEqual((state / "last-good-image").read_text().strip(), first_image_id)
+        first_record = (state / "rollback-state").read_text().splitlines()
+        self.assertEqual(first_record[0], "none")
+
+        second_lib.mkdir()
+        (second_lib / "deploy").symlink_to(ROOT / "deploy")
+        extra.update({"LIB": str(second_lib), "RESULT": str(box.root / "second.result"),
+                      "CANDIDATE_COMMIT": second_commit, "CANDIDATE_DIGEST": second_digest})
+        box.log.write_text("")
+        box.set_rules(self.candidate_swap_rules(
+            second_commit, second_digest, second_image_id, first_image_id))
+        second = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual((deploy_root / "current").resolve(), second_lib.resolve())
+        self.assertEqual((state / "last-good-image").read_text().strip(), second_image_id)
+        second_record = (state / "rollback-state").read_text().splitlines()
+        self.assertEqual(second_record[0], first_image_id)
+        self.assertEqual(Path(second_record[5]).resolve(), first_lib.resolve())
+        self.assertFalse(Path(first_record[4]).exists())
+        self.assertTrue(Path(second_record[4]).exists())
+
+        box.log.write_text("")
+        box.set_rules(dev_host_rules() + [
+            ["docker", "image inspect.*--format.*Id", first_image_id + "\n", 0],
+            ["docker", "^container inspect coordinator", "{}\n", 0],
+            ["docker", "^inspect coordinator --format.*Config.Env", "EIGENINFERENCE_DRAIN_GRACE=45s\n", 0],
+            ["docker", "^stop", "", 0], ["docker", "^rm coordinator", "", 0],
+            ["docker", "^ps -q", "", 0], ["docker", "^run", "rollback-container\n", 0],
+            ["docker", "image inspect.*image.revision", first_commit + "\n", 0],
+            ["curl", "localhost:8080/health", json.dumps({
+                "status": "ok", "build_commit": first_commit,
+                "build_date": "fixture", "version": "0.9.17",
+            }), 0],
+            ["curl", "localhost:8080/readyz", "", 0],
+            ["docker", r"^inspect --format \{\{\.Image\}\} coordinator", first_image_id + "\n", 0],
+        ])
+        rollback_extra = {**extra, "MODE": "rollback", "LIB": str(second_lib),
+                          "RESULT": str(box.root / "rollback.result")}
+        rollback = box.run([DEV / "swap.sh"], rollback_extra)
+        self.assertEqual(rollback.returncode, 0, rollback.stdout + rollback.stderr)
+        self.assertEqual((deploy_root / "current").resolve(), first_lib.resolve())
+        self.assertEqual((state / "last-good-image").read_text().strip(), first_image_id)
+        restored_record = (state / "rollback-state").read_text().splitlines()
+        self.assertEqual(restored_record, first_record)
+        self.assertFalse(Path(restored_record[4]).exists())
+
+        box.log.write_text("")
+        second_rollback = box.run(
+            [DEV / "swap.sh"], {**rollback_extra, "RESULT": str(box.root / "second-rollback.result")})
+        self.assertNotEqual(second_rollback.returncode, 0)
+        self.assertIn("tooling backup is not a root:root 0700 directory",
+                      (box.root / "second-rollback.result").read_text())
+        self.assertEqual(box.calls("docker"), [])
 
     def test_swap_seed_failure_precedes_every_mutation(self):
         box, extra, _ = self.seeded_swap_box()
@@ -1224,8 +1455,23 @@ class ZeroMutationTests(unittest.TestCase):
         (lib / "deploy").symlink_to(ROOT / "deploy")
         unit_result = deploy_root / "darkbloom-dev-swap-aaaaaaa-1.result"
         unit_result.write_text("OK fixture\n")
+        aged_result = deploy_root / "darkbloom-dev-swap-bbbbbbb-2.result"
+        aged_result.write_text("old generated result\n")
+        os.utime(aged_result, (1, 1))
+        lookalike_result = deploy_root / "darkbloom-dev-swap-old-1.result"
+        lookalike_result.write_text("operator lookalike\n")
+        newline_result = deploy_root / "darkbloom-dev-swap-ccccccc-3.result\noperator"
+        newline_result.write_text("operator newline name\n")
+        os.utime(lookalike_result, (1, 1))
+        os.utime(newline_result, (1, 1))
         state = Path(extra["STATE"])
         state.mkdir()
+        aged_log = state / "failed-coordinator-20200101T000000Z.log"
+        aged_log.write_text("old generated log\n")
+        operator_file = state / "operator-note.log"
+        operator_file.write_text("preserve me\n")
+        os.utime(aged_log, (1, 1))
+        os.utime(operator_file, (1, 1))
         old_attempt = state / "attempt-20200101T000000Z-1"
         old_attempt.mkdir(mode=0o700)
         (old_attempt / "env.before").write_text("SECRET-FIXTURE-VALUE\n")
@@ -1234,6 +1480,7 @@ class ZeroMutationTests(unittest.TestCase):
         result = box.run([DEV / "swap.sh"], extra)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(Path(extra["RESULT"]).read_text().startswith(f"OK {COMMIT} "))
+        self.assertEqual(list(Path(extra["ENV_FILE"]).parent.glob("env.bak.*")), [])
         record = (state / "rollback-state").read_text().splitlines()
         self.assertEqual(len(record), 6)
         self.assertEqual(sorted(state.glob("attempt-*")), [Path(record[4])])
@@ -1241,9 +1488,27 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(record[5], str(previous))
         self.assertFalse(old_attempt.exists())
         self.assertFalse(superseded.exists())
+        self.assertFalse(aged_result.exists())
+        self.assertTrue(lookalike_result.exists())
+        self.assertTrue(newline_result.exists())
+        self.assertFalse(aged_log.exists())
+        self.assertTrue(operator_file.exists())
         for kept in (previous, lib, unit_result, deploy_root / "old"):
             self.assertTrue(kept.exists(), kept)
         self.assertEqual((deploy_root / "current").resolve(), lib.resolve())
+
+    @requires_gnu_ln
+    def test_generated_history_find_failure_is_reported_after_commit(self):
+        box, extra, _ = self.seeded_swap_box(with_current=False)
+        find = box.bin / "find"
+        find.write_text(STUB)
+        find.chmod(0o755)
+        box.set_rules(self.first_deploy_rules() + [["find", "", "", 76]])
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("could not remove every dev deploy result or failed-container log",
+                      result.stderr)
+        self.assertTrue(Path(extra["RESULT"]).read_text().startswith(f"OK {COMMIT} "))
 
     def test_swap_requires_a_tls_single_host_database_url(self):
         box, extra, _ = self.seeded_swap_box()

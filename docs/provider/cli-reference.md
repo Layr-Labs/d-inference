@@ -301,6 +301,11 @@ deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
+With no accepted work left, a graceful drain retries native MiMo owner
+retirement until the owners retire or its deadline passes: after served
+requests, the first attempt only starts joining their finished consumers
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
+`performLifecycleDrain`).
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt

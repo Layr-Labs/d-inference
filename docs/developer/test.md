@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 ## Pull-request restacking
 
@@ -1445,7 +1445,15 @@ MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
   MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE=testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim \
   DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
   ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
+  DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
+  ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
 ```
+
+The lifecycle drain gate serves one request through the real native owner, then
+requires the graceful drain that `darkbloom restart` and `darkbloom stop` publish
+to report `drained` within its deadline
+(`provider-swift/Tests/ProviderCoreTests/ProviderLoop/MiMo/ProviderLoopNativeMiMoLifetimeTests.swift`).
 
 Reserve the native lane before these commands. The retained-fault selector must
 run alone and preserve its actual native owner until process exit. CI runs these

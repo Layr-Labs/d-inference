@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — provider restart after native MiMo serving
+
+- Let `darkbloom restart` and `darkbloom stop` finish their graceful drain on a provider that has served native MiMo requests. The drain tried to retire the native owner once; after any served request that attempt only starts joining the finished request's consumer, so the drain reported `timedOut` with 0 unfinished requests within milliseconds, the command failed, and the service was left draining with automatic restart disabled. The drain now retries the retirement within its own deadline and reports `drained` once the owner retires.
+
 ## Unreleased - typical MTP acceptance
 
 - Default eligible sampled target-prefix MTP requests to typical acceptance (delta `0.2`) when `[backend] mtp_acceptance` and the model override are absent. Sampled output is approximate, not distribution-exact; explicit `exact` restores exact acceptance and invalid values remain safely exact. Greedy behavior, native MiMo exact acceptance, disabled MTP and model eligibility are unchanged. Benchmark acceptance still defaults to `exact`; the recorded single-host B=1 runs do not qualify sampled quality or fleet-wide speed.

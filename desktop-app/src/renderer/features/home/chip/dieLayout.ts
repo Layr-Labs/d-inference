@@ -2,9 +2,8 @@ import type { CoreKind } from '../../../../shared/hardware';
 import type { ChipTier, CoreCluster } from './anatomy';
 import { columns, fitGrid, grid, inset, rows, share, type Rect, type Side } from './geometry';
 
-export type BlockKind =
-  'cpu' | 'gpu' | 'cache' | 'neural' | 'media' | 'display' | 'io' | 'interface';
-export type TileKind = 'gpu' | CoreKind | 'neural' | 'l2' | 'slc';
+export type BlockKind = 'cpu' | 'gpu' | 'interface';
+export type TileKind = 'gpu' | CoreKind | 'l2';
 export interface DieBlock extends Rect {
   kind: BlockKind;
   label: string;
@@ -33,23 +32,16 @@ export interface DieSpec {
   gpuGroups: number[];
   /** Cores drawn per partition: the chip's largest, so binned cores show as fillers. */
   gpuSlots: number;
-  neural: number;
-  cacheBanks: number;
 }
 export const BLOCK_LABELS: Record<BlockKind, string> = {
   cpu: 'CPU',
   gpu: 'GPU',
-  cache: 'Memory traffic',
-  neural: 'Neural Engine',
-  media: 'Media',
-  display: 'Display',
-  io: 'I/O',
   interface: 'Memory interface',
 };
 
 /**
  * One die in its canonical frame: memory interface strips on the left/right edges
- * (right only for base chips), CPU at the top of the centre column and I/O at the bottom.
+ * (right only for base chips), with GPU wings beside the CPU column.
  */
 export function canonicalDie(spec: DieSpec, w: number, h: number) {
   const blocks: DieBlock[] = [],
@@ -95,17 +87,7 @@ export function canonicalDie(spec: DieSpec, w: number, h: number) {
     });
   });
 
-  const [cpu, cache, neural, misc] = rows(centre, [0.37, 0.16, 0.31, 0.16], gap);
-  cpuClusters(spec.clusters, block(cpu, 'cpu'), gap, tiles);
-  const banks = Math.max(2, spec.cacheBanks);
-  place(grid(block(cache, 'cache'), Math.ceil(banks / 2), 2, gap * 0.6), 'slc', banks);
-  const neuralBody = block(neural, 'neural'),
-    neuralShape = fitGrid(spec.neural, neuralBody, 1.15);
-  place(grid(neuralBody, neuralShape.cols, neuralShape.rows, gap * 0.6), 'neural', spec.neural);
-  const [media, display, io] = columns(misc, [0.36, 0.28, 0.36], gap);
-  block(media, 'media', false);
-  block(display, 'display', false);
-  block(io, 'io', false);
+  cpuClusters(spec.clusters, block(centre, 'cpu'), gap, tiles);
   return { blocks, tiles };
 }
 

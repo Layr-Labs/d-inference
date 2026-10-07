@@ -47,15 +47,15 @@ it('does not animate or claim stale native model counts', () => {
     },
   } as unknown as Snapshot;
   const { rerender, container } = render(<LiveModels state={state} />);
-  expect(screen.getByText('5 running')).toBeInTheDocument();
+  expect(screen.getByText('5 processing')).toBeInTheDocument();
   expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(5);
   fireEvent.click(screen.getByRole('button', { name: 'Pause activity animation' }));
   expect(container.querySelector('[data-animate="false"]')).toBeInTheDocument();
   rerender(<LiveModels state={{ ...state, activity: { ...state.activity, sampled_at: 1 } }} />);
-  expect(screen.queryByText('5 running')).not.toBeInTheDocument();
+  expect(screen.queryByText('5 processing')).not.toBeInTheDocument();
   expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(0);
   rerender(<LiveModels state={{ ...state, state: 'stopped' }} />);
-  expect(screen.queryByText('5 running')).not.toBeInTheDocument();
+  expect(screen.queryByText('5 processing')).not.toBeInTheDocument();
   expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(0);
   rerender(
     <LiveModels
@@ -68,7 +68,7 @@ it('does not animate or claim stale native model counts', () => {
       }}
     />,
   );
-  expect(screen.queryByText('5 running')).not.toBeInTheDocument();
+  expect(screen.queryByText('5 processing')).not.toBeInTheDocument();
   expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(0);
 });
 it('celebrates a new milestone once and handles exact boundaries', () => {

@@ -1,7 +1,7 @@
-import { ArrowUpRight, Check, LoaderCircle, Monitor, X } from 'lucide-react';
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { ArrowUpRight, Monitor, X } from 'lucide-react';
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { api } from '../useBackend';
-import type { BackendState } from '../useBackend';
+export { OperationFeed } from './operations/OperationFeed';
 export function Button({
   children,
   variant = 'secondary',
@@ -87,61 +87,6 @@ export function Notice({ children, onClose }: { children: ReactNode; onClose?: (
         </button>
       )}
     </div>
-  );
-}
-export function OperationFeed({
-  backend,
-  inline = false,
-}: {
-  backend: BackendState;
-  inline?: boolean;
-}) {
-  const [dismissed, setDismissed] = useState('');
-  const operation = backend.state?.operations[0];
-  if (!operation || operation.id === dismissed) return null;
-  return (
-    <aside
-      className={`operation ${operation.state} ${inline ? 'operation-inline' : ''}`}
-      aria-live="polite"
-    >
-      {inline && operation.state === 'running' && (
-        <span
-          className="operation-progress"
-          role="progressbar"
-          aria-label={`${operation.action} in progress`}
-        />
-      )}
-      {operation.state === 'running' ? (
-        <LoaderCircle className="spin" size={17} />
-      ) : operation.state === 'succeeded' ? (
-        <Check size={17} />
-      ) : (
-        <X size={17} />
-      )}
-      <details>
-        <summary>
-          {operation.action.charAt(0).toUpperCase() + operation.action.slice(1)} · {operation.state}
-        </summary>
-        <pre>{operation.message}</pre>
-      </details>
-      {operation.state === 'running' && operation.cancellable && (
-        <Button
-          variant="quiet"
-          onClick={() => void backend.act({ action: 'cancel', operation: operation.id })}
-        >
-          Cancel
-        </Button>
-      )}
-      {operation.state !== 'running' && (
-        <button
-          className="icon-button"
-          aria-label="Dismiss operation"
-          onClick={() => setDismissed(operation.id)}
-        >
-          <X size={14} />
-        </button>
-      )}
-    </aside>
   );
 }
 export function Modal({

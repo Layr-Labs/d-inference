@@ -12,16 +12,6 @@ const CAP = { length: 0.032, width: 0.017, pitch: 0.031, standoff: 0.02 };
 const SIDES: Side[] = ['top', 'bottom', 'left', 'right'];
 const inside = (r: Rect, p: Point) => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
 
-export function ioCorridor(layout: ChipLayout, half: number): Rect {
-  const [a, b] = layout.io.path;
-  return {
-    x: Math.min(a.x, b.x) - half,
-    y: Math.min(a.y, b.y) - half,
-    w: Math.abs(a.x - b.x) + half * 2,
-    h: Math.abs(a.y - b.y) + half * 2,
-  };
-}
-
 /** Whether `other` lies beyond `side` of `r` and overlaps it along that edge. */
 function beyond(r: Rect, other: Rect, side: Side) {
   const spanX = Math.min(r.x + r.w, other.x + other.w) > Math.max(r.x, other.x),
@@ -109,7 +99,6 @@ export function capacitorLayout(layout: ChipLayout): Capacitor[] {
     keepOut = [
       ...layout.dies.map((die) => inset(die, -unit * 0.01)),
       ...layout.memory.map((pkg) => inset(pkg, -unit * 0.006)),
-      ioCorridor(layout, unit * 0.03),
       ...(layout.bridge ? [layout.bridge] : []),
     ];
   return caps.filter((cap) => contains(room, cap) && !keepOut.some((r) => overlaps(r, cap)));
@@ -132,7 +121,6 @@ export function viaLayout(layout: ChipLayout, caps: Rect[]): Point[] {
     ...layout.dies.map((die) => inset(die, -unit * 0.03)),
     ...layout.memory.map((pkg) => inset(pkg, -unit * 0.022)),
     ...caps.map((cap) => inset(cap, -unit * 0.01)),
-    ioCorridor(layout, unit * 0.03),
     ...fields,
   ];
   const vias: Point[] = [];

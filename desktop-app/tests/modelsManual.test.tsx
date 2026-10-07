@@ -23,6 +23,7 @@ function renderModels(state = poolSnapshot({ enabled: false, phase: 'off' })) {
 it('keeps the manual workflow while Autopilot is off', () => {
   const backend = renderModels();
   expect(screen.getByText('Native load allowance')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: /Show \d+ more models/ }));
   expect(screen.getByRole('checkbox', { name: 'Select Qwen 3.6 35B A3B' })).toBeDisabled();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Select Qwen 3.5 9B' }));
   fireEvent.click(screen.getByRole('button', { name: /Apply selection/ }));
@@ -36,8 +37,7 @@ it('offers to turn Autopilot on with the models serving now', async () => {
   api.act.mockImplementation(async (action: Action) => succeeded(action.action));
   renderModels();
   const offer = screen.getByRole('region', { name: 'Autopilot' });
-  expect(offer).toHaveTextContent('downloaded models form Autopilot’s pool');
-  expect(offer).toHaveTextContent('pin the ones that must always stay loaded');
+  expect(offer).toHaveTextContent('Choose downloads. Autopilot manages what’s loaded.');
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Turn on Autopilot' })));
   expect(api.act).toHaveBeenCalledExactlyOnceWith({
     action: 'autopilot',

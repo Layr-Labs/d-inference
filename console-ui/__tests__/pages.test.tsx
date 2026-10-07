@@ -196,7 +196,7 @@ describe("BillingPage", () => {
 describe("LinkPage", () => {
   it("renders without crashing and shows heading", async () => {
     const LinkPage = (await import("@/app/link/page")).default;
-    render(<LinkPage />);
+    render(await LinkPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByText("Link Your Device")).toBeInTheDocument();
     expect(
@@ -206,7 +206,7 @@ describe("LinkPage", () => {
 
   it("shows the device code input form when authenticated", async () => {
     const LinkPage = (await import("@/app/link/page")).default;
-    render(<LinkPage />);
+    render(await LinkPage({ searchParams: Promise.resolve({}) }));
 
     // The DeviceLinkForm renders code input when authenticated
     expect(
@@ -215,6 +215,14 @@ describe("LinkPage", () => {
     expect(screen.getByPlaceholderText("XXXX-XXXX")).toBeInTheDocument();
     expect(screen.getByText("Link Device")).toBeInTheDocument();
   });
+  it("labels desktop authorization separately from provider linking", async () => {
+    const LinkPage = (await import("@/app/link/page")).default;
+    render(await LinkPage({ searchParams: Promise.resolve({ purpose: "desktop_account" }) }));
+    expect(screen.getByText("Sign in to Darkbloom Desktop")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Authorize Desktop" })).toBeInTheDocument();
+    expect(screen.queryByText("Link Device")).not.toBeInTheDocument();
+  });
+
 });
 
 // =========================================================================

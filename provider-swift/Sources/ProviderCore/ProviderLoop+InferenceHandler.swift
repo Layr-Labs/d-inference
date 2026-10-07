@@ -1422,6 +1422,7 @@ extension ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+            providerStats.addPromptTokensProcessed(UInt64(max(promptTokens, 0)))
 
             // Commit the TTFT sample (routing v2): completed real requests
             // only — a cancelled stream's first-token timing is still real,
@@ -1459,6 +1460,14 @@ extension ProviderLoop {
                 prefillTokensSaved: cacheResult.map { UInt64(max(0, $0.prefillTokensSaved)) },
                 cacheStageMs: cacheResult?.stageMs
             )
+            let localCachedTokens = min(usageInfo.promptTokens, usageInfo.cachedTokens ?? UInt64(max(0, v2UsageSignal.prefixCacheHitTokens ?? 0)))
+            providerStats.addCachedInputTokens(localCachedTokens)
+            providerStats.addReasoningTokens(min(usageInfo.reasoningTokens, usageInfo.completionTokens))
+            await me.recordLocalUsage(ProviderUsageRecord(
+                id: requestId, sessionStartedAt: me.startedAtEpoch, model: modelId,
+                inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
+                cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
+                exact: !usageRecovered))
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

@@ -10,7 +10,9 @@ export function TokenBars({ points }: { points: TrafficPoint[] }) {
   const [selected, setSelected] = useState<number | null>(null);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const prompt = reportsPromptTokens(data);
-  const series = prompt ? tokenSeries : tokenSeries.filter((entry) => entry.key === 'output');
+  const series = tokenSeries.filter(
+    (entry) => entry.key === 'output' || data.some((bar) => bar[entry.key] !== undefined),
+  );
   const max = Math.max(1, ...data.map((bar) => bar.total));
   const bar = selected === null ? undefined : data[selected];
   const focus = selected ?? data.length - 1;

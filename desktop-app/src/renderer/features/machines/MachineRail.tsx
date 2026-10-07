@@ -1,3 +1,4 @@
+import { machineStatus } from '../../presentation/status';
 import type { Machine } from '../../../shared/contracts';
 import { MachineIcon } from './MachineIcon';
 import { isOnline, memoryLabel } from './fleet';
@@ -38,7 +39,7 @@ export function MachineRail({
                 </small>
                 <small>
                   <i data-online={isOnline(machine.status)} />
-                  {machine.status}
+                  {machineStatus(machine.status)}
                 </small>
               </span>
             </button>

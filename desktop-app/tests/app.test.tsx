@@ -14,6 +14,10 @@ describe('desktop operator journeys', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Your contribution' });
     expect(screen.getByText('Development preview')).toBeVisible();
+    fireEvent.click(await screen.findByRole('button', { name: /Auto fan on.*Open Cooling/ }));
+    expect(await screen.findByRole('heading', { name: 'Cooling' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }));
+    await screen.findByRole('heading', { name: 'Your contribution' });
     expect(screen.getByRole('link', { name: 'Darkbloom on X' })).toHaveAttribute(
       'href',
       'https://x.com/darkbloomai',
@@ -106,17 +110,18 @@ describe('desktop operator journeys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Manage models' }));
     expect(screen.getByRole('region', { name: 'Autopilot' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Apply selection' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Browse models' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), {
       target: { value: 'Qwen 3.6' },
     });
     expect(screen.queryByRole('heading', { name: 'GPT-OSS 20B' })).not.toBeInTheDocument();
     const row = screen.getByRole('heading', { name: 'Qwen 3.6 35B A3B' }).closest('article')!;
     expect(within(row).getByText('Not downloaded')).toBeVisible();
-    fireEvent.click(within(row).getByRole('button', { name: /Download/ }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
+    await within(row).findByRole('progressbar', { name: 'Download progress' });
     expect(
-      await within(row).findByRole('progressbar', { name: 'Download progress' }),
+      await within(row).findByText('Available to Autopilot', {}, { timeout: 10_000 }),
     ).toBeVisible();
-    expect(await within(row).findByText('In pool', {}, { timeout: 10_000 })).toBeVisible();
   });
   it('does not overwrite a concurrent CLI settings change with a stale draft', async () => {
     render(<App />);

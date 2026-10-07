@@ -15,14 +15,18 @@ export const metricLabel = (value: bigint, metric: InsightMetric) =>
 export function EarningsTimeline({
   days,
   metric,
+  partial = false,
 }: {
   days: InsightSlice[];
   metric: InsightMetric;
+  partial?: boolean;
 }) {
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const detailID = useId();
   const selected = days.find((day) => day.id === selectedID) ?? days.at(-1);
-  const max = maximum(days.map((day) => metricValue(day, metric)));
+  const max = maximum(
+    days.filter((day) => day.available !== false).map((day) => metricValue(day, metric)),
+  );
   return (
     <div className={styles.timeline}>
       <div className={styles.chartScale}>
@@ -32,7 +36,8 @@ export function EarningsTimeline({
       </div>
       <div className={styles.bars} role="group" aria-label={`Daily ${metric} in UTC`}>
         {days.map((day, index) => {
-          const value = metricValue(day, metric);
+          const available = day.available !== false;
+          const value = available ? metricValue(day, metric) : 0n;
           const base = metric === 'earnings' ? day.base_reward_micro_usd : 0n;
           return (
             <button
@@ -40,7 +45,15 @@ export function EarningsTimeline({
               key={day.id}
               aria-pressed={selected?.id === day.id}
               aria-describedby={detailID}
-              aria-label={`${dayLabel(day.id)}${index === days.length - 1 ? ', today so far' : ''}: ${metricLabel(value, metric)} ${metric}`}
+              title={
+                !available
+                  ? 'History unavailable'
+                  : day.complete === false || (partial && index === 0)
+                    ? 'Available records; this day is incomplete'
+                    : undefined
+              }
+              aria-label={`${dayLabel(day.id)}${index === days.length - 1 ? ', today so far' : ''}: ${available ? `${metricLabel(value, metric)} ${metric}` : 'History unavailable'}`}
+              data-unavailable={!available}
               onClick={() => setSelectedID(day.id)}
               onMouseEnter={() => setSelectedID(day.id)}
               onFocus={() => setSelectedID(day.id)}
@@ -48,7 +61,9 @@ export function EarningsTimeline({
             >
               <span
                 className={styles.barStack}
-                data-partial={index === days.length - 1}
+                data-partial={
+                  day.complete === false || index === days.length - 1 || (partial && index === 0)
+                }
                 style={{ height: `${Math.max(value > 0n ? 1 : 0, percent(value, max))}%` }}
               >
                 {base > 0 && <i className={styles.rewardBar} style={{ flexGrow: Number(base) }} />}
@@ -65,16 +80,22 @@ export function EarningsTimeline({
       {selected && (
         <div id={detailID} className={styles.chartDetail}>
           <strong>{dayLabel(selected.id)}</strong>
-          <span>
-            <i className={styles.workDot} />
-            {money(selected.work_micro_usd)} inference
-          </span>
-          <span>
-            <i className={styles.rewardDot} />
-            {money(selected.base_reward_micro_usd)} base rewards
-          </span>
-          <span>{compact(selected.jobs)} settled requests</span>
-          <span>{compact(selected.completion_tokens)} output tokens</span>
+          {selected.available === false ? (
+            <span>History unavailable</span>
+          ) : (
+            <>
+              <span>
+                <i className={styles.workDot} />
+                {money(selected.work_micro_usd)} inference
+              </span>
+              <span>
+                <i className={styles.rewardDot} />
+                {money(selected.base_reward_micro_usd)} base rewards
+              </span>
+              <span>{compact(selected.jobs)} settled requests</span>
+              <span>{compact(selected.completion_tokens)} output tokens</span>
+            </>
+          )}
         </div>
       )}
     </div>

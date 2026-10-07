@@ -1,3 +1,4 @@
+import { machineStatus } from '../../../presentation/status';
 import { Eye } from 'lucide-react';
 import type { Machine } from '../../../../shared/contracts';
 import { age } from '../../../format';
@@ -16,7 +17,7 @@ export function RemoteStatus({ machine, presence }: { machine: Machine; presence
       <span role="status" className={styles.presence}>
         <i data-presence={presence} aria-hidden="true" />
         {presenceText[presence]}
-        {presence === 'stale' && <small>last reported {machine.status}</small>}
+        {presence === 'stale' && <small>last reported {machineStatus(machine.status)}</small>}
       </span>
       <span className={styles.viewOnly}>
         <Eye size={12} aria-hidden="true" />

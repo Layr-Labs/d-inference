@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-06
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -27,6 +27,13 @@ keeps the provider independent of its window lifetime. Internal
 (each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
 `desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
 to request macOS administrator authorization for the existing signed helper.
+`darkbloom desktop login [--config <path>]` signs into the account
+workspace through browser approval; `darkbloom desktop logout [--config <path>]`
+signs out without changing provider linkage or serving state. Both use the same
+CLI and native account store as Electron (`Desktop.Login`, `Desktop.Logout`).
+It prefers a scoped account session and supports existing coordinator device-code
+grants when the desktop scope is not reported. Dashboard credentials stay separate
+from the running provider (`DeviceLoginScope`, `DesktopAccountCredential`).
 See [desktop control](../reference/desktop-control.md) for the exact routes,
 credentials, outcomes, and limits (`Desktop`, `DesktopBackend`).
 

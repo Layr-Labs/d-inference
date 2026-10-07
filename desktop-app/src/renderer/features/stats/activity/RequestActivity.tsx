@@ -12,8 +12,16 @@ import styles from './activity.module.css';
 
 const PAGE = 25;
 
-export function RequestActivity({ models }: { models: NativeModel[] }) {
-  const { history, loading, failed, refresh } = useRequestHistory();
+export function RequestActivity({
+  models,
+  scope,
+  revision,
+}: {
+  models: NativeModel[];
+  scope?: string;
+  revision?: string;
+}) {
+  const { history, loading, failed, refresh } = useRequestHistory(scope, revision);
   const [filter, setFilter] = useState<RequestFilter>({ model: 'all', outcome: 'all' });
   const [shown, setShown] = useState(PAGE);
   const titleID = useId();
@@ -32,7 +40,7 @@ export function RequestActivity({ models }: { models: NativeModel[] }) {
         <div>
           <h2 id={titleID}>Requests served</h2>
           <p>
-            Every request this Mac has served
+            Recorded requests from this Mac
             {history?.since ? ` since ${clockTime(history.since, history.observed_at)}` : ''}.
           </p>
         </div>
@@ -47,10 +55,7 @@ export function RequestActivity({ models }: { models: NativeModel[] }) {
         failed ? (
           <div className={styles.unavailable} role="status">
             <strong>Request history is unavailable</strong>
-            <p>
-              The Darkbloom runtime on this Mac didn’t return its request history. Runtimes that
-              predate this view don’t report it yet.
-            </p>
+            <p>Couldn’t load requests from this Mac.</p>
             <Button disabled={loading} onClick={() => void refresh()}>
               Try again
             </Button>
@@ -62,7 +67,7 @@ export function RequestActivity({ models }: { models: NativeModel[] }) {
         <>
           {failed && (
             <p className={styles.notice} role="status">
-              Couldn’t refresh request history. Showing the last observation.
+              Couldn’t refresh request history. Showing previously loaded requests.
             </p>
           )}
           <RequestFilters

@@ -32,11 +32,18 @@ export const loadedModels = (models: NativeModel[]) =>
  * resident weights per model, room for the KV cache, and the headroom the provider leaves the
  * OS (its load cap is 90% of RAM with at least 2 GB kept back).
  */
-export function memoryMap(totalGb: number, models: MemoryMap['models']): MemoryMap {
+export function memoryMap(
+  totalGb: number,
+  models: MemoryMap['models'],
+  providerGb?: number | null,
+): MemoryMap {
   const total = totalGb > 0 ? totalGb : 1,
     reserved = clamp(Math.max(0.1, 2 / total), 0.1, 0.3),
     weightsGb = models.reduce((sum, model) => sum + model.gb, 0),
-    room = 1 - reserved - MIN_KV_SHARE,
+    room = Math.min(
+      1 - reserved - MIN_KV_SHARE,
+      providerGb == null ? 1 : Math.max(0, providerGb / total),
+    ),
     scale = weightsGb / total > room ? room / (weightsGb / total) : 1;
   const segments: MemorySegment[] = [];
   let at = 0;

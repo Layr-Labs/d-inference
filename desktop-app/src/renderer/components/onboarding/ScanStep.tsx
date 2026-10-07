@@ -65,7 +65,12 @@ export function ScanStep({
         verdict={verdict}
         caption={caption(scan, backend)}
       />
-      <ScanFooter scan={scan} proceed={proceed} explore={explore} />
+      <ScanFooter
+        waitlist={!backend.state?.capabilities || backend.state.capabilities.includes('waitlist')}
+        scan={scan}
+        proceed={proceed}
+        explore={explore}
+      />
     </>
   );
 }

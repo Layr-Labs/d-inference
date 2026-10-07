@@ -16,7 +16,7 @@ const keyTargets = (index: number): Record<string, number> => ({
 function describe(bucket: HourBucket, now: number, until: string) {
   const end = Math.min(now, bucket.start + HOUR);
   const range = `${hourLabel(bucket.start)} – ${end < bucket.start + HOUR ? until.toLowerCase() : hourLabel(end)}`;
-  if (bucket.tokens === null) return { range, value: 'No observations' };
+  if (bucket.tokens === null) return { range, value: 'No data' };
   const span = end - bucket.start;
   const partial =
     span - bucket.observed >= 120
@@ -71,7 +71,7 @@ export function TokensChart({
         <span>
           {observed.length
             ? `${compact(tokens)} token${tokens === 1 ? '' : 's'}${counted.length ? ` · ${compact(requests)} request${requests === 1 ? '' : 's'}` : ''}`
-            : 'No observations yet'}
+            : 'No data yet'}
         </span>
       </div>
       <div className={chart.chart} data-compact={dense}>
@@ -127,8 +127,7 @@ export function TokensChart({
       </p>
       {!dense && (
         <p className={styles.caption}>
-          Output tokens generated on this Mac each hour. Blank hours have no observations, because
-          the provider wasn’t running or the runtime wasn’t reporting; they aren’t counted as zero.
+          Output tokens generated per hour. Blank hours have no data.
         </p>
       )}
     </section>

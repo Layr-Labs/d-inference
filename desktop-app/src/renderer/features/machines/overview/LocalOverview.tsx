@@ -34,7 +34,7 @@ export function LocalOverview({
           ? 'Link this Mac to see what it earns.'
           : cloud &&
             (!cloud.local_lifetime_micro_usd || !cloud.local_day_micro_usd) &&
-            'Per-Mac totals appear here once your Darkbloom runtime reports them.'}
+            'Some earnings totals are not available yet.'}
       </MacEarnings>
       <TokensChart buckets={buckets} now={state.observed_at} />
       <ServingModels

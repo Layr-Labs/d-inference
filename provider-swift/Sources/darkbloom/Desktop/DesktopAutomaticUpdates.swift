@@ -8,7 +8,7 @@ extension DesktopBackend {
       do { try await Task.sleep(for: .seconds(4 * 60 * 60)) } catch { return }
       do {
         let config = try configuration().config
-        guard config.provider.autoUpdate else { continue }
+        guard config.provider.autoUpdate, DaemonStateFile.read()?.processIdentity?.isCurrent() != true else { continue }
         let updater = SelfUpdater(coordinatorBaseURL: config.coordinator.url)
         switch await updater.checkForUpdate() {
         case .updateAvailable, .restartRequired:

@@ -20,19 +20,14 @@ export function FleetSummary({
     <section className={styles.fleet} aria-labelledby={titleID}>
       <div className={styles.heading}>
         <h2 id={titleID}>Across your Macs</h2>
-        <p>Earnings and status for every Mac on your account.</p>
       </div>
       <FleetEarnings backend={backend} onEarnings={onEarnings} />
       <FleetMacs
         machines={fleetMachines(state, backend.cloud)}
         localID={state.machine.id}
+        recent={backend.cloud?.earnings_complete === false}
         onOpen={openMachine}
       />
-      {!backend.cloud?.linked && (
-        <p className={styles.caption}>
-          Link each Mac to the same account to see its status and earnings here.
-        </p>
-      )}
     </section>
   );
 }

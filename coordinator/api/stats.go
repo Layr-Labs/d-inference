@@ -341,6 +341,7 @@ func (s *Server) computeStats() ([]byte, error) {
 		"location_privacy_min_providers":     minProvidersPerCityBucket,
 	}
 	geography.addTo(resp)
+	resp["model_earnings"] = s.networkModelEarnings(snapshotAt)
 	return json.Marshal(resp)
 }
 

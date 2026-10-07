@@ -5,20 +5,14 @@ extension DesktopBackend {
   func state() async throws -> JSONValue {
     let loaded = try configuration()
     let now = Date()
+    refreshAccountIdentityIfNeeded(base: coordinatorHTTPBase(loaded.config.coordinator.url), now: now)
     if now.timeIntervalSince(localAt) > 30 {
       ModelScanner.configureCacheDirectory(
         try ConfigManager.modelCacheDirectory(in: loaded.config, relativeTo: loaded.configPath))
       localModels = loaded.hardware.map { ModelScanner.scanAllModels(hardwareInfo: $0) } ?? []
       localAt = now
     }
-    if now.timeIntervalSince(catalogAt) > 120 {
-      catalogAt = now
-      do {
-        catalog = try await ModelCatalogClient(coordinatorURL: loaded.config.coordinator.url)
-          .fetchCatalog(typeFilter: nil)
-        catalogError = nil
-      } catch { catalogError = "Model catalog unavailable. Downloaded models remain available." }
-    }
+    refreshCatalogIfNeeded(coordinator: loaded.config.coordinator.url, now: now)
     let daemon = DaemonStateFile.read()
     let current = daemon?.processIdentity?.isCurrent() == true
     let fresh = current && daemon?.isStale(now: now.timeIntervalSince1970) == false
@@ -36,6 +30,7 @@ extension DesktopBackend {
     let supported = Set(EngineV2SupportedModels.partition(localModels).supported.map(\.id))
     let capabilities = Set(
       (daemon?.runtimeCapabilities ?? []).map { ProviderRuntimeCapability(rawValue: $0) })
+    let totalMemory = Double(loaded.hardware?.memoryGb ?? 0)
     let modelIDs = Set(catalog.map(\.id)).union(localModels.map(\.id)).sorted()
     let models = modelIDs.map { id -> JSONValue in
       let entry = catalog.first { $0.id == id }
@@ -43,14 +38,20 @@ extension DesktopBackend {
       let runtimeOK =
         !fresh || daemon?.runtimeCapabilities == nil
         || ModelRuntimeRequirements.isEligible(modelID: id, available: capabilities)
-      let reason: String? =
+      let catalogReason: String? = entry.flatMap { entry in
+        if Double(entry.minRamGb ?? 0) > totalMemory { return "Needs \(entry.minRamGb ?? 0) GB of unified memory" }
+        if !Start.modelFitsBudget(sizeGb: local?.estimatedMemoryGb ?? entry.sizeGb, memoryGb: totalMemory) { return "Does not fit this Mac’s model load allowance" }
+        if fresh && daemon?.runtimeCapabilities != nil && !ModelRuntimeRequirements.isEligible(modelID: id, catalogRequirements: entry.requiredProviderCapabilities, available: capabilities) { return "Requires runtime capabilities this Mac does not report" }
+        return nil
+      }
+      let reason: String? = catalogReason ?? (
         local == nil
         ? nil
         : (!supported.contains(id)
           ? "Unsupported by this runtime"
           : (local?.templateRenderOK == false
             ? "Chat template validation failed"
-            : (!runtimeOK ? "Runtime capability check required before serving" : nil)))
+            : (!runtimeOK ? "Runtime capability check required before serving" : nil))))
       return .dict([
         "id": .string(id), "display_name": .string(entry?.displayName ?? id),
         "size_gb": .number(entry?.sizeGb ?? local.map { Double($0.sizeBytes) / 1_073_741_824 }),
@@ -78,7 +79,21 @@ extension DesktopBackend {
         ]))
       samples = Array(samples.suffix(1440))
     }
+    let promptTokens = fresh ? daemon?.stats.promptTokensProcessed : nil
+    let promptCount: JSONValue = promptTokens.map { JSONValue.string(String($0)) } ?? .null
+    var activity: [String: JSONValue] = [
+      "models": Self.modelActivity(daemon?.capacity, fresh: fresh, now: now.timeIntervalSince1970),
+      "sampled_at": .number(fresh ? daemon?.capacity?.activityObservedAt : nil),
+      "requests": fresh ? .string(String(requestCount)) : .null,
+      "tokens": fresh ? .string(String(tokens)) : .null,
+      "prompt_tokens": promptCount,
+      "usage_gaps": fresh ? .string(String(daemon?.stats.usageGaps ?? 0)) : .null,
+      "started_at": .number(fresh ? daemon?.startedAt : nil), "samples": .array(samples),
+    ]
+    activity.merge(sessionUsage(daemon: daemon, fresh: fresh, now: now)) { _, usage in usage }
     let total = Double(loaded.hardware?.memoryGb ?? 0)
+    let maxModelSlots = (fresh ? daemon?.autopilot.map { Double($0.maxModelSlots) } : nil)
+      ?? Double(loaded.config.backend.maxModelSlots)
     let machine: JSONValue = .dict([
       "id": .string("this-mac"), "name": .string(loaded.config.provider.name),
       "chip": .string(loaded.hardware?.chipName ?? "Unknown hardware"), "memory_gb": .number(total),
@@ -86,13 +101,20 @@ extension DesktopBackend {
       "models": .array(selected.map(DV.string)),
       "observed_at": .number(fresh ? daemon?.writtenAt : nil),
     ])
+    let connectionStatus: String? = fresh && !localOnly ? daemon?.trust?.status : nil
+    let providerStatus: JSONValue = connectionStatus.map(JSONValue.string) ?? .null
     return .dict([
       "protocol": .int(1), "version": .string(ProviderCore.version),
       "installation_id": .string(instance),
       "observed_at": .number(now.timeIntervalSince1970),
+      "resource_revision": .string(String(Int(now.timeIntervalSince1970 / 30))),
       "linked": .bool(AuthTokenStore.load() != nil),
-      "account_revision": .string(accountSession.observe(AuthTokenStore.load())),
+      "account_revision": .string(accountSession.observe("\(loaded.config.coordinator.url)\n\(accountReadToken() ?? "")")),
+      "account": accountStatus(),
+      "capabilities": .array(["account-signin", "account-signout", "request-history", "autopilot"].map(DV.string)),
+      "autopilot": Self.autopilotSnapshot(loaded.config.backend.modelAutopilot, daemon: daemon, fresh: fresh),
       "state": .string(phase),
+      "provider_status": providerStatus,
       "readiness": .string(
         fresh
           ? daemon?.trust?.reason ?? "Provider connected"
@@ -102,17 +124,13 @@ extension DesktopBackend {
       "machine": machine, "models": .array(models), "operations": try .encoded(operations),
       "memory": .dict([
         "total_gb": .number(total),
+        "pin_budget_gb": .number(Start.pickerLoadBudgetGiB(memoryGb: total)),
+        "max_model_slots": .number(maxModelSlots),
         "active_gb": .number(fresh ? daemon?.capacity?.gpuMemoryActiveGb : nil),
         "cache_gb": .number(fresh ? daemon?.capacity?.gpuMemoryCacheGb : nil),
         "free_for_load_gb": .number(fresh ? daemon?.capacity?.freeForLoadGb : nil),
       ]),
-      "activity": .dict([
-        "models": Self.modelActivity(daemon?.capacity, fresh: fresh, now: now.timeIntervalSince1970),
-        "sampled_at": .number(fresh ? daemon?.capacity?.activityObservedAt : nil),
-        "requests": fresh ? .string(String(requestCount)) : .null,
-        "tokens": fresh ? .string(String(tokens)) : .null,
-        "started_at": .number(fresh ? daemon?.startedAt : nil), "samples": .array(samples),
-      ]),
+      "activity": .dict(activity),
       "settings": .dict([
         "revision": .string(DesktopStorage.revision(loaded.configPath)),
         "name": .string(loaded.config.provider.name),

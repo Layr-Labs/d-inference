@@ -6,7 +6,7 @@ import { noise } from '../random';
 import type { ChipScene } from '../render/types';
 import { createAtlas, type Sprite } from './atlas';
 import { createBrush, longAxis, snap, type Brush } from './brush';
-import { engineParts, tileParts } from './dieParts';
+import { tileParts } from './dieParts';
 import {
   haloOf,
   paintCellsGlow,
@@ -34,7 +34,6 @@ export interface PackageLight extends Point {
   pkg: MemoryPackage;
   /** What each cell holds; the split repeats in every package because memory is interleaved. */
   kinds: MemoryKind[];
-  weights: Sprite | null;
   kv: Sprite | null;
   traces: Sprite | null;
 }
@@ -42,11 +41,8 @@ export interface PackageLight extends Point {
 export interface Emissive {
   gpu: GpuLight[];
   cpu: TileLight[];
-  slc: TileLight[];
-  neural: TileLight[];
   phy: (Sprite | null)[];
   bridge: Sprite | null;
-  io: Sprite | null;
   memory: PackageLight[];
   atlas: HTMLCanvasElement | null;
 }
@@ -89,20 +85,16 @@ export function buildEmissive(
   };
 
   const gpu: { tile: Tile; prefill: number; decode: number; neutral: number }[] = [],
-    cpu: { tile: Tile; slot: number }[] = [],
-    slc: { tile: Tile; slot: number }[] = [],
-    neural: { tile: Tile; slot: number }[] = [];
+    cpu: { tile: Tile; slot: number }[] = [];
   for (const tile of layout.tiles) {
     if (tile.filler) continue;
-    if (tile.kind === 'neural') neural.push({ tile, slot: tileSlot(tile, glow.accent, 0.3, 6) });
-    else if (tile.kind === 'gpu')
+    if (tile.kind === 'gpu')
       gpu.push({
         tile,
         prefill: tileSlot(tile, glow.prefill, 0.36, 9),
         decode: tileSlot(tile, glow.decode, 0.36, 9),
         neutral: tileSlot(tile, glow.neutral, 0.36, 9),
       });
-    else if (tile.kind === 'slc') slc.push({ tile, slot: tileSlot(tile, glow.decode, 0.3, 6) });
     else cpu.push({ tile, slot: tileSlot(tile, glow.cpu, 0.42, 7) });
   }
   const phy = layout.phy.map((segment) =>
@@ -116,14 +108,7 @@ export function buildEmissive(
           paintStripGlow(b, seam, glow.prefill, b.tex.glow.lanes[longAxis(seam)], haloAlpha),
         )
       : -1;
-  const ioBlock = layout.blocks.find((block) => block.kind === 'io' && block.die === 0),
-    io = ioBlock
-      ? queue(ioBlock, 12, (b) =>
-          paintPartsGlow(b, ioBlock, engineParts(ioBlock), glow.accent, 6, haloAlpha),
-        )
-      : -1;
-
-  const regions = new Map<string, { weights: number; kv: number }>();
+  const regions = new Map<string, { kv: number }>();
   const packages = layout.memory.map((pkg) => {
     const kinds = cellKinds(pkg.cells.length, memory),
       at = origin(pkg),
@@ -135,12 +120,8 @@ export function buildEmissive(
           pkg.cells
             .filter((_, i) => kinds[i] === kind)
             .map((cell) => ({ ...cell, x: cell.x - at.x, y: cell.y - at.y })),
-        weights = cells('weights'),
         kv = cells('kv');
       slots = {
-        weights: weights.length
-          ? queue(local, unit * 0.034, (b) => paintCellsGlow(b, weights, glow.accent, true))
-          : -1,
         kv: kv.length ? queue(local, 2, (b) => paintCellsGlow(b, kv, glow.kv, false)) : -1,
       };
       regions.set(key, slots);
@@ -173,16 +154,12 @@ export function buildEmissive(
       neutral: sprite(neutral),
     })),
     cpu: cpu.map(tileLight),
-    slc: slc.map(tileLight),
-    neural: neural.map(tileLight),
     phy: phy.map(sprite),
     bridge: sprite(bridge),
-    io: sprite(io),
-    memory: packages.map(({ pkg, kinds, at, weights, kv, traces }) => ({
+    memory: packages.map(({ pkg, kinds, at, kv, traces }) => ({
       pkg,
       kinds,
       ...at,
-      weights: sprite(weights),
       kv: sprite(kv),
       traces: sprite(traces),
     })),

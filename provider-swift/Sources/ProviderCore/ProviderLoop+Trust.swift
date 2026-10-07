@@ -61,7 +61,10 @@ extension ProviderLoop {
             stats: DaemonState.Stats(
                 requestsServed: stats.requestsServed,
                 tokensGenerated: stats.tokensGenerated,
-                usageGaps: stats.usageGaps
+                usageGaps: stats.usageGaps,
+                promptTokensProcessed: self.stats.promptTokensProcessed,
+                cachedInputTokens: self.stats.cachedInputTokens,
+                reasoningTokens: self.stats.reasoningTokens
             ),
             capacity: cap.map {
                 DaemonState.Capacity(

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-05
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -17,7 +17,7 @@ Autopilot `selected_models` is the cached planning inventory; `backend.enabled_m
 
 | Setting | Default | Consumer and effect |
 |---|---|---|
-| `DARKBLOOM_DESKTOP_DIR` | `~/.darkbloom/desktop` | `DesktopStorage.directory` in `provider-swift/Sources/darkbloom/Desktop/DesktopStorage.swift`; owner-only API discovery and operation journal; useful for isolated tests |
+| `DARKBLOOM_DESKTOP_DIR` | `~/.darkbloom/desktop` | `DesktopStorage.directory` in `provider-swift/Sources/darkbloom/Desktop/DesktopStorage.swift`; owner-only API discovery, operation journal, and coordinator-scoped dashboard credentials; useful for isolated tests |
 | `DARKBLOOM_CLI_PATH` | `~/.darkbloom/bin/darkbloom` | `Backend.binary` in `desktop-app/src/main/backend.ts`; development-only CLI override, ignored by packaged apps |
 | `DARKBLOOM_DESKTOP_ATTACH_ONLY` | unset | `Backend.connect` in `desktop-app/src/main/backend.ts`; when `1` in development, attach to an already-running isolated API without creating a LaunchAgent; ignored in packaged apps |
 | `DARKBLOOM_DEV_URL` | Packaged `darkbloom://app/index.html` | `desktop-app/src/main/index.ts`; development-only renderer URL, ignored by packaged apps |

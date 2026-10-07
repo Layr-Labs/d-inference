@@ -30,16 +30,16 @@ export interface NativeModel {
   id: string;
   display_name: string;
   size_gb: number;
-  memory_gb?: number;
+  memory_gb?: number | null;
   downloaded: boolean;
   serving: boolean;
   loaded: boolean;
   eligible: boolean;
-  reason?: string;
-  description?: string;
-  context_length?: number;
-  family?: string;
-  quantization?: string;
+  reason?: string | null;
+  description?: string | null;
+  context_length?: number | null;
+  family?: string | null;
+  quantization?: string | null;
 }
 export interface Machine {
   id: string;
@@ -79,15 +79,46 @@ export interface Snapshot {
   installation_id: string;
   linked: boolean;
   account_revision?: string;
+  resource_revision?: string;
+  capabilities?: string[];
+  account?: {
+    signed_in: boolean;
+    email?: string | null;
+    expires_at?: number;
+    legacy_data?: boolean;
+  };
   state: 'stopped' | 'starting' | 'running' | 'draining' | 'stale';
   readiness: string;
+  /** Coordinator-reported connection status, distinct from its diagnostic event reason. */
+  provider_status?: string | null;
   machine: Machine;
   models: NativeModel[];
   operations: Operation[];
-  memory: { total_gb: number; active_gb?: number; cache_gb?: number; free_for_load_gb?: number };
+  memory: {
+    total_gb: number;
+    active_gb?: number;
+    cache_gb?: number;
+    free_for_load_gb?: number;
+    pin_budget_gb?: number;
+    max_model_slots?: number;
+  };
   activity: {
     requests?: string;
     tokens?: string;
+    /** All prompt tokens, including cached input; output already includes reasoning. */
+    prompt_tokens?: string | null;
+    usage_gaps?: string | null;
+    processed_tokens?: string | null;
+    processed_input_tokens?: string | null;
+    processed_output_tokens?: string | null;
+    cached_input_tokens?: string | null;
+    reasoning_tokens?: string | null;
+    counted_requests?: string | null;
+    pending_usage_requests?: string | null;
+    usage_source?: 'local' | 'settled-history';
+    usage_observed_at?: number;
+    /** Settled earnings for this provider session only, when the server supplies them. */
+    earnings_micro_usd?: string | null;
     started_at?: number;
     samples: ActivitySample[];
     sampled_at?: number;
@@ -123,9 +154,14 @@ export interface CloudData {
   observed_at: number;
   lifetime_micro_usd?: string;
   week_micro_usd?: string;
+  /** False when the returned records cover only part of the requested week. */
+  earnings_complete?: boolean;
+  earnings_since?: number;
+  settled_records?: string;
   balance_micro_usd?: string;
   machines: Machine[];
   local_earnings_micro_usd?: string;
+  minimum_provider_version?: string;
   // This Mac's settled earnings including base rewards: all time, and the rolling past 24 hours.
   local_lifetime_micro_usd?: string;
   local_day_micro_usd?: string;
@@ -134,12 +170,14 @@ export interface CloudData {
 // Request metadata only: history never carries prompt or response content.
 export interface RequestRecord {
   id: string;
-  started_at: number;
+  started_at?: number;
+  settled_at?: number;
+  completed_at?: number;
   model: string;
   input_tokens: number;
   output_tokens: number;
-  duration_ms: number;
-  outcome: 'completed' | 'cancelled' | 'failed';
+  duration_ms?: number;
+  outcome: 'completed' | 'cancelled' | 'failed' | 'settled';
   // Omitted until the request settles.
   earnings_micro_usd?: string;
 }
@@ -149,6 +187,11 @@ export interface RequestHistory {
   records: RequestRecord[];
 }
 export interface NetworkData {
+  model_earnings?: {
+    window: '7d';
+    as_of: string;
+    models: { id: string; earnings_micro_usd: string }[];
+  } | null;
   total_tokens?: string;
   total_requests?: string;
   // Prompt plus completion tokens in the past 24 hours; omitted by runtimes that do not relay it.
@@ -159,9 +202,14 @@ export interface NetworkData {
 }
 export interface CoolingData {
   supported: boolean;
+  enabled?: boolean | null;
+  observed_at?: number;
   mode: string;
-  temperature?: number;
+  temperature?: number | null;
   fans: { name: string; rpm: number; max_rpm: number }[];
+  control_available?: boolean;
+  speed?: number;
+  threshold?: number;
   error?: string;
 }
 export interface ReleaseData {
@@ -185,7 +233,17 @@ export interface Leader {
 }
 export type Action =
   | { action: 'start' | 'switch'; models: string[]; local?: boolean; endpoint?: boolean }
-  | { action: 'stop' | 'restart' | 'update' | 'diagnose' | 'link' | 'unlink' }
+  | {
+      action:
+        | 'stop'
+        | 'restart'
+        | 'update'
+        | 'diagnose'
+        | 'link'
+        | 'unlink'
+        | 'account-signin'
+        | 'account-signout';
+    }
   | { action: 'download' | 'remove'; model: string }
   | { action: 'cancel'; operation: string }
   | {

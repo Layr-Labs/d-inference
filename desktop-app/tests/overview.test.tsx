@@ -24,17 +24,15 @@ const health = () => screen.getByRole('region', { name: 'Health' });
 
 it('shows This Mac’s memory, fans, readiness and earnings', async () => {
   render(<LocalOverview backend={await previewBackend()} navigate={vi.fn()} />);
-  expect(within(health()).getByRole('status')).toHaveTextContent(
-    'Connected and ready for requests',
-  );
+  expect(within(health()).getByRole('status')).toHaveTextContent('Ready to serve');
   for (const text of [
-    'Serving GPT-OSS 20B and Gemma 4 26B',
+    '2 models loaded',
     '19.8 GB of 64.0 GB',
     '16.4 GB active',
     '3.4 GB cache',
     '34.0 GB free to load',
     'Spinning · 2,495 RPM',
-    'Left fan 2,480 · Right fan 2,510 RPM · macOS managed',
+    'Left fan 2,480 · Right fan 2,510 RPM · macOS control',
     '52°C GPU',
   ])
     expect(health()).toHaveTextContent(text);
@@ -85,7 +83,7 @@ it('distinguishes unread, fanless, unavailable and provider-cooled fans', async 
       navigate={vi.fn()}
     />,
   );
-  expect(health()).toHaveTextContent('Spinning · 4,100 RPM82% of max · Provider cooling');
+  expect(health()).toHaveTextContent('Spinning · 4,100 RPM82% of max · Darkbloom control');
   expect(within(health()).getByRole('img', { name: 'Fan spinning at 4,100 RPM' })).toHaveAttribute(
     'data-animate',
     'true',
@@ -103,7 +101,7 @@ it('lists next steps with working actions for a stopped, unlinked Mac', async ()
   };
   const navigate = vi.fn();
   const { rerender } = render(<LocalOverview backend={backend} navigate={navigate} />);
-  expect(within(health()).getByRole('status')).toHaveTextContent('Ready when you are');
+  expect(within(health()).getByRole('status')).toHaveTextContent('Stopped');
   expect(health()).toHaveTextContent('Not serving requests');
   const steps = within(health()).getByRole('list');
   expect(
@@ -153,8 +151,8 @@ it('explains a disconnected runtime and repairs it through the native installer'
       navigate={vi.fn()}
     />,
   );
-  expect(within(health()).getByRole('status')).toHaveTextContent(message);
-  expect(health()).toHaveTextContent('Status unknown while disconnected');
+  expect(within(health()).getByRole('status')).toHaveTextContent('Connection unavailable');
+  expect(health()).toHaveTextContent('Serving status unavailable');
   fireEvent.click(within(health()).getByRole('button', { name: 'Repair runtime' }));
   expect(install).toHaveBeenCalled();
 });
@@ -169,9 +167,7 @@ it('shows unreported per-Mac earnings as unknown, never as zero', async () => {
   const { rerender } = render(<LocalOverview backend={{ ...backend, cloud }} navigate={vi.fn()} />);
   const earnings = () => screen.getByRole('region', { name: 'This Mac’s earnings' });
   expect(within(earnings()).getAllByText('—')).toHaveLength(2);
-  expect(earnings()).toHaveTextContent(
-    'Per-Mac totals appear here once your Darkbloom runtime reports them.',
-  );
+  expect(earnings()).toHaveTextContent('Some earnings totals are not available yet.');
   rerender(
     <LocalOverview
       backend={{ ...backend, cloud, state: { ...backend.state!, linked: false } }}
@@ -195,7 +191,7 @@ it('charts hourly tokens with labelled gaps and keyboard inspection', () => {
   );
   expect(bars).toHaveLength(24);
   expect(bars[21]).toHaveAccessibleName(/1,500 tokens · 2 requests · observed 1 of 60 min$/);
-  expect(bars[22]).toHaveAccessibleName(/No observations$/);
+  expect(bars[22]).toHaveAccessibleName(/No data$/);
   expect(bars[23]).toHaveAccessibleName(/now: 1,000 tokens · 1 request · observed 1 of 5 min$/);
   expect(bars[23]).toHaveAttribute('aria-pressed', 'true');
   expect(screen.getByText('2.5K tokens · 3 requests')).toBeVisible();

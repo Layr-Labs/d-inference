@@ -114,10 +114,17 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var requestsServed: UInt64
         public var tokensGenerated: UInt64
         public var usageGaps: UInt64
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0) {
+        /// Nil on older runtimes; all prompt tokens including prefix-cache hits.
+        public var promptTokensProcessed: UInt64?
+        public var cachedInputTokens: UInt64?
+        public var reasoningTokens: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
+            self.promptTokensProcessed = promptTokensProcessed
+            self.cachedInputTokens = cachedInputTokens
+            self.reasoningTokens = reasoningTokens
         }
     }
 

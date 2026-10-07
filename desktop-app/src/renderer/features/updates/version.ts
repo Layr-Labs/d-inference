@@ -51,11 +51,12 @@ export function releaseStatus(
 export const publishedVersions = (sources: {
   release?: ReleaseData;
   releaseHistory?: ReleaseHistory;
+  cloud?: { minimum_provider_version?: string };
 }) => ({
   latest: sources.release?.error ? undefined : sources.release?.version,
-  minimum: sources.releaseHistory?.error
-    ? undefined
-    : sources.releaseHistory?.minimum_provider_version,
+  minimum:
+    sources.cloud?.minimum_provider_version ??
+    (sources.releaseHistory?.error ? undefined : sources.releaseHistory?.minimum_provider_version),
 });
 
 export const runtimeVersion = (state: Snapshot) =>

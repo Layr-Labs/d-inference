@@ -1,8 +1,7 @@
-"use client";
-
 import { DeviceLinkForm } from "./DeviceLinkForm";
 
-export default function LinkPage() {
+export default async function LinkPage({ searchParams }: { searchParams: Promise<{ purpose?: string }> }) {
+  const account = (await searchParams).purpose === "desktop_account";
   return (
     <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -19,14 +18,13 @@ export default function LinkPage() {
 
         <div className="text-center mb-8">
           <h1 className="text-3xl font-semibold text-ink">
-            Link Your Device
+            {account ? "Sign in to Darkbloom Desktop" : "Link Your Device"}
           </h1>
           <p className="text-text-secondary mt-2">
-            Connect your Mac to your Darkbloom account to receive
-            earnings for providing compute.
+            {account ? "View your Macs and earnings." : "Connect your Mac to your Darkbloom account to receive earnings for providing compute."}
           </p>
         </div>
-        <DeviceLinkForm />
+        <DeviceLinkForm account={account} />
       </div>
     </div>
   );

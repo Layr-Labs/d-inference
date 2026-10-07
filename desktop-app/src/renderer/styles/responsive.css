@@ -73,8 +73,7 @@
     display: none;
   }
   .sidebar nav span,
-  .sidebar nav small,
-  .local-profile {
+  .sidebar nav small {
     display: none;
   }
   .sidebar nav button {

@@ -545,6 +545,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
+			if strings.HasPrefix(regMsg.AuthToken, desktopAccountTokenPrefix) {
+				_ = conn.Close(websocket.StatusPolicyViolation, "account sessions cannot register providers")
+				return
+			}
 			// Resolve the token once before choosing the identity rollout path.
 			// Keep linkage after attestation restoration, as with legacy clients;
 			// only this validated account may select the App Attest cohort.
@@ -553,7 +557,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			resolveAccount := func() {
 				accountResolved = true
 				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil || pt == nil {
+				if err != nil || pt == nil || strings.HasPrefix(regMsg.AuthToken, desktopAccountTokenPrefix) {
 					s.logger.Warn("provider auth token invalid", "provider_id", providerID, "error", err)
 				} else {
 					authenticatedAccountID, authenticatedTokenLabel = pt.AccountID, pt.Label

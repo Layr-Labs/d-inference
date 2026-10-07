@@ -2697,17 +2697,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/payments/balance", s.requireAuth(s.handleBalance))
 	s.mux.HandleFunc("GET /v1/payments/usage", s.requireAuth(s.handleUsage))
 
-	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
+	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAccountRead(s.requireAuth(s.handleAccountEarnings)))
 	s.mux.HandleFunc("GET /v1/provider/desktop", s.requireDesktopProviderToken(s.rateLimitDesktop(s.handleDesktopAccount)))
 	s.mux.HandleFunc("GET /v1/provider/desktop/insights", s.requireDesktopProviderToken(s.rateLimitDesktop(s.handleDesktopInsights)))
 
 	// Account-scoped provider dashboard.
-	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
+	s.mux.HandleFunc("GET /v1/me/providers", s.requireAccountRead(s.requirePrivyAuth(s.handleMyProviders)))
 	s.mux.HandleFunc("GET /v1/me/token-promotions", s.requirePrivyAuth(s.handleMyModelTokenPromotions))
 	s.mux.HandleFunc("POST /v1/me/token-promotions/claim", s.requirePrivyAuth(s.rateLimitFinancial(s.handleMyModelTokenPromotions)))
 	s.mux.HandleFunc("GET /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
 	s.mux.HandleFunc("PUT /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
-	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	s.mux.HandleFunc("GET /v1/me/summary", s.requireAccountRead(s.requirePrivyAuth(s.handleMySummary)))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
@@ -2743,8 +2743,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken) // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode) // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)
+	s.mux.HandleFunc("DELETE /v1/device/token", s.revokeDesktopAccountToken) // no auth — polls with device_code secret
 	// Device approve issues a long-lived provider→account linking token —
 	// same risk class as /v1/auth/keys, so financial-tier limit applies.
 	// Uses requirePrivyAuth to reject API keys (interactive session only).
@@ -3262,7 +3263,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				// Cache the API-key result (positive or negative). Provider-token
 				// fallbacks are deliberately NOT cached below.
 				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: keyRec, cachedAt: time.Now()})
-			} else if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
+			} else if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active && !strings.HasPrefix(token, desktopAccountTokenPrefix) {
 				// Provider device-login tokens authenticate as an account-scoped
 				// identity with no per-key limits (ID left empty). These are NOT
 				// cached: provider-token revocation has no api-key-cache

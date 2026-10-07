@@ -10,7 +10,16 @@ export function enableAction(snapshot: Snapshot) {
   const serving = snapshot.models.filter((model) => model.serving && model.downloaded);
   const fallback = startingModel(snapshot);
   const models = serving.length ? serving.map((model) => model.id) : fallback ? [fallback.id] : [];
-  return { action: 'autopilot' as const, models, pinned: [], endpoint: !!snapshot.endpoint };
+  const downloads = snapshot.models
+    .filter((model) => models.includes(model.id) && !model.downloaded)
+    .map((model) => model.id);
+  return {
+    action: 'autopilot' as const,
+    models,
+    pinned: [],
+    ...(downloads.length ? { downloads } : {}),
+    endpoint: !!snapshot.endpoint,
+  };
 }
 
 export function TurnOnAutopilot({
@@ -28,12 +37,8 @@ export function TurnOnAutopilot({
         <Sparkles size={18} />
       </span>
       <div>
-        <strong>Let Autopilot run this Mac’s models</strong>
-        <p>
-          You choose which models live on this Mac: downloaded models form Autopilot’s pool, and you
-          can pin the ones that must always stay loaded. Autopilot decides which ones to load into
-          memory as demand changes.
-        </p>
+        <strong>Autopilot</strong>
+        <small>Choose downloads. Autopilot manages what’s loaded.</small>
       </div>
       <Button disabled={!!working || !enableAction(snapshot).models.length} onClick={onEnable}>
         {working ?? 'Turn on Autopilot'}

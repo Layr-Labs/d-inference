@@ -6,7 +6,7 @@ import { texture, type Brush } from './brush';
 
 export const substrateRadius = (unit: number) => unit * 0.034;
 
-/** Solder-mask substrate: copper under the mask, vias, gold edge ring, marks and the I/O pad. */
+/** Solder-mask substrate: copper under the mask, vias, gold edge ring, and marks. */
 export function paintSubstrate(brush: Brush, layout: ChipLayout, vias: Point[]) {
   const { ctx, mats, unit, tex } = brush,
     s = layout.substrate,
@@ -38,7 +38,6 @@ export function paintSubstrate(brush: Brush, layout: ChipLayout, vias: Point[]) 
   ctx.restore();
   paintRing(brush, s, radius);
   paintMarks(brush, s);
-  paintPort(brush, layout);
   paintEdge(brush, s, radius);
 }
 
@@ -51,27 +50,19 @@ const dot = (path: Path2D, p: Point, r: number) => {
 function paintCopper(brush: Brush, layout: ChipLayout) {
   const { ctx, mats, unit } = brush,
     traces = new Path2D(),
-    pads = new Path2D(),
-    io = new Path2D(),
-    [port, end] = layout.io.path;
+    pads = new Path2D();
   for (const { from, to } of layout.traces) {
     traces.moveTo(from.x, from.y);
     traces.lineTo(to.x, to.y);
     dot(pads, from, Math.max(0.8, unit * 0.0045));
   }
-  io.moveTo(port.x, port.y);
-  io.lineTo(end.x, end.y);
   ctx.lineCap = 'round';
   ctx.strokeStyle = rgba(mix(mats.copper, mats.mask, 0.6), 0.85);
   ctx.lineWidth = Math.max(1, unit * 0.0062);
   ctx.stroke(traces);
-  ctx.lineWidth = Math.max(1.4, unit * 0.012);
-  ctx.stroke(io);
   ctx.strokeStyle = rgba(mats.copper, mats.dark ? 0.3 : 0.36);
   ctx.lineWidth = Math.max(0.5, unit * 0.0024);
   ctx.stroke(traces);
-  ctx.lineWidth = Math.max(0.6, unit * 0.004);
-  ctx.stroke(io);
   ctx.fillStyle = rgba(mats.copper, 0.28);
   ctx.fill(pads);
 }
@@ -150,24 +141,6 @@ function paintMarks(brush: Brush, s: Rect) {
   ctx.lineTo(s.x + p, s.y + p + leg);
   ctx.closePath();
   ctx.fillStyle = goldFill(ctx, { x: s.x + p, y: s.y + p, w: leg, h: leg }, mats.gold);
-  ctx.fill();
-}
-
-/** Gold contact where requests enter, just inside the edge ring. */
-function paintPort(brush: Brush, layout: ChipLayout) {
-  const { ctx, mats, unit } = brush,
-    [port, end] = layout.io.path,
-    across = layout.io.side === 'left' || layout.io.side === 'right',
-    w = unit * (across ? 0.028 : 0.07),
-    h = unit * (across ? 0.07 : 0.028),
-    x = port.x + Math.sign(end.x - port.x) * unit * 0.05,
-    y = port.y + Math.sign(end.y - port.y) * unit * 0.05,
-    pad = { x: x - w / 2, y: y - h / 2, w, h };
-  roundRect(ctx, inset(pad, -1.5), unit * 0.006);
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
-  ctx.fill();
-  roundRect(ctx, pad, unit * 0.005);
-  ctx.fillStyle = goldFill(ctx, pad, mats.gold);
   ctx.fill();
 }
 

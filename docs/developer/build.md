@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-05
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
@@ -939,3 +939,11 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Desktop architecture checks
+
+`make desktop-api-test` exercises the real Swift control API against isolated
+local fixtures. It checks that release reads share the existing latest-release
+API, earnings use the existing ledger window parameter, and a credential change
+rejects an in-flight private response (`scripts/test-desktop-api.py`).
+The fixture never starts a serving provider or changes its credentials.

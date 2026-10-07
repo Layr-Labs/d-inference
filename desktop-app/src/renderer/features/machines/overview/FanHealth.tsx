@@ -22,7 +22,7 @@ function fanReading(cooling?: CoolingData) {
     value: spinning.length ? `Spinning · ${rpmLabel(average)}` : 'Stopped',
     detail: [
       share,
-      cooling.supported && cooling.mode === 'manual' ? 'Provider cooling' : 'macOS managed',
+      cooling.supported && cooling.mode === 'manual' ? 'Darkbloom control' : 'macOS control',
     ]
       .filter(Boolean)
       .join(' · '),

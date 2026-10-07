@@ -32,12 +32,13 @@ describe('ChipStage', () => {
     expect(within(stage).getByRole('heading', { name: state.machine.chip })).toBeVisible();
     expect(within(stage).getByText(`${state.machine.memory_gb} GB unified memory`)).toBeVisible();
     const loaded = state.models.filter((model) => model.loaded)[0];
-    expect(within(stage).getByText(new RegExp(loaded.display_name))).toBeVisible();
+    expect(within(stage).getByText(loaded.display_name, { selector: 'span' })).toBeVisible();
     expect(within(stage).getByText('Simulated activity')).toBeVisible();
     const legend = within(stage).getByRole('list', { name: 'What lights up' });
-    for (const phase of ['Prefill', 'Decode', 'KV cache', 'Neural Engine'])
+    for (const phase of ['Prefill', 'Decode', 'KV cache'])
       expect(within(legend).getByText(phase)).toBeVisible();
-    expect(within(legend).getByText('Idle')).toBeVisible();
+    expect(within(legend).queryByText('Neural Engine')).not.toBeInTheDocument();
+    expect(within(legend).queryByText('Memory traffic')).not.toBeInTheDocument();
   });
 
   it('switches between the two variants through the URL in preview', async () => {
@@ -77,8 +78,10 @@ describe('ChipStage', () => {
     const { rerender } = render(<ChipStage state={{ ...state, observed_at: 1 }} preview={false} />);
     const stage = stageFor(state);
     expect(within(stage).queryByRole('group', { name: 'Chip style' })).not.toBeInTheDocument();
-    expect(within(stage).getByText('Simulated activity')).toBeVisible();
-    expect(within(stage).getAllByText('—')).toHaveLength(3);
+    expect(within(stage).getByText('Waiting for live activity')).toBeVisible();
+    expect(within(stage).queryByText('tokens per second')).not.toBeInTheDocument();
+    expect(within(stage).queryByText('In progress')).not.toBeInTheDocument();
+    expect(within(stage).queryByText('Waiting')).not.toBeInTheDocument();
     rerender(<ChipStage state={{ ...state, state: 'stopped' }} preview={false} />);
     expect(within(stage).getByText('Provider stopped')).toBeVisible();
     expect(stage).toHaveAttribute('data-powered', 'false');
@@ -93,7 +96,7 @@ describe('ChipStage', () => {
     };
     render(<ChipStage state={state} preview={false} />);
     const stage = stageFor(state);
-    expect(within(stage).getByText('Simulated activity')).toBeVisible();
+    expect(within(stage).getByText('Live from this Mac')).toBeVisible();
     expect(within(stage).getByText('In progress').nextSibling).toHaveTextContent('3');
     expect(within(stage).getByText('Waiting').nextSibling).toHaveTextContent('2');
   });
@@ -107,21 +110,21 @@ describe('ChipStage', () => {
     expect(row('GPU busy')).toHaveTextContent('99%');
     expect(row('GPU busy')).toHaveTextContent('Darkbloom 96%');
     expect(row('GPU clock')).toHaveTextContent('1,578 MHz');
-    expect(row('Memory traffic')).toHaveTextContent(/\d+ GB\/s.*Estimated/);
+    expect(within(stage).queryByText('Memory traffic')).not.toBeInTheDocument();
     expect(
-      within(stage).getByText('macOS reports GPU busy for the whole GPU, not per core.'),
+      within(stage).getByTitle('macOS reports GPU busy for the whole GPU, not per core.'),
     ).toBeVisible();
-    expect(within(stage).getByText('Idle: Darkbloom runs on the GPU')).toBeVisible();
   });
 
-  it('falls back to the simulation when the hardware stream is stale', async () => {
+  it('withholds hardware readings when the stream is stale', async () => {
     const state = await previewState();
     const source = hardwareSource(10);
+    state.activity.sampled_at = 1;
     render(<ChipStage state={state} preview={false} source={source} />);
     const stage = stageFor(state);
     await vi.waitFor(() => expect(source.read).toHaveBeenCalled());
     expect(await within(stage).findByText('GPU busy')).toBeVisible();
-    expect(within(stage).getByText('Simulated activity')).toBeVisible();
+    expect(within(stage).getByText('Waiting for live activity')).toBeVisible();
     expect(within(stage).getByText('GPU busy').nextSibling).toHaveTextContent('—');
     expect(within(stage).queryByText('Live from this Mac')).not.toBeInTheDocument();
   });

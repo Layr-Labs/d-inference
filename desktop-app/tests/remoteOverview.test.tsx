@@ -22,7 +22,7 @@ it('shows the remote Mac’s earnings, 24-hour traffic, hourly chart and models'
   expect(screen.getByRole('status')).toHaveTextContent(/^Online$/);
   expect(screen.getByRole('status').parentElement).toHaveTextContent('Last observed just now');
   expect(screen.getByText('Online since').nextElementSibling).toHaveTextContent(
-    /^\d{1,2}:\d{2}\s?[AP]M1[23]h \d+m$/,
+    /\d{1,2}:\d{2}\s?[AP]M1[23]h \d+m$/,
   );
   const earnings = screen.getByRole('region', { name: 'Mac Studio’s earnings' });
   for (const amount of ['$186.40', '$4.12', '$7.00']) expect(earnings).toHaveTextContent(amount);
@@ -43,7 +43,7 @@ it('shows the remote Mac’s earnings, 24-hour traffic, hourly chart and models'
     'button',
   );
   expect(bars).toHaveLength(24);
-  expect(bars[9]).toHaveAccessibleName(/No observations$/);
+  expect(bars[9]).toHaveAccessibleName(/No data$/);
   expect(bars[23]).toHaveAccessibleName(/now: [\d,]+ tokens$/);
   expect(screen.getByText('Last paid work').nextElementSibling).toHaveTextContent('2m ago');
   expect(screen.getByText('Gemma 4 26B')).toBeVisible();
@@ -81,7 +81,7 @@ it('shows a dash for every figure the account projection does not report yet', a
   for (const label of ['Provider version', 'Last paid work', 'Online since'])
     expect(screen.getByText(label).nextElementSibling).toHaveTextContent('—');
   expect(screen.queryByRole('group', { name: 'Tokens shared per hour' })).not.toBeInTheDocument();
-  expect(screen.getByText('No serving models reported')).toBeVisible();
+  expect(screen.getByText('No models reported')).toBeVisible();
   expect(container).not.toHaveTextContent('$0.00');
 });
 
@@ -95,7 +95,7 @@ it('flags a silent or offline Mac and a provider below the minimum version', asy
     />,
   );
   const status = screen.getByRole('status');
-  expect(status).toHaveTextContent('Not reportinglast reported online');
+  expect(status).toHaveTextContent('Not reportinglast reported Online');
   expect(status.parentElement).toHaveTextContent('Last observed 3h ago');
   expect(status.querySelector('i')).toHaveAttribute('data-presence', 'stale');
   expect(screen.getByText('Online since').nextElementSibling).toHaveTextContent('—');

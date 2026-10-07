@@ -20,12 +20,24 @@ actor DesktopBackend {
   var catalog: [CatalogModel] = []
   var catalogError: String?
   var catalogAt = Date.distantPast
+  var catalogTask: Task<Void, Never>?
+  var resourceGeneration = 0
+  var resourceFailures: [String: (attempts: Int, retryAt: Date)] = [:]
+  var resourceCache: [String: DesktopResourceCache] = [:]
+  var resourceTasks: [String: Task<JSONValue, Error>] = [:]
   var localAt = Date.distantPast
   var localModels: [ModelInfo] = []
   var link: JSONValue = .null
   var samples: [JSONValue] = []
   var sampleSession: Double?
+  var accountEarningsCache: (key: String, at: Date, value: JSONValue)?
+  var accountEarningsTask: (key: String, task: Task<JSONValue, Error>)?
+  var usageArchive = DesktopUsageArchive()
+  var usageReadAt = Date.distantPast
+  var usageRead: Task<Void, Never>?
   var accountSession = DesktopAccountSession()
+  var accountIdentityRead: Task<Void, Never>?
+  var accountIdentityReadAt = Date.distantPast
   /// Shared `fan status` read; `coolingReadAt` is nil while it is in flight.
   var coolingRead: Task<JSONValue, Never>?
   var coolingReadAt: Date?
@@ -66,7 +78,7 @@ actor DesktopBackend {
     }
     let operation = DesktopOperation(
       id: request.id, action: request.action, started_at: Date().timeIntervalSince1970,
-      cancellable: ["download", "diagnose", "link"].contains(request.action))
+      cancellable: ["download", "diagnose", "link", "account-signin", "autopilot"].contains(request.action))
     requests[request.id] = request
     operations.insert(operation, at: 0)
     operations = Array(operations.prefix(32))
@@ -101,6 +113,8 @@ actor DesktopBackend {
         complete(
           request.id, code: 0,
           message: "Settings saved. Restart the provider to apply runtime changes.")
+      } else if ["account-signin", "account-signout"].contains(request.action) {
+        try await executeAccountAction(request)
       } else if request.action == "link" {
         guard AuthTokenStore.load() == nil else {
           throw ValidationError("This Mac is already linked")
@@ -128,12 +142,17 @@ actor DesktopBackend {
         try Task.checkCancellation()
         let worker = DesktopWorker(executable: executable)
         workers[request.id] = worker
+        if request.action == "download" {
+          setDownloadModel(request.id, model: request.model)
+        }
         let before = Self.currentExecutableStamp()
-        let (code, output) = try await worker.run(
-          arguments,
-          progress: { [weak self] output in
-            Task { await self?.setProgress(request.id, output: output) }
-          })
+        let (code, output) = request.action == "autopilot"
+          ? try await runAutopilot(request, arguments: arguments, worker: worker, beforeStart: { [configPath] in
+              if DesktopLocalLifecycle.isActive { try await DesktopLocalLifecycle.stop(configPath: configPath) }
+            })
+          : try await worker.run(arguments, progress: { [weak self] output in
+              Task { await self?.setProgress(request.id, output: output) }
+            })
         complete(request.id, code: code, message: output)
         if request.action == "update", code == 0,
           Self.shouldRestartForReplacedExecutable(
@@ -144,12 +163,18 @@ actor DesktopBackend {
         }
       }
     } catch {
-      if request.action == "link" { link = .null }
+      if ["link", "account-signin"].contains(request.action) { link = .null }
       complete(request.id, code: 1, message: String(describing: error))
     }
   }
 
   func arguments(for request: DesktopAction) throws -> [String] {
+    if request.action == "autopilot_pin" { try validateAutopilotPins(request.models ?? []) }
+    if request.action == "autopilot_models" {
+      let config = try configuration().config
+      return try Self.autopilotRefreshArguments(settings: config.backend.modelAutopilot,
+        startupModels: config.backend.enabledModels, endpoint: LocalEndpoint.readLiveInfo(), configPath: configPath)
+    }
     if request.action == "remove" {
       let state = DaemonStateFile.read()
       guard !(state?.warmModels.contains(request.model!) ?? false),
@@ -168,6 +193,7 @@ actor DesktopBackend {
   ) throws -> [String] {
     let config = configPath.map { ["--config", $0] } ?? []
     let models = (request.models ?? []).flatMap { ["--model", $0] }
+    if let arguments = autopilotArguments(for: request, config: config) { return arguments }
     switch request.action {
     case "start":
       guard request.local != true else { return ["desktop", "start-local"] + models + config }
@@ -190,19 +216,27 @@ actor DesktopBackend {
     }
   }
 
-  private func setLink(_ id: String, _ value: JSONValue) {
+  func setLink(_ id: String, _ value: JSONValue) {
     guard !cancellationRequested.contains(id),
       operations.contains(where: { $0.id == id && $0.state == "running" })
     else { return }
     link = value
   }
-  private func setProgress(_ id: String, output: String) {
+  func setProgress(_ id: String, output: String, downloadModel: String? = nil) {
     guard let index = operations.firstIndex(where: { $0.id == id }),
       operations[index].state == "running"
     else { return }
+    if let downloadModel, operations[index].model != downloadModel { return }
     operations[index].message = String(output.suffix(8000))
+    operations[index].progress = Self.downloadProgress(output)
   }
-  private func complete(_ id: String, code: Int32, message: String) {
+  func setDownloadModel(_ id: String, model: String?) {
+    guard let index = operations.firstIndex(where: { $0.id == id }) else { return }
+    operations[index].model = model
+    operations[index].progress = nil
+    operations[index].message = model.map { "Downloading \($0)…" } ?? "Starting Autopilot…"
+  }
+  func complete(_ id: String, code: Int32, message: String) {
     guard let index = operations.firstIndex(where: { $0.id == id }),
       operations[index].state == "running"
     else { return }

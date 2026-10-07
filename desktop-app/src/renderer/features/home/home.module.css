@@ -8,12 +8,28 @@
 .dashboard > header h1 {
   font-size: 28px;
 }
-.dashboard > header p {
-  font-size: 12px;
-  margin-top: 8px;
-}
 .contribution {
   padding: 4px 0 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+}
+.generated {
+  text-align: right;
+  padding-bottom: 2px;
+}
+.generated strong {
+  display: block;
+  font-size: 27px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.generated span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 5px;
 }
 .shared > span {
   display: block;
@@ -51,7 +67,7 @@
 .activity {
   display: flex;
   flex-direction: column;
-  height: clamp(440px, 54vh, 640px);
+  height: auto;
   min-width: 0;
 }
 .activity > * {
@@ -100,4 +116,18 @@
   .shared > strong {
     font-size: 46px;
   }
+}
+
+.tokenBreakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.tokenBreakdown b {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }

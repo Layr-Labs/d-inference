@@ -55,7 +55,7 @@ it('pins models to keep them always on and sends the pins with Autopilot', async
   expect(pin(/Kimi K3/).closest('label')).toHaveTextContent('Needs 512 GB of unified memory.');
   fireEvent.click(pin(/Qwen 3.5 9B/));
   fireEvent.click(pin(/GPT-OSS 20B/));
-  expect(within(panel).getByText('2 pinned · at least 16.4 GB of 64 GB memory')).toBeVisible();
+  expect(within(panel).getByText('2 pinned · at least 22.5 GB of 64 GB memory')).toBeVisible();
   expect(screen.getByRole('region', { name: 'What happens next' })).toHaveTextContent(
     'Keeps pinned models loaded and manages the rest as demand changes.',
   );
@@ -65,6 +65,7 @@ it('pins models to keep them always on and sends the pins with Autopilot', async
     action: 'autopilot',
     models: ['qwen-3.5-9b', 'gpt-oss-20b'],
     pinned: ['gpt-oss-20b', 'qwen-3.5-9b'],
+    downloads: ['qwen-3.5-9b'],
     endpoint: true,
   });
 });

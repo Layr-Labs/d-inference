@@ -21,7 +21,10 @@ describe.each(CHIPS)('%s layout', (chip) => {
     expect(counted('gpu')).toBe(anatomy.gpuCores);
     expect(counted('performance')).toBe(anatomy.performanceCores);
     expect(counted('efficiency')).toBe(anatomy.efficiencyCores);
-    expect(counted('neural')).toBe(anatomy.neuralCores);
+    expect(counted('neural')).toBe(0);
+    expect(layout.blocks.every((block) => ['cpu', 'gpu', 'interface'].includes(block.kind))).toBe(
+      true,
+    );
     expect(layout.dies).toHaveLength(anatomy.dies);
     expect(layout.memory).toHaveLength(anatomy.memoryPackages);
 
@@ -61,7 +64,6 @@ describe.each(CHIPS)('%s layout', (chip) => {
         contains(layout.dies[layout.memory[trace.package].die], { ...trace.to, w: 0, h: 0 }),
       ).toBe(true);
     }
-    expect(contains(layout.substrate, { ...layout.io.path[0], w: 0, h: 0 })).toBe(true);
   });
 
   it('is deterministic', () => {
@@ -80,6 +82,5 @@ describe('package arrangement', () => {
     const ultra = chipLayout(chipAnatomy('Apple M2 Ultra', 192), SIZES[0]);
     expect(ultra.dies.map((die) => die.orientation)).toEqual(['cw', 'ccw']);
     expect(ultra.bridge).not.toBeNull();
-    expect(ultra.io.side).toBe('left');
   });
 });

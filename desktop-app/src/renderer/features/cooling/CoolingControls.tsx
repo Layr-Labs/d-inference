@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { BackendState } from '../../useBackend';
 import { Button } from '../../components/UI';
 import styles from './cooling.module.css';
@@ -9,6 +9,10 @@ export function CoolingControls({ backend }: { backend: BackendState }) {
   const [speed, setSpeed] = useState(70);
   const [temperature, setTemperature] = useState(50);
   const titleID = useId();
+  useEffect(() => {
+    if (backend.cooling?.speed != null) setSpeed(backend.cooling.speed);
+    if (backend.cooling?.threshold != null) setTemperature(backend.cooling.threshold);
+  }, [backend.cooling?.speed, backend.cooling?.threshold]);
   return (
     <section className={styles.controls} aria-labelledby={titleID}>
       <h2 id={titleID}>Provider cooling</h2>
@@ -20,8 +24,8 @@ export function CoolingControls({ backend }: { backend: BackendState }) {
           <input
             aria-label="Fan speed"
             type="range"
-            min={30}
-            max={100}
+            min={60}
+            max={90}
             value={speed}
             onChange={(e) => setSpeed(Number(e.target.value))}
           />

@@ -6,6 +6,7 @@ import { metricLabel, metricValue, type InsightMetric } from './EarningsTimeline
 import styles from './insights.module.css';
 
 function rowLabel(row: InsightSlice, dimension: 'models' | 'machines') {
+  if (dimension === 'machines' && row.id === 'this-mac') return 'This Mac';
   if (dimension === 'models')
     return row.id === 'base_reward'
       ? 'Base rewards'

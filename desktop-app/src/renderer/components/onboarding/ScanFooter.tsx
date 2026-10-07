@@ -11,10 +11,12 @@ export function ScanFooter({
   scan,
   proceed,
   explore,
+  waitlist = true,
 }: {
   scan: MacScan;
   proceed: () => void;
   explore: () => void;
+  waitlist?: boolean;
 }) {
   const { result, settled } = scan;
   if (!result) return null;
@@ -51,7 +53,7 @@ export function ScanFooter({
   );
   return result.verdict === 'ineligible' ? (
     <>
-      <WaitlistForm reasons={failedChecks(result.checks).map((check) => check.id)} />
+      {waitlist && <WaitlistForm reasons={failedChecks(result.checks).map((check) => check.id)} />}
       {links}
     </>
   ) : (

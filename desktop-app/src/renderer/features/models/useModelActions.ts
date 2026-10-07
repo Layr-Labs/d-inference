@@ -19,12 +19,17 @@ export function useModelActions(backend: BackendState) {
   const [working, setWorking] = useState<Record<string, string>>({});
   const [downloads, setDownloads] = useState<Record<string, string>>({});
   const [problem, setProblem] = useState('');
+  const snapshot = backend.state!;
 
   const label = (key: string, text?: string) =>
     setWorking(({ [key]: _, ...rest }) => (text ? { ...rest, [key]: text } : rest));
 
   async function run(action: Action, model?: string) {
     if (!api) throw new Error('Open the Darkbloom app to change models.');
+    if (action.action === 'autopilot' && !((await latest())?.linked ?? snapshot.linked)) {
+      await submitAction(api, { action: 'link' }, { timeoutMs, timeout });
+      await backend.refresh();
+    }
     await submitAction(api, action, {
       timeoutMs,
       timeout,
@@ -52,6 +57,7 @@ export function useModelActions(backend: BackendState) {
       await run({ action: 'download', model: model.id }, model.id);
     }
     if ((await latest())?.autopilot?.selected.includes(model.id)) return;
+    if (!snapshot.autopilot?.enabled) return;
     label(model.id, 'Joining the pool…');
     await run({ action: 'autopilot_models' });
   }
@@ -64,6 +70,17 @@ export function useModelActions(backend: BackendState) {
     join: (model: NativeModel) => task(model.id, () => intoPool(model)),
     pin: (model: NativeModel) =>
       task(model.id, async () => {
+        if (!snapshot.autopilot?.enabled) {
+          label(model.id, model.downloaded ? 'Starting…' : 'Downloading…');
+          await run({
+            action: 'autopilot',
+            models: [model.id],
+            pinned: [model.id],
+            downloads: model.downloaded ? [] : [model.id],
+            endpoint: !!snapshot.endpoint,
+          });
+          return;
+        }
         await intoPool(model);
         label(model.id, 'Pinning…');
         await run({ action: 'autopilot_pin', models: [model.id] });

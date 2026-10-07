@@ -44,9 +44,13 @@ function simulatedGpu(tile: Tile, w: WorkloadFrame, motion: boolean) {
 
 /**
  * GPU core light split into its prefill and decode shares. Measured, all cores share one
- * intensity, with a shimmer outward from the dispatch point that quickens with the clock.
+ * intensity. Only synthetic previews add sweeps and shimmer.
  */
 export function gpuLevel(tile: Tile, f: RenderFrame) {
+  if (f.workload.mode !== 'synthetic') {
+    const hw = f.hardware;
+    return { prefill: 0, decode: hw ? hw.weight * hw.gpu.known * hw.gpu.value : 0 };
+  }
   const sim = simulatedGpu(tile, f.workload, f.motion),
     hw = f.hardware;
   if (!hw) return sim;
@@ -62,7 +66,10 @@ export function gpuLevel(tile: Tile, f: RenderFrame) {
 }
 
 /** Darkbloom's share of the GPU light; the rest is drawn neutral. */
-export const gpuShare = (f: RenderFrame) => measured(f, 1, f.hardware?.share);
+export const gpuShare = (f: RenderFrame) =>
+  f.workload.mode === 'synthetic'
+    ? measured(f, 1, f.hardware?.share)
+    : measured(f, 0, f.hardware?.share);
 
 /** Measured GPU busy time that belongs to other apps. */
 export const foreignGpu = (f: RenderFrame) => {
@@ -86,26 +93,18 @@ export function cpuLevel(tile: Tile, f: RenderFrame) {
     const flicker = motion ? 0.85 + 0.15 * Math.sin(w.time * 9 + tile.index * 2.1) : 1;
     sim = w.cpu * (chosen ? 1 : 0.22) * flicker;
   }
-  if (!hw) return sim;
+  if (!hw) return w.mode === 'synthetic' ? sim : 0;
   const level =
     tile.kind === 'l2'
       ? hw.clusters[tile.cluster ?? -1]
       : (tile.cpu ?? -1) >= 0
         ? hw.cpu[tile.cpu!]
         : hw.cpuBusy;
-  return measured(f, sim, level);
+  return measured(f, w.mode === 'synthetic' ? sim : 0, level);
 }
-
-/** System-level cache banks: the conduit memory traffic flows through, not cache hits. */
-export const cacheLevel = ({ workload: w, motion }: RenderFrame) =>
-  w.memoryRead * (0.42 + 0.3 * stepPulse(w, motion));
 
 export const interfaceLevel = ({ workload: w, motion }: RenderFrame) =>
   clamp(w.memoryRead * (0.55 + 0.45 * stepPulse(w, motion)) + w.kvWrite * 0.3);
-
-/** Dark unless something actually runs on the Neural Engine; Darkbloom never does. */
-export const neuralLevel = ({ hardware: hw }: RenderFrame) =>
-  hw ? hw.weight * hw.ane.known * hw.ane.value : 0;
 
 export interface CellLight {
   kind: MemoryKind;
@@ -138,11 +137,12 @@ export function memoryCell(
     : 0;
   const sweepAt = w.stepPhase * 1.25 - 0.12;
   if (segment.kind === 'weights') {
-    const breathe = motion ? 0.5 + 0.5 * Math.sin(w.time * 1.4) : 0.5;
-    const sweep = motion
-      ? (w.decodeByModel[segment.model] ?? w.decode) *
-        Math.exp(-((local + localSpan / 2 - sweepAt) ** 2) / 0.006)
-      : 0;
+    const breathe = motion && w.mode === 'synthetic' ? 0.5 + 0.5 * Math.sin(w.time * 1.4) : 0.5;
+    const sweep =
+      motion && w.mode === 'synthetic'
+        ? (w.decodeByModel[segment.model] ?? w.decode) *
+          Math.exp(-((local + localSpan / 2 - sweepAt) ** 2) / 0.006)
+        : 0;
     return {
       kind: 'weights',
       model: segment.model,
@@ -153,13 +153,20 @@ export function memoryCell(
     };
   }
   if (segment.kind === 'kv') {
-    const kv = clamp((w.kvFill - local) / localSpan),
+    const kv = clamp((w.kvFill - local) / localSpan) * (1 - other),
       frontier = Math.exp(-((local - w.kvFill) ** 2) / 0.003) * clamp(w.kvWrite * 1.4);
     const read =
-      motion && kv > 0 && w.kvFill > 0
+      motion && w.mode === 'synthetic' && kv > 0 && w.kvFill > 0
         ? w.decode * 0.6 * Math.exp(-((local / w.kvFill - sweepAt) ** 2) / 0.01)
         : 0;
-    return { kind: 'kv', model: -1, weights: 0, kv, sweep: Math.max(frontier, read), other };
+    return {
+      kind: 'kv',
+      model: -1,
+      weights: 0,
+      kv,
+      sweep: Math.max(frontier, read) * (1 - other),
+      other,
+    };
   }
   return { kind: 'reserved', model: -1, weights: 0, kv: 0, sweep: 0, other };
 }
@@ -172,7 +179,7 @@ export interface Pulse {
 }
 /** Reads stream from memory toward the die in step with decode; KV writes flow back. */
 export function tracePulses(trace: Trace, { workload: w, motion }: RenderFrame): Pulse[] {
-  if (!motion) return [];
+  if (!motion || w.mode !== 'synthetic') return [];
   const seed = noise(trace.package * 17.3 + trace.lane * 3.1),
     pulses: Pulse[] = [];
   if (w.memoryRead > 0.04) {
@@ -192,11 +199,4 @@ export function tracePulses(trace: Trace, { workload: w, motion }: RenderFrame):
       write: true,
     });
   return pulses;
-}
-
-/** A request entering through the network/I/O block; null once it has arrived. */
-export function ioPulse({ workload: w, motion }: RenderFrame) {
-  const at = w.sinceArrival / 0.4;
-  if (!motion || at < 0 || at > 1.3) return null;
-  return { at: Math.min(1, at), strength: w.power * (1 - smoothstep(1, 1.3, at)) };
 }

@@ -10,12 +10,7 @@ import {
   sessionPeakPower,
 } from '../src/renderer/features/home/chip/hardware/targets';
 import { chipLayout } from '../src/renderer/features/home/chip/layout';
-import {
-  cpuLevel,
-  gpuLevel,
-  gpuShare,
-  neuralLevel,
-} from '../src/renderer/features/home/chip/render/activity';
+import { cpuLevel, gpuLevel, gpuShare } from '../src/renderer/features/home/chip/render/activity';
 import type { RenderFrame } from '../src/renderer/features/home/chip/render/types';
 import { anatomyFromTopology } from '../src/renderer/features/home/chip/topologyAnatomy';
 import { createWorkloadEngine } from '../src/renderer/features/home/chip/workload/engine';
@@ -166,15 +161,23 @@ describe('hardware phase', () => {
 });
 
 describe('hardware drive', () => {
-  it('overlays eased measurements on the simulation while fresh', () => {
+  it('uses measured light without manufacturing live phases or traffic', () => {
     const drive = createHardwareDrive(),
       targets = targetsAt(DECODE),
       { lit } = run(drive, targets, 3);
     expect(lit.hardware?.weight).toBeGreaterThan(0.99);
     expect(lit.workload.power).toBeCloseTo(1);
-    expect(lit.workload.memoryRead).toBeCloseTo(targets.traffic!, 2);
-    expect(lit.workload.decode).toBeCloseTo(0.99 * 0.97, 1);
-    expect(lit.workload.phase).toBe('decode');
+    expect(lit.workload.memoryRead).toBe(0);
+    expect(lit.workload.decode).toBe(0);
+    expect(lit.workload.phase).toBe('ready');
+  });
+
+  it('does not animate unmeasured bandwidth as live traffic', () => {
+    const drive = createHardwareDrive();
+    const targets = { ...targetsAt(DECODE), traffic: null };
+    const { lit } = run(drive, targets, 4);
+    expect(lit.workload.memoryRead).toBeLessThan(0.001);
+    expect(lit.workload.kvWrite).toBeLessThan(0.001);
   });
 
   it('eases between 1 Hz samples instead of jumping', () => {
@@ -186,7 +189,7 @@ describe('hardware drive', () => {
     expect(traffic).toBeGreaterThan(targetsAt(IDLE).traffic! + 0.2);
   });
 
-  it('falls back to the simulation once the stream goes stale', () => {
+  it('turns measured lights off as soon as the stream goes stale', () => {
     const drive = createHardwareDrive();
     run(drive, targetsAt(DECODE), 3);
     const { lit, simulated } = run(drive, null, 4);
@@ -204,7 +207,7 @@ describe('measured light', () => {
   };
 
   it('gives every GPU core the same intensity, tinted by Darkbloom’s share', () => {
-    const frame = frameAt(DECODE),
+    const frame = { ...frameAt(DECODE), motion: true },
       levels = layout.tiles
         .filter((tile) => tile.kind === 'gpu' && !tile.filler)
         .map((tile) => {
@@ -217,11 +220,10 @@ describe('measured light', () => {
     expect(gpuShare(frameAt(DECODE, false))).toBeCloseTo(0, 2);
   });
 
-  it('lights CPU cores individually and keeps the Neural Engine dark', () => {
+  it('lights CPU cores individually', () => {
     const frame = frameAt(DECODE),
       measured = sample(DECODE).cpu.load;
     for (const tile of layout.tiles.filter((tile) => tile.kind === 'performance'))
       expect(cpuLevel(tile, frame)).toBeCloseTo(measured[tile.cpu!], 2);
-    expect(neuralLevel(frame)).toBe(0);
   });
 });

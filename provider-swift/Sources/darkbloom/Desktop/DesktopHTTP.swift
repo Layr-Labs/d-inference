@@ -98,7 +98,9 @@ struct DesktopHTTP: HTTPResponder {
     case let error as HTTPError: return (error.status, error.body ?? error.status.reasonPhrase)
     case let error as any HTTPResponseError: return (error.status, error.status.reasonPhrase)
     case let error as ValidationError: return (.badRequest, error.message)
-    case is URLError: return (.badGateway, "Coordinator request failed")
+    case let error as URLError:
+      if error.code == .userAuthenticationRequired { return (.unauthorized, "Account changed or expired. Sign in to continue.") }
+      return (.badGateway, "Coordinator request failed")
     default: return (.internalServerError, "Internal error")
     }
   }

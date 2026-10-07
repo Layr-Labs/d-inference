@@ -29,7 +29,6 @@ export function fitLayout(layout: ChipLayout, scale: number): ChipLayout {
       from: point(trace.from),
       to: point(trace.to),
     })),
-    io: { ...layout.io, path: layout.io.path.map(point) },
     dispatch: point(layout.dispatch),
   };
 }

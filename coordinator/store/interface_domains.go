@@ -472,6 +472,9 @@ type DeviceAuthStore interface {
 	// ApproveDeviceCode links a device code to an account, marking it approved.
 	ApproveDeviceCode(deviceCode, accountID string) error
 
+	// ConsumeDeviceCode atomically exchanges an approved, unexpired grant once.
+	ConsumeDeviceCode(deviceCode string) error
+
 	// DeleteExpiredDeviceCodes removes device codes that have passed their expiry.
 	DeleteExpiredDeviceCodes() error
 

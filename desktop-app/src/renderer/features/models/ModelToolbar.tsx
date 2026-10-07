@@ -41,7 +41,9 @@ export function ModelToolbar<Filter extends string>({
 }
 
 export const matchesQuery = (
-  model: { display_name: string; id: string; family?: string },
+  model: { display_name: string; id: string; family?: string | null },
   query: string,
 ) =>
-  `${model.display_name} ${model.id} ${model.family}`.toLowerCase().includes(query.toLowerCase());
+  `${model.display_name} ${model.id} ${model.family ?? ''}`
+    .toLowerCase()
+    .includes(query.toLowerCase());

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Box, ChevronRight, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
+import { Box, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
 import { Home } from './features/Home';
@@ -12,6 +12,7 @@ import { Onboarding } from './components/Onboarding';
 import { onboardingScenario } from './previewEligibility';
 import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
+import { AccountControl } from './components/AccountControl';
 import { SocialLinks } from './components/SocialLinks';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
@@ -40,25 +41,11 @@ export default function App() {
     setOnboarding(false);
   };
   useEffect(() => api?.onNavigate(navigate), [navigate]);
-  const title = [
-    ...navigation,
-    { id: 'settings', label: 'Settings' },
-    { id: 'models', label: 'Models' },
-    { id: 'studio', label: 'Studio' },
-    { id: 'analysis', label: 'Stats' },
-    { id: 'earnings', label: 'Earnings' },
-    { id: 'cooling', label: 'Cooling' },
-  ].find((item) => item.id === route)?.label;
   if (!backend.state || onboarding)
     return (
       <>
         <div className="drag-region" />
         <Onboarding backend={backend} done={finishOnboarding} />
-        {backend.error && (
-          <div className="onboarding-error">
-            <Notice onClose={() => backend.setError('')}>{backend.error}</Notice>
-          </div>
-        )}
         <OperationFeed backend={backend} />
       </>
     );
@@ -85,39 +72,24 @@ export default function App() {
         </nav>
         <div className="sidebar-bottom">
           <SocialLinks />
-          <button className="local-profile" onClick={() => setOnboarding(true)}>
-            <div className="profile-icon">
-              <Monitor size={17} />
-            </div>
-            <span>
-              <strong>{backend.state.machine.name}</strong>
-              <small>
-                {backend.state.state === 'running' ? 'Providing to the grid' : 'Ready when you are'}
-              </small>
-            </span>
-            <i className={backend.state.state === 'running' ? 'online-dot' : ''} />
-          </button>
+          <AccountControl backend={backend} />
         </div>
       </aside>
       <div className="workspace">
         <header className="topbar">
           <span>
-            Workspace <ChevronRight size={12} /> <strong>{title}</strong>
-          </span>
-          <span>
             {isPreview && <b className="preview-label">Development preview</b>}
             <Appearance />
             <i className={backend.status.state === 'ready' ? 'online-dot' : ''} />
-            {backend.status.state === 'ready' ? 'Runtime connected' : 'Reconnecting'}
+            {backend.status.state === 'ready' ? 'Connected to this Mac' : 'Reconnecting'}
           </span>
         </header>
         <main
           key={machineRoute ? 'machines' : route}
           className={`page-content ${machineRoute ? 'machine-page' : route === 'home' ? 'home-page' : ''}`}
         >
-          {backend.error && <Notice onClose={() => backend.setError('')}>{backend.error}</Notice>}
           {backend.status.state !== 'ready' && (
-            <Notice>{backend.status.message || 'Connecting to the native runtime…'}</Notice>
+            <Notice>{backend.status.message || 'Connecting to this Mac…'}</Notice>
           )}
           {route === 'home' && (
             <Home backend={backend} navigate={navigate} openMachine={openMachine} />
@@ -141,7 +113,7 @@ export default function App() {
             <span>Compute, powered by people.</span>
           </footer>
         </main>
-        {!machineRoute && <OperationFeed backend={backend} />}
+        <OperationFeed backend={backend} />
       </div>
     </div>
   );

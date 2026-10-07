@@ -4,7 +4,7 @@ import { api } from '../../useBackend';
 import { parseInsights, type ProviderInsights } from './types';
 
 export function useInsights(state: Snapshot, window: '7d' | '30d' = '7d') {
-  const key = state.linked
+  const key = (state.account ? state.account.signed_in || state.account.legacy_data : state.linked)
     ? `${state.installation_id}:${state.account_revision || 'legacy'}:${window}`
     : '';
   const [snapshot, setSnapshot] = useState<{
@@ -28,7 +28,7 @@ export function useInsights(state: Snapshot, window: '7d' | '30d' = '7d') {
         setSnapshot((previous) => ({
           key: current.key,
           data: previous.key === current.key ? previous.data : null,
-          error: 'Earnings insights are unavailable. Check your connection and runtime version.',
+          error: 'Couldn’t load earnings. Try again shortly.',
         }));
     } finally {
       current.busy = false;
@@ -39,19 +39,15 @@ export function useInsights(state: Snapshot, window: '7d' | '30d' = '7d') {
     const current = { key, alive: true, busy: false };
     session.current = current;
     void refresh();
-    const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, 30_000);
     const visible = () => {
       if (!document.hidden) void refresh();
     };
     document.addEventListener('visibilitychange', visible);
     return () => {
       current.alive = false;
-      clearInterval(timer);
       document.removeEventListener('visibilitychange', visible);
       if (session.current === current) session.current = null;
     };
-  }, [key, refresh]);
+  }, [key, refresh, state.resource_revision]);
   return snapshot.key === key ? { ...snapshot, refresh } : { data: null, error: null, refresh };
 }

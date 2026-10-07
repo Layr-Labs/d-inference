@@ -1,6 +1,6 @@
 import { inset } from '../geometry';
 import type { Block, ChipLayout, Tile } from '../layout';
-import { css, rgba, type ChipPalette } from '../palette';
+import { rgba, type ChipPalette } from '../palette';
 import { roundRect, strokeTicks, tileRadius } from '../render/canvas';
 import type { ChipScene } from '../render/types';
 import { drawLabel, labelPlacements } from './labels';
@@ -21,7 +21,6 @@ export function paintBlueprintStatic(ctx: CanvasRenderingContext2D, scene: ChipS
   for (const block of layout.blocks) paintBlock(ctx, block, layout.unit, ink, dark);
   for (const tile of layout.tiles) paintTile(ctx, tile, ink, dark);
   labels(ctx, layout, palette);
-  ioPort(ctx, layout, ink, palette);
 }
 
 function dotGrid(ctx: CanvasRenderingContext2D, layout: ChipLayout, color: string) {
@@ -143,14 +142,7 @@ function paintTile(ctx: CanvasRenderingContext2D, tile: Tile, ink: Ink, dark: bo
     ctx.fill();
     return;
   }
-  if (tile.kind === 'neural') {
-    ctx.setLineDash([2, 2]);
-    ctx.strokeStyle = ink(dark ? 0.17 : 0.2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    return;
-  }
-  if (tile.kind === 'l2' || tile.kind === 'slc') {
+  if (tile.kind === 'l2') {
     ctx.fillStyle = ink(0.03);
     ctx.fill();
     ctx.save();
@@ -199,15 +191,8 @@ function labels(ctx: CanvasRenderingContext2D, layout: ChipLayout, palette: Chip
   ctx.letterSpacing = `${(size * 0.12).toFixed(2)}px`;
   for (const block of layout.blocks) {
     if (block.kind === 'interface') continue;
-    const minor = block.kind === 'media' || block.kind === 'display' || block.kind === 'io';
-    ctx.fillStyle = rgba(palette.text, minor ? 0.32 : palette.dark ? 0.52 : 0.58);
-    drawLabel(
-      ctx,
-      block.label.toUpperCase(),
-      labelPlacements(block),
-      minor ? size * 0.9 : size,
-      font,
-    );
+    ctx.fillStyle = rgba(palette.text, palette.dark ? 0.52 : 0.58);
+    drawLabel(ctx, block.label.toUpperCase(), labelPlacements(block), size, font);
   }
   const first = layout.memory[0];
   if (first) {
@@ -218,25 +203,4 @@ function labels(ctx: CanvasRenderingContext2D, layout: ChipLayout, palette: Chip
     ctx.fillText('UNIFIED MEMORY', right ? first.x + first.w : first.x, first.y - size * 0.8);
   }
   ctx.letterSpacing = '0px';
-}
-
-function ioPort(ctx: CanvasRenderingContext2D, layout: ChipLayout, ink: Ink, palette: ChipPalette) {
-  const [port, end] = layout.io.path,
-    u = layout.unit,
-    dark = palette.dark,
-    across = layout.io.side === 'left' || layout.io.side === 'right';
-  ctx.setLineDash([3, 3]);
-  ctx.strokeStyle = ink(dark ? 0.24 : 0.26);
-  ctx.beginPath();
-  ctx.moveTo(port.x, port.y);
-  ctx.lineTo(end.x, end.y);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  const w = across ? u * 0.03 : u * 0.09,
-    h = across ? u * 0.09 : u * 0.03;
-  roundRect(ctx, { x: port.x - w / 2, y: port.y - h / 2, w, h }, 2);
-  ctx.fillStyle = dark ? css(palette.surface) : '#fff';
-  ctx.fill();
-  ctx.strokeStyle = ink(dark ? 0.32 : 0.3);
-  ctx.stroke();
 }

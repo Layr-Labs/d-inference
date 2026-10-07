@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-05
 
 Desktop activity and earnings tests are described in the
 [desktop verification guide](desktop-app.md#verify). `make desktop-api-test`
@@ -2949,3 +2949,11 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Desktop architecture checks
+
+`make desktop-api-test` exercises the real Swift control API against isolated
+local fixtures. It checks that release reads share the existing latest-release
+API, earnings use the existing ledger window parameter, and a credential change
+rejects an in-flight private response (`scripts/test-desktop-api.py`).
+The fixture never starts a serving provider or changes its credentials.

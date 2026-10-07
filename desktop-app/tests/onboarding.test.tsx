@@ -62,7 +62,7 @@ it('states what Autopilot will do from reported facts, with the terms beside the
   expect(summary).toHaveTextContent('MacBook Pro');
   expect(summary).toHaveTextContent('Apple M4 Max · 64 GB');
   expect(summary).toHaveTextContent('Starts with GPT-OSS 20B, already on this Mac.');
-  expect(summary).toHaveTextContent('Updates on · managed by the native runtime.');
+  expect(summary).toHaveTextContent('Automatic updates on.');
   expect(summary).toHaveTextContent('Stop any time from the app or the menu bar.');
   expect(screen.getByText('Your Darkbloom account is linked.')).toBeVisible();
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();

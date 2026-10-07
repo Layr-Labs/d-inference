@@ -24,8 +24,9 @@ extension DesktopBackend {
   }
 
   static func readCooling(executable: URL?) async -> JSONValue {
+    let signed = executable ?? (try? DesktopFanRuntime.resolve())
     guard
-      let (code, output) = try? await DesktopWorker(executable: executable).run(
+      let (code, output) = try? await DesktopWorker(executable: signed ?? executable).run(
         ["fan", "status", "--json"], timeout: 15),
       code == 0, let data = output.data(using: .utf8),
       let status = try? JSONDecoder().decode(JSONValue.self, from: data)
@@ -35,6 +36,10 @@ extension DesktopBackend {
         "error": .string("Cooling status unavailable"),
       ])
     }
+    return Self.projectCooling(status, controlAvailable: signed != nil)
+  }
+
+  static func projectCooling(_ status: JSONValue, controlAvailable: Bool) -> JSONValue {
     let diagnostic = status.field("diagnostic")
     let temperatures = diagnostic.field("gpuTemperatures").values.compactMap {
       $0.field("celsius").number
@@ -45,9 +50,22 @@ extension DesktopBackend {
         "rpm": fan.field("actualRPM"), "max_rpm": fan.field("maximumRPM"),
       ])
     }
+    // Automatic describes the current SMC mode, including an enabled helper below its
+    // trigger. The opt-in is on while the installed helper is loaded and reporting status.
+    let enabled: JSONValue
+    if status.field("helperError").text != nil { enabled = .null }
+    else if status.field("loaded").flag == false { enabled = .bool(false) }
+    else if status.field("loaded").flag == true, status.field("helper").field("mode").text != nil { enabled = .bool(true) }
+    else { enabled = .null }
     return .dict([
       "supported": diagnostic.field("supported"),
-      "mode": status.field("helper").field("mode").text.map(DV.string) ?? .string("automatic"),
+      "control_available": .bool(controlAvailable),
+      "enabled": enabled, "observed_at": .number(Date().timeIntervalSince1970),
+      "speed": status.field("helper").field("speedPercent"),
+      "threshold": status.field("helper").field("triggerTemperatureC"),
+      "mode": status.field("helper").field("mode").text.map(DV.string)
+        ?? .string(status.field("helperError").text == nil ? "automatic" : "unavailable"),
+      "error": status.field("helperError"),
       "temperature": .number(temperatures.max()), "fans": .array(fans),
     ])
   }

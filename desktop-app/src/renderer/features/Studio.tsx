@@ -37,7 +37,7 @@ export function Studio({
         <Terminal size={32} strokeWidth={1.2} />
         <div>
           <h2>Your Mac. Your endpoint.</h2>
-          <p>OpenAI-compatible inference, backed by the same Swift runtime.</p>
+          <p>Run models through an OpenAI-compatible API.</p>
         </div>
         {endpoint && <Status state="online">Listening</Status>}
       </div>
@@ -124,7 +124,7 @@ export function Studio({
             {key ? 'Hide' : 'Reveal'}
           </Button>
         </div>
-        <small className="muted">Authenticated and bound to this Mac’s loopback interface.</small>
+        <small className="muted">Requires an API key. Accessible only on this Mac.</small>
       </section>
       <section className="section">
         <div className="section-title">

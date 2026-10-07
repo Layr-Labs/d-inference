@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -35,6 +36,17 @@ const (
 // POST /v1/device/code
 // No auth required — the provider CLI is not yet authenticated.
 func (s *Server) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
+	var options struct {
+		Purpose string `json:"purpose"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxControlPlaneBodyBytes)).Decode(&options); err != nil && err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request", "invalid device code request"))
+		return
+	}
+	if options.Purpose != "" && options.Purpose != "provider" && options.Purpose != desktopAccountPurpose {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request", "unsupported authorization purpose"))
+		return
+	}
 	// Generate device code (opaque, high-entropy secret).
 	deviceCodeBytes := make([]byte, 32)
 	if _, err := rand.Read(deviceCodeBytes); err != nil {
@@ -42,6 +54,9 @@ func (s *Server) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deviceCode := hex.EncodeToString(deviceCodeBytes)
+	if options.Purpose == desktopAccountPurpose {
+		deviceCode = desktopAccountCodePrefix + deviceCode
+	}
 
 	// Generate user code (short, human-readable, uppercase alphanumeric).
 	userCode, err := generateUserCode()
@@ -80,7 +95,11 @@ func (s *Server) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		verificationURI = fmt.Sprintf("%s://%s/link", scheme, r.Host)
 	}
 
+	if options.Purpose == desktopAccountPurpose {
+		verificationURI += "?purpose=" + desktopAccountPurpose
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"purpose":          options.Purpose,
 		"device_code":      deviceCode,
 		"user_code":        userCode,
 		"verification_uri": verificationURI,
@@ -129,6 +148,10 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "approved":
+		if strings.HasPrefix(dc.DeviceCode, desktopAccountCodePrefix) {
+			s.issueDesktopAccountToken(w, dc)
+			return
+		}
 		// Generate a long-lived provider token.
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err != nil {
@@ -177,6 +200,7 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		UserCode string `json:"user_code"`
+		Purpose  string `json:"purpose"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserCode == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request", "user_code is required"))
@@ -197,6 +221,10 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasPrefix(dc.DeviceCode, desktopAccountCodePrefix) != (req.Purpose == desktopAccountPurpose) {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request", "authorization purpose does not match this code"))
+		return
+	}
 	if dc.Status != "pending" {
 		writeJSON(w, http.StatusConflict, errorResponse("already_used", "this code has already been used"))
 		return
@@ -213,9 +241,14 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 		"email", user.Email,
 	)
 
+	message := "Device linked successfully. Your provider will connect to your account shortly."
+	if req.Purpose == desktopAccountPurpose {
+		message = "Desktop account access approved. Return to the app."
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"purpose": req.Purpose,
 		"status":  "approved",
-		"message": "Device linked successfully. Your provider will connect to your account shortly.",
+		"message": message,
 	})
 }
 

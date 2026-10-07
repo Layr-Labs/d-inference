@@ -17,14 +17,15 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 
 | Behavior | Start here |
 |---|---|
-| Process assembly and shutdown | `coordinator/app/`; command parsing stays in `coordinator/cmd/coordinator/` |
+| Process assembly and shutdown | `coordinator/app/`; command body in `coordinator/internal/command/coordinator/`, thin executable in `coordinator/cmd/coordinator/` |
+| Pre-database production-serving validation | `coordinator/config/app_config.go` (`AppConfig.Check`); pure `service.Config.CheckProductionServing` in `coordinator/appattest/service/config.go`, reused by `coordinator/internal/provider/legacymdm/policy.go` before the cohort freeze |
 | Provider-owner email campaigns | `coordinator/provideremail/`; CLI orchestration in `provideremail/command/`, Resend transport in `provideremail/resend/`, thin executable in `coordinator/cmd/provider-emails/` |
 | HTTP composition | `coordinator/api/`; `NewServer` binds domain owners to the real router |
 | Authentication, principals, keys and device login | `coordinator/api/access/`, `access/keys/`, `access/device/` |
 | Request admission, dispatch and settlement | `coordinator/api/inference/`; request/response codecs in its `request/` and `response/` packages |
 | Provider sessions and trust | `coordinator/api/provider/` and `provider/trust/`; terminal inference events return to the shared inference owner |
 | Catalog publication and release policy | `coordinator/api/catalog/` and `coordinator/api/releases/` |
-| Accounts, account erasure, billing HTTP and payouts | `coordinator/api/accounts/`, `accounts/erasure/`, `coordinator/api/billing/`, `billing/payouts/` |
+| Accounts, account erasure, billing HTTP and payouts | `coordinator/api/accounts/`, `accounts/erasure/`, `coordinator/api/billing/`, `billing/payouts/`; account HTTP owners gate new soft-delete mutations, not existing scrub/outbox obligations |
 | Earn-page hardware interest: registration, own readback and admin export | `coordinator/api/accounts/small_models_interest.go`; contract in `coordinator/store/small_models_interest.go`, backends in `coordinator/store/memory/small_models_interest.go` and `coordinator/store/postgres/small_models_interest.go` |
 | Public projections and operational endpoints | `coordinator/api/reporting/` and `coordinator/api/operations/` |
 | Profiles, request outcomes and route sinks | `coordinator/api/observation/`; separate bounded queues retain their own loss/flush rules |

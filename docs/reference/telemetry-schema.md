@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-06
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -129,6 +129,18 @@ prompt, completion, media or cache content), enumerated in
 [`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
 No mirror carries a field filter. To add a field, add it at the call site with a bounded value and
 list it in the inventory.
+
+### Provider slot posture acceptance
+
+`EngineV2Bridge.emitSlotPostureTelemetry` constructs this fixed operational key
+for `operation = engine_v2_slot_posture`. The provider's `TelemetryClient`
+facade discards the event; the coordinator has no client ingestion route. This
+is a producer-side field contract, not a live coordinator-emitted datum or a
+field allowlist.
+
+| Key | Values | Presence and meaning | Code |
+|---|---|---|---|
+| `mtp_acceptance` | `exact`, `typical` | Present when `ProviderMTPStatusSnapshot.acceptance` supplies the installed rule; otherwise omitted. Distinguishes the rule from `mtp_acceptance_rate`: typical deliberately keeps more drafts, so a higher ratio alone is not a better-drafter claim. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
 
 ## Coordinator emitter
 

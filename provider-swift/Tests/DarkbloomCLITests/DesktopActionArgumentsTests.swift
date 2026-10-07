@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import ProviderCore
 import Testing
 
 @testable import darkbloom
@@ -48,6 +49,13 @@ struct DesktopActionArgumentsTests {
       Case(action: action("unlink"), localActive: local, forwardsConfig: false),
       Case(action: action("download") { $0.model = model }, localActive: local, forwardsConfig: true),
       Case(action: action("remove") { $0.model = model }, localActive: local, forwardsConfig: true),
+      Case(action: action("autopilot") { $0.models = [model]; $0.pinned = [] }, localActive: local, forwardsConfig: true),
+      Case(action: action("autopilot_pin") { $0.models = [model] }, localActive: local, forwardsConfig: true),
+      Case(action: action("autopilot_unpin") { $0.models = [model] }, localActive: local, forwardsConfig: true),
+      Case(action: action("autopilot_pause"), localActive: local, forwardsConfig: true),
+      Case(action: action("autopilot_resume"), localActive: local, forwardsConfig: true),
+      Case(action: action("autopilot_disable"), localActive: local, forwardsConfig: true),
+      Case(action: action("autopilot_models"), localActive: local, forwardsConfig: true),
       Case(
         action: action("cooling") {
           $0.enabled = true
@@ -85,5 +93,50 @@ struct DesktopActionArgumentsTests {
   @Test(arguments: ["stop-local", "restart-local"])
   func localLifecycleCommandsAcceptConfig(command: String) throws {
     _ = try Darkbloom.parseAsRoot(["desktop", command, "--config", Self.config])
+  }
+
+  @Test func refusesPinsOutsideStartupSelection() throws {
+    let request = Self.action("autopilot") { $0.models = [Self.model]; $0.pinned = ["another-model"] }
+    #expect(throws: (any Error).self) { try request.validate() }
+  }
+
+  @Test func pinFollowupUsesTheSameCLIAndConfig() throws {
+    let argv = DesktopBackend.autopilotPinArguments([Self.model], configPath: Self.config)
+    _ = try Darkbloom.parseAsRoot(argv)
+    #expect(argv == ["autopilot", "pin", Self.model, "--config", Self.config])
+  }
+
+  @Test func refreshRetainsStartupAndEndpointWithoutAnInteractiveWizard() throws {
+    let settings = ModelAutopilotSettings(enabled: true, consentRecorded: true,
+      selectedModels: [Self.model, "another-model"], revision: "test")
+    let endpoint = LocalEndpoint.Info(host: "0.0.0.0", port: 7777, apiKey: "", version: "test", pid: 1, updatedAt: "test")
+    let argv = try DesktopBackend.autopilotRefreshArguments(settings: settings,
+      startupModels: [Self.model], endpoint: endpoint, configPath: Self.config)
+    _ = try Darkbloom.parseAsRoot(argv)
+    #expect(argv == ["start", "--autopilot", "--model", Self.model, "--local-endpoint", "--port", "7777", "--bind", "0.0.0.0", "--no-auth", "--config", Self.config])
+    let fallback = try DesktopBackend.autopilotRefreshArguments(settings: settings,
+      startupModels: [], endpoint: nil, configPath: nil)
+    #expect(fallback == ["start", "--autopilot", "--model", Self.model])
+    #expect(throws: (any Error).self) {
+      try DesktopBackend.autopilotRefreshArguments(settings: ModelAutopilotSettings(),
+        startupModels: [Self.model], endpoint: nil, configPath: nil)
+    }
+  }
+
+  @Test func configuredEnrollmentDoesNotInventALivePhase() {
+    let settings = ModelAutopilotSettings(enabled: true, consentRecorded: true,
+      selectedModels: [Self.model], revision: "test")
+    let snapshot = DesktopBackend.autopilotSnapshot(settings, daemon: nil, fresh: false)
+    #expect(snapshot.field("configured").flag == true)
+    #expect(snapshot.field("enabled").flag == true)
+    #expect(snapshot.field("phase") == .null)
+    #expect(DesktopBackend.autopilotSnapshot(ModelAutopilotSettings(), daemon: nil, fresh: false).field("configured").flag == false)
+  }
+
+  @Test func progressUsesTheLatestValidDownloadPercentage() {
+    #expect(DesktopBackend.downloadProgress("10%\nmodel 40.5%") == 0.405)
+    #expect(DesktopBackend.downloadProgress("Downloaded 100%") == 1)
+    #expect(DesktopBackend.downloadProgress("Loading weights" ) == nil)
+    #expect(DesktopBackend.downloadProgress("Impossible 200%") == nil)
   }
 }

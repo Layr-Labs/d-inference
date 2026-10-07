@@ -30,16 +30,16 @@ export interface NativeModel {
   id: string;
   display_name: string;
   size_gb: number;
-  memory_gb?: number;
+  memory_gb?: number | null;
   downloaded: boolean;
   serving: boolean;
   loaded: boolean;
   eligible: boolean;
-  reason?: string;
-  description?: string;
-  context_length?: number;
-  family?: string;
-  quantization?: string;
+  reason?: string | null;
+  description?: string | null;
+  context_length?: number | null;
+  family?: string | null;
+  quantization?: string | null;
 }
 export interface Machine {
   id: string;
@@ -81,13 +81,27 @@ export interface Snapshot {
   account_revision?: string;
   resource_revision?: string;
   capabilities?: string[];
-  account?: { signed_in: boolean; expires_at?: number; legacy_data?: boolean };
+  account?: {
+    signed_in: boolean;
+    email?: string | null;
+    expires_at?: number;
+    legacy_data?: boolean;
+  };
   state: 'stopped' | 'starting' | 'running' | 'draining' | 'stale';
   readiness: string;
+  /** Coordinator-reported connection status, distinct from its diagnostic event reason. */
+  provider_status?: string | null;
   machine: Machine;
   models: NativeModel[];
   operations: Operation[];
-  memory: { total_gb: number; active_gb?: number; cache_gb?: number; free_for_load_gb?: number };
+  memory: {
+    total_gb: number;
+    active_gb?: number;
+    cache_gb?: number;
+    free_for_load_gb?: number;
+    pin_budget_gb?: number;
+    max_model_slots?: number;
+  };
   activity: {
     requests?: string;
     tokens?: string;
@@ -173,6 +187,11 @@ export interface RequestHistory {
   records: RequestRecord[];
 }
 export interface NetworkData {
+  model_earnings?: {
+    window: '7d';
+    as_of: string;
+    models: { id: string; earnings_micro_usd: string }[];
+  } | null;
   total_tokens?: string;
   total_requests?: string;
   // Prompt plus completion tokens in the past 24 hours; omitted by runtimes that do not relay it.
@@ -183,8 +202,10 @@ export interface NetworkData {
 }
 export interface CoolingData {
   supported: boolean;
+  enabled?: boolean | null;
+  observed_at?: number;
   mode: string;
-  temperature?: number;
+  temperature?: number | null;
   fans: { name: string; rpm: number; max_rpm: number }[];
   control_available?: boolean;
   speed?: number;

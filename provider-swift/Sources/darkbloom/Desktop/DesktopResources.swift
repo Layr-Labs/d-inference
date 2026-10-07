@@ -59,6 +59,7 @@ extension DesktopBackend {
         "total_requests": Self.integerText(value.field("total_requests")),
         "total_macs": value.field("active_providers"),
         "provider_regions": value.field("provider_regions"),
+        "model_earnings": value.field("model_earnings"),
       ])
     }
     if name == "leaderboard" {

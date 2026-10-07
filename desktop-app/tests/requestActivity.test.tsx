@@ -103,7 +103,9 @@ it('keeps the last observation when a refresh fails', async () => {
   vi.spyOn(previewAPI, 'read').mockRejectedValue(new Error('offline'));
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   expect(
-    await screen.findByText('Couldn’t refresh request history. Showing the last observation.'),
+    await screen.findByText(
+      'Couldn’t refresh request history. Showing previously loaded requests.',
+    ),
   ).toBeVisible();
   expect(rows()).toHaveLength(25);
 });

@@ -37,7 +37,12 @@ export function Home({
       <NetworkMilestone network={backend.network} />
       <ContributionMetrics activity={state.activity} explore={() => navigate('analysis')} />
       <div className={styles.activity}>
-        <ChipStage state={state} preview={isPreview} />
+        <ChipStage
+          state={state}
+          preview={isPreview}
+          cooling={backend.cooling}
+          onCooling={() => navigate('cooling')}
+        />
       </div>
       <FleetSummary
         backend={backend}

@@ -59,7 +59,7 @@ export function ServingSummary({
     {
       icon: <RefreshCw size={15} />,
       text: snapshot.settings.auto_update
-        ? 'Updates on · managed by the native runtime.'
+        ? 'Automatic updates on.'
         : 'Updates off · turn them on any time in Updates.',
     },
     { icon: <Power size={15} />, text: 'Stop any time from the app or the menu bar.' },

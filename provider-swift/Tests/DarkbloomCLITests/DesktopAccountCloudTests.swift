@@ -4,6 +4,11 @@ import Testing
 @testable import darkbloom
 
 struct DesktopAccountCloudTests {
+  @Test func dashboardCredentialAcceptsScopedAndExistingDeviceTokensOnly() {
+    #expect(DesktopAccountCredential.supports(token: "darkbloom-at-test"))
+    #expect(DesktopAccountCredential.supports(token: "eigeninference-pt-test"))
+    #expect(!DesktopAccountCredential.supports(token: "consumer-api-key"))
+  }
   @Test func identifiesThisMacByIdentityAndUsesAuthoritativeLoadedSlots() throws {
     let fleet = try JSONDecoder().decode(JSONValue.self, from: Data("""
       {"providers":[

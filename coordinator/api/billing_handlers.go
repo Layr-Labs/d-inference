@@ -614,7 +614,7 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 
 	availableBalance, withdrawableBalance := s.store.GetBalanceWithWithdrawable(accountID)
 
-	body, err := json.Marshal(map[string]any{
+	response := map[string]any{
 		"account_id":                     accountID,
 		"earnings":                       earnings,
 		"total_micro_usd":                summary.TotalMicroUSD,
@@ -626,7 +626,11 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		"available_balance_usd":          fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
 		"withdrawable_balance_micro_usd": withdrawableBalance,
 		"withdrawable_balance_usd":       fmt.Sprintf("%.6f", float64(withdrawableBalance)/1_000_000),
-	})
+	}
+	if user := auth.UserFromContext(r.Context()); user != nil && user.AccountID == accountID && user.Email != "" {
+		response["email"] = user.Email
+	}
+	body, err := json.Marshal(response)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal earnings"))
 		return

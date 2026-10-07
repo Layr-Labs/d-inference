@@ -36,6 +36,10 @@ extension DesktopBackend {
         "error": .string("Cooling status unavailable"),
       ])
     }
+    return Self.projectCooling(status, controlAvailable: signed != nil)
+  }
+
+  static func projectCooling(_ status: JSONValue, controlAvailable: Bool) -> JSONValue {
     let diagnostic = status.field("diagnostic")
     let temperatures = diagnostic.field("gpuTemperatures").values.compactMap {
       $0.field("celsius").number
@@ -46,9 +50,17 @@ extension DesktopBackend {
         "rpm": fan.field("actualRPM"), "max_rpm": fan.field("maximumRPM"),
       ])
     }
+    // Automatic describes the current SMC mode, including an enabled helper below its
+    // trigger. The opt-in is on while the installed helper is loaded and reporting status.
+    let enabled: JSONValue
+    if status.field("helperError").text != nil { enabled = .null }
+    else if status.field("loaded").flag == false { enabled = .bool(false) }
+    else if status.field("loaded").flag == true, status.field("helper").field("mode").text != nil { enabled = .bool(true) }
+    else { enabled = .null }
     return .dict([
       "supported": diagnostic.field("supported"),
-      "control_available": .bool(signed != nil),
+      "control_available": .bool(controlAvailable),
+      "enabled": enabled, "observed_at": .number(Date().timeIntervalSince1970),
       "speed": status.field("helper").field("speedPercent"),
       "threshold": status.field("helper").field("triggerTemperatureC"),
       "mode": status.field("helper").field("mode").text.map(DV.string)

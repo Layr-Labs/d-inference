@@ -6,6 +6,16 @@ import Testing
 /// The cooling resource runs a real child process; rapid and concurrent reads
 /// must share one run instead of each spawning `fan status`.
 struct DesktopCoolingCacheTests {
+  @Test func enabledHelperIsDistinctFromItsCurrentFanMode() {
+    for mode in ["automatic", "manual"] {
+      let status: DV = .dict(["loaded": .bool(true), "helper": .dict(["mode": .string(mode)]), "diagnostic": .dict(["supported": .bool(true)])])
+      #expect(DesktopBackend.projectCooling(status, controlAvailable: true).field("enabled").flag == true)
+    }
+    let disabled: DV = .dict(["loaded": .bool(false), "helper": .null])
+    #expect(DesktopBackend.projectCooling(disabled, controlAvailable: true).field("enabled").flag == false)
+    let failed: DV = .dict(["loaded": .bool(true), "helperError": .string("Unavailable")])
+    #expect(DesktopBackend.projectCooling(failed, controlAvailable: true).field("enabled") == .null)
+  }
   /// A stand-in CLI that counts its runs and prints a `fan status --json` body.
   static func fakeCLI() throws -> (directory: URL, script: URL, counter: URL) {
     let directory = FileManager.default.temporaryDirectory

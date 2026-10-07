@@ -18,6 +18,7 @@ extension DesktopBackend {
     defer { if generation == resourceGeneration, accountEarningsTask?.key == key { accountEarningsTask = nil } }
     let value = try await task.value
     guard generation == resourceGeneration, usageCredentialToken() == token else { throw URLError(.userAuthenticationRequired) }
+    recordAccountIdentity(value, base: base, token: token)
     accountEarningsCache = (key, Date(), value)
     return value
   }

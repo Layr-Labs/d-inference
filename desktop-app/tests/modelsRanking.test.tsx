@@ -33,9 +33,9 @@ for (const enabled of [false, true]) {
         .getAllByRole('heading', { level: 3 })
         .filter((heading) => heading.closest('.model-row'))
         .map((heading) => heading.textContent),
-    ).toEqual(['Gemma 4 26B', 'Qwen 3.5 9B', 'GPT-OSS 20B', 'Qwen 3.6 35B A3B', 'Kimi K2.6']);
+    ).toEqual(['Gemma 4 26B', 'Qwen 3.5 9B', 'GPT-OSS 20B']);
     expect(screen.getByText('Most earned · 30d')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: enabled ? 'In pool' : 'Serving' }));
+    fireEvent.click(screen.getByRole('button', { name: enabled ? 'Your models' : 'Serving' }));
     expect(screen.queryByRole('heading', { name: 'Qwen 3.6 35B A3B' })).not.toBeInTheDocument();
     if (!enabled) {
       expect(screen.getByRole('checkbox', { name: 'Select Gemma 4 26B' })).toBeChecked();

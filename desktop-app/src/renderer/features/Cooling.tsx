@@ -1,5 +1,6 @@
 import type { BackendState } from '../useBackend';
 import { Empty, Header, Notice, Status } from '../components/UI';
+import { coolingStatus } from './cooling/status';
 import { CoolingControls } from './cooling/CoolingControls';
 import { FanCards } from './cooling/FanCards';
 import styles from './cooling/cooling.module.css';
@@ -19,11 +20,7 @@ export function Cooling({
         level={embedded ? 2 : 1}
         title="Cooling"
         description="Keep sustained workloads comfortable."
-        action={
-          <Status state={cooling?.mode === 'manual' ? 'online' : ''}>
-            {cooling?.mode || 'Checking'}
-          </Status>
-        }
+        action={<Status state={cooling?.enabled ? 'online' : ''}>{coolingStatus(cooling)}</Status>}
       />
       {cooling?.error && <Notice>{cooling.error}</Notice>}
       <div className={styles.hero}>

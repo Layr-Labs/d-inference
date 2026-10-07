@@ -10,7 +10,7 @@ extension Desktop {
       let base = coordinatorHTTPBase(try loadRuntimeConfiguration(configPath: configOptions.config).config.coordinator.url)
       let token = try await performDeviceCodeLogin(coordinatorURL: base, onDisplayCode: { code, url, _ in
         print("Open \(url) and authorize desktop access with code \(code).")
-      }, purpose: "desktop_account")
+      }, purpose: "desktop_account", allowLegacyAccountFlow: true)
       try DesktopAccountCredential.save(token: token, base: base)
       print("Signed in to the desktop dashboard.")
     }

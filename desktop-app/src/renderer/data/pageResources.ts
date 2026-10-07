@@ -5,6 +5,8 @@ export function pageResources(route: Route): Resource[] {
   switch (route) {
     case 'home':
       return ['cloud', 'network'];
+    case 'models':
+      return ['network'];
     case 'machines':
     case 'earnings':
       return ['cloud'];

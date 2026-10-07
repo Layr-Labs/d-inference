@@ -19,21 +19,21 @@ export function ServingModels({
       {names.length ? (
         names.map((name) => <span key={name}>{name}</span>)
       ) : (
-        <span>No serving models reported</span>
+        <span>No models reported</span>
       )}
     </div>
   );
   if (inline)
     return (
-      <section className={styles.inline} aria-label="Serving models">
-        <h2>Serving models</h2>
+      <section className={styles.inline} aria-label="Models">
+        <h2>Models</h2>
         {chips}
       </section>
     );
   return (
     <section className={styles.section}>
       <div className={styles.heading}>
-        <h2>Serving models</h2>
+        <h2>Models</h2>
         {onManage && (
           <button className="text-link" onClick={onManage}>
             Manage models

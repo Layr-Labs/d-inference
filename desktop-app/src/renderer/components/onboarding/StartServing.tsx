@@ -11,6 +11,8 @@ import { pinnedMemory, startingModel } from '../../models/selection';
 import { methodFor, startAction, startModels, type StartMethod } from './startPlan';
 import { useStartServing } from './useStartServing';
 import styles from './startServing.module.css';
+import { networkEarnings, recommendedModels } from '../../features/models/recommendations';
+import { RecommendedModels } from '../../features/models/RecommendedModels';
 
 const copy: Record<StartMethod, { lead: string; start: string; empty: string }> = {
   autopilot: {
@@ -60,14 +62,22 @@ export function StartServing({
   const manualOnly = !!snapshot.capabilities && !snapshot.capabilities.includes('autopilot');
   const method = methodFor(mode, serving.rejected || manualOnly);
   const text = copy[method];
+  const network = networkEarnings(backend.network);
+  const recommended =
+    method === 'autopilot' && !pinned.length ? recommendedModels(snapshot.models, network) : [];
+  const showRecommendations = recommended.length > 0;
   const empty = !startModels(snapshot, method, pinned).length;
   const tooLarge = pinnedMemory(snapshot, pinned).exceeds;
   const running = snapshot.operations.find((operation) => operation.state === 'running');
   return (
     <>
       <h2>Ready to serve.</h2>
-      <p>{text.lead}</p>
-      <ServingSummary snapshot={snapshot} method={method} pinned={pinned} />
+      {!showRecommendations && (
+        <>
+          <p>{text.lead}</p>
+          <ServingSummary snapshot={snapshot} method={method} pinned={pinned} />
+        </>
+      )}
       {serving.rejected && method === 'manual' && (
         <div className={styles.fallback} role="alert">
           <strong>Autopilot isn’t available in this version of Darkbloom.</strong>
@@ -84,27 +94,40 @@ export function StartServing({
         <LinkPanel link={snapshot.link} cancel={serving.cancelLink} />
       ) : (
         <>
-          <Button
-            variant="primary"
-            className={styles.start}
-            disabled={empty || tooLarge || backend.busy || serving.phase !== 'idle'}
-            onClick={() =>
-              void serving.serve(
-                startAction(snapshot, method, pinned),
-                method !== 'local' && !snapshot.linked,
-              )
-            }
-          >
-            {serving.phase === 'starting' ? (
-              <>
-                <LoaderCircle className="spin" size={16} /> Starting…
-              </>
-            ) : (
-              <>
-                {text.start} <ArrowRight size={16} />
-              </>
-            )}
-          </Button>
+          {showRecommendations ? (
+            <RecommendedModels
+              snapshot={snapshot}
+              models={recommended}
+              earnings={network}
+              setup
+              busy={backend.busy || serving.phase !== 'idle'}
+              onStart={(action) =>
+                void serving.serve({ ...action, endpoint: true }, !snapshot.linked)
+              }
+            />
+          ) : (
+            <Button
+              variant="primary"
+              className={styles.start}
+              disabled={empty || tooLarge || backend.busy || serving.phase !== 'idle'}
+              onClick={() =>
+                void serving.serve(
+                  startAction(snapshot, method, pinned),
+                  method !== 'local' && !snapshot.linked,
+                )
+              }
+            >
+              {serving.phase === 'starting' ? (
+                <>
+                  <LoaderCircle className="spin" size={16} /> Starting…
+                </>
+              ) : (
+                <>
+                  {text.start} <ArrowRight size={16} />
+                </>
+              )}
+            </Button>
+          )}
           <div className={styles.note} role="status">
             {serving.phase === 'starting' && running?.message
               ? running.message

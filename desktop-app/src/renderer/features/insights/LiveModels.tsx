@@ -1,3 +1,4 @@
+import { modelActivity } from '../../presentation/status';
 import { useEffect, useState } from 'react';
 import { Activity, Pause, Play } from 'lucide-react';
 import type { Snapshot } from '../../../shared/contracts';
@@ -51,9 +52,9 @@ export function LiveModels({ state }: { state: Snapshot }) {
       <div className={styles.liveSummary}>
         <strong>{stale ? '—' : running}</strong>
         <span>
-          requests running
+          requests processing
           <br />
-          <span className="muted">Native activity · refreshes every 2 seconds</span>
+          <span className="muted">Live activity</span>
         </span>
       </div>
       <div className={styles.lanes}>
@@ -67,7 +68,8 @@ export function LiveModels({ state }: { state: Snapshot }) {
                 <span>
                   {modelName(state.models, model.model)}
                   <small>
-                    {model.state} · {stale ? '—' : model.waiting} waiting
+                    {stale ? 'Status unavailable' : modelActivity(model.state, model.running)} ·{' '}
+                    {stale ? '—' : model.waiting} waiting
                   </small>
                 </span>
               </span>
@@ -81,11 +83,7 @@ export function LiveModels({ state }: { state: Snapshot }) {
                 ))}
               </span>
               <span className={styles.running}>
-                {stale
-                  ? 'Not current'
-                  : serving(model.state)
-                    ? `${model.running} running`
-                    : model.state}
+                {stale ? 'Not current' : modelActivity(model.state, model.running)}
               </span>
             </div>
           </div>
@@ -96,7 +94,7 @@ export function LiveModels({ state }: { state: Snapshot }) {
           {state.state === 'stopped'
             ? 'Start providing to see your models working.'
             : stale
-              ? 'Waiting for the runtime to report model activity.'
+              ? 'Waiting for model activity.'
               : 'No models are currently loaded.'}
         </p>
       )}

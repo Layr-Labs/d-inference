@@ -4,7 +4,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { Resource, Route } from '../src/shared/contracts';
 
 // Cooling status is read by spawning `darkbloom fan status --json` in the
-// native backend, so it is fetched only while Cooling or This Mac's Overview is shown.
+// native backend, so it is fetched only while Home, Cooling or This Mac's Overview is shown.
 let useBackend: typeof import('../src/renderer/useBackend').useBackend;
 let showsCooling: typeof import('../src/renderer/useBackend').showsCooling;
 let previewAPI: typeof import('../src/renderer/preview').previewAPI;
@@ -30,24 +30,25 @@ async function mount(route: Route, machine: string | null = null) {
   return { read, ...hook };
 }
 
-it('shows cooling only on Cooling and on This Mac’s Overview', () => {
+it('shows cooling on Home, Cooling and This Mac’s Overview', () => {
+  expect(showsCooling('home')).toBe(true);
   expect(showsCooling('cooling')).toBe(true);
   expect(showsCooling('cooling', 'remote-studio')).toBe(true);
   expect(showsCooling('machines')).toBe(true);
   expect(showsCooling('machines', 'remote-studio')).toBe(false);
-  for (const route of ['home', 'models', 'analysis', 'settings', 'studio'] as const)
+  for (const route of ['models', 'analysis', 'settings', 'studio'] as const)
     expect(showsCooling(route)).toBe(false);
 });
 
 it('does not read cooling while another screen is shown', async () => {
-  const { read, result } = await mount('home');
+  const { read, result } = await mount('models');
   await act(() => result.current.refresh());
   expect(reads(read, 'state')).toBeGreaterThanOrEqual(2);
   expect(reads(read, 'cooling')).toBe(0);
 });
 
 it('reads cooling on entering the cooling screen and on each refresh there', async () => {
-  const { read, result, rerender } = await mount('home');
+  const { read, result, rerender } = await mount('models');
   rerender({ route: 'cooling', machine: null });
   await waitFor(() => expect(reads(read, 'cooling')).toBe(1));
   await waitFor(() => expect(result.current.cooling?.supported).toBe(true));

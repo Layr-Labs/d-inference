@@ -1,10 +1,16 @@
 # Models reference
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-06
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
 ## `GET /v1/models`
+
+Public `/v1/stats` includes optional seven-day settled model payout aggregates,
+used by desktop download recommendations. These network totals are separate from
+catalog consumer prices and account-specific earnings; see the
+[public stats contract](../reference/api-contracts.md#public-stats-and-health-6)
+(`coordinator/api/network_model_earnings.go`, `networkModelEarnings`).
 
 MiMo image/video requests also require temporary preparation memory beyond the
 loaded weights and text KV budget. A request that cannot reserve that memory

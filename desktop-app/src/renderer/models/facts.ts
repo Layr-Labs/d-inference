@@ -13,7 +13,7 @@ export function modelFacts(model: NativeModel) {
   if (!model.eligible) return model.reason || 'Not available on this Mac.';
   return [
     `${gigabytes(model.size_gb)} ${model.downloaded ? 'on disk' : 'download'}`,
-    model.memory_gb !== undefined && `needs ${gigabytes(model.memory_gb)} memory`,
+    model.memory_gb != null && `needs ${gigabytes(model.memory_gb)} memory`,
   ]
     .filter(Boolean)
     .join(' · ');

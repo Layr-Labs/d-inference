@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -42,6 +42,13 @@ no SQL migration.
 The additive `app_attest_build_qualifications` table stores immutable signed-artifact approval, test evidence and server-attributed operator/time, plus permanent revocation tombstones. `coordinator/store/app_attest_builds_postgres.go` (`SetQualifiedRelease`) locks the same row used for revocation and atomically checks the exact identity before writing the active release. `store.As[AppAttestBuildStore]` unwraps the store decorator; qualification reads are deliberately uncached there. Service snapshots have a separate bounded lifetime, and stored approval never restores a live serving lease. See the [qualification runbook](../operations/app-attest-build-qualification.md).
 
 ## Context
+
+`NetworkModelEarningsReader` (`coordinator/store/network_model_earnings.go`,
+`NetworkModelEarnings`) groups positive settled inference payouts across accounts
+by model for the public stats projection. It excludes base rewards and empty model
+IDs, validates the bounded half-open window and has a five-second SQL deadline.
+It adds no schema or writer changes. `store.As` discovers the capability through
+decorators; a query failure is unavailable, never a successful zero ranking.
 
 The desktop earnings reader (`ProviderInsightsReader` in
 `coordinator/store/provider_insights.go`) groups the account's settled earnings

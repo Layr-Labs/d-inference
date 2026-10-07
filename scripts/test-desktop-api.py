@@ -57,12 +57,17 @@ class Catalog(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(payload).encode())
             return
         if self.path == "/v1/provider/account-earnings?limit=1000":
-            assert self.headers.get("Authorization") in ("Bearer fixture-provider-token", "Bearer fixture-provider-token-2")
+            authorization = self.headers.get("Authorization")
+            account_authorization = "Bearer darkbloom-at-" + "a" * 64
+            assert authorization in ("Bearer fixture-provider-token", "Bearer fixture-provider-token-2", account_authorization)
             if self.server.hold_insights:
                 self.server.insights_started.set()
                 self.server.insights_release.wait(10)
-            body = json.dumps({"account_id":"fixture", "total_micro_usd":0, "count":1, "available_balance_micro_usd":0,
-                "earnings":[{"id":1,"provider_key":"fixture-key","provider_id":"fixture-mac","model":"fixture-model","amount_micro_usd":0,"prompt_tokens":0,"completion_tokens":9007199254740993,"created_at":"2026-10-05T00:00:00Z"}]}).encode()
+            payload = {"account_id":"fixture", "total_micro_usd":0, "count":1, "available_balance_micro_usd":0,
+                "earnings":[{"id":1,"provider_key":"fixture-key","provider_id":"fixture-mac","model":"fixture-model","amount_micro_usd":0,"prompt_tokens":0,"completion_tokens":9007199254740993,"created_at":"2026-10-05T00:00:00Z"}]}
+            if authorization == account_authorization:
+                payload["email"] = "fixture@example.com"
+            body = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -224,6 +229,13 @@ idle_timeout_mins = 60
                 account_file.write_text(json.dumps({"base":base,"token":"darkbloom-at-" + "a" * 64,"expiresAt":time.time()+86400-978307200}))
                 account_file.chmod(0o600)
                 assert request()[1]["account"]["signed_in"] is True
+                for _ in range(40):
+                    snapshot = request()[1]
+                    if snapshot["account"].get("email") == "fixture@example.com": break
+                    time.sleep(.1)
+                assert snapshot["account"].get("email") == "fixture@example.com", snapshot["account"]
+                assert json.loads(account_file.read_text())["email"] == "fixture@example.com"
+                assert "darkbloom-at-" not in json.dumps(snapshot), "account token leaked to renderer"
                 code, signout = request("actions", {"id":str(uuid.uuid4()),"action":"account-signout"})
                 assert code == 202, signout
                 for _ in range(40):
@@ -232,6 +244,7 @@ idle_timeout_mins = 60
                     time.sleep(.1)
                 assert snapshot["operations"][0]["state"] == "succeeded", snapshot
                 assert snapshot["linked"] and not snapshot["account"]["signed_in"], snapshot
+                assert not snapshot["account"].get("email"), "signed-out identity remained visible"
                 assert (root / "auth").read_text() == "fixture-provider-token"
                 assert not account_file.exists()
                 assert request("insights-week")[0] == 401

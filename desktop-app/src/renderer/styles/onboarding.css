@@ -267,17 +267,6 @@
   font-size: 11px;
 }
 
-.onboarding-error {
-  position: fixed;
-  bottom: 30px;
-  left: 30px;
-  right: 30px;
-}
-
-.onboarding-error .notice {
-  margin: 0;
-}
-
 .onboarding .text-link {
   font-size: 11px;
 }

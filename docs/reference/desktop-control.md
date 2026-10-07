@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -67,11 +67,11 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `GET /control/v1/request-history` | Exact metadata from the current native usage journal, with settled money joined only by job ID; verified ledger fallback on older runtimes | `DesktopBackend.requestHistory`, `localRequestHistory` |
 | `GET /control/v1/cloud` | Account and owned fleet projection through the coordinator; separates This Mac using native identity | `DesktopBackend.resource` |
 | `GET /control/v1/insights-week`, `GET /control/v1/insights-month` | Settled earnings, lifetime output tokens, and 7/30-calendar-day analytics through the account-session-authenticated ledger API | `DesktopBackend.resource` |
-| `GET /control/v1/network` | Normalized public totals and approximate `provider_regions` from `/v1/stats` | `DesktopBackend.resource` |
+| `GET /control/v1/network` | Public totals, approximate `provider_regions`, and optional seven-day `model_earnings` from `/v1/stats` | `DesktopBackend.resource` |
 | `GET /control/v1/release-history` | Latest release notes from `/v1/releases/latest`; no separate desktop release request | `DesktopBackend.resource` |
 | `GET /control/v1/leaderboard` | Public earnings ranking over 24 hours (`metric=earnings&window=24h`); response includes `metric`, `window`, and `entries`; money and token counts remain decimal strings | `DesktopBackend.resource` |
 | `GET /control/v1/release` | Latest registered runtime version and changelog | `DesktopBackend.resource` |
-| `GET /control/v1/cooling` | Native fan diagnostics and helper state; concurrent and repeat reads within 10 s share one `fan status` run; a finished `cooling` action clears it | `DesktopBackend.cooling` |
+| `GET /control/v1/cooling` | Native fan diagnostics and helper state, including `enabled` and `observed_at`; concurrent and repeat reads within 10 s share one `fan status` run; a finished `cooling` action clears it | `DesktopBackend.cooling`, `projectCooling` |
 | `GET /control/v1/endpoint-key` | Existing local inference credential for explicit reveal | `DesktopBackend.resource` |
 | `GET /control/v1/hardware` | Chip topology and the latest whole-machine load sample (see [Hardware load](#hardware-load)); waits up to 1.5 s for a first sample | `DesktopHardware.resource` |
 | `GET /control/v1/hardware/events` | One full `hardware` sample per SSE frame at 1 Hz; connection renews after 120 frames; shares the eight-stream limit with `/events` | `DesktopHardware.events`, `DesktopStreamLimiter` |
@@ -93,6 +93,14 @@ Snapshots replace client state rather than applying deltas. Reconnection always
 obtains a full snapshot. Normal snapshots omit credentials. Missing/stale native
 observations are not evidence of zero memory usage or zero historical activity.
 
+The existing state snapshot adds `provider_status`, the fresh daemon trust status
+from the coordinator (`DesktopBackend.state`). It is `null` when the daemon is
+stale or only the local endpoint is active. `readiness` retains the diagnostic
+event reason for compatibility; Electron derives the primary readiness label
+from lifecycle, loaded selected models, update requirements and `provider_status`
+(`assessReadiness`). `untrusted` requires verification; `offline` waits for the
+network. A ready Mac shows a loaded-model count, distinct from processing counts.
+
 ### Live model activity and account insights
 
 `DaemonState.Capacity.modelActivity` and `activityObservedAt` are additive local
@@ -112,7 +120,7 @@ an in-flight private response if the credential changed while awaiting it.
 
 The insights resources map to
 `GET /v1/provider/account-earnings?window=7d|30d`. Swift owns the separate
-read-only account session; Electron receives no credential or configurable request URL.
+dashboard account session; Electron receives no credential or configurable request URL.
 Before the first dashboard sign-in, existing linked-provider earnings remain
 available as a migration fallback. Signing out disables that fallback for account views.
 Local session settlement backfill remains separate (`DesktopAccountCredential`, `accountReadToken`, `usageCredentialToken`).
@@ -191,6 +199,10 @@ that cleanup completes, then the operation becomes `cancelled`.
 | Action | Additional fields | Behavior |
 |---|---|---|
 | `start` | `models`; optional `local`, `endpoint` | Existing start path; local-only mode uses the same canonical provider LaunchAgent |
+| `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails |
+| `autopilot_pin`, `autopilot_unpin` | `models` | Existing CLI pin/unpin; pin budget is rechecked against downloaded estimates and configured slots |
+| `autopilot_pause`, `autopilot_resume`, `autopilot_disable` | — | Existing CLI policy commands |
+| `autopilot_models` | — | Explicit saved startup selection through `start --autopilot`; same inventory verification and drain/restart as the CLI wizard, preserving live endpoint options |
 | `switch` | `models` | Existing validated live model-switch path |
 | `stop`, `restart` | — | Existing native drain; local-only owner uses its registered native termination handler |
 | `download`, `remove` | `model` | Native model management; removal refuses models reported serving/resident |
@@ -208,6 +220,20 @@ or parsing terminal output to determine state. Settings reuse `withMutableConfig
 Process output is bounded diagnostic detail; the native exit status determines
 operation success (`DesktopWorker`, `DesktopBackend.execute`).
 
+Local review builds using `DARKBLOOM_DESKTOP_ATTACH_ONLY=1` run operation children
+through the verified installed Darkbloom CLI, preserving the signed serving
+installation (`Desktop.Serve.run`, `DesktopFanRuntime.resolve`). Normal builds
+invoke their own shared CLI executable.
+
+`Snapshot.autopilot` contains `configured` (consent recorded), `enabled`, `paused`,
+`selected` and `pinned`. Its `phase` is populated only by a fresh live daemon;
+enrollment alone never implies active control (`DesktopBackend.autopilotSnapshot`).
+`memory.pin_budget_gb` and `memory.max_model_slots` expose the shared startup
+allowance and current/configured slot limit (`DesktopBackend.state`). Pins protect
+from unloading while Autopilot controls residency; a cold pin is not reported as
+loaded. Operations optionally report the current download `model` and `progress`
+in `[0,1]` (`DesktopBackend.runAutopilot`, `downloadProgress`).
+
 ## Account session and refresh
 
 `DesktopBackend.accountCloud` combines `/v1/me/providers`, `/v1/me/summary`,
@@ -216,15 +242,39 @@ identifies This Mac; remote models come from loaded `running`/`idle` slots when
 capacity exists. Missing per-machine money stays unknown. The renderer receives
 only the UI projection (`DesktopAccountCloud.swift`, `projectAccountCloud`).
 
+The account footer displays `state.account.email` with Signed in. Swift obtains
+identity from the existing `/v1/provider/account-earnings` response's optional
+`email`, persists it with the coordinator-scoped dashboard credential, and shares
+the same cached ledger request with stats and earnings (`DesktopAccountIdentity`).
+State polling hydrates older credentials even when the provider is stopped;
+missing identity leaves Account as the label. Sign-out removes the identity,
+and replies from another coordinator/session cannot update it. Coordinators must
+include the authenticated owner's email in that response for the address to appear.
+
 `account-signin` and `darkbloom desktop login` reuse the browser device-code flow
-with `purpose=desktop_account`. The browser uses its Privy session to approve
-read-only access. Swift requires the coordinator to echo the purpose before
-opening the browser; an older coordinator fails explicitly. It stores the separate
-30-day session in an owner-only, coordinator-scoped file under `DARKBLOOM_DESKTOP_DIR`.
+with `purpose=desktop_account`. The bottom-left account button opens a modal with
+the snapshot's `link.code`, copy, explicit Continue in browser and cancellation controls
+(`AccountControl`, `AccountSignInProgress`). Electron sets
+`automaticallyOpenBrowser=false` in the shared login client; `darkbloom login` and
+`darkbloom desktop login` retain the default automatic launch. Closing the dialog
+preserves pending approval and Continue sign-in reopens it. Completion, failure or
+cancellation hides the code; failure supports retry. No additional endpoint is needed.
+The browser uses its Privy session to approve
+read-only access on coordinators that acknowledge that scope. Older coordinators
+that omit the purpose use their existing provider device-code grant; the browser
+shows the standard device-link approval. Swift accepts only the matching token
+prefix for the negotiated grant and never downgrades an acknowledged scoped grant
+(`ProviderCore/Auth/DeviceLoginScope.swift`, `DeviceLoginScope`). This legacy token
+has provider privileges on the server, but the dashboard uses it only for account
+reads and stores it separately from the serving credential. Local dashboard use
+expires after 30 days in both cases, in an owner-only, coordinator-scoped file
+under `DARKBLOOM_DESKTOP_DIR`.
 The renderer never receives it. Expiry or revocation requires sign-in again.
 `account-signout` and `darkbloom desktop logout` clear the local credential and
-account caches and attempt bounded server revocation; offline sign-out can leave
-the server credential valid until expiry. Neither command changes the provider's
+account caches and attempt bounded server revocation for scoped sessions; offline
+sign-out can leave them valid until expiry. Legacy coordinators have no account
+revocation endpoint or server expiry, so legacy sign-out removes only local access.
+Neither command changes the provider's
 `AuthTokenStore` credential (`DesktopAccountCredential.swift`, `DesktopAccountCommands.swift`).
 
 `DesktopResourceCache.swift` (`cachedResource`) coalesces reads and caches account

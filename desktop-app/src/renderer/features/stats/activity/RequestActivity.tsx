@@ -55,10 +55,7 @@ export function RequestActivity({
         failed ? (
           <div className={styles.unavailable} role="status">
             <strong>Request history is unavailable</strong>
-            <p>
-              The Darkbloom runtime on this Mac didn’t return its request history. Runtimes that
-              predate this view don’t report it yet.
-            </p>
+            <p>Couldn’t load requests from this Mac.</p>
             <Button disabled={loading} onClick={() => void refresh()}>
               Try again
             </Button>
@@ -70,7 +67,7 @@ export function RequestActivity({
         <>
           {failed && (
             <p className={styles.notice} role="status">
-              Couldn’t refresh request history. Showing the last observation.
+              Couldn’t refresh request history. Showing previously loaded requests.
             </p>
           )}
           <RequestFilters

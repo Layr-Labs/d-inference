@@ -23,9 +23,9 @@ export const isPreview = import.meta.env.DEV && new URLSearchParams(location.sea
 export const api: DesktopAPI | undefined = isPreview ? previewAPI : window.darkbloom;
 // Cooling status spawns a `darkbloom fan status` process in the native backend,
 // so it is read only while a screen that displays it is shown: Cooling and
-// This Mac's Overview.
+// This Mac's Overview, and Home's fan indicator.
 export const showsCooling = (route: Route, machine: MachineSelection = null) =>
-  route === 'cooling' || showsLocalOverview(route, machine);
+  route === 'home' || route === 'cooling' || showsLocalOverview(route, machine);
 export function useBackend(route: Route = 'home', machine: MachineSelection = null) {
   const [status, setStatus] = useState<DesktopStatus>({ state: 'connecting' });
   const [state, setState] = useState<Snapshot>();

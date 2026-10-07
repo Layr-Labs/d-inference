@@ -83,6 +83,21 @@ jobs:
             deploy
             scripts
 
+      # github.token cannot read repository Actions variables. This App is
+      # installed only on d-inference with Variables, Checks, Commit statuses
+      # and Metadata read permissions, so deploy.sh can fail closed on the
+      # live pause and exact-commit CI gates. This pinned action has no
+      # permission-variables input; the exact read-only grant is therefore an
+      # installation invariant. Its default post-step revocation remains on.
+      - name: Mint deploy safety gate token
+        id: safety-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.DEV_DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEV_DEPLOY_APP_PRIVATE_KEY }}
+          owner: Layr-Labs
+          repositories: d-inference
+
       - name: Read the dev host name
         run: |
           domain=$(awk -F= '$1 == "DOMAIN" { print $2; exit }' deploy/gcp/dev/env-overrides)
@@ -113,6 +128,7 @@ jobs:
         id: deploy
         env:
           DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}
+          GH_TOKEN: ${{ steps.safety-token.outputs.token }}
           # Test the event first: on push, inputs.migrate_only is null, and null == false.
           MIGRATE_ONLY: ${{ (github.event_name == 'workflow_dispatch' && !inputs.migrate_only) && '0' || '1' }}
           ON_SUPERSEDED: skip
@@ -164,7 +180,7 @@ jobs:
           echo "::warning::providers before=$BEFORE_N after=$n after 120 s"
           exit 1
 
-      # No API_KEY: the workflow has no secrets, so smoke-dev.sh skips the
+      # No API_KEY is passed to this step, so smoke-dev.sh skips the
       # authenticated chat test.
       - name: Smoke test (notify only)
         id: smoke

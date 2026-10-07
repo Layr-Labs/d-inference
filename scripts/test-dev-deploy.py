@@ -4,7 +4,10 @@ stub that records its arguments. No test makes a network request or touches
 a VM, a GCP project or the files of this machine outside a temporary
 directory."""
 
+import copy
+from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +16,8 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +29,7 @@ DEFAULTS = ROOT / "deploy/gcp/prod/release-env-defaults"
 WORKFLOW = ROOT / ".github/workflows/deploy-dev.yml"
 SUITE_WORKFLOW = ROOT / ".github/workflows/devnet-suite.yml"
 SUITE = ROOT / "scripts/devnet-suite.sh"
+HISTORY = ROOT / "scripts/devnet_suite_history.py"
 PROD_ENV = ROOT / "deploy/environments/prod.env"
 COMMIT = "a" * 40
 DIGEST = "sha256:" + "b" * 64
@@ -151,7 +157,7 @@ class DevEnvContractTests(unittest.TestCase):
         self.assertRegex(api, r"^[a-z0-9.-]+$")
         self.assertTrue(console.startswith("https://"))
         files = [*DEV.glob("*.sh"), ROOT / "deploy/gcp/host-setup.sh", ROOT / "scripts/smoke-dev.sh", WORKFLOW,
-                 SUITE_WORKFLOW, SUITE]
+                 SUITE_WORKFLOW, SUITE, HISTORY]
         for path in files:
             self.assertNotIn(api, path.read_text(), path)
             self.assertNotIn(console.removeprefix("https://"), path.read_text(), path)
@@ -502,13 +508,29 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertIn("deploy/gcp/dev/deploy.sh", self.deploy_step)
         self.assertIn("          DEV_DEPLOY_PAUSED: ${{ vars.DEV_DEPLOY_PAUSED }}\n", self.deploy_step)
 
+    def test_deploy_step_uses_a_variables_capable_app_token(self):
+        self.assertIn(
+            "uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2",
+            self.text,
+        )
+        self.assertIn("          app-id: ${{ vars.DEV_DEPLOY_APP_ID }}\n", self.text)
+        self.assertIn("          private-key: ${{ secrets.DEV_DEPLOY_APP_PRIVATE_KEY }}\n", self.text)
+        self.assertIn("          owner: Layr-Labs\n          repositories: d-inference\n", self.text)
+        token_step = self.text.split("        id: safety-token\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertNotIn("permission-", token_step)  # pinned action has no permission-variables input
+        self.assertNotIn("skip-token-revoke", token_step)  # retain the action's revoke-by-default behavior
+        self.assertIn("          GH_TOKEN: ${{ steps.safety-token.outputs.token }}\n", self.deploy_step)
+        self.assertLess(self.text.index("        id: safety-token\n"), self.text.index("      - uses: google-github-actions/auth@"))
+        self.assertLess(self.text.index("        id: safety-token\n"), self.text.index("        id: deploy\n"))
+        self.assertEqual(self.text.count("secrets."), 1)
+
     def test_steps_run_with_pipefail(self):
         # Without pipefail, `deploy.sh | tee` passes when deploy.sh stops (exit 3).
         self.assertIn("\ndefaults:\n  run:\n    shell: bash\n", self.text)
         self.assertNotIn("shell:", self.deploy_step)
 
     def test_token_subject_rules_of_the_wif_provider(self):
-        for banned in ("environment:", "pull_request", "secrets."):
+        for banned in ("environment:", "pull_request"):
             self.assertNotIn(banned, self.text, f"deploy-dev.yml has {banned}")
 
 
@@ -544,6 +566,13 @@ class DevnetSuiteWorkflowTests(unittest.TestCase):
         self.assertIn("\n  MERGE_THRESHOLD: '10'\n", self.text)
         self.assertIn('-ge "$MERGE_THRESHOLD"', self.text)
 
+    def test_history_is_resolved_by_the_run_bound_helper(self):
+        self.assertIn("last=$(python3 scripts/devnet_suite_history.py)", self.text)
+        self.assertIn("            scripts/devnet_suite_history.py\n", self.text)
+        self.assertNotIn("actions/artifacts?name=$TESTED_ARTIFACT", self.text)
+        self.assertIn('history_status" = 3', self.text)
+        self.assertIn("cannot verify retained DevNet-suite history", self.text)
+
     def test_no_job_environment_and_no_cloud_token(self):
         for banned in ("environment:", "id-token", "pull_request"):
             self.assertNotIn(banned, self.text, f"devnet-suite.yml has {banned}")
@@ -558,6 +587,176 @@ class DevnetSuiteWorkflowTests(unittest.TestCase):
                 self.assertNotIn("set -x", line, path)
                 if re.search(r"\b(echo|printf)\b", line):
                     self.assertNotRegex(line, r"\$\{?(API_KEY|SLACK_WEBHOOK)", f"{path}: {line}")
+
+
+class FakeHistoryAPI:
+    repository = "Layr-Labs/d-inference"
+    now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+
+    def __init__(self):
+        self.commit = COMMIT
+        self.archive = self.make_archive(self.commit + "\n")
+        self.saved = []
+        self.calls = []
+        self.runs = []
+        self.artifacts = {}
+        self.unrelated_same_name_artifacts = 3000
+
+    @staticmethod
+    def make_archive(content, extra=False):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as zipped:
+            zipped.writestr("commit.txt", content)
+            if extra:
+                zipped.writestr("other.txt", "unexpected")
+        return output.getvalue()
+
+    def add(self, artifact_id, run_id, *, path=".github/workflows/devnet-suite.yml",
+            branch="master", conclusion="success", expired=False, include_artifact=True):
+        digest = "sha256:" + hashlib.sha256(self.archive).hexdigest()
+        run = {
+            "id": run_id,
+            "repository": {"full_name": self.repository},
+            "head_repository": {"full_name": self.repository},
+            "path": path,
+            "head_branch": branch,
+            "head_sha": self.commit,
+            "event": "schedule",
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+        artifact = {
+            "id": artifact_id, "name": "devnet-suite-tested-commit", "expired": expired,
+            "size_in_bytes": len(self.archive), "digest": digest,
+            "workflow_run": {"id": run_id, "head_branch": branch, "head_sha": self.commit},
+        }
+        self.runs.append(run)
+        self.artifacts[run_id] = [artifact] if include_artifact else []
+        return run, artifact
+
+    def get(self, path):
+        self.calls.append((path,))
+        if path.startswith("actions/workflows/devnet-suite.yml/runs?"):
+            page = int(re.search(r"[?&]page=([0-9]+)$", path).group(1))
+            start = (page - 1) * 100
+            return {"workflow_runs": copy.deepcopy(self.runs[start:start + 100])}
+        match = re.fullmatch(r"actions/runs/([0-9]+)/artifacts\?name=devnet-suite-tested-commit&per_page=2", path)
+        if match:
+            artifacts = copy.deepcopy(self.artifacts.get(int(match.group(1)), []))
+            return {"total_count": len(artifacts), "artifacts": artifacts}
+        if path.startswith("actions/artifacts"):
+            raise AssertionError("repository-wide artifact lookup is forbidden")
+        raise AssertionError(path)
+
+    def save(self, path, destination):
+        match = re.fullmatch(r"actions/artifacts/([0-9]+)/zip", path)
+        if not match:
+            raise AssertionError(path)
+        self.saved.append(int(match.group(1)))
+        destination.write_bytes(self.archive)
+
+
+class DevnetSuiteHistoryTests(unittest.TestCase):
+    def test_many_unrelated_collisions_cannot_hide_valid_trusted_history(self):
+        import devnet_suite_history as history
+
+        api = FakeHistoryAPI()
+        api.add(10, 110, path=".github/workflows/other.yml")
+        api.add(11, 111, branch="feature")
+        api.add(12, 112, conclusion="failure")
+        api.add(14, 114, include_artifact=False)
+        api.add(13, 113)
+        self.assertEqual(history.select(api, api.now), COMMIT)
+        self.assertEqual(api.saved, [13])
+        self.assertEqual(api.unrelated_same_name_artifacts, 3000)
+        self.assertFalse(any(call[0].startswith("actions/artifacts?") for call in api.calls))
+        queried = [call[0] for call in api.calls if call[0].startswith("actions/runs/")]
+        self.assertEqual(queried, [
+            "actions/runs/114/artifacts?name=devnet-suite-tested-commit&per_page=2",
+            "actions/runs/113/artifacts?name=devnet-suite-tested-commit&per_page=2",
+        ])
+
+    def test_no_retained_success_is_initial_run_but_api_failure_is_closed(self):
+        import devnet_suite_history as history
+
+        api = FakeHistoryAPI()
+        api.add(10, 110, expired=True)
+        self.assertIsNone(history.select(api, api.now))
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": api.repository}, clear=True), \
+                patch.object(history, "GitHub", return_value=api), \
+                patch.object(history, "datetime") as clock:
+            clock.now.return_value = api.now
+            self.assertEqual(history.main(), 3)
+        api.get = lambda *_: (_ for _ in ()).throw(ValueError("fixture failure"))
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": api.repository}, clear=True), \
+                patch.object(history, "GitHub", return_value=api), \
+                patch.object(history, "datetime") as clock:
+            clock.now.return_value = api.now
+            self.assertEqual(history.main(), 1)
+
+    def test_malformed_artifact_count_is_not_an_initial_run(self):
+        import devnet_suite_history as history
+
+        api = FakeHistoryAPI()
+        api.add(10, 110, include_artifact=False)
+        original_get = api.get
+        def malformed(path):
+            if path.startswith("actions/runs/"):
+                return {"total_count": 1, "artifacts": []}
+            return original_get(path)
+        api.get = malformed
+        with self.assertRaisesRegex(ValueError, "malformed run artifact response"):
+            history.select(api, api.now)
+
+    def test_trusted_artifact_expiry_digest_and_layout_are_required(self):
+        import devnet_suite_history as history
+
+        for mutation in (
+            lambda artifact: artifact.update(digest="sha256:" + "0" * 64),
+            lambda artifact: artifact["workflow_run"].update(head_sha="b" * 40),
+        ):
+            api = FakeHistoryAPI()
+            _, artifact = api.add(10, 110)
+            mutation(artifact)
+            with self.assertRaises(ValueError):
+                history.select(api, api.now)
+        api = FakeHistoryAPI()
+        _, artifact = api.add(10, 110)
+        api.archive = api.make_archive(COMMIT + "\n", extra=True)
+        artifact.update(
+            size_in_bytes=len(api.archive),
+            digest="sha256:" + hashlib.sha256(api.archive).hexdigest(),
+        )
+        with self.assertRaises(ValueError):
+            history.select(api, api.now)
+
+    def test_lazy_pagination_finds_newest_history_before_overflow(self):
+        import devnet_suite_history as history
+
+        api = FakeHistoryAPI()
+        api.add(10, 110)
+        for index in range(800):
+            api.add(1000 + index, 2000 + index, include_artifact=False)
+        self.assertEqual(history.select(api, api.now), COMMIT)
+        run_pages = [call[0] for call in api.calls
+                     if call[0].startswith("actions/workflows/devnet-suite.yml/runs?")]
+        self.assertEqual(len(run_pages), 1)
+        self.assertTrue(run_pages[0].endswith("&per_page=100&page=1"))
+
+    def test_retention_scan_is_bounded_after_800_artifactless_runs(self):
+        import devnet_suite_history as history
+
+        api = FakeHistoryAPI()
+        for index in range(800):
+            api.add(1000 + index, 2000 + index, include_artifact=False)
+        self.assertIsNone(history.select(api, api.now))
+        run_pages = [call[0] for call in api.calls
+                     if call[0].startswith("actions/workflows/devnet-suite.yml/runs?")]
+        self.assertEqual(len(run_pages), 9)
+        self.assertIn("created=%3E%3D2026-07-09", run_pages[0])
+        api.add(9999, 9999, include_artifact=False)
+        with self.assertRaisesRegex(ValueError, "bounded pagination"):
+            history.select(api, api.now)
 
 
 class DevnetSuiteScriptTests(unittest.TestCase):

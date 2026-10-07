@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -248,6 +248,12 @@ boundary does not remove the separate local superseded-resident cleanup path.
 Complete load footprints, native offload allowances, activation reserves and minimum KV
 remain authoritative. Optional MTP can fall back to the target alone and cannot
 initiate an Autopilot download.
+
+`autopilotModelFitLocked` (`coordinator/registry/autopilot_snapshot.go`) uses the
+same [cold-model KV forecast](routing.md#cold-model-kv-forecasts) as request
+admission. Matching fresh native observations can replace the generic rate for
+a cold candidate; they do not create resident capacity or guarantee a successful
+load. The provider still applies the complete load and request-memory gates.
 
 `ModelAutopilotHistory` retains bounded load measurements after unloading and
 restart, keyed by exact model ID and the current verified weight hash published

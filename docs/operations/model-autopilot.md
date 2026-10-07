@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved live rollout. Startup opt-in records interest/consent, not
@@ -82,6 +82,11 @@ Use with compatible protocol-3 coordinator and provider releases. See the
 6. Compare live intent and terminal residency with request outcomes, not just
    predicted benefit or issued counts. Provider status includes local resident
    models and the latest transition result.
+
+When investigating a candidate's memory-fit prediction, distinguish its
+[cold KV forecast](../architecture/routing.md#cold-model-kv-forecasts) from a live
+slot budget. Fresh matching native evidence can improve the forecast, but only
+the provider's completed load and current capacity report establish readiness.
 
 The live planner chooses cached models for utilization; enrollment and rollout
 are not an earnings guarantee. Newly downloaded catalog builds do not expand

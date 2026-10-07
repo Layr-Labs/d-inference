@@ -554,7 +554,7 @@ struct QwenVLMTargetExtractionTests {
         let modelID = "tiny-qwen-hybrid"
         let modelHash = String(repeating: "a", count: 64)
         let contract = String(repeating: "b", count: 64)
-        let slotBytes = 8 << 20
+        let slotBytes = 2 << 30 // Logical grant for minimum KV + fixed state, not an allocation.
         let bankBytes = 1 << 20
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(mtpLayers: 0, fullAttentionInterval: 2))
@@ -710,7 +710,7 @@ struct QwenVLMTargetExtractionTests {
             ? "qwen3.5-35b-a3b" : "EigenLabs/Qwen3.8-27B-4bit-mtp"
         let modelHash = String(repeating: "a", count: 64)
         let contract = String(repeating: "b", count: 64)
-        let slotBytes = 8 << 20
+        let slotBytes = 2 << 30 // Logical grant for minimum KV + fixed state, not an allocation.
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("complete-checkpoint-seam-\(UUID().uuidString)", isDirectory: true)
         defer {

@@ -1,21 +1,29 @@
-// Native MiMo admission: keep useful KV space after fixed request workspace.
+// Keep useful KV space after fixed request workspace.
 import Foundation
 import MLXLMCommon
 
 extension EngineV2Bridge {
-    /// Native engines reserve fixed MTP/prefill workspace per request. A grant
+    /// The fixed charge, not native shutdown tracking, determines whether an
+    /// ordinary engine needs this limit. Unknown overhead must fail closed;
+    /// zero-overhead ordinary engines retain their existing serving width.
+    var usesMemoryLimitedConcurrency: Bool {
+        ownedEngine is EngineV2
+            && (tracksNativeShutdown || maximumRequestOverheadBytes() != 0)
+    }
+
+    /// Engines reserve fixed recurrent/MTP/prefill workspace per request. A grant
     /// shrink must reduce concurrency before reserving every possible future
     /// workspace in the heartbeat. Otherwise a loaded model advertises zero
     /// tokens even when one or more requests still fit.
     func memoryLimitedConcurrency(configured: Int, capacityBytes: Int? = nil) -> Int {
-        guard tracksNativeShutdown else { return configured }
-        return Self.nativeMemoryConcurrencyLimit(configured: configured,
-            capacityBytes: capacityBytes ?? nativeAdmissionCapacityBytes(),
+        guard usesMemoryLimitedConcurrency else { return configured }
+        return Self.fixedWorkspaceConcurrencyLimit(configured: configured,
+            capacityBytes: capacityBytes ?? admissionCapacityBytes(),
             requestOverheadBytes: maximumRequestOverheadBytes())
     }
 
     /// Scalar portion shared by live reporting/admission and policy tests.
-    nonisolated static func nativeMemoryConcurrencyLimit(
+    nonisolated static func fixedWorkspaceConcurrencyLimit(
         configured: Int, capacityBytes: Int, requestOverheadBytes: Int?
     ) -> Int {
         guard configured > 0, let overhead = requestOverheadBytes, overhead >= 0 else { return 0 }
@@ -27,10 +35,10 @@ extension EngineV2Bridge {
 
     /// The admission ledger's ceiling is smaller than the raw KV grant by its
     /// watermark. Also honor a fixed backend pool that cannot grow with it.
-    func nativeAdmissionCapacityBytes() -> Int {
-        guard let native = ownedEngine as? EngineV2 else { return 0 }
-        let snapshot = native.capacity()
-        var capacity = min(snapshot.kvBytesCapacity, native.admissibleKVBytesCapacity)
+    func admissionCapacityBytes() -> Int {
+        guard let engine = ownedEngine as? EngineV2 else { return 0 }
+        let snapshot = engine.capacity()
+        var capacity = min(snapshot.kvBytesCapacity, engine.admissibleKVBytesCapacity)
         if snapshot.kvBytesBackendCapacity > 0 {
             capacity = min(capacity, snapshot.kvBytesBackendCapacity)
         }

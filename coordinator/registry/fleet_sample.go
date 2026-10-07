@@ -265,10 +265,11 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 	// Eligibility via the real routing gates (the snapshot helper takes p.mu
 	// itself, so p.mu must not be held here), then the catalog fold — the
 	// gate reads the raw slot model, the persisted row never does.
+	estimates := r.coldKVEstimatesLocked([]*Provider{p}, "", now)
 	for i := range scratch {
 		row := &rows[start+i]
 		raw := scratch[i].rawModel
-		row.EligibilityReason = r.slotEligibilityReasonLocked(p, raw, probe, now)
+		row.EligibilityReason = r.slotEligibilityReasonLocked(p, raw, probe, now, estimates)
 		row.Model = r.fleetSnapshotModelLocked(raw)
 	}
 	return rows
@@ -294,12 +295,12 @@ func (r *Registry) fleetSnapshotModelLocked(raw string) string {
 // + buildCandidateInto pipeline the dispatch scan runs — and returns the
 // first failing GateReason name or "eligible". Caller holds r.mu (read) and
 // must NOT hold p.mu (the snapshot helper takes it).
-func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe *PendingRequest, now time.Time) string {
+func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe *PendingRequest, now time.Time, estimates coldKVEstimates) string {
 	// The same evaluation pipeline as the scan uses stack-local storage and
 	// returns the closed GateReason the dispatch scan would tally.
 	var c routingCandidate
 	var snapshot routingSnapshot
-	ok, reason := r.snapshotProviderIntoLockedEx(&snapshot, p, model, probe.Traits, false, false, now)
+	ok, reason := r.snapshotProviderIntoLockedEx(&snapshot, p, model, probe.Traits, false, false, now, estimates)
 	if !ok {
 		return reason.String()
 	}

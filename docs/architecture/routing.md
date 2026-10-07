@@ -372,7 +372,7 @@ and stores every term in `costBreakdown` with `Total = cost`
 | `firstContentFastBandMs` | `100.0` | Expected-first-content band in `selectFirstContentCandidate` (`coordinator/registry/first_content_selection.go`). |
 | `defaultRequestedMaxTokens` | `256` | Used for `max_tokens` when the request does not set one. |
 | `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`effectiveDecodeTPS`). |
-| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. |
+| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when neither a slot report nor matching fresh cold-model evidence is available. |
 | `modelMemoryHeadroomFactor` | `2.0` | `modelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. |
 | `maxPrefillTPS` | `20_000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `resolvePrefillTPS`, `coordinator/registry/scheduler.go`). |
 | `defaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. |
@@ -724,7 +724,7 @@ resident it is `ColdTokenBudgetWithOffload`:
 ```text
 weightsGiB   = measured resident GiB (model in servabilityMeasuredResidentGiB) else catalogGB × coldLoadCatalogGBToMemGiB
 postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # mirrors the provider cap fraction
-tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # kvCacheBytesPerToken when unreported
+tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # reported rate, cold forecast, then fallback
 ```
 
 `coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30))` (≈ 1.1176,
@@ -751,6 +751,43 @@ The consumer path turns an unservable verdict into an immediate `429` instead
 of queueing; the coordinator binary enables this by default and
 `EIGENINFERENCE_SERVABILITY_GATE=false` disables it
 (`coordinator/app/routing.go`, `SetServabilityGate`).
+
+### Cold-model KV forecasts
+
+A cold candidate has no authoritative per-slot KV report. The coordinator can
+instead estimate its per-token cost from the maximum fresh native rate reported
+by publicly eligible providers with the same model artifact and verified
+runtime identity. It does not infer memory from model names or weight quantization,
+or average away a higher observed native rate. Missing or incompatible evidence
+retains `kvCacheBytesPerToken`.
+
+`coldKVEstimatesLocked` in `coordinator/registry/cold_kv_estimate.go` captures
+operation-local evidence through the existing model index. Model ID, weight hash,
+provider version and verified MLX metallib hash must match. Donors need a valid
+native prompt-work identity for that artifact, a healthy loaded slot and accepted
+capacity no older than `DefaultProviderHeartbeatTimeout`; `CapacityAcceptedAt`,
+not a merely received heartbeat, supplies freshness. The registry retains no
+cross-operation rate history: disconnects, model changes, trust loss and cleared
+capacity are re-evaluated on the next capture.
+
+The estimate is separate from `KVBytesPerToken` in a live slot report. It prices
+cold structural and memory checks and cold-model coordinator-pending work, but
+does not synthesize a slot maximum, override an authoritative zero budget, change
+the provider pool's reported capacity or usage, or enable byte accounting for a
+legacy pool. A reservation rechecks current evidence under the registry's locking
+contract rather than retaining a disconnected provider's rate indefinitely.
+`memorypolicy.Input.EstimatedKVBytesPerToken`
+(`coordinator/internal/registry/memorypolicy/input.go`) carries the forecast;
+`kvbudget.Budget.AddColdRate` (`coordinator/internal/registry/kvbudget/rates.go`)
+prices absent-model pending work without changing the reported pool totals.
+
+This is an empirical forecast, not a guaranteed upper bound or proof that two
+providers allocate identical caches. Backend fallback, native precision, assistant
+availability, fixed workspace and concurrent load can still make a provider
+decline a request. Full model-load quotations, activation and minimum-KV reserves,
+live shared-memory admission and actual engine byte-fit checks remain unchanged;
+the existing refusal/retry path handles forecast misses. Loaded slot reports
+replace the cold forecast rather than being widened by it.
 
 ### Gray-box capacity signals
 

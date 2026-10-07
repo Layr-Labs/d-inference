@@ -7,19 +7,19 @@ import (
 
 // fillSnapshotPendingAndPool is also used by capacity publication, which needs
 // memory commitments without constructing first-content work. All-model pending
-// bytes use each resident model's KV rate, or the same bounded conservative cold
-// rate as admission; only unreconstructable legacy pools leave bytes unknown.
+// bytes use each resident model's KV rate, a current cold forecast, or the
+// conservative fallback; only unreconstructable legacy pools leave bytes unknown.
 // The per-model pending pair remains separate from those all-model totals.
 // Caller holds p.mu.
-func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string) {
-	fillPendingSnapshot(snap, p, model, nil)
+func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string, estimates coldKVEstimates) {
+	fillPendingSnapshot(snap, p, model, nil, estimates)
 }
 
 // fillPendingSnapshot reconciles pending memory and first-content work in one
 // walk. A non-nil work buffer freezes each attempt's content state once for this
 // routing snapshot; its bounded service inputs never retain the request owner.
 // The caller owns the buffer and holds p.mu throughout projection and use.
-func fillPendingSnapshot(snap *routingSnapshot, p *Provider, model string, work []forecast.PendingWork) []forecast.PendingWork {
+func fillPendingSnapshot(snap *routingSnapshot, p *Provider, model string, work []forecast.PendingWork, estimates coldKVEstimates) []forecast.PendingWork {
 	snap.pendingPrefillKnown = true
 	if p.BackendCapacity != nil {
 		snap.pooledTokenBudget = kvbudget.FromSlots(p.BackendCapacity.Slots)
@@ -43,6 +43,7 @@ func fillPendingSnapshot(snap *routingSnapshot, p *Provider, model string, work 
 			}, p.CapacityAcceptedAt)
 		}
 		tokens := pendingTokenBudget(pr)
+		snap.pooledTokenBudget.AddColdRate(pr.Model, estimates.Rate(p, pr.Model))
 		pending.Add(&snap.pooledTokenBudget, pr.Model, tokens)
 		if pr.Model != model {
 			continue

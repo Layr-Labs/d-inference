@@ -1101,3 +1101,11 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Telemetry archive worker
+
+The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. The same worker supports isolated accounting archives and indexed ID batches; deploy each archive job with its own destination permissions. See [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+`telemetry-archive analytics-preview` compiles catalog-pinned accounting analytics SQL locally; `--execute` runs capped SELECT-only BigQuery checks. `query-submit`, `query-status` and `query-cancel` provide bounded asynchronous custom queries; see [query operations](../operations/history-queries.md). These commands require no coordinator build or deploy. The [operational/history design](../design/operational-history-retention.md) defines the broader storage boundary.
+
+The opt-in analytics reader is built with the coordinator; its private `sync-analytics-snapshot` adapter is part of the Python worker. Neither command enables a producer or schedule. See [analytics snapshots](../operations/analytics-snapshots.md).

@@ -69,3 +69,10 @@ Write the record and make line 5 — directly under the freshness stamp — read
 here and stop editing the body once it lands. When the design ships, fold the
 as-built facts into `architecture/` and change only the status line. See
 [`../AGENTS.md`](../AGENTS.md) §8.
+
+## Storage and analytics
+
+| Record | Status | Date | One line |
+|---|---|---|---|
+| [operational-history-retention.md](operational-history-retention.md) | In progress | 2026-10-05 | Fourteen-day completed detail, full durable history, async queries and gated retirement across telemetry and accounting |
+| [archive-analytics-retention.md](archive-analytics-retention.md) | Superseded | 2026-09-26 | Earlier telemetry-only retirement scope, replaced by the operational/history boundary |

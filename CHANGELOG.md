@@ -104,6 +104,16 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 
 - Cancel superseded pull-request CI and integration runs without cancelling default-branch pushes. Bound provider unit-test stalls with the existing diagnostic watchdog, and reuse compatible integration build caches while retaining every test gate and parallel job.
 
+## Unreleased - archived analytics reader
+
+- Add bounded asynchronous historical SELECT submission, polling, pagination and cancellation over pinned archive catalogs. Keep query results private and source retirement disabled while preparing the 14-day completed-detail storage plan.
+- Allow explicit recapture generations, shard large completion catalogs, enforce replay deadlines and verify reused BigQuery catalog contents before publication.
+- Pin and validate prior coverage before republishing, rejecting altered or duplicate catalog rows rather than incorporating them into a new verified digest. Unverifiable legacy catalogs fail closed without changing reader aliases.
+- Add an opt-in validated local snapshot path for leaderboard, network totals and network series with source freshness checks and 503 responses when unavailable. Persist accepted source cutoffs and generation checksums in a separate private state file; snapshot mode fails closed if that file is missing or corrupt.
+- Refresh database-backed network totals every 5 minutes with a 15-minute stale-success ceiling and cache successful network series for 5 minutes. Preserve shared top-200 leaderboard caching, failure cooldowns and the 30-second stats refresh.
+- Reconcile aligned usage buckets across public series and reject reused BigQuery external tables whose manifest, configuration or schema differs from the verified publication.
+- Replace the earlier telemetry-only retirement proposal with a 14-day completed-detail target covering telemetry and accounting. Keep active state and financial replay fences operational; continuous capture, broad reader migration and source retirement remain unimplemented and disabled.
+
 ## Unreleased - provider test coverage
 
 - Report Swift product, CLI and benchmark coverage separately in CI, merging isolated test-process profiles without replacing test failures with coverage results.

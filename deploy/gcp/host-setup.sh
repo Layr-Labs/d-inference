@@ -16,8 +16,8 @@
 #
 # It writes no env value and starts no coordinator container. --apply reloads
 # Caddy only when the Caddyfile changes. Do not run --apply during a swap: a
-# Caddy reload reconnects every provider. It refuses
-# to run outside the GCP project darkbloom-dev.
+# Caddy reload reconnects every provider. It refuses to run outside the GCP
+# project darkbloom-dev.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)

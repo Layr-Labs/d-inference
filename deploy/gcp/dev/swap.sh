@@ -181,8 +181,10 @@ if any(key in ("host", "hostaddr", "port", "dbname", "user", "password", "passfi
        for key, _ in params):
     raise SystemExit(1)
 sslrootcerts = [value for key, value in params if key == "sslrootcert"]
-sslrootcert = sslrootcerts[0] if len(sslrootcerts) == 1 else ""
-if len(sslrootcerts) > 1 or re.search(r"[\x00\t\r\n]", sslrootcert):
+if len(sslrootcerts) > 1:
+    raise SystemExit(1)
+sslrootcert = sslrootcerts[0] if sslrootcerts else ""
+if re.search(r"[\x00\t\r\n]", sslrootcert):
     raise SystemExit(1)
 def pgpass_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:")
@@ -534,7 +536,7 @@ pg_cleanup_report=""
 if ! cleanup_pg_files; then
     echo "REPORT private database credential cleanup failed after the commit; remove $PG_TMP on the VM" >&2
     pg_cleanup_report="; private database credential cleanup failed"
-    PG_TMP=""
+    PG_TMP=""   # already reported; the exit trap must not retry and append to the OK line
 fi
 
 # prune_superseded_files keeps what one rollback reads: this attempt (the env

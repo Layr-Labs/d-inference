@@ -282,10 +282,10 @@ unfinished_required_ci() {
 # verify_ci waits for the required check runs and for every status context,
 # but not for other check runs: the job that runs this script is an unfinished
 # check run of the same commit, and optional workflows such as E2E Integration
-# Tests can run longer than the deploy job. Conclusions
-# success, neutral and skipped pass, as in GitHub branch protection: ci.yml
-# skips path-gated jobs, and a skip caused by a failed dependency shows as the
-# failure of that dependency.
+# Tests can run longer than the deploy job. Conclusions success, neutral and
+# skipped pass, as in GitHub branch protection: ci.yml skips path-gated jobs,
+# and a skip caused by a failed dependency shows as the failure of that
+# dependency.
 verify_ci() {
     local checks statuses pending running failures name allowed found
     while :; do

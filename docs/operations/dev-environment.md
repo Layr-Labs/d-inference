@@ -106,7 +106,7 @@ Rules for values:
   `swap.sh` also accepts `sslmode=verify-ca` or `sslmode=verify-full`, and
   gives `sslrootcert` to `psql`. It refuses a URI without one of these three
   `sslmode` values, and a URI with a query parameter that names another host,
-  port, database, user, password or service.
+  port, database, user, password, password file or service.
 - `eigeninference-release-key` equals the GitHub secret `DEV_RELEASE_KEY`.
   `eigeninference-r2-cdn-url` equals `DEV_R2_PUBLIC_URL`
   ([provider-release.md](provider-release.md)).

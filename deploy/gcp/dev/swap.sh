@@ -580,10 +580,10 @@ prune_generated_history() {
 prune_generated_history ||
     echo "REPORT could not remove every dev deploy result or failed-container log older than 14 days" >&2
 
-# The boot refresh unit, and a failed removal of a swap refresh backup, leave
-# <env file>.bak.<UTC> copies of the secret env file. Remove a copy only when
-# its bytes equal the live file or the env.before that rollback-state names.
-# Another copy is the only copy of that env state, so it stays.
+# Each refresh --apply, including the one the boot refresh unit runs, makes a
+# <env file>.bak.<UTC> copy of the secret env file. Remove a copy only when its
+# bytes equal the live file or the env.before that rollback-state names. Any
+# other copy is the only copy of that env state, so it stays.
 prune_redundant_env_backups() {
     local file digest live status=0
     live=$(sha256sum "$ENV_FILE" | cut -d' ' -f1) || return 1

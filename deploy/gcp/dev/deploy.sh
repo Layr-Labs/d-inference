@@ -349,10 +349,10 @@ enforce_pause live
 # left by an interrupted run and is removed; a live run uses its own for
 # seconds.
 LIB=$REMOTE/$CANDIDATE_COMMIT
-STAGE_NAME=".incoming-$(printf '[0-9a-f]%.0s' {1..40}).??????"
+STAGE_GLOB=".incoming-$(printf '[0-9a-f]%.0s' {1..40}).??????"
 extract="/bin/bash -c 'set -euo pipefail
 sudo install -d -m 0700 $REMOTE
-sudo find $REMOTE -mindepth 1 -maxdepth 1 -type d -name \"$STAGE_NAME\" -mmin +60 -exec rm -rf -- {} +
+sudo find $REMOTE -mindepth 1 -maxdepth 1 -type d -name \"$STAGE_GLOB\" -mmin +60 -exec rm -rf -- {} +
 stage=\$(sudo mktemp -d $REMOTE/.incoming-$CANDIDATE_COMMIT.XXXXXX)
 cleanup_stage() { [ -z \"\$stage\" ] || sudo rm -rf -- \"\$stage\"; }
 trap cleanup_stage EXIT
@@ -361,15 +361,16 @@ tree_digest() {
     sudo tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \\
         -cf - -C \"\$1\" . | sha256sum | cut -d\" \" -f1
 }
+# A link or state file that cannot be read counts as a use.
 in_use() {
     local target
     if sudo test -e $REMOTE/current || sudo test -L $REMOTE/current; then
         target=\$(sudo readlink -f $REMOTE/current) || return 0
-        ! sudo test \"\$target\" -ef $LIB || return 0
+        if sudo test \"\$target\" -ef $LIB; then return 0; fi
     fi
     if sudo test -e $REMOTE_STATE/rollback-state; then
         target=\$(sudo sed -n 6p $REMOTE_STATE/rollback-state) || return 0
-        ! sudo test \"\$target\" -ef $LIB || return 0
+        if sudo test \"\$target\" -ef $LIB; then return 0; fi
     fi
     return 1
 }

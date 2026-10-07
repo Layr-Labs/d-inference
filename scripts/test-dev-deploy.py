@@ -243,16 +243,16 @@ def manifest_keys(path):
 
 
 def fail_rm_of_env_backups(box):
-    """rm fails for <env file>.bak.<UTC> paths and runs the real rm otherwise."""
+    """rm fails when an argument contains .bak. and runs the real rm otherwise."""
     rm = box.bin / "rm"
     rm.write_text('#!/bin/sh\ncase "$*" in *.bak.*) exit 55 ;; esac\nexec /bin/rm "$@"\n')
     rm.chmod(0o755)
 
 
-def lib_with_refresh_wrapper(box, before_refresh="", refresh="exec"):
+def lib_with_refresh_wrapper(box, before_refresh="", refresh='exec bash REAL "$@"'):
     """A copy of the shipped deploy files whose prod refresh-env.sh runs the
-    shell text before_refresh, then the real refresh (refresh="exec"), or
-    the text of refresh in place of that exec."""
+    shell text before_refresh, then the shell text refresh, in which REAL
+    names the real refresh-env.sh."""
     lib = box.root / "lib"
     for name in ("dev", "prod"):
         directory = lib / "deploy/gcp" / name
@@ -263,8 +263,8 @@ def lib_with_refresh_wrapper(box, before_refresh="", refresh="exec"):
     real = ROOT / "deploy/gcp/prod/refresh-env.sh"
     wrapper = lib / "deploy/gcp/prod/refresh-env.sh"
     wrapper.unlink()
-    run_real = f'exec bash "{real}" "$@"' if refresh == "exec" else refresh.replace("REAL", f'"{real}"')
-    wrapper.write_text(f"#!/bin/bash\nset -euo pipefail\n{before_refresh}\n{run_real}\n")
+    run_refresh = refresh.replace("REAL", f'"{real}"')
+    wrapper.write_text(f"#!/bin/bash\nset -euo pipefail\n{before_refresh}\n{run_refresh}\n")
     wrapper.chmod(0o755)
     return lib
 
@@ -467,17 +467,17 @@ class SeedEnvTests(unittest.TestCase):
 
     def test_seed_reports_a_kept_refresh_backup_without_failing(self):
         cases = (
-            ("removal fails", "", "exec",
+            ("removal fails", True, 'exec bash REAL "$@"',
              "REPORT could not remove the redundant post-seed refresh backup"),
-            ("output names no backup", "", 'out=$(bash REAL "$@"); printf \'%s\\n\' "${out%%; backup=*}"',
+            ("output names no backup", False, 'out=$(bash REAL "$@"); printf \'%s\\n\' "${out%%; backup=*}"',
              "REPORT the refresh did not report one regular timestamped backup; nothing removed"),
         )
-        for label, before, refresh, expected in cases:
+        for label, fail_rm, refresh, expected in cases:
             with self.subTest(label=label):
                 box = self.sandbox()
-                if label == "removal fails":
+                if fail_rm:
                     fail_rm_of_env_backups(box)
-                seed = lib_with_refresh_wrapper(box, before, refresh) / "deploy/gcp/dev/seed-env.sh"
+                seed = lib_with_refresh_wrapper(box, refresh=refresh) / "deploy/gcp/dev/seed-env.sh"
                 result = box.run([seed, "--seed"])
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(expected, result.stdout)

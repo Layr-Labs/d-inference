@@ -192,8 +192,8 @@ The seed reads the secrets with the VM account, runs the production
 `refresh-env.sh --check` on a temporary file in `/etc/d-inference`, then moves
 it into place and runs `--apply`. Expect `OK wrote /etc/d-inference/env`. If
 the seed cannot remove the redundant refresh backup, it prints a `REPORT` line
-and still writes `OK`. If a
-required value is missing, the seed lists the key names and writes nothing.
+and still writes `OK`. If a required value is missing, the seed lists the key
+names and writes nothing.
 Add the values and run it again. The second `host-setup.sh --apply` installs
 the Datadog Agent when `DD_API_KEY` has a value.
 
@@ -263,16 +263,19 @@ it aside and puts the new tree in its place (`REPORT replaced unused published
 candidate files ...`). If one of them uses it, the script stops. An interrupted
 or mismatched transfer leaves `current` and the prior rollback files untouched.
 Each publication removes the hidden directories that are older than 60
-minutes; an interrupted run leaves them. The shared refresh still creates its
-production timestamped backup. Dev seed validates and removes that redundant
-copy. Dev swap removes it only when it matches the attempt-directory rollback
-copy. A backup that does not match has an env change that was made during the
-deploy; the swap keeps it and stops. Successful swaps also remove only
-generated dev result and failed-container log files older than 14 days; unknown
-operator files are not matched. They also remove each
-`/etc/d-inference/env.bak.<UTC>` file (the boot refresh makes one at each boot)
-that is the same as the live env file or the retained rollback copy. A backup
-with other content is the only copy of that env state, and it stays.
+minutes; an interrupted run leaves them.
+
+The shared refresh still creates its production timestamped backup. Dev seed
+validates and removes that redundant copy. Dev swap removes it only when it
+matches the attempt-directory rollback copy. A backup that does not match has
+an env change that was made during the deploy; the swap keeps it and stops.
+
+Successful swaps also remove only generated dev result and failed-container
+log files older than 14 days; unknown operator files are not matched. They also
+remove each `/etc/d-inference/env.bak.<UTC>` file (the boot refresh makes one
+at each boot) that is the same as the live env file or the retained rollback
+copy. A backup with other content is the only copy of that env state, and it
+stays.
 
 Expected last line from the VM: `OK <commit> drain_s=0 start_to_ready_s=<n>`.
 The first deploy has no previous image; a failed first attempt removes its

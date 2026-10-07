@@ -34,11 +34,16 @@ type erasureServer struct {
 
 func newErasureServer(t *testing.T) (*erasureServer, *memory.MemoryStore) {
 	t.Helper()
+	return newErasureServerWithConfig(t, api.ServerConfig{SoftDeleteMutationsEnabled: true})
+}
+
+func newErasureServerWithConfig(t *testing.T, cfg api.ServerConfig) (*erasureServer, *memory.MemoryStore) {
+	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	st := memory.NewMemory(store.Config{})
 	reg := registry.New(logger)
 	ledger := payments.NewLedger(st)
-	srv := api.NewRuntime(api.RuntimeDependencies{Registry: reg, Store: st, Ledger: ledger, ReadCache: readcache.New(), Logger: logger}, api.ServerConfig{}).Server
+	srv := api.NewRuntime(api.RuntimeDependencies{Registry: reg, Store: st, Ledger: ledger, ReadCache: readcache.New(), Logger: logger}, cfg).Server
 	t.Cleanup(srv.Close)
 	srv.SetAdminKey("admin-key")
 	return &erasureServer{Server: srv, registry: reg, ledger: ledger}, st
@@ -293,7 +298,8 @@ func TestAdminErasureConfirmBindsAccountAndWallets(t *testing.T) {
 // The loop scrubs a request whose grace period ended, at its first pass,
 // and clears the in-memory usage history.
 func TestAccountErasureLoopScrubsAndForgets(t *testing.T) {
-	srv, st := newErasureServer(t)
+	// Prior accepted obligations must finish even with new mutations disabled.
+	srv, st := newErasureServerWithConfig(t, api.ServerConfig{})
 	account := "acct-due"
 	if err := st.CreateUser(&store.User{AccountID: account, PrivyUserID: "did:privy:due", Email: "due@example.com"}); err != nil {
 		t.Fatal(err)

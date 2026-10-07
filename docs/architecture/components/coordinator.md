@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -50,7 +50,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/access` | Credential policy/cache, principal context and rate middleware; key and device handlers live in child packages. |
 | `coordinator/api/inference` | Shared admission, dispatch, cancellation and settlement; request lowering and response encoding are separate leaves. |
 | `coordinator/api/provider` | WebSocket sessions and typed inference-event handoff; `provider/trust` owns legacy verification and revocation state. |
-| `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. |
+| `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. Release composition injects the source `LatestProviderVersion` display fallback from `coordinator/api/server.go`; the store still owns registered releases. A source version bump is not publication (see [release contracts](../../reference/api-contracts.md#release-and-install-5)). |
 | `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the `accounts/erasure` child owns the account erasure admin routes and scrub loop; the payouts child owns provider payout workflows, not a second ledger. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |

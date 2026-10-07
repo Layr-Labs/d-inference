@@ -454,11 +454,11 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `HandleLatestRelease` (`coordinator/api/releases/read_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `HandleReadyz` (`coordinator/api/operations/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.16 candidate sets `LatestProviderVersion` in
+The 0.9.18 prepared candidate sets `LatestProviderVersion` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
-exists (`coordinator/api/releases/release_handlers.go`, `HandleLatestRelease`).
+exists (`coordinator/api/releases/read_handlers.go`, `HandleLatestRelease`).
 
 `POST /v1/releases` accepts additive `code_directory_hash`, `source_commit`, `ci_run_id`, and `require_app_attest_qualification`. The production workflow requires durable approval; enabled production App Attest serving also enforces the gate server-side. The scoped release key cannot create approval. Missing or conflicting approval returns 409 without advancing latest; unavailable qualification returns 503. Both the legacy version path and a bundle-hash-qualified `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-<PLATFORM>.tar.gz` path are accepted only on the configured R2 origin. Code: `coordinator/api/releases/app_attest_publication.go` (`persistReleaseForPublication`), `coordinator/api/releases/artifact_metadata.go` (`trustedReleaseArtifactURL`).
 

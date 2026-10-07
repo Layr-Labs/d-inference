@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -52,8 +52,17 @@ For bank payout configuration and validation, follow [Global Payouts](global-pay
   it is a value you paste from the deploy record.
 - The candidate commit is `origin/master`, CI is green, and
   [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) job "Release
-  Integrity" passed (`scripts/check-release-version.sh`,
+  Integrity" passed (`python3 scripts/check-go-toolchain.py`,
+  `python3 scripts/test-go-toolchain.py`, `scripts/check-release-version.sh`,
   `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh`).
+
+For the bundled 0.9.18 preparation, follow the
+[candidate bridge and fallback checks](provider-release.md#0918-candidate-rollout).
+The toolchain guard prevents a declared Go builder/module mismatch; it does not
+build the image or authorize a deployment. Require the actual Cloud Build
+result and preserve the active production controls. An older bridge fallback
+does not become safe merely by withholding account erasure: ordinary provider
+removal also writes soft-deleted data.
 
 ### Infrastructure
 

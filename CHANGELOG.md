@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.18 - prepared candidate (not published)
+
+The next provider release is prepared from changes merged since `v0.9.17`.
+This is not signed-artifact qualification or a release announcement. Included
+changes are detailed in the retained topic entries below:
+
+- [Provider service replacement](#unreleased--provider-service-replacement) (#1315), [shared-host memory admission](#unreleased--shared-host-memory-admission) (#1264), and [system tool output readers](#unreleased--system-tool-output-readers) (#1327).
+- [Authenticated legacy enrollment](#unreleased---frozen-legacy-mdm-authorization) (#1344), including the signed CLI eligibility check. Older providers cannot use the new authenticated reenrollment contract; coordinate the bridge rollout before publication.
+- [Native queued cancellation retirement](#unreleased---native-queued-cancellation-retirement) in the pinned SDK and [provider lifecycle coverage](#unreleased---provider-test-coverage) (#1253).
+- [MLX gather row tiles](#unreleased---mlx-gather-row-tiles) (#1237), including the compiled nested MLX and regenerated Swift kernels. Changed numerical paths require fresh qualification; earlier full-model results do not qualify this candidate.
+- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere (#1322).
+- The merged [DevNet installer binding](#unreleased--devnet) is included; pending provider build-environment and release-qualification PRs are not.
+
+The bundled coordinator build fix aligns the digest-pinned Go builder and local
+toolchain at Go 1.26.8, satisfying the unchanged `go.mod` minimum of 1.26.0.
+Release Integrity now rejects missing pins, local/container drift and toolchains
+below the module minimum. Coordinator deployment and provider publication remain
+separate approvals; see the [candidate rollout checks](docs/operations/provider-release.md#0918-candidate-rollout).
+
 ## Unreleased - MLX gather row tiles
 
 - Backport row-tile selection for `gather_mm` and `gather_qmm` in the provider's pinned MLX dependencies, with matching regenerated Swift kernel sources. Rebuild with a source-matched metallib; earlier full-model measurements do not qualify performance on these pins.
@@ -133,8 +152,6 @@
 - Remove caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and `prompt_cache_key` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.
 
 ## Unreleased — provider 0.9.17
-
-- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere.
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
 - Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.

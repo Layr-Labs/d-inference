@@ -44,6 +44,7 @@ fail() {
 }
 CLEANUP_PHASE=none
 CLEANUP_ACTIVE=0
+ROLLBACK_ACTIVE=0
 COMMITTED=0
 PG_TMP=""
 cleanup_pg_files() {
@@ -55,16 +56,16 @@ cleanup_pg_files() {
     PG_TMP=""
 }
 automatic_cleanup() {
-    local original_rc=$? cleanup_rc=0
+    local original_rc=$? cleanup_rc=0 pg_cleanup_rc=0 result_line
     trap - EXIT
+    set +e
     if [ "$original_rc" -ne 0 ] && [ "$COMMITTED" = 0 ] && [ "$CLEANUP_PHASE" != none ] && [ "$CLEANUP_ACTIVE" = 0 ]; then
         CLEANUP_ACTIVE=1
-        set +e
         if [ "$CLEANUP_PHASE" = swap ]; then
             (rollback)
             cleanup_rc=$?
         else
-            (load_rollback_state && restore_files)
+            (restore_files)
             cleanup_rc=$?
         fi
         if [ "$cleanup_rc" = 0 ]; then
@@ -73,8 +74,20 @@ automatic_cleanup() {
             echo "REPORT automatic cleanup failed with status $cleanup_rc; inspect $ROLLBACK_STATE locally on the VM" >&2
         fi
     fi
-    cleanup_pg_files || true
-    [ -s "$RESULT" ] || echo "FAIL unexpected exit (status $original_rc); automatic cleanup status=$cleanup_rc" > "$RESULT"
+    cleanup_pg_files
+    pg_cleanup_rc=$?
+    if [ "$pg_cleanup_rc" -ne 0 ]; then
+        echo "REPORT private database credential cleanup failed with status $pg_cleanup_rc" >&2
+        if [ -s "$RESULT" ]; then
+            result_line=$(cat "$RESULT")
+            printf '%s; private database credential cleanup failed (status %s)\n' "$result_line" "$pg_cleanup_rc" > "$RESULT"
+        else
+            printf 'FAIL unexpected exit (status %s); automatic cleanup status=%s; private database credential cleanup failed (status %s)\n' \
+                "$original_rc" "$cleanup_rc" "$pg_cleanup_rc" > "$RESULT"
+        fi
+    elif [ ! -s "$RESULT" ]; then
+        echo "FAIL unexpected exit (status $original_rc); automatic cleanup status=$cleanup_rc" > "$RESULT"
+    fi
     exit "$original_rc"
 }
 trap automatic_cleanup EXIT
@@ -121,8 +134,10 @@ cache_controls() {
         '{routing_mode, percent:.activation.percent, max_plan_qps:.activation.max_plan_qps}'
 }
 prepare_psql() {
-    PG_TMP=$(mktemp -d "$STATE/.pg.XXXXXX")
-    chmod 0700 "$PG_TMP"
+    local tmp
+    tmp=$(mktemp -d "$STATE/.pg.XXXXXX") || return 1
+    PG_TMP=$tmp
+    chmod 0700 "$PG_TMP" || return 1
     if ! python3 - "$ENV_FILE" "$PG_TMP/connection" "$PG_TMP/pgpass" <<'PYDB'
 import os
 from pathlib import Path
@@ -156,12 +171,14 @@ if not re.fullmatch(r"[A-Za-z0-9_.-]+", database) or not re.fullmatch(r"[A-Za-z0
 params = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
 if params != [("sslmode", "require")]:
     raise SystemExit(1)
-connection_file.write_text("\t".join((*fields, "require")) + "\n")
 def pgpass_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:")
-passfile.write_text(":".join(pgpass_escape(value) for value in (*fields[:3], user, password)) + "\n")
-os.chmod(connection_file, 0o600)
-os.chmod(passfile, 0o600)
+def write_private(path: Path, value: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(value)
+write_private(connection_file, "\t".join((*fields, "require")) + "\n")
+write_private(passfile, ":".join(pgpass_escape(value) for value in (*fields[:3], user, password)) + "\n")
 PYDB
     then
         return 1
@@ -208,7 +225,7 @@ restore_path() { # <destination> <name> <attempt-dir> <mode>
         install -D -o root -g root -m "$mode" "$attempt/$name" "$destination" || return 1
     fi
 }
-restore_files() { # validated values loaded by load_rollback_state
+restore_deploy_files() { # validated values from this attempt or load_rollback_state
     install -o root -g root -m 0600 "$PREVIOUS_ENV_BACKUP" "$ENV_FILE" || return 1
     restore_path "$REFRESH_BIN" refresh-env.sh "$TOOLING_BACKUP" 0755 || return 1
     restore_path "$ENVLIB/required-env-keys.txt" required-env-keys.txt "$TOOLING_BACKUP" 0644 || return 1
@@ -218,7 +235,35 @@ restore_files() { # validated values loaded by load_rollback_state
     else
         ln -sfnT "$PREVIOUS_CURRENT" "$DEPLOY_ROOT/current" || return 1
     fi
-    restore_path "$ROLLBACK_STATE" rollback-state "$TOOLING_BACKUP" 0600 || return 1
+}
+restore_prior_rollback_state() {
+    local temp
+    if [ -f "$TOOLING_BACKUP/rollback-state.absent" ]; then
+        rm -f "$ROLLBACK_STATE" || return 1
+        sync -f "$STATE" || return 1
+        return 0
+    fi
+    temp=$(mktemp "$STATE/.rollback-state.restore.XXXXXX") || return 1
+    if ! install -o root -g root -m 0600 "$TOOLING_BACKUP/rollback-state" "$temp" ||
+        ! sync -f "$temp" || ! mv -f "$temp" "$ROLLBACK_STATE" || ! sync -f "$STATE"; then
+        rm -f "$temp" || true
+        return 1
+    fi
+}
+restore_files() {
+    restore_deploy_files || return 1
+    restore_prior_rollback_state || return 1
+}
+publish_rollback_state() {
+    local temp
+    temp=$(mktemp "$STATE/.rollback-state.publish.XXXXXX") || return 1
+    if ! chmod 0600 "$temp" || ! chown root:root "$temp" ||
+        ! printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$PREVIOUS_IMAGE" "$PREVIOUS_ENV_BACKUP" \
+            "$PREVIOUS_ENV_BACKUP_SHA256" "$FALLBACK" "$TOOLING_BACKUP" "$PREVIOUS_CURRENT" > "$temp" ||
+        ! sync -f "$temp" || ! mv -f "$temp" "$ROLLBACK_STATE" || ! sync -f "$STATE"; then
+        rm -f "$temp" || true
+        return 1
+    fi
 }
 load_rollback_state() {
     [ -f "$ROLLBACK_STATE" ] || fail "no rollback state; nothing to roll back to"
@@ -245,6 +290,9 @@ load_rollback_state() {
     fi
 }
 rollback() {    # runbook "Rollback"
+    [ "$ROLLBACK_ACTIVE" = 0 ] || fail "rollback is already active; recovery context retained"
+    ROLLBACK_ACTIVE=1
+    CLEANUP_ACTIVE=1
     load_rollback_state
     if [ "$PREVIOUS_IMAGE" != none ]; then
         docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}' >/dev/null || fail "previous image $PREVIOUS_IMAGE is not on the host"
@@ -258,21 +306,25 @@ rollback() {    # runbook "Rollback"
         container_has_drain_grace "$FALLBACK" || fail "$FALLBACK has no $DRAIN_GRACE_LINE"
         docker stop -t "$STOP_TIMEOUT" "$FALLBACK" >/dev/null || fail "could not stop $FALLBACK during rollback"
     fi
-    restore_files || fail "could not restore env, tooling, current link or prior rollback metadata"
+    restore_deploy_files || fail "could not restore env, tooling or current link; recovery context retained"
     if [ "$PREVIOUS_IMAGE" = none ]; then
-        rm -f "$LAST_GOOD" || fail "could not remove $LAST_GOOD"
+        rm -f "$LAST_GOOD" || fail "could not remove $LAST_GOOD; recovery context retained"
+        restore_prior_rollback_state || fail "pre-first-deploy state is restored, but prior rollback metadata could not be published"
         echo "REPORT restored the pre-deploy env, tooling and current link; no previous container existed"
         CLEANUP_PHASE=none
         return 0
     fi
-    run_coordinator "$PREVIOUS_IMAGE" || fail "could not restart previous image $PREVIOUS_IMAGE"
+    run_coordinator "$PREVIOUS_IMAGE" || fail "could not restart previous image $PREVIOUS_IMAGE; recovery context retained"
     PREVIOUS_COMMIT=$(docker image inspect "$PREVIOUS_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
     if ! wait_ready "$PREVIOUS_COMMIT"; then
         save_logs coordinator
-        fail "rollback image $PREVIOUS_IMAGE is not ready within 180 s"
+        fail "rollback image $PREVIOUS_IMAGE is not ready within 180 s; recovery context retained"
     fi
-    [ "$(docker inspect --format '{{.Image}}' coordinator)" = "$PREVIOUS_IMAGE" ] || fail "rollback runs the wrong image"
-    printf '%s\n' "$PREVIOUS_IMAGE" | install -m 0600 /dev/stdin "$LAST_GOOD" || fail "could not restore $LAST_GOOD"
+    [ "$(docker inspect --format '{{.Image}}' coordinator)" = "$PREVIOUS_IMAGE" ] ||
+        fail "rollback runs the wrong image; recovery context retained"
+    printf '%s\n' "$PREVIOUS_IMAGE" | install -m 0600 /dev/stdin "$LAST_GOOD" ||
+        fail "could not restore $LAST_GOOD; recovery context retained"
+    restore_prior_rollback_state || fail "previous image recovered, but prior rollback metadata could not be published"
     CLEANUP_PHASE=none
 }
 if [ "$MODE" = rollback ]; then
@@ -302,6 +354,24 @@ if ! SEED_CHECK=$(ENV_DIR=$(dirname "$ENV_FILE") "$LIB/deploy/gcp/dev/seed-env.s
 fi
 printf '%s\n' "$SEED_CHECK" | grep -E '^(PASS|REPORT) ' |
     sed -E 's/^(PASS|REPORT) /REPORT seed check: /' || true
+
+# Resolve the published deploy files before any local or remote mutation.
+# GNU readlink -f can return a canonical path for an absent final component,
+# so absence must be established from the directory entry itself.
+if [ ! -e "$DEPLOY_ROOT/current" ] && [ ! -L "$DEPLOY_ROOT/current" ]; then
+    PREVIOUS_CURRENT=none
+else
+    [ -L "$DEPLOY_ROOT/current" ] ||
+        fail "$DEPLOY_ROOT/current exists but is not a symlink; nothing changed"
+    PREVIOUS_CURRENT=$(readlink -f "$DEPLOY_ROOT/current") ||
+        fail "$DEPLOY_ROOT/current is a dangling or unreadable symlink; nothing changed"
+    case "$PREVIOUS_CURRENT" in
+        "$DEPLOY_ROOT"/*) ;;
+        *) fail "current deploy files resolve outside $DEPLOY_ROOT; nothing changed" ;;
+    esac
+    [ -d "$PREVIOUS_CURRENT" ] ||
+        fail "current deploy files do not resolve to an existing directory; nothing changed"
+fi
 install -d -o root -g root -m 0700 "$STATE"
 prepare_psql || fail "EIGENINFERENCE_DATABASE_URL is not the required single-host sslmode=require URI; nothing changed"
 
@@ -347,15 +417,6 @@ if [ "$CURRENT" = true ]; then
 else
     PREVIOUS_IMAGE=none
 fi
-if [ -e "$DEPLOY_ROOT/current" ] && [ ! -L "$DEPLOY_ROOT/current" ]; then
-    fail "$DEPLOY_ROOT/current exists but is not a symlink; nothing changed"
-fi
-PREVIOUS_CURRENT=$(readlink -f "$DEPLOY_ROOT/current" 2>/dev/null || true)
-if [ -z "$PREVIOUS_CURRENT" ]; then
-    PREVIOUS_CURRENT=none
-else
-    case "$PREVIOUS_CURRENT" in "$DEPLOY_ROOT"/*) ;; *) fail "current deploy files resolve outside $DEPLOY_ROOT; nothing changed" ;; esac
-fi
 ATTEMPT=$STATE/attempt-$(date -u +%Y%m%dT%H%M%SZ)-$$
 install -d -o root -g root -m 0700 "$ATTEMPT"
 install -o root -g root -m 0600 "$ENV_FILE" "$ATTEMPT/env.before"
@@ -365,14 +426,16 @@ backup_path "$ENVLIB/release-env-defaults" release-env-defaults "$ATTEMPT"
 backup_path "$ROLLBACK_STATE" rollback-state "$ATTEMPT"
 PREVIOUS_ENV_BACKUP=$ATTEMPT/env.before
 PREVIOUS_ENV_BACKUP_SHA256=$(sha256sum "$PREVIOUS_ENV_BACKUP" | cut -d' ' -f1)
-printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$PREVIOUS_IMAGE" "$PREVIOUS_ENV_BACKUP" \
-    "$PREVIOUS_ENV_BACKUP_SHA256" "$FALLBACK" "$ATTEMPT" "$PREVIOUS_CURRENT" |
-    install -o root -g root -m 0600 /dev/stdin "$ROLLBACK_STATE"
+TOOLING_BACKUP=$ATTEMPT
 CLEANUP_PHASE=files
+if ! publish_rollback_state; then
+    restore_files || fail "rollback-state publication failed and the pre-deploy files could not be restored"
+    CLEANUP_PHASE=none
+    fail "could not atomically publish rollback state; restored the pre-deploy state"
+fi
 
 restore_then_fail() {
     local message=$1
-    load_rollback_state
     restore_files || fail "could not restore env, tooling, current link or prior rollback metadata after: $message"
     CLEANUP_PHASE=none
     fail "$message; restored the pre-deploy env, tooling and current link"

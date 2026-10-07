@@ -141,7 +141,9 @@ if [ "$MODE" = --apply ]; then
     install -d -m 0755 "$DATA_MOUNT"
     device_layout=$(lsblk -nr -o TYPE "$DATA_DEV" 2>/dev/null) || die "cannot inspect expected data device $DATA_DEV"
     [ "$device_layout" = disk ] || die "$DATA_DEV is not one unpartitioned block disk (layout: ${device_layout:-unknown})"
-    mounted_at=$(findmnt -rn -S "$DATA_DEV" -o TARGET 2>/dev/null || true)
+    mounted_at=$(lsblk -dn -o MOUNTPOINTS "$DATA_DEV" 2>/dev/null) ||
+        die "cannot determine whether $DATA_DEV is mounted"
+    mounted_at=$(printf '%s\n' "$mounted_at" | awk 'NF { print }')
     [ -z "$mounted_at" ] || [ "$mounted_at" = "$DATA_MOUNT" ] ||
         die "$DATA_DEV is already mounted at $mounted_at, not $DATA_MOUNT"
     fs_type=$(lsblk -dn -o FSTYPE "$DATA_DEV" 2>/dev/null) || die "cannot read the filesystem type of $DATA_DEV"

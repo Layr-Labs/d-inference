@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -39,7 +40,7 @@ REQUIRED_STATUSES = [
 # A stub reads its rules from STUB_RULES: [name, regex over the joined
 # arguments, stdout, exit code]. The first matching rule wins; no match prints
 # nothing and exits 0. Every call is appended to STUB_LOG.
-STUB = r'''#!/usr/bin/env python3
+STUB = "#!" + sys.executable + "\n" + r'''
 import json, os, re, sys
 name = os.path.basename(sys.argv[0])
 args = sys.argv[1:]
@@ -416,7 +417,7 @@ class ZeroMutationTests(unittest.TestCase):
         base = dev_host_rules() + [
             ["lsblk", "-o TYPE", "disk\n", 0],
             ["lsblk", "-o FSTYPE", "\n", 0],
-            ["findmnt", "-S /dev/disk/by-id/google-darkbloom-coordinator-data", "", 1],
+            ["lsblk", "-o MOUNTPOINTS", "", 0],
             ["wipefs", "^-n", "", 0],
         ]
         box = Sandbox(self, MUTATORS, base)
@@ -429,6 +430,17 @@ class ZeroMutationTests(unittest.TestCase):
         result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply", "--format-data-disk"])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("existing signature", result.stderr)
+        self.assertEqual(box.calls("mkfs.ext4"), [])
+
+        box = Sandbox(self, MUTATORS, base)
+        probe_error = [rule[:] for rule in base]
+        for rule in probe_error:
+            if rule[0] == "lsblk" and "MOUNTPOINTS" in rule[1]:
+                rule[3] = 1
+        box.set_rules(probe_error)
+        result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply", "--format-data-disk"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot determine whether", result.stderr)
         self.assertEqual(box.calls("mkfs.ext4"), [])
 
     def test_preflight_makes_no_mutating_call(self):
@@ -628,6 +640,32 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stale or misspelled", result.stderr)
 
+    def test_required_checks_must_conclude_success(self):
+        for conclusion in ("skipped", "neutral", None):
+            with self.subTest(conclusion=conclusion):
+                runs = [
+                    {"name": name, "status": "completed",
+                     "conclusion": conclusion if name == "Coordinator Tests" else "success"}
+                    for name in REQUIRED_CHECKS
+                ]
+                rules = self.deploy_rules()
+                for rule in rules:
+                    if rule[0] == "gh" and "check-runs" in rule[1]:
+                        rule[2] = json.dumps([{"total_count": len(runs), "check_runs": runs}])
+                box = Sandbox(self, MUTATORS, rules)
+                result = box.run([DEV / "deploy.sh", "--dry-run"])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CI failure is not explicitly waived: Coordinator Tests", result.stderr)
+
+    def test_ci_waivers_are_rejected_under_github_actions(self):
+        box = Sandbox(self, MUTATORS, self.deploy_rules())
+        result = box.run([DEV / "deploy.sh", "--allow-ci-failure", "Coordinator Tests",
+                          "--ci-waiver-reason", "owner reviewed base failure"],
+                         {"GITHUB_ACTIONS": "true"})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("human-only", result.stderr)
+        self.assertEqual(box.calls(), [])
+
     def test_override_reasons_must_be_nonblank_single_lines(self):
         box = Sandbox(self, MUTATORS, self.deploy_rules(paused="true\n"))
         for reason in ("   ", "line one\nline two", "line one\rline two"):
@@ -635,8 +673,8 @@ class ZeroMutationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
         self.assertEqual(box.calls("gcloud"), [])
 
-    def seeded_swap_box(self):
-        stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install"]
+    def seeded_swap_box(self, with_current=True):
+        stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install", "chown"]
         box = Sandbox(self, stubs, dev_host_rules())
         env_dir = box.root / "etc-d-inference"
         env_dir.mkdir(mode=0o700)
@@ -658,7 +696,8 @@ class ZeroMutationTests(unittest.TestCase):
         refresh_bin.parent.mkdir()
         old = deploy_root / "old"
         old.mkdir()
-        (deploy_root / "current").symlink_to(old)
+        if with_current:
+            (deploy_root / "current").symlink_to(old)
         refresh_bin.write_text("old refresh\n")
         (envlib / "required-env-keys.txt").write_text("old required\n")
         (envlib / "release-env-defaults").write_text("old defaults\n")
@@ -701,13 +740,92 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertNotIn("fixture-password", result.stdout + result.stderr)
         self.assertEqual(list(Path(extra["STATE"]).glob(".pg.*")), [])
 
-    def test_unexpected_post_swap_failure_triggers_first_deploy_restoration(self):
+    def assert_private_temp_setup_failure(self, command, rule):
+        box, extra, _ = self.seeded_swap_box()
+        for name in (command, "python3"):
+            path = box.bin / name
+            path.write_text(STUB)
+            path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        box.set_rules(dev_host_rules() + [rule])
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(box.calls("python3"), [])
+        self.assertEqual(box.calls("psql"), [])
+        self.assertEqual(list(Path(extra["STATE"]).glob(".pg.*")), [])
+
+    def test_swap_stops_when_private_temp_directory_creation_fails(self):
+        self.assert_private_temp_setup_failure("mktemp", ["mktemp", "^-d", "", 73])
+
+    def test_swap_stops_when_private_temp_directory_chmod_fails(self):
+        self.assert_private_temp_setup_failure("chmod", ["chmod", "^0700", "", 74])
+
+    def test_failed_private_credential_cleanup_is_reported(self):
+        box, extra, _ = self.seeded_swap_box()
+        path = box.bin / "rm"
+        path.write_text(STUB)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        box.set_rules(dev_host_rules() + [
+            ["psql", "select 1", "", 41],
+            ["rm", "\\.pg\\.", "", 55],
+        ])
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("private database credential cleanup failed", result.stderr)
+        self.assertIn("private database credential cleanup failed", Path(extra["RESULT"]).read_text())
+        self.assertEqual(len(list(Path(extra["STATE"]).glob(".pg.*"))), 1)
+
+    def test_rollback_state_publication_failure_preserves_prior_record(self):
+        box, extra, _ = self.seeded_swap_box()
+        state = Path(extra["STATE"])
+        state.mkdir()
+        prior = state / "rollback-state"
+        prior_bytes = b"prior rollback record\n"
+        prior.write_bytes(prior_bytes)
+        prior.chmod(0o600)
+        path = box.bin / "mv"
+        path.write_text(STUB)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        box.set_rules(dev_host_rules() + [
+            ["psql", "select count", "0\n", 0],
+            ["docker", "^pull", "", 0],
+            ["docker", "image inspect.*image.revision", COMMIT + "\n", 0],
+            ["docker", "image inspect.*image.version", "0.9.17\n", 0],
+            ["docker", "^container inspect coordinator", "", 1],
+            ["mv", "\\.rollback-state\\.publish\\.", "", 63],
+        ])
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not atomically publish rollback state", Path(extra["RESULT"]).read_text())
+        self.assertEqual(prior.read_bytes(), prior_bytes)
+        self.assertEqual(box.calls("docker")[-1][1], "container")
+        self.assertEqual([call for call in box.calls("docker") if call[1] == "run"], [])
+
+    def test_swap_rejects_dangling_current_before_mutation(self):
         box, extra, paths = self.seeded_swap_box()
+        _, _, deploy_root = paths
+        (deploy_root / "current").unlink()
+        (deploy_root / "current").symlink_to(deploy_root / "missing")
+        box.set_rules(dev_host_rules())
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(Path(extra["RESULT"]).read_text(),
+                         r"dangling or unreadable symlink|do not resolve to an existing directory")
+        self.assertEqual(box.calls("psql"), [])
+        self.assertEqual(box.calls("docker"), [])
+        self.assertEqual(box.calls("install"), [])
+
+    def test_unexpected_post_swap_failure_triggers_first_deploy_restoration(self):
+        box, extra, paths = self.seeded_swap_box(with_current=False)
         refresh_bin, envlib, deploy_root = paths
         env_file = Path(extra["ENV_FILE"])
         before_env = env_file.read_bytes()
         before_tools = [refresh_bin.read_bytes(), (envlib / "required-env-keys.txt").read_bytes(),
                         (envlib / "release-env-defaults").read_bytes()]
+        absent_current = deploy_root / "current"
+        readlink_probe = subprocess.run(["readlink", "-f", str(absent_current)], text=True,
+                                        capture_output=True, check=False)
+        self.assertEqual(readlink_probe.returncode, 0)
+        self.assertEqual(readlink_probe.stdout.strip(), str(absent_current))
         state = Path(extra["STATE"])
         state.mkdir()
         prior_rollback = state / "rollback-state"
@@ -734,9 +852,58 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(refresh_bin.read_bytes(), before_tools[0])
         self.assertEqual((envlib / "required-env-keys.txt").read_bytes(), before_tools[1])
         self.assertEqual((envlib / "release-env-defaults").read_bytes(), before_tools[2])
-        self.assertEqual((deploy_root / "current").resolve(), deploy_root / "old")
+        self.assertFalse((deploy_root / "current").exists())
+        self.assertFalse((deploy_root / "current").is_symlink())
         self.assertEqual(prior_rollback.read_text(), "prior rollback fixture\n")
         self.assertIn("automatic cleanup status=0", Path(extra["RESULT"]).read_text())
+
+    def test_explicit_rollback_failure_is_single_entry_and_retains_recovery_state(self):
+        previous_image = "sha256:" + "c" * 64
+        for failure in ("restart", "readiness"):
+            with self.subTest(failure=failure):
+                box, extra, _ = self.seeded_swap_box()
+                state = Path(extra["STATE"])
+                state.mkdir()
+                prior = state / "rollback-state"
+                prior_bytes = b"older rollback record\n"
+                prior.write_bytes(prior_bytes)
+                prior.chmod(0o600)
+                (state / "last-good-image").write_text(previous_image + "\n")
+                sleep = box.bin / "sleep"
+                sleep.write_text(STUB)
+                sleep.chmod(sleep.stat().st_mode | stat.S_IXUSR)
+                run_results = [["", 1], ["", 1 if failure == "restart" else 0]]
+                rules = dev_host_rules() + [
+                    ["psql", "select count", "0\n", 0],
+                    ["docker", "^pull", "", 0],
+                    ["docker", "image inspect.*image.revision", COMMIT + "\n", 0],
+                    ["docker", "image inspect.*image.version", "0.9.17\n", 0],
+                    ["docker", "^container inspect coordinator", [["{}\n", 0], ["", 1]], 0],
+                    ["docker", "^inspect coordinator --format.*Config.Env",
+                     "EIGENINFERENCE_DRAIN_GRACE=45s\n", 0],
+                    ["docker", "^inspect --format.*Image.* coordinator", previous_image + "\n", 0],
+                    ["docker", "image inspect.*--format.*Id", previous_image + "\n", 0],
+                    ["docker", "^ps", "fallback-id\n", 0],
+                    ["docker", "^inspect coordinator_fallback_.*Config.Env",
+                     "EIGENINFERENCE_DRAIN_GRACE=45s\n", 0],
+                    ["docker", "^rename", "", 0],
+                    ["docker", "^stop", "", 0],
+                    ["docker", "^run", run_results, 0],
+                    ["curl", "localhost:8080/health",
+                     [[json.dumps({"status": "ok"}) + "\n", 0], ["", 1]], 0],
+                    ["sleep", "", "", 0],
+                ]
+                box.set_rules(rules)
+                result = box.run([DEV / "swap.sh"], extra)
+                self.assertNotEqual(result.returncode, 0)
+                runs = [call for call in box.calls("docker") if call[1] == "run"]
+                self.assertEqual(len(runs), 2, runs)
+                self.assertNotIn("automatic cleanup restored", result.stdout)
+                self.assertNotEqual(prior.read_bytes(), prior_bytes)
+                recovery = prior.read_text().splitlines()
+                self.assertEqual(len(recovery), 6)
+                self.assertEqual(recovery[0], previous_image)
+                self.assertIn("recovery context retained", Path(extra["RESULT"]).read_text())
 
     def test_automatic_cleanup_reports_rollback_command_failure(self):
         box, extra, _ = self.seeded_swap_box()

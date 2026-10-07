@@ -104,6 +104,9 @@ fi
 if [ -n "$CI_WAIVER_REASON" ] && [ "${#CI_FAILURE_ALLOWLIST[@]}" -eq 0 ]; then
     die "--ci-waiver-reason requires at least one --allow-ci-failure" 2
 fi
+if [ "${GITHUB_ACTIONS:-false}" = true ] && [ "${#CI_FAILURE_ALLOWLIST[@]}" -gt 0 ]; then
+    die "CI failure waivers are human-only and cannot run under GitHub Actions" 2
+fi
 
 pause_override_reported=0
 enforce_pause() { # <initial|live>; live always rereads GitHub immediately before mutation
@@ -242,7 +245,7 @@ verify_ci() {
     failures=$(
         {
             printf '%s' "$checks" | jq -r \
-                '.[].check_runs[] | select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not)) | .name'
+                '.[].check_runs[] | select(.status == "completed" and .conclusion != "success") | .name'
             printf '%s' "$statuses" | jq -r '.statuses[] | select(.state != "success" and .state != "pending") | .context'
         } | LC_ALL=C sort -u
     )

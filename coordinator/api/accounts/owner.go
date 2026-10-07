@@ -36,32 +36,35 @@ type Authorizer interface {
 }
 
 type Dependencies struct {
-	Store                 Store
-	Registry              *registry.Registry
-	Access                Authorizer
-	Logger                *slog.Logger
-	ReadCache             *readcache.Cache
-	LatestReleasedVersion func() string
-	MinProviderVersion    string
-	SelfRouteModelEntries func(string, bool) []types.ModelEntry
+	Store                      Store
+	Registry                   *registry.Registry
+	Access                     Authorizer
+	Logger                     *slog.Logger
+	ReadCache                  *readcache.Cache
+	LatestReleasedVersion      func() string
+	MinProviderVersion         string
+	SelfRouteModelEntries      func(string, bool) []types.ModelEntry
+	SoftDeleteMutationsEnabled bool
 }
 
 type Owner struct {
-	store                 Store
-	registry              *registry.Registry
-	access                Authorizer
-	logger                *slog.Logger
-	readCache             *readcache.Cache
-	summaryWindowsFlights singleflight.Group
-	latestReleasedVersion func() string
-	minProviderVersion    string
-	selfRouteModelEntries func(string, bool) []types.ModelEntry
+	store                      Store
+	registry                   *registry.Registry
+	access                     Authorizer
+	logger                     *slog.Logger
+	readCache                  *readcache.Cache
+	summaryWindowsFlights      singleflight.Group
+	latestReleasedVersion      func() string
+	minProviderVersion         string
+	selfRouteModelEntries      func(string, bool) []types.ModelEntry
+	softDeleteMutationsEnabled bool
 }
 
 func New(d Dependencies) *Owner {
 	return &Owner{store: d.Store, registry: d.Registry, access: d.Access, logger: d.Logger,
 		readCache: d.ReadCache, latestReleasedVersion: d.LatestReleasedVersion,
-		minProviderVersion: d.MinProviderVersion, selfRouteModelEntries: d.SelfRouteModelEntries}
+		minProviderVersion: d.MinProviderVersion, selfRouteModelEntries: d.SelfRouteModelEntries,
+		softDeleteMutationsEnabled: d.SoftDeleteMutationsEnabled}
 }
 
 func (s *Owner) SetMinProviderVersion(version string) { s.minProviderVersion = version }

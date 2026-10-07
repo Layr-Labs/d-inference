@@ -915,8 +915,12 @@ and `/usr/local/bin/promptsidecar`, OCI labels
 ### 10. Use the database-only coordinator command
 
 The normal coordinator build also supports `coordinator --migrate-only`. It
-requires `EIGENINFERENCE_DATABASE_URL`, runs store migrations, and exits without
-starting the server or seeding an admin key. Container execution must override
+requires `EIGENINFERENCE_DATABASE_URL`, validates store configuration rather than
+full application/serving prerequisites, and exits without starting the server or
+seeding an admin key. `EIGENINFERENCE_MIGRATION_TIMEOUT` bounds the full command;
+`EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` independently bounds concurrent
+build lock waits (see [configuration](../reference/configuration.md#database-store-and-persistent-disk)).
+Container execution must override
 the default MicroMDM entrypoint script; see the
 [schema migration runbook](../operations/schema-migration.md#4-apply-the-migrations).
 

@@ -114,7 +114,11 @@ failure in any step marked *fatal* exits the process before it listens.
 2. **Configuration** (*fatal*). `config.ReadAppConfig` reads every package's
    environment, then `Check` rejects invalid combinations (no DSN without the
    memory-store opt-in, mock billing with a live Stripe key, malformed media
-   fetch or cache-routing values, an unknown trust level). Every variable is
+   fetch or cache-routing values, an unknown trust level). For production
+   serving, it also calls the pure `service.Config.CheckProductionServing`
+   before database access; the same validator runs later in `Policy.Initialize`
+   before the freeze. [Deployment classification](../../reference/configuration.md#deployment-environment)
+   defines the development and actual-memory-store exceptions. Every variable is
    listed in [`../../reference/configuration.md`](../../reference/configuration.md).
 3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, apply pending
    goose migrations ([schema lifecycle](../schema-lifecycle.md)), seed the
@@ -148,7 +152,9 @@ failure in any step marked *fatal* exits the process before it listens.
    runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`) and
    outbox worker (`StartErasureOutboxLoop`, which runs `Owner.StartOutboxLoop`
    in `coordinator/api/accounts/erasure/outbox.go`;
-   [account erasure](../account-erasure.md)); the prompt sidecar supervisor
+   [account erasure](../account-erasure.md)). These workers complete existing
+   obligations even when `SoftDeleteMutationsEnabled` blocks new confirmations
+   and provider removals in the HTTP owners; the prompt sidecar supervisor
    and preloader.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
@@ -158,6 +164,11 @@ failure in any step marked *fatal* exits the process before it listens.
     sidecar, wait up to `EIGENINFERENCE_DRAIN_GRACE` for in-flight requests,
     then `Shutdown` with a 15 s backstop; deferred closes stop Datadog and the
     Postgres pool.
+
+The database-only `Maintenance` path
+(`coordinator/internal/command/coordinator/maintenance.go`) validates store
+configuration and applies migrations under `Config.MigrationTimeout`, without
+full application validation, a cohort freeze, listeners or workers.
 
 The dependency direction is `cmd -> app -> api composition -> domain owners ->
 focused internal components`.

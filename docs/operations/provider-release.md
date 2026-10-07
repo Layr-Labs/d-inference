@@ -36,10 +36,13 @@ registration succeeds.
    pre-goose production to current master. A versions-1-to-9 bridge is not a
    lasting compatible fallback once soft-deleted data exists: ordinary
    `DELETE /v1/me/providers/{id}` writes `deleted_at`, not just account erasure.
-   Hold incompatible mutation operations during that window or prepare a
-   fallback that implements the required soft-delete and erasure semantics
-   before allowing them. Preserve active App Attest, removal, payout and cache
-   controls; the bridge is not permission to reset production policy.
+   Keep `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false` until a fallback
+   implements the required soft-delete and erasure semantics. This blocks new
+   erasure confirmations and provider removals, not accepted scrub/outbox work;
+   prior tombstones or erasures still require a compatible fallback. Review the
+   [migration budgets and invalid-index procedure](schema-migration.md#steps)
+   before online preparation. Preserve active App Attest, removal, payout and
+   cache controls; the bridge is not permission to reset production policy.
 3. Coordinate authenticated legacy reenrollment with the signed provider and
    embedded installer. Existing 0.9.17 providers do not send the new signed
    `/v1/enroll` contract, so an upgraded coordinator can preserve eligible

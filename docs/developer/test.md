@@ -2596,7 +2596,9 @@ python3 scripts/test-provider-release-resolution.py # signed-validation and publ
 Version checks, release routing, installer parity and production environment refresh
 run in CI job "Release Integrity". The production env refresh test checks automatic
 payout activation, preservation of an explicit off switch, and rejection of missing
-payout prerequisites before the live env is changed.
+payout prerequisites before the live env is changed. It also verifies that the
+required soft-delete mutation flag bootstraps to `false` while preserving explicit
+`false` and `true` choices. These tests use temporary env files, not production.
 
 The Go toolchain guard runs without Docker or a Go download. Its regression suite
 rejects the former Go 1.25 builder with the Go 1.26 module, mismatched local pins,

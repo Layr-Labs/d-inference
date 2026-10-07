@@ -211,13 +211,15 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 
 	s.accounts = accounts.New(accounts.Dependencies{
 		Store: st, Registry: reg, Access: s.access, Logger: logger, ReadCache: s.readCache,
-		LatestReleasedVersion: s.releases.LatestReleasedVersion,
-		MinProviderVersion:    strings.TrimSpace(cfg.MinProviderVersion),
-		SelfRouteModelEntries: s.catalog.SelfRouteModelEntries,
+		LatestReleasedVersion:      s.releases.LatestReleasedVersion,
+		MinProviderVersion:         strings.TrimSpace(cfg.MinProviderVersion),
+		SelfRouteModelEntries:      s.catalog.SelfRouteModelEntries,
+		SoftDeleteMutationsEnabled: cfg.SoftDeleteMutationsEnabled,
 	})
 	s.erasure = erasureapi.New(erasureapi.Dependencies{
 		Store: st, Access: s.access, Logger: logger, MaxBodyBytes: maxControlPlaneBodyBytes,
-		Datadog: s.observation.Datadog,
+		Datadog:                    s.observation.Datadog,
+		SoftDeleteMutationsEnabled: cfg.SoftDeleteMutationsEnabled,
 		Hooks: erasureapi.Hooks{
 			DisconnectAccount:  reg.DisconnectAccount,
 			ForgetSEKeys:       s.trust.ForgetErasedKeys,

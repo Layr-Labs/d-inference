@@ -16,8 +16,17 @@ changes are detailed in the retained topic entries below:
 The bundled coordinator build fix aligns the digest-pinned Go builder and local
 toolchain at Go 1.26.8, satisfying the unchanged `go.mod` minimum of 1.26.0.
 Release Integrity now rejects missing pins, local/container drift and toolchains
-below the module minimum. Coordinator deployment and provider publication remain
+below the module minimum. The bundled [upgrade safety changes](#unreleased---coordinator-upgrade-safety)
+add migration budgets, early trust preflight and a default-off soft-delete
+mutation gate. Coordinator deployment and provider publication remain
 separate approvals; see the [candidate rollout checks](docs/operations/provider-release.md#0918-candidate-rollout).
+
+## Unreleased - coordinator upgrade safety
+
+- Add `EIGENINFERENCE_MIGRATION_TIMEOUT` (default `15m`) for the positive total `--migrate-only` deadline, and `EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` (default `1m`, minimum `1ms`) for all concurrent index builders on dedicated connections. Ordinary SQL DDL retains its 3-second lock and 10-minute statement defaults.
+- Preserve invalid indexes and fail with operator inspection guidance, including legacy earnings indexes; never automatically drop a potentially active external build. Schema versions and financial semantics are unchanged.
+- Validate production App Attest serving prerequisites before database access or migrations, reusing the later pre-freeze validator. Explicit development and actual opted-in memory-store startup remain exempt; database-only maintenance intentionally skips full application validation.
+- Default `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED` to `false`, blocking new erasure confirmations (including `force`) and owned-provider removal with 503 `soft_delete_mutations_disabled` after authorization. Plan/status/cancel and accepted scrub/outbox work continue. Prior tombstones or erasures still require compatible fallback code; disabling the flag does not restore old-image compatibility. Production env refresh preserves explicit opt-ins.
 
 ## Unreleased - MLX gather row tiles
 
@@ -67,7 +76,7 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 
 ## Unreleased — soft-delete schema
 
-- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Nothing sets `deleted_at` yet. After this release runs, roll back only to coordinator images built with goose.
+- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Account erasure and ordinary provider removal write `deleted_at` behind the [mutation gate](#unreleased---coordinator-upgrade-safety). After these migrations run, roll back only to compatible goose-based coordinator images.
 
 - Exclude soft-deleted users from small-model interest exports before pagination, and exclude deleted users and provider records from initial legacy MDM cohort qualification. Repeated cohort reads preserve the frozen snapshot.
 - Suppress stale registry-supplied provider locations in memory-store usage flows when the stored provider record is soft-deleted.

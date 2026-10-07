@@ -207,6 +207,9 @@ the api_keys and account erasure queries from it. The versions,
 locks, timeouts, sqlc and failure modes are in
 [schema lifecycle](schema-lifecycle.md); adding a migration is
 [Add a database migration](../developer/database-migrations.md).
+The concurrent-index helpers preserve invalid indexes for operator inspection;
+they do not automatically drop them. Their dedicated connection timeout is
+separate from ordinary migration DDL, without changing schema versions.
 
 ```mermaid
 flowchart LR
@@ -214,10 +217,11 @@ flowchart LR
   classDef check fill:#fef3c7,stroke:#b45309,color:#1f1300
   classDef ok fill:#dcfce7,stroke:#15803d,color:#052e16
   classDef fail fill:#fee2e2,stroke:#b91c1c,color:#450a0a
-  A["ReadAppConfig"]:::step --> B{"EIGENINFERENCE_DATABASE_URL set?"}:::check
+  A["ReadAppConfig + Check<br/>(production-serving preflight)"]:::step --> B{"EIGENINFERENCE_DATABASE_URL set?"}:::check
+  A -- "invalid config; no database access" --> X["exit 1"]:::fail
   B -- "yes" --> C["NewPostgres: connect, Ping,<br/>apply pending goose versions"]:::step
   C -- "ok" --> G["SeedKey admin key, serve"]:::ok
-  C -- "error" --> X["exit 1"]:::fail
+  C -- "error" --> X
   B -- "no, ALLOW_MEMORY_STORE=true" --> H["NewMemory + 15 min pruner"]:::ok
   B -- "no" --> X
 ```
@@ -234,6 +238,9 @@ late external creation results retain cleanup IDs in the erasure outbox.
 Historical accounting and revocation paths remain available. The model is in
 [schema lifecycle](schema-lifecycle.md#soft-delete); the exact read and write
 behavior is in the [soft-delete reference](../reference/soft-delete.md).
+The default-off HTTP mutation gate prevents new account-erasure confirmations
+and provider removals, not existing scrub/outbox obligations. It does not change
+the stored schema, read filters or rollback requirements for prior tombstones.
 
 ### Provider earnings and history
 
@@ -464,7 +471,7 @@ KV blocks under a per-model key, not tokens.
 | Concern | Location |
 |---|---|
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
-| Earnings rankings and startup time index | `coordinator/store/postgres/leaderboard.go` (`Leaderboard`), `coordinator/store/postgres/earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres/startup.go` (`ensureConcurrentIndex`) |
+| Earnings rankings and startup time index | `coordinator/store/postgres/leaderboard.go` (`Leaderboard`), `coordinator/store/postgres/earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres/migration_indexes.go` (`ensureConcurrentIndex`) |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/app/store.go` |
 | Postgres pool | `coordinator/store/postgres/postgres.go` |
 | Migrations | `coordinator/store/postgres/migrations.go`, `coordinator/store/postgres/schema/migrations/`, `coordinator/store/postgres/schema/schema.sql`; full map in [schema lifecycle](schema-lifecycle.md#code-map) |

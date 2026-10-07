@@ -125,11 +125,12 @@ by hand; shell variables do not cross SSH.
 ### 2. Pre-swap checks (VM and DB)
 
 Startup applies pending goose migrations
-([schema lifecycle](../architecture/schema-lifecycle.md)). An SQL migration
-statement waits at most 3 s for a lock (`lock_timeout`); after three failed
-attempts the coordinator exits 1. Before goose, an `ALTER TABLE` queued behind
-a long query's relation lock hung the deploy (2026-07-03 outage). No rows
-means safe to proceed:
+([schema lifecycle](../architecture/schema-lifecycle.md)). Ordinary SQL DDL
+defaults remain a 3 s lock timeout and 10 min statement timeout, subject to
+existing database URL overrides. Concurrent index builders use a separate
+configured lock budget. Before goose, an `ALTER TABLE` queued behind a long
+query's relation lock hung the deploy (2026-07-03 outage). Check blockers below;
+no rows is necessary but does not establish index-build capacity or duration:
 
 ```bash
 psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(query,80)
@@ -213,10 +214,13 @@ separate database and explicit development configuration.
 Before starting the upgraded binary, explicitly approve and configure production
 App Attest serving: `EIGENINFERENCE_APP_ATTEST_SERVING=true`,
 `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT=production` and
-`EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT=100`. The startup policy validates
-these prerequisites **before** freezing membership and fails closed on invalid
-configuration; it must not silently freeze or start with new identities unable
-to use the required path. These settings do not qualify a build or waive any
+`EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT=100`. `AppConfig.Check` validates
+these prerequisites **before opening the database or applying migrations**,
+using `service.Config.CheckProductionServing`. `Policy.Initialize` repeats the
+same check before freezing membership, still after revocation replay. The
+database-only `--migrate-only` path intentionally validates store configuration
+without full application validation; schema preparation does not establish
+serving readiness. These settings do not qualify a build or waive any
 proof, receipt or runtime check. See [qualification](app-attest-build-qualification.md)
 and [authorization controls](../reference/provider-authorization.md#controls).
 
@@ -248,6 +252,11 @@ the versions, take and record a Cloud SQL backup, check for long queries, and
 optionally apply additive versions with `--migrate-only` while the current
 coordinator serves. The first deploy of a goose build also follows its
 [first cut-over checklist](schema-migration.md#first-production-cut-over-to-goose).
+Review `EIGENINFERENCE_MIGRATION_TIMEOUT` and
+`EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` against rehearsed build duration
+and capacity; [configuration](../reference/configuration.md#database-store-and-persistent-disk) defines
+their independent budgets. All builders preserve invalid indexes and fail;
+inspect active builders before any separately approved repair.
 
 ### 3. Refresh the env file and capture rollback inputs
 
@@ -257,6 +266,16 @@ file, refuses to drop any existing key, adds absent release defaults, migrates
 only explicitly retired defaults, keeps a root-only timestamped backup, and
 renames atomically. It never touches secrets. It fails if `/etc/d-inference` is
 tmpfs.
+
+The required manifest includes `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED`;
+release defaults add `false` only if absent, preserving an explicit `true` or
+`false`. Verify the intended value before the swap. Keep it `false` through the
+initial rollback window: new erasure confirmations (including `force`) and
+owned-provider removals return 503 `soft_delete_mutations_disabled` after their
+authorization checks. Plan/status/cancel and existing scrub/outbox obligations
+continue. Enabling it needs separate approval and a compatible fallback; turning
+it off does not erase prior tombstones or restore older-image compatibility.
+See the [soft-delete contract](../reference/soft-delete.md#writers-of-deleted_at).
 
 The v0.9 cache-cost migration replaces only the exact historical pair
 `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS=1000` and

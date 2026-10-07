@@ -14,14 +14,17 @@ import (
 func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now time.Time, pendingWork []forecast.PendingWork, report capacityvalue.ServiceReport) {
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
 	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = p.transport.Forecast(now)
-	s.capacityAgeMs, s.performanceAgeMs = -1, -1
+	s.capacityAgeMs, s.performanceAgeMs, s.decodePerformanceAgeMs = -1, -1, -1
 	s.contendedPerformanceAgeMs = -1
 	s.promptWorkArtifactHash, s.promptWorkContractID = providerPromptWorkIdentityLocked(p, s.model)
 	if !p.CapacityAcceptedAt.IsZero() {
 		s.capacityAgeMs = heartbeatAgeMs(now, p.CapacityAcceptedAt)
 	}
-	if sample, ok := p.firstContentMeasurements.Lookup(s.model); ok && !sample.ObservedAfter.IsZero() && !sample.DecodeObservedAfter.IsZero() {
-		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.ObservedAfter), heartbeatAgeMs(now, sample.DecodeObservedAfter))
+	if sample, ok := p.firstContentMeasurements.Lookup(s.model); ok && !sample.DecodeObservedAfter.IsZero() {
+		s.decodePerformanceAgeMs = heartbeatAgeMs(now, sample.DecodeObservedAfter)
+		if !sample.ObservedAfter.IsZero() {
+			s.performanceAgeMs = max(heartbeatAgeMs(now, sample.ObservedAfter), s.decodePerformanceAgeMs)
+		}
 	}
 	s.evidenceGapAgeMs = firstContentEvidenceGapAgeMs(s, p.connectionOrigin, now)
 	capacity := p.BackendCapacity

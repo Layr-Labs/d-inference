@@ -1774,11 +1774,13 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 // Qualified curves use their measured conservative width point; unmatched
 // configurations fall back through observed EWMA, fleet median and benchmark.
 // A provider that evidence exploration admits uses the fleet median before
-// its own decode EWMA while that EWMA is missing or old.
+// its own decode EWMA while that EWMA is missing or old. A long-idle provider
+// cannot remain pinned to a dated observed decode rate.
 func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 	return (performance.Rates{Profile: (*performance.Profile)(snap.performanceProfile),
 		StaticDecode: snap.decodeTPS, ObservedDecode: snap.observedDecodeTPS,
 		FleetMedian: snap.fleetMedianTPS, ExploredDecode: snap.explorationDecodeTPS,
+		IdleDecodeAge: idleDecodeMeasurementAge(snap),
 		ObservedBatch: snap.backendRunning, Occupancy: snapshotOccupancy(snap)}).EffectiveDecode(effectiveTPSLoadFactor)
 }
 

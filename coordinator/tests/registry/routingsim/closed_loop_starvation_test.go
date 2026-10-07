@@ -18,11 +18,10 @@ import (
 //
 // This bound asserts a proposed policy, not the behavior of #1243 or #1254.
 // #1254 admits a provider to the pool at the bound but does not promise that
-// it is selected. #1243, which is not merged, keeps an old decode rate for 30
-// minutes on purpose. The proposed policy goes beyond both: an explored
-// provider is costed at the fleet median for prefill and decode from the
-// bound, and it is selected within the bound plus one request. The
-// maintainers own this policy.
+// it is selected. #1243 keeps an old decode rate for 30 minutes on purpose.
+// The proposed policy goes beyond both: an explored provider is costed at
+// the fleet median for prefill and decode from the bound, and it is selected
+// within the bound plus one request. The maintainers own this policy.
 const noStarvationBound = forecast.EvidenceExplorationAfter + loopRequestServiceTime
 
 // loopDuration is the length of every arrival stream.

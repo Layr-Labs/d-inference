@@ -21,13 +21,12 @@ func (r *Registry) fillExplorationRates(s *routingSnapshot, p *Provider, now tim
 	if !firstContentExplorationAdmitted(s) {
 		return
 	}
-	decodeAgeMs, prefillAgeMs := firstContentRateAgesMs(p.firstContentMeasurements, s.model, now)
-	if s.fleetMedianTPS > 0 && forecast.ExplorationReplacesRate(s.observedDecodeTPS > 0, decodeAgeMs) {
+	if s.fleetMedianTPS > 0 && forecast.ExplorationReplacesRate(s.observedDecodeTPS > 0, s.decodePerformanceAgeMs) {
 		s.explorationDecodeTPS = s.fleetMedianTPS
 	}
 	ownPrefill := s.isolatedPrefillInitialized && capacityvalue.FinitePositive(s.isolatedPrefillTPS)
 	if median := r.tpsRegistry.PrefillMedian(s.model, s.chipFamily); capacityvalue.FinitePositive(median) &&
-		forecast.ExplorationReplacesRate(ownPrefill, prefillAgeMs) {
+		forecast.ExplorationReplacesRate(ownPrefill, firstContentPrefillAgeMs(p.firstContentMeasurements, s.model, now)) {
 		s.explorationPrefillTPS = median
 	}
 }
@@ -42,21 +41,15 @@ func firstContentExplorationAdmitted(s *routingSnapshot) bool {
 		firstContentIdleEvidenceGap(s)
 }
 
-// firstContentRateAgesMs returns the age of each dated measurement for the
-// model. -1 means the rate is not dated.
-func firstContentRateAgesMs(history *measurements.History, model string, now time.Time) (decodeMs, prefillMs int32) {
-	decodeMs, prefillMs = -1, -1
+// firstContentPrefillAgeMs returns the age of the dated prefill measurement
+// for the model. -1 means the rate is not dated. The decode age is on the
+// snapshot (decodePerformanceAgeMs).
+func firstContentPrefillAgeMs(history *measurements.History, model string, now time.Time) int32 {
 	sample, ok := history.Lookup(model)
-	if !ok {
-		return decodeMs, prefillMs
+	if !ok || sample.ObservedAfter.IsZero() {
+		return -1
 	}
-	if !sample.DecodeObservedAfter.IsZero() {
-		decodeMs = heartbeatAgeMs(now, sample.DecodeObservedAfter)
-	}
-	if !sample.ObservedAfter.IsZero() {
-		prefillMs = heartbeatAgeMs(now, sample.ObservedAfter)
-	}
-	return decodeMs, prefillMs
+	return heartbeatAgeMs(now, sample.ObservedAfter)
 }
 
 // explorationUsesMedian reports whether either rate is a fleet median. The

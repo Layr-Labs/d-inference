@@ -1,17 +1,34 @@
 package performance
 
-import "github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
+)
+
+// IdleDecodeMaxAge is how long a dated decode observation can rank an idle
+// provider. It deliberately outlives the deadline-evidence window
+// (forecast.PerformanceFreshness, two minutes), so ordinary idle intervals
+// keep their measured ranking, while it bounds how long a dated slow
+// observation can exclude an idle provider from work.
+const IdleDecodeMaxAge = 30 * time.Minute
 
 // Rates projects detached measurements without owning serving or admission state.
 // ExploredPrefill and ExploredDecode are fleet medians that replace the
 // provider's own rate while evidence exploration prices it; 0 keeps the
 // ordinary order. A reviewed profile point still comes first. EffectiveDecode
 // and Prefill use them; ProjectedDecode does not.
+//
+// IdleDecodeAge is the age of the dated observation behind ObservedDecode
+// while the provider is idle. It is 0 when the provider has work or the
+// observation is undated. Past IdleDecodeMaxAge, EffectiveDecode skips
+// ObservedDecode; ProjectedDecode does not.
 type Rates struct {
 	Profile                                   *Profile
 	StaticPrefill, ObservedPrefill            float64
 	StaticDecode, ObservedDecode, FleetMedian float64
 	ExploredPrefill, ExploredDecode           float64
+	IdleDecodeAge                             time.Duration
 	ObservedBatch, Occupancy                  int
 }
 
@@ -23,7 +40,7 @@ func (r Rates) EffectiveDecode(loadFactor float64) float64 {
 	if r.ExploredDecode > 0 {
 		return r.ExploredDecode
 	}
-	if r.ObservedDecode > 0 {
+	if r.ObservedDecode > 0 && r.IdleDecodeAge <= IdleDecodeMaxAge {
 		return r.ObservedDecode
 	}
 	if r.FleetMedian > 0 {

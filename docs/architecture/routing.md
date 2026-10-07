@@ -384,8 +384,9 @@ exact matching reviewed profile's conservative point at or above the batch
 width after admission (`coordinator/registry/performance_profile.go`, `batchAt`).
 A workload-specific live EWMA does not replace that point. Without a fitting
 profile point, `resolveEffectiveTPS` prefers the slot's
-`ObservedDecodeTPS` EWMA, then the fleet median for the model, then the
-static registration rate derated by load:
+`ObservedDecodeTPS` EWMA unless it has expired under
+[idle decode measurement aging](#idle-decode-measurement-aging), then the
+fleet median for the model, then the static registration rate derated by load:
 `effectiveDecodeTPS = staticTPS / (1 + effectiveTPSLoadFactor × backendRunning)`,
 floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
@@ -404,7 +405,7 @@ binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 |---|---|---|
 | 1 | Reviewed profile point | Reviewed profile point |
 | 2 | Fleet decode median, if the provider is exploration-admitted and its own decode evidence is missing or old | Fleet isolated-prefill median, if the provider is exploration-admitted and its own isolated-prefill evidence is missing or old |
-| 3 | `ObservedDecodeTPS` | `ObservedPrefillTPS` |
+| 3 | `ObservedDecodeTPS`, unless [idle decode measurement aging](#idle-decode-measurement-aging) expired it | `ObservedPrefillTPS` |
 | 4 | Fleet decode median | Registration `PrefillTPS`, or decode × `prefillToDecodeRatio` |
 | 5 | Registration decode, derated by load | — |
 
@@ -449,6 +450,47 @@ Known limits:
   each idle window of 5 minutes or more. This change does not stop that. The
   per-identity exploration backoff and remembered-slow check of PR #1270 stop
   it, so this change must merge after #1270.
+
+#### Idle decode measurement aging
+
+Without a matching reviewed profile point or an explored decode median,
+`performance.Rates.EffectiveDecode`
+(`coordinator/internal/registry/performance/rates.go`) stops preferring a
+positive observed decode rate when its independently tracked decode
+observation is older than `performance.IdleDecodeMaxAge = 30 * time.Minute`
+and the model is loaded on an idle machine with no local reservations. It then
+uses the existing model/chip-family fleet median, or the load-scaled
+registration estimate when no median exists. A matching reviewed profile point
+keeps priority over both observed and fallback rates. The thirty-minute
+ranking horizon deliberately outlives the two-minute first-content evidence
+horizon (`forecast.PerformanceFreshness`), so ordinary idle intervals retain
+their measured ranking. The decode-floor projection (`Rates.ProjectedDecode`)
+keeps the observed rate.
+
+`idleDecodeMeasurementAge`
+(`coordinator/registry/decode_measurement_freshness.go`) supplies the age as
+`Rates.IdleDecodeAge` from both `resolveEffectiveTPS` and the retained
+`candidateSnapshot`. It returns 0, which keeps the observed rate, for busy
+machines, cold models, providers with local reservations and observations
+whose age is unknown. `fillFirstContentSnapshot`
+(`coordinator/registry/first_content_snapshot.go`) copies the decode age
+(`decodePerformanceAgeMs`) separately from prefill age; `fillExplorationRates`
+reads the same field. Unchanged heartbeats or new prefill measurements cannot
+renew it; new decode observations restore the observed-rate preference through
+`reconcileFirstContentMeasurementsLocked`
+(`coordinator/registry/first_content_measurements.go`, which calls
+`measurements.History.Reconcile`). Explicit producer sample counts can
+establish a new observation even when its rate is unchanged; legacy providers
+require a changed rate between accepted reports.
+
+This is a ranking fallback, not new deadline evidence or added physical
+capacity. A stale first-content forecast remains `unknown`. Explored provider
+pricing applies first once the evidence gap reaches 5 minutes; decode aging
+covers an idle provider that exploration does not admit, for example one that
+connected less than 5 minutes ago and has no dated prefill measurement.
+Neither mechanism guarantees selection. Admission limits, health penalties,
+retries and hedge qualification still apply, and the fleet median itself is
+not expired.
 
 **Historical prefill cost weighting for long prompts.** `longPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a

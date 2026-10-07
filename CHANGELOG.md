@@ -378,6 +378,7 @@
 
 ## Unreleased — coordinator first-content routing
 
+- Stop ranking idle loaded providers by independently dated decode observations older than thirty minutes; use the existing fleet/registration fallback without promoting stale deadline evidence or changing physical admission.
 - Read serving-slot metric attribution from the already-selected provider after dispatch, avoiding a redundant registry lock that could delay first content. Keep backup and terminal-fault attribution rules intact.
 - Rank eligible providers by cache-adjusted first-content forecasts by default, prefer credible deadline-feasible choices, and spread near-equal choices by whole-machine service work within a 100-ms band. Preserve physical prompt/output reservations and explicit owner routing.
 - Preserve valid prefill observations through 20,000 tokens/s. Track accepted capacity and observed performance freshness separately; missing or stale evidence stays unknown.

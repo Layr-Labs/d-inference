@@ -9,17 +9,15 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/measurements"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // staleIdleDecodeAge is the age after which an idle provider's decode
-// measurement must no longer lower its ranking. It mirrors
-// idleDecodeMeasurementMaxAge from #1243. #1243 is not merged, so this test
-// cannot reference that symbol yet. After #1243 merges, this test must use
-// its constant instead of this copy. The value is a policy number and the
-// maintainers own it.
-const staleIdleDecodeAge = 30 * time.Minute
+// measurement must no longer lower its ranking (#1243). The value is a policy
+// number and the maintainers own it.
+const staleIdleDecodeAge = performance.IdleDecodeMaxAge
 
 // idleEvidenceModel is the model of every provider in these tests.
 const idleEvidenceModel = "idle-evidence-model"
@@ -183,8 +181,8 @@ func TestIdleDecodeMeasurementAgeDoesNotLoseSelection(t *testing.T) {
 // It is not a regression test for #1243 or #1254. #1254 admits an idle
 // provider without usable evidence to the pool after
 // forecast.EvidenceExplorationAfter, and it does not promise that the
-// provider is selected. #1243, which is not merged, keeps an old decode rate
-// until staleIdleDecodeAge, on purpose. The proposed policy goes beyond both:
+// provider is selected. #1243 keeps an old decode rate until
+// staleIdleDecodeAge, on purpose. The proposed policy goes beyond both:
 // from forecast.EvidenceExplorationAfter, an explored provider is costed at
 // the fleet median, so that admission can lead to selection. This test checks
 // the decode half of that policy. The closed-loop tests in

@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/ttftforecast"
 )
@@ -27,6 +29,8 @@ type candidateSnapshot struct {
 	// exploration prices it. 0 keeps the provider's own rate.
 	explorationDecodeTPS  float64
 	explorationPrefillTPS float64
+	// idleDecodeAge feeds Rates.IdleDecodeAge (idleDecodeMeasurementAge).
+	idleDecodeAge time.Duration
 
 	pendingPrefillTokens  float64
 	pendingPrefillUnknown int
@@ -52,6 +56,7 @@ func retainCandidateSnapshot(s *routingSnapshot) candidateSnapshot {
 		decodeTPS: s.decodeTPS, observedDecodeTPS: s.observedDecodeTPS, fleetMedianTPS: s.fleetMedianTPS,
 		prefillTPS: s.prefillTPS, observedPrefillTPS: s.observedPrefillTPS,
 		explorationDecodeTPS: s.explorationDecodeTPS, explorationPrefillTPS: s.explorationPrefillTPS,
+		idleDecodeAge:        idleDecodeMeasurementAge(s),
 		pendingPrefillTokens: s.pendingPrefillTokens, pendingPrefillUnknown: s.pendingPrefillUnknown,
 		pendingPrefillKnown: s.pendingPrefillKnown, modelLoaded: s.modelLoaded,
 		hasBackendCapacity: s.hasBackendCapacity, wholeMacBusy: s.wholeMacBusy,
@@ -77,7 +82,7 @@ func (s *candidateSnapshot) rates() performance.Rates {
 		StaticDecode: s.decodeTPS, ObservedDecode: s.observedDecodeTPS, FleetMedian: s.fleetMedianTPS,
 		StaticPrefill: s.prefillTPS, ObservedPrefill: s.observedPrefillTPS,
 		ExploredDecode: s.explorationDecodeTPS, ExploredPrefill: s.explorationPrefillTPS,
-		ObservedBatch: s.backendRunning, Occupancy: s.occupancy()}
+		IdleDecodeAge: s.idleDecodeAge, ObservedBatch: s.backendRunning, Occupancy: s.occupancy()}
 }
 
 // projectedDecodeTPS unwinds the observed rate at backendRunning, then projects

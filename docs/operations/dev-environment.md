@@ -31,6 +31,17 @@ production (`darkbloom-mainnet`).
   A project owner has all three.
 - `git`, `dig`, `jq` and `gh` on your machine (`mise install`). `gh` must be
   able to read the repository variable `DEV_DEPLOY_PAUSED`.
+- Automatic deploys use a GitHub App installed only on
+  `Layr-Labs/d-inference`, with repository permissions **Variables: read**,
+  **Checks: read**, **Commit statuses: read** and **Metadata: read**. Set its
+  App ID as the repository variable `DEV_DEPLOY_APP_ID` and its private key as
+  the repository secret `DEV_DEPLOY_APP_PRIVATE_KEY`. The workflow mints a
+  short-lived token; it does not use a personal access token. The pinned
+  `actions/create-github-app-token` SHA exposes read inputs for Checks, Commit
+  statuses and Metadata, but no `permission-variables` input. Supplying only
+  those supported inputs would omit the required Variables grant, so the exact
+  four-permission read-only set must be enforced on the App installation. The
+  action's default post-job token revocation remains enabled.
 - The secret values and DNS records of DBLM-558 (section "Secrets" below).
 - A clean, detached checkout of `origin/master`. Every script reads its files
   from that checkout:
@@ -119,6 +130,10 @@ is set (a workflow passes `vars.DEV_DEPLOY_PAUSED`), else
 `gh variable get DEV_DEPLOY_PAUSED -R Layr-Labs/d-inference`. It continues only
 when the value is `false`. The value `true`, an empty value or a failed read
 stops it with exit code 3, and nothing changes. A rollback obeys the same rule.
+The workflow also passes a short-lived, Variables-capable GitHub App token as
+`GH_TOKEN`, so the script can reread the live repository value immediately
+before SSH and apply its exact-commit CI gates. The built-in `github.token`
+cannot be granted repository Variables permission.
 
 A human can pass `--override-pause "<reason>"`. The script then prints a
 `REPORT pause override by <account> (<user>@<host>): <reason>` line and
@@ -267,8 +282,8 @@ What one run does:
    `version` = `LatestProviderVersion` and `build_commit` = the commit of the
    run (for a rollback, any 40-character commit).
 3. Notify only: providers attach again within 120 s, and
-   `scripts/smoke-dev.sh`. The workflow has no secrets, so the authenticated
-   chat test does not run.
+   `scripts/smoke-dev.sh`. This smoke step receives no API key, so the
+   authenticated chat test does not run.
 4. When a push changes the `var LatestProviderVersion` line, the job starts
    `release-swift.yml` with `environment=dev` on `master`. It does not wait
    for that run.
@@ -396,9 +411,22 @@ Cadence:
   dispatch with `-f force=true` always runs.
 - The deployed commit is `build_commit` of the public `/health`. If `/health`
   does not answer, the run is skipped with a notice, also with `force=true`.
-- The last tested commit is in the artifact `devnet-suite-tested-commit` of
-  the newest successful run (kept 90 days). If there is no artifact, the
-  suite runs.
+- The last tested commit is in the unexpired artifact
+  `devnet-suite-tested-commit` of the newest successful `devnet-suite.yml` run
+  on `master` (kept 90 days). The selector enumerates only those exact
+  successful runs created within the 90-day retention window, newest first,
+  and asks each exact run for the named artifact. It validates the selected
+  artifact's owner, digest, expiry, size and single-file ZIP before use. It
+  never lists repository-wide artifacts, so same-named artifacts from other
+  workflows or branches cannot consume its pagination budget. The scan is
+  bounded at 800 eligible runs and scans lazily newest first: a valid recent
+  artifact returns without reading older pages. The no-artifact worst case is
+  9 run-list requests plus 800 exact-run artifact requests; a match on the
+  800th run adds one download (809 requests total). More than 800 eligible runs
+  with no earlier match, or any API or provenance failure, skips closed. If no
+  retained matching artifact exists
+  within the complete bounded scan, that is an initial run and
+  the suite runs. An API, pagination or provenance failure skips the suite.
 - Only one run at a time, and at most one pending run. A newer pending run
   replaces the older pending run (concurrency group `devnet-suite`).
 

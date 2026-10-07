@@ -2464,12 +2464,17 @@ paths, a paused deploy and a refused project make no state-changing call: every
 such command is a stub that records its arguments. It also reads
 `.github/workflows/deploy-dev.yml`: the deploy step must pass
 `vars.DEV_DEPLOY_PAUSED` to `deploy.sh`, the steps must run in `bash` with
-`pipefail`, and the file must not contain
-`--override-pause`, a job environment, a pull request trigger or a secret.
+`pipefail`, the deploy step must use the repository-scoped GitHub App token for
+live safety-gate reads, and the file must not contain `--override-pause`, a job
+environment or a pull request trigger.
 It runs `scripts/devnet-suite.sh` against a stub `curl`, and it checks the
 rules of `.github/workflows/devnet-suite.yml`: the concurrency group, the
 `DEVNET_SUITE_ENABLED` switch on each job, the 3-hour schedule, the threshold
-of 10 commits, no job environment, and no printed secret.
+of 10 commits, no job environment, and no printed secret. The history fixture
+proves that only an unexpired, digest-valid artifact from a successful
+`devnet-suite.yml` run on `master` is accepted; the selector never lists
+repository-wide artifacts, thousands of unrelated same-name collisions cannot
+consume its bound, and API or bounded-pagination failures skip closed.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

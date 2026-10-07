@@ -64,7 +64,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0       # first-parent count on master
           filter: tree:0
-          sparse-checkout: deploy/gcp/dev
+          sparse-checkout: |
+            deploy/gcp/dev
+            scripts/devnet_suite_history.py
 
       - name: Decide
         id: decide
@@ -87,15 +89,18 @@ jobs:
           echo "commit=$deployed" >> "$GITHUB_OUTPUT"
           if [ "$FORCE" = true ]; then decide true "force, deployed $deployed"; exit 0; fi
 
-          last=""
-          artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$TESTED_ARTIFACT&per_page=100" \
-            --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .id // empty')
-          if [ -n "$artifact" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/tested.zip"
-            last=$(unzip -p "$RUNNER_TEMP/tested.zip" commit.txt | tr -d '[:space:]')
+          if last=$(python3 scripts/devnet_suite_history.py); then
+            :
+          else
+            history_status=$?
+            if [ "$history_status" = 3 ]; then
+              decide true "no retained successful DevNet-suite artifact, deployed $deployed"
+            else
+              decide false "cannot verify retained DevNet-suite history"
+            fi
+            exit 0
           fi
 
-          if [[ ! "$last" =~ ^[0-9a-f]{40}$ ]]; then decide true "no last tested commit, deployed $deployed"; exit 0; fi
           if [ "$deployed" = "$last" ]; then decide false "deployed $deployed is the last tested commit"; exit 0; fi
           if [ "$GITHUB_EVENT_NAME" != workflow_run ]; then decide true "deployed $deployed, last tested $last"; exit 0; fi
           if ! merges=$(git rev-list --first-parent --count "$last..$deployed" 2>/dev/null); then

@@ -10,7 +10,7 @@ package candidatearena
 // small-object size class (32 KiB). One fewer is rounded up to the same class
 // and wastes the tail; one more makes each chunk a large object. Each chunk retains stable
 // pointers until the scan and its retained candidates are no longer referenced.
-const ChunkSize = 55
+const ChunkSize = 51
 
 // Arena is a bump allocator over chunks of request-local candidates. The
 // zero value is ready to use; it is single-goroutine (one per scan).

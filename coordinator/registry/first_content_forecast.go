@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/identitygate"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 	"github.com/eigeninference/d-inference/coordinator/registry/firstcontent"
 )
@@ -35,7 +36,9 @@ type firstContentSnapshot struct {
 	capacityAcceptedAt          time.Time
 	capacitySeq                 uint64
 	performanceAgeMs            int32
+	decodePerformanceAgeMs      int32
 	evidenceGapAgeMs            int32
+	exploration                 identitygate.ExplorationView
 	isolatedPrefillTPS          float64
 	isolatedPrefillInitialized  bool
 	wholeMacBusy                bool

@@ -1264,6 +1264,25 @@ the configured database. CI provides a
 a substitute for the complete coordinator runner and explicit race/database
 validation; run the full set before merging.
 
+#### Idle-provider routing recovery
+
+The routing regression suites use real registry reservations, injected
+measurement histories and virtual-clock heartbeat feedback. Run the focused
+selection and two-hour starvation simulations before the complete coordinator
+suite:
+
+```bash
+go test ./coordinator/tests/registry ./coordinator/tests/registry/routingsim \
+  -run 'TestIdleDecode|TestExploredIdleProvider|TestClosedLoop' -count=1
+```
+
+The simulation's idle-wait bound applies to its fixed fleet and arrival schedule;
+it is not a promise that every production provider receives traffic. Keep the
+exploration-backoff and inference-outcome tests in the full suite as well:
+recovering an idle provider must not repeatedly select a genuinely slow one.
+All tests stay under `coordinator/tests/`; no live coordinator or provider model
+is needed for these routing checks.
+
 #### Offline OpenRouter caller conformance
 
 Scenarios, fixtures and observers live in `coordinator/tests/internal/conformance/`.

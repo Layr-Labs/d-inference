@@ -137,6 +137,11 @@ func (s *Controller) CancelDispatchForFirstContentTimeout(
 	pr.Profile.Mark(registry.StampCancelSent)
 	s.SendRecordedCancel(provider, pr.RequestID, pr.Model, CauseFirstChunkTimeout)
 	s.RefundProviderExtra(pr)
+	// Only the timeout that claimed the attempt backs exploration off; a
+	// provider terminal or on-time ingress above must keep its own outcome.
+	if pr.ClaimFirstContentExplorationOutcome() {
+		s.Registry.RecordFirstContentExplorationOutcome(provider.ID, pr.Model, false)
+	}
 	return true
 }
 

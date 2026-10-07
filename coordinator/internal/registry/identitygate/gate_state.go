@@ -14,6 +14,7 @@ const (
 	gateFlagErrorCooldown
 	gateFlagCapacityCooldown
 	gateFlagBudgetClamp
+	gateFlagExploration
 )
 
 // modelShapeKey identifies an inference-error bucket inside one gate:
@@ -82,6 +83,7 @@ type State struct {
 	capacityCooldownTrips map[string]int                    // capacity_cooldown.go
 	budgetClamps          map[string]*budgetClampEntry      // budget_clamp.go
 	capacityRateHistory   RateHistory                       // capacity_rate.go
+	exploration           map[string]*firstContentExplorationEntry
 }
 
 func newGateState(key string) *State {
@@ -114,6 +116,13 @@ func (g *State) publishLocked() {
 	}
 	if len(g.budgetClamps) > 0 {
 		flags |= gateFlagBudgetClamp
+	}
+	for _, e := range g.exploration {
+		// Replay watermarks and healthy tombstones do not affect routing reads.
+		if e.level > 0 || len(e.decode) > 0 {
+			flags |= gateFlagExploration
+			break
+		}
 	}
 	g.pairFlags.Store(flags)
 	g.newestRateRejectNS.Store(g.capacityRateHistory.newestRejectNS())

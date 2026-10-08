@@ -39,7 +39,7 @@ func ensureAutopilotRewardEnrollment(ctx context.Context, tx pgx.Tx, machine aut
 		return enrollment, err
 	}
 	if enrollment != nil {
-		if enrollment.BaselineSource == earningsfloor.TrackedBaseline && !enrollment.HistoryConflict {
+		if (enrollment.BaselineSource == earningsfloor.TrackedBaseline || enrollment.BaselineSource == earningsfloor.CohortBaseline) && !enrollment.HistoryConflict {
 			complete, err := autopilotRewardTrackingComplete(ctx, tx, machine, pool, *enrollment.FirstOptInAt)
 			if err != nil {
 				return nil, err
@@ -67,17 +67,19 @@ func ensureAutopilotRewardEnrollment(ctx context.Context, tx pgx.Tx, machine aut
 		enrollment.NextDay = floorpolicy.Day(pool.TrackingStartedAt)
 	}
 	if enrollment.BaselineKnown {
-		enrollment.SevenDayEarningsMicroUSD, err = sumAutopilotInference(ctx, tx, machine, firstPositive.Add(-floorpolicy.BaselineDuration), *firstPositive)
-		if err != nil {
+		enrollment.SevenDayEarningsMicroUSD, enrollment.BaselineSource, enrollment.BaselineEvidence, err = autopilotRewardBaseline(ctx, tx, machine, *firstPositive)
+		if errors.Is(err, earningsfloor.ErrHistory) {
+			enrollment.BaselineKnown = false
+		} else if err != nil {
 			return nil, err
 		}
+	}
+	if enrollment.BaselineKnown {
 		enrollment.DailyFloorMicroUSD, err = floorpolicy.DailyFloor(enrollment.SevenDayEarningsMicroUSD)
 		if err != nil {
 			return nil, err
 		}
 		enrollment.FirstOptInAt = firstPositive
-		enrollment.BaselineSource = earningsfloor.TrackedBaseline
-		enrollment.BaselineEvidence = "tracked_inference_history"
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO autopilot_reward_enrollments(machine_id,account_id,first_observed_at,first_opt_in_at,
 	 seven_day_earnings_micro_usd,daily_floor_micro_usd,baseline_known,baseline_source,baseline_evidence,next_day)
@@ -112,7 +114,7 @@ func projectAutopilotRewardEnrollment(ctx context.Context, tx pgx.Tx, machine au
 	projected := *enrollment
 	projected.MachineID = machine.id
 	var err error
-	projected.OptedIn, projected.ObservedAt, err = autopilotConsentAt(ctx, tx, machine.ancestors, nil)
+	projected.OptedIn, _, projected.ObservedAt, err = autopilotConsentAt(ctx, tx, machine.ancestors, nil)
 	return projected, err
 }
 

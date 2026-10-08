@@ -91,12 +91,26 @@ func (f *autopilotRewardsFixture) observe(t *testing.T, observation store.Machin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !observation.Disconnected {
+		before := f.clock.Load()
+		f.clock.Store(observation.At.UnixMicro())
+		err := f.backend.OpenProviderSession(t.Context(), observation.SessionID, "", observation.AccountID)
+		f.clock.Store(before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.backend.TouchProviderSession(t.Context(), observation.SessionID, "", observation.AccountID, "", time.UnixMicro(before)); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := f.backend.CloseProviderSession(t.Context(), observation.SessionID, "fixture disconnect", observation.At); err != nil {
+		t.Fatal(err)
+	}
 	return machine
 }
 
 func (f *autopilotRewardsFixture) consent(t *testing.T, session, account string, optedIn bool, at time.Time) earningsfloor.Enrollment {
 	t.Helper()
-	enrollment, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: session, AccountID: account, Supported: true, OptedIn: optedIn, At: at})
+	enrollment, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: session, AccountID: account, Supported: true, Qualified: true, OptedIn: optedIn, At: at})
 	if err != nil {
 		t.Fatal(err)
 	}

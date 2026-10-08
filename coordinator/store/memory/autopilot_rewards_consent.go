@@ -3,7 +3,9 @@ package memory
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/payments/floorpolicy"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -36,7 +38,8 @@ func (s *MemoryStore) ObserveAutopilotConsent(ctx context.Context, consent earni
 		return earningsfloor.Enrollment{}, err
 	}
 	consent.At = consent.At.UTC().Truncate(time.Microsecond)
-	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (!consent.Supported && consent.OptedIn) {
+	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (!consent.Supported && consent.OptedIn) ||
+		len(consent.Chip) > 128 || !utf8.ValidString(consent.Chip) || consent.MemoryGB < 0 || math.IsNaN(consent.MemoryGB) || math.IsInf(consent.MemoryGB, 0) {
 		return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
 	}
 	s.mu.Lock()
@@ -122,7 +125,11 @@ func (s *MemoryStore) ObserveAutopilotConsent(ctx context.Context, consent earni
 }
 
 func sameAutopilotRewardConsent(a, b earningsfloor.Consent) bool {
-	return a.Supported == b.Supported && a.OptedIn == b.OptedIn
+	return sameAutopilotRewardState(a, b) && a.Chip == b.Chip && a.MemoryGB == b.MemoryGB
+}
+
+func sameAutopilotRewardState(a, b earningsfloor.Consent) bool {
+	return a.Supported == b.Supported && a.OptedIn == b.OptedIn && a.Qualified == b.Qualified
 }
 
 func (s *MemoryStore) autopilotRewardDeclarationsLocked(machine autopilotRewardMachine) (autopilotRewardDeclarations, error) {
@@ -138,7 +145,7 @@ func (s *MemoryStore) autopilotRewardDeclarationsLocked(machine autopilotRewardM
 		}
 		last := history.events[len(history.events)-1].Consent
 		last.At = history.observedAt
-		if last.At.Equal(declarations.latest.At) && !sameAutopilotRewardConsent(last, declarations.latest) {
+		if last.At.Equal(declarations.latest.At) && !sameAutopilotRewardState(last, declarations.latest) {
 			ambiguous = true
 		}
 		if last.At.After(declarations.latest.At) {
@@ -189,7 +196,7 @@ func (s *MemoryStore) autopilotRewardEnrollmentLocked(ctx context.Context, machi
 			enrollment.NextDay = floorpolicy.Day(tracking)
 		}
 		if s.autopilotRewardTrackingCompleteLocked(machine, declarations, first) {
-			sum, err := s.autopilotRewardInferenceLocked(ctx, machine, first.Add(-floorpolicy.BaselineDuration), first)
+			sum, source, evidence, err := s.autopilotRewardBaselineLocked(ctx, machine, first)
 			if err != nil && !errors.Is(err, earningsfloor.ErrHistory) {
 				return earningsfloor.Enrollment{}, err
 			}
@@ -200,8 +207,8 @@ func (s *MemoryStore) autopilotRewardEnrollmentLocked(ctx context.Context, machi
 				}
 				enrollment.FirstOptInAt, enrollment.BaselineKnown = &first, true
 				enrollment.SevenDayEarningsMicroUSD, enrollment.DailyFloorMicroUSD = sum, floor
-				enrollment.BaselineSource = earningsfloor.TrackedBaseline
-				enrollment.BaselineEvidence = "tracked_inference_history"
+				enrollment.BaselineSource = source
+				enrollment.BaselineEvidence = evidence
 			}
 		}
 	}
@@ -215,7 +222,7 @@ func (s *MemoryStore) autopilotRewardHistoryConflictLocked(machine autopilotRewa
 	if !enrollment.BaselineKnown {
 		return false
 	}
-	if enrollment.BaselineSource == earningsfloor.TrackedBaseline && !s.autopilotRewardTrackingCompleteLocked(machine, declarations, *enrollment.FirstOptInAt) {
+	if (enrollment.BaselineSource == earningsfloor.TrackedBaseline || enrollment.BaselineSource == earningsfloor.CohortBaseline) && !s.autopilotRewardTrackingCompleteLocked(machine, declarations, *enrollment.FirstOptInAt) {
 		return true
 	}
 	if !declarations.firstPositive.IsZero() && declarations.firstPositive.Before(*enrollment.FirstOptInAt) {
@@ -284,7 +291,7 @@ func projectAutopilotRewardEnrollment(enrollment earningsfloor.Enrollment, canon
 	return enrollment
 }
 
-func (s *MemoryStore) autopilotRewardOptedInBeforeLocked(machine autopilotRewardMachine, end time.Time) (bool, error) {
+func (s *MemoryStore) autopilotRewardConsentBeforeLocked(machine autopilotRewardMachine, end time.Time) (bool, bool, error) {
 	var latest earningsfloor.Consent
 	ambiguous := false
 	for session := range machine.sessions {
@@ -292,7 +299,7 @@ func (s *MemoryStore) autopilotRewardOptedInBeforeLocked(machine autopilotReward
 			if !event.observedAt.Before(end) {
 				break
 			}
-			if event.observedAt.Equal(latest.At) && !sameAutopilotRewardConsent(event.Consent, latest) {
+			if event.observedAt.Equal(latest.At) && !sameAutopilotRewardState(event.Consent, latest) {
 				ambiguous = true
 			}
 			if event.observedAt.After(latest.At) {
@@ -303,7 +310,7 @@ func (s *MemoryStore) autopilotRewardOptedInBeforeLocked(machine autopilotReward
 		}
 	}
 	if ambiguous {
-		return false, earningsfloor.ErrIdentity
+		return false, false, earningsfloor.ErrIdentity
 	}
-	return latest.Supported && latest.OptedIn, nil
+	return latest.Supported && latest.OptedIn, latest.Qualified, nil
 }

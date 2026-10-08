@@ -72,8 +72,17 @@ func TestAutopilotRewardWorkerUsesSharedEndForLateEnrollment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	savedNow := *now
+	*now = floorpolicy.Day(*now)
+	if err := st.OpenProviderSession(t.Context(), "late-session", "", "late-owner"); err != nil {
+		t.Fatal(err)
+	}
+	*now = savedNow
+	if err := st.TouchProviderSession(t.Context(), "late-session", "", "late-owner", "late-key", end); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{
-		SessionID: "late-session", AccountID: "late-owner", Supported: true, OptedIn: true, At: *now,
+		SessionID: "late-session", AccountID: "late-owner", Supported: true, Qualified: true, OptedIn: true, At: *now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,9 +127,15 @@ func rewardWorkerFixture(t *testing.T, restore bool) (*memory.MemoryStore, *auto
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := st.OpenProviderSession(t.Context(), "worker-session", "", "worker-account"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchProviderSession(t.Context(), "worker-session", "", "worker-account", "worker-key", time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
 	now = now.AddDate(0, 0, 8)
 	if _, err := st.ObserveAutopilotConsent(context.Background(), earningsfloor.Consent{
-		SessionID: "worker-session", AccountID: "worker-account", Supported: true, OptedIn: true, At: now,
+		SessionID: "worker-session", AccountID: "worker-account", Supported: true, Qualified: true, OptedIn: true, At: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +226,7 @@ func TestAutopilotRewardWorkerWithholdsConflictedFrozenHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.ObserveAutopilotConsent(context.Background(), earningsfloor.Consent{
-		SessionID: "earlier-session", AccountID: "worker-account", Supported: true, OptedIn: true, At: now.AddDate(0, 0, -3),
+		SessionID: "earlier-session", AccountID: "worker-account", Supported: true, Qualified: true, OptedIn: true, At: now.AddDate(0, 0, -3),
 	}); err != nil {
 		t.Fatal(err)
 	}

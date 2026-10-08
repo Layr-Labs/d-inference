@@ -434,14 +434,21 @@ flowchart TD
   C -->|"not yet"| D["Retain raw journal; retry binding"]
   D --> C
   C -->|"yes"| E{"First-ever history known?"}
-  E -->|"no"| F["Hold baseline unknown; audited admin backfill"]
-  E -->|"yes"| G["Freeze baseline once"]
-  F --> G
+  E -->|"no"| F["Hold baseline unknown; preserve anchor"]
+  E -->|"yes"| Q{"Enough personal earnings history?"}
+  Q -->|"yes"| G["Freeze personal baseline once"]
+  Q -->|"no"| R{"Comparable mature cohort exists?"}
+  R -->|"yes"| G2["Freeze cohort baseline once"]
+  R -->|"no"| F
+  F -->|"Verified admin import"| G
   G --> M{"SettleClosedDays: history conflict?"}
+  G2 --> M
   M -->|"yes"| N["Hold machine; preserve frozen baseline"]
   M -->|"no"| H["Next closed UTC day before shared end"]
-  H --> I["SettleAutopilotRewardDay: consent at close and actual income snapshot"]
-  I --> J{"Full shortfall funded?"}
+  H --> I{"SettleAutopilotRewardDay: saved consent,<br/>captured qualification and daily uptime?"}
+  I -->|"opted out / ineligible"| L0["Final unpaid receipt; advance day"]
+  I -->|"eligible"| I2["Read daily actual income snapshot"]
+  I2 --> J{"Full shortfall funded?"}
   J -->|"no"| K["Pending pool_exhausted; retry and recompute"]
   K --> I
   J -->|"yes, or no payment due"| L["Atomic final receipt and any credit; advance day"]
@@ -469,14 +476,27 @@ the store holds history rather than guessing. The history checks are in
 `coordinator/store/postgres/autopilot_rewards.go` (`autopilotRewardTrackingComplete`)
 and the corresponding memory implementation.
 
+Known first-ever consent and complete personal earnings history are separate
+conditions. A newly observed machine may have a known opt-in anchor and too
+little personal history for its baseline. The store then selects comparable
+mature canonical machines under the
+[cohort rules](../reference/pricing-model.md#autopilot-rewards), excluding the
+enrollee's aliases and deduplicating peers. It freezes the resulting mean once;
+turning Autopilot off/on or later accumulating personal history does not replace
+that cohort baseline. Missing comparable evidence leaves history pending rather
+than a fabricated zero (`coordinator/store/postgres/autopilot_rewards_cohort.go`,
+`autopilotRewardBaseline`; `coordinator/store/memory/autopilot_rewards_cohort.go`,
+`autopilotRewardBaselineLocked`). Cohort fallback does not
+establish an unknown first-ever opt-in or bypass the creation-history proof.
+
 `RestoreAutopilotBaseline` accepts the true first-ever instant, its preceding
 inference total and evidence identifying both sources. This is a privileged
 attestation of history, not automatic verification of the supplied evidence.
 It fills only a missing baseline; it does not create old consent events, move
 the first tracked positive day backward or rewrite a frozen value. The explicit
 [`baseline_source`](../reference/api-contracts.md#autopilot-reward-administration)
-distinguishes an automatic freeze from an evidenced import independently of the
-evidence string. Follow the
+distinguishes personal and cohort automatic freezes from an evidenced import
+independently of the evidence string. Follow the
 [backfill runbook](../operations/autopilot-rewards.md), not an inferred launch date.
 
 Earlier positive evidence from another session is retained even if a later
@@ -508,10 +528,18 @@ continuous history from a receive timestamp, pending-write log or later reconnec
 #### Settlement ownership
 
 The store selects the last durable declaration strictly before each UTC close
-and requires it to qualify as saved opt-in; it does not skip a later
-nonqualifying declaration to reuse an earlier opt-in.
-Today's live readiness, pause, shadow mode and connection status do not decide
-yesterday's eligibility. The [wire declaration](../reference/protocol-messages.md#model_autopilot-state)
+and requires saved opt-in plus the qualification captured with that declaration;
+it does not skip a later nonqualifying declaration to reuse an earlier one.
+Qualification uses trusted OS evidence and accepted downloaded catalog inventory,
+under the [daily policy](../reference/pricing-model.md#autopilot-rewards).
+The machine's daily uptime comes from the union of attributable provider sessions,
+with heartbeat and disconnect boundaries clipped to that UTC day. Aliases and
+overlapping sessions cannot inflate uptime. Opted-out and ineligible days finalize
+without payment or pool spending, then advance the cursor.
+
+Today's live readiness, OS, model list, pause or shadow mode does not replace
+yesterday's captured qualification and online history. Legacy qualification rows
+remain unqualified. The [wire declaration](../reference/protocol-messages.md#model_autopilot-state)
 separates saved consent from scheduling participation. Sequential daily receipts
 preserve each day's result; retries never replace a prior day with today's income.
 The calculation reads a committed earnings snapshot, not a quiescence barrier

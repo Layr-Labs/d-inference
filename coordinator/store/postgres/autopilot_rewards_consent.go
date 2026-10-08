@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/payments/floorpolicy"
 	"github.com/eigeninference/d-inference/coordinator/store/earningsfloor"
@@ -12,7 +14,8 @@ import (
 
 func (s *PostgresStore) ObserveAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) (earningsfloor.Enrollment, error) {
 	consent.At = consent.At.UTC().Truncate(time.Microsecond)
-	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (consent.OptedIn && !consent.Supported) {
+	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (consent.OptedIn && !consent.Supported) ||
+		len(consent.Chip) > 128 || !utf8.ValidString(consent.Chip) || consent.MemoryGB < 0 || math.IsNaN(consent.MemoryGB) || math.IsInf(consent.MemoryGB, 0) {
 		return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
 	}
 	if consent.At.After(s.now()) {
@@ -74,19 +77,21 @@ func (s *PostgresStore) journalAutopilotConsent(ctx context.Context, consent ear
 	// session's earlier evidence; timestamp-ordered projections prevent it from
 	// regressing current consent without losing a first-ever positive instant.
 	var at, observedAt time.Time
-	var optedIn, supported bool
-	err = tx.QueryRow(ctx, `SELECT at,last_observed_at,opted_in,supported FROM autopilot_reward_consents
+	var optedIn, supported, qualified bool
+	var chip string
+	var memoryGB float64
+	err = tx.QueryRow(ctx, `SELECT at,last_observed_at,opted_in,supported,qualified,chip,memory_gb FROM autopilot_reward_consents
 	 WHERE session_id=$1 ORDER BY last_observed_at DESC LIMIT 1`, consent.SessionID).
-		Scan(&at, &observedAt, &optedIn, &supported)
+		Scan(&at, &observedAt, &optedIn, &supported, &qualified, &chip, &memoryGB)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
 	if errors.Is(err, pgx.ErrNoRows) || consent.At.After(observedAt) {
-		if err == nil && optedIn == consent.OptedIn && supported == consent.Supported && floorpolicy.Day(at).Equal(floorpolicy.Day(consent.At)) {
+		if err == nil && optedIn == consent.OptedIn && supported == consent.Supported && qualified == consent.Qualified && chip == consent.Chip && memoryGB == consent.MemoryGB && floorpolicy.Day(at).Equal(floorpolicy.Day(consent.At)) {
 			_, err = tx.Exec(ctx, `UPDATE autopilot_reward_consents SET last_observed_at=$3 WHERE session_id=$1 AND at=$2`, consent.SessionID, at, consent.At)
 		} else {
-			_, err = tx.Exec(ctx, `INSERT INTO autopilot_reward_consents(machine_id,at,last_observed_at,account_id,session_id,opted_in,supported)
-			 VALUES($1,$2,$2,$3,$4,$5,$6)`, journalMachine, consent.At, consent.AccountID, consent.SessionID, consent.OptedIn, consent.Supported)
+			_, err = tx.Exec(ctx, `INSERT INTO autopilot_reward_consents(machine_id,at,last_observed_at,account_id,session_id,opted_in,supported,qualified,chip,memory_gb)
+			 VALUES($1,$2,$2,$3,$4,$5,$6,$7,$8,$9)`, journalMachine, consent.At, consent.AccountID, consent.SessionID, consent.OptedIn, consent.Supported, consent.Qualified, consent.Chip, consent.MemoryGB)
 		}
 		if err != nil {
 			return "", err
@@ -107,24 +112,25 @@ func bindAutopilotRewardConsents(ctx context.Context, tx pgx.Tx, machine autopil
 
 // Each watermark is confined to its row's UTC day. A merge can therefore use
 // the last durable declaration before day end without rewriting earlier days.
-func autopilotConsentAt(ctx context.Context, tx pgx.Tx, ancestors []string, before *time.Time) (bool, time.Time, error) {
+func autopilotConsentAt(ctx context.Context, tx pgx.Tx, ancestors []string, before *time.Time) (bool, bool, time.Time, error) {
 	var observedAt *time.Time
-	var allIn, anyIn, allSupported, anySupported bool
+	var allIn, anyIn, allSupported, anySupported, allQualified, anyQualified bool
 	err := tx.QueryRow(ctx, `WITH declarations AS (
-	 SELECT last_observed_at,opted_in,supported FROM autopilot_reward_consents
+	 SELECT last_observed_at,opted_in,supported,qualified FROM autopilot_reward_consents
 	 WHERE machine_id=ANY($1::text[]) AND ($2::timestamptz IS NULL OR last_observed_at<$2)
 	), latest AS (SELECT * FROM declarations WHERE last_observed_at=(SELECT max(last_observed_at) FROM declarations))
 	 SELECT max(last_observed_at),COALESCE(bool_and(opted_in),false),COALESCE(bool_or(opted_in),false),
-	 COALESCE(bool_and(supported),false),COALESCE(bool_or(supported),false) FROM latest`, ancestors, before).
-		Scan(&observedAt, &allIn, &anyIn, &allSupported, &anySupported)
+	 COALESCE(bool_and(supported),false),COALESCE(bool_or(supported),false),
+	 COALESCE(bool_and(qualified),false),COALESCE(bool_or(qualified),false) FROM latest`, ancestors, before).
+		Scan(&observedAt, &allIn, &anyIn, &allSupported, &anySupported, &allQualified, &anyQualified)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, false, time.Time{}, err
 	}
-	if allIn != anyIn || allSupported != anySupported {
-		return false, time.Time{}, earningsfloor.ErrIdentity
+	if allIn != anyIn || allSupported != anySupported || allQualified != anyQualified {
+		return false, false, time.Time{}, earningsfloor.ErrIdentity
 	}
 	if observedAt == nil {
-		return false, time.Time{}, nil
+		return false, false, time.Time{}, nil
 	}
-	return allIn && allSupported, observedAt.UTC(), nil
+	return allIn && allSupported, allQualified, observedAt.UTC(), nil
 }

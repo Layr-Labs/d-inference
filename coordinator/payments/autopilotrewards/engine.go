@@ -93,7 +93,7 @@ func (e *Engine) SettleClosedDays(ctx context.Context) (Result, error) {
 					result.PoolPending++
 				case earningsfloor.HistoryRequired:
 					result.HistoryPending++
-				case earningsfloor.Paid, earningsfloor.Zero, earningsfloor.OptedOut:
+				case earningsfloor.Paid, earningsfloor.Zero, earningsfloor.OptedOut, earningsfloor.Ineligible:
 					result.ProcessedDays++
 					day = day.AddDate(0, 0, 1)
 					continue

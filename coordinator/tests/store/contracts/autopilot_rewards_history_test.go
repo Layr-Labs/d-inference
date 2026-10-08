@@ -70,7 +70,7 @@ func TestAutopilotRewardsDelayedSessionConsentPreservesFirstOptIn(t *testing.T) 
 		}
 		f.earning(t, "first", "owner", 70, f.optIn.Add(-48*time.Hour))
 		f.earning(t, "second", "owner", 140, f.optIn.Add(time.Hour))
-		delayed := earningsfloor.Consent{SessionID: "first", AccountID: "owner", Supported: true, OptedIn: true, At: f.optIn}
+		delayed := earningsfloor.Consent{SessionID: "first", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: f.optIn}
 		// Registration read loops run independently: a later opt-out can reach
 		// the store before the other session's original accepted opt-in.
 		optOutAt := f.optIn.Add(time.Second)
@@ -319,7 +319,7 @@ func TestAutopilotRewardsConsentWatermarksAcrossAliases(t *testing.T) {
 			}
 		}
 		future := time.UnixMicro(f.clock.Load()).Add(time.Microsecond)
-		if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "positive", AccountID: "owner", Supported: true, OptedIn: true, At: future}); err == nil {
+		if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "positive", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: future}); err == nil {
 			t.Fatal("accepted a future server observation")
 		}
 		if got := readAutopilotRewardEnrollment(t, f, merged.ID); got.OptedIn || !got.ObservedAt.Equal(unsupportedAt) {

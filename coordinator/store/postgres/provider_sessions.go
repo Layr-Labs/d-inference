@@ -19,10 +19,10 @@ func (s *PostgresStore) OpenProviderSession(ctx context.Context, sessionID, seri
 		return err
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO provider_sessions (session_id, serial_number, account_id)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO provider_sessions (session_id, serial_number, account_id, connected_at, last_seen)
+		 VALUES ($1, $2, $3, $4, $4)
 		 ON CONFLICT (session_id) DO NOTHING`,
-		sessionID, serial, accountID,
+		sessionID, serial, accountID, s.now(),
 	)
 	if err != nil {
 		return fmt.Errorf("store: open provider session: %w", err)

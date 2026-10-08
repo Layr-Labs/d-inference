@@ -22,8 +22,8 @@ func TestAutopilotRewardsUnboundConsentSurvivesBinding(t *testing.T) {
 				}
 				for _, consent := range []earningsfloor.Consent{
 					{SessionID: "lost", AccountID: "owner", Supported: true, At: f.start},
-					{SessionID: "lost", AccountID: "owner", Supported: true, OptedIn: true, At: f.optIn},
-					{SessionID: "lost", AccountID: "owner", Supported: true, OptedIn: true, At: f.optIn.Add(time.Hour)},
+					{SessionID: "lost", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: f.optIn},
+					{SessionID: "lost", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: f.optIn.Add(time.Hour)},
 					{SessionID: "lost", AccountID: "owner", Supported: true, At: f.optIn.Add(2 * time.Hour)},
 				} {
 					got, err := f.rewards.ObserveAutopilotConsent(t.Context(), consent)
@@ -39,6 +39,18 @@ func TestAutopilotRewardsUnboundConsentSurvivesBinding(t *testing.T) {
 				// the delayed inventory write. Listing must bind the durable journal.
 				machine := f.observe(t, store.MachineObservation{SessionID: "lost", AccountID: "owner", SEKey: "se", Disconnected: true, At: f.optIn.Add(3 * time.Hour)})
 				got := readAutopilotRewardEnrollment(t, f, machine.ID)
+				if !got.BaselineKnown {
+					// A newly bound short-history machine has no comparable peer.
+					// Restore verified earnings without replacing its journal anchor.
+					if !got.FirstObservedAt.Equal(f.optIn) {
+						t.Fatalf("lost original opt-in: %+v", got)
+					}
+					var err error
+					got, err = f.rewards.RestoreAutopilotBaseline(t.Context(), earningsfloor.Baseline{MachineID: machine.ID, FirstOptInAt: f.optIn, SevenDayEarningsMicroUSD: 70, Evidence: "verified original unbound opt-in and inference history"})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 				if !got.BaselineKnown || got.FirstOptInAt == nil || !got.FirstOptInAt.Equal(f.optIn) || !got.FirstObservedAt.Equal(f.optIn) || got.SevenDayEarningsMicroUSD != 70 || got.OptedIn || !got.ObservedAt.Equal(f.optIn.Add(2*time.Hour)) {
 					t.Fatalf("lazy binding lost the original declaration history: %+v", got)
 				}
@@ -79,7 +91,7 @@ func TestAutopilotRewardsEarlierUnresolvedOptInBlocksAutoBaseline(t *testing.T) 
 		t.Run(earlierAccount, func(t *testing.T) {
 			autopilotRewardsBackends(t, func(t *testing.T, f *autopilotRewardsFixture) {
 				earlier := f.optIn.Add(-24 * time.Hour)
-				if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "unresolved", AccountID: earlierAccount, Supported: true, OptedIn: true, At: earlier}); !errors.Is(err, earningsfloor.ErrIdentity) {
+				if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "unresolved", AccountID: earlierAccount, Supported: true, Qualified: true, OptedIn: true, At: earlier}); !errors.Is(err, earningsfloor.ErrIdentity) {
 					t.Fatalf("unbound original declaration = %v", err)
 				}
 				machine := f.observe(t, store.MachineObservation{SessionID: "current", AccountID: "owner", SEKey: "current-se", At: f.start})
@@ -249,7 +261,7 @@ func TestAutopilotRewardsRejectsConflictingOwners(t *testing.T) {
 				} else if err := f.backend.OpenProviderSession(t.Context(), "session", "", "owner"); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "session", AccountID: "intruder", Supported: true, OptedIn: true, At: f.optIn}); !errors.Is(err, earningsfloor.ErrIdentity) {
+				if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "session", AccountID: "intruder", Supported: true, Qualified: true, OptedIn: true, At: f.optIn}); !errors.Is(err, earningsfloor.ErrIdentity) {
 					t.Fatalf("accepted known wrong session owner: %v", err)
 				}
 				f.observe(t, observation)
@@ -272,7 +284,7 @@ func TestAutopilotRewardsRejectsConflictingOwners(t *testing.T) {
 			if merged.ID != first.MachineID {
 				t.Fatal("fixture did not produce a multi-owner canonical identity")
 			}
-			if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "first", AccountID: "owner", Supported: true, OptedIn: true, At: f.optIn.Add(3 * time.Hour)}); !errors.Is(err, earningsfloor.ErrIdentity) {
+			if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "first", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: f.optIn.Add(3 * time.Hour)}); !errors.Is(err, earningsfloor.ErrIdentity) {
 				t.Fatalf("multi-owner consent = %v", err)
 			}
 			if _, err := f.rewards.RestoreAutopilotBaseline(t.Context(), earningsfloor.Baseline{MachineID: merged.ID, FirstOptInAt: f.optIn, SevenDayEarningsMicroUSD: 70, Evidence: "audit"}); !errors.Is(err, earningsfloor.ErrIdentity) {
@@ -298,7 +310,7 @@ func TestAutopilotRewardsEarningAttribution(t *testing.T) {
 				if err := f.backend.OpenProviderSession(t.Context(), session.id, "", session.account); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.backend.TouchProviderSession(t.Context(), session.id, "", session.account, session.key, f.start); err != nil {
+				if err := f.backend.TouchProviderSession(t.Context(), session.id, "", session.account, session.key, time.UnixMicro(f.clock.Load())); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -344,7 +356,7 @@ func TestAutopilotRewardsEarningAttribution(t *testing.T) {
 					if err := f.backend.OpenProviderSession(t.Context(), session, "", "owner"); err != nil {
 						t.Fatal(err)
 					}
-					if err := f.backend.TouchProviderSession(t.Context(), session, "", "owner", "ambiguous-key", f.start); err != nil {
+					if err := f.backend.TouchProviderSession(t.Context(), session, "", "owner", "ambiguous-key", time.UnixMicro(f.clock.Load())); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -359,7 +371,7 @@ func TestAutopilotRewardsEarningAttribution(t *testing.T) {
 				for i, session := range []string{"first", "second"} {
 					var err error
 					if phase == "baseline" {
-						_, err = f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: session, AccountID: "owner", Supported: true, OptedIn: true, At: f.optIn})
+						_, err = f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: session, AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: f.optIn})
 					} else {
 						_, err = f.rewards.SettleAutopilotRewardDay(t.Context(), machines[i], f.optIn.Truncate(24*time.Hour))
 					}

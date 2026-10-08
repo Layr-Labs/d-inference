@@ -18,6 +18,7 @@ const maxPendingAutopilotConsents = 256
 // must never replace the first receive time or skip a short opt-in/opt-out.
 type autopilotRewardCapture struct {
 	store                store.AutopilotRewardsStore
+	registry             *registry.Registry
 	logger               *slog.Logger
 	sessionID, accountID string
 	pending              []earningsfloor.Consent
@@ -32,7 +33,7 @@ func (s *Owner) newAutopilotRewardCapture(sessionID, authenticatedAccountID stri
 		s.logger.Warn("autopilot consent tracking unavailable", "reason", "unsupported_store")
 		return nil
 	}
-	return &autopilotRewardCapture{store: rewards, logger: s.logger, sessionID: sessionID, accountID: authenticatedAccountID}
+	return &autopilotRewardCapture{store: rewards, registry: s.registry, logger: s.logger, sessionID: sessionID, accountID: authenticatedAccountID}
 }
 
 func (c *autopilotRewardCapture) observe(ctx context.Context, provider *registry.Provider, receivedAt time.Time) bool {
@@ -43,9 +44,10 @@ func (c *autopilotRewardCapture) observe(ctx context.Context, provider *registry
 	// flushes share one deadline rather than doubling the read-loop stall.
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	optedIn, supported := provider.AutopilotRewardConsentSnapshot()
+	declaration := c.registry.AutopilotRewardDeclaration(provider)
+	declaration.SessionID, declaration.AccountID, declaration.At = c.sessionID, c.accountID, receivedAt
 	n := len(c.pending)
-	duplicate := n > 0 && c.pending[n-1].OptedIn == optedIn && c.pending[n-1].Supported == supported
+	duplicate := n > 0 && sameAutopilotRewardState(c.pending[n-1], declaration)
 	if n == maxPendingAutopilotConsents && !duplicate {
 		c.flush(ctx, nil)
 		if len(c.pending) == maxPendingAutopilotConsents {
@@ -58,10 +60,13 @@ func (c *autopilotRewardCapture) observe(ctx context.Context, provider *registry
 	// Even an unbound session's repeat must reach the raw journal with its
 	// current timestamp. Only failed adjacent duplicates are compacted below;
 	// this transient extra observation does not add a pending transition.
-	c.flush(ctx, &earningsfloor.Consent{
-		SessionID: c.sessionID, AccountID: c.accountID, OptedIn: optedIn, Supported: supported, At: receivedAt,
-	})
+	c.flush(ctx, &declaration)
 	return true
+}
+
+func sameAutopilotRewardState(a, b earningsfloor.Consent) bool {
+	return a.OptedIn == b.OptedIn && a.Supported == b.Supported && a.Qualified == b.Qualified &&
+		a.Chip == b.Chip && a.MemoryGB == b.MemoryGB
 }
 
 func (c *autopilotRewardCapture) flush(ctx context.Context, current *earningsfloor.Consent) {
@@ -83,7 +88,7 @@ func (c *autopilotRewardCapture) flush(ctx context.Context, current *earningsflo
 		// straddle an intervening transition that already succeeded.
 		if current != nil && index == len(pending)-1 && previousRetained {
 			last := c.pending[len(c.pending)-1]
-			if last.OptedIn == declaration.OptedIn && last.Supported == declaration.Supported {
+			if sameAutopilotRewardState(last, declaration) {
 				return
 			}
 		}

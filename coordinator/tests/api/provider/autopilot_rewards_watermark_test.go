@@ -56,6 +56,14 @@ func TestAutopilotConsentCaptureUnboundRepeatAdvancesMergedDayState(t *testing.T
 	if err != nil || bound.ID != machine.ID {
 		t.Fatalf("late binding did not resolve the same machine: %+v, %v", bound, err)
 	}
+	// These captured sessions have no mature hardware cohort. Restore an
+	// explicitly verified baseline so settlement can evaluate day-state history
+	// independently from the intentionally unavailable baseline evidence.
+	if _, err := st.RestoreAutopilotBaseline(t.Context(), earningsfloor.Baseline{
+		MachineID: machine.ID, FirstOptInAt: first.At, Evidence: "verified fixture first consent and zero inference earnings",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	rows, err := st.AutopilotRewardEnrollments(t.Context(), "", 100)
 	if err != nil || len(rows) != 1 || !rows[0].OptedIn || !rows[0].ObservedAt.Equal(latest.At) || rows[0].FirstOptInAt == nil || !rows[0].FirstOptInAt.Equal(first.At) {
 		t.Fatalf("late alias binding lost day-three state or reanchored first opt-in: %+v, %v", rows, err)
@@ -63,7 +71,7 @@ func TestAutopilotConsentCaptureUnboundRepeatAdvancesMergedDayState(t *testing.T
 	for _, expectation := range []struct {
 		day    time.Time
 		status string
-	}{{day1, earningsfloor.Zero}, {day2, earningsfloor.OptedOut}, {day3, earningsfloor.Zero}} {
+	}{{day1, earningsfloor.Ineligible}, {day2, earningsfloor.OptedOut}, {day3, earningsfloor.Ineligible}} {
 		receipt, err := st.SettleAutopilotRewardDay(t.Context(), machine.ID, expectation.day)
 		if err != nil || receipt.Status != expectation.status {
 			t.Fatalf("day %v state = %+v, %v; want %s", expectation.day, receipt, err, expectation.status)

@@ -68,8 +68,8 @@ func TestAutopilotConsentCaptureDelayedInventoryAndChallengeRetry(t *testing.T) 
 				t.Fatalf("challenge path did not retry the original declaration: %+v", calls)
 			}
 			rows := f.enrollments(t)
-			if len(rows) != 1 || !rows[0].BaselineKnown || rows[0].FirstOptInAt == nil || !rows[0].FirstOptInAt.Equal(first.At.Truncate(time.Microsecond)) {
-				t.Fatalf("binding/retry changed first opt-in: %+v", rows)
+			if len(rows) != 1 || !rows[0].OptedIn || rows[0].BaselineKnown || rows[0].FirstOptInAt != nil || !rows[0].FirstObservedAt.Equal(first.At.Truncate(time.Microsecond)) {
+				t.Fatalf("binding/retry changed first consent or invented missing cohort history: %+v", rows)
 			}
 		})
 	}
@@ -140,7 +140,7 @@ func TestAutopilotConsentCaptureAcceptedStateAndRepeatCheckpoints(t *testing.T) 
 	// The capture releases provider and registry locks before touching storage.
 	f.store.failBeforeConsent(func(_ context.Context, declaration earningsfloor.Consent) error {
 		p := f.owner.registry.GetProvider(declaration.SessionID)
-		p.AutopilotRewardConsentSnapshot()
+		f.owner.registry.AutopilotRewardSnapshot(p)
 		return nil
 	})
 	for seq := uint64(1); seq <= 3; seq++ {
@@ -269,7 +269,7 @@ func TestAutopilotConsentCaptureRegistrationSurvivesLostSocket(t *testing.T) {
 		return f.owner.registry.GetProvider(first.SessionID) == nil
 	})
 	rows := f.enrollments(t)
-	if len(rows) != 1 || !rows[0].OptedIn || !rows[0].BaselineKnown || rows[0].FirstOptInAt == nil || !rows[0].FirstOptInAt.Equal(first.At.Truncate(time.Microsecond)) {
+	if len(rows) != 1 || !rows[0].OptedIn || rows[0].BaselineKnown || rows[0].FirstOptInAt != nil || !rows[0].FirstObservedAt.Equal(first.At.Truncate(time.Microsecond)) {
 		t.Fatalf("disconnect lost the original positive declaration: %+v", rows)
 	}
 	calls := f.store.snapshot()

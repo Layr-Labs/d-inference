@@ -152,7 +152,7 @@ func TestAutopilotRewardsErasureMarkerRejectsBeforeCreditTriggers(t *testing.T) 
 	if _, err := f.SettleAutopilotRewardDay(ctx, enrollment.MachineID, floorpolicy.Day(first)); !errors.Is(err, store.ErrErasureConflict) {
 		t.Fatalf("erased marker allowed settlement: %v", err)
 	}
-	if _, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "provider", AccountID: "owner", Supported: true, OptedIn: true, At: first.Add(time.Hour)}); !errors.Is(err, store.ErrErasureConflict) {
+	if _, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "provider", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: first.Add(time.Hour)}); !errors.Is(err, store.ErrErasureConflict) {
 		t.Fatalf("erased marker allowed renewed consent: %v", err)
 	}
 	assertSameLines(t, "before erased account attempts", before, "after refused operations", queryLines(t, f.pool, autopilotFinancialSnapshotSQL))

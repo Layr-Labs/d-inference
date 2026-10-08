@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -24,6 +24,15 @@ before the container swap.
 
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
+
+For a machine-selected Autopilot rollout, follow the separate
+[selection and recovery checks](model-autopilot.md). Set each approved canonical
+machine's persisted `desired_mode` to `live` through admin
+`PATCH /v1/admin/autopilot/machines/{machine_id}`, not an environment allowlist.
+Machine edits apply without restart; live control still requires
+`EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=false`, verified identity, provider consent
+and acknowledgement. The default desired mode is `shadow`. Deployment alone
+does not authorize selecting or promoting machines.
 
 For bank payout configuration and validation, follow [Global Payouts](global-payouts.md) and the [Stripe account cutover](stripe-migration.md). The global-only cutover is explicit and remains false in release defaults; deploying code alone does not switch accounts.
 

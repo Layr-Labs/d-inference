@@ -339,7 +339,7 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
             try await server.ensureModelLoaded(id)
             let entries = await server.existingSlotGrants(excludingModelId: "")
             let entry = try XCTUnwrap(entries.first { $0.slot.modelId == id })
-            let minimum = await entry.bridge.minimumServiceableNativeGrantBytes()
+            let minimum = await entry.bridge.minimumServiceableGrantBytes()
             XCTAssertEqual(entry.minimumGrantBytes, minimum)
             XCTAssertGreaterThan(minimum, Int(UnifiedMemoryCap.minimumLoadKVBytes))
             XCTAssertTrue(StandaloneServer.resliceKeepsSlotsServiceable([id: minimum], existing: entries))

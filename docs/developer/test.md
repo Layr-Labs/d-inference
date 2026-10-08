@@ -9,7 +9,7 @@ Run from the repository root with the pinned Go toolchain and an isolated local
 
 ```bash
 go test -race ./coordinator/tests/payments/autopilotrewards -count=1
-go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|Migration|Migrate' -count=1
+go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|AutopilotConsent|Migration|Migrate' -count=1
 go test -race ./coordinator/tests/api/provider ./coordinator/tests/api/operations/contracts ./coordinator/tests/api ./coordinator/tests/registry -run 'AutopilotReward|AutopilotConsent' -count=1
 go test ./coordinator/tests/protocol -run Autopilot -count=1
 ```
@@ -25,6 +25,7 @@ isolate databases and coordinate the local server's connection budget.
 | Exact first-ever window, sponsored inference, whole first partial day, immutable baseline, history gaps, canonical aliases, per-day consent, pool retry and single-count earnings | `coordinator/tests/store/contracts/` (`autopilot_rewards_test.go`, `autopilot_rewards_history_test.go`, `autopilot_rewards_identity_test.go`) |
 | Delayed cross-session consent and frozen-history conflicts without rewriting finalized receipts | `coordinator/tests/store/contracts/autopilot_rewards_history_test.go` (`TestAutopilotRewardsDelayedSessionConsentPreservesFirstOptIn`, `TestAutopilotRewardsLateEarlierConsentFlagsFrozenHistory`) |
 | Migration/schema equivalence, restart persistence, concurrent cap/deduplication and rollback of all financial writes | `coordinator/tests/store/postgres/` (`autopilot_rewards_migration_test.go`, `autopilot_rewards_test.go`, `autopilot_rewards_atomicity_test.go`) |
+| Concurrent independent consent journals, exclusive inventory exclusion, per-session ownership and session-local binding | `coordinator/tests/store/postgres/autopilot_consent_concurrency_test.go` |
 | Authenticated original receive time, pre-binding journal, accepted heartbeat state, daily checkpoints and bounded failed-write queue | `coordinator/tests/api/provider/autopilot_rewards_test.go`, `autopilot_rewards_queue_test.go` in the same directory; `coordinator/tests/registry/autopilot_reward_snapshot_test.go` |
 | Admin auth, exact money JSON, immutable backfill and independently default-off config | `coordinator/tests/api/operations/contracts/autopilot_rewards_test.go`; `coordinator/tests/api/autopilot_rewards_config_test.go` |
 
@@ -4439,6 +4440,12 @@ regressions also run in the coordinator/provider unit and race suites. Real
 production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
+
+The conditional gate uses a separate organization-membership read token.
+`python3 .github/scripts/test-threat-bedrock.py` checks active member identity,
+outsiders, bots, pending membership, repeat lookups and the independent human
+review path. The budget suite checks that local validator reasons remain visible
+without exposing raw provider output. See [review configuration](threat-model-review.md).
 
 The threat-review preflight checks the configured OpenRouter budget mode and
 remaining normal-attempt capacity as well as writer access and funding. Offline

@@ -50,8 +50,26 @@ func (s *PostgresStore) validateAutopilotConsent(consent earningsfloor.Consent) 
 	return consent, nil
 }
 
+func (s *PostgresStore) beginAutopilotConsentWrite(ctx context.Context, consent earningsfloor.Consent) (pgx.Tx, error) {
+	tx, err := s.beginAutopilotAccountWrite(ctx, consent.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	// Serialize one session's ownership and watermark without queueing the fleet.
+	// Merges and settlement retain exclusive ownership of the inventory barrier.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('autopilot-consent'), hashtext($1))`, consent.SessionID); err != nil {
+		rollbackErasureTx(tx)
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(9952701)`); err != nil {
+		rollbackErasureTx(tx)
+		return nil, err
+	}
+	return tx, nil
+}
+
 func (s *PostgresStore) journalAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) (string, error) {
-	tx, err := s.beginAutopilotRewardWrite(ctx, consent.AccountID)
+	tx, err := s.beginAutopilotConsentWrite(ctx, consent)
 	if err != nil {
 		return "", err
 	}
@@ -89,7 +107,10 @@ func (s *PostgresStore) journalAutopilotConsent(ctx context.Context, consent ear
 	var journalMachine *string
 	if identityErr == nil {
 		journalMachine = &machine.id
-		if err := bindAutopilotRewardConsents(ctx, tx, machine); err != nil {
+		// Shared inventory readers bind only their own session. Bulk ancestry
+		// binding stays under the materializer's exclusive inventory barrier.
+		if _, err := tx.Exec(ctx, `UPDATE autopilot_reward_consents SET machine_id=$3
+		 WHERE session_id=$1 AND account_id=$2 AND machine_id IS NULL`, consent.SessionID, consent.AccountID, machine.id); err != nil {
 			return "", err
 		}
 	}

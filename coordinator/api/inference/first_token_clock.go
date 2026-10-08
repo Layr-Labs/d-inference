@@ -37,7 +37,7 @@ func (d *dispatchState) firstContentClock() firstcontent.Clock {
 }
 
 func (d *dispatchState) firstTokenExpired() bool {
-	return d != nil && d.firstContentClock().Expired()
+	return d != nil && d.firstContentClock().ForPending(d.pr).Expired()
 }
 
 // abandonInflightForFirstTokenTimeout cancels a request already on the wire
@@ -54,7 +54,7 @@ func (d *dispatchState) abandonInflightForFirstTokenTimeout() bool {
 	result := d.s.NewInflightAbandon(attempt.TimeoutConfig{
 		Model: d.model, Provider: d.provider, Pending: d.pr,
 		RequestID: d.requestID, Attempt: d.attempt,
-	}).Run(d.deadline)
+	}).Run(d.firstContentClock().ForPending(d.pr).Duration(d.deadline))
 	d.provider, d.pr = result.Provider, result.Pending
 	if !result.Claimed {
 		return false

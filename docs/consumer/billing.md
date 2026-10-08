@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -103,6 +103,21 @@ If you also operate a provider, distinguish completed-inference earnings from
 macOS 27 or later and current qualified App Attest authorization for every
 provider, old or new, not legacy MDM alone. This does not
 remove previously earned balances or change payment for completed inference.
+
+For an opted-in Autopilot machine, check earnings history separately for daily
+[Autopilot floor top-ups](../reference/pricing-model.md#autopilot-rewards).
+Paid top-ups increase both spendable and withdrawable balance and appear once as
+`base_reward` earnings, not as additional inference requests. They do not change
+consumer prices or ordinary base rewards. If a top-up is missing, ask the operator
+to check the machine's saved-consent history, captured OS/model eligibility,
+daily uptime, baseline source and funded pool using the
+[reward runbook](../operations/autopilot-rewards.md); enrollment alone does not
+mean payments are enabled or funded. A machine with shorter personal history can
+receive a comparable-machine baseline under the [cohort policy](../reference/pricing-model.md#autopilot-rewards).
+Do not toggle enrollment to reset either baseline source.
+November 7, 2026 is the final eligible UTC day for everyone, including late
+joiners; its reward settles at midnight November 8. Earlier unpaid rewards remain
+payable under the [same funding rules](../reference/pricing-model.md#autopilot-rewards).
 
 ### 4. Understand what a request costs you
 

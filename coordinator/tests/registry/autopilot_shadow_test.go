@@ -13,17 +13,29 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/warmplan"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestAutopilotShadowLeasePlansWithoutChangingResidencyOrLegacyAdmission(t *testing.T) {
+	for _, mode := range []string{"global shadow", "empty live cohort", "outside live cohort"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := autopilot.DefaultConfig()
+			cfg.ObserveOnly = mode == "global shadow"
+			testAutopilotShadowServing(t, cfg, mode == "outside live cohort")
+		})
+	}
+}
+
+func testAutopilotShadowServing(t *testing.T, cfg autopilot.Config, selectOtherMachine bool) {
+	t.Helper()
 	posture := newDeadlineObservations()
 	pendingLoads := &pendingload.Ledger{}
 	w := newWriterFixture(0, 8, nil, nil, nil, nil)
 	var warmFleet func(time.Time) map[string]warmplan.Fleet
 	var residencyCommands, legacyLoads int
 	var interceptLegacyLoad bool
-	r, c, now := newAutopilotControllerTest(t, true, posture.configure, func(deps *production.Dependencies) {
+	r, c, now := newAutopilotControllerTestConfig(t, cfg, posture.configure, func(deps *production.Dependencies) {
 		deps.PendingLoads = pendingLoads
 		deps.Connections = autopilotDeliveryWriters{"shadow": w}
 		deps.AutopilotSender = func(string, protocol.ModelAutopilotMessage) error { residencyCommands++; return nil }
@@ -47,6 +59,9 @@ func TestAutopilotShadowLeasePlansWithoutChangingResidencyOrLegacyAdmission(t *t
 			})
 		}
 	})
+	if selectOtherMachine {
+		r.selectLiveMachines(t, 10)
+	}
 	p := autopilotControllerProvider(t, r, "shadow", now, autopilotTestDonor)
 	// The sequence-establishing heartbeat is fixture setup, not placement work.
 	posture.forProvider(p.ID).Reset()
@@ -57,11 +72,11 @@ func TestAutopilotShadowLeasePlansWithoutChangingResidencyOrLegacyAdmission(t *t
 	beforePublic := r.ModelCapacitySnapshot()
 	beforeFleet := warmFleet(now)
 	beforeCold := r.ColdSpillProviders(autopilotTestTarget, production.RequestTraits{}, false)
-	if !r.AutopilotSnapshot().ObserveOnly {
-		t.Fatal("admin snapshot hides shadow mode before the first tick")
+	if r.AutopilotSnapshot().ObserveOnly != cfg.ObserveOnly {
+		t.Fatal("admin snapshot changed the global operator switch")
 	}
 	summary := c.Tick(now)
-	if !summary.ObserveOnly || summary.Proposed != 1 || summary.Issued != 0 || residencyCommands != 0 {
+	if summary.ObserveOnly != cfg.ObserveOnly || summary.Shadow != 1 || summary.ShadowProposed != 1 || summary.LiveProposed != 0 || summary.Proposed != 1 || summary.Issued != 0 || residencyCommands != 0 {
 		t.Fatalf("shadow did not produce an inert useful plan: %+v", summary)
 	}
 	var control protocol.ModelAutopilotControl

@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -132,11 +132,16 @@ type is in [billing.md](../architecture/billing.md#ledger).
 | `admin_reward` | `LedgerAdminReward` | `POST /v1/admin/reward` | yes |
 | `migration` | `LedgerMigration` | balance moved between account identities | both columns move |
 | `provider_floor_draw` | `LedgerFloorDraw` | base-rewards epoch draw, reference `<epoch_id>` | yes |
+| `autopilot_floor_topup` | `LedgerAutopilotFloor` | [Autopilot daily shortfall](#autopilot-rewards), reference `autopilot-floor:<original enrollment machine ID>:<YYYY-MM-DD>` (`coordinator/store/ledger_types.go`) | yes |
 | `erasure_forfeit` | `LedgerErasureForfeit` | account erasure zeroes the balance, reference `erasure:<request_id>` | debit (both columns to 0) |
 
 `RewardLedgerTypes = [referral_reward, admin_reward]` — counted as "reward"
 rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
-(`coordinator/store/interface.go` `IsRewardLedgerType`).
+(`coordinator/store/ledger_types.go`, `IsRewardLedgerType`).
+
+`autopilot_floor_topup` is not in `RewardLedgerTypes`: its single synthetic
+`provider_earnings` row already contributes to earnings totals, so adding the
+ledger credit again would double count (`coordinator/store/ledger_types.go`).
 
 ## Balance primitives
 
@@ -150,6 +155,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 | `CreditProviderAccount` | + | + | on `provider_earnings.job_id` | `CreditProviderAccount`; index `idx_provider_earnings_job` |
 | `FinalizeConsumerCharge` | consumer adjustment; + reward to referrer | consumer debit cap; + reward to referrer | on `consumer_charge_settlements.job_id`; consumer settlement and reward share one transaction | `coordinator/store/postgres/consumer_settlement.go` |
 | `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres/base_rewards.go` |
+| `SettleAutopilotRewardDay` | + | + | one finalized canonical-machine/UTC-day receipt across aliases; credit, earning, summary, receipt and pool spending are atomic | `coordinator/store/postgres/autopilot_rewards_settlement.go`; `coordinator/store/memory/autopilot_rewards_settlement.go` |
 
 ## Per-key spend caps
 
@@ -222,6 +228,78 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 
 `settleCandidatePlan` commits all pending rows atomically through `FloorDrawBatchStore`, rechecking current session authorization before each planned credit and before commit. A late rejection rolls back the pending plan and triggers reallocation under the same pool/account caps. Canonical identities, endpoint continuity and prior finalized rows follow the [provider authorization contract](provider-authorization.md#machine-identity-and-base-rewards). Code: `coordinator/payments/baserewards/settlement_plan.go`, `coordinator/store/floor_draw_batch.go`.
 
+## Autopilot rewards
+
+This independently funded daily inference-earnings floor applies only to saved
+Autopilot opt-ins. The [billing mechanism](../architecture/billing.md#autopilot-rewards)
+explains consent history and settlement; [operations](../operations/autopilot-rewards.md)
+covers funding and historical baseline repair. Ordinary [base rewards](#base-rewards)
+remain separate and unchanged.
+
+| Rule | Contract | Citation |
+|---|---|---|
+| Baseline instant `T` | Machine's first-ever Autopilot opt-in, frozen once; restart, reconnect, key rotation, configuration revision and off/on do not re-anchor it | `coordinator/store/postgres/autopilot_rewards.go` (`ensureAutopilotRewardEnrollment`, `RestoreAutopilotBaseline`); `coordinator/store/memory/autopilot_rewards.go` |
+| Baseline window | Exactly `[T - 168 hours, T)`, not seven preceding UTC dates or a common launch cutoff | `coordinator/internal/payments/floorpolicy/math.go` (`BaselineDuration`); `coordinator/store/postgres/autopilot_rewards.go` |
+| Personal-history baseline | Canonical machine `first_seen <= T - BaselineDuration` establishes enough personal history to use its own attributed inference sum for the baseline window; complete first-ever consent proof is still required | `coordinator/store/postgres/autopilot_rewards_cohort.go` (`autopilotRewardBaseline`); `coordinator/store/memory/autopilot_rewards_cohort.go` (`autopilotRewardBaselineLocked`) |
+| Cohort fallback | With shorter history, use the arithmetic mean of seven-day inference sums for other canonical machines with the same chip generation, performance tier and exact finite positive memory. Each peer needs `first_seen <= T - BaselineDuration`, verified account/machine attribution and matching peer hardware observed by the same `T`; target hardware comes from its original server-received positive consent (with at-or-before-`T` inventory only for legacy declarations); exclude the target and all its aliases, count each canonical peer once, and include mature zero-earning peers. Compute each peer over `[T - 168 hours, T)`, floor the mean to whole micro-USD, then apply `DailyFloor` once | `coordinator/store/postgres/autopilot_rewards_cohort.go` (`autopilotRewardBaseline`, `autopilotRewardCohortKey`); `coordinator/store/memory/autopilot_rewards_cohort.go` (`autopilotRewardBaselineLocked`); `coordinator/internal/payments/floorpolicy/cohort.go` (`ParseCohortKey`, `CohortBaselineValue`) |
+| Missing cohort | No comparable mature peers, unknown/conflicting historical hardware or incomplete attributable history leaves `baseline_known=false`; never substitute a measured zero, a different memory/chip tier or a later opt-in. A later freeze still uses the original first-ever anchor and baseline window | same |
+| Earnings basis | Sum attributed inference payout `AmountMicroUSD`, including sponsored/promotional inference; exclude `model='base_reward'`, other rewards and referral income. Not consumer-funded-only earnings | `coordinator/store/postgres/autopilot_rewards_identity.go` (`sumAutopilotInference`); `coordinator/store/memory/autopilot_rewards_identity.go` |
+| Fixed daily floor | `floor(seven_day_earnings_micro_usd * 11 / 70)`: divide by seven and multiply by 110%, rounding down only once to whole micro-USD, with overflow-safe integer arithmetic | `coordinator/internal/payments/floorpolicy/math.go` (`DailyFloor`) |
+| Shared final day | November 7, 2026 UTC is included for every enrollee. `EndsAt()` is `2026-11-08T00:00:00Z`, the exclusive accrual cutoff; joining later never extends it. Earlier eligible days remain settleable afterward, including pending funding retries | `coordinator/internal/payments/floorpolicy/math.go` (`EndsAt`, `ValidateDay`); `coordinator/payments/autopilotrewards/engine.go` (`SettleClosedDays`) |
+| Daily top-up | `max(0, daily_floor_micro_usd - inference_micro_usd)` for that closed UTC day only. A strong later day does not cancel an earlier day's shortfall | `coordinator/store/postgres/autopilot_rewards_settlement.go` (`SettleAutopilotRewardDay`); `coordinator/store/memory/autopilot_rewards_settlement.go` |
+| Day-close eligibility | Last durable consent strictly before the next UTC midnight must qualify as saved Autopilot opt-in and carry `Qualified=true`: a public provider has current full App Attest serving authorization whose authenticated OS evidence is macOS 27 or later, Autopilot is enabled with a current inventory declaration, and at least two distinct saved selected models are reported downloaded and eligible. Pause, shadow/observation and an absent live lease do not themselves opt out or disqualify saved inventory | `coordinator/store/postgres/autopilot_rewards_consent.go` (`autopilotConsentAt`); `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardSnapshot`); `coordinator/internal/payments/rewardeligibility/os.go` (`OSVersionEligible`) |
+| Downloaded model eligibility | Exact current catalog membership, nonempty matching promoted weight hash, current runtime requirements, no explicit template-render failure and hardware fit. Count each ID once; duplicate selected or downloaded IDs fail qualification. Fresh cached observation-only inventory can qualify; residency/loading and an active control lease are not required. Missing or disabled catalog policy does not grant eligibility | `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardSnapshot`) |
+| Daily uptime | At least 90% of the entire UTC day, including a first partial enrollment day. Union the canonical machine's provider-session online intervals across aliases; clip them to the day and the earlier of each session's disconnect and last heartbeat plus the ordinary `90s` heartbeat grace. Overlapping/reconnected sessions do not multiply uptime | `coordinator/store/postgres/autopilot_rewards_uptime.go` (`autopilotRewardUptime`); `coordinator/store/memory/autopilot_rewards_uptime.go` (`autopilotRewardUptimeLocked`); `coordinator/internal/payments/rewardpolicy/uptime.go` (`UptimeByProviderKey`) |
+| Authorization time | Captured qualification uses the server receive instant: `IssuedAt <= receivedAt < ValidUntil`, plus current binding, policy, revocation and privacy guards. Later processing or a newly granted lease cannot qualify an earlier UTC day | `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardDeclarationAt`); `coordinator/registry/app_attest_authorization.go` (`providerAppAttestServingAuthorizedAtLocked`) |
+| Consent recording | Socket capture calls `RecordAutopilotConsent` within its one-second write budget. Success includes an unbound durable declaration; it performs no baseline calculation or reward-pool lock. Worker/enrollment listing materializes baselines later, using the original opt-in window. PostgreSQL reads cohort identities/hardware and matching earnings in two set-based queries rather than per-machine round trips | `coordinator/store/earnings_floor.go` (`AutopilotConsentJournal`); `coordinator/store/postgres/autopilot_rewards_cohort_peers.go` (`autopilotRewardCohortEarnings`) |
+| Qualification history | The coordinator captures qualification and bounded chip/memory hardware beside server-timestamped saved-consent declarations, preserving first-registration hardware even when trusted inventory binds later. Legacy rows default to `qualified=false`; current OS/model state does not backfill yesterday's evidence | `coordinator/store/earningsfloor/types.go` (`Consent`); `coordinator/store/postgres/schema/migrations/00032_autopilot_reward_eligibility.sql` |
+| First partial day | Full daily floor less all inference earnings in that UTC day, including earnings before a midday enrollment; no prorating. Accrual begins with the first positive observation under this tracker, not a backfilled historical opt-in day | `coordinator/store/postgres/autopilot_rewards.go` (`ensureAutopilotRewardEnrollment`); `coordinator/store/postgres/autopilot_rewards_settlement.go` |
+| Pool | Separate cumulative `cap_micro_usd` and `spent_micro_usd`, both initially `0`. Admin sets an absolute nonnegative cap, never below spending; raising it funds/refills the remaining allowance. No automatic calendar reset, base-budget binding, 10%-of-base funding or per-enrollee extension | `coordinator/store/postgres/schema/migrations/00031_autopilot_rewards.sql`; `coordinator/store/postgres/autopilot_rewards_pool.go` (`SetAutopilotRewardPoolCap`) |
+
+For a seven-day inference sum of $70, the daily floor is $11. Daily inference
+earnings of $8, $10 and $12 produce separate top-ups of $3, $1 and $0 respectively,
+subject to eligibility and pool funding (`DailyFloor`, `SettleAutopilotRewardDay`).
+
+History state is independent of funding and current connection state:
+
+| History state | Contract | Citation |
+|---|---|---|
+| Missing first-ever history | Unknown baseline is not zero: `baseline_known=false`, `first_opt_in_at=null`; verified admin evidence is required before payment. Backfill cannot rewrite a frozen baseline or manufacture earlier daily consent | `coordinator/store/earningsfloor/types.go` (`Enrollment`, `Baseline`); `coordinator/store/postgres/autopilot_rewards.go` |
+| Automatic history revalidation | Automatically frozen baselines recheck the same creation-history proof after late binding/merges, including older unsupported declarations and pretracking ancestors; frozen earnings are not recalculated. An evidenced admin import does not conflict merely because that pretracking/unsupported history exists. Source values are defined in the [enrollment API](api-contracts.md#autopilot-reward-administration), not inferred from evidence text | `coordinator/store/postgres/autopilot_rewards.go` (`autopilotRewardTrackingComplete`); `coordinator/store/memory/autopilot_rewards_consent.go` (`autopilotRewardTrackingCompleteLocked`) |
+| Conflicting frozen history | `history_conflict=true` when automatic history proof fails or linked positive history predates either source's frozen anchor, including an unknown-baseline ancestor's earlier observation. Preserve frozen values and finalized receipts; withhold unfinalized days without advancing, including opted-out days. Ordinary baseline import cannot repair a frozen conflict | `coordinator/store/postgres/autopilot_rewards.go` (`ensureAutopilotRewardEnrollment`, `readAutopilotRewardEnrollment`); `coordinator/store/postgres/autopilot_rewards_settlement.go`; `coordinator/store/memory/autopilot_rewards_consent.go` (`autopilotRewardEnrollmentLocked`) |
+
+Settlement statuses are the closed vocabulary in
+`coordinator/store/earningsfloor/types.go` (`Settlement`), implemented by
+`SettleAutopilotRewardDay` in both backends:
+
+| `status` | Payment | Final / cursor effect |
+|---|---|---|
+| `paid` | Full shortfall | Final; advance `next_day` |
+| `zero` | None; eligible day's inference already meets the floor, including a known zero floor | Final; advance `next_day` |
+| `opted_out` | None; last declaration before close is not qualifying saved opt-in | Final; advance `next_day` |
+| `ineligible` | None; saved opt-in fails day-close OS/model qualification or full-day uptime | Final; advance `next_day`; no pool spending |
+| `pool_exhausted` | None; available pool cannot fund the full shortfall | Pending; keep `next_day`, retry after funding and recompute actual inference earnings; never partial payment or final zero |
+| `history_required` | None; frozen history conflicts, or a qualifying day lacks a known baseline or required inference history | Pending; keep `next_day`; never infer zero from missing or conflicting history |
+
+`Engine.SettleClosedDays` counts unknown-baseline or `history_conflict=true`
+enrollments as `history_pending` without calling daily settlement, so a pending
+day need not have a receipt yet. Other machines continue through the same pass.
+The memory backend can also return `history_required` after necessary inference or uptime
+evidence has been pruned; restoring a baseline does not restore that evidence
+(`coordinator/store/memory/autopilot_rewards_settlement.go`, `SettleAutopilotRewardDay`).
+
+Actual earnings are the committed rows visible when that calculation reads
+them, not a guarantee that every future backdated financial row has arrived.
+Pending receipts recalculate; finalized receipts are neither reopened nor
+clawed back (`coordinator/store/postgres/autopilot_rewards_settlement.go`,
+`finalizedAutopilotRewardDay`).
+
+| Worker bound | Value | Citation |
+|---|---|---|
+| Enrollment page | `pageSize = 100` per store call; keyset pagination across the pass | `coordinator/payments/autopilotrewards/engine.go` (`SettleClosedDays`) |
+| Catch-up | `catchUpDays = 31` closed days per machine per pass; a work bound, not an expiry | same |
+| Schedule | Startup pass, then wait until the next UTC midnight. After a pass with pending history, funding, errors or remaining catch-up, wait at most `retryInterval = time.Minute`, or until midnight if sooner | same (`Run`) |
+
 ## Routes
 
 Registered in `coordinator/api/routes.go`. "Auth" is the middleware plus any
@@ -268,6 +346,8 @@ the financial rate limiter ([Constants](#constants)).
 | `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/billing/admin_balance_adjustment.go` (`HandleAdminCredit`) |
 | `POST /v1/admin/reward` | requireAuth; admin | `HandleAdminReward` |
 | `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/billing/base_rewards_handlers.go` (`HandleAdminBaseRewards`) |
+| `GET /v1/admin/autopilot/rewards` | requireAuth; admin | `coordinator/api/autopilot/rewards.go` (`RewardsHandler`); [payloads](api-contracts.md#autopilot-reward-administration) |
+| `PATCH /v1/admin/autopilot/rewards/pool`, `POST /v1/admin/autopilot/rewards/machines/{machine_id}/baseline` | requireAuth + financial; admin | same; independent funding and verified history repair, not live-controller activation |
 
 ### `GET /v1/pricing` response
 
@@ -331,6 +411,7 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_BILLING_MOCK` | mock billing; `Config.Check` rejects it alongside a real Stripe key | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | in-memory reservation holds for `RoleService` accounts | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_BASE_REWARDS`, `EIGENINFERENCE_BASE_REWARDS_K`, `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO`, `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME`, `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | base-rewards engine switch, reduction factor `k`, monthly pool (µUSD), eligibility uptime fraction, per-account cap fraction | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `EIGENINFERENCE_AUTOPILOT_REWARDS` | Daily Autopilot settlement worker only; consent tracking and stored pool cap are independent | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | read by billing config but used for the coordinator's X25519 request-encryption key, not for money | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`IsAdminAuthorized`, `coordinator/api/access/authorize.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`RequirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |

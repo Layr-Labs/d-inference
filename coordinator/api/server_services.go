@@ -11,6 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/payments/autopilotrewards"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
@@ -112,6 +113,10 @@ func (s *Server) SetBaseRewards(e *baserewards.Engine) {
 func (s *Server) BaseRewards() *baserewards.Engine {
 	return s.baseRewards
 }
+
+func (s *Server) SetAutopilotRewards(e *autopilotrewards.Engine) { s.autopilotRewards = e }
+
+func (s *Server) AutopilotRewards() *autopilotrewards.Engine { return s.autopilotRewards }
 
 func (s *Server) SetChallengeInterval(d time.Duration) { s.trust.SetChallengeInterval(d) }
 

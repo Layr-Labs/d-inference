@@ -210,7 +210,7 @@ ownership links before deleting aliases; it stores no serial, UDID or APNs token
 
 The Stripe job columns and `lease_generation` come from
 `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql`.
-`coordinator/store/postgres/schema/migrations/00029_erasure_outbox_privy_user.sql`
+`coordinator/store/postgres/schema/migrations/00033_erasure_outbox_privy_user.sql`
 replaces the target check `erasure_outbox_target_check` with
 `erasure_outbox_target_allowed`, which also allows `privy_user`.
 

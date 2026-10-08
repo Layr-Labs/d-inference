@@ -1,6 +1,6 @@
 # Apply schema migrations in production
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Runbook for applying the goose migrations of a coordinator candidate to the
 production database (Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet`, read
@@ -288,7 +288,7 @@ the image by these rules:
    the fallback too: the expanded outbox check is schema-compatible with older
    readers, but an older scrub loses the contact email before creating a
    cleanup obligation. Do not narrow the target check while `resend_contact`
-   or `privy_user` rows remain. A fallback built before version 29 does not
+   or `privy_user` rows remain. A fallback built before version 33 does not
    know `privy_user`: its scrub replaces the Privy user ID without a
    `privy_user` row, and its outbox worker moves such a row to `manual_action` with
    `unknown outbox target privy_user`, or, in mock billing mode, marks it
@@ -361,6 +361,29 @@ versions 1 to 9 runs in production, so that a goose image is the fallback.
 ### Rollback with queued withdrawals
 
 The withdrawal funding-queue columns and index migrations are additive. Before a rollback, inspect `stripe_withdrawals` and `global_payout_withdrawals` for `status='queued'`. Use an image that understands the queue while queued withdrawals exist: older code leaves reservations stranded and its account-erasure guards do not count that status. Do not discard reservations or infer a refund from a missing payment ID. Code: `coordinator/store/postgres/stripe_withdrawal_queue.go` (`ListStripeWithdrawalQueue`), `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`).
+
+### Rollback with machine Autopilot settings
+
+Versions 29 and 30 add desired mode and revision to `darkbloom_machines`; they do
+not activate live control or restore grants. Older images can ignore those
+columns, but code without database-backed selection does not honor the saved
+cohort. Before rolling back to such an image, obtain approval to force
+`EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` through the deployment procedure.
+Do not rely on the process-local pause surviving restart, remove settings to
+simulate rollback, or assume accepted operations were reversed. Verify actual
+capacity and recovery records with the [Autopilot runbook](model-autopilot.md#rollback).
+Keep the additive columns and their recorded goose versions intact.
+
+### Rollback with Autopilot reward qualification
+
+Versions 31 and 32 retain financial baselines, captured daily qualification and
+receipts independently of the live controller. Before code rollback, follow
+[reward rollback](autopilot-rewards.md#rollback) with approval to disable its
+payment worker. Preserve all four reward tables, qualification fields, cohort
+sources, finalized `ineligible` receipts and goose versions. An older writer
+that omits qualification creates a history gap; a later upgrade cannot infer
+earlier eligibility from current OS or downloaded models. Do not downgrade the
+schema, clear baselines or reset settlement cursors to accommodate older code.
 
 ## Related
 

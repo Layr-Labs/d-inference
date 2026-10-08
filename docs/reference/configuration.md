@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -386,7 +386,7 @@ immediately. A normal start with saved consent preserves the configuration and
 running provider when any selected model cannot be verified. This introduces no
 new configuration setting (`ModelDownloader.verifySelectedModel`).
 
-All coordinator variables below are startup-only and read by
+All controller variables in the following table are startup-only and read by
 `coordinator/registry/autopilot_config.go` (`autopilotConfigFromEnv`); defaults and
 validation live in `coordinator/registry/autopilot/config.go` (`DefaultConfig`, `Config.Check`).
 Provider consent is separate persistent TOML, documented in
@@ -394,17 +394,30 @@ Provider consent is separate persistent TOML, documented in
 See [architecture](../architecture/model-autopilot.md) and
 [rollout](../operations/model-autopilot.md).
 
+Reward payment enablement is separate:
+[`EIGENINFERENCE_AUTOPILOT_REWARDS`](#billing-stripe-and-base-rewards) neither
+enables this controller nor selects live machines. Saved-consent history is
+tracked independently of both flags.
+
 | Variable | Values / type | Default | Effect / source |
 |---|---|---|---|
 | `EIGENINFERENCE_AUTOPILOT_ENABLED` | bool | `true` | Enable demand collection and controller ticks (`autopilotConfigFromEnv`) |
-| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Default shadow rollout: compute/log hypothetical plans and send shadow status leases without residency ownership, reservations, fences or commands. Explicit `false` switches to live control after restart (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`; `autopilot_activation.go`, `refreshControlLeases`) |
+| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Global shadow override. Explicit `false` permits live control only for verified machines with persisted live intent; nonmembers still receive shadow leases and hypothetical planning. Changing this global flag requires restart, but machine edits do not (`autopilotConfigFromEnv`; `autopilot_activation.go`, `refreshControlLeases`, `liveMachineLocked`) |
 | `EIGENINFERENCE_AUTOPILOT_INTERVAL` | Go duration, `1s...1m` | `10s` | Tick cadence (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_DEMAND_WINDOW` | Go duration, `1m...30m` | `5m` | Arrival-window workload aggregation (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_MIN_DWELL`, `EIGENINFERENCE_AUTOPILOT_IDLE_UNLOAD_AFTER` | Go durations, dwell `1m...24h`; idle ≥ dwell and ≤ `24h` | `30m`, `1h` | Replacement residence/idle protection and optional standalone quiet window; provider's longer dwell also binds (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_LOAD_TIME_PRIOR` | Go duration, `1s...5m` | `30s` | Conservative unmeasured load cost; recent exact-build/weight-hash measurements retained after unloading may replace it (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
-| `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Per-tick proposals/commands and managed-operation start budget, accounting for currently observed legacy pending loads; legacy controllers retain separate limits (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`) |
+| `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Each detached shadow pass and live pass has the per-tick action bound and the available actual-operation budget, including legacy pending loads. Only the live pass reserves operations, with concurrency rechecked at reservation; combined proposals can exceed the per-pass bound (`autopilotConfigFromEnv`; `coordinator/internal/registry/autopilotcontrol/controller.go`, `Controller.Tick`) |
 | `EIGENINFERENCE_AUTOPILOT_TARGET_UTILIZATION` | float, `0.1...0.9` | `0.7` | Quality-capacity utilization factor (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
-| `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `true` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle gates (`autopilotConfigFromEnv`; `coordinator/registry/autopilot/planner.go`, `Plan`) |
+| `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `true` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle gates. `false` does not prohibit a load that replaces named victims (`autopilotConfigFromEnv`; `coordinator/registry/autopilot/planner.go`, `Plan`) |
+
+Machine selection is not an environment variable. Persist `desired_mode` through
+the [admin machine API](api-contracts.md#autopilot-machine-settings); its default
+and revision semantics are defined in [storage](../architecture/storage.md#autopilot-machine-settings).
+The registry reads persisted live settings before lease renewal on each tick,
+and applies successful local API edits before returning
+(`coordinator/registry/autopilot_machine_policy.go`,
+`refreshMachineAutopilotPolicy`, `SetMachineAutopilotDesiredMode`).
 
 These implementation defaults have **no environment-variable override** in this
 change; programmatic configuration fields are validated by `autopilot.Config.Check`.
@@ -438,8 +451,13 @@ rebuilds capacity and sends an event heartbeat, independently of the normal
 provider heartbeat timer.
 
 Live control uses a connection/revision lease lasting `3 * Interval + 10s`.
+Select the coordinator-issued `Machine ID` shown by `darkbloom status`, not a
+WebSocket provider ID, account, serial or endpoint key. Legacy inventory rows
+without a verified runtime machine binding remain shadow. If the canonical UUID
+changes, the survivor retains its own desired mode; aliases do not transfer a
+live setting from another identity.
 `POST /v1/admin/autopilot` changes only the runtime pause flag; resume does not
-promote shadow to live or alter startup configuration. Restart resets the
+promote shadow to live, change membership or alter startup configuration. Restart resets the
 operator pause. See `coordinator/registry/autopilot_activation.go`
 (`SetAutopilotPaused`, `refreshControlLeases`).
 
@@ -465,11 +483,21 @@ Prices, the platform fee and the fixed consumer referral reward live in [`../arc
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted Global Payouts key; must be explicit during global-only cutover (no fallback in that mode). |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`HandleGlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reserve balance up front for service-account requests. |
-| `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the hourly base-rewards settlement loop. |
+| `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the ordinary [base-rewards settlement loop](pricing-model.md#base-rewards). |
+| `EIGENINFERENCE_AUTOPILOT_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`, `AutopilotRewardsEnabled`) | Wires the separate daily reward worker in `coordinator/app/services.go` and starts `Engine.Run` in `coordinator/app/lifecycle.go`. Does not stop consent tracking, fund the stored pool, alter base rewards or activate live Autopilot control; [policy and cadence](pricing-model.md#autopilot-rewards). |
 | `EIGENINFERENCE_BASE_REWARDS_K` | float | `0` (additive base income; `1` = legacy max backstop) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reduction factor applied to earnings before the floor is paid. |
 | `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO` | integer µUSD | `9000000000` ($9,000 per month) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Monthly cap on the base-rewards pool. |
 | `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME` | float 0–1 | `0.90` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Uptime fraction required to share in the pool. |
 | `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | float 0–1 (`0` = per machine, no cap) | `0` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Cap on one account's share of the pool. |
+
+Autopilot's independent pool cap is durable state, not an environment-derived
+percentage or monthly base-reward budget. Set it through the
+[reward admin API](api-contracts.md#autopilot-reward-administration); enabling the
+worker alone cannot fund payments or waive the fixed
+[daily OS/model and uptime gates](pricing-model.md#autopilot-rewards).
+`EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME` applies to ordinary base rewards only;
+it does not retune Autopilot daily eligibility. Follow [reward operations](../operations/autopilot-rewards.md)
+for separately approved deployment, funding and historical baseline repair.
 
 ### Model registry, releases and R2/CDN
 
@@ -491,7 +519,7 @@ Prompt sidecar (`coordinator/promptcontract/config.go`, `ReadSupervisorConfig`; 
 | `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT` | absolute directory | `/mnt/disks/userdata/prompt-contracts` (`DefaultArtifactRoot`) | `coordinator/promptcontract/config.go` | Cache of downloaded contract artifacts. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_BASE_URL` | `https://` URL without query or credentials | `https://models.darkbloom.ai` | `coordinator/promptcontract/config.go` | Origin artifacts are downloaded from. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_TIMEOUT_MS` | ms | `120000` | `coordinator/promptcontract/config.go` | Per-artifact download timeout. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_WORKERS`, `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_MAX_MODELS` | integers, workers ≤ models | `2`, `128` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/provisioner.go` | Provisioning concurrency and the maximum number of models provisioned. |
+| `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_WORKERS`, `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_MAX_MODELS` | integers, workers ≤ models | `2`, `128` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/provisioner.go` | Provisioning concurrency and the maximum number of models provisioned. The actual model bound also bounds full verified preload selection; the independent cache-routing projection limit remains 128 and native contract capacity is unchanged. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_HEADER_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_PRELOAD_TIMEOUT_MS` | ms | `1000`, `1000`, `250`, `120000` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/client.go` | Client deadlines for reading a response header, a render call, a health probe and a preload. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_STARTUP_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_FAILURE_THRESHOLD`, `EIGENINFERENCE_PROMPT_SIDECAR_SHUTDOWN_TIMEOUT_MS` | ms, ms, integer ≥ 2, ms | `120000`, `1000`, `5`, `2000` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/supervisor_defaults.go` (`applySupervisorDefaults`) | Supervisor readiness wait, probe cadence, consecutive failures before a restart, graceful-stop budget. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MIN_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_WINDOW_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_IN_WINDOW`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_COOLDOWN_MS` | ms, ms, ms, integer, ms | `100`, `5000`, `60000`, `3`, `30000` | `coordinator/promptcontract/config.go` | Crash-loop backoff and circuit breaker. |

@@ -11,7 +11,6 @@ import (
 
 	cacheactivation "github.com/eigeninference/d-inference/coordinator/internal/registry/cacheactivation"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheplan"
-	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -113,37 +112,16 @@ func (r *Registry) PlanCacheRouteWithResult(
 	client *promptcontract.Client,
 	input CachePlanInput,
 ) CachePlanResult {
-	if r == nil || client == nil || input.HasMedia ||
-		input.Account == "" || input.Model == "" ||
-		!validLowerHex256(input.PromptContractID) ||
-		!validLowerHex256(input.ModelAggregateSHA256) || len(input.Body) == 0 {
+	if r == nil || cachePlanInputIneligible(client != nil, input) {
 		return CachePlanResult{Outcome: cacheactivation.CachePlanIneligible}
 	}
 
-	r.mu.RLock()
-	mode := r.cacheRoutingMode
-	tracker := r.cacheRouting
-	keys := cacheRouteKeys{
-		route:      append([]byte(nil), r.cacheRouteKeys.route...),
-		scope:      append([]byte(nil), r.cacheRouteKeys.scope...),
-		activation: append([]byte(nil), r.cacheRouteKeys.activation...),
+	state := r.snapshotCachePlanAuthority(input.Model, true)
+	if outcome := cachePlanAuthorityRejection(state, input); outcome != "" {
+		return CachePlanResult{Outcome: outcome}
 	}
-	activation := r.cacheActivation
-	artifacts := r.cacheRoutingAllowedArtifacts
-	catalog, ok := r.modelCatalog[input.Model]
-	r.mu.RUnlock()
-	if mode != CacheRoutingOn || tracker == nil || !tracker.generation.Active() {
-		return CachePlanResult{Outcome: cacheactivation.CachePlanOff}
-	}
-	aggregateHash := strings.ToLower(strings.TrimSpace(catalog.WeightHash))
-	if !ok || len(keys.route) == 0 || len(keys.activation) == 0 ||
-		!validLowerHex256(aggregateHash) || aggregateHash != input.ModelAggregateSHA256 {
-		return CachePlanResult{Outcome: cacheactivation.CachePlanIneligible}
-	}
-
-	if !artifacts.Allows(cachepolicy.Artifact{ModelID: input.Model, ModelAggregateSHA256: input.ModelAggregateSHA256, PromptContractID: input.PromptContractID}) {
-		return CachePlanResult{Outcome: cacheactivation.CachePlanIneligible}
-	}
+	tracker, keys, activation := state.tracker, state.keys, state.activation
+	aggregateHash := strings.ToLower(strings.TrimSpace(state.catalog.WeightHash))
 
 	scope := providerCacheScope(
 		keys.scope,
@@ -160,7 +138,26 @@ func (r *Registry) PlanCacheRouteWithResult(
 	// keyed digest reaches the gate; raw identity/prompt bytes are never stored,
 	// logged, persisted, tagged, or returned.
 	cohort := cacheactivation.Cohort(keys.activation, input.Account, input.Model, input.Body)
-	switch activation.Allow(cohort, time.Now()) {
+	// The diagnostic preflight is not authorization. Revalidate current policy
+	// at the one activation commit; no callback, HMAC or IO runs under this lock.
+	// Gate.Allow holds only its own scalar counter/token mutex and never enters r.
+	r.mu.RLock()
+	currentAuthority := r.cachePlanAuthorityLocked(input.Model, false)
+	if r.cacheRouting != tracker || !tracker.generation.Active() {
+		outcome := cacheactivation.CachePlanIneligible
+		if currentAuthority.mode != CacheRoutingOn {
+			outcome = cacheactivation.CachePlanOff
+		}
+		r.mu.RUnlock()
+		return CachePlanResult{Outcome: outcome}
+	}
+	if outcome := cachePlanAuthorityRejection(currentAuthority, input); outcome != "" {
+		r.mu.RUnlock()
+		return CachePlanResult{Outcome: outcome}
+	}
+	decision := activation.Allow(cohort, time.Now())
+	r.mu.RUnlock()
+	switch decision {
 	case cacheactivation.SampledOut:
 		return CachePlanResult{Outcome: cacheactivation.CachePlanSampledOut}
 	case cacheactivation.Throttled:

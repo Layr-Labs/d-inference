@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -55,6 +55,16 @@ Process ownership uses optional
 The Swift producer, Go consumer and TypeScript mirror share the canonical
 `coordinator/tests/protocol/testdata/process_memory_wire.json` fixture. These scalar
 observations add no event fields.
+
+## Autopilot tick diagnostics
+
+`coordinator/registry/autopilot_control.go` (`newAutopilotControl`) writes the
+structured `model autopilot tick` process log. Its aggregate `live_cohort`,
+`live_active`, `shadow`, `live_proposed` and `shadow_proposed` fields follow the
+[admin summary contract](api-contracts.md#experimental-model-autopilot).
+`observe_only` remains the global switch; it does not label every machine in a
+mixed rollout. These are coordinator process-log attributes, not new fields or
+kinds in `TelemetryEvent`, and contain no machine/account identifiers.
 
 ## Local provider drain events
 

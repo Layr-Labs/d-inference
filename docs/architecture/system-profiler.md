@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -280,11 +280,23 @@ nullable, everything else `NOT NULL DEFAULT` zero. `id BIGSERIAL PRIMARY KEY`,
 Indexes `idx_fleet_snapshots_sampled (sampled_at DESC)`,
 `idx_fleet_snapshots_provider (provider_id, sampled_at DESC)`. INT columns are
 saturated to int32 by `ClampFleetRowInts`. The sampler's lock discipline: one
-short `r.mu.RLock` copies the provider list; phase A reads each provider under
-`p.mu` only; phase B takes a brief `r.mu.RLock` per provider for breaker,
+short `r.mu.RLock` copies the provider list. `fleetSampleColdKVEstimates`
+(`coordinator/registry/fleet_sample_kv.go`) captures one operation-local
+[cold KV forecast](routing.md#cold-model-kv-forecasts) for actual slot probes and
+pending cold work, not unused on-disk advertisements. It gathers requirements
+under each provider's `p.mu`, copies each needed model index under a short
+registry read lease, and validates donors one provider per lease. No registry
+lease spans the participant or donor walk, and the table is reused for the
+sample rather than rebuilt for every provider.
+
+Phase A reads each provider under `p.mu` only; phase B takes a brief
+`r.mu.RLock` per provider for breaker,
 ejection, cooldown, clamp and eligibility through the real routing gates
 (`snapshotProviderIntoLockedEx`, `buildCandidateInto`); a provider
-replaced between phases is dropped. `registry/routingsim`
+replaced between phases is dropped. Destination state and catalog folding are
+rechecked in phase B. This remains an approximate sample: a newly pending model
+not present during forecast capture uses the conservative fallback, and the
+next sample captures fresh evidence. `registry/routingsim`
 (`coordinator/registry/routingsim/fleet_ndjson.go`, `LoadFleetNDJSON`) rebuilds
 a fleet from these rows, capability columns included.
 
@@ -415,7 +427,7 @@ to the replication set, and accepts the hourly retention DELETE volume.
 | Provider profile malformed | `valid = false` with the reason above; `size`/`decode`/`schema` store `NULL`, `range`/`order` store the clamped copy | `profiler.provider_profile{valid:false, reason}` |
 | Non-monotonic coordinator stamps | `timing_anomaly = true`, row always recorded | column |
 | Prune window blocked | `lock_timeout = '2s'` aborts that window; sweep stops at the first error and retries next hour | slog |
-| Sampler holds `r.mu` too long | not possible by design: phase A is `p.mu`-only, phase B is per-provider brief read locks | — |
+| Sampler holds `r.mu` too long | Forecast collection releases the registry lease between donors; phase A is `p.mu`-only and phase B uses per-provider read leases. No lease spans a fleet walk, though any provider lock can still wait | Sampler/index-visit and lock regressions |
 | `request_waterfall` view stale after a new column | `TestRequestWaterfallViewListsEveryProfileColumn` fails until the SQL is updated and re-applied | CI |
 
 ## Not built

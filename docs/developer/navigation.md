@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -37,7 +37,9 @@ Payout funding queues remain within the billing domain. `coordinator/api/billing
 | Pure deadline calibration | `coordinator/registry/firstcontent/`; runtime adapters remain in `coordinator/registry/` |
 | Provider selection, admission, queueing | `coordinator/registry/`; pure calculations in `registry/admission/` and `registry/selection/`, atomic transitions in the registry parent |
 | Autopilot admin HTTP contract | `coordinator/api/autopilot/`; parent API adapter supplies authorization and dependencies |
+| Autopilot rewards and first-ever consent history | `coordinator/api/provider/autopilot_rewards.go` captures authenticated declarations; `coordinator/registry/autopilot_reward_snapshot.go` reads saved consent and trusted OS/model qualification (`AutopilotRewardSnapshot`). `coordinator/payments/autopilotrewards/` owns the closed-day worker; `coordinator/internal/payments/floorpolicy/` owns arithmetic, cohort keys/evidence and the shared accrual cutoff (`EndsAt`, `ValidateDay`); `coordinator/internal/payments/rewardeligibility/` owns OS parsing (`OSVersionEligible`); `coordinator/internal/payments/rewardpolicy/uptime.go` owns session interval unions (`UptimeByProviderKey`). `coordinator/store/earnings_floor.go` defines `AutopilotRewardsStore` and the journal-only `AutopilotConsentJournal`; backend `autopilot_rewards*.go` files own frozen personal/cohort baselines, captured qualification, canonical session uptime and atomic credits. Admin payloads live in `coordinator/api/autopilot/rewards.go` and `rewards_decode.go`. |
 | Autopilot demand, placement and donor coverage | `coordinator/registry/autopilot/`; the registry adapter owns live sessions, reservations and transport |
+| Autopilot machine-cohort authority | `coordinator/store/machine_autopilot.go` persists intent; `coordinator/registry/autopilot_machine_policy.go` serializes admin edits and periodic synchronization; `autopilot_machine_status.go` separates intent from current sessions; `autopilot_activation.go` (`liveMachineLocked`, `refreshControlLeases`) and `autopilot_reservation.go` (`beginAutopilotReservation`) enforce current authority. Detached live/shadow passes in `coordinator/internal/registry/autopilotcontrol/controller.go` retain separate hypothetical state. |
 | Accounting and durable state | `coordinator/billing/`, `coordinator/payments/`; contracts/decorator in `coordinator/store/`, implementations in `store/memory/` and `store/postgres/` |
 | Open Sales Program | `coordinator/api/billing/referrals.go` for account-scoped HTTP; `coordinator/billing/referral.go` for registration, attribution and stats; `coordinator/store/consumer_settlement.go` for the atomic charge contract |
 | Coordinator tests and fixtures | `coordinator/tests/` mirrors production owners; public API contracts use `tests/api/<domain>/contracts/`, shared helpers use `tests/internal/` |
@@ -61,6 +63,8 @@ components for the specific invariant:
 | Middleware, projections and reporting calculations | `coordinator/internal/api/` |
 | Shared request prelude and provider-bound caller-field minimization | `coordinator/internal/inference/prelude/request_prelude.go` (`Parser.Parse`), `coordinator/internal/inference/prelude/provider_body_privacy.go` (`stripProviderCallerIdentity`); bound to the key policy by `coordinator/api/inference/prelude_parser.go` (`NewPreludeParser`) |
 | Media, provider-body memo/sealing, relay, cancellation, promotions/reservations and outcomes | `coordinator/internal/inference/` |
+| Renderer-specific first-content deadlines and attempt clocks | `coordinator/api/inference/first_content_prompt_deadline.go` (`Owner.PromptWorkDeadlineForRequest`); `coordinator/internal/inference/firstcontent/attempt_clock.go` (`Clock.ForPending`) selects the reserved attempt's cutoff |
+| Independent expiry during a speculative race | `coordinator/internal/inference/attempt/race_deadlines.go` (`Race.expireBoundRacer`) retires only the expired attempt after checking ready content |
 | Optional cache-planning decisions and their bounded metric reasons | `coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`), `coordinator/internal/inference/routeplan/cache_planning_telemetry.go` (`CachePlanner.EmitDecision`); bound by `coordinator/api/inference/cache_planner.go` (`NewCachePlanner`) and called from `coordinator/api/inference/prompt_work.go` (`planPromptRoute`) |
 | Uncertain consumer-charge settlement | `coordinator/internal/inference/consumercharge/settlement.go` (`Engine`); the inference owner supplies completion callbacks and `coordinator/app/services.go` runs maintenance |
 | Session/inventory/heartbeat, challenge, identity, MDM and trust authority | `coordinator/internal/provider/` |
@@ -68,10 +72,12 @@ components for the specific invariant:
 | Apple transcript, exchange/evidence/storage, recovery, qualification and authorization | `coordinator/internal/appattest/`; `coordinator/appattest/service/` binds the live session lifecycle and collaborators |
 | Independent route/profile/outcome pipelines | `coordinator/internal/observation/` |
 | Writer lanes/watchdog, drain authority, identity gates, queue-drain coalescing, bounded demand and detached residency/capacity/forecast/deadline policy | `coordinator/internal/registry/` |
+| Cold-model KV forecasts and byte charging | `coordinator/registry/cold_kv_estimate.go` (`coldKVEstimatesLocked`) captures fresh artifact/runtime-matched native observations; `coordinator/registry/fleet_sample_kv.go` (`fleetSampleColdKVEstimates`) captures once per profiler sample with bounded donor leases; `coordinator/internal/registry/memorypolicy/` and `coordinator/internal/registry/kvbudget/` keep forecast rates separate from authoritative slot and pool budgets |
 | Connection age/order and eviction grace | `coordinator/internal/registry/connectiontime/origin.go` (`Origin`), `coordinator/internal/registry/eviction/grace.go` (`Grace`); `coordinator/registry/connection_lifecycle.go` binds maintenance to the live registry; `coordinator/registry/connection_origin.go` (`RegisteredAt`) exposes the immutable origin to inventory capture |
 | Live connection membership and advertisement counts | `coordinator/registry/provider_directory.go` (`ProviderDirectory`) shares `Registry.mu`; `coordinator/internal/registry/modelindex/counts.go` (`Counts`) owns live-advertisement counts |
 | Restore publication and pending service charges | `coordinator/registry/provider_persistence.go` (`ProviderPersistence`), `coordinator/registry/service_reservations.go` (`ServiceReservations`); both retain the provider's existing lock boundaries |
 | Cache restore, maintenance and capability publication | `coordinator/registry/cache_restoration.go`, `coordinator/registry/cache_maintenance.go`, `coordinator/registry/cache_snapshot.go`; factories in `coordinator/registry/cache_dependencies.go` retain the actual tracker/registry |
+| Bounded holder matching with complete cache hints | `coordinator/internal/registry/cachetracker/matching.go` (`Tracker.MatchBoundaries`) and `match_groups.go` (`cacheMatchGroups`); live registry adapters supply the holders and proof fences |
 | Cache receipt attempts and their retained-byte budget | `coordinator/internal/registry/cachetracker/attempt_budget.go` (`CacheAttemptCharge`, `AttemptBudget`), `coordinator/internal/registry/cachetracker/cache_receipts_kernel.go` (`Tracker.StoreAttemptLocked` admits, `RemoveAttemptLocked` refunds), `coordinator/internal/registry/cachetracker/attempt_pressure.go` (reclaims finished requests' records under byte pressure); `coordinator/registry/cache_receipts_v2.go` (`PreparePrefixCacheV2Attempt`) publishes an owner only for an admitted record |
 | Cache-routing artifact allowlist and stale-entry reporting | `coordinator/internal/registry/cachepolicy/artifacts.go` (`ArtifactAllowlist`); configured instance in `coordinator/registry/cache_artifact_allowlist.go`; status count and one-time warning in `coordinator/api/inference/exact_cache_allowlist_staleness.go` |
 | Autopilot session authority, bounded control and pending durable phases | `coordinator/internal/registry/autopilotstate/`, `autopilotcontrol/`, `autopilotledger/`; pure placement and demand contracts remain under `coordinator/registry/autopilot/` |
@@ -81,7 +87,7 @@ components for the specific invariant:
 | Cache generations, memory history, shared records, account erasure rules and SQL helpers | `coordinator/internal/store/`; erasure rules and keys in `coordinator/internal/store/erasure/` |
 | Consumer referral accounting shared by both backends | `coordinator/internal/store/consumersettlement/settlement.go` owns validation, replay, collected-cost and promotion-record rules; `coordinator/store/memory/consumer_settlement.go` and `coordinator/store/postgres/consumer_settlement.go` own atomic writes |
 | Sidecar identity, protocol, artifacts, catalog/preload and endpoint lowering | `coordinator/internal/promptcontract/` |
-| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`PreloadController.ReadyFor`, `Reconcile`) |
+| Sidecar planning admission and per-contract preload readiness | `coordinator/internal/promptcontract/sidecar/plan_admission.go` (`PlanAdmission`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`, `Client.Plan`); `coordinator/internal/promptcontract/preload/controller.go` (`Reconcile`), `coordinator/internal/promptcontract/preload/selection.go` (`PreloadController.ReadyFor`, `PlanningState`); `coordinator/promptcontract/preload_controller.go` (`NewPreloadController`) carries the actual provisioning model bound into `PreloadControllerConfig.MaxCatalogModels`; `coordinator/internal/promptcontract/preload/active_set.go` (`CompleteUncertainAttempt`) retains negotiated incumbents’ residency metadata without creating report acknowledgements |
 | Remote media policy, read budgets and reference grouping | `coordinator/internal/mediafetch/` |
 | Frame scanning and decoding | `coordinator/internal/wire/` |
 | Command bodies: coordinator lifecycle, payout audit and DevNet seed data | `coordinator/internal/command/coordinator/`, `payoutaudit/`, `devnetseed/`; each `coordinator/cmd/<name>/main.go` is a thin entry point |
@@ -90,6 +96,15 @@ Application assembly supplies the same registry/store/ledger/read-cache instance
 through `api.RuntimeDependencies` (`coordinator/api/server.go`, `NewRuntime`).
 See [coordinator assembly](../architecture/components/coordinator.md#startup-sequence)
 for startup ordering and cross-owner callback binding.
+
+Reward-worker assembly is in `coordinator/app/services.go`
+(`configureBillingAndTrust`) and `coordinator/app/lifecycle.go`
+(`startBackgroundLoops`); provider consent capture is independent of that worker
+and the residency controller. Find its tests under
+`coordinator/tests/payments/autopilotrewards/`, `tests/api/provider/`,
+`tests/api/operations/contracts/` and `tests/store/` within `coordinator/`.
+Use the [focused reward selectors](test.md#autopilot-rewards), not production
+package paths alone.
 
 ### 2. Search filenames, then symbols
 

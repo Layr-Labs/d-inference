@@ -1,6 +1,6 @@
 # Schema lifecycle
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the
@@ -93,7 +93,11 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 26 | `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql` | One transaction: adds the Stripe redaction-job fields and independent `lease_generation BIGINT NOT NULL DEFAULT 0` to `erasure_outbox`. Constant defaults change only the catalog; `ALTER TABLE` takes a brief exclusive table lock. |
 | 27 | `coordinator/store/postgres/schema/migrations/00027_withdrawal_funding_queue.sql` | One transaction: adds Connect transfer generation, dispatch count, start time and lease columns with constant defaults and `IF NOT EXISTS`, preserving existing definitions and queued data during schema adoption or replay. The alterations take a brief exclusive table lock under the existing migration timeouts. |
 | 28 | `indexMigrations` in `coordinator/store/postgres/migration_indexes.go` | Builds the additional queued Global Payouts reconciliation index with `CREATE INDEX CONCURRENTLY`; checks validity and readiness before recording the version. |
-| 29 | `coordinator/store/postgres/schema/migrations/00029_erasure_outbox_privy_user.sql` | `NO TRANSACTION`: drops a leftover `erasure_outbox_target_allowed` of an interrupted attempt, adds `erasure_outbox_target_allowed` (the earlier targets plus `privy_user`) `NOT VALID` under a short lock, validates it without blocking writes, then drops `erasure_outbox_target_check`. |
+| 29 | `coordinator/store/postgres/schema/migrations/00029_machine_autopilot.sql` | One transaction: adds constant-default machine desired-mode/revision columns and guarded `NOT VALID` checks. The brief exclusive DDL lock does not include a historical-row validation scan. Existing values survive schema adoption and replay. |
+| 30 | `coordinator/store/postgres/schema/migrations/00030_machine_autopilot_validate.sql` | A separate transaction validates the machine mode and nonnegative revision checks with PostgreSQL's validation lock, permitting ordinary writes while scanning. The version is recorded only after both checks validate. |
+| 31 | `coordinator/store/postgres/schema/migrations/00031_autopilot_rewards.sql` | One transaction creates the separate reward pool, enrollments, raw consent journal and daily settlements with constraints and ordinary indexes on the new tables. Seeds the zero-cap singleton and tracking start once, without rewriting base rewards or inventing historical opt-ins. |
+| 32 | `coordinator/store/postgres/schema/migrations/00032_autopilot_reward_eligibility.sql` | One transaction adds `qualified BOOLEAN NOT NULL DEFAULT false` and bounded receipt-time chip/memory fields to reward declarations and extends baseline-source and receipt-status checks for `cohort` and `ineligible`. Preserves frozen baselines, money and receipts; older declarations remain unqualified. |
+| 33 | `coordinator/store/postgres/schema/migrations/00033_erasure_outbox_privy_user.sql` | `NO TRANSACTION`: drops a leftover `erasure_outbox_target_allowed` of an interrupted attempt, adds `erasure_outbox_target_allowed` (the earlier targets plus `privy_user`) `NOT VALID` under a short lock, validates it without blocking writes, then drops `erasure_outbox_target_check`. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They preserve the
 startup steps that ran after the old DDL loop, with concurrent builds now using
@@ -109,10 +113,25 @@ unapplied version below the highest applied one
 
 ### Migration kinds
 
+Version 31 is additive: it changes no existing base-reward table or balances.
+Its foreign keys retain original machine/enrollment references without cascade
+deletion. Financial deduplication and consent evidence must survive rollback;
+disabling the payment worker does not remove them. Existing copy-only archives
+do not cover the new tables. See the
+[reward persistence contract](storage.md#autopilot-reward-persistence) and
+[reward rollback procedure](../operations/autopilot-rewards.md#rollback).
+
+Version 32 alters only the reward tables. Constant-default qualification and hardware columns add a
+brief exclusive table lock without rewriting old rows; replacing and validating
+the source/status checks can scan existing reward rows under the transaction's
+DDL locks. The migration does not derive old qualification from current provider
+state. Rollback must preserve the captured qualification/hardware, cohort source and final unpaid
+receipts: older writers that omit qualification cannot reconstruct lost history.
+
 | Kind | How goose runs it | Why it exists | Example |
 |---|---|---|---|
 | SQL file (default) | All statements and the `goose_db_version` insert in one transaction, on the connection that holds the advisory lock | A change that must apply completely or not at all | Versions 6 to 8 and 19 |
-| SQL file with `-- +goose NO TRANSACTION` | Each statement (or each `StatementBegin`/`StatementEnd` block) commits on its own; the version is recorded after the last one | A statement that cannot run in a transaction (`DROP INDEX CONCURRENTLY`), or a file whose locks must be held one at a time | Versions 1, 17, 20, 21, 29 |
+| SQL file with `-- +goose NO TRANSACTION` | Each statement (or each `StatementBegin`/`StatementEnd` block) commits on its own; the version is recorded after the last one | A statement that cannot run in a transaction (`DROP INDEX CONCURRENTLY`), or a file whose locks must be held one at a time | Versions 1, 17, 20, 21, 33 |
 | Go migration (`goose.NewGoMigration` with `RunDB`) | Goose calls the function, then records the version on the second migration connection; no transaction | A step that must read the database before it acts, or check its result | Versions 2 and 4 |
 | Concurrent index (`indexMigrations`, `buildConcurrentIndex`) | Opens a dedicated connection with the configured concurrent-index `lock_timeout`, returns for a valid and ready index, preserves and refuses an invalid or unready index, otherwise builds and checks the result | `CREATE INDEX CONCURRENTLY` cannot run in a transaction, and `IF NOT EXISTS` alone would hide an invalid index | Versions 10 to 16, 18, 23 and 24 |
 | Concurrent index, pre-goose steps (`ensureConcurrentIndex`, `ensureProviderEarningsJobIndex`) | Uses the same dedicated-connection timeout and invalid-index preservation as new index migrations | Preserves the legacy upgrade path without unbounded lock waits or automatic index removal | Versions 3, 4, 5 and 9 |

@@ -68,7 +68,7 @@ func (in connectedCacheInput) validate() (exactCacheArtifactFixture, error) {
 	if in.MaxConcurrent != 1 && in.MaxConcurrent != 2 && in.MaxConcurrent != 4 {
 		return fixture, fmt.Errorf("max_concurrent must be 1, 2 or 4")
 	}
-	expectedMTP := map[string]string{"gpt-oss-20b": "off", "gemma-4-26b": "on", "qwen3.5-35b-a3b": "on", "qwen3.6-35b-a3b-vl-mtp-mxfp8": "on", "EigenLabs/Qwen3.8-27B-4bit-mtp": "on"}
+	expectedMTP := map[string]string{"ternary-bonsai-2-27b": "off", "gpt-oss-20b": "off", "gemma-4-26b": "on", "qwen3.5-35b-a3b": "on", "qwen3.6-35b-a3b-vl-mtp-mxfp8": "on", "EigenLabs/Qwen3.8-27B-4bit-mtp": "on"}
 	if expectedMTP[in.Artifact.ModelID] == "" || expectedMTP[in.Artifact.ModelID] != in.MTPMode {
 		return fixture, fmt.Errorf("exact release model and normal MTP mode required")
 	}

@@ -1,0 +1,181 @@
+{
+  "scope": "Fresh Qwen3.5-9B long cohort: four complete reports with mixed donor-parity outcomes, one partial disk-aborted production report and one unstarted candidate. Original matrices and fresh short control remain separate.",
+  "model": "qwen/qwen3.5-9b",
+  "cell": "long",
+  "startedUTC": "2026-10-04T00:26:21.763860+00:00",
+  "endedUTC": "2026-10-04T00:36:33.323530+00:00",
+  "sourceSnapshotSHA256": "9f56066a82996159866a9aba146cb2cf21ee978d7cbbd9554a4022a1c3a57eea",
+  "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "sourceBundlePlanTemplateSpecHelperOrchestrationBeforeAfterIdentical": true,
+  "allFiveSavedResultDigestsMatchClosedReports": true,
+  "allStartedOwnedProcessTreesReapedAndQuiescent": true,
+  "maximumTrackedDescendants": 0,
+  "safetyStopReason": "free_disk_below_selected_floor_plus0.25GiB_while_active",
+  "diskFloorGiB": 20,
+  "activeDiskThresholdGiB": 20.25,
+  "selectedArms": 6,
+  "startedArms": 5,
+  "completeReports": 4,
+  "partialReports": 1,
+  "unstartedArms": 1,
+  "recordedRequests": 19,
+  "reportedOutputIDs": 2432,
+  "qualifiedBlocks": 0,
+  "qualifiedThreePairPolicyComparison": false,
+  "qualifiedThreePairEconomicComparison": false,
+  "arms": [
+    {
+      "block": 0,
+      "policy": "production",
+      "status": "failed",
+      "exitCode": 1,
+      "recordedRows": 4,
+      "contractFailures": [
+        "output_parity"
+      ],
+      "completeReport": true,
+      "donorOutputMatches": false,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 0,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": 1,
+      "recordedRows": 4,
+      "contractFailures": [
+        "output_parity"
+      ],
+      "completeReport": true,
+      "donorOutputMatches": false,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 1,
+      "policy": "candidate",
+      "status": "failed",
+      "exitCode": 1,
+      "recordedRows": 4,
+      "contractFailures": [
+        "output_parity"
+      ],
+      "completeReport": true,
+      "donorOutputMatches": false,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 1,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "recordedRows": 4,
+      "contractFailures": [],
+      "completeReport": true,
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "policy": "production",
+      "status": "failed",
+      "exitCode": -15,
+      "recordedRows": 3,
+      "contractFailures": [
+        "incomplete_role_set"
+      ],
+      "completeReport": false
+    },
+    {
+      "block": 2,
+      "policy": "candidate",
+      "status": "not_started",
+      "exitCode": null,
+      "recordedRows": 0,
+      "contractFailures": null
+    }
+  ],
+  "crossPolicyRoleEquality": [
+    {
+      "block": 0,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": false,
+      "crossPolicyWarmForkOutputMatches": true
+    },
+    {
+      "block": 1,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": false,
+      "crossPolicyWarmForkOutputMatches": true
+    }
+  ],
+  "partialProductionBlock2": {
+    "recordedRoles": [
+      "cold_fork",
+      "novel_donor",
+      "demanded_donor"
+    ],
+    "donorAndNovelRecordedOutputsMatch": true,
+    "noWarmRowOrCompletedComparison": true,
+    "failedWholeArmDoesNotQualify": true
+  },
+  "allRecordedActualMTPAndCheckpointDrainsQualified": true,
+  "actualMTP": {
+    "requestedAndActive": true,
+    "verificationMode": "rectangular",
+    "positiveDraftVerificationEmissionPerRecordedRow": true,
+    "acceptedTokensPerRecordedRowRange": [
+      59,
+      77
+    ],
+    "outputEventsPerRecordedRowRange": [
+      51,
+      69
+    ]
+  },
+  "zeroCacheIOAndRestorationControls": 10,
+  "observedProduction": {
+    "completeDonorComparisons": [
+      false,
+      true
+    ],
+    "completeForkComparisons": [
+      true,
+      true
+    ],
+    "donorWrittenFilesEach": 3,
+    "donorWrittenBytesEach": 1497032363,
+    "warmRestoredTokensEach": 12288,
+    "warmReplayTokensEach": 0,
+    "warmReadFilesEach": 2,
+    "warmReadBytesEach": 555013246,
+    "novelAndDemandedPrefillChunksEach": 5
+  },
+  "observedCandidate": {
+    "completeDonorComparisons": [
+      false,
+      false
+    ],
+    "completeForkComparisons": [
+      true,
+      true
+    ],
+    "donorWrittenFilesEach": 2,
+    "donorWrittenBytesEach": 858181598,
+    "warmRestoredTokensEach": 14336,
+    "warmReplayTokensEach": 0,
+    "warmReadFilesEach": 2,
+    "warmReadBytesEach": 638926538,
+    "novelAndDemandedPrefillChunksEach": 5
+  },
+  "mechanismDecision": "No policy/economic gain qualifies. Production and candidate donor failures coexist; actual fork restoration succeeds in completed reports but does not establish all-role parity or a causal archive failure. Serving long remains false.",
+  "limits": [
+    "Partial rows and the unstarted arm never fill missing blocks or qualify a whole failed process.",
+    "Known16,384 frontier loss remains source/host-derived until a separate same-donor adjacent native qualification; these demanded-fork reports alone do not test that frontier.",
+    "Same prefill counts do not control adaptive MTP width/cost history; source-shared raw costs can persist across roles. Cause remains unknown; top-logprob instrumentation would disable active MTP.",
+    "Unqualified timing/cost observations remain visible; zero qualified blocks means no median, speedup, break-even decision, rollout or decoder/fleet claim.",
+    "Ephemeral keys/strictFsync=false and writer joins do not establish fsync durability or total RSS."
+  ],
+  "privacy": "Public model/source/bundle identities, aggregate counters/status and equality booleans only; no raw IDs/output fingerprints/logprobs/prompts/private paths/process metadata/provider/account identifiers."
+}

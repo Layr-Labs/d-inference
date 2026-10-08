@@ -97,6 +97,19 @@ struct Status: AsyncParsableCommand {
             + "SIP \(bootSecurity.sip.summary); Secure Boot has no local public check"
     }
 
+    /// Names the coordinator's runtime-hash mismatch and the fix, or nil when
+    /// no mismatch is recorded, or the recorded mismatch is older than 15
+    /// minutes -- the coordinator never sends `verified:true`, so this age
+    /// check is what clears a stale record.
+    func runtimeIntegrityStatusLine(state: DaemonState, now: Double) -> String? {
+        guard let runtimeIntegrity = state.runtimeIntegrity else { return nil }
+        guard now - runtimeIntegrity.receivedAt <= 900 else { return nil }
+        let count = runtimeIntegrity.mismatchCount
+        let plural = count == 1 ? "" : "es"
+        return "Runtime: outdated (\(count) mismatch\(plural)) — excluded from routing; "
+            + "run `darkbloom update` to fix"
+    }
+
     /// Prints the running daemon's live state, including the coordinator's last
     /// trust reason — the answer to "am I earning, and if not, why?".
     private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo]) {
@@ -142,6 +155,9 @@ struct Status: AsyncParsableCommand {
             if let fix = advice.fix { print("  → fix: \(fix)") }
         } else {
             print("Trust: awaiting coordinator status")
+        }
+        if let line = runtimeIntegrityStatusLine(state: state, now: now) {
+            print(line)
         }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")

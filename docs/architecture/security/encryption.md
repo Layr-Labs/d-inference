@@ -184,6 +184,13 @@ metadata (sizes, model/layout binding and times) remains visible; the precise
 are unchanged. TTL checks on reuse, tenant binding and authentication remain in
 force. Switching locations leaves earlier ciphertext in its old location; the
 new location's maintenance does not sweep the old one or securely erase a disk.
+TTL limits ordinary cache reuse, not physical retention: detached or inaccessible
+media can retain ciphertext and metadata indefinitely. TTL/LRU deletion requires the
+selected volume to be mounted and accessible. Destroying the installation KEK
+provides a cryptographic purge for retained encrypted copies; it does not erase
+their bytes or visible metadata.
+Restart scanning seeds freshness from file modification times, so TTL is not
+an anti-rollback guarantee against a malicious disk replaying data and metadata.
 
 `darkbloom cache set --directory` accepts an existing private directory on local,
 writable APFS with ownership enabled. External volumes additionally require APFS

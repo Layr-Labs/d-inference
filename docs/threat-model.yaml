@@ -592,6 +592,14 @@ trust_boundaries:
       Memory wiping functions (secureZero via memset_s) are defined in
       SecurityHardening.swift but call-site coverage in the inference path is not
       confirmed from static analysis.
+
+      Cache payload placement is operator-controlled through provider.toml.
+      A selected external APFS volume is not part of the attested Mac boundary:
+      its controller can retain, replay or delete ciphertext and expose activity
+      metadata. UUID and filesystem checks detect ordinary replacement, not a
+      malicious clone. Keys stay on the Mac; T-041 describes cache protections
+      and retention limits. Cache disk-space checks use the selected payload
+      volume, while daily-write accounting stays on the Mac.
     current_limitations:
       - "Binary hash is computed once at startup. A binary modification after the hash
         is captured (e.g. via a writable path the binary was loaded from) would not be
@@ -859,6 +867,14 @@ trust_boundaries:
       GPU memory metrics (MLX.GPU.activeMemory, peakMemory, cacheMemory) are tracked
       and reported but not explicitly zeroed between requests. There is no Metal-level
       memset of GPU buffers between inference sessions.
+
+      Encrypted DBK3 cache payloads may reside on the built-in disk or an
+      operator-selected local APFS volume. CacheVolume and descriptor-relative
+      I/O enforce the selected filesystem's UUID, ownership and suitability;
+      external or unclassified volumes must report encryption. The volume is
+      not an attested part of the inference boundary: firmware and a cloned
+      filesystem UUID remain outside these checks. The KEK and write ledger
+      stay on the Mac. T-041 covers the residual cache exposure.
     current_limitations:
       - "GPU-side MLX buffers (Metal allocations for activations, KV-cache, logits) are
         not explicitly zeroed between requests. Residual inference data from one consumer
@@ -874,6 +890,11 @@ trust_boundaries:
       - "Model weight files are loaded from the user-writable HuggingFace cache directory.
         The operator can replace weight files between idle periods without affecting the
         currently-loaded model."
+      - "Cache TTL does not erase ciphertext from detached,
+        replaced or previously selected volumes. Cleanup needs access to the selected
+        volume; retained copies require destruction of the installation KEK for a
+        cryptographic purge. Disk metadata and malicious firmware are not hidden or
+        authenticated by payload encryption."
 
   - id: TB-008
     name: coordinator_to_payments
@@ -2031,7 +2052,7 @@ threats:
             observer cannot test a guessed prefix against anything. The
             long-open HMAC mitigation ships IMPLEMENTED with the tier that
             re-opened it.
-        (b) The at-rest window is bounded by a 30-MINUTE sliding TTL
+        (b) Cache reuse is bounded by a 30-MINUTE sliding TTL
             (raised from 15 minutes on 2026-09-26 by operator decision, the
             SEC-035 re-acceptance recorded in detection_hint below;
             DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
@@ -2043,6 +2064,13 @@ threats:
             The separate fixed 20 GiB pre-write free-space reserve includes
             the pending donation payload; it does not reserve OS disk blocks
             against unrelated concurrent writers.
+            TTL/LRU cleanup requires the selected volume to remain mounted and
+            accessible. Detached, replaced and previously selected volumes can
+            retain ciphertext and visible metadata indefinitely. Expiration
+            is enforced on entries the cache considers expired. File mtimes
+            seed restart freshness; TTL is not an anti-rollback proof against
+            a controller replaying metadata. KEK destruction provides the
+            cryptographic purge for retained copies, not a promise of physical erasure.
         (c) File crypto is the reviewed legacy scheme unchanged: per-file
             random DEK wrapped AES-256-GCM under the SE-rooted KEK,
             HKDF-derived per-chunk nonces ("dbkv-chunk-v3"), canonical
@@ -2062,6 +2090,14 @@ threats:
       shape), file count, mtimes/createdAt (activity timing), and the
       cached-model identity (modelKey directory — already public via
       heartbeats). None of these confirm a specific prefix.
+      Payload roots can be operator-selected external APFS volumes. Their
+      controllers are outside the attested process boundary: UUID cloning,
+      retained ciphertext, replay of authenticated data and filesystem metadata,
+      and denial of service remain possible. AES-GCM and context bindings reject
+      forged or incompatible payloads; they do not attest the peripheral or
+      provide a trusted monotonic freshness record. Relocation does not sweep
+      the old root. Disk budget and free-space guards apply to the selected
+      payload volume; the rolling-day write ledger remains on the Mac.
       Kill switch: DARKBLOOM_PREFIX_CACHE=0 disables the sole production
       tier, encrypted SSD. There is no production RAM tier or tier
       composition. Purge points: KEK wipe makes all files
@@ -2073,7 +2109,7 @@ threats:
       cached earlier the same half-hour). Cache scope is coordinator-authored
       from authenticated account, model build, and prompt-contract identity;
       callers cannot choose or override it.
-    adversaries: [ADV-002]
+    adversaries: [ADV-001, ADV-002]
     affected_assets: [A-001]
     affected_files:
       # (BatchScheduler / PrefixCacheManager / EncryptedPrefixCachePersistence
@@ -2087,6 +2123,9 @@ threats:
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/CacheStorage.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift
       - provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift
       - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift
       - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift
@@ -2115,14 +2154,15 @@ threats:
           outside that scope. Caller prompt_cache_key/user values are ignored.
         status: implemented
       - description: >
-          SSD tier at-rest window bound: 30-minute sliding TTL (env can only
+          SSD tier reuse window bound: 30-minute sliding TTL (env can only
           shorten), default available-disk/2 box-wide LRU disk budget without
           a fixed ceiling (20 GiB fallback when unavailable;
           DARKBLOOM_PREFIX_CACHE_DISK_GB overrides), a fixed 20 GiB pre-write
           free-space reserve including the pending donation payload, verified weightHash in
           coordinator mode (model-ID fallback in standalone) + layoutEpoch
           fail-closed bindings, and KEK-wipe purge (files become unreadable AND
-          unfindable — K_lookup derives from the KEK).
+          unfindable — K_lookup derives from the KEK). TTL/LRU deletion requires
+          a mounted, accessible selected volume; it cannot purge detached media.
         status: implemented
       - description: >
           SSD tier NO-persistent-memory-carve posture: the engine keeps its full
@@ -2143,7 +2183,8 @@ threats:
           baseline (as it did under the 2026-06 default-on legacy posture) —
           but the covered channel is strictly narrower than legacy: leak #2 is
           CLOSED (HMAC-keyed names, vs legacy's plaintext tokenPrefixHash),
-          the at-rest window is TTL/LRU-bounded, authenticated account scoping
+          cache reuse is TTL-bounded and accessible selected storage is swept,
+          authenticated account scoping
           closes cross-account reuse, per-donation gating caches only adoptable
           long prefixes, and DARKBLOOM_PREFIX_CACHE=0 survives restarts. The
           residual same-account in-process TTFT oracle can extend across

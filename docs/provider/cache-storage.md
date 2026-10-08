@@ -46,6 +46,9 @@ a separate disk. These commands affect cache payloads; use
    The CLI records the volume UUID. Cache files use its `darkbloom/kv3` child;
    existing files are not copied or removed. A missing or different volume
    disables SSD caching while inference can continue without it.
+   Normal expiration prevents reuse but cannot delete files on detached or
+   previously selected disks. Cleanup needs the selected volume mounted and accessible;
+   see the [retention limits](../architecture/security/encryption.md#provider-cache-storage).
 
 3. Restart the provider to load the saved settings:
 

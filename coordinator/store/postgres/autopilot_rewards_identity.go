@@ -55,7 +55,7 @@ func resolveAutopilotRewardMachine(ctx context.Context, q pgQuerier, machineID s
 	return machine, nil
 }
 
-func (s *PostgresStore) beginAutopilotRewardWrite(ctx context.Context, account string) (pgx.Tx, error) {
+func (s *PostgresStore) beginAutopilotAccountWrite(ctx context.Context, account string) (pgx.Tx, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -70,6 +70,14 @@ func (s *PostgresStore) beginAutopilotRewardWrite(ctx context.Context, account s
 	}
 	if err := checkPersonalAccount(ctx, tx, account); err != nil {
 		rollbackErasureTx(tx)
+		return nil, err
+	}
+	return tx, nil
+}
+
+func (s *PostgresStore) beginAutopilotRewardWrite(ctx context.Context, account string) (pgx.Tx, error) {
+	tx, err := s.beginAutopilotAccountWrite(ctx, account)
+	if err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(9952701)`); err != nil {

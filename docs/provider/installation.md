@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -210,6 +210,16 @@ in [runtime constants](./cli-reference.md#runtime-constants)). Only
 that exact version is blocked; a newer release installs normally.
 `darkbloom update --override-quarantine` reinstalls it anyway, and
 `darkbloom doctor` reports the quarantine under `up to date`.
+
+If the watchdog exits after starting a candidate but before recording the
+launch receipt, its next health observations reconcile the saved intent with
+launchd's run count or process identity. A proven launch receives the existing
+startup timeout from reconciliation; repeated observations do not extend it.
+An unavailable launch snapshot preserves the intent for a later observation,
+and an unchanged snapshot does not arm a failed-start timeout. This also covers
+a candidate that remains running without a heartbeat
+(`provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
+`observeHealthyProvider`).
 
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).

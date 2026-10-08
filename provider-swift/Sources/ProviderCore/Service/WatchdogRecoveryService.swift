@@ -618,6 +618,15 @@ public struct WatchdogRecoveryService: Sendable {
 
         do {
             var state = try session.readState()
+            let before = state
+            // The previous watchdog may have exited after kickstart but
+            // before persisting its launch receipt. Keep the intent when
+            // the snapshot is unavailable so a later tick can recover it.
+            if state.candidate?.launchIntent != nil,
+               let snapshot = deps.launchSnapshot()
+            {
+                _ = state.reconcileLaunchIntent(snapshot: snapshot, now: now)
+            }
             guard let candidate = state.candidate else { return .noCandidate }
             let freshMatchingHeartbeat: Bool
             if let daemonState {
@@ -629,7 +638,6 @@ public struct WatchdogRecoveryService: Sendable {
                 freshMatchingHeartbeat = false
             }
 
-            let before = state
             let promoted = state.observeCandidateHealth(
                 healthySignal: freshMatchingHeartbeat,
                 processStartedAt: daemonState?.startedAt,

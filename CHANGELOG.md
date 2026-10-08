@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - interrupted watchdog launch recovery
+
+- Recover a candidate's launch receipt when the watchdog exits after starting it but before recording success. A running candidate that never produces a heartbeat then reaches the existing startup timeout; missing launch evidence does not count as a failed start.
+
 ## Unreleased - Autopilot daily earnings floor
 
 - Add a separately funded daily inference-earnings floor only for machines with saved Autopilot consent. Freeze the first-ever opt-in baseline from the exact preceding 168 hours, including sponsored inference; the daily floor is 110% of that seven-day daily average, rounded down once to whole micro-USD. Closed UTC days receive their own shortfall top-up without changing ordinary base rewards.

@@ -672,6 +672,11 @@ final receipts fail closed (`coordinator/store/postgres/autopilot_rewards_identi
 `coordinator/store/postgres/autopilot_rewards_settlement.go`,
 `finalizedAutopilotRewardDay`).
 
+`resolveAutopilotRewardMachine` materializes the canonical ancestor IDs before
+reading their owners. The separate indexed owner query includes both stored
+consent machine bindings and consent-session mappings, preserving conflicting
+owners without letting recursive cardinality estimates cause a full history scan.
+
 Inference attribution uses the earning's authenticated account and durable
 provider-session machine mapping. A legacy provider-key fallback must be
 unambiguous for that same account; joins never multiply an earning by the number

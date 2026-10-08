@@ -201,3 +201,32 @@ func TestAutopilotConsentJournalBindsOnlyCurrentSession(t *testing.T) {
 		t.Fatalf("raw journal bound another session: unbound=%v err=%v", otherUnbound, err)
 	}
 }
+
+func TestAutopilotConsentJournalRejectsUnboundAncestorOwner(t *testing.T) {
+	f := newAutopilotRewardsFixture(t)
+	ctx := t.Context()
+	first := f.firstSeen.Add(8*24*time.Hour + 12*time.Hour)
+	enrollment := f.enroll(t, "owner", "current", first, 70)
+	ancestor, err := f.ObserveMachine(ctx, store.MachineObservation{SessionID: "historical", AccountID: "owner", SEKey: "historical-se", At: f.firstSeen})
+	if err != nil || ancestor.ID == enrollment.MachineID {
+		t.Fatalf("independent historical machine: %+v %v", ancestor, err)
+	}
+	// Retain an ancestral session mapping with inconsistent, unbound ownership
+	// evidence. Only the consent-to-session join can discover its captured owner.
+	if _, err := f.pool.Exec(ctx, `UPDATE darkbloom_machines SET merged_into=$1 WHERE id=$2`, enrollment.MachineID, ancestor.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO autopilot_reward_consents
+	 (machine_id,at,last_observed_at,account_id,session_id,opted_in,supported,qualified,chip,memory_gb)
+	 VALUES(NULL,$1,$1,'other-owner','historical',true,true,true,'',0)`, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.SetAutopilotRewardPoolCap(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	before := queryLines(t, f.pool, autopilotFinancialSnapshotSQL)
+	if receipt, err := f.SettleAutopilotRewardDay(ctx, enrollment.MachineID, enrollment.NextDay); !errors.Is(err, earningsfloor.ErrIdentity) {
+		t.Fatalf("unbound ancestral consent owner was ignored: %+v %v", receipt, err)
+	}
+	assertSameLines(t, "before conflicting ownership", before, "after refused settlement", queryLines(t, f.pool, autopilotFinancialSnapshotSQL))
+}

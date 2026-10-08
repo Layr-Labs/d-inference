@@ -30,21 +30,27 @@ func resolveAutopilotRewardMachine(ctx context.Context, q pgQuerier, machineID s
 	), ancestors AS (
 	 SELECT m.id,m.first_seen FROM darkbloom_machines m JOIN canonical c ON c.id=m.id
 	 UNION SELECT m.id,m.first_seen FROM darkbloom_machines m JOIN ancestors a ON m.merged_into=a.id
-	), owners AS (
-	 SELECT s.account_id FROM darkbloom_machine_sessions s WHERE s.machine_id IN (SELECT id FROM ancestors)
-	 UNION SELECT p.account_id FROM provider_sessions p JOIN darkbloom_machine_sessions s USING(session_id)
-	 WHERE s.machine_id IN (SELECT id FROM ancestors)
-	 UNION SELECT e.account_id FROM autopilot_reward_enrollments e WHERE e.machine_id IN (SELECT id FROM ancestors)
-	 UNION SELECT c.account_id FROM autopilot_reward_consents c WHERE c.machine_id IN (SELECT id FROM ancestors)
-	 OR EXISTS (SELECT 1 FROM darkbloom_machine_sessions s WHERE s.session_id=c.session_id AND s.machine_id IN (SELECT id FROM ancestors))
 	) SELECT id,ARRAY(SELECT id FROM ancestors ORDER BY id),(SELECT min(first_seen) FROM (
 	 SELECT first_seen FROM ancestors UNION ALL SELECT s.first_seen FROM darkbloom_machine_sessions s
-	 WHERE s.machine_id IN (SELECT id FROM ancestors)) observations),
-	 ARRAY(SELECT account_id FROM owners WHERE account_id<>'' ORDER BY account_id) FROM canonical`, machineID).
-		Scan(&machine.id, &machine.ancestors, &machine.firstSeen, &owners)
+	 WHERE s.machine_id IN (SELECT id FROM ancestors)) observations) FROM canonical`, machineID).
+		Scan(&machine.id, &machine.ancestors, &machine.firstSeen)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return machine, earningsfloor.ErrIdentity
 	}
+	if err != nil {
+		return machine, err
+	}
+	// Materialized IDs keep recursive row estimates from selecting a full
+	// provider-session history scan for this machine's ownership check.
+	err = q.QueryRow(ctx, `SELECT ARRAY(SELECT account_id FROM (
+	 SELECT account_id FROM darkbloom_machine_sessions WHERE machine_id=ANY($1::text[])
+	 UNION SELECT p.account_id FROM provider_sessions p JOIN darkbloom_machine_sessions s USING(session_id)
+	 WHERE s.machine_id=ANY($1::text[])
+	 UNION SELECT account_id FROM autopilot_reward_enrollments WHERE machine_id=ANY($1::text[])
+	 UNION SELECT account_id FROM autopilot_reward_consents WHERE machine_id=ANY($1::text[])
+	 UNION SELECT c.account_id FROM darkbloom_machine_sessions s JOIN autopilot_reward_consents c USING(session_id)
+	 WHERE s.machine_id=ANY($1::text[])
+	) owners WHERE account_id<>'' ORDER BY account_id)`, machine.ancestors).Scan(&owners)
 	if err != nil {
 		return machine, err
 	}

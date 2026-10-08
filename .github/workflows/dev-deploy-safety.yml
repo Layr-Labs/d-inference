@@ -4,10 +4,11 @@ on:
   push:
     branches: [master, main]
     # The inputs of scripts/test-dev-deploy.py and their docs. A test there
-    # checks the inputs that it names. deploy-dev.yml arrives with PR 1370.
+    # checks the inputs that it names.
     paths: &dev-deploy-safety-paths
       - .github/workflows/dev-deploy-safety.yml
       - .github/workflows/deploy-dev.yml
+      - .github/workflows/devnet-suite.yml
       - coordinator/api/server.go
       - coordinator/Dockerfile
       - deploy/gcp/cloudbuild-prod.yaml
@@ -15,6 +16,7 @@ on:
       - deploy/gcp/host-setup.sh
       - deploy/gcp/prod/**
       - deploy/environments/prod.env
+      - scripts/devnet-suite.sh
       - scripts/smoke-dev.sh
       - scripts/test-dev-deploy.py
       - scripts/run-dev-deploy-safety-ci.sh

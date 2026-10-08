@@ -20,6 +20,7 @@ let package = Package(
         // used only by the Runtime target, never by the control modules or
         // the provider's normal dependency path.
         .package(path: "../mlx-swift"),
+        .package(path: "../mlx-swift-lm"),
     ],
     targets: [
         .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),
@@ -35,6 +36,8 @@ let package = Package(
         .target(name: "DarkbloomClusterRuntime", dependencies: [
             .product(name: "MLX", package: "mlx-swift"),
             .product(name: "MLXNN", package: "mlx-swift"),
+            .product(name: "MLXLLM", package: "mlx-swift-lm"),
+            .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
         ]),
         .testTarget(name: "DarkbloomClusterRuntimeTests", dependencies: ["DarkbloomClusterRuntime"]),
     ]

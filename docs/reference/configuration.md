@@ -986,3 +986,15 @@ These library controls apply to foreground processes and benchmark runs; they ar
 |---|---|---|---|---|
 | `EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH` | absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`) | Enables validated snapshot reads for leaderboard, network totals and network series; missing/stale snapshots return 503 and never trigger database fallback. See [snapshot operations](../operations/analytics-snapshots.md). |
 | `EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH` | distinct absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`); `coordinator/analyticssnapshot` (`LoadPersistent`) | Required when snapshot mode is enabled. Points to the operator-initialized, private accepted-generation record on a persistent writable mount; missing or corrupt state fails closed across restarts. See [snapshot operations](../operations/analytics-snapshots.md). |
+
+## Experimental cluster configuration (staging)
+
+`provider-swift/Sources/ProviderCore/Config/ClusterConfiguration{,Files,Paths}.swift`
+holds the staged cluster configuration value types: one canonical device
+namespace per user (`~/.config/darkbloom/clusters`,
+`~/.darkbloom/cluster-device`), strict path/symlink rules, and closed
+configuration validation. They carry saved expectations only — never a
+grant, runtime approval or serving capacity. No CLI command or environment
+variable constructs or selects one today; the member role is reachable only
+through an explicit code path that also constructs the member control
+owner, keeping the whole surface default-off.

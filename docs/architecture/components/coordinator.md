@@ -369,3 +369,23 @@ The dev VM: [`../../operations/dev-environment.md`](../../operations/dev-environ
 - [`../telemetry.md`](../telemetry.md) — what it emits
 - [`../../reference/api-contracts.md`](../../reference/api-contracts.md), [`../../reference/protocol-messages.md`](../../reference/protocol-messages.md) — the HTTP and WebSocket surfaces
 - [`provider.md`](provider.md) — the other end of the WebSocket
+
+## Experimental native-pair ownership (staging)
+
+`coordinator/registry/native_pair_*.go` owns the experimental native-pair
+control plane: the approved runtime catalog (`native_pair_approval.go`),
+TLS-bound member attachment (`native_pair_connection.go`), session
+reservation and relay (`native_pair_reservation.go`, `native_pair_relay.go`)
+and inbound frame handling (`native_pair_handlers.go`).
+`coordinator/registry/verified_pair_*.go` owns the bilateral membership
+hold: reservation, preparation/commit, lifecycle fencing, expiry and
+quarantine. `coordinator/protocol/native_pair.go` and
+`native_authorization.go` own the closed public frame and canonical
+authorization bytes, mirrored by
+`provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift`;
+`coordinator/protocol/execution_role.go` owns the member registration role.
+The `Server.nativePairs` lifecycle is constructed only when
+`ServerConfig.NativePairCatalog` is configured (nil by default, handlers
+fail closed); the provider read loop attaches/detaches member connections
+and dispatches the five member frame types through the strict decoder.
+See [cluster-control-protocol.md](../../reference/cluster-control-protocol.md).

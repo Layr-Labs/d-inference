@@ -1137,6 +1137,26 @@ must not run in parallel with other scheduler tests in the same process.
 | Flag wiring at startup | `coordinator/app/routing.go` |
 | Simulation harness | `coordinator/registry/routingsim/` — `runner.go`, `fleet.go`, `fleet_ndjson.go`, `trace.go`, `report.go` |
 
+## Verified cluster-pair reservations (experimental, staging)
+
+Two gate reasons are reserved for the experimental cluster membership
+lifecycle and take precedence at the top of the liveness chain:
+`member_only` (`GateMemberOnly`) excludes control-only cluster-member
+connections from ordinary dispatch, warming and load planning (only the pair
+selector's eligibility path may admit them), and `pair_reserved`
+(`GatePairReserved`) excludes a provider whose physical device is held by an
+active verified pair so ordinary work never double-books it. Both are
+appended to the persisted `GateReason` enum in
+`coordinator/registry/gate_reason.go` (order preserved) with matching
+`warmplan` cold reasons. A verified pair is a bilateral, time-boxed hold:
+preparation and commit require both members' current identity, attestation
+and release evidence; disconnect, trust loss, release-policy generation
+changes or capability loss quarantine the hold, and only both original
+owners' cleanup observations release it. The public control shapes live in
+[cluster-control-protocol.md](../reference/cluster-control-protocol.md);
+the catalog stays empty, so the lifecycle is inert until an explicitly
+approved native runtime catalog is configured.
+
 ## Related
 
 - [`scheduling.md`](scheduling.md) — queues, slot states, token-budget admission, warm pool, heartbeat and eviction.

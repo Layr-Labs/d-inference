@@ -1507,3 +1507,14 @@ atomic, non-withdrawable credit (`HandleStripeWebhook`, `CompleteStripeCheckout`
 its account was deleted. The response omits the session URL; durable erasure
 cleanup retains the newly created Stripe identifier
 (`coordinator/api/billing/checkout.go`, `HandleStripeCreateSession`).
+
+## Experimental native-pair selection hook (no public route)
+
+`BeginNativePair` (`coordinator/api/native_pair.go`) is an explicit
+in-process coordinator selection hook for the experimental verified-pair
+membership lifecycle. There is deliberately no provider request or public
+HTTP route that can choose a peer, approve a runtime or manufacture this
+authorization; the hook fails closed while `ServerConfig.NativePairCatalog`
+is nil (the default), and any configured catalog must come from
+`NewNativeRuntimeCatalog` with explicitly approved entries. The wire shapes
+it drives are documented in [cluster-control-protocol.md](cluster-control-protocol.md).

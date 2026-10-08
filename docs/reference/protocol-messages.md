@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -180,6 +180,9 @@ connection, first.
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
 | `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
+| `execution_role` | `ExecutionRole` | `ProviderExecutionRole` | opt | omitted/`""` keeps ordinary solo; `"cluster_member"` is the control-only member role (empty ordinary `models`, separate `cluster_models`, fresh `member_registration_nonce`) — grants no trust or model capability |
+| `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
+| `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -971,6 +974,24 @@ drift correction for the coordinator's ledger, not reservations.
 | `confidence` | `string` | req | `high` or `low` (`CapacityConfidenceHigh`/`Low`) |
 
 ## Coordinator → provider
+
+### `cluster_member_accepted`
+
+Go `ClusterMemberAcceptedMessage` (`coordinator/protocol/execution_role.go`) ·
+Swift `CoordinatorMessage.clusterMemberAccepted` (`ClusterMemberAccepted`).
+Sent once per member-role connection after registration. One acceptance per
+negotiation, before a ten-second deadline; the negotiation is discarded on
+reconnect. It proves protocol support and connection binding only — never
+attestation, runtime approval, native-owner authorization or serving
+readiness. A solo connection ignores it. See
+[cluster-control-protocol.md](cluster-control-protocol.md).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `type` | string | String | req | exactly `cluster_member_accepted` |
+| `execution_role` | string | `ProviderExecutionRole` | req | exactly `cluster_member` |
+| `member_registration_nonce` | string | String | req | exact nonce from this connection's registration |
+| `provider_id` | string | String | req | nonempty, at most 128 UTF-8 bytes |
 
 ### `inference_request`
 

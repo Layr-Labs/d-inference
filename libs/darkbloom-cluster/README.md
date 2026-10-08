@@ -16,8 +16,11 @@ Both modules support macOS 14 and have no MLX dependency.
 
 Source ledger: extracted unmodified from the private research branch
 (`Layr-Labs/d-inference` PR 1226 head `78397f4c395af9b9e016ba817c475a61a175a222`,
-paths under `libs/darkbloom-cluster/`). Deferred modules (Process, Remote,
-Runtime, JACCL transport) are tracked in the staging handoff.
+paths under `libs/darkbloom-cluster/`). `DarkbloomClusterRuntime` currently holds the model-free closure plus
+tensor-level verification (safe tensor descriptors/reads, selection, local
+correctness storage) against the pinned `libs/mlx-swift` build. Qwen
+loading/resident runtime, Transport and Generation remain unstaged and are
+tracked in the staging handoff.
 The native key prelude and record authority (PR 1227 draft `b16c97bf`) are staged
 with new exchange/refusal checks; the draft shipped no tests of its own.
 The JACCL native-ABI bridge checks are blocked on the pinned mlx-swift/mlx-c
@@ -32,6 +35,13 @@ python3 libs/darkbloom-cluster/Tests/SecurityChecks/run.py --output <new-dir>
 bash libs/darkbloom-cluster/Tests/NativePairChecks/run.sh
 bash libs/darkbloom-cluster/Tests/BootstrapChecks/run.sh
 bash libs/darkbloom-cluster/Tests/PreludeChecks/run.sh
+bash libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh
+python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output <new-dir>
+# Tensor verification (needs the pinned mlx.metallib built once):
+./scripts/fetch-metallib.sh libs/darkbloom-cluster/.build/debug
+cd libs/darkbloom-cluster && swift build --build-tests \
+  && cp .build/debug/mlx.metallib .build/out/Products/Debug/DarkbloomClusterRuntimeTests.xctest/Contents/MacOS/ \
+  && swift test --skip-build --filter TensorVerificationTests
 ```
 
 These compile the actual sources with Swift 6 and warnings as errors in a

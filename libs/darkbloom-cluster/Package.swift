@@ -15,16 +15,27 @@ let package = Package(
         .library(name: "DarkbloomClusterRemote", targets: ["DarkbloomClusterRemote"]),
         .library(name: "DarkbloomClusterRuntime", targets: ["DarkbloomClusterRuntime"]),
     ],
+    dependencies: [
+        // Pinned Darkbloom MLX build (same submodule the provider compiles);
+        // used only by the Runtime target, never by the control modules or
+        // the provider's normal dependency path.
+        .package(path: "../mlx-swift"),
+    ],
     targets: [
         .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),
         .target(name: "DarkbloomClusterProtocol"),
         .target(name: "DarkbloomClusterBootstrap"),
         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
         .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess", "DarkbloomClusterBootstrap", "DarkbloomClusterSecurity"]),
-        // Staged subset: the model-free closure only (stage metadata, manifest
-        // schema, verified checkpoint, aligned reader). MLX-linked runtime
-        // files are NOT staged; do not add them to this target without their
-        // own qualification slice.
-        .target(name: "DarkbloomClusterRuntime"),
+        // Staged subset: the model-free closure plus tensor-level
+        // verification (safe tensor descriptors/reads, selection, local
+        // correctness storage, model parameter layout). No GPU group
+        // creation or distributed backend is staged. Qwen loading/resident
+        // runtime, Transport and Generation remain unstaged.
+        .target(name: "DarkbloomClusterRuntime", dependencies: [
+            .product(name: "MLX", package: "mlx-swift"),
+            .product(name: "MLXNN", package: "mlx-swift"),
+        ]),
+        .testTarget(name: "DarkbloomClusterRuntimeTests", dependencies: ["DarkbloomClusterRuntime"]),
     ]
 )

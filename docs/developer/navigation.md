@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -37,6 +37,7 @@ Payout funding queues remain within the billing domain. `coordinator/api/billing
 | Pure deadline calibration | `coordinator/registry/firstcontent/`; runtime adapters remain in `coordinator/registry/` |
 | Provider selection, admission, queueing | `coordinator/registry/`; pure calculations in `registry/admission/` and `registry/selection/`, atomic transitions in the registry parent |
 | Autopilot admin HTTP contract | `coordinator/api/autopilot/`; parent API adapter supplies authorization and dependencies |
+| Autopilot rewards and first-ever consent history | `coordinator/api/provider/autopilot_rewards.go` captures authenticated declarations; `coordinator/registry/autopilot_reward_snapshot.go` reads accepted saved consent. `coordinator/payments/autopilotrewards/` owns the closed-day worker, `coordinator/internal/payments/floorpolicy/` owns arithmetic, and `coordinator/store/earnings_floor.go` defines `AutopilotRewardsStore`; backend `autopilot_rewards*.go` files own durable history and atomic credits. Admin payloads live in `coordinator/api/autopilot/rewards.go` and `rewards_decode.go`. |
 | Autopilot demand, placement and donor coverage | `coordinator/registry/autopilot/`; the registry adapter owns live sessions, reservations and transport |
 | Autopilot machine-cohort authority | `coordinator/store/machine_autopilot.go` persists intent; `coordinator/registry/autopilot_machine_policy.go` serializes admin edits and periodic synchronization; `autopilot_machine_status.go` separates intent from current sessions; `autopilot_activation.go` (`liveMachineLocked`, `refreshControlLeases`) and `autopilot_reservation.go` (`beginAutopilotReservation`) enforce current authority. Detached live/shadow passes in `coordinator/internal/registry/autopilotcontrol/controller.go` retain separate hypothetical state. |
 | Accounting and durable state | `coordinator/billing/`, `coordinator/payments/`; contracts/decorator in `coordinator/store/`, implementations in `store/memory/` and `store/postgres/` |
@@ -92,6 +93,15 @@ Application assembly supplies the same registry/store/ledger/read-cache instance
 through `api.RuntimeDependencies` (`coordinator/api/server.go`, `NewRuntime`).
 See [coordinator assembly](../architecture/components/coordinator.md#startup-sequence)
 for startup ordering and cross-owner callback binding.
+
+Reward-worker assembly is in `coordinator/app/services.go`
+(`configureBillingAndTrust`) and `coordinator/app/lifecycle.go`
+(`startBackgroundLoops`); provider consent capture is independent of that worker
+and the residency controller. Find its tests under
+`coordinator/tests/payments/autopilotrewards/`, `tests/api/provider/`,
+`tests/api/operations/contracts/` and `tests/store/` within `coordinator/`.
+Use the [focused reward selectors](test.md#autopilot-rewards), not production
+package paths alone.
 
 ### 2. Search filenames, then symbols
 

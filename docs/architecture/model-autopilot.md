@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled, machine-selected live rollout.
@@ -201,8 +201,9 @@ so a manual hosted-model transaction cannot bypass the approved selection.
 Both operation owners reject overlap, including model-switch validation. Pause, resume, pins and
 disable update a config revision consumed by the running daemon's capacity poll.
 
-Protocol 3 separates `enabled` consent, `observe_only` shadow mode and `active`
-live control. The coordinator defaults to `ObserveOnly=true`; operators explicitly
+Protocol 3 separates scheduling participation (`enabled`), saved consent
+(`consent_enabled`), `observe_only` shadow mode and `active` live control.
+The coordinator defaults to `ObserveOnly=true`; operators explicitly
 permit live control through the global configuration, then select verified
 machine IDs through persisted admin edits for a cohort rollout.
 The startup enable switch and runtime admin pause remain independent controls;
@@ -271,6 +272,28 @@ configured enrollment and live state. `shadow` explicitly means not activated;
 snapshot; the admin endpoint exposes controller status and recent operations.
 CLI freshness allows four configured half-heartbeat writes, with a ten-second
 minimum, matching the other daemon diagnostics.
+
+### Saved consent and reward tracking
+
+`publishModelAutopilotSnapshot` reports optional `consent_enabled` directly from
+`ModelAutopilotSettings.hasConsent`, independent of readiness, inventory refresh,
+pause, observation mode or a live lease. `enabled` retains its scheduling meaning:
+saved enrollment can remain true while inventory refresh requires `enabled=false`.
+Older reports without the new field are unknown/nonqualifying for rewards, not
+evidence of an explicit off state. The
+[wire reference](../reference/protocol-messages.md#model_autopilot-state) defines
+validation and compatibility; no client historical opt-in time is trusted.
+
+The authenticated provider session owner records accepted declarations
+synchronously with the original server receive time, independently of controller
+and payment-worker flags. Durable raw declarations can precede verified machine
+binding; only verified machine/account history can freeze a baseline or pay.
+This tracker is separate from connected inventory aggregates and the
+`autopilot_events` command ledger, and retains offline financial history.
+The [billing mechanism](billing.md#autopilot-rewards) owns first-ever-history
+limitations and daily settlement; the [reward runbook](../operations/autopilot-rewards.md)
+owns manual funding and backfill. The payment program does not change selection,
+leases, scheduling safeguards or the live planner's lack of a utilization guarantee.
 
 ### Demand and placement
 
@@ -454,6 +477,7 @@ its own `Start/` folder.
 | Cached inventory discovery and verification | `provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`; `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Selection.swift` (`verifySelectedModel`) |
 | Live local controls | `provider-swift/Sources/darkbloom/Autopilot/AutopilotCommand.swift`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotControl.swift` |
 | Protocol | `coordinator/protocol/model_autopilot.go`; `provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift` |
+| Saved-consent reward tracking | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift` (`publishModelAutopilotSnapshot`); `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardConsentSnapshot`); `coordinator/api/provider/autopilot_rewards.go` (`autopilotRewardCapture`); durable contract in `coordinator/store/earnings_floor.go` (`AutopilotRewardsStore`) |
 | Shapes and planning | `coordinator/registry/autopilot/shapes.go`; `coordinator/registry/autopilot/coverage.go`; `coordinator/registry/autopilot/planner.go` |
 | Hard request eligibility | `coordinator/registry/autopilot/requirements.go`; `coordinator/registry/autopilot_traits.go` |
 | Demand and policy defaults | `coordinator/registry/autopilot/demand.go` (`DemandTracker.Record`); `coordinator/internal/registry/demandwindow/window.go` (`Window.Record`, `Snapshot`); `coordinator/registry/autopilot/config.go` |
@@ -467,6 +491,7 @@ its own `Start/` folder.
 ## Related
 
 - [Operator procedures](../operations/model-autopilot.md)
+- [Reward funding and historical baseline repair](../operations/autopilot-rewards.md)
 - [Provider CLI](../provider/cli-reference.md#darkbloom-autopilot)
 - [Configuration](../reference/configuration.md#model-autopilot)
 - [Protocol](../reference/protocol-messages.md#model_autopilot)

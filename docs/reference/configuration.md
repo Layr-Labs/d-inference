@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -386,13 +386,18 @@ immediately. A normal start with saved consent preserves the configuration and
 running provider when any selected model cannot be verified. This introduces no
 new configuration setting (`ModelDownloader.verifySelectedModel`).
 
-All coordinator variables below are startup-only and read by
+All controller variables in the following table are startup-only and read by
 `coordinator/registry/autopilot_config.go` (`autopilotConfigFromEnv`); defaults and
 validation live in `coordinator/registry/autopilot/config.go` (`DefaultConfig`, `Config.Check`).
 Provider consent is separate persistent TOML, documented in
 [CLI configuration](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
 See [architecture](../architecture/model-autopilot.md) and
 [rollout](../operations/model-autopilot.md).
+
+Reward payment enablement is separate:
+[`EIGENINFERENCE_AUTOPILOT_REWARDS`](#billing-stripe-and-base-rewards) neither
+enables this controller nor selects live machines. Saved-consent history is
+tracked independently of both flags.
 
 | Variable | Values / type | Default | Effect / source |
 |---|---|---|---|
@@ -478,11 +483,18 @@ Prices, the platform fee and the fixed consumer referral reward live in [`../arc
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted Global Payouts key; must be explicit during global-only cutover (no fallback in that mode). |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`HandleGlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reserve balance up front for service-account requests. |
-| `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the hourly base-rewards settlement loop. |
+| `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the ordinary [base-rewards settlement loop](pricing-model.md#base-rewards). |
+| `EIGENINFERENCE_AUTOPILOT_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`, `AutopilotRewardsEnabled`) | Wires the separate daily reward worker in `coordinator/app/services.go` and starts `Engine.Run` in `coordinator/app/lifecycle.go`. Does not stop consent tracking, fund the stored pool, alter base rewards or activate live Autopilot control; [policy and cadence](pricing-model.md#autopilot-rewards). |
 | `EIGENINFERENCE_BASE_REWARDS_K` | float | `0` (additive base income; `1` = legacy max backstop) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reduction factor applied to earnings before the floor is paid. |
 | `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO` | integer µUSD | `9000000000` ($9,000 per month) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Monthly cap on the base-rewards pool. |
 | `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME` | float 0–1 | `0.90` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Uptime fraction required to share in the pool. |
 | `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | float 0–1 (`0` = per machine, no cap) | `0` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Cap on one account's share of the pool. |
+
+Autopilot's independent pool cap is durable state, not an environment-derived
+percentage or monthly base-reward budget. Set it through the
+[reward admin API](api-contracts.md#autopilot-reward-administration); enabling the
+worker alone cannot fund payments. Follow [reward operations](../operations/autopilot-rewards.md)
+for separately approved deployment, funding and historical baseline repair.
 
 ### Model registry, releases and R2/CDN
 

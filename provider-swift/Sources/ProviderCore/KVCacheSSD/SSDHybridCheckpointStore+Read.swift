@@ -154,8 +154,8 @@ extension SSDHybridCheckpointStore {
                 lease.finishIO()
                 if !transferred { lease.release() }
             }
-            // The helper owns every manifest/plan/import alias. A failed scalar
-            // return means those owners have unwound before any host refund.
+            // Retryable results prove synchronous native unwind. AR allocation
+            // refusals stay cold because the SDK may retain queued retirement.
             let outcome = await readAttempt(
                 requestID: requestID, request: request, candidate: selected,
                 access: access, epoch: epoch, lease: lease, readScratch: readScratch,

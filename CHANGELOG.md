@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased - machine-scoped Autopilot
+
+- Persist each canonical machine's desired Autopilot mode in the database, defaulting to shadow. Admins list and edit machines through authenticated endpoints without a coordinator restart; live control still requires verified identity, provider consent and acknowledgement, with global shadow and pause overriding intent. Other machines retain ordinary serving and hypothetical planning; memory, pins and donor safeguards remain enforced.
+- Distinguish desired machine mode from current session activity, and report live-cohort, acknowledged-live and shadow populations separately. Mode revisions revoke stale grants, failed policy reads remove live authority, and demotion preserves accepted-operation recovery. This change does not deploy or activate a production cohort by itself.
+- Keep capacity freshness checks current across policy reads and durable command delivery, so slow database operations cannot extend a provider snapshot's lifetime.
+- Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
+
+## Unreleased - withdrawal funding queue
+
+- Queue confirmed withdrawals when Stripe payout funding is insufficient. Earnings stay reserved, the coordinator retries automatically, and Billing shows a Queued status. International exchange estimates refresh when queued payments are sent; uncertain Stripe outcomes keep their existing payment identity and funds reserved. Funding waits do not shorten the return-check and account-erasure protection windows after Global Payouts dispatch.
+
 ## Unreleased — Bedrock review and conditional merge clearance
 
 - Support an explicitly approved ongoing OpenRouter budget with daily and per-attempt caps, retaining historical charges and unknown reservations. Preflight now rejects exhausted budget capacity even when provider funding is available.
@@ -193,6 +204,10 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 
 ## Unreleased — cache reliability
 
+- Preserve healthy SSD checkpoints when missing-file reconciliation alone satisfies the disk limit, and retain same-tag publications across reconciliation. Keep AR allocation refusals cold until the SDK can prove native retirement completion before a shorter retry.
+
+- Preserve negotiated healthy preload incumbents across interrupted response bodies and readiness-probe transport failures. Keep malformed completed reports fail-closed, and do not acknowledge newcomers or retain explicitly failed members after an uncertain partial attempt.
+- Align preload model-ID validation with the registration request bound so an already accepted long identifier cannot disable unrelated verified contracts. Keep the explicit artifact allowlist and tokenizer capacity limits unchanged.
 - Preserve negotiated preload incumbents through uncertain control transport completion, and keep configured catalogs above 128 models usable without expanding cache-routing allowlists or native tokenizer capacity.
 
 - Remove caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and `prompt_cache_key` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.

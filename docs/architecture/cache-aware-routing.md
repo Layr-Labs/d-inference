@@ -127,6 +127,10 @@ model and its exact contract: unrelated pending or failed artifacts do not close
 an acknowledged healthy member. Current catalog/child/verified-set identity
 and actual runtime readiness still gate participation; see
 [per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
+Negotiated preload transport uncertainty preserves only current incumbent
+acknowledgements. After a validated partial report, a failed readiness probe
+cannot admit newcomers or retain explicit failures; see
+[continuity during retry](prompt-contract-sidecar.md#negotiated-continuity-during-preload-retry).
 See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
 
 Current tokenizer acknowledgement and current routing participation are distinct.
@@ -467,6 +471,21 @@ minutes is accepted and logged as a warning at startup, because providers keep
 their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### SSD reconciliation and native retry authority
+
+Missing-file reconciliation rechecks the pathname while holding the index
+publication barrier and exact-file lease. Busy writers defer reconciliation; a
+same-tag replacement remains indexed and reusable. Budget enforcement rechecks
+usage after stale accounting disappears before choosing another physical victim.
+Accounting-only cleanup does not increment physical eviction counters.
+
+AR allocation-time capacity refusal stays cold because the pinned SDK can queue
+native retirement without exposing a completion receipt. Host refund does not
+authorize another import. Native-block refusals and pre-allocation provider
+budget refusals retain their existing bounded shorter-checkpoint behavior.
+
+See [bounded shorter complete-checkpoint fallback](../reference/ssd-kv-cache.md#bounded-shorter-complete-checkpoint-fallback) for retry authority and remaining-budget rules.
 
 ### Attempt-record memory accounting
 

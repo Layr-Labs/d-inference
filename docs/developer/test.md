@@ -2,6 +2,18 @@
 
 > Last updated: 2026-10-07
 
+## SSD reconciliation and tracked-native retry regressions
+
+`SSDCheckpointMaintenanceEpochTests` covers an externally missing oldest entry
+whose accounting alone satisfies the limit, and a leased same-tag rewrite whose
+fresh publication remains indexed and readable. Both use actual encrypted files.
+`SSDTrackedNativeRetryTests` uses the real `EngineV2.planCompleteCheckpointImport`
+binding, reservation pressure and a delayed native retirement fence to prove that
+host refund cannot rearm a shorter AR allocation. Its tiny native graph is not a
+trained MiMo model or numerical qualification. Run these rebuilt suites under the
+exclusive native lane with the normal resource safeguards; keep the broader
+shorter-checkpoint, native-block, epoch-recovery and write-budget regressions.
+
 ## SSD epoch status lookup and retirement snapshots
 
 Run the rebuilt provider's `SSDCacheEpochStoreRecoveryTests` with
@@ -17,6 +29,51 @@ for the retirement snapshot oracle. This test rejects delayed evictions after
 provider, model or epoch replacement. The connected live fixture also compares
 the original capability when eviction is first observed and after refreshing
 the report; it still requires its ordinary model, host and disk admission gates.
+## Autopilot machine cohorts
+
+Run the focused coordinator and isolated harness suites with the pinned Go
+toolchain:
+
+```bash
+go test -race ./coordinator/tests/registry/... -run 'Test(Autopilot|ModelAutopilot)' -count=1
+go test ./coordinator/tests/api/operations/contracts -run Autopilot -count=1
+go test ./coordinator/tests/store/... -run 'MachineAutopilot|Migration|Migrate' -count=1
+go test ./e2e/testbed -count=1
+go test ./e2e -run '^$'
+```
+
+`coordinator/tests/registry/autopilot_machine_cohort_test.go`,
+`autopilot_machine_lease_test.go` and `autopilot_machine_donors_test.go` in the
+same directory cover exact machine selection, mixed-mode isolation, reconnects,
+identity changes and actual donor protection. Existing consent, inventory,
+memory, writer, uncertain-command and terminal-reconciliation tests remain part
+of the focused selector.
+
+`coordinator/tests/registry/autopilot_machine_policy_time_test.go` uses virtual
+time and real memory-store callbacks to cross the freshness boundary during a
+successful policy read or between durable deliveries. It keeps fresh and exact
+boundary positive controls, rejects old buffered tick timestamps, and preserves
+future evaluation epochs without changing production thresholds.
+
+Machine-setting contracts exercise real memory/Postgres stores, canonical merges,
+idempotent revisions and the cached-store wrapper. PostgreSQL tests require a
+disposable local `DATABASE_URL`; `testdb.Main` isolates each process's database.
+Without that variable, PostgreSQL coverage skips. Migration checks cover fresh
+and legacy schemas, preserved settings on replay, constraints and reopening a
+store without truncating its data. HTTP tests use the composed authenticated
+router for desired-mode edits, paging, errors and effective-session projection.
+
+`e2e/testbed/autopilot_cohort_test.go` uses real registry operations to check
+that fixture identities bind only to running suite-owned authenticated accounts.
+It creates real inventory/settings rows while seeding trusted account/launch
+outcomes rather than proving Apple attestation.
+The real-provider `TestIntegration_AutopilotCachedBootstrapAndPause` additionally
+requires a cached model and isolated Postgres; it checks live acknowledgement,
+cached loading, inference, persisted endpoint demotion/re-enable, a fresh
+acknowledgement after re-enable, and pause without rewriting desired mode.
+Compiling it is not running it. Neither the
+unit fixture nor that bootstrap case establishes live replacement quality,
+hardware identity proof or production improvement.
 
 ## SSD write endurance
 
@@ -1175,6 +1232,12 @@ and pagination through `GET /segments/{id}/contacts`. No tests send live email. 
 [provider email runbook](../operations/provider-emails.md) separates live
 self-addressed delivery verification from these checks.
 
+
+Withdrawal funding regressions run in `coordinator/tests/api/billing/contracts/stripe_withdrawal_queue_test.go`, `coordinator/tests/api/billing/contracts/stripe_withdrawal_queue_fairness_test.go`, `coordinator/tests/api/billing/payouts/global_payouts_queue_test.go` and `coordinator/tests/store/contracts/withdrawal_funding_queue_test.go`. Run the billing API and store contract packages; set `DATABASE_URL` to a disposable PostgreSQL database for both-backend coverage. Tests verify single reservation, concurrent claims, funding recovery, refreshed FX quotes, unknown-outcome retention and queued-money erasure guards. `coordinator/tests/store/contracts/global_payouts_window_test.go` covers posted readback and erasure protection after long funding waits, the exact return-window boundary, minute eligibility and active leases, plus legacy missing and zero JSON dispatch timestamps. UI copy tests cover the queued success and history states. `coordinator/tests/store/postgres/withdrawal_funding_migration_test.go` verifies adoption of an existing schema preserves queued records and records the migration once; the migration timeout suite includes the queued reconciliation index. Run the full PostgreSQL store package with the disposable database to cover replay fixtures as well as fresh/legacy upgrades. `coordinator/tests/store/contracts/stripe_withdrawal_state_age_test.go` verifies stuck filtering and sweep ordering before batch caps, and `coordinator/tests/api/billing/contracts/global_payouts_funding_expiry_test.go` verifies renewal when Stripe returns an FX object without a lock expiry. The funding queue contracts also cover progress beyond a full 200-row unavailable cohort, no-send retry bookkeeping, stale claim fences and recovery after rejected proof writes.
+
+
+`e2e/testbed/profile/profile_test.go` (`TestProfilerDiff`) supplies explicit segment-duration events through `EventBuffer` and `Profiler` for deterministic mean/P95 comparisons. This verifies exact deltas without assuming that a longer timer sleep always measures longer on a busy CI runner; the profiler lifecycle tests retain real instrumentation coverage.
+
 ## Prerequisites
 
 - Toolchain from [build.md](build.md) (`mise install`, submodules, `cmake`).
@@ -1731,6 +1794,21 @@ acknowledging newcomers. `TestCachePreloadIdentityProjectsLargeVerifiedCatalog`
 and `TestCachePreloadConfiguredCatalogControllerFlow` cover 129 verified models
 sharing eight contracts with one allowlisted model; selection retains the full
 verified catalog without raising native capacity.
+
+`coordinator/tests/promptcontract/preload_transport_uncertainty_test.go` uses the
+actual Unix-socket client and controller to cover truncated/timed-out HTTP 200
+bodies, readiness-probe failures after validated partial reports, and the next
+capacity rotation. Completed malformed reports still withdraw authority; failed
+members and unconfirmed newcomers never inherit an incumbent acknowledgement.
+Run these with `go test -race ./coordinator/tests/promptcontract -count=3 -run
+'TestPreloadContinuity(ResponseBodyFailure|ReadinessTimeout|ReadyFailure)'`.
+
+`TestPreloadLongModelIDAuthenticatedRegistration`, `TestPreloadProvisionedLongModelID`
+and `TestCachePreloadLongModelIDDoesNotPoisonCatalog` cover accepted 513-byte model
+IDs through registration, actual artifact verification, Registry projection and
+bounded selection. The short-model-only allowlist control proves an unrelated
+accepted model cannot invalidate that model's preload selection. Oversized-ID
+and existing explicit-allowlist rejection controls retain their bounds.
 
 
 The pure `coordinator/tests/promptcontract/preload_active_set*_test.go` cases cover

@@ -32,11 +32,11 @@ struct SSDShorterCheckpointRestoreTests {
         }
     }
 
-    @Test("real shared-paged admission refusal unwinds before the shorter allocation")
-    func nativeAdmissionCapacityFallsBack() async throws {
+    @Test("AR allocation refusal stays cold without a native retirement receipt")
+    func autoregressiveAdmissionCapacityStaysCold() async throws {
         try await SSDShorterRestoreFixture.withStore(shared: true) { fixture, store in
             let probe = SSDShorterRestoreProbe()
-            let expected = try SSDShorterRestoreFixture.expectedReadBytes(fixture, store: store, failed: [512], success: 256)
+            let expected = try SSDShorterRestoreFixture.expectedReadBytes(fixture, store: store, failed: [512], success: nil)
             let result = await store.stage(requestID: .init(901), request: fixture.request(),
                 reserveReadScratch: { try probe.scratch(fixture) }) { manifest in
                     probe.record(manifest.position)
@@ -63,12 +63,12 @@ struct SSDShorterCheckpointRestoreTests {
                     } else { #expect(probe.scratchCounts.1 == 1) }
                     return plan
                 }
-            #expect(probe.positions == [512, 256])
-            #expect(!probe.evaluatedPositions.contains(512) && probe.evaluatedPositions.contains(256))
-            #expect(probe.scratchCounts.0 == 2 && probe.scratchCounts.1 == 2)
-            #expect(result.stagedTokens == 256)
-            SSDShorterRestoreFixture.expectSingleStage(store, result: result, readBytes: expected, files: 3)
-            #expect(store.stats().stagedBytesInUse == 0, "successful shared stage has already refunded provider host IO")
+            #expect(probe.positions == [512])
+            #expect(probe.evaluatedPositions.isEmpty)
+            #expect(probe.scratchCounts.0 == 1 && probe.scratchCounts.1 == 1)
+            #expect(result.disposition == .skippedCapacity)
+            SSDShorterRestoreFixture.expectSingleStage(store, result: result, readBytes: expected, files: 1)
+            #expect(store.stats().stagedBytesInUse == 0, "failed attempt refunds provider host IO without granting retry authority")
             if result.staged { try SSDShorterRestoreFixture.adoptAndRetire(fixture, store: store, requestID: .init(901), position: 256) }
         }
     }

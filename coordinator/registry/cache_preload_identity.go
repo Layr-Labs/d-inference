@@ -17,7 +17,9 @@ func (r *Registry) CachePreloadIdentities(verified []promptcontract.VerifiedPrel
 	defer r.mu.RUnlock()
 	var admitted []promptcontract.PreloadDemandIdentity
 	for _, identity := range verified {
-		if identity.CatalogGeneration == 0 || identity.ModelID == "" || len(identity.ModelID) > 512 ||
+		// Match preload validation to registration's 64 MiB HTTP body ceiling,
+		// not the optional explicit artifact allowlist's narrower ID limit.
+		if identity.CatalogGeneration == 0 || identity.ModelID == "" || len(identity.ModelID) > 64<<20 ||
 			strings.TrimSpace(identity.ModelID) != identity.ModelID || strings.ContainsAny(identity.ModelID, "\x00\r\n\t*") ||
 			!validLowerHex256(identity.ModelAggregateSHA256) || !validLowerHex256(identity.PromptContractID) {
 			continue

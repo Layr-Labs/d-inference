@@ -46,11 +46,19 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 	for _, p := range r.providers {
 		p.mu.Lock()
 		placement := p.autopilotState.Placement(p.ModelAutopilot, now, c.config.CommandWatchdog)
-		n := autopilot.Node{ID: p.ID, Seq: p.capacitySeq, Managed: providerAutopilotManagedLocked(p) || (c.config.ObserveOnly && providerAutopilotConsentedLocked(p) && !p.ModelAutopilot.Paused), Pending: placement.Pending, MemoryPressure: p.SystemMetrics.MemoryPressure, Fits: map[string]autopilot.ModelFit{}}
+		observeOnly := !c.liveMachineLocked(p)
+		n := autopilot.Node{
+			ID: p.ID, Seq: p.capacitySeq, ObserveOnly: observeOnly,
+			Consented:     !p.PrivateOnly && providerAutopilotConsentedLocked(p),
+			ControlActive: !observeOnly && providerAutopilotControlActiveLocked(p),
+			Managed:       providerAutopilotManagedLocked(p) || (observeOnly && providerAutopilotConsentedLocked(p) && !p.ModelAutopilot.Paused),
+			Pending:       placement.Pending, MemoryPressure: p.SystemMetrics.MemoryPressure, Fits: map[string]autopilot.ModelFit{},
+			HypotheticalFits: map[string]autopilot.ModelFit{},
+		}
 		n.UnscopedBusy = unscoped[p.ID]
 		n.Uncertain = placement.Uncertain
 		maxAge := c.config.ControlSnapshotMaxAge()
-		if !providerAutopilotControlActiveLocked(p) {
+		if !n.ControlActive {
 			// Ordinary, waiting, observed and explicitly paused providers may
 			// legitimately use a slower heartbeat. Preserve their donor credit
 			// through the normal serving window. Active control renewals force
@@ -72,39 +80,70 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 			f.Excluded["unreconciled_state"]++
 		}
 		for _, model := range p.Models {
-			if p.ModelAutopilot != nil && p.ModelAutopilot.Enabled && !providerAutopilotAllowsLocked(p, model.ID) {
-				continue
+			hypothetical := (p.ModelAutopilot == nil || !p.ModelAutopilot.Enabled || providerAutopilotAllowsLocked(p, model.ID)) &&
+				r.providerPassesAutopilotGatesLocked(p, model, RequestTraits{}, now)
+			serving := hypothetical
+			if !n.ControlActive {
+				// Waiting, expired and shadow peers retain only their ordinary
+				// serving permissions as real donors. Cached residency alone cannot
+				// protect a live action; hypothetical grants can also lose dedication.
+				serving = r.providerPassesRoutingGatesLocked(p, model.ID, RequestTraits{}, false, now)
 			}
 			// Keep base residency independent of a specialized request shape.
 			// Each cohort earns capacity only from providers qualified for it.
-			if !r.providerPassesAutopilotGatesLocked(p, model, RequestTraits{}, now) {
+			if !serving && !hypothetical {
 				continue
 			}
 			found := false
 			for key, d := range byModel[model.ID] {
 				found = true
-				if !r.providerPassesAutopilotGatesLocked(p, model, RequestTraitsForAutopilot(d.Requirements), now) || (d.RequiresVision && !model.IsVision) {
+				if d.RequiresVision && !model.IsVision {
+					continue
+				}
+				traits := RequestTraitsForAutopilot(d.Requirements)
+				hypotheticalShape := hypothetical && r.providerPassesAutopilotGatesLocked(p, model, traits, now)
+				servingShape := hypotheticalShape
+				if !n.ControlActive {
+					servingShape = serving && r.providerPassesRoutingGatesLocked(p, model.ID, traits, false, now)
+				}
+				if !servingShape && !hypotheticalShape {
 					continue
 				}
 				fit := r.autopilotModelFitLocked(p, model.ID, d, c.config)
 				if fit.Rate > 0 {
-					n.Fits[key] = fit
+					if servingShape {
+						n.Fits[key] = fit
+					}
+					if hypotheticalShape {
+						n.HypotheticalFits[key] = fit
+					}
 				}
 			}
 			if !found {
-				n.Fits[model.ID] = r.autopilotModelFitLocked(p, model.ID, autopilot.DemandView{}, c.config)
+				fit := r.autopilotModelFitLocked(p, model.ID, autopilot.DemandView{}, c.config)
+				if serving {
+					n.Fits[model.ID] = fit
+				}
+				if hypothetical {
+					n.HypotheticalFits[model.ID] = fit
+				}
 			}
 
 			for _, slot := range p.BackendCapacity.Slots {
 				if slot.Model == model.ID && (slot.State == "idle" || slot.State == "running") {
-					n.Residents = append(n.Residents, model.ID)
+					if serving {
+						n.Residents = append(n.Residents, model.ID)
+					}
+					if hypothetical {
+						n.HypotheticalResidents = append(n.HypotheticalResidents, model.ID)
+					}
 					break
 				}
 			}
 		}
 		// Do not authorize a plan that ignores an off-catalog/local resident or
 		// resident rejected by current safety gates. Its owner retains control.
-		if n.Managed && !slices.Equal(autopilot.SortedStrings(n.Residents), autopilot.ResidentIDs(n.State)) {
+		if n.Managed && !slices.Equal(autopilot.SortedStrings(n.HypotheticalResidents), autopilot.ResidentIDs(n.State)) {
 			n.Idle = false
 			f.Excluded["unmanaged_resident"]++
 		}

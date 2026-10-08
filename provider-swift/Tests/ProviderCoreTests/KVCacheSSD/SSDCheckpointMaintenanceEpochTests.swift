@@ -4,6 +4,71 @@ import Testing
 
 @Suite("Complete checkpoint maintenance epoch", .serialized)
 struct SSDCheckpointMaintenanceEpochTests {
+    @Test("missing oldest accounting satisfies the budget without evicting its survivor")
+    func missingOldestPreservesSurvivor() async throws {
+        let f = try SSDHybridCheckpointTestFixture()
+        defer { f.remove() }
+        let budget = SSDDiskBudget()
+        let store = try f.makeStore(diskBudget: budget)
+        defer { store.close() }
+        #expect(try await f.donate(store, position: 256) == [256])
+        #expect(try await f.donate(store, position: 512) == [512])
+        let missing = f.file(store, position: 256)
+        let survivor = f.file(store, position: 512)
+        let missingTag = try #require(SSDPrefixCache.hexDecode(missing.deletingPathExtension().lastPathComponent))
+        let survivorTag = try #require(SSDPrefixCache.hexDecode(survivor.deletingPathExtension().lastPathComponent))
+        let now = Int64(Date().timeIntervalSince1970)
+        store.index.touch(tags16: [missingTag], now: now - 1)
+        store.index.touch(tags16: [survivorTag], now: now)
+        let bytes = try Data(contentsOf: survivor)
+        let epoch = store.config.epochStore?.current
+        let evictions = store.stats().evictions
+        try FileManager.default.removeItem(at: missing)
+        #expect(budget.enforce(budgetBytes: bytes.count) == 0)
+        #expect(store.stats().evictions == evictions)
+        #expect(store.index.totalBytes == bytes.count)
+        #expect(store.index.contains(tag16: survivorTag))
+        #expect(try Data(contentsOf: survivor) == bytes)
+        #expect(store.config.epochStore?.current == epoch)
+        let result = await store.stage(requestID: .init(991), request: f.request(),
+            reserveReadScratch: f.reserveReadScratch, makeImportPlan: f.plan)
+        #expect(result.stagedTokens == 512)
+        await store.abandonStaging(requestID: .init(991))
+        await store.closeAndWait()
+    }
+
+    @Test("reconciliation respects the same-tag writer lease and its fresh publication")
+    func reconciliationPreservesRewrite() async throws {
+        let f = try SSDHybridCheckpointTestFixture()
+        defer { f.remove() }
+        let store = try f.makeStore()
+        defer { store.close() }
+        #expect(try await f.donate(store, position: 512) == [512])
+        let file = f.file(store, position: 512)
+        let tag = try #require(SSDPrefixCache.hexDecode(file.deletingPathExtension().lastPathComponent))
+        let bytes = try Data(contentsOf: file)
+        let lease = try #require(SSDCheckpointFileCoordinator.shared.tryAcquire(to: file))
+        defer { lease.release() }
+        // Hold the real writer's exclusion boundary across missing discovery,
+        // recreation, and publication. Maintenance must defer a busy pathname.
+        try FileManager.default.removeItem(at: file)
+        store.reconcileExternalRemovals()
+        #expect(store.index.contains(tag16: tag))
+        try bytes.write(to: file)
+        store.removalLock.withLock {
+            store.index.insert(tag16: tag, fileBytes: bytes.count, lastAccess: Int64(Date().timeIntervalSince1970))
+        }
+        lease.release()
+        store.reconcileExternalRemovals()
+        #expect(store.index.contains(tag16: tag))
+        #expect(store.index.totalBytes == bytes.count)
+        let result = await store.stage(requestID: .init(992), request: f.request(),
+            reserveReadScratch: f.reserveReadScratch, makeImportPlan: f.plan)
+        #expect(result.stagedTokens == 512)
+        await store.abandonStaging(requestID: .init(992))
+        await store.closeAndWait()
+    }
+
     @Test("whole-root TTL retirement preserves active survivor publication and reads")
     func activeTTLRetirementPreservesSurvivor() async throws {
         let f = try SSDHybridCheckpointTestFixture()

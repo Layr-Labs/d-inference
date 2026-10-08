@@ -296,8 +296,14 @@ final class SSDDiskBudget: @unchecked Sendable {
                     }
                 }
                 guard let victim else { return evicted }
+                let indexedBytesBefore = victim.diskBytesOnDisk
                 guard victim.evictOldestEntry() > 0 else {
-                    blockedStores.insert(ObjectIdentifier(victim))
+                    // Stale accounting can disappear without unlinking a file.
+                    // Re-evaluate the limit after that progress, and count only
+                    // actual physical evictions in both telemetry counters.
+                    if victim.diskBytesOnDisk >= indexedBytesBefore {
+                        blockedStores.insert(ObjectIdentifier(victim))
+                    }
                     continue
                 }
                 evicted += 1

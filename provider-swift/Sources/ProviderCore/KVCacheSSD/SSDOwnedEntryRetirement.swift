@@ -10,6 +10,19 @@ enum SSDOwnedEntryRetirement {
         var externalChange = false
     }
 
+    /// Caller holds its index-publication/removal barrier. File leases also
+    /// exclude a writer between rename and publication; busy entries wait for
+    /// the next pass. Recheck status at removal, never from an earlier snapshot.
+    static func reconcileMissingEntries(root: URL, index: SSDBlockIndex) {
+        for tag in index.allTags() {
+            let url = SSDBlockStore.fileURL(root: root, tag16Hex: tag.hexString)
+            guard let access = SSDCheckpointFileCoordinator.shared.tryAcquire(to: url) else { continue }
+            defer { access.release() }
+            guard SSDBlockStore.indexedBlockFileStatus(at: url, under: root) != .regular else { continue }
+            _ = index.remove(tag16: tag)
+        }
+    }
+
     static func remove(
         urls: [URL], root: URL, index: SSDBlockIndex, epochStore: SSDCacheEpochStore?
     ) -> Result? {

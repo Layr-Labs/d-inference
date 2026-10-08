@@ -7,13 +7,13 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func (f *failingGlobalPayoutPersistence) RecordGlobalPayoutRejection(id string, attempt int, code string) error {
+func (f *failingGlobalPayoutPersistence) RecordGlobalPayoutRejection(id string, attempt int, code string, leaseUntil time.Time) error {
 	f.recordCalls++
 	if f.recordFailures > 0 {
 		f.recordFailures--
 		return errors.New("temporary rejection write failure")
 	}
-	return f.MemoryStore.RecordGlobalPayoutRejection(id, attempt, code)
+	return f.MemoryStore.RecordGlobalPayoutRejection(id, attempt, code, leaseUntil)
 }
 
 func (f *failingGlobalPayoutPersistence) ApplyGlobalPayout(id string, result store.GlobalPayoutResult, now time.Time) error {
@@ -25,6 +25,6 @@ func (f *failingGlobalPayoutPersistence) ApplyGlobalPayout(id string, result sto
 	return f.MemoryStore.ApplyGlobalPayout(id, result, now)
 }
 
-func (f *failingGlobalPayoutPersistence) ClaimGlobalPayout(id string, now time.Time) (bool, error) {
+func (f *failingGlobalPayoutPersistence) ClaimGlobalPayout(id string, now time.Time) (*store.GlobalPayout, error) {
 	return f.MemoryStore.ClaimGlobalPayout(id, now.Add(f.claimOffset))
 }

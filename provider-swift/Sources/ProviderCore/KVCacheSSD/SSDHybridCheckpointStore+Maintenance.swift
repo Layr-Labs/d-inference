@@ -13,7 +13,11 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func evictOldestEntry() -> Int {
         for entry in index.oldestEntries() {
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: entry.tag16.hexString)
-            let freed = retireIndexedEntries([url]).indexedBytesFreed
+            let retired = retireIndexedEntries([url])
+            // Reconciliation may already satisfy the global limit. Return to
+            // enforcement before selecting another physical victim.
+            if retired.externalChange { return 0 }
+            let freed = retired.indexedBytesFreed
             if freed > 0 {
                 statsBox.update { $0.evictions += 1 }
                 return freed
@@ -38,12 +42,9 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     func reconcileExternalRemovals() {
-        let removed = index.allTags().filter {
-            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: $0.hexString)
-            return SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
+        performIndexReconciliation {
+            SSDOwnedEntryRetirement.reconcileMissingEntries(root: config.root, index: index)
         }
-        guard !removed.isEmpty else { return }
-        performIndexReconciliation { removed.forEach { _ = self.index.remove(tag16: $0) } }
     }
 
     /// Forget one entry whose file a reader found already gone. Index-only,

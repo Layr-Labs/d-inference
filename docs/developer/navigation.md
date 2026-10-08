@@ -11,6 +11,9 @@ type, or test name you are investigating.
 Run the commands below from the repository root with `rg` installed.
 Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 
+
+Payout funding queues remain within the billing domain. `coordinator/api/billing/payouts/stripe_dispatch.go` (`dispatchStripeWithdrawal`) shares Connect dispatch between HTTP confirmation and `stripe_withdrawal_queue.go` (`ProcessStripeWithdrawalQueue`). `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`) owns Global Payouts balance checks and safe quote refresh. Memory and PostgreSQL queue implementations own durable claims and transitions; shared Global Payouts guards live in `coordinator/internal/store/shared/global_payouts_queue.go`.
+
 ## Steps
 
 ### 1. Choose the owning subsystem
@@ -35,6 +38,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Provider selection, admission, queueing | `coordinator/registry/`; pure calculations in `registry/admission/` and `registry/selection/`, atomic transitions in the registry parent |
 | Autopilot admin HTTP contract | `coordinator/api/autopilot/`; parent API adapter supplies authorization and dependencies |
 | Autopilot demand, placement and donor coverage | `coordinator/registry/autopilot/`; the registry adapter owns live sessions, reservations and transport |
+| Autopilot machine-cohort authority | `coordinator/store/machine_autopilot.go` persists intent; `coordinator/registry/autopilot_machine_policy.go` serializes admin edits and periodic synchronization; `autopilot_machine_status.go` separates intent from current sessions; `autopilot_activation.go` (`liveMachineLocked`, `refreshControlLeases`) and `autopilot_reservation.go` (`beginAutopilotReservation`) enforce current authority. Detached live/shadow passes in `coordinator/internal/registry/autopilotcontrol/controller.go` retain separate hypothetical state. |
 | Accounting and durable state | `coordinator/billing/`, `coordinator/payments/`; contracts/decorator in `coordinator/store/`, implementations in `store/memory/` and `store/postgres/` |
 | Open Sales Program | `coordinator/api/billing/referrals.go` for account-scoped HTTP; `coordinator/billing/referral.go` for registration, attribution and stats; `coordinator/store/consumer_settlement.go` for the atomic charge contract |
 | Coordinator tests and fixtures | `coordinator/tests/` mirrors production owners; public API contracts use `tests/api/<domain>/contracts/`, shared helpers use `tests/internal/` |

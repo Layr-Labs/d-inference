@@ -16,8 +16,8 @@ extension SSDHybridCheckpointStore {
         }
     }
 
-    // Only scalars escape a failed attempt. Manifest, plan and native import
-    // aliases unwind here before stageTransfer retires and awaits host owners.
+    // Only scalars escape a failed attempt. Retry authority additionally needs
+    // native retirement proof; dropping public handles does not provide it.
     func readAttempt(
         requestID: CBv2RequestID, request: CBv2Request, candidate: ReadCandidate,
         access: SSDCheckpointFileCoordinator.Access, epoch: String?,
@@ -164,10 +164,11 @@ extension SSDHybridCheckpointStore {
                 if !usesProcessMemoryOwner { lease.release() }
             })
         } catch CBv2KVError.capacityExhausted {
-            // Both AR and native-block import plans throw this
-            // typed refusal at Admission/native reservation BEFORE allocating.
-            // MLX evaluation/materialization failures have different types and
-            // must not inherit retry authority merely from an allocation error.
+            // The pinned AR API can queue tracked-native retirement while
+            // retaining the charged manifest. It exposes neither a tracking
+            // discriminator nor a completion receipt: host refund alone cannot
+            // authorize another attempt. Native-block refusal unwinds inline.
+            guard case .nativeBlock = plan else { throw ReadControl.capacity }
             throw ReadControl.retryableCapacity
         } catch { throw ReadControl.capacity }
         readScratch.close()

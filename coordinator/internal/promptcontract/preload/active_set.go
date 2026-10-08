@@ -560,14 +560,16 @@ func validatePreloadSelection(input PreloadSelectionInput) ([]VerifiedPreloadArt
 }
 
 func validPreloadArtifact(artifact VerifiedPreloadArtifact, generation uint64) bool {
-	// Mirror the existing exact Registry artifact syntax, not a new model family
-	// or provider-availability restriction. This also bounds retained model bytes.
+	// Preserve exact identity syntax without imposing the optional artifact
+	// allowlist's narrower model-ID limit on the full verified catalog.
 	return generation != 0 && artifact.CatalogGeneration == generation && validPreloadModel(artifact.ModelID) &&
 		sidecar.ValidHash(artifact.ModelAggregateSHA256) && sidecar.ValidHash(artifact.PromptContractID)
 }
 
 func validPreloadModel(model string) bool {
-	return model != "" && len(model) <= 512 && strings.TrimSpace(model) == model && !strings.ContainsAny(model, "\x00\r\n\t*")
+	// Registration has no per-ID limit beyond its 64 MiB HTTP body ceiling.
+	// Match CachePreloadIdentities while bounding retained catalog strings.
+	return model != "" && len(model) <= 64<<20 && strings.TrimSpace(model) == model && !strings.ContainsAny(model, "\x00\r\n\t*")
 }
 
 func clonePreloadArtifact(artifact VerifiedPreloadArtifact) VerifiedPreloadArtifact {

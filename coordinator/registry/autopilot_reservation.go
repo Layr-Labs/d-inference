@@ -22,7 +22,9 @@ func (r *Registry) beginAutopilotReservation(c *modelAutopilotController, now ti
 			p := a.Session
 			p.mu.Lock()
 			defer p.mu.Unlock()
-			if p.capacitySeq != a.Node.Seq || providerAutopilotTransitionLocked(p) || p.pendingCount() != 0 || !providerAutopilotManagedLocked(p) {
+			if r.autopilot != c || r.providers[p.ID] != p || !c.config.Enabled || c.paused.Load() ||
+				!c.liveMachineLocked(p) || !providerAutopilotControlActiveLocked(p) ||
+				p.capacitySeq != a.Node.Seq || providerAutopilotTransitionLocked(p) || p.pendingCount() != 0 {
 				return false
 			}
 			p.autopilotState.Reserve(cmd, p.capacitySeq, now, c.config.FailureBackoff)

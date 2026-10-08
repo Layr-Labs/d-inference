@@ -1776,6 +1776,7 @@ public final class SSDPrefixCache:
         for victim in victims {
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
             let retired = retireIndexedEntries([url])
+            if retired.externalChange { return 0 }
             if retired.indexedBytesFreed > 0 {
                 statsBox.add(evictions: 1)
                 return retired.indexedBytesFreed
@@ -1801,12 +1802,8 @@ public final class SSDPrefixCache:
 
     func reconcileExternalRemovals() {
         guard hasSafeRoot else { return }
-        let removed = externallyRemovedTags()
-        guard !removed.isEmpty else { return }
         performIndexReconciliation {
-            for tag16 in removed {
-                index.remove(tag16: tag16)
-            }
+            SSDOwnedEntryRetirement.reconcileMissingEntries(root: config.root, index: index)
         }
     }
 

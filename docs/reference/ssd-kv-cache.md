@@ -136,20 +136,20 @@ checkpoint from a longer file.
 
 | Contract | Bound / behavior | Code |
 |---|---|---|
-| Retry authority | At most one strictly shorter indexed endpoint after an authenticated import plan's typed `CBv2KVError.capacityExhausted`, a typed native pre-allocation reservation refusal, or the provider's pre-allocation destination-peak refusal | `SSDHybridCheckpointStore+Read.swift` (`stageTransfer`), `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`) |
-| No retry | Initial scratch/host authority refusal, arithmetic overflow, unknown/generic allocation or post-materialization failure, policy, corruption, cancellation, close, epoch drift or same-ID replacement | `SSDHybridCheckpointStore+ReadAttempt.swift` (`ReadControl`, `readAttempt`), `SSDHybridCheckpointStore+Read.swift` (`readIsCurrent`) |
+| Retry authority | At most one strictly shorter indexed endpoint after an authenticated import plan's typed `CBv2KVError.capacityExhausted`, a typed native-block pre-allocation reservation refusal, or the provider's pre-allocation destination-peak refusal | `SSDHybridCheckpointStore+Read.swift` (`stageTransfer`), `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`) |
+| No retry | AR allocation refusal without a native retirement receipt, initial scratch/host authority refusal, arithmetic overflow, unknown/generic allocation or post-materialization failure, policy, corruption, cancellation, close, epoch drift or same-ID replacement | `SSDHybridCheckpointStore+ReadAttempt.swift` (`ReadControl`, `readAttempt`), `SSDHybridCheckpointStore+Read.swift` (`readIsCurrent`) |
 | First attempt | Existing candidate size/estimated-time and per-file plaintext limits remain unchanged; the new meter only records first-attempt reads and elapsed time | `SSDCheckpointReadBudget.swift` (`beforeRead`, `checkTime`) |
 | Retry raw-byte ceiling | The original `maxReadBytes`, less the already-spent first manifest probe; the retry's own manifest probe and whole-file read share that remainder. Every header/framing span is charged before allocation/read, plus a conservative one-byte EOF allowance. Partial OS reads do not grant another allowance | `SSDCheckpointReadBudget.swift` (`beginRetry`, `beforeRead`), `SSDBlockStore.swift` (`readExactly`), `SSDBlockStore+Streaming.swift` (`readStreaming`) |
 | Retry time checks | The original start plus `maxStageMillis`, including first-attempt work, file waits and refunds. Remaining time must also admit the candidate's existing estimated cost. Checks are cooperative, including awaited file-access/refund/native work: they do not impose a timer on those waits, preempt an OS/native operation, or guarantee return/cancellation at `maxStageMillis`. The original request cancellation remains authoritative; elapsed time is rechecked before further retry work and publication | `SSDCheckpointReadBudget.swift` (`beginRetry`, `checkTime`), `SSDHybridCheckpointStore+ReadAttempt.swift` (`readAttempt`) |
 | Retirement and identity | Failed import/plan aliases unwind, scratch/native owners retire and the original host refund completes before another reservation. One continuous logical registration atomically changes file access; lifecycle invalidation cannot resurrect it or erase its replacement | `SSDHybridCheckpointStore+Read.swift` (`stageTransfer`), `SSDCheckpointStageReservation.swift` (`waitForRefund`) |
 
-Typed retry provenance is pinned to the SDK's admission-before-materialization
-paths in `CompleteCheckpointImportPlan.swift` (`allocate`) and
-`NativeBlockCheckpointImport.swift` (`allocate`), together with the current
-concrete provider owners and evaluators. It is not a guarantee for arbitrary
-injected callbacks. A future allocator or callback that can throw the same typed
-error after materialization must re-establish that boundary;
-generic MLX errors are not substitutes for this evidence. The successful shorter
+The pinned AR `CompleteCheckpointImportPlan.allocate` API may retain its charged
+manifest on queued native retirement after capacity refusal. It exposes no
+tracking discriminator or completion receipt, so this refusal remains cold;
+provider host refund does not authorize a shorter attempt. Native-block typed
+reservation refusals unwind synchronously. Plan-creation and provider destination
+peak refusals retain the bounded retry. Future SDK changes must establish actual
+retirement completion before expanding this authority. The successful shorter
 file still requires full authenticated metadata, manifest, payload and EOF, then
 ordinary native adoption. A staged endpoint alone is not a hit or saved usage.
 

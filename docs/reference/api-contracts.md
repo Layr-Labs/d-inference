@@ -1498,12 +1498,35 @@ The authorized machine adapter sets `Cache-Control: no-store`.
 | Session field | Meaning |
 |---|---|
 | `provider_id` | Current provider connection identifier, usable for correlation but not as a machine-edit target |
+| `machine_model`, `chip_name`, `memory_gb` | Hardware labels and installed memory reported by this connection; not independent hardware verification or available load headroom |
 | `effective_mode` | `disabled` when the controller is absent/disabled; then, in precedence order, `paused`, `private`, `unconsented`, `shadow`, `awaiting_ack`, or `live` according to effective control. `awaiting_ack` includes expired or missing grants on selected sessions. |
 | `control_active` | Effective acknowledged, unexpired live authority after global and session gates; not proof of idle capacity, feasible placement or an issued operation |
 | `consented` | Current supported cached-only consent with a valid saved selection/revision |
 | `paused` | Provider pause or current coordinator pause; does not alter durable desired mode |
 | `private_only` | Session excludes public participation |
 | `capacity_fresh` | Accepted capacity exists within the applicable control/ordinary freshness window; independent of consent and control activation |
+| `last_heartbeat` | Coordinator connection-liveness timestamp, or `null` when unavailable; rejected capacity sequences can advance it without refreshing the reported model state |
+| `capacity_accepted_at` | Coordinator timestamp of the last applied non-null capacity frame, or `null`; an accepted empty frame without a usable sample can still have `capacity_fresh=false` |
+| `idle_unload_mins` | Last valid heartbeat-reported ordinary idle timeout in minutes: `0` disables timeout unloading, a positive value enables it, and `null` means unreported. Retained within this connection when later heartbeats omit the field. |
+| `always_ready_configured` | `true` exactly when reported `idle_unload_mins` is `0`, `false` for a positive timeout, and `null` when unknown. Describes the running daemon's startup-loaded baseline, not current residency, routability or a later on-disk edit. |
+| `pinned_models` | Sorted exact IDs from the bounded protocol-3 cached-only Autopilot report, including the provider's combined explicit pins and configured `backend.model`; `[]` means reported none and `null` means no usable report. Does not require active control or imply that protection is currently enforced. |
+| `resident_models` | Sorted IDs from that same report's `resident_models`, with the same `[]`/`null` distinction. Reported local residency, not selected/advertised models, a fresh disk scan, or catalog-filtered ready routing capacity. |
+
+Model lists are unavailable for missing, unsupported or sanitized malformed
+Autopilot reports. A stale report remains visible alongside its freshness
+metadata; it is not converted into an empty list. An accepted heartbeat omitting
+Autopilot state clears the previous lists. Registration can supply model lists
+before any accepted capacity frame or idle-policy report. Offline machines have
+`sessions: []`; neither pins nor idle policy are recovered from historical rows.
+The diagnostic fields also appear in the successful PATCH response, but PATCH
+still accepts only `desired_mode`. Reads send no commands and change no policy.
+
+Always ready is not an Autopilot activation requirement or a pin-all setting.
+Live Autopilot suspends the ordinary idle timer and may replace or unload
+unpinned models subject to its own safeguards. The combined `paused` field does
+not distinguish a global pause from an explicit provider pause; do not use it
+alone to infer provider-side pin protection. See
+[idle-policy ownership](../architecture/model-autopilot.md#enrollment-and-ownership).
 
 The database read and current-session projection are separate snapshots, not an
 atomic cross-process view. A successful local edit publishes authority and

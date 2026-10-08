@@ -475,6 +475,9 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 }
 
 public struct ProviderConfig: Sendable, Equatable, Codable {
+    /// Inert saved cluster setup; startup requires a separate explicit
+    /// distributed opt-in. Never an approval or serving capacity.
+    public var cluster: ClusterConfigurationReference?
     public var provider: ProviderSettings
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
@@ -486,13 +489,15 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
-        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings()
+        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
+        cluster: ClusterConfigurationReference? = nil
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
+        self.cluster = cluster
     }
 
     enum CodingKeys: String, CodingKey {
@@ -501,6 +506,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case coordinator
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
+        case cluster
     }
 
     public init(from decoder: Decoder) throws {
@@ -512,6 +518,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.gemmaOptimizations = try container.decodeIfPresent(
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
+        self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
     }
 
     /// Generate a default config based on detected hardware.

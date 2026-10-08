@@ -25,5 +25,6 @@ public struct CBv2Request: Sendable {
     }
 }
 public struct CBv2FirstTokenDeadlineAdmission: Sendable { public init() {} }
-public enum CBv2FirstTokenProjectedWork: Sendable, Equatable { case unbounded }
+public enum CBv2FirstTokenUnboundedReason: Sendable, Equatable { case unsupportedScheduler }
+public enum CBv2FirstTokenProjectedWork: Sendable, Equatable { case unbounded(reason: CBv2FirstTokenUnboundedReason? = nil) }
 public enum CBv2FinishReason: Sendable, Equatable { case stop, length, cancelled, error(String) }

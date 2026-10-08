@@ -1,7 +1,7 @@
 #!/bin/bash
-# Scoped slice-7 runner: process ownership checks without the provider
-# pipe-contract suites (those need the research branch's ProviderCore
-# Distributed/* sources and land with the member-invocation slice).
+# Process ownership checks, including the provider pipe-contract suites
+# against the ACTUAL staged ProviderCore Distributed sources with explicit
+# MLXLMCommon contract value stand-ins (no MLX runtime).
 set -euo pipefail
 task_root="$(cd "$(dirname "$0")/../.." && pwd)"
 task_protocol="$task_root/Sources/DarkbloomClusterProtocol"
@@ -39,6 +39,29 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/PartialAdmissionTests.swift" -o "$task_build/partial-check"
 "$task_build/partial-check" "$task_build/fake-worker"
 
+task_repo="$(cd "$task_root/../.." && pwd)"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
+  -module-name MLXLMCommon -emit-module-path "$task_build/MLXLMCommon.swiftmodule" \
+  "$task_root/Tests/ProcessChecks/MLXLMCommonContractValues.swift" -o "$task_build/libMLXLMCommon.dylib"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
+  -I "$task_build" -L "$task_build" -lMLXLMCommon -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  -module-name ProviderPipeContract -emit-module-path "$task_build/ProviderPipeContract.swiftmodule" \
+  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
+  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift" \
+  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
+  -o "$task_build/libProviderPipeContract.dylib"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lMLXLMCommon -lProviderPipeContract -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/ProviderPipeContractTests.swift" -o "$task_build/provider-check"
+"$task_build/provider-check" "$task_build/fake-worker"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lMLXLMCommon -lProviderPipeContract -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/ProviderDeadlinePipeCheck.swift" -o "$task_build/deadline-check"
+"$task_build/deadline-check" "$task_build/fake-worker"
+
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
   -Xlinker -rpath -Xlinker "$task_build" \
@@ -53,4 +76,4 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   "$task_root/Sources/DarkbloomClusterProcess/ClusterDeviceExclusion.swift" \
   "$task_root/Tests/ProcessChecks/DeviceExclusionCheck.swift" -o "$task_build/device-exclusion-check"
 "$task_build/device-exclusion-check"
-printf '%s\n' '{"passed":true,"providerPipeContract":"deferred-member-slice","networkUsed":false}'
+printf '%s\n' '{"passed":true,"providerPipeContract":"actual-provider-sources","networkUsed":false}'

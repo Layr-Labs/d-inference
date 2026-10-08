@@ -34,7 +34,7 @@ private struct Failure: Error {}
         let owner: any DistributedResidentExecutionOwner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: 2)
         guard let ready = owner.readiness() else { throw Failure() }
         let request = CBv2Request(id: .init(7), promptTokens: [1, 2, 3], sampling: .init(temperature: 0), maxTokens: 2)
-        guard owner.projectFirstToken(request, admission: .init()) == .unbounded else { throw Failure() }
+        guard owner.projectFirstToken(request, admission: .init()) == .unbounded(reason: nil) else { throw Failure() }
         var bad = request; bad.sampling.temperature = 1
         var refused = false
         do { _ = try owner.reserve(bad, identity: ready.identity, profileID: profile.id, capacityLimit: 1800) } catch { refused = true }

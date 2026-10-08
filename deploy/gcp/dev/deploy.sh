@@ -79,8 +79,9 @@ REQUIRED_CHECKS=(
 # not decide whether the coordinator can deploy, so the gate ignores them.
 # jq programs that read status contexts start with this definition.
 GATED_STATUS_JQ='def gated: .context | ascii_downcase | startswith("vercel") | not; '
-# The jobs of devnet-suite.yml test the deployed coordinator; they are not a
-# deploy gate either. Each one is named "DevNet suite...".
+# The jobs of devnet-suite.yml (each name starts with "DevNet suite") test the
+# deployed coordinator; they are not a deploy gate either. jq programs that
+# read check runs start with this definition.
 GATED_RUN_JQ='def gated: .name | startswith("DevNet suite") | not; '
 BUILD_WAIT_S=${BUILD_WAIT_S:-1200}
 CI_WAIT_S=${CI_WAIT_S:-1200}

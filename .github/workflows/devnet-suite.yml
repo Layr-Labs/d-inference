@@ -10,7 +10,8 @@ name: DevNet Suite
 # the deployed commit is the last tested commit; workflow_dispatch with
 # force=true runs then too. When the public /health is down or gives no
 # build_commit, the gate job fails and says so in its summary; the suite does
-# not run. The deploy gate in deploy.sh ignores the jobs of this workflow.
+# not run. The deploy gate in deploy.sh ignores the jobs of this workflow by
+# name: keep "DevNet suite" at the start of each job name.
 #
 # Master switch: every job runs only when vars.DEVNET_SUITE_ENABLED is "true".
 # Runbook: docs/operations/dev-environment.md, step 13.
@@ -81,9 +82,10 @@ jobs:
           domain=$(awk -F= '$1 == "DOMAIN" { print $2; exit }' deploy/gcp/dev/env-overrides)
           deployed=$(curl -fsS --max-time 10 "https://$domain/health" 2>/dev/null | jq -r '.build_commit // empty' 2>/dev/null) || deployed=""
           if [[ ! "$deployed" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::https://$domain/health is down or gives no build_commit"
+            down="https://$domain/health is down or gives no build_commit"
+            echo "::error::$down"
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "Gate: fail. https://$domain/health is down or gives no build_commit; the suite did not run." >> "$GITHUB_STEP_SUMMARY"
+            echo "Gate: fail. $down; the suite did not run." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "commit=$deployed" >> "$GITHUB_OUTPUT"

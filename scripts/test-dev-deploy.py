@@ -2075,12 +2075,38 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual([c[0] for c in box.calls()], ["id", "curl"])
 
 
+def workflow_jobs(text):
+    """Each job id of a workflow file, mapped to the text of that job."""
+    body = text.split("\njobs:\n", 1)[1]
+    heads = list(re.finditer(r"^  ([a-z0-9_-]+):\n", body, re.MULTILINE))
+    return {m.group(1): body[m.end():heads[i + 1].start() if i + 1 < len(heads) else len(body)]
+            for i, m in enumerate(heads)}
+
+
+def workflow_step(text, step_id):
+    """The text of the step with `id: <step_id>`, up to the next step."""
+    return text.split(f"        id: {step_id}\n", 1)[1].split("\n      - ", 1)[0]
+
+
+def run_step_script(box, step, extra, cwd=ROOT):
+    """Run the `run: |` block of a workflow step with bash -e -o pipefail, as
+    the runner does. Return the result and the GITHUB_OUTPUT and
+    GITHUB_STEP_SUMMARY texts."""
+    script = "\n".join(line[10:] for line in step.split("        run: |\n", 1)[1].splitlines()) + "\n"
+    output, summary = box.root / "output", box.root / "summary"
+    output.touch()
+    summary.touch()
+    result = box.run(["-e", "-o", "pipefail", "-c", script],
+                     {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), **extra}, cwd=cwd)
+    return result, output.read_text(), summary.read_text()
+
+
 class DeployWorkflowTests(unittest.TestCase):
     """deploy-dev.yml leaves the pause decision to deploy.sh on every run."""
 
     def setUp(self):
         self.text = WORKFLOW.read_text()
-        self.deploy_step = self.text.split("        id: deploy\n", 1)[1].split("\n      - ", 1)[0]
+        self.deploy_step = workflow_step(self.text, "deploy")
 
     def test_workflow_never_overrides_the_pause(self):
         self.assertNotIn("--override-pause", self.text, "deploy-dev.yml names --override-pause")
@@ -2098,13 +2124,6 @@ class DeployWorkflowTests(unittest.TestCase):
         for banned in ("environment:", "pull_request", "secrets."):
             self.assertNotIn(banned, self.text, f"deploy-dev.yml has {banned}")
 
-
-    def jobs(self):
-        body = self.text.split("\njobs:\n", 1)[1]
-        heads = list(re.finditer(r"^  ([a-z0-9_-]+):\n", body, re.MULTILINE))
-        return {m.group(1): body[m.end():heads[i + 1].start() if i + 1 < len(heads) else len(body)]
-                for i, m in enumerate(heads)}
-
     def test_triggers_are_master_pushes_and_dispatch_only(self):
         on = self.text.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
         self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["push", "workflow_dispatch"])
@@ -2113,7 +2132,7 @@ class DeployWorkflowTests(unittest.TestCase):
 
     def test_permissions_are_least_privilege_per_job(self):
         self.assertIn("\npermissions:\n  contents: read\n\n", self.text)
-        jobs = self.jobs()
+        jobs = workflow_jobs(self.text)
         self.assertEqual(sorted(jobs), ["deploy", "pair-release"])
         self.assertIn("    permissions:\n      contents: read\n      id-token: write   # WIF token\n    env:",
                       jobs["deploy"])
@@ -2128,43 +2147,33 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertIn("\nconcurrency:\n  group: deploy-dev-${{ inputs.mode == 'rollback' && 'rollback' || 'deploy' }}\n"
                       "  cancel-in-progress: false\n", self.text)
 
-    def pair_script(self):
-        step = self.jobs()["pair-release"].split("        id: pair\n", 1)[1].split("\n      - ", 1)[0]
-        return step
-
     def test_release_pairing_compares_with_the_commit_deployed_before(self):
         # A push run that the pause skipped, or a dispatch, must still pair a
         # provider version bump: compare with what /health reported before.
-        jobs = self.jobs()
+        jobs = workflow_jobs(self.text)
         self.assertIn("          commit=$(curl -fsS --max-time 10 \"$COORD/health\" | jq -r '.build_commit // empty')",
                       jobs["deploy"])
-        step = self.pair_script()
+        step = workflow_step(jobs["pair-release"], "pair")
         self.assertIn("          BEFORE: ${{ needs.deploy.outputs.before_commit }}\n", step)
         self.assertNotIn("github.event.before", self.text)
         self.assertRegex(jobs["pair-release"],
                          r"(?m)^    if: needs\.deploy\.outputs\.healthy == 'true' && needs\.deploy\.outputs\.mode == 'deploy'$")
-        script = "\n".join(line[10:] for line in step.split("        run: |\n", 1)[1].splitlines()) + "\n"
         deployed = "b" * 40
+        api = r"^api -H Accept: application/vnd\.github\.raw repos/Layr-Labs/d-inference/contents/coordinator/api/server\.go\?ref="
         for before, was, dispatched in ((COMMIT, "0.0.1", True), (COMMIT, "0.0.2", False), ("", "0.0.1", False)):
             with self.subTest(before=before, was=was):
-                api = r"^api -H Accept: application/vnd\.github\.raw repos/Layr-Labs/d-inference/contents/coordinator/api/server\.go\?ref="
                 box = Sandbox(self, ["gh"], [
                     ["gh", api + COMMIT + "$", f'var LatestProviderVersion = "{was}"\n', 0],
                     ["gh", api + deployed + "$", 'var LatestProviderVersion = "0.0.2"\n', 0],
                 ])
-                output, summary = box.root / "output", box.root / "summary"
-                output.touch()
-                summary.touch()
-                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=box.root,
-                                        env={**box.env, "BEFORE": before, "GITHUB_SHA": deployed,
-                                             "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
-                                             "GITHUB_REPOSITORY": "Layr-Labs/d-inference"},
-                                        capture_output=True, text=True)
+                result, _, summary = run_step_script(box, step, {
+                    "BEFORE": before, "GITHUB_SHA": deployed, "GITHUB_REPOSITORY": "Layr-Labs/d-inference"},
+                    cwd=box.root)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 runs = [c for c in box.calls("gh") if c[1:3] == ["workflow", "run"]]
                 self.assertEqual(runs, [["gh", "workflow", "run", "release-swift.yml", "--repo", "Layr-Labs/d-inference",
                                          "--ref", "master", "-f", "environment=dev"]] if dispatched else [])
-                self.assertIn("Provider release: ", summary.read_text())
+                self.assertIn("Provider release: ", summary)
 
 
 class DevnetSuiteWorkflowTests(unittest.TestCase):
@@ -2173,17 +2182,11 @@ class DevnetSuiteWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.text = SUITE_WORKFLOW.read_text()
 
-    def jobs(self):
-        body = self.text.split("\njobs:\n", 1)[1]
-        heads = list(re.finditer(r"^  ([a-z0-9_-]+):\n", body, re.MULTILINE))
-        return {m.group(1): body[m.end():heads[i + 1].start() if i + 1 < len(heads) else len(body)]
-                for i, m in enumerate(heads)}
-
     def test_one_running_and_one_pending_run(self):
         self.assertIn("\nconcurrency:\n  group: devnet-suite\n  cancel-in-progress: false\n", self.text)
 
     def test_every_job_needs_the_master_switch(self):
-        jobs = self.jobs()
+        jobs = workflow_jobs(self.text)
         self.assertEqual(sorted(jobs), ["gate", "suite"])
         for name, block in jobs.items():
             self.assertRegex(block, r"(?m)^    if: vars\.DEVNET_SUITE_ENABLED == 'true' && ", name)
@@ -2203,28 +2206,18 @@ class DevnetSuiteWorkflowTests(unittest.TestCase):
         for banned in ("environment:", "id-token", "pull_request"):
             self.assertNotIn(banned, self.text, f"devnet-suite.yml has {banned}")
 
-    def decide_step(self):
-        step = self.text.split("        id: decide\n", 1)[1].split("\n      - ", 1)[0]
-        script = step.split("        run: |\n", 1)[1]
-        return "\n".join(line[10:] for line in script.splitlines()) + "\n"
-
     def test_gate_fails_and_says_so_when_health_is_down(self):
         box = Sandbox(self, ["curl", "gh"], [["curl", "/health$", "", 7]])
-        output, summary = box.root / "output", box.root / "summary"
-        output.touch()
-        summary.touch()
-        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", self.decide_step()], cwd=ROOT,
-                                env={**box.env, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
-                                     "FORCE": "false", "RUNNER_TEMP": str(box.root)},
-                                capture_output=True, text=True)
+        result, output, summary = run_step_script(box, workflow_step(self.text, "decide"),
+                                                  {"FORCE": "false", "RUNNER_TEMP": str(box.root)})
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("run=false", output.read_text())
-        self.assertRegex(summary.read_text(), r"Gate: fail\. https://\S+/health is down or gives no build_commit")
+        self.assertIn("run=false", output)
+        self.assertRegex(summary, r"Gate: fail\. https://\S+/health is down or gives no build_commit")
         self.assertIn("::error::", result.stdout)
         self.assertEqual(box.calls("gh"), [])
 
     def test_suite_job_has_the_master_history(self):
-        suite = self.jobs()["suite"]
+        suite = workflow_jobs(self.text)["suite"]
         self.assertRegex(suite, r"(?m)^          fetch-depth: 0( +#.*)?$")
         self.assertIn("          filter: tree:0\n", suite)
 

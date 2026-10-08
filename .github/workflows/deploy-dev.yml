@@ -226,7 +226,7 @@ jobs:
             echo
             echo "Providers attached: before ${BEFORE_N:-n/a}, after ${AFTER_N} (check: ${REATTACH:-skipped})"
             echo
-            echo "Smoke: ${SMOKE:-skipped}. Provider release: see the job of that name."
+            echo "Smoke: ${SMOKE:-skipped}. Provider release: see the job \"Dispatch dev provider release on a version bump\"."
             echo
             echo '<details><summary>REPORT lines</summary>'
             echo
@@ -264,6 +264,7 @@ jobs:
           }
           if [[ ! "$BEFORE" =~ ^[0-9a-f]{40}$ ]]; then
             result="no commit was deployed before"
+            echo "::warning::/health gave no commit before the swap, so no provider release was compared; compare LatestProviderVersion by hand"
           else
             now=$(version_at "$GITHUB_SHA")
             was=$(version_at "$BEFORE")
@@ -276,5 +277,4 @@ jobs:
               result="dispatched release-swift.yml environment=dev for $was -> $now"
             fi
           fi
-          echo "result=$result" >> "$GITHUB_OUTPUT"
           echo "Provider release: $result" >> "$GITHUB_STEP_SUMMARY"

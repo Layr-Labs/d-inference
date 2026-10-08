@@ -358,19 +358,21 @@ What one run does:
    summary: the time from merge to healthy, the `dev-build` times, the swap
    result line, the provider counts, the smoke result and the `REPORT` lines.
 5. After a healthy deploy (a push or a `mode=deploy` dispatch), a separate job
-   compares `LatestProviderVersion` of the deployed commit with the commit
-   that `/health` reported before the swap. If they are different, it starts
-   `release-swift.yml` with `environment=dev` on `master`. It does not wait
-   for that run. This job has the only `actions: write` token, and it has no
-   cloud token. A push run that the pause skipped, or a dispatch, does not
-   cause a missed release.
+   compares `LatestProviderVersion` at the deployed commit and at the commit
+   that `/health` reported before the swap. If the two values are different,
+   it starts `release-swift.yml` with `environment=dev` on `master`. It does
+   not wait for that run. If `/health` gave no commit before the swap, the job
+   starts nothing and its summary says so. This job has the only
+   `actions: write` token, and it has no cloud token. A push run that the
+   pause skipped, or a dispatch, does not cause a missed release.
 
 A rollback dispatch has its own concurrency group (`deploy-dev-rollback`);
-deploys use `deploy-dev-deploy`. In each group one run is active and one is
-pending; a newer run replaces the pending run, and no run is cancelled. So a
-push cannot replace a pending rollback. The VM lock of `swap.sh` keeps a
-rollback and a deploy from swapping at the same time; the second one stops
-with `FAIL another swap or rollback holds ...`. Run it again.
+deploys use `deploy-dev-deploy`. In each group, at most one run is active and
+at most one run is pending. A newer run replaces the pending run, and no
+active run is cancelled. So a push cannot replace a pending rollback. The VM
+lock of `swap.sh` keeps a rollback and a deploy from swapping at the same
+time; the second one stops with `FAIL another swap or rollback holds ...`.
+Run it again.
 
 Manual runs (always `--ref master`; WIF refuses other branches):
 

@@ -120,8 +120,16 @@ extension EngineV2Bridge {
         profile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
+        distributedRequestOrigin: ContinuousClock.Instant? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        // This is our frame-receipt clock when available, never an upstream wall
+        // timestamp. Local engines are unaffected by the distributed-only context.
+        let httpResponse = DistributedHTTPResponseScope.current
+        let distributedOrigin = DistributedRequestOrigin.earliest(
+            handler: distributedRequestOrigin, profile: profile?.continuousAnchor,
+            now: ContinuousClock.now)
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
         // id is replaced with a fresh generated one (it could never correlate
@@ -661,15 +669,39 @@ extension EngineV2Bridge {
                 ? deadlineProjectionBypassReason(
                     deadline: firstContentDeadline, isMultimodal: multimodal != nil)
                 : nil)
+        let distributed = engine as? DistributedCBv2Engine
+        let originContext = distributed?.deadlineContext(receivedAt: distributedOrigin,
+                                                         firstTokenDeadline: firstContentDeadline?.instant)
         do {
+            let selectedContext = try originContext.map { original in
+                let bounded = distributedDeadlineContext.map { original.restricted(to: $0) } ?? original
+                return try distributedFirstTokenBudgetPolicy.map { policy in
+                    try policy.restricting(bounded, receivedAt: distributedOrigin,
+                                           inputTokenCount: promptTokens.count)
+                } ?? bounded
+            }
+            if let distributed, let selectedContext, let httpResponse {
+                // Actual token count and trusted origin have selected this
+                // absolute deadline. Bind before reserve/start; no fresh budget.
+                try httpResponse.bind(deadline: selectedContext.firstTokenDeadline) { [weak distributed] in
+                    // Never block a writer/timer on a synchronous engine queue.
+                    distributed?.queue.async { [weak distributed] in distributed?.cancel(cbv2Id) }
+                }
+            }
             if let admission = deadlineAdmission {
                 // The engine's serialized closure compares projection against
                 // this same absolute deadline. A second task-group race would
                 // cancel after commit and hide the generation-bound retirement
                 // handle needed to transfer resource ownership safely.
-                let result = try await engine.submit(
-                    engineRequest,
-                    firstTokenDeadline: admission)
+                let result: CBv2FirstTokenDeadlineResult
+                if let distributed, let selectedContext {
+                    result = try await distributed.submit(engineRequest, firstTokenDeadline: admission,
+                                                          deadlineContext: selectedContext)
+                } else {
+                    result = try await engine.submit(
+                        engineRequest,
+                        firstTokenDeadline: admission)
+                }
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
                     prefillEvidenceRecovery.admit(id)
@@ -818,6 +850,7 @@ extension EngineV2Bridge {
                     }
                 }
             }
+            httpResponse?.applyPendingCancellation()
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
             prefillEvidenceRecovery.admit(id)
             // This exception proves acceptance but carries no projected work.

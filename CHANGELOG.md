@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - machine model diagnostics
+
+- Extend the authenticated admin machine view with per-session reported pins, resident models, hardware, snapshot freshness and the running provider's Always ready/idle-timeout configuration. Unknown reports remain distinct from empty pin sets or disabled settings. These read-only diagnostics do not activate Autopilot, change pins or idle policy, or guarantee ready capacity.
+
 ## Unreleased - machine-scoped Autopilot
 
 - Persist each canonical machine's desired Autopilot mode in the database, defaulting to shadow. Admins list and edit machines through authenticated endpoints without a coordinator restart; live control still requires verified identity, provider consent and acknowledgement, with global shadow and pause overriding intent. Other machines retain ordinary serving and hypothetical planning; memory, pins and donor safeguards remain enforced.

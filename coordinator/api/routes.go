@@ -290,6 +290,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/autopilot/inventory", s.access.RequireAuth(s.handleAdminAutopilotInventory))
 	s.mux.HandleFunc("GET /v1/admin/autopilot/machines", s.access.RequireAuth(s.handleAdminAutopilotMachines))
 	s.mux.HandleFunc("PATCH /v1/admin/autopilot/machines/{machine_id}", s.access.RequireAuth(s.handleAdminAutopilotMachines))
+	s.mux.HandleFunc("GET /v1/admin/autopilot/rewards", s.access.RequireAuth(s.handleAdminAutopilotRewards))
+	s.mux.HandleFunc("PATCH /v1/admin/autopilot/rewards/pool", s.access.RequireAuth(s.handleAdminAutopilotRewards))
+	s.mux.HandleFunc("POST /v1/admin/autopilot/rewards/machines/{machine_id}/baseline", s.access.RequireAuth(s.handleAdminAutopilotRewards))
 	s.mux.HandleFunc("POST /v1/admin/autopilot", s.access.RequireAuth(s.handleAdminAutopilot))
 	s.mux.HandleFunc("POST /v1/admin/drain", s.access.RequireAuth(s.operations.HandleAdminDrain))
 

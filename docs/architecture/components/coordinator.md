@@ -52,6 +52,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/provider` | WebSocket sessions and typed inference-event handoff; `provider/trust` owns legacy verification and revocation state. |
 | `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. Release composition injects the source `LatestProviderVersion` display fallback from `coordinator/api/server.go`; the store still owns registered releases. A source version bump is not publication (see [release contracts](../../reference/api-contracts.md#release-and-install-5)). |
 | `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the `accounts/erasure` child owns the account erasure admin routes and scrub loop; the payouts child owns provider payout workflows, not a second ledger. |
+| `coordinator/api/autopilot` | Admin controller, machine-mode and reward HTTP shapes. `RewardsHandler` owns funding/history input validation; its API parent supplies authorization, financial rate limiting and the durable store capability. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
 | `coordinator/analyticssnapshot` | Validates optional local public analytics snapshots and persists acceptance continuity. `ServerConfig` supplies the snapshot and state paths through reporting dependencies; the reporting owner polls and serves them without database fallback. See [snapshot operations](../../operations/analytics-snapshots.md). |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
@@ -75,6 +76,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/profilesign` | CMS signing of the enrollment profile. |
 | `coordinator/billing` | Billing service, Stripe Checkout and Connect, referrals. |
 | `coordinator/payments` | Ledger and pricing. |
+| `coordinator/payments/autopilotrewards`, `coordinator/internal/payments/floorpolicy` | Closed-UTC-day reward worker and pure floor arithmetic respectively. `AutopilotRewardsStore` in `coordinator/store/earnings_floor.go` owns durable consent/baseline/pool/receipt operations; no live registry or ordinary base-reward budget dependency. |
 | `coordinator/ratelimit` | Per-account, financial and service-tier limiters; expected-output admission. |
 | `coordinator/modelpolicy` | Exact-model first-content deadline policy. |
 | `coordinator/mediafetch` | SSRF-guarded remote media resolution. |
@@ -138,7 +140,8 @@ failure in any step marked *fatal* exits the process before it listens.
    routing knobs read directly from the environment (release policy mode,
    TTFT admission, reject list, decode floor, servability gate, prompt
    calibration, pprof listener).
-7. **Money and identity.** Ledger and billing service, base rewards, the
+7. **Money and identity.** Ledger and billing service, independently enabled base
+   rewards and Autopilot rewards, the
    sender-encryption key from the mnemonic, admin emails, Privy, MDM client
    and verification scheduler, profile signer, APNs attestor and the
    code-attestation cache, the trust-reuse cache (*fatal* if its revocation
@@ -148,7 +151,7 @@ failure in any step marked *fatal* exits the process before it listens.
     and is not part of schema migration.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
-   anomaly detector; base-rewards settlement (when enabled); Stripe payout
+   anomaly detector; base-rewards and Autopilot-reward settlement (each only when enabled); Stripe payout
    reconciler; the account erasure scrub loop (`StartAccountErasureLoop`, which
    runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`) and
    outbox worker (`StartErasureOutboxLoop`, which runs `Owner.StartOutboxLoop`
@@ -248,6 +251,19 @@ and separate desired/current-session projections, not direct provider mutation.
 The detached controller separates live and hypothetical shadow passes without
 splitting actual donor or accepted-command ownership. The [Autopilot architecture](../model-autopilot.md#machine-selected-live-control)
 defines the mode and reconnect boundaries.
+
+Saved-consent financial tracking has a separate lifetime.
+`coordinator/api/provider/session.go` retains `autopilotRewardCapture`
+(`coordinator/api/provider/autopilot_rewards.go`) in the serial authenticated
+socket reader, timestamps declarations before verification binding, and persists
+accepted saved state outside provider locks. It does not depend on controller
+enablement or the payment flag. `configureBillingAndTrust` wires
+`autopilotrewards.NewEngine` only when `AutopilotRewardsEnabled`; the background
+lifecycle runs it under the shared cancellation context. `Engine.Run` catches up
+durable enrollment cursors, not current registry availability. Backend transactions
+own canonical identity, history, erasure admission and credit atomicity; the
+[billing mechanism](../billing.md#autopilot-rewards) defines these financial
+boundaries. Funding/backfill APIs do not change live residency authority.
 
 Reservation preparation retains the scan's registry read lease in
 `PreparedReservation` (`coordinator/registry/reservation_preparation.go`). `Finish`

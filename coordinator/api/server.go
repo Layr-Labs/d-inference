@@ -50,6 +50,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/scangate"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/payments/autopilotrewards"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -74,17 +75,18 @@ var LatestProviderVersion = "0.9.19"
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
-	registry    *registry.Registry
-	store       store.Store
-	ledger      *payments.Ledger
-	billing     *billing.Service
-	baseRewards *baserewards.Engine
-	logger      *slog.Logger
-	mux         *http.ServeMux
-	baseURL     string
-	corsOrigin  string
-	geoResolver geo.Resolver
-	readCache   *readcache.Cache
+	registry         *registry.Registry
+	store            store.Store
+	ledger           *payments.Ledger
+	billing          *billing.Service
+	baseRewards      *baserewards.Engine
+	autopilotRewards *autopilotrewards.Engine
+	logger           *slog.Logger
+	mux              *http.ServeMux
+	baseURL          string
+	corsOrigin       string
+	geoResolver      geo.Resolver
+	readCache        *readcache.Cache
 
 	access      *access.Owner
 	keys        *keys.Handler

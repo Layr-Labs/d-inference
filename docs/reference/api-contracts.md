@@ -529,7 +529,7 @@ base 10. The proof binds the request to both token and key; possession of either
 alone is insufficient. The timestamp bound is proof freshness, **not** a cohort
 grace period or expiry; frozen membership remains a separate prerequisite.
 
-### Admin (47)
+### Admin (50)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
@@ -567,6 +567,9 @@ grace period or expiry; frozen membership remains a separate prerequisite.
 | GET | `/v1/admin/autopilot/inventory` | `handleAdminAutopilotInventory` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Connected saved-approval aggregates](#autopilot-inventory-report), independent of the ledger |
 | GET | `/v1/admin/autopilot/machines` | `handleAdminAutopilotMachines` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Persisted desired machine modes and current verified sessions](#autopilot-machine-settings) |
 | PATCH | `/v1/admin/autopilot/machines/{machine_id}` | `handleAdminAutopilotMachines` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Persist an exact machine's desired mode](#autopilot-machine-settings); no restart or implicit activation |
+| GET | `/v1/admin/autopilot/rewards` | `handleAdminAutopilotRewards` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Durable reward pool and paged enrollments](#autopilot-reward-administration), including offline/history-required machines |
+| PATCH | `/v1/admin/autopilot/rewards/pool` | same | `admin`, financial | Set the separate cumulative absolute cap; never below spent funds |
+| POST | `/v1/admin/autopilot/rewards/machines/{machine_id}/baseline` | same | `admin`, financial | Restore a missing first-ever opt-in baseline with evidence; no consent or cohort mutation |
 | POST | `/v1/admin/drain` | `HandleAdminDrain` (`coordinator/api/operations/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `HandleAdminRoutes`, `HandleAdminRoutesExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `HandleAdminRejections`, `HandleAdminRejectionsExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
@@ -1515,6 +1518,51 @@ matching acknowledgement. The APIs work while the controller is unconfigured,
 disabled, paused or globally shadow, without changing those safety settings.
 See [persistence](../architecture/storage.md#autopilot-machine-settings) and
 [operator procedure](../operations/model-autopilot.md).
+
+### Autopilot reward administration
+
+`coordinator/api/autopilot/rewards.go` (`RewardsHandler`) owns the payloads;
+`rewards_decode.go` in that directory rejects ambiguous JSON. The adapter
+`coordinator/api/autopilot_handlers.go` (`handleAdminAutopilotRewards`) requires
+admin authorization after `RequireAuth`; admin bearer keys or authenticated
+admin Privy users qualify. Missing/invalid credentials return 401; authenticated
+non-admins return 403. Mutations use the financial limiter (429 on exhaustion).
+The adapter sets `Cache-Control: no-store`. These routes do not activate
+Autopilot, change provider consent/cohort, deploy code or publish a provider release.
+
+| Request | Contract |
+|---|---|
+| `GET /v1/admin/autopilot/rewards` | `{"enabled":bool,"pool":{...},"enrollments":[...]}`, ascending canonical machine UUIDs, including offline and unknown-baseline enrollments. `limit` defaults to 100, accepts 1 through 200; optional exclusive `after` is a canonical UUID. Full pages include `next_after`; following one may return an empty final page. Unknown/duplicate query keys or invalid values return 400. |
+| `PATCH /v1/admin/autopilot/rewards/pool` | Exactly `{"cap_micro_usd":<nonnegative int64>}`; body limit 1024 bytes. Sets an absolute cumulative cap, not an increment, monthly budget or balance deposit. Returns `{"pool":{...}}`. |
+| `POST /v1/admin/autopilot/rewards/machines/{machine_id}/baseline` | Exactly `{"first_opt_in_at":<RFC3339 string>,"seven_day_earnings_micro_usd":<nonnegative int64>,"evidence":<string>}`; body limit 8192 bytes. Evidence must be nonblank and at most 1024 UTF-8 bytes. Time must be no later than the first positive tracked observation. Returns `{"enrollment":{...}}`. |
+| Input identity and decoding | Nonzero hyphenated UUIDs, normalized to lowercase; whitespace/alternate encodings fail. Mutations require exactly one object with all named fields; missing/null values, duplicate/unknown/case-altered keys, invalid numbers/times or trailing JSON return 400. |
+| Domain conflicts | 409 `conflict` for a frozen baseline (including exact resubmission), cap below spending, unresolved history/ownership or account-erasure admission. No baseline rewrite or partial funding occurs. A known machine without reward enrollment returns 404 `not_found`; invalid/unverified ownership fails closed. |
+| Store failure | 503 `server_error` with sanitized message `Autopilot rewards unavailable`; no raw store errors/evidence in the error. Read back after an uncertain mutation; do not infer rollback or add funds by blindly incrementing the requested cap. |
+
+Response records are defined in `coordinator/store/earningsfloor/types.go`:
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Payment worker is wired; not proof of funding, known baselines or live Autopilot control |
+| `pool.cap_micro_usd`, `pool.spent_micro_usd` | Separate cumulative allowance and committed spending; [monetary policy](pricing-model.md#autopilot-rewards) |
+| `pool.tracking_started_at` | Persisted start of the new tracker, not a historical first opt-in |
+| `enrollments[].machine_id`, `account_id` | Current canonical machine UUID and authenticated payout account; financial records may retain an original pre-merge ID |
+| `first_opt_in_at`, `first_observed_at` | Frozen first-ever anchor (null while unknown), and the first positive used to initialize enrollment respectively. Both remain unchanged when later evidence sets `history_conflict`; backfill does not move accrual to an older date |
+| `seven_day_earnings_micro_usd`, `daily_floor_micro_usd`, `baseline_known`, `baseline_evidence` | Frozen baseline values and evidence. Zero values with `baseline_known=false` are unknown, not a measured zero floor |
+| `baseline_source` | Closed enum: `""` while unknown, `"tracked"` for an automatically frozen baseline, `"verified_history"` for an evidenced admin import. Assigned by the store, not a baseline-request field; independent of the free-form evidence string |
+| `history_conflict` | Linked history contradicts the frozen anchor or invalidates an automatic baseline's creation-history proof; [history rules](pricing-model.md#autopilot-rewards). May be true with `baseline_known=true`; frozen fields stay unchanged, but unfinalized days are held without payment or cursor advance. Ordinary baseline import still returns 409 for the frozen value |
+| `opted_in`, `observed_at` | Whether the latest durable declaration qualifies as saved opt-in, and that declaration's observation watermark; not a connection/readiness indicator or the consent snapshot for every prior day |
+| `next_day` | Next chronological UTC settlement day; pending funding/history does not advance it |
+| `next_after` | Optional exclusive cursor for the next page; absent on a short page |
+
+Listing can lazily bind already-journaled declarations and materialize enrollment
+after trusted inventory resolution. The GET can therefore write tracking records,
+but cannot pay a day or invent first-ever history. Unverified or
+ambiguous ownership and erased accounts are not admitted to the list. Pool and
+enrollment reads are separate snapshots, not an atomic financial export.
+There is no receipt-list or manual settlement endpoint here. Use the
+[operator runbook](../operations/autopilot-rewards.md) for restricted financial
+verification and backfill evidence requirements.
 
 ### Autopilot inventory report
 

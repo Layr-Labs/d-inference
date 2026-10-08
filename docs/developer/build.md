@@ -122,6 +122,11 @@ owners. `go build ./coordinator/...` builds production code and ordinary
 adds checked shard discovery; coverage explicitly instruments the imported
 production packages, excluding all test helpers. See the
 [test-boundary map](test.md#2-coordinator-go) for focused commands.
+The Autopilot reward worker and migration use the ordinary coordinator build;
+the saved-consent wire mirror requires rebuilding the Swift provider too.
+Use [reward test selectors](test.md#autopilot-rewards) for both backends, HTTP,
+capture and wire coverage. Building does not enable payments, fund the pool,
+publish the provider or activate a live cohort.
 The account API contract suite uses the same `testdb.Main` database isolation
 as store tests for [committed-erasure cleanup checks](test.md#account-erasure-regressions).
 Routing snapshot-age regressions run against the ordinary coordinator build;

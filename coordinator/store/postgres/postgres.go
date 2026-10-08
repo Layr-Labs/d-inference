@@ -17,6 +17,7 @@ var _ store.Store = (*PostgresStore)(nil)
 type PostgresStore struct {
 	pool                       *pgxpool.Pool
 	concurrentIndexLockTimeout time.Duration
+	now                        func() time.Time
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
@@ -69,6 +70,9 @@ func NewPostgres(ctx context.Context, scfg store.Config) (*PostgresStore, error)
 	}
 
 	s := NewPostgresWithPool(pool)
+	if scfg.Now != nil {
+		s.now = scfg.Now
+	}
 	if scfg.ConcurrentIndexLockTimeout != 0 {
 		s.concurrentIndexLockTimeout = scfg.ConcurrentIndexLockTimeout
 	}
@@ -87,7 +91,7 @@ func NewPostgres(ctx context.Context, scfg store.Config) (*PostgresStore, error)
 // connections and instrumented transports. Close closes the supplied pool.
 func NewPostgresWithPool(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool, priceCache: make(map[string]cachedPrice),
-		concurrentIndexLockTimeout: store.DefaultConcurrentIndexLockTimeout}
+		concurrentIndexLockTimeout: store.DefaultConcurrentIndexLockTimeout, now: time.Now}
 }
 
 // Close shuts down the connection pool.

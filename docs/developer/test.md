@@ -2,6 +2,41 @@
 
 > Last updated: 2026-10-07
 
+## Autopilot rewards
+
+Run from the repository root with the pinned Go toolchain and an isolated local
+`DATABASE_URL` whose role can create disposable test databases:
+
+```bash
+go test -race ./coordinator/tests/payments/autopilotrewards -count=1
+go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|Migration|Migrate' -count=1
+go test -race ./coordinator/tests/api/provider ./coordinator/tests/api/operations/contracts ./coordinator/tests/api ./coordinator/tests/registry -run 'AutopilotReward|AutopilotConsent' -count=1
+go test ./coordinator/tests/protocol -run Autopilot -count=1
+```
+
+Without `DATABASE_URL`, the PostgreSQL cases skip; a memory-only pass is not
+persistence validation. Never use a production DSN. The existing `testdb` fixtures
+isolate databases and coordinate the local server's connection budget.
+
+| Boundary | Regression owner |
+|---|---|
+| Once-rounded floor, UTC day guards and independent-day worker catch-up | `coordinator/tests/payments/autopilotrewards/engine_test.go` |
+| Exact first-ever window, sponsored inference, whole first partial day, immutable baseline, history gaps, canonical aliases, per-day consent, pool retry and single-count earnings | `coordinator/tests/store/contracts/` (`autopilot_rewards_test.go`, `autopilot_rewards_history_test.go`, `autopilot_rewards_identity_test.go`) |
+| Delayed cross-session consent and frozen-history conflicts without rewriting finalized receipts | `coordinator/tests/store/contracts/autopilot_rewards_history_test.go` (`TestAutopilotRewardsDelayedSessionConsentPreservesFirstOptIn`, `TestAutopilotRewardsLateEarlierConsentFlagsFrozenHistory`) |
+| Migration/schema equivalence, restart persistence, concurrent cap/deduplication and rollback of all financial writes | `coordinator/tests/store/postgres/` (`autopilot_rewards_migration_test.go`, `autopilot_rewards_test.go`, `autopilot_rewards_atomicity_test.go`) |
+| Authenticated original receive time, pre-binding journal, accepted heartbeat state, daily checkpoints and bounded failed-write queue | `coordinator/tests/api/provider/autopilot_rewards_test.go`, `autopilot_rewards_queue_test.go` in the same directory; `coordinator/tests/registry/autopilot_reward_snapshot_test.go` |
+| Admin auth, exact money JSON, immutable backfill and independently default-off config | `coordinator/tests/api/operations/contracts/autopilot_rewards_test.go`; `coordinator/tests/api/autopilot_rewards_config_test.go` |
+
+Run `make provider-test` for the Swift mirror with source-matched dependencies
+and Metal library. `AutopilotSnapshotCodingTests`, `AutopilotInventoryTests`,
+`ModelAutopilotTests` and `ModelAutopilotShadowTests` under
+`provider-swift/Tests/ProviderCoreTests/Autopilot/` check optional saved-consent
+encoding/decoding and independence from runtime readiness. Keep provider test
+state isolated through the standard runner; do not overwrite a running daemon's
+status files for a focused test. These tests do not prove production rollout or
+the truth of an operator's imported historical evidence. See
+[reward operations](../operations/autopilot-rewards.md).
+
 ## Autopilot machine cohorts
 
 Run the focused coordinator and isolated harness suites with the pinned Go

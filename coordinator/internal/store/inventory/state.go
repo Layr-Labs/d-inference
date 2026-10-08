@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	memoryhistory "github.com/eigeninference/d-inference/coordinator/internal/store/memoryhistory"
 	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
@@ -20,7 +21,9 @@ type State struct {
 	Aliases         map[store.MachineAlias]string
 	Sessions        map[string]store.MachineObservation
 	SessionMachines map[string]string
-	Events          []store.AppAttestEvent
+	// First observations outlive heartbeat replacements and bounded histories.
+	SessionFirstSeen map[string]time.Time
+	Events           []store.AppAttestEvent
 	// Observations reconstruct MachineIdentity; operator intent has its own lifetime.
 	autopilotSettings map[string]store.MachineAutopilotSetting
 }
@@ -85,6 +88,9 @@ func (s *State) ObserveMachine(ctx context.Context, o store.MachineObservation) 
 		m.Aliases[a] = id
 	}
 	m.SessionMachines[o.SessionID] = id
+	if m.SessionFirstSeen[o.SessionID].IsZero() {
+		m.SessionFirstSeen[o.SessionID] = o.At
+	}
 	m.Sessions[o.SessionID] = o
 	return identity, nil
 }
@@ -103,5 +109,5 @@ func (s *State) RecordAppAttestEvent(ctx context.Context, e store.AppAttestEvent
 }
 
 func New(history *memoryhistory.State) *State {
-	return &State{History: history, Machines: map[string]store.MachineIdentity{}, Aliases: map[store.MachineAlias]string{}, Sessions: map[string]store.MachineObservation{}, SessionMachines: map[string]string{}}
+	return &State{History: history, Machines: map[string]store.MachineIdentity{}, Aliases: map[store.MachineAlias]string{}, Sessions: map[string]store.MachineObservation{}, SessionMachines: map[string]string{}, SessionFirstSeen: map[string]time.Time{}}
 }

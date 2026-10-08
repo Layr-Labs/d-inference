@@ -1,13 +1,17 @@
 import Foundation
 @testable import ProviderCore
 
-func autopilotTestLoop(enabled: Bool, models: [ModelInfo] = [], activeControl: Bool = true) async throws -> ProviderLoop {
+func autopilotTestLoop(enabled: Bool, models: [ModelInfo] = [], activeControl: Bool = true,
+                       consentRecorded: Bool = true, privateOnly: Bool = false) async throws -> ProviderLoop {
     let loop = try ProviderLoop(config: ProviderLoopConfig(
         coordinatorURL: "ws://127.0.0.1:0/unused",
         hardware: HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
             memoryGb: 128, memoryAvailableGb: 124, cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
             gpuCores: 40, memoryBandwidthGbs: 546),
-        models: models, config: ProviderConfig(provider: ProviderSettings(name: "autopilot-test"), backend: BackendSettings(modelAutopilot: .init(enabled: enabled, consentRecorded:true, selectedModels:["target","uncached","other"], revision:"test")))),
+        models: models, config: ProviderConfig(provider: ProviderSettings(name: "autopilot-test"),
+            backend: BackendSettings(modelAutopilot: .init(enabled: enabled, consentRecorded: consentRecorded,
+                selectedModels: ["target", "uncached", "other"], revision: "test")),
+            coordinator: .init(privateOnly: privateOnly))),
         attestationSigner: nil)
     if enabled && activeControl { await loop.activateAutopilotForTesting() }
     return loop

@@ -75,3 +75,82 @@ func TestModelAutopilotObservationModeIsAlwaysOnWire(t *testing.T) {
 		}
 	}
 }
+
+func TestModelAutopilotSavedConsentWire(t *testing.T) {
+	for _, optedIn := range []bool{false, true} {
+		state := production.ModelAutopilotState{ConsentEnabled: &optedIn}
+		body, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			t.Fatal(err)
+		}
+		want := "false"
+		if optedIn {
+			want = "true"
+		}
+		if string(fields["consent_enabled"]) != want {
+			t.Fatalf("saved consent must encode explicit %s: %s", want, body)
+		}
+		var decoded production.ModelAutopilotState
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.ConsentEnabled == nil || *decoded.ConsentEnabled != optedIn || decoded.Enabled {
+			t.Fatalf("saved consent conflated with readiness: %+v", decoded)
+		}
+	}
+
+	body, err := json.Marshal(production.ModelAutopilotState{Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := fields["consent_enabled"]; present {
+		t.Fatalf("unknown consent must be omitted, not inferred from enabled: %s", body)
+	}
+	var legacy production.ModelAutopilotState
+	if err := json.Unmarshal(body, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.ConsentEnabled != nil {
+		t.Fatal("older payload gained saved consent")
+	}
+	if err := json.Unmarshal([]byte(`{"consent_enabled":null}`), &legacy); err != nil || legacy.ConsentEnabled != nil {
+		t.Fatalf("null consent must remain unknown: %+v, %v", legacy, err)
+	}
+	for _, invalid := range []string{`"true"`, `1`, `{}`} {
+		if err := json.Unmarshal([]byte(`{"consent_enabled":`+invalid+`}`), &legacy); err == nil {
+			t.Fatalf("accepted nonboolean saved consent: %s", invalid)
+		}
+	}
+}
+
+func TestModelAutopilotSavedConsentProviderFrameDecode(t *testing.T) {
+	for _, kind := range []string{production.TypeRegister, production.TypeHeartbeat} {
+		for _, value := range []string{"true", "false", "null"} {
+			var decoded production.ProviderMessage
+			if err := production.DecodeProviderMessage([]byte(`{"type":"`+kind+`","model_autopilot":{"protocol":3,"enabled":false,"consent_enabled":`+value+`}}`), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			var state *production.ModelAutopilotState
+			switch message := decoded.Payload.(type) {
+			case *production.RegisterMessage:
+				state = message.ModelAutopilot
+			case *production.HeartbeatMessage:
+				state = message.ModelAutopilot
+			}
+			if state == nil || state.Enabled || (state.ConsentEnabled == nil) != (value == "null") {
+				t.Fatalf("%s lost separate optional consent %s: %+v", kind, value, state)
+			}
+			if state.ConsentEnabled != nil && *state.ConsentEnabled != (value == "true") {
+				t.Fatalf("%s changed saved consent %s", kind, value)
+			}
+		}
+	}
+}

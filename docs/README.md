@@ -122,6 +122,7 @@
 - [`operations/README.md`](operations/README.md): index and the two rules that apply to every runbook.
 - [`operations/coordinator-deploy.md`](operations/coordinator-deploy.md): swap the production coordinator to a reviewed build, verify, roll back.
 - [`operations/schema-migration.md`](operations/schema-migration.md): back up, check, apply and verify goose migrations in production; the first goose cut-over; rollback rules.
+- [`operations/autopilot-rewards.md`](operations/autopilot-rewards.md): inspect saved-consent reward enrollment, fund the separate pool and repair missing first-ever baseline evidence.
 - [`operations/dev-environment.md`](operations/dev-environment.md): the GCP dev environment.
 - [`operations/provider-release.md`](operations/provider-release.md): cut a provider release — version bump, signing, notarization, hashing, registration, `latest/` publish, rollback.
 - [`operations/cache-routing-rollout.md`](operations/cache-routing-rollout.md): turn cache-aware routing on in production — percent ramp, verification, kill switch back to `off`.

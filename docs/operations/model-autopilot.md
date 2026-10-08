@@ -10,6 +10,9 @@ activation; the coordinator defaults to shadow observation.
 
 Use with compatible protocol-3 coordinator and provider releases. See the
 [architecture](../architecture/model-autopilot.md) for ownership and eligibility.
+For the independently enabled daily earnings floor, use
+[Autopilot reward funding and recovery](autopilot-rewards.md). This controller
+runbook neither funds rewards nor repairs historical first-opt-in evidence.
 
 ## Prerequisites
 
@@ -124,8 +127,10 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    a clean causal A/B experiment. Too few feasible operations is inconclusive,
    not a reason to relax safety thresholds.
 
-The live planner chooses cached models for utilization; enrollment and rollout
-are not an earnings guarantee. Newly downloaded catalog builds do not expand
+The live planner chooses cached models for utilization; it does not guarantee
+more inference work. The separate [reward policy](../reference/pricing-model.md#autopilot-rewards)
+depends on tracked saved consent, a known baseline, payment enablement and funded
+allowance, not live activation. Newly downloaded catalog builds do not expand
 consent until an explicit inventory refresh.
 
 The action and operation bounds are in
@@ -177,6 +182,11 @@ liveness, loaded models, authorization and shadow/live mode.
 
 ## Rollback
 
+Controller pause, shadow demotion and disconnect do not revoke saved reward
+consent or stop its payment worker. Follow the separate
+[reward rollback](autopilot-rewards.md#rollback) when that is the approved action;
+do not change the cohort just to stop payments.
+
 1. Submit authenticated `POST /v1/admin/autopilot` with `{"paused":true}` to stop
    new reservations. Existing operations retain retries and reconciliation;
    pausing is not a reversal of already accepted work. Resume with
@@ -221,6 +231,7 @@ requires a fresh grant and acknowledgement. Consult
 ## Related
 
 - [Autopilot architecture](../architecture/model-autopilot.md)
+- [Autopilot reward funding and recovery](autopilot-rewards.md)
 - [API contracts](../reference/api-contracts.md)
 - [Provider release](provider-release.md)
 - [Historical capacity evidence](../reports/2026-09-11-autopilot-capacity-evidence.md)

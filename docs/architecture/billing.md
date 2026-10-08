@@ -142,6 +142,7 @@ and which balance column moves:
 | `admin_credit` | `HandleAdminCredit` → `handleAdminBalanceAdjustment` → `store.Credit` | `balance` |
 | `admin_reward` | `HandleAdminReward` → `handleAdminBalanceAdjustment` → `CreditWithdrawable` | both |
 | `provider_floor_draw` | `coordinator/store/postgres/floor_draw_batch.go` `SettleProviderFloorDrawBatch` → `settleProviderFloorDraw` (`coordinator/store/postgres/base_rewards.go`) | both |
+| `autopilot_floor_topup` | `coordinator/store/postgres/autopilot_rewards_settlement.go` (`SettleAutopilotRewardDay`, `creditAutopilotReward`) | both; one synthetic `base_reward` earning already counts the credit in earnings summaries |
 | `migration` | `coordinator/store/postgres/` `MigrateAccountBalance` (balance moved between account identities) | both |
 | `erasure_forfeit` | `ScrubAccount` → `forfeitBalance` (`coordinator/store/postgres/erasure.go`); one entry for the whole balance, see [account erasure](account-erasure.md#the-scrub-transaction) | both set to 0 |
 | `deposit`, `withdrawal` | declared for legacy (pre-Stripe) deposit and on-chain withdrawal paths; no current handler writes them | — |
@@ -411,6 +412,120 @@ The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max Mac
 Studio. The M5 Ultra Studio identifier remains excluded because Apple's model
 pages also assign it to the lower-memory M5 Pro mini; see the
 [identifier table](../provider/hardware-requirements.md#new-2026-desktop-identifiers).
+
+### Autopilot rewards
+
+The saved-opt-in daily floor is independent of ordinary base-reward allocation
+and of the live residency controller. Its formulas, eligibility, pool rules and
+receipt statuses have one home in the
+[Autopilot rewards reference](../reference/pricing-model.md#autopilot-rewards).
+`coordinator/payments/autopilotrewards/engine.go` (`Engine.SettleClosedDays`,
+`Run`) consumes durable enrollment cursors, not the currently connected fleet.
+
+```mermaid
+flowchart TD
+  A["Authenticated saved-consent declaration"] --> B["ObserveAutopilotConsent: persist original receive time"]
+  B --> C{"Verified canonical machine and account?"}
+  C -->|"not yet"| D["Retain raw journal; retry binding"]
+  D --> C
+  C -->|"yes"| E{"First-ever history known?"}
+  E -->|"no"| F["Hold baseline unknown; audited admin backfill"]
+  E -->|"yes"| G["Freeze baseline once"]
+  F --> G
+  G --> M{"SettleClosedDays: history conflict?"}
+  M -->|"yes"| N["Hold machine; preserve frozen baseline"]
+  M -->|"no"| H["Next closed UTC day"]
+  H --> I["SettleAutopilotRewardDay: consent at close and actual income snapshot"]
+  I --> J{"Full shortfall funded?"}
+  J -->|"no"| K["Pending pool_exhausted; retry and recompute"]
+  K --> I
+  J -->|"yes, or no payment due"| L["Atomic final receipt and any credit; advance day"]
+```
+
+#### First-ever history
+
+Older software did not store the first opt-in time. A deployment, reconnect or
+machine `first_seen` is not evidence of that time. New authenticated socket
+declarations carry no trusted client historical timestamp. The coordinator
+stamps receive time before decoding or authentication, journals accepted
+authenticated declarations, and later materializes enrollment under verified
+machine/account ownership. An identity-not-ready result can therefore leave a durable raw
+declaration even though it cannot yet freeze a baseline or pay
+(`coordinator/api/provider/autopilot_rewards.go`, `autopilotRewardCapture`;
+`coordinator/store/postgres/autopilot_rewards_consent.go`, `ObserveAutopilotConsent`).
+
+Automatic freezing requires tracked history from the machine's first observation.
+A machine seen before `tracking_started_at`, a gap before its first supported
+declaration, an earlier unsupported declaration, or an unresolved earlier positive
+session on the authenticated account keeps history unknown. Unsupported state
+is not evidence of an explicit historical opt-out. An old unbound session that
+never obtains a trusted machine mapping cannot be safely assigned to a reconnect;
+the store holds history rather than guessing. The history checks are in
+`coordinator/store/postgres/autopilot_rewards.go` (`autopilotRewardTrackingComplete`)
+and the corresponding memory implementation.
+
+`RestoreAutopilotBaseline` accepts the true first-ever instant, its preceding
+inference total and evidence identifying both sources. This is a privileged
+attestation of history, not automatic verification of the supplied evidence.
+It fills only a missing baseline; it does not create old consent events, move
+the first tracked positive day backward or rewrite a frozen value. The explicit
+[`baseline_source`](../reference/api-contracts.md#autopilot-reward-administration)
+distinguishes an automatic freeze from an evidenced import independently of the
+evidence string. Follow the
+[backfill runbook](../operations/autopilot-rewards.md), not an inferred launch date.
+
+Earlier positive evidence from another session is retained even if a later
+declaration has already arrived. Automatic baselines recheck the same creation-history
+proof when late identity binding or merges reveal older unsupported history or
+an ancestor predating tracking. An evidenced import does not conflict merely
+because that pretracking or unsupported history exists, but contradictory earlier
+positive history conflicts with either source, including an unknown-baseline
+ancestor's earlier positive observation. In either conflict, the enrollment
+projects `history_conflict=true` while retaining its frozen amounts and anchor.
+The worker defers that machine, not the rest of the fleet;
+the store holds its unfinalized days as `history_required`, even if it has since
+opted out. Finalized receipts remain final. Ordinary baseline import still rejects
+a frozen value; resolving the conflict requires separately approved reconciliation,
+not an automatic correction or another import (`ensureAutopilotRewardEnrollment`,
+`readAutopilotRewardEnrollment`,
+`coordinator/store/postgres/autopilot_rewards.go`; `Engine.SettleClosedDays`).
+
+#### Capture failure boundary
+
+Only committed raw declarations survive socket or coordinator-process loss.
+`autopilotRewardCapture` uses a bounded in-memory retry queue, not a durable spool.
+A journal outage that outlasts the connection and its final bounded retry can
+therefore lose uncommitted declarations. The session owner marks the connection
+offline before that retry; it neither delays the recorded disconnect nor invents
+an opt-out (`coordinator/api/provider/session.go`, `providerReadLoop`). Do not infer
+continuous history from a receive timestamp, pending-write log or later reconnect.
+
+#### Settlement ownership
+
+The store selects the last durable declaration strictly before each UTC close
+and requires it to qualify as saved opt-in; it does not skip a later
+nonqualifying declaration to reuse an earlier opt-in.
+Today's live readiness, pause, shadow mode and connection status do not decide
+yesterday's eligibility. The [wire declaration](../reference/protocol-messages.md#model_autopilot-state)
+separates saved consent from scheduling participation. Sequential daily receipts
+preserve each day's result; retries never replace a prior day with today's income.
+The calculation reads a committed earnings snapshot, not a quiescence barrier
+against later backdated inference rows.
+
+Both backends commit the spendable and withdrawable credit, dedicated ledger
+entry, one non-inference earning, summary, pool spending and receipt atomically.
+Canonical identity merges cannot create a second finalized machine/day payment.
+Account-erasure admission fences precede spending. The
+[storage contract](storage.md#autopilot-reward-persistence) owns the locking,
+deduplication and archive limitations; the new ledger type is deliberately absent
+from `RewardLedgerTypes` because the synthetic earning counts the money once.
+
+The worker is wired by `coordinator/app/services.go` and started by
+`coordinator/app/lifecycle.go` only under the
+[payment flag](../reference/configuration.md#billing-stripe-and-base-rewards).
+Consent tracking continues independently. Logs contain aggregate processing,
+pending and failure counts, not identifiers, evidence or store error strings.
+Neither the admin reward APIs nor this worker activates a live Autopilot cohort.
 
 ## Invariants
 

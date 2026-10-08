@@ -1,3 +1,4 @@
+import NIOCore
 import Hummingbird
 
 /// Capture transport ownership without changing the upstream router's basic
@@ -7,11 +8,15 @@ public struct LocalDisconnectContext: RequestContext {
     public var coreContext: CoreRequestContextStorage
     private let base: BasicRequestContext
     let connection: LocalHTTPConnectionCancellation
+    /// The application's actual channel, retained for the distributed
+    /// response-observation scope; never read on the ordinary local path.
+    let rawChannel: any Channel
 
     public init(source: Source) {
         base = BasicRequestContext(source: source)
         coreContext = base.coreContext
         connection = LocalHTTPConnectionCancellationRegistry.shared.connection(for: source.channel)
+        rawChannel = source.channel
     }
 
     var basic: BasicRequestContext {
@@ -26,13 +31,21 @@ where Inner.Context == BasicRequestContext {
     public typealias Context = LocalDisconnectContext
     let inner: Inner
     var responseTracker: LocalResponseTracker? = nil
+    /// Binds the channel into the distributed response scope for this request;
+    /// false on every ordinary local engine (no behavior change).
+    var observeConnection = false
 
     public func respond(to request: Request, context: Context) async throws -> Response {
         let lease = request.method == .post ? try responseTracker?.admit() : nil
         let scope = context.connection.makeScope()
         let task = Task<Response, Error> {
             try await LocalRequestCancellation.$current.withValue(scope) {
-                try await inner.respond(to: request, context: context.basic)
+                if observeConnection {
+                    return try await LocalHTTPConnectionScope.$current.withValue(context.rawChannel) {
+                        try await inner.respond(to: request, context: context.basic)
+                    }
+                }
+                return try await inner.respond(to: request, context: context.basic)
             }
         }
         let preparation = scope.register { task.cancel() }

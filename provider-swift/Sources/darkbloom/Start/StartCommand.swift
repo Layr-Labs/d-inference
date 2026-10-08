@@ -53,6 +53,9 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
 
+    @Flag(help: "Use the saved distributed cluster for local serving and register its leader as a control-only member (requires --local).")
+    var distributed = false
+
     /// Only the process actually owned by launchd ignores stale baked argv.
     /// A manually launched foreground command retains explicit --model priority.
     static func usesPinnedModelSelection(configPath: URL, launchManaged: Bool) -> Bool {
@@ -86,6 +89,14 @@ struct Start: AsyncParsableCommand {
         if local && localEndpoint {
             printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
             throw ExitCode.failure
+        }
+        if distributed {
+            guard local else {
+                throw ValidationError("Distributed startup requires --local; its coordinator connection is control-only.")
+            }
+            guard model.isEmpty, !all, idleTimeout == nil else {
+                throw ValidationError("Distributed startup uses the saved cluster model and lifecycle; solo model and idle overrides are unavailable.")
+            }
         }
 
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
@@ -170,7 +181,9 @@ struct Start: AsyncParsableCommand {
             printError("warning: \(message)")
         }
 
-        if local {
+        if local && distributed {
+            try await runLocalDistributed()
+        } else if local {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,

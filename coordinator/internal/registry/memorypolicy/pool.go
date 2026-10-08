@@ -16,13 +16,13 @@ import (
 //
 // The check runs in BYTES when the pool is byte-reconstructable (byteMode) and
 // every pending charge was normalizable (snap.pendingBytesKnown). The single
-// resolvedPooledKVBytesPerToken policy prices both resident and cold/absent
-// requests: resident rates are preserved after clamping; cold unknown rates use
-// at least the conservative default, never a cheap resident-only estimate.
+// kvbudget.ResolveRate policy prices both resident and cold/absent
+// requests: own rates are preserved, a cold model may use its explicit forecast,
+// and unknown rates retain the conservative default/largest-resident fallback.
 // Token accounting is used only when the pool is not byte-reconstructable or
 // the snapshot predates/omits byte accumulation.
 func PoolAdmits(snap *Input, requestTokens int64) bool {
 	return admission.PoolAdmits(kvbudget.Snapshot(&snap.PooledTokenBudget,
 		snap.PendingMaxTokensAllModels, snap.PendingMaxBytesAllModels,
-		snap.PendingBytesKnown, snap.KVBytesPerToken), requestTokens)
+		snap.PendingBytesKnown, snap.requestKVBytesPerToken()), requestTokens)
 }

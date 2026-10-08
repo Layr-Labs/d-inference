@@ -124,6 +124,11 @@ Use with compatible protocol-3 coordinator and provider releases. See the
    a clean causal A/B experiment. Too few feasible operations is inconclusive,
    not a reason to relax safety thresholds.
 
+When investigating a candidate's memory-fit prediction, distinguish its
+[cold KV forecast](../architecture/routing.md#cold-model-kv-forecasts) from a live
+slot budget. Fresh matching native evidence can improve the forecast, but only
+the provider's completed load and current capacity report establish readiness.
+
 The live planner chooses cached models for utilization; enrollment and rollout
 are not an earnings guarantee. Newly downloaded catalog builds do not expand
 consent until an explicit inventory refresh.

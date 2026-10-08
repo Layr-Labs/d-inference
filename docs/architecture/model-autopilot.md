@@ -312,6 +312,12 @@ Complete load footprints, native offload allowances, activation reserves and min
 remain authoritative. Optional MTP can fall back to the target alone and cannot
 initiate an Autopilot download.
 
+`autopilotModelFitLocked` (`coordinator/registry/autopilot_snapshot.go`) uses the
+same [cold-model KV forecast](routing.md#cold-model-kv-forecasts) as request
+admission. Matching fresh native observations can replace the generic rate for
+a cold candidate; they do not create resident capacity or guarantee a successful
+load. The provider still applies the complete load and request-memory gates.
+
 `ModelAutopilotHistory` retains bounded load measurements after unloading and
 restart, keyed by exact model ID and the current verified weight hash published
 by the load path. A hash refreshed after startup replaces the startup identity;

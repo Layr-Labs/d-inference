@@ -60,6 +60,14 @@ applies, explain why and ask a maintainer to apply the docs-not-needed label.
 - [ ] Canonical documentation updated
 - [ ] No documentation needed — reason:
 
+## Changelog
+
+- [ ] Added or updated this PR's unique `changelog.d/<topic>.md` fragment and ran `make changelog-check`.
+- [ ] No user-visible change, or an explicitly authorized release/history change.
+
+Ordinary PRs must not edit or regenerate `CHANGELOG.md`. When updating an older
+PR, move only its pending entry to a fragment and preserve the current history.
+
 ## Notes for reviewers
 
 <!-- Anything non-obvious: tradeoffs taken, edge cases not covered, follow-ups planned. -->

@@ -136,37 +136,39 @@ The release runbook is [`docs/operations/provider-release.md`](docs/operations/p
 
 ### Changelog entries with less merge contention
 
-User-visible changes need an entry in the root [`CHANGELOG.md`](CHANGELOG.md).
-Keep the entry in the same PR as the change; it does not replace the canonical
+Ordinary PRs add one uniquely named Markdown file under
+[`changelog.d/`](changelog.d/README.md); they do **not** edit or regenerate
+[`CHANGELOG.md`](CHANGELOG.md). Different files remove the shared insertion
+point that made unrelated PRs conflict. Fragments do not replace the canonical
 documentation required by [`docs/AGENTS.md`](docs/AGENTS.md).
 
-1. Read the target branch's current changelog before editing. For an ordinary
-   PR, add a small, self-contained section near the top using the existing
-   `## Unreleased — <topic>` style. Describe observable changes and important
-   limitations, not a commit-by-commit implementation log.
-2. Keep review updates inside your topic's section. Do not keep moving it back
-   to the top as other PRs land, rename a shared `Unreleased` heading for your
-   feature, or reorder, rewrap or clean up unrelated entries. Extend an existing
-   topic only when your change actually belongs to it.
-3. Leave version assignment, release dates and consolidation to an explicitly
-   requested release-preparation change. A current version constant or an
-   unshipped release-candidate heading is not a reason to add an ordinary PR
-   to that release. Do not change shipped history or claim publication from a
-   source merge or version bump.
-4. When updating your branch, resolve changelog conflicts by preserving the
-   target branch's entries and your topic's intended changes. Do not take the
-   whole file from either side. If release preparation has moved your topic,
-   check the new release boundary rather than duplicating it or putting new
-   work into an already shipped section.
-5. Review the final changelog diff against the current target branch, not just
-   the last commit: unrelated entries must remain intact and your change must
-   appear once. Run `git diff --check` and the documentation checks before
-   requesting review.
+1. Choose a descriptive kebab-case name, optionally prefixed with the issue or
+   PR number, such as `1402-coordinator-env-retirement.md`. Start with
+   `### Coordinator environment retirement`, a blank line, and concise bullets
+   describing observable changes and limitations. Do not put release versions
+   or dates in the fragment.
+2. Keep follow-up edits in that PR's fragment. Do not edit another PR's pending
+   notes, split one change across several files, or use a shared `unreleased.md`.
+   Run `make changelog-check` and `make changelog-preview` before review.
+3. For an open PR based on the old workflow, preserve current `master` history
+   when merging it. Move only that PR's not-yet-released notes into a new
+   fragment and remove its duplicate root-changelog insertion. Never silently
+   drop another change or assign a version solely because a PR was merged.
+4. Release preparation alone renders selected fragments with
+   `python3 scripts/changelog.py render --version X.Y.Z --date YYYY-MM-DD NAME.md ...`.
+   Review the output, insert it above the previous release, and remove exactly
+   those fragment files in the same commit. Omitting the names selects all
+   pending fragments, so first verify that every one belongs in the candidate.
+   The renderer is read-only and refuses an already recorded version.
+5. Record actual publication separately from source preparation. Verify the
+   annotated tag and published release before claiming shipment; coordinator,
+   console, model activation and physical qualification remain independent.
+   Publication failure leaves a prepared candidate, not a shipped release.
 
-Small topic-local edits reduce contention and make resolution easier; they do
-not eliminate conflicts when parallel PRs insert at the same location. Keep
-the existing single-file changelog rather than introducing per-PR fragments
-or a new release-generation process for an ordinary contribution.
+Do not configure a union merge driver for the changelog. Combining conflicting
+lines without understanding versions can silently duplicate notes or put a
+change under the wrong release. Existing published sections are historical;
+correct them only with source/tag evidence and explicit authorization.
 
 ## Code of conduct
 

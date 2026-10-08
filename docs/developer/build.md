@@ -2,6 +2,12 @@
 
 > Last updated: 2026-10-08
 
+Changelog checks use Python's standard library, with no package installation.
+Run `make changelog-check` to validate pending fragments and
+`make changelog-preview` to print them. Neither command edits `CHANGELOG.md`;
+only an authorized release-preparation change updates published history. See
+[contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
+
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
 for `scripts/restack-after-squash.py` checks, signed ancestry updates, and

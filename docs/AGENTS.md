@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -182,7 +182,7 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
-| Anything user-visible | `CHANGELOG.md` |
+| Anything user-visible | One `changelog.d/<topic>.md` fragment; `CHANGELOG.md` only during release preparation |
 
 CI encodes the high-confidence part of this matrix in
 `scripts/docs-impact-rules.json`. `scripts/docs-impact-check.py` evaluates it

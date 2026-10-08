@@ -325,9 +325,10 @@ rollback() {    # runbook "Rollback"
     [ -d "$STATE" ] || fail "no rollback state; nothing to roll back to"
     take_swap_lock
     load_rollback_state
-    # Only a pre-first-deploy record (no previous deploy files) may restore
-    # files and start no container.
-    [ "$PREVIOUS_IMAGE" != none ] || [ "$PREVIOUS_CURRENT" = none ] ||
+    # An explicit rollback that starts no container is valid only for the
+    # first deploy (no previous deploy files). A failed deploy that found no
+    # container restores that state, so its own rollback starts nothing.
+    [ "$MODE" != rollback ] || [ "$PREVIOUS_IMAGE" != none ] || [ "$PREVIOUS_CURRENT" = none ] ||
         fail "the rollback state names no previous image, but a previous deploy exists; nothing to start; nothing stopped"
     if [ "$PREVIOUS_IMAGE" != none ]; then
         docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}' >/dev/null || fail "previous image $PREVIOUS_IMAGE is not on the host"

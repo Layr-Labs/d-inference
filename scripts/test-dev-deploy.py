@@ -4,6 +4,7 @@ stub that records its arguments. No test makes a network request or touches
 a VM, a GCP project or the files of this machine outside a temporary
 directory."""
 
+import fcntl
 import hashlib
 import json
 import os
@@ -986,7 +987,7 @@ class ZeroMutationTests(unittest.TestCase):
                 result = box.run([DEV / "deploy.sh", "--dry-run"])
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("REPORT GitHub CI/check contexts are green", result.stdout)
-                if values != []:
+                if values:
                     self.assertRegex(result.stdout, "REPORT not a deploy gate: .*Vercel – d-inference=failure")
                 self.assert_read_only(box)
 
@@ -1857,7 +1858,6 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(sorted(env_file.parent.glob("env.bak.*")), sorted([lookalike, unique]))
 
     def test_swap_and_rollback_refuse_while_another_run_holds_the_lock(self):
-        import fcntl
         box, extra, _ = self.seeded_swap_box()
         state = Path(extra["STATE"])
         state.mkdir()

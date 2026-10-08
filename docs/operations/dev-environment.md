@@ -240,12 +240,12 @@ waive only exact currently failing context names with repeated
 `--allow-ci-failure "<name>"` flags plus a nonblank single-line
 `--ci-waiver-reason`; stale, misspelled, pending or unlisted failures still stop.
 The script prints a `REPORT CI waiver for <commit> by <account> (<user>@<host>): <reason>`
-line. Automatic workflows must never pass a CI waiver. Then it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the candidate commit (not of
-the checkout `HEAD`) to
-`/usr/local/lib/darkbloom-deploy/<commit>` and runs `swap.sh` under
-`systemd-run`. One swap or rollback runs at a time on the VM: each one holds
-`/var/lib/darkbloom-deploy/swap.lock`, and another run stops with `FAIL
-another swap or rollback holds ...; nothing changed`.
+line. Automatic workflows must never pass a CI waiver. Then it ships
+`deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the candidate commit
+(not of the checkout `HEAD`) to `/usr/local/lib/darkbloom-deploy/<commit>` and
+runs `swap.sh` under `systemd-run`. One swap or rollback runs at a time on the
+VM: each one holds `/var/lib/darkbloom-deploy/swap.lock`, and another run
+stops with `FAIL another swap or rollback holds ...; nothing changed`.
 [`deploy/gcp/dev/swap.sh`](../../deploy/gcp/dev/swap.sh) does
 steps 2 to 4, Verification and Rollback: the root-owned seed gate, database
 lock checks (the database URI is parsed without entering argv; nonsecret fields

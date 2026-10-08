@@ -77,7 +77,8 @@ REQUIRED_CHECKS=(
 )
 # Vercel status contexts report preview deploys of the web projects. They do
 # not decide whether the coordinator can deploy, so the gate ignores them.
-GATED_STATUS='(.context | ascii_downcase | startswith("vercel") | not)'
+# jq programs that read status contexts start with this definition.
+GATED_STATUS_JQ='def gated: .context | ascii_downcase | startswith("vercel") | not; '
 BUILD_WAIT_S=${BUILD_WAIT_S:-1200}
 CI_WAIT_S=${CI_WAIT_S:-1200}
 MIGRATE_ONLY=${MIGRATE_ONLY:-1}
@@ -274,17 +275,17 @@ unfinished_required_ci() {
             if ($matching | length) == 0 then "\($name) (not reported)"
             elif any($matching[]; .status != "completed") then $name
             else empty end' "${REQUIRED_CHECKS[@]}"
-        printf '%s' "$statuses" | jq -r ".[].statuses[] | select(.state == \"pending\" and $GATED_STATUS) | .context"
+        printf '%s' "$statuses" | jq -r "$GATED_STATUS_JQ"'.[].statuses[] | select(.state == "pending" and gated) | .context'
     } | LC_ALL=C sort -u
 }
 
 # verify_ci waits for the required check runs and for every status context
-# except Vercel, but not for other check runs: the job that runs this script is an unfinished
-# check run of the same commit, and optional workflows such as E2E Integration
-# Tests can run longer than the deploy job. Conclusions success, neutral and
-# skipped pass, as in GitHub branch protection: ci.yml skips path-gated jobs,
-# and a skip caused by a failed dependency shows as the failure of that
-# dependency.
+# except Vercel, but not for other check runs: the job that runs this script
+# is an unfinished check run of the same commit, and optional workflows such
+# as E2E Integration Tests can run longer than the deploy job. Conclusions
+# success, neutral and skipped pass, as in GitHub branch protection: ci.yml
+# skips path-gated jobs, and a skip caused by a failed dependency shows as the
+# failure of that dependency.
 verify_ci() {
     local checks statuses pending running ungated failures name allowed found
     while :; do
@@ -302,14 +303,15 @@ verify_ci() {
     running=$(printf '%s' "$checks" | jq -r '.[].check_runs[] | select(.status != "completed") | .name' |
         LC_ALL=C sort -u | paste -sd, -)
     [ -z "$running" ] || echo "REPORT not required and not finished: $running"
-    ungated=$(printf '%s' "$statuses" | jq -r ".[].statuses[] | select($GATED_STATUS | not) | \"\\(.context)=\\(.state)\"" |
+    ungated=$(printf '%s' "$statuses" | jq -r "$GATED_STATUS_JQ"'.[].statuses[] | select(gated | not) | "\(.context)=\(.state)"' |
         LC_ALL=C sort -u | paste -sd, -)
     [ -z "$ungated" ] || echo "REPORT not a deploy gate: $ungated"
     failures=$(
         {
             printf '%s' "$checks" | jq -r '.[].check_runs[] |
                 select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not)) | .name'
-            printf '%s' "$statuses" | jq -r ".[].statuses[] | select(.state != \"success\" and .state != \"pending\" and $GATED_STATUS) | .context"
+            printf '%s' "$statuses" | jq -r "$GATED_STATUS_JQ"'.[].statuses[] |
+                select(.state != "success" and .state != "pending" and gated) | .context'
         } | LC_ALL=C sort -u
     )
     if [ -z "$failures" ]; then

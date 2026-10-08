@@ -100,7 +100,8 @@ project=$(curl -fsS --max-time 5 -H 'Metadata-Flavor: Google' "$METADATA_URL") |
 . "$LIB/deploy/gcp/dev/refresh-backup.sh" || fail "cannot read $LIB/deploy/gcp/dev/refresh-backup.sh; nothing changed"
 
 # One swap or rollback at a time on the VM: a manual run and a workflow run
-# must not interleave. The lock lasts until the script exits.
+# must not interleave. The lock lasts until the script exits, so the rollback
+# that a failed deploy starts already holds it.
 SWAP_LOCK=$STATE/swap.lock
 SWAP_LOCK_HELD=0
 take_swap_lock() {
@@ -320,6 +321,7 @@ rollback() {    # runbook "Rollback"
     [ "$ROLLBACK_ACTIVE" = 0 ] || fail "rollback is already active; recovery context retained"
     ROLLBACK_ACTIVE=1
     CLEANUP_ACTIVE=1
+    # Without $STATE there is no rollback state and no place for the lock file.
     [ -d "$STATE" ] || fail "no rollback state; nothing to roll back to"
     take_swap_lock
     load_rollback_state
@@ -430,9 +432,9 @@ if docker container inspect coordinator >/dev/null 2>&1; then
 fi
 
 # Optional step (schema-migration.md step 4): database-only migration while the
-# current coordinator serves.
-# Its output can name connection details, so it goes to a root-only file on
-# the VM, as the container log of a failed candidate does.
+# current coordinator serves. Its output can name connection details, so it
+# goes to a root-only file on the VM, as the container log of a failed
+# candidate does.
 if [ "$MIGRATE_ONLY" = 1 ]; then
     migrate_log=$STATE/migrate-only-$(date -u +%Y%m%dT%H%M%SZ).log
     if ! (umask 077; docker run --rm --network host --env-file "$ENV_FILE" \

@@ -20,8 +20,10 @@ func TestAutopilotRewardsEligibilityMigrationPreservesMoneyAndConsent(t *testing
 		t.Fatalf("preupgrade payment: %+v %v", paid, err)
 	}
 	// Simulate the consent shape left by migration31, retaining financial rows.
+	// Later versions are unrecorded too: goose refuses a gap below the highest
+	// applied version, and they rerun without changing the reward tables.
 	if _, err := f.pool.Exec(ctx, `ALTER TABLE autopilot_reward_consents DROP COLUMN qualified, DROP COLUMN chip, DROP COLUMN memory_gb;
-	 DELETE FROM goose_db_version WHERE version_id=32`); err != nil {
+	 DELETE FROM goose_db_version WHERE version_id>=32`); err != nil {
 		t.Fatal(err)
 	}
 	f.reopenRewards(t)

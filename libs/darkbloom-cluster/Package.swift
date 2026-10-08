@@ -12,11 +12,13 @@ let package = Package(
         .library(name: "DarkbloomClusterProtocol", targets: ["DarkbloomClusterProtocol"]),
         .library(name: "DarkbloomClusterBootstrap", targets: ["DarkbloomClusterBootstrap"]),
         .library(name: "DarkbloomClusterProcess", targets: ["DarkbloomClusterProcess"]),
+        .library(name: "DarkbloomClusterRemote", targets: ["DarkbloomClusterRemote"]),
     ],
     targets: [
         .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),
         .target(name: "DarkbloomClusterProtocol"),
         .target(name: "DarkbloomClusterBootstrap"),
         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
+        .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess", "DarkbloomClusterBootstrap", "DarkbloomClusterSecurity"]),
     ]
 )

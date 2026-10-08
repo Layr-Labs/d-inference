@@ -274,6 +274,27 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         await owner.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
     }
 
+    /// Serve one real request through the native owner and let it finish, as a
+    /// provider does before an operator runs `darkbloom restart`. The payload
+    /// and Scheduler stay in this frame so neither outlives the request.
+    private func serveOneLocalRequestToCompletion(_ owner: ProviderLoop) async throws {
+        let modelID = self.modelID
+        let acquired = try await owner.acquireModelForLocal(modelID)
+        let lease = try XCTUnwrap(acquired.nativeConsumerLease)
+        let scheduler = MultiModelBatchSchedulerEngine(acquire: { _ in acquired },
+            tokenizerProvider: { _ in .init(tokenizer: acquired.tokenizer, modelType: acquired.modelType) },
+            availableModels: { [modelID] in [modelID] }, defaultMaxTokens: 2)
+        let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: JSONSerialization.data(withJSONObject: [
+            "model": modelID, "messages": [["role": "user", "content": "x"]], "max_tokens": 2, "temperature": 0]))
+        var terminals = 0
+        for try await event in try await scheduler.streamChatCompletion(request: request) {
+            if case .info = event { terminals += 1 }
+        }
+        await lease.joinFromOutside()
+        XCTAssertEqual(terminals, 1)
+        XCTAssertEqual(lease.snapshot().phase, .completed)
+    }
+
     /// Keep the real acquired payload and Scheduler in a bounded frame. Once
     /// this returns, neither can retain model aliases during owner retirement.
     private func completeActuallyBoundRequestAcrossGracefulDrain(
@@ -652,6 +673,29 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         } catch {
             // Keep the actual root, not only a numeric commitment, on unknown
             // native completion. This failed process must not run another cell.
+            _ = Unmanaged.passRetained(registry)
+            throw error
+        }
+    }
+
+    /// `darkbloom restart` and `stop` publish a graceful lifecycle drain. After
+    /// a served request, the native owner's retirement first waits on joining
+    /// that request's consumer; with nothing left in flight the drain must keep
+    /// retiring within its deadline and report `drained`, not an immediate
+    /// `timedOut` with zero unfinished requests.
+    func testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline() async throws {
+        try nativeLane()
+        let (owner, load, registry) = try await loaded()
+        try await isolateLifecycleState(owner)
+        let transaction = try XCTUnwrap(load.transaction)
+        do {
+            try await serveOneLocalRequestToCompletion(owner)
+            let identity = try XCTUnwrap(ProcessIdentity.current())
+            let status = await owner.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 30))
+            XCTAssertEqual(status.remaining, 0)
+            XCTAssertEqual(status.outcome, .drained)
+            XCTAssertEqual(transaction.snapshot().phase, .retired)
+        } catch {
             _ = Unmanaged.passRetained(registry)
             throw error
         }

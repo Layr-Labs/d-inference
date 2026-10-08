@@ -577,6 +577,21 @@ public actor ProviderLoop {
     /// coordinator's per-model catalog routing filter). Set in `run()`.
     internal var coordinatorClient: CoordinatorClient?
 
+    // MARK: - Native pair member (private cluster staging, fail-closed)
+
+    /// Whether this loop runs in the control-only cluster member role. The
+    /// member-mode serving integration is NOT staged: no configuration path
+    /// enables it, so this stays false and `installNativePairMember` always
+    /// refuses. Keeping the components compiled and tested preserves the
+    /// staged contract without activating any member behavior.
+    internal var isClusterMember: Bool { false }
+    /// Set when the serving configuration closes; member installation is only
+    /// valid before serving starts.
+    internal var nativePairConfigurationClosed = false
+    /// The staged member control owner; never installed while `isClusterMember`
+    /// is false. `nativePairMemberStatus` stays nil.
+    internal var nativePairMemberControl: NativePairMemberControl?
+
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the
     /// choke point every material slot-state change already flows through.

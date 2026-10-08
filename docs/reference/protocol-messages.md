@@ -499,8 +499,13 @@ define the mirror.
 | Key | Meaning |
 |---|---|
 | `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
-| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
+| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time since the newest observation at snapshot, even if an older completed observation arrives later |
 | `workload_buckets` | Bounded numeric buckets with `phase` (`prefill`, `decode`, `native_media_prefill`), `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation`, and optional `concurrent_requests` (peak observed request overlap; 1–64; omitted by legacy providers) |
+
+The Swift producer applies the same age rule independently to each workload
+bucket and current-posture series (`EnginePerformanceMeasurements.swift`).
+Completed samples retain the existing receipt-order EWMA and sample counts;
+snapshot time does not replace observation time. Wire fields are unchanged.
 
 `native_media_prefill` records the target decoder's actual computed suffix for
 owner-bound native media, after encoder preparation. It retains cache and

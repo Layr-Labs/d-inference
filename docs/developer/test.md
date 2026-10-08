@@ -876,6 +876,17 @@ ordinary provider test target as well as dependency tests for
 suite covers accepted counter deltas, stale/replayed observations, shared
 service admission, warm-load ownership and transport freshness.
 
+`EngineMeasurementOrderingTests` exercises the actual measurement owner with
+synthetic timestamps across the 120-second expiry boundary, and the real
+`EngineV2Bridge` event pump with two scripted engine requests whose terminals
+arrive in reverse observation order. It pins aggregate, qualified and per-shape
+freshness, forward-gap reseeding, equal timestamps and independent bucket ages,
+while preserving receipt-order averaging and completed-work counters. After
+building the provider test target, run
+`cd provider-swift && swift test --skip-build --no-parallel --filter EngineMeasurementOrderingTests`.
+These tests require no model or GPU execution; they do not qualify live
+inference, hardware performance or coordinator routing.
+
 `make benchmark-wrapper-test` also runs the offline serving-profile evaluator
 regressions. Release Integrity CI runs this same `serving_performance` suite,
 including evidence validation and generated-catalog consistency, without a GPU

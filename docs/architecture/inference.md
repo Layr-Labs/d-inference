@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -72,6 +72,13 @@ prefill rates. Cross-model activity is tracked across the shared runtime, not
 inferred from one engine's occupancy. Engine decode rate ends at the last
 confirmed token, excluding terminal delivery delays; delivered and end-to-end
 rates remain separate.
+
+Completed observations can reach the bridge out of engine-time order.
+`EnginePerformanceMeasurements.Rate` keeps age and expiry anchored to the newest
+observation in each aggregate, current-posture or workload-bucket series.
+Rate averaging and sample counts still follow receipt consumption order;
+an older receipt cannot move freshness backward or create a false evidence gap
+for the next observation. A heartbeat snapshot alone never renews evidence.
 
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the

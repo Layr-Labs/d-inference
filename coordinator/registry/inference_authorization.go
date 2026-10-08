@@ -94,6 +94,15 @@ func (h InferenceHandoff) Authorize() error {
 	if pending.providerAuthorizationBinding != providerRequestAuthorizationBindingLocked(p) {
 		return ErrProviderServingUnauthorized
 	}
+	if pending.firstContentDeadlineUsesQualified {
+		artifact, contract := providerPromptWorkIdentityLocked(p, pending.Model)
+		if pending.PromptWork == nil || !pending.PromptWork.IsQualifiedFor(artifact, contract) {
+			// The frame was built with this selected renderer's exact cutoff.
+			// Reject unsent identity drift rather than upgrading/downgrading a
+			// frozen frame after its budget and timeout have been prepared.
+			return ErrProviderServingUnauthorized
+		}
+	}
 	owned := pending.OwnerAccountID != "" && pending.OwnerAccountID == p.AccountID
 	selfRouteOwner := owned && (pending.SelfRouteOnly || pending.PreferOwner)
 	if pending.SelfRouteOnly && !owned {

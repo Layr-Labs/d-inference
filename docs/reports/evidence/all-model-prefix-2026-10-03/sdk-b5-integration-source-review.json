@@ -1,0 +1,123 @@
+{
+  "status": "source_ancestry_formatted_parity_inventory_light_controls_and_local_signature_pass_runtime_checks_pending",
+  "scope": "Read-only review of signed B5 SDK integration; committed source projections and fake nested-wrapper controls only, no B5 build/engine/Metal/native/full-suite outcome.",
+  "B5": "357c76dfd817b6627166ba8ecb1ff888a4d8ada9",
+  "compatibleA5": "3a8257679ce75c8d775ba04db6b0a5259643034d",
+  "freshMain": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+  "priorB4": "e5aeb17210735bdceab0471c014406a6abe90cde",
+  "ancestry": {
+    "A5": {
+      "revision": "3a8257679ce75c8d775ba04db6b0a5259643034d",
+      "ancestorOfB5": true
+    },
+    "freshMain": {
+      "revision": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+      "ancestorOfB5": true
+    },
+    "B4": {
+      "revision": "e5aeb17210735bdceab0471c014406a6abe90cde",
+      "ancestorOfB5": true
+    }
+  },
+  "freshMainAncestorOfCompatibleA5": false,
+  "integrationWorktreeClean": true,
+  "featureSourceParity": {
+    "productionPaths": 13,
+    "rawProductionByteMatches": 11,
+    "formattedProductionByteMatches": 13,
+    "testPaths": 15,
+    "rawTestByteMatches": 12,
+    "formattedTestByteMatches": 15,
+    "formatter": "Xcode swift-format 6.3.0",
+    "formatterConfigSHA256": "c66a5da8152975e0c3a5ed7ff4ed5047cb2868ce2acf7174c5604a627bedf000",
+    "projectionsFromCommittedGitBlobsOnly": true,
+    "frozenSourceModified": false,
+    "rawDifferences": [
+      {
+        "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointRetention.swift",
+        "scope": "production",
+        "classification": "existing_B4_formatting_only",
+        "B5RawBytesEqualPriorB4": true,
+        "formattedBytesEqualA5": true
+      },
+      {
+        "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineLoopV2+HybridPrefix.swift",
+        "scope": "production",
+        "classification": "existing_B4_formatting_only",
+        "B5RawBytesEqualPriorB4": true,
+        "formattedBytesEqualA5": true
+      },
+      {
+        "path": "Tests/MLXLMTests/CBv2CheckpointRetentionTests.swift",
+        "scope": "test",
+        "classification": "existing_B4_formatting_only",
+        "B5RawBytesEqualPriorB4": true,
+        "formattedBytesEqualA5": true
+      },
+      {
+        "path": "Tests/MLXLMTests/HistoricalWindowCheckpointEngineTests.swift",
+        "scope": "test",
+        "classification": "existing_B4_formatting_only",
+        "B5RawBytesEqualPriorB4": true,
+        "formattedBytesEqualA5": true
+      },
+      {
+        "path": "Tests/MLXLMTests/HistoricalWindowCheckpointTests.swift",
+        "scope": "test",
+        "classification": "existing_B4_formatting_only",
+        "B5RawBytesEqualPriorB4": true,
+        "formattedBytesEqualA5": true
+      }
+    ]
+  },
+  "freshMainPreservation": {
+    "changedPaths": 22,
+    "nonForkPathsByteExact": 21,
+    "forkPathExactReviewedUnion": true,
+    "allMainGlobsPreserved": true,
+    "allA5GlobsPreserved": true,
+    "canonicalUpstreamBase": "7e2b7107be52ffbfe488f3c7987d3f52c1858b4b",
+    "newInventoryPaths": [
+      "Libraries/MLXLMCommon/README.md",
+      "Tests/MLXLMTests/Fixtures/MiMoNativeHistoricalRetentionFixture.swift",
+      "docs/prefix-checkpoint-retention.md",
+      "scripts/prepare-mimo-native-retention-fixtures.py"
+    ],
+    "mainModelChangesImportedIntoCompatibleParentPin": false
+  },
+  "forkInventoryChecks": {
+    "passedChecks": 2,
+    "changedPathsDescribed": 1493,
+    "globs": 169,
+    "coverageComplete": true
+  },
+  "lightNestedWrapperControls": {
+    "passed": 24,
+    "failed": 0,
+    "additionalCurrentMainUnitTagControls": 4,
+    "priorCompatiblePreparation20ControlsSeparate": true,
+    "scriptsByteExactToCurrentMain": true,
+    "actualSwiftTests": false
+  },
+  "localSignature": {
+    "B5Verified": true,
+    "existingRootProvidedTrustFilePerCommand": true,
+    "initialTrustConfigurationMissPreserved": true,
+    "globalOrRepositoryGitConfigChanged": false,
+    "publicGitHubVerifiedStatus": "not_checked_by_this_source_review"
+  },
+  "runtimeQualification": {
+    "actualSwiftBuildInvoked": false,
+    "actualSwiftEngineTestsInvoked": false,
+    "GPUOrMetalBuildInvoked": false,
+    "fullB5Result": "pending",
+    "oldB4GreenCITransferred": false,
+    "compatibleA5FullResultTransferred": false
+  },
+  "limits": [
+    "Formatter byte parity is source evidence and cannot replace B5 current-main build, required selectors, full suite, GitHub CI or review closure.",
+    "Signed compatible A5 remains the parent dependency; newer main model changes belong only to B5 integration.",
+    "No full-model MiMo, native adjacent-fork long gain or Bonsai production result is inferred."
+  ],
+  "privacy": "Public revisions/source paths and aggregate equality/count/status evidence only; no private paths, raw logs, signer/account/provider/process identifiers or prompt/output data."
+}

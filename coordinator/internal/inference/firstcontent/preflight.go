@@ -20,6 +20,8 @@ type Preflight struct {
 	PreferOwner            bool
 	OwnerAccountID         string
 	Deadline               time.Duration
+	FallbackDeadline       time.Duration
+	DeadlineForWork        func(string, *protocol.PromptWork) time.Duration
 	ReceivedAt             time.Time
 	CachePlanForModel      func(string) registry.CachePlan
 	PromptWorkForModel     func(string) *protocol.PromptWork
@@ -34,8 +36,8 @@ func (p Preflight) Request(model string, traits registry.RequestTraits) *registr
 		Traits: traits, AllowedProviderSerials: p.AllowedProviderSerials,
 		SelfRouteOnly: p.SelfRouteOnly, PreferOwner: p.PreferOwner, OwnerAccountID: p.OwnerAccountID,
 	}
+	received := p.ReceivedAt
 	if p.Deadline > 0 {
-		received := p.ReceivedAt
 		if received.IsZero() {
 			received = time.Now()
 		}
@@ -49,6 +51,13 @@ func (p Preflight) Request(model string, traits registry.RequestTraits) *registr
 	}
 	if pr.PromptWork == nil {
 		pr.PromptWork = promptwork.Heuristic(pr.FirstContentPromptTokens)
+	}
+	if p.DeadlineForWork != nil {
+		fallback := p.FallbackDeadline
+		if fallback <= 0 {
+			fallback = p.Deadline
+		}
+		SetPromptWorkDeadlines(pr, received, fallback, p.DeadlineForWork(model, pr.PromptWork))
 	}
 	return pr
 }

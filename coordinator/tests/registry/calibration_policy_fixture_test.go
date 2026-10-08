@@ -142,7 +142,7 @@ func (f *calibrationPolicyFixture) evaluate(pr *production.PendingRequest, now t
 	prompt, upper := forecast.PromptCounts(pr.EstimatedPromptTokens, pr.FirstContentPromptTokens, pr.PromptWork,
 		e.Calibration.PromptWorkArtifactHash, e.Calibration.PromptWorkContractID, pr.CachePlan.PromptTokenCount,
 		matched && pr.CachePlan.Authenticates(f.generation) && f.generation.Active() && pr.CachePlan.Present())
-	request := forecast.Request{PromptTokens: prompt, UpperBoundTokens: upper, Deadline: pr.FirstContentDeadline,
+	request := forecast.Request{PromptTokens: prompt, UpperBoundTokens: upper, Deadline: pr.FirstContentDeadlineForIdentity(e.Calibration.PromptWorkArtifactHash, e.Calibration.PromptWorkContractID),
 		FreshAfter: pr.RequireFreshFeasibleAfter, MaxTTFTMS: pr.MaxTTFTMs, Hedge: pr.Hedge, RequireFreshFeasible: pr.RequireFreshFeasible, PlanningHorizon: pr.FirstContentPlanningHorizon,
 		Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision, PromptWork: pr.PromptWork, RequestedMaxTokens: pr.RequestedMaxTokens}}
 	if !pr.CachePlan.Present() || matched {

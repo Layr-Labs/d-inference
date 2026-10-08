@@ -28,7 +28,7 @@ func (pr *PendingRequest) QueueWorkload() queuedrain.Work[RequestTraits] {
 		return queuedrain.Work[RequestTraits]{}
 	}
 	return queuedrain.Work[RequestTraits]{
-		Comparable: !pr.SelfRouteOnly && !pr.PreferOwner && len(pr.AllowedProviderSerials) == 0 && len(pr.ExcludedProviderIDs) == 0 && !pr.CachePlan.Present(),
+		Comparable: !pr.SelfRouteOnly && !pr.PreferOwner && len(pr.AllowedProviderSerials) == 0 && len(pr.ExcludedProviderIDs) == 0 && !pr.CachePlan.Present() && pr.FirstContentQualifiedDeadline.IsZero(),
 		Vision:     pr.RequiresVision, Traits: pr.Traits, PromptTokens: pr.EstimatedPromptTokens,
 		MaxTokens: pr.RequestedMaxTokens, MaxTTFTMs: pr.MaxTTFTMs,
 	}

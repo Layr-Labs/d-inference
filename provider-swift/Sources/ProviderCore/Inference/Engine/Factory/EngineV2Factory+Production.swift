@@ -176,7 +176,8 @@ extension EngineV2Factory {
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             preparedBackend: preparedBackend,
-            kvBudget: kvBudget)
+            kvBudget: kvBudget,
+            constructionPurpose: constructionPurpose)
     }
 
     /// Consume the prepared resources exactly once. Preserve the scheduler config
@@ -190,7 +191,9 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)?,
         mtpConfig: CBv2MTPConfig,
         preparedBackend: ProductionBackendPreparation,
-        kvBudget: GlobalKVCacheBudget? = nil
+        kvBudget: GlobalKVCacheBudget? = nil,
+        constructionPurpose: ConstructionPurpose = .serving,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
     ) throws -> ProductionBuild {
         let (backend, caches) = try preparedBackend.consume(
             model: model,
@@ -206,6 +209,13 @@ extension EngineV2Factory {
             effectivePrefixCache != nil || preparedBackend.residentPrefixCacheEnabled
                 || preparedBackend.hybridPrefixCache != nil
                 || completePrefixCache != nil
+        schedulerConfig.demandedShortCheckpointMinimumTokens = demandedShortCheckpointMinimumTokens(
+            model: model, backend: preparedBackend.kind, store: completePrefixCache,
+            constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
+        schedulerConfig.demandedCheckpointPartitionIncludesLongPrompts =
+            benchmarkDemandedCheckpointPartitionIncludesLongPrompts(
+                model: model, backend: preparedBackend.kind, store: completePrefixCache,
+                constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
         let processOwner: EngineProcessMemoryOwner?
         if preparedBackend.kind == .paged, let kvBudget {
             // Binding after any slab/request allocation would lose the required

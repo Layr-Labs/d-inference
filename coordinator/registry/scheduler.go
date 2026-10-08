@@ -784,6 +784,12 @@ func (s ReservationSelection) commit(
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, rejectNone, true)
 	}
+	deadline := candidateFirstContentDeadline(candidate, pr)
+	if !deadline.IsZero() && !deadline.After(now) {
+		// This renderer's cutoff can expire before another candidate's. Keep
+		// the unselected envelope intact so the next bounded scan can try it.
+		return nil, nil, reservationCandidateRejected, RoutingDecision{}
+	}
 
 	// Another reservation or cache quarantine changed this winner after the
 	// shared scan. Re-scan before committing stale cost or affinity preference.
@@ -823,6 +829,13 @@ func (s ReservationSelection) commit(
 	}
 
 	pr.ProviderID = p.ID
+	pr.FirstContentDeadline = deadline
+	pr.firstContentDeadlineBound = true
+	pr.firstContentDeadlineUsesQualified = !pr.FirstContentQualifiedDeadline.IsZero() &&
+		deadline.Equal(pr.FirstContentQualifiedDeadline) && pr.PromptWork != nil &&
+		pr.PromptWork.Source == protocol.PromptWorkExact &&
+		pr.PromptWork.IsQualifiedFor(snapshot.promptWorkArtifactHash, snapshot.promptWorkContractID)
+	pr.RefreshFirstContentBudget(now)
 	pr.SetFirstContentExplored(firstContentEvidenceExplorable(candidate) || candidate.snapshot.explorationUsesMedian())
 	recordReservedPrefill(pr, candidate)
 	p.addPendingLocked(pr)
@@ -1058,6 +1071,7 @@ type CandidateScan struct {
 	ModelTooLargeRejections int
 	VisionRejections        int
 	TTFTRejections          int
+	DeadlineRejections      int
 	BestTTFTMs              float64
 	BreakerRejected         int
 	ignoreProviderBreaker   bool

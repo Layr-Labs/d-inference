@@ -87,6 +87,8 @@ type dispatchState struct {
 	timing                 *registry.RequestTiming
 	profile                *registry.RequestProfile
 	deadline               time.Duration
+	fallbackDeadline       time.Duration
+	promptDeadlineForWork  func(string, *protocol.PromptWork) time.Duration
 	speculativeAt          time.Duration
 	// modelMaxContext is the model's context window (0 = unknown), used by
 	// shouldStopFailover/classifyRejection to tell a fleet-wide context overflow
@@ -549,7 +551,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			d.pr = nil
 		},
 		Timeout: func() bool {
-			result := timeout.Run(r.Context(), attempt.NoBackupTimeout, d.deadline)
+			result := timeout.Run(r.Context(), attempt.NoBackupTimeout, d.firstContentClock().ForPending(pr).Duration(d.deadline))
 			if !result.Claimed {
 				return false
 			}

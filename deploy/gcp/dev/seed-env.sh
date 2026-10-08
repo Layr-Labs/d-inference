@@ -35,6 +35,8 @@ fail() {
     exit 1
 }
 # shellcheck source=deploy/gcp/dev/refresh-backup.sh
+# Check first: bash 3.2 exits at once when "." names a missing file.
+[ -r "$SCRIPT_DIR/refresh-backup.sh" ] || fail "cannot read $SCRIPT_DIR/refresh-backup.sh"
 . "$SCRIPT_DIR/refresh-backup.sh" || fail "cannot read $SCRIPT_DIR/refresh-backup.sh"
 
 case "$MODE" in

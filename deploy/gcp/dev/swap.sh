@@ -97,6 +97,8 @@ project=$(curl -fsS --max-time 5 -H 'Metadata-Flavor: Google' "$METADATA_URL") |
 [ "$project" = "$PROJECT" ] || fail "project is $project, not $PROJECT"
 [ -f "$ENV_FILE" ] || fail "$ENV_FILE does not exist; run host-setup.sh --apply and seed-env.sh --seed first"
 # shellcheck source=deploy/gcp/dev/refresh-backup.sh
+# Check first: bash 3.2 exits at once when "." names a missing file.
+[ -r "$LIB/deploy/gcp/dev/refresh-backup.sh" ] || fail "cannot read $LIB/deploy/gcp/dev/refresh-backup.sh; nothing changed"
 . "$LIB/deploy/gcp/dev/refresh-backup.sh" || fail "cannot read $LIB/deploy/gcp/dev/refresh-backup.sh; nothing changed"
 
 # One swap or rollback at a time on the VM: a manual run and a workflow run

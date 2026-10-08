@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "DarkbloomClusterBootstrap", targets: ["DarkbloomClusterBootstrap"]),
         .library(name: "DarkbloomClusterProcess", targets: ["DarkbloomClusterProcess"]),
         .library(name: "DarkbloomClusterRemote", targets: ["DarkbloomClusterRemote"]),
+        .library(name: "DarkbloomClusterRuntime", targets: ["DarkbloomClusterRuntime"]),
     ],
     targets: [
         .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),
@@ -20,5 +21,10 @@ let package = Package(
         .target(name: "DarkbloomClusterBootstrap"),
         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
         .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess", "DarkbloomClusterBootstrap", "DarkbloomClusterSecurity"]),
+        // Staged subset: the model-free closure only (stage metadata, manifest
+        // schema, verified checkpoint, aligned reader). MLX-linked runtime
+        // files are NOT staged; do not add them to this target without their
+        // own qualification slice.
+        .target(name: "DarkbloomClusterRuntime"),
     ]
 )

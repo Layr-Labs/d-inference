@@ -1,0 +1,76 @@
+{
+  "status": "pass",
+  "curatedUTC": "2026-10-04T05:09:52.809590+00:00",
+  "scope": "Temporary two-test diagnostic preparation/source restoration and generated-only metadata preservation; no transferred complete Provider gate.",
+  "proofFilesSHA256": {
+    "restore": "1e8f1a23fee6379d1a1f09d485da75019709ff285d623a980a280d1dace53a18",
+    "build": "950bec31b0b919683721900a870c8de40b734105f23a7f3aeca9f12dd263e722",
+    "controls": "1505569634e3ead7ca0e2b86947fee40cf234cb98e3fc03e13853b9363227984",
+    "generatedMetadataRetirement": "058d15fd986a4d5edafae389e96fe262a33f916ff74919e8b821438d1d29881e"
+  },
+  "V5DependencyControls": {
+    "executedPassed": 39,
+    "skips": 0,
+    "sourceUnchanged": true,
+    "logSHA256": "702a785a2e54545174f6cf80e2288f18cb63994be70eb2fd0631c43291d501d1",
+    "elapsedSeconds": 0.868783165991772
+  },
+  "actualNormalDiagnosticBuild": {
+    "startUTC": "2026-10-04T04:58:29.749126+00:00",
+    "endUTC": "2026-10-04T04:59:25.752281+00:00",
+    "compiler": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+    "steps": [
+      {
+        "name": "normal-build",
+        "exitCode": 0,
+        "elapsedSeconds": 43.49921895796433,
+        "logSHA256": "c27865d631078946fe31511b28a7a3dad03ca86866f0bcc05059c2652badee64",
+        "directChildReaped": true,
+        "trackedOwnedProcessesQuiescent": true
+      },
+      {
+        "name": "stage-metallib",
+        "exitCode": 0,
+        "elapsedSeconds": 10.290441207995173,
+        "logSHA256": "58575a3dc73c74dc44bbece7068394c93e7e47ee3e23c8c267459f88f16a4af8",
+        "directChildReaped": true,
+        "trackedOwnedProcessesQuiescent": true
+      }
+    ],
+    "sourcePinsOrchestrationUnchanged": true,
+    "threeMetalCopiesEqual": true,
+    "testImageSHA256": "d66732244f4e0999e1205ba095f4bd643bf78c3c13d486b506299d4763b37f09"
+  },
+  "sourceRestoration": {
+    "startUTC": "2026-10-04T05:06:51.182419+00:00",
+    "endUTC": "2026-10-04T05:06:51.516626+00:00",
+    "removedOnlyTwoDeclaredOwningTests": [
+      "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/QwenNoCacheMTPRepeatTests.swift",
+      "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/GemmaTrainedCheckpointStateTests.swift"
+    ],
+    "exactOriginalSourceRestored": true,
+    "actualClosedBuildAndBothNativeReceiptsBound": 3,
+    "allAttemptedChildTreesClosedReapedQuiescent": true,
+    "canonicalComponentPassTransferred": false,
+    "freshNormalCanonicalProviderGateRequired": true
+  },
+  "generatedMetadataRetirement": {
+    "startUTC": "2026-10-04T05:05:05.670005+00:00",
+    "endUTC": "2026-10-04T05:05:10.788957+00:00",
+    "actualDeclaredGeneratedRootsRemoved": 2,
+    "scope": "Only regenerated test xctest dSYM and index; compiled objects/ModuleCache/resources/installed tests/prior evidence retained.",
+    "all23RuntimeResourceBytesThreeMetalCopiesUnchanged": true,
+    "observedFreeBytesDelta": 555360256,
+    "exclusiveDiskReclaimAttributionClaimed": false,
+    "componentOrNativePassTransferred": false,
+    "portableRuntimeClosureClaimed": false
+  },
+  "preparationFailuresRetained": [
+    "V3 install passes; build preflight refuses late OwnedProcess import before output directory/Swift launch; exact source restoration follows explicit no-execution declaration.",
+    "V4 actual phase-import controls pass; two task-owned tempfile alias controls fail (one error/one failure), no source apply/build.",
+    "First cleanup preflight refuses absent CLI/enclave symbol roots before mutation; versioned explicit actual subset succeeds."
+  ],
+  "finalCanonicalProviderStatus": "pass",
+  "finalCanonicalProviderProofSHA256": "0bcb4bd38c390fa1633752d2e879ae209b678bcd7d788663ca441d6108ad2a11",
+  "finalCanonicalProviderPublicProof": "provider-final-restored-component-checks.json"
+}

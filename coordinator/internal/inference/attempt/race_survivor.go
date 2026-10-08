@@ -22,11 +22,14 @@ func (r *Race) WaitBackup(ctx context.Context, current, backup RaceAttempt) Race
 // waitPrimary retains the bookkeeping distinctions between a backup terminal
 // read from its closed chunk channel and one read directly from its error arm.
 func (r *Race) waitPrimary(ctx context.Context, provider *registry.Provider, pr *registry.PendingRequest, backupChunkClosed bool) RaceResult {
-	primaryDeadline := r.config.Clock.Timer(r.config.Clock.Wait(r.config.Deadline - r.config.SpeculativeAt))
+	clock := r.config.Clock.ForPending(pr)
+	primaryDeadline := clock.Timer(clock.Wait(r.config.Deadline - r.config.SpeculativeAt))
+	defer func() { primaryDeadline.Stop() }()
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && firstcontent.HoldPreContentBoilerplate(pr, chunk, &r.result.Attempt.HeldChunks) {
+				clock.RearmExpired(&primaryDeadline)
 				continue
 			}
 			primaryDeadline.Stop()
@@ -72,7 +75,7 @@ func (r *Race) waitPrimary(ctx context.Context, provider *registry.Provider, pr 
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(r.result.Attempt.HeldChunks) > 0 && r.config.Clock.CanExtendPreamble() {
+			if len(r.result.Attempt.HeldChunks) > 0 && clock.CanExtendPreamble() {
 				r.result.PreambleLiveness = true
 				return r.finish(Accepted)
 			}
@@ -80,8 +83,8 @@ func (r *Race) waitPrimary(ctx context.Context, provider *registry.Provider, pr 
 				continue
 			}
 			r.exclude(provider)
-			r.deps.Registry.RecordWarmPoolTTFTMiss(r.config.Model, r.config.Deadline)
-			if firstcontent.ProviderAttemptAttributableStall(pr, r.config.Deadline) {
+			r.deps.Registry.RecordWarmPoolTTFTMiss(r.config.Model, clock.Duration(r.config.Deadline))
+			if firstcontent.ProviderAttemptAttributableStall(pr, clock.Duration(r.config.Deadline)) {
 				r.deps.Effects.RecordError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			r.recordTimeout(pr)
@@ -104,11 +107,14 @@ func (r *Race) waitBackup(ctx context.Context, backup RaceAttempt) RaceResult {
 	// The primary is already gone. Attribute the survivor now, unless the
 	// primary's deterministic terminal verdict froze the request-wide latch.
 	r.noteServing(provider, pr)
-	backupDeadline := r.config.Clock.Timer(r.config.Clock.Wait(r.config.Deadline - r.config.SpeculativeAt))
+	clock := r.config.Clock.ForPending(pr)
+	backupDeadline := clock.Timer(clock.Wait(r.config.Deadline - r.config.SpeculativeAt))
+	defer func() { backupDeadline.Stop() }()
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && firstcontent.HoldPreContentBoilerplate(pr, chunk, &backup.HeldChunks) {
+				clock.RearmExpired(&backupDeadline)
 				continue
 			}
 			backupDeadline.Stop()
@@ -167,7 +173,7 @@ func (r *Race) waitBackup(ctx context.Context, backup RaceAttempt) RaceResult {
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(backup.HeldChunks) > 0 && r.config.Clock.CanExtendPreamble() {
+			if len(backup.HeldChunks) > 0 && clock.CanExtendPreamble() {
 				pr.BackupWon.Store(true)
 				r.result.Attempt = backup
 				r.result.Attempt.RequestID = pr.RequestID
@@ -178,8 +184,8 @@ func (r *Race) waitBackup(ctx context.Context, backup RaceAttempt) RaceResult {
 				continue
 			}
 			r.exclude(provider)
-			r.deps.Registry.RecordWarmPoolTTFTMiss(r.config.Model, r.config.Deadline)
-			if firstcontent.ProviderAttemptAttributableStall(pr, r.config.Deadline-r.config.SpeculativeAt) {
+			r.deps.Registry.RecordWarmPoolTTFTMiss(r.config.Model, clock.Duration(r.config.Deadline))
+			if firstcontent.ProviderAttemptAttributableStall(pr, clock.Duration(r.config.Deadline-r.config.SpeculativeAt)) {
 				r.deps.Effects.RecordError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			r.recordTimeout(pr)

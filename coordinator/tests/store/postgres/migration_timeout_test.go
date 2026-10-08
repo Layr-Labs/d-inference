@@ -18,6 +18,7 @@ var concurrentMigrationIndexes = []string{
 	"idx_darkbloom_machine_sessions_account", "idx_model_token_reservations_account",
 	"idx_inference_routes_consumer_key_hash", "idx_request_rejections_consumer_key_hash",
 	"idx_users_privy_live", "idx_billing_sessions_referral_code", "idx_users_privy_deleted",
+	"global_payout_funding_reconcile",
 }
 
 // Observe settings on the actual DDL connections, not a copy of the timeout

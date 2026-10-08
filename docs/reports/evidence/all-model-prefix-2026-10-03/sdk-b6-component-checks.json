@@ -1,0 +1,295 @@
+{
+  "status": "test_components_pass_documentation_failed",
+  "curatedUTC": "2026-10-04T02:09:04.333867+00:00",
+  "SDKHead": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+  "runnerStartedUTC": "2026-10-04T01:55:12.706586+00:00",
+  "runnerEndedUTC": "2026-10-04T02:07:23.477593+00:00",
+  "compiler": "Apple Swift 6.3.3",
+  "sourceScopeRecords": 1152,
+  "swiftSourceTestRecords": 1144,
+  "testImageSHA256": "2467b6c4eef3afdfc14b825a721210f8d5322e1bf23118261d75a2c33c59d8e1",
+  "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+  "build": {
+    "exitCode": 0,
+    "elapsedSeconds": 26.669928124989383
+  },
+  "MetalStage": {
+    "exitCode": 0,
+    "elapsedSeconds": 10.591848249954637
+  },
+  "bindingsAfterClosedTestComponents": {
+    "sourceUnchanged": true,
+    "imageUnchanged": true,
+    "helpersUnchanged": true,
+    "MetalSourceUnchanged": true
+  },
+  "closedTestStepsOwnedProcessTreesQuiescent": true,
+  "fullSuite": {
+    "cut": "signed documentation-only integration B6 aec06021913fff97d86c8d71889b9e9c3c4516a9",
+    "scope": "Closed full test invocation; overall runner and DocC are separate.",
+    "startedUTC": "2026-10-04T01:56:12.933351+00:00",
+    "endedUTC": "2026-10-04T02:05:24.974945+00:00",
+    "fullCommandElapsedSeconds": 552.0371918340097,
+    "fullLogSHA256": "dca9293366844959dcdab7d0d4c5fb29a535aca4837451bc4ecbb39b22f37c08",
+    "XCTest": {
+      "enumerated": 1686,
+      "executedPassEvents": 1351,
+      "skippedEvents": 335,
+      "failures": 0,
+      "unexpectedFailures": 0,
+      "testSeconds": 303.92
+    },
+    "SwiftTesting": {
+      "terminalEnumeratedDeclarations": 2380,
+      "individualExecutedPassEvents": 2346,
+      "ordinaryPassMarkerEvents": 2336,
+      "knownIssuePassMarkerEvents": 10,
+      "explicitSkippedTestDeclarations": 34,
+      "skippedSuiteDeclarations": 0,
+      "suites": 364,
+      "failedEvents": 0,
+      "recordedExpectedKnownIssues": 12,
+      "knownIssueAffectedTestMethods": 10,
+      "testSeconds": 244.629,
+      "terminalSummaryExcludedFromPassEvents": true
+    },
+    "completeSuiteExecutedPassCount": 3697,
+    "completeSuiteSkippedCount": 369,
+    "completeSuiteEnumeratedCount": 4066,
+    "incorrectTerminalSummaryPassAddition": 3731,
+    "overstatedExecutedPassCount": 34,
+    "dedicatedNativeMethodSkippedInGenericFull": true,
+    "dedicatedNativeMethodExplicitRequiredPass": true,
+    "requiredInvocationsAddedToFullCount": false
+  },
+  "knownIssueSourceReview": {
+    "status": "pass",
+    "SDKHead": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+    "freshMain": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+    "recordedKnownIssueEvents": 12,
+    "affectedTestMethods": 10,
+    "events": [
+      {
+        "test": "streamsContentToolCallAndInfo()",
+        "file": "ModelContainerEngineStreamTests.swift",
+        "line": 140,
+        "column": 17
+      },
+      {
+        "test": "windowedMaskKeepsTheCurrentPosition()",
+        "file": "CompilableCacheTests.swift",
+        "line": 173,
+        "column": 17
+      },
+      {
+        "test": "promotionAfterAPromptLongerThanTheRing()",
+        "file": "CompilableCacheTests.swift",
+        "line": 215,
+        "column": 17
+      },
+      {
+        "test": "promotionAfterAPromptLongerThanTheRing()",
+        "file": "CompilableCacheTests.swift",
+        "line": 217,
+        "column": 17
+      },
+      {
+        "test": "compilableCacheCopyIsIndependent()",
+        "file": "CompilableCacheTests.swift",
+        "line": 323,
+        "column": 17
+      },
+      {
+        "test": "compilableCacheCopyIsIndependent()",
+        "file": "CompilableCacheTests.swift",
+        "line": 324,
+        "column": 17
+      },
+      {
+        "test": "tokensTaskReportsLength()",
+        "file": "GenerateLoopTests.swift",
+        "line": 788,
+        "column": 17
+      },
+      {
+        "test": "streamWithRejectedDraftsMatchesTheMainModel()",
+        "file": "GenerateLoopTests.swift",
+        "line": 888,
+        "column": 17
+      },
+      {
+        "test": "logitsPrepareResultKeepsTheFirstToken()",
+        "file": "GenerateLoopTests.swift",
+        "line": 929,
+        "column": 17
+      },
+      {
+        "test": "generateStreamsTextToolCallsAndInfo()",
+        "file": "ModelContainerGenerationTests.swift",
+        "line": 135,
+        "column": 17
+      },
+      {
+        "test": "floatArrayInTheUnitRange()",
+        "file": "UserInputImageArrayTests.swift",
+        "line": 106,
+        "column": 17
+      },
+      {
+        "test": "idefics3ProcessorOutputRunsThroughTheModel()",
+        "file": "VisionModelExtraPathTests.swift",
+        "line": 1033,
+        "column": 21
+      }
+    ],
+    "sourceComparison": [
+      {
+        "filename": "CompilableCacheTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Cache/CompilableCacheTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "92f96e447b45fa53f6f23f4647c4525735fc2b91608b20e66585b727b740e806"
+          }
+        ]
+      },
+      {
+        "filename": "GenerateLoopTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Generation/GenerateLoopTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "63ffdbe5119b965efce0f8bc1f474aa52d7df1a2b726a8c8df1b2a9e9c156f43"
+          }
+        ]
+      },
+      {
+        "filename": "ModelContainerEngineStreamTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMServerTests/Kernel/Runtime/ModelContainerEngineStreamTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "b84d51d6415f1f1eda654d13a27dae6ef0576506a8a863b43b9f394561994489"
+          }
+        ]
+      },
+      {
+        "filename": "ModelContainerGenerationTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Common/ModelContainerGenerationTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "ad8f23148a9c892b1d30ee4841f0658ec3f602fa7521fcce6135f37482a04835"
+          }
+        ]
+      },
+      {
+        "filename": "UserInputImageArrayTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Common/UserInputImageArrayTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "e901d29ea0549dcd2e7d6c143a562b31de359c188428ddaa85455aae15ae1099"
+          }
+        ]
+      },
+      {
+        "filename": "VisionModelExtraPathTests.swift",
+        "matches": [
+          {
+            "file": "Tests/MLXLMTests/Kernel/Vision/VisionModelExtraPathTests.swift",
+            "committedBytesEqualFreshMain": true,
+            "sourceSHA256": "896ef722bb915cc0936927ffdb63c4069b5d6269cb794598bd06f14f40851750"
+          }
+        ]
+      }
+    ],
+    "scope": "B6 recorded known-issue event locations and six committed files independently verified byte-identical to B5 and fresh main; no new cache failure attribution.",
+    "sourceFilesIndependentlyMatchedB5AndFreshMain": true
+  },
+  "requiredInvocations": [
+    {
+      "name": "retention",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 6,
+        "unexpected": 0
+      },
+      "testSeconds": 0.042,
+      "commandElapsedSeconds": 4.7470967920380645,
+      "exitCode": 0,
+      "logSHA256": "bbf2d318c2534a5ead11324ae546325f1f3d2aa60983a0c2725d6e1720b1ffd7"
+    },
+    {
+      "name": "partition",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 3,
+        "unexpected": 0
+      },
+      "testSeconds": 0.001,
+      "commandElapsedSeconds": 3.7037132080295123,
+      "exitCode": 0,
+      "logSHA256": "1da220b9656feb3861e8250c5bf830785bf28e5f729690bff5c4521ad2bfe656"
+    },
+    {
+      "name": "continuation",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 7,
+        "unexpected": 0
+      },
+      "testSeconds": 0.002,
+      "commandElapsedSeconds": 1.490451458026655,
+      "exitCode": 0,
+      "logSHA256": "45538bf030b679e99359cb042835d3ad16a4aa428874b5e773fadfa7b0c103ae"
+    },
+    {
+      "name": "native-retention",
+      "counts": {
+        "failures": 0,
+        "skipped": 0,
+        "tests": 1,
+        "unexpected": 0
+      },
+      "testSeconds": 0.996,
+      "commandElapsedSeconds": 10.102861708030105,
+      "exitCode": 0,
+      "logSHA256": "d7bfadbbc8ffc8a7fdc1b67eab6772ad753f1cae1f050ca728d6f83f97f4409b"
+    }
+  ],
+  "documentation": {
+    "status": "failed_exit_1",
+    "exitCode": 1,
+    "startedUTC": "2026-10-04T02:05:25.602739+00:00",
+    "endedUTC": "2026-10-04T02:07:23.242525+00:00",
+    "elapsedSeconds": 117.63771024998277,
+    "logSHA256": "31ea5d33885f63015139c081fdf1092b5b85d4e1b18d8e4aecb442486ac2d3de",
+    "successMarkerPresent": false,
+    "remainingDocumentationDiagnostic": "ambiguous generateTask overload link",
+    "publicSourceLocation": "Libraries/MLXLMCommon/Evaluate.swift:1334",
+    "PackageResolvedChangedByPlugin": false,
+    "sourceRestoredExactly": true,
+    "PackageResolvedMatchesBefore": true
+  },
+  "overallRunnerGreenClaimed": false,
+  "limits": [
+    "The completed B6 test proof is independent of B5; matching counts are not transferred results.",
+    "Required17 are separate invocations and are not added to full unique counts; the native owning method is optional-skipped generically but required explicitly.",
+    "Twelve expected known issues remain explicit, in ten passing methods from six source-byte-identical upstream files.",
+    "Component/tiny-native coverage does not qualify full-model MiMo, broader or long serving, deployed gains or benchmark throughput.",
+    "Overall source/image/helper and owned-process closure passes; the separate strict DocC command fails on an ambiguous overload link, so the overall runner remains failed."
+  ],
+  "privacy": "Aggregate public source/image/test counts only; no raw logs, private paths, generated output IDs or process/account/provider identities.",
+  "bindingsAtOverallClosure": {
+    "sourceUnchanged": true,
+    "imageUnchanged": true,
+    "helpersUnchanged": true,
+    "MetalSourceUnchanged": true,
+    "finalSourceMatchesBefore": true,
+    "allOwnedStepsQuiescent": true
+  }
+}

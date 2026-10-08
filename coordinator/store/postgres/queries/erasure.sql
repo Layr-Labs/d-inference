@@ -102,7 +102,7 @@ UPDATE providers SET deleted_at = NULL WHERE account_id = $1 AND deleted_at = $2
 -- name: CountOpenStripeWithdrawals :one
 SELECT COUNT(*) FROM stripe_withdrawals
 WHERE account_id = sqlc.arg('account_id') AND (
-    status IN ('pending', 'transferred')
+    status IN ('queued', 'pending', 'transferred')
     OR (status = 'paid' AND updated_at > sqlc.arg('paid_after')::timestamptz)
     OR (status = 'failed' AND NOT refunded AND transfer_id = '' AND payout_id = ''
         AND sweep_payout_id = '' AND amount_micro_usd > 0
@@ -111,8 +111,8 @@ WHERE account_id = sqlc.arg('account_id') AND (
 -- name: CountOpenGlobalPayouts :one
 SELECT COUNT(*) FROM global_payout_withdrawals
 WHERE account_id = sqlc.arg('account_id') AND (
-    status IN ('pending', 'processing')
-    OR (status = 'posted' AND submitted_at > sqlc.arg('posted_after')::timestamptz));
+    status IN ('queued', 'pending', 'processing')
+    OR (status = 'posted' AND COALESCE(NULLIF((data->>'dispatch_started_at')::timestamptz, '0001-01-01T00:00:00Z'::timestamptz), submitted_at) > sqlc.arg('posted_after')::timestamptz));
 
 -- name: LockBalance :one
 SELECT balance_micro_usd, withdrawable_micro_usd FROM balances WHERE account_id = $1 FOR UPDATE;

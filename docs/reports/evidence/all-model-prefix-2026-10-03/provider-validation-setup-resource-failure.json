@@ -1,0 +1,117 @@
+{
+  "status": "aborted_or_failed",
+  "curatedUTC": "2026-10-04T02:38:29.412491+00:00",
+  "qualification": "Failed validation setup and independent host disk guard; no complete provider green gate and no product cache defect established.",
+  "parentRecordedHead": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33",
+  "compatibleSDKHead": "3a8257679ce75c8d775ba04db6b0a5259643034d",
+  "startedUTC": "2026-10-04T02:25:57.403370+00:00",
+  "endedUTC": "2026-10-04T02:34:26.500699+00:00",
+  "runnerFailure": "RuntimeError: active_provider_component_host_disk_floor12GiB",
+  "commands": [
+    {
+      "name": "prebuild-test-image",
+      "exitCode": 0,
+      "elapsedSeconds": 66.8027547079837,
+      "startedUTC": "2026-10-04T02:25:58.497198+00:00",
+      "endedUTC": "2026-10-04T02:27:05.301678+00:00",
+      "logSHA256": "fd7de74881d7a4c0b516266908d2b40dc7d4c67cc7841af850627343402b78e1",
+      "logSHA256IndependentlyVerified": true,
+      "directChildReaped": true,
+      "ownedProcessTreeQuiescent": true
+    },
+    {
+      "name": "prestage-metallib",
+      "exitCode": 0,
+      "elapsedSeconds": 11.178452207997907,
+      "startedUTC": "2026-10-04T02:27:05.303865+00:00",
+      "endedUTC": "2026-10-04T02:27:16.483436+00:00",
+      "logSHA256": "58575a3dc73c74dc44bbece7068394c93e7e47ee3e23c8c267459f88f16a4af8",
+      "logSHA256IndependentlyVerified": true,
+      "directChildReaped": true,
+      "ownedProcessTreeQuiescent": true
+    },
+    {
+      "name": "make-provider",
+      "exitCode": 2,
+      "elapsedSeconds": 427.563909458986,
+      "startedUTC": "2026-10-04T02:27:18.336457+00:00",
+      "endedUTC": "2026-10-04T02:34:25.904094+00:00",
+      "logSHA256": "c60f0b4305dd45d2005149c67883e11e005d89fdde0c8fd07be689db06f6a323",
+      "logSHA256IndependentlyVerified": true,
+      "directChildReaped": true,
+      "ownedProcessTreeQuiescent": true
+    }
+  ],
+  "actualObservedTestPopulations": {
+    "XCTest": {
+      "observedExecutedPassEvents": 362,
+      "observedSkippedEvents": 144,
+      "observedFailedCaseEvents": 47,
+      "terminalEnumeratedCases": 553,
+      "terminalFailureAssertions": 56,
+      "terminalUnexpectedFailures": 26,
+      "completeXCTestPhase": true
+    },
+    "SwiftTesting": {
+      "observedExecutedPassEvents": 3012,
+      "observedSkippedTestEvents": 86,
+      "observedFailedTestEvents": 1,
+      "observedRecordedIssueEvents": 1,
+      "terminalSummaryPresent": false,
+      "completePhase": false
+    }
+  },
+  "XCTestFailedClasses": {
+    "ProviderCoreTests.MiMoV26ConsumerParityTests": 5,
+    "ProviderCoreTests.MiMoV26DiscoveryLoadFootprintTests": 7,
+    "ProviderCoreTests.MiMoV26LocalContractTests": 10,
+    "ProviderCoreTests.MiMoV26ManagedSlotTests": 2,
+    "ProviderCoreTests.MiMoV26NativeLoadTransactionTests": 8,
+    "ProviderCoreTests.MiMoV26PromptContractTests": 5,
+    "ProviderCoreTests.MiMoV26ServingLoadTests": 7,
+    "ProviderCoreTests.MiMoV26StreamContractTests": 3
+  },
+  "canonicalInvocationsExpected": 8,
+  "generalInvocationStarted": true,
+  "remainingSevenInvocationsReached": false,
+  "completeSuitePassClaimed": false,
+  "sourceBeforeAndFinallyIndependentlyEqual": true,
+  "sourceFinallyMatchesBefore": true,
+  "allOwnedCommandTreesQuiescent": true,
+  "finalRuntimeImageMetalHelperBindingProofRecorded": false,
+  "setupFailureEvidence": {
+    "boundedFixtureEnvironment": "MIMO_V26_SERIAL_LOAD_FIXTURES",
+    "promptMetadataEnvironment": [
+      "MIMO_PROMPT_ARTIFACT_DIRECTORY",
+      "MIMO_PROMPT_REFERENCE_VECTORS"
+    ],
+    "runnerStripsMimoV26Prefix": true,
+    "promptMetadataProvisioningNotPerformed": true,
+    "promptMetadataStrippedByThatPrefix": false,
+    "CIExplicitlyPreparesBothPrerequisites": true,
+    "sourceLocations": [
+      "artifacts/all-model-prefix-20261003/native/final_provider_component_helpers.py:170",
+      "provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26NativeLoadTransactionTests.swift:101",
+      "provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ConsumerFixtures.swift:42",
+      "provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26PromptContractTests.swift:32",
+      ".github/workflows/ci.yml:240"
+    ]
+  },
+  "resourceFailureEvidence": {
+    "activeHostStopGiB": 12,
+    "activeDiskGuardRaised": true,
+    "guardLowSampleBytesRecorded": false,
+    "finalFreeBytes": 14048817152,
+    "finalFreeIsMinimumObservedClaimed": false,
+    "nativePerformanceInitialFloorGiBUnchanged": 20,
+    "nativePerformanceActiveFloorGiBUnchanged": 20.25
+  },
+  "limits": [
+    "XCTest completed its general phase with actual failures; Swift general phase was interrupted without a terminal summary. Partial passes/skips are observed log events, not a forecast or full-suite population.",
+    "Forty-seven failed XCTest methods report 56 failure assertions/26 unexpected failures; these are distinct counts.",
+    "The disk guard is separate from earlier missing-prerequisite failures. The final free-space sample does not establish the guard minimum.",
+    "Source-final and owned process closure are recorded; the guard prevented later full runtime image/Metal/helper and head-after validation.",
+    "A new fixture-aware invocation must establish its own build/tests/ownership/source proof. Earlier sealed receipts and SDK passes are not overwritten."
+  ],
+  "privacy": "Aggregate test/source/setup/error classification only; no raw logs, prompt/generated data, private paths, environment values, process/account/provider identifiers."
+}

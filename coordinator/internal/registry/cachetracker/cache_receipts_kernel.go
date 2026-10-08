@@ -6,27 +6,65 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheindex"
 )
 
-func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) {
+func (t *Tracker[P]) StoreAttemptLocked(nonce string, attempt Attempt[P]) bool {
 	if !t.generation.Active() {
-		return
+		return false
 	}
-	t.attempts.Store(nonce, attempt)
+	charge, valid := CacheAttemptCharge(nonce, attempt)
+	if !valid {
+		return false
+	}
+	now := t.now()
+	t.SweepIfDueLocked(now)
+	old := t.attempts.Lookup(nonce).AccountedBytes
+	total, fits := t.attemptBudget.replacementTotal(old, charge)
+	if !fits && (total == 0 || charge > t.attemptBudget.MaxBytes()) {
+		// Reclaiming cannot help an inconsistent or overflowing ledger, nor a
+		// record larger than the whole budget.
+		t.noteAttemptBudgetRefusalLocked()
+		return false
+	}
+	key, owned, valid := detachCacheAttempt(nonce, attempt)
+	if !valid || !t.generation.Active() {
+		return false
+	}
+	// The complete candidate is validated and detached before any terminal
+	// grace is given up for it.
+	if !fits {
+		total, fits = t.reclaimTerminalGraceLocked(now, nonce, total)
+		if !fits {
+			t.noteAttemptBudgetRefusalLocked()
+			return false
+		}
+	}
+	owned.Terminal = t.attempts.Lookup(nonce).Terminal
+	owned.AccountedBytes = charge // Never trust a caller-supplied charge.
+	t.attempts.Store(key, owned)
+	t.attemptBudget.Store(total)
 	if entry := t.attemptOrder.Load(nonce); entry != nil {
 		if entry.Key().ProviderID != attempt.ProviderID {
 			t.UnindexAttemptLocked(entry)
-			t.attemptOrder.Track(nonce, cacheindex.AttemptRef{Nonce: nonce, ProviderID: attempt.ProviderID}, attempt.ExpiresAt)
+			t.attemptOrder.Track(nonce, cacheindex.AttemptRef{Nonce: entry.Key().Nonce, ProviderID: owned.ProviderID}, attempt.ExpiresAt)
 			t.IndexAttemptLocked(entry)
 		} else {
 			t.attemptOrder.Track(nonce, entry.Key(), attempt.ExpiresAt)
 		}
-		return
+		if t.terminalOrder.Load(nonce) != nil {
+			t.terminalOrder.Track(nonce, entry.Key(), attempt.ExpiresAt)
+		}
+		return true
 	}
-	entry := t.attemptOrder.Track(nonce, cacheindex.AttemptRef{Nonce: nonce, ProviderID: attempt.ProviderID}, attempt.ExpiresAt)
+	entry := t.attemptOrder.Track(key, cacheindex.AttemptRef{Nonce: key, ProviderID: owned.ProviderID}, owned.ExpiresAt)
 	t.IndexAttemptLocked(entry)
+	return true
 }
 
 func (t *Tracker[P]) RemoveAttemptLocked(nonce string) {
+	if attempt, exists := t.attempts.Load(nonce); exists {
+		t.attemptBudget.refund(attempt.AccountedBytes)
+	}
 	t.attempts.Delete(nonce)
+	t.terminalOrder.Remove(nonce)
 	if entry := t.attemptOrder.Remove(nonce); entry != nil {
 		t.UnindexAttemptLocked(entry)
 	}

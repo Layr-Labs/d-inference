@@ -355,14 +355,15 @@ type BillingStore interface {
 	ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsByStatus returns up to limit withdrawals in the
-	// given status created before olderThan, oldest first. Used by the payout
-	// reconciler to find withdrawals stuck in "transferred". A limit <= 0 (or
+	// given status whose reconciliation age starts before olderThan, oldest first.
+	// Pending age uses TransferStartedAt (creation time for historical rows),
+	// transferred age uses UpdatedAt, and other statuses use CreatedAt. A limit <= 0 (or
 	// above MaxStripeWithdrawalsByStatusLimit) is capped at
 	// MaxStripeWithdrawalsByStatusLimit — the result set is never unbounded.
 	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for
-	// the given connected account (acct_…) in the given status, oldest first.
+	// the given connected account (acct_…) in the given status, oldest UpdatedAt first.
 	// Used to resolve Stripe's automatic sweep payouts (whose IDs we never
 	// see at creation time) back to local withdrawal rows.
 	ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]StripeWithdrawal, error)

@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -52,16 +52,19 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/provider` | WebSocket sessions and typed inference-event handoff; `provider/trust` owns legacy verification and revocation state. |
 | `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. Release composition injects the source `LatestProviderVersion` display fallback from `coordinator/api/server.go`; the store still owns registered releases. A source version bump is not publication (see [release contracts](../../reference/api-contracts.md#release-and-install-5)). |
 | `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the `accounts/erasure` child owns the account erasure admin routes and scrub loop; the payouts child owns provider payout workflows, not a second ledger. |
+| `coordinator/api/autopilot` | Admin controller, machine-mode and reward HTTP shapes. `RewardsHandler` owns funding/history input validation; its API parent supplies authorization, financial rate limiting and the durable store capability. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
 | `coordinator/analyticssnapshot` | Validates optional local public analytics snapshots and persists acceptance continuity. `ServerConfig` supplies the snapshot and state paths through reporting dependencies; the reporting owner polls and serves them without database fallback. See [snapshot operations](../../operations/analytics-snapshots.md). |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
 | `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
 | `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, non-streaming response limits, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |
+| `coordinator/internal/inference/firstcontent`, `coordinator/internal/inference/attempt` | `Clock.ForPending` selects each reserved renderer's ingress-anchored cutoff; `Race.expireBoundRacer` retires an expired racer while preserving its survivor. `coordinator/api/inference/first_content_prompt_deadline.go` (`Owner.PromptWorkDeadlineForRequest`) binds current exact prompt counts and the caller cutoff before admission. See [first-content routing](../first-content-routing.md). |
 | `coordinator/internal/provider` | Challenge verification, session/inventory/heartbeat components, identity budget/push/coverage, MDM scheduling, trust authority, reuse cache and revocation journal. Trust adapters bind these to live provider sessions. |
 | `coordinator/internal/provider/legacymdm` | One shared immutable authenticated account/SE-key/serial eligibility policy for legacy registration, enrollment, MDM verification and trust reuse; the store owns its durable one-time freeze. |
 | `coordinator/internal/observation` | Independent route, profile and compact-outcome pipelines; queues, backpressure, flush cadence and shutdown remain pipeline-specific. |
 | `coordinator/registry` | Live fleet state, atomic admission/reservation transitions, queues and controllers. Pure detached calculations live in `registry/admission` and `registry/selection`. |
 | `coordinator/internal/registry` | Provider-write transport/lanes/watchdog, connection drain authority, immutable connection age/order, eviction grace, identity-gate directory and retained fault evidence, bounded demand windows, detached residency/capacity/forecast policies, reviewed deadline catalog/posture, Autopilot state/control/ledger, cache activation and persistence. Registry/provider critical sections remain authoritative; owned directory and identity-state locks are private to `identitygate`. |
+| `coordinator/internal/registry/cachetracker` | `Tracker.MatchBoundaries` uses bounded `cacheMatchGroups` to retain complete cache hints without materializing every equivalent holder depth. Registry adapters retain live provider and generation authority; see [cache-aware routing](../cache-aware-routing.md). |
 | `coordinator/store` | Contracts, domain records, errors, configuration, read-through decorator and capability unwrapping. |
 | `coordinator/store/memory`, `coordinator/store/postgres` | Backend owners with domain-focused operations; PostgreSQL owns its migrations. |
 | `coordinator/internal/store` | Shared record normalization, read-cache domain generations, bounded memory history, the account erasure rule table and keys (`erasure`) and focused PostgreSQL query/schema helpers; backends retain storage ownership. |
@@ -75,6 +78,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/profilesign` | CMS signing of the enrollment profile. |
 | `coordinator/billing` | Billing service, Stripe Checkout and Connect, referrals. |
 | `coordinator/payments` | Ledger and pricing. |
+| `coordinator/payments/autopilotrewards`, `coordinator/internal/payments/floorpolicy` | Closed-UTC-day reward worker and pure floor/cohort arithmetic and cohort evidence respectively. `AutopilotRewardsStore` in `coordinator/store/earnings_floor.go` owns durable consent/qualification, frozen personal or cohort baselines, canonical-session daily uptime, pool and receipt operations; no live registry or ordinary base-reward budget dependency at settlement. Shared `coordinator/internal/payments/rewardeligibility/os.go` (`OSVersionEligible`) parses authenticated OS evidence, and `coordinator/internal/payments/rewardpolicy/uptime.go` (`UptimeByProviderKey`) unions online sessions. |
 | `coordinator/ratelimit` | Per-account, financial and service-tier limiters; expected-output admission. |
 | `coordinator/modelpolicy` | Exact-model first-content deadline policy. |
 | `coordinator/mediafetch` | SSRF-guarded remote media resolution. |
@@ -138,7 +142,8 @@ failure in any step marked *fatal* exits the process before it listens.
    routing knobs read directly from the environment (release policy mode,
    TTFT admission, reject list, decode floor, servability gate, prompt
    calibration, pprof listener).
-7. **Money and identity.** Ledger and billing service, base rewards, the
+7. **Money and identity.** Ledger and billing service, independently enabled base
+   rewards and Autopilot rewards, the
    sender-encryption key from the mnemonic, admin emails, Privy, MDM client
    and verification scheduler, profile signer, APNs attestor and the
    code-attestation cache, the trust-reuse cache (*fatal* if its revocation
@@ -148,7 +153,7 @@ failure in any step marked *fatal* exits the process before it listens.
     and is not part of schema migration.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
-   anomaly detector; base-rewards settlement (when enabled); Stripe payout
+   anomaly detector; base-rewards and Autopilot-reward settlement (each only when enabled); Stripe payout
    reconciler; the account erasure scrub loop (`StartAccountErasureLoop`, which
    runs `Owner.StartLoop` in `coordinator/api/accounts/erasure/loop.go`) and
    outbox worker (`StartErasureOutboxLoop`, which runs `Owner.StartOutboxLoop`
@@ -235,6 +240,32 @@ read lease and evaluates providers under their existing locks
 snapshot/reservation/transport/store operations
 (`coordinator/registry/autopilot_control.go`, `newAutopilotControl`). These boundaries
 do not create independent admission, drain or command authority on the same session.
+
+The Autopilot adapter owns database-backed machine-cohort selection, checks the current
+verified machine/account binding when enqueueing control leases and rechecks it
+at reservation (`coordinator/registry/autopilot_activation.go`, `liveMachineLocked`;
+`coordinator/registry/autopilot_reservation.go`, `beginAutopilotReservation`).
+`coordinator/registry/autopilot_machine_policy.go` serializes desired-mode writes
+and periodic reads through runtime publication, without database IO under
+registry/provider locks. `MachineAutopilotStore` persists intent independently
+of session leases and command records. Authenticated admin adapters expose edits
+and separate desired/current-session projections, not direct provider mutation.
+The detached controller separates live and hypothetical shadow passes without
+splitting actual donor or accepted-command ownership. The [Autopilot architecture](../model-autopilot.md#machine-selected-live-control)
+defines the mode and reconnect boundaries.
+
+Saved-consent financial tracking has a separate lifetime.
+`coordinator/api/provider/session.go` retains `autopilotRewardCapture`
+(`coordinator/api/provider/autopilot_rewards.go`) in the serial authenticated
+socket reader, timestamps declarations before verification binding, and persists
+accepted saved state outside provider locks. It does not depend on controller
+enablement or the payment flag. `configureBillingAndTrust` wires
+`autopilotrewards.NewEngine` only when `AutopilotRewardsEnabled`; the background
+lifecycle runs it under the shared cancellation context. `Engine.Run` catches up
+durable enrollment cursors, not current registry availability. Backend transactions
+own canonical identity, history, erasure admission and credit atomicity; the
+[billing mechanism](../billing.md#autopilot-rewards) defines these financial
+boundaries. Funding/backfill APIs do not change live residency authority.
 
 Reservation preparation retains the scan's registry read lease in
 `PreparedReservation` (`coordinator/registry/reservation_preparation.go`). `Finish`

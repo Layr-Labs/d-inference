@@ -1,0 +1,24 @@
+{
+  "status": "pass",
+  "curatedUTC": "2026-10-04T02:42:36.133111+00:00",
+  "executedUTC": "2026-10-04T02:41:16.988382+00:00",
+  "cases": 9,
+  "skips": 0,
+  "elapsedSeconds": 0.024,
+  "exitCode": 0,
+  "scope": "real temporary required-fixture scope/env/path/hash contract controls; no downloads, build, GPU or actual model inputs",
+  "helpersUnchanged": true,
+  "sourceDigests": {
+    "run-provider-fixture-components.py": "4f715ffc220805d768b5527678c7c1703cb007b05c9f1e87bfd33d91cc248a40",
+    "provider_component_fixtures.py": "22024258d7a6f0f10e1abf73b8d8a78aade66a423c46a1d54b5f9109a1987317",
+    "test_provider_component_fixtures.py": "3e31ed4974fce4d53abf90d89efd03e8bd629f1c93b66afcb500829d4d62fe7c"
+  },
+  "logSHA256": "fe7e8863cdb403d6e05b6c6b77ebbcf3412f10e4c39a6ec5c8f5ca20fe002f81",
+  "logSHA256IndependentlyVerified": true,
+  "actualProviderSuitePassTransferred": false,
+  "limits": [
+    "Temporary required-fixture scope/env/path/hash controls only; no download, model, build or GPU execution in these controls.",
+    "A separately launched fixture-aware canonical provider invocation must qualify its own closed source/image/test and ownership evidence."
+  ],
+  "privacy": "Aggregate safe control fields only; no private paths, environment values or raw logs."
+}

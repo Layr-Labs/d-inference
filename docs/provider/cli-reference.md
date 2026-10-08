@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -301,6 +301,11 @@ deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
+With no accepted work left, a graceful drain retries native MiMo owner
+retirement until the owners retire or its deadline passes: after served
+requests, the first attempt only starts joining their finished consumers
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
+`performLifecycleDrain`).
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
@@ -613,8 +618,11 @@ target-only serving without an Autopilot download. Files stay on disk.
 A valid shadow lease produces `shadow`, explicitly not activated, with
 `active=false` and `observe_only=true`. `waiting` means no valid lease is
 acknowledged. Consent and shadow control retain ordinary loading and idle behavior.
-Only a matching live lease after an operator switches the rollout can produce
-`active`; providers have no shadow/live mode command. `paused` retains ready
+Only a matching live lease after an operator permits live rollout and selects
+the verified machine can produce `active`; providers have no shadow/live mode
+command. The coordinator-issued `Machine ID` in `darkbloom status` is the cohort
+selector, not a provider connection ID or serial. An unselected machine stays
+shadow even when other machines are live. `paused` retains ready
 models; `recovering` means an accepted transition is still settling. Policy changes
 are consumed at the next capacity poll. `models` uses the existing safe restart.
 See [architecture](../architecture/model-autopilot.md) and
@@ -750,6 +758,11 @@ Output includes:
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- `Not serving:` when the daemon is alive but a graceful drain has closed
+  admission — draining, a drain that did not finish, or a drain whose relaunch
+  never happened — with the commands that finish or interrupt it
+  (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`,
+  `Status.lifecycleDrainLine`).
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
   separated into `Startup preload pending`, `Not loaded (loads on request)`,

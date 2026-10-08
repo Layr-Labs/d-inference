@@ -1,6 +1,9 @@
 mod input;
 mod json;
 mod nemotron;
+mod prepared;
+
+pub(crate) use prepared::PreparedTemplates;
 
 pub(crate) use input::{
     validate_mimo_encoded_argument, validate_request_input_before_contract,
@@ -16,7 +19,7 @@ use std::io::{self, Write};
 use thiserror::Error;
 
 const MAX_RENDERED_BYTES: usize = 16 << 20;
-const RENDER_FUEL: u64 = 10_000_000;
+
 const SPECIAL_TOKEN_ATTRIBUTES: [&str; 8] = [
     "bos_token",
     "eos_token",
@@ -28,7 +31,7 @@ const SPECIAL_TOKEN_ATTRIBUTES: [&str; 8] = [
     "additional_special_tokens",
 ];
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum RenderError {
     #[error("prompt contract has no selectable chat template")]
     MissingTemplate,
@@ -55,6 +58,15 @@ pub fn render(
     )?;
     validate_template_source(template_source, request.prompt_date.as_deref())?;
 
+    let environment = prepared::compile_template(artifacts, template_source)?;
+    render_with_environment(&environment, artifacts, request)
+}
+
+fn render_with_environment(
+    environment: &Environment<'_>,
+    artifacts: &LoadedArtifacts,
+    request: &NormalizedRequest,
+) -> Result<String, RenderError> {
     let mut context = Map::new();
     context.insert("messages".into(), Value::Array(request.messages.clone()));
     context.insert("add_generation_prompt".into(), Value::Bool(true));
@@ -72,49 +84,29 @@ pub fn render(
         }
     }
 
-    let mut environment = Environment::new();
-    environment.set_lstrip_blocks(true);
-    environment.set_trim_blocks(true);
-    environment.set_fuel(Some(RENDER_FUEL));
-    environment.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
-    minijinja_contrib::add_to_environment(&mut environment);
-    environment.add_filter("tojson", json::tojson);
-    if artifacts
-        .model_config
-        .get("model_type")
-        .and_then(Value::as_str)
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h"))
-    {
-        environment.add_filter("string", nemotron::string);
-        environment.add_filter("tojson", nemotron::tojson);
-    }
-    environment.add_function("raise_exception", raise_exception);
+    // The callable owns only this render's date. The immutable compiled
+    // environment never captures a request body, context, prompt or clock.
     let date = request.prompt_date.clone();
-    environment.add_function(
-        "strftime_now",
-        move |format: String| -> Result<String, Error> {
-            if format != "%Y-%m-%d" {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "unsupported prompt date format",
-                ));
-            }
-            date.clone()
-                .ok_or_else(|| Error::new(ErrorKind::InvalidOperation, "missing prompt date"))
-        },
-    );
-    environment
-        .add_template("chat", template_source)
-        .map_err(|_| RenderError::Template)?;
+    let date_function = JinjaValue::from_function(move |format: String| -> Result<String, Error> {
+        if format != "%Y-%m-%d" {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "unsupported prompt date format",
+            ));
+        }
+        date.clone()
+            .ok_or_else(|| Error::new(ErrorKind::InvalidOperation, "missing prompt date"))
+    });
+    let context = context
+        .into_iter()
+        .map(|(key, value)| (JinjaValue::from(key), JinjaValue::from_serialize(value)))
+        .chain([(JinjaValue::from("strftime_now"), date_function)])
+        .collect::<JinjaValue>();
     let template = environment
         .get_template("chat")
         .map_err(|_| RenderError::Template)?;
     let mut output = BoundedWriter::new(MAX_RENDERED_BYTES);
-    render_bounded(
-        &template,
-        JinjaValue::from_serialize(Value::Object(context)),
-        &mut output,
-    )?;
+    render_bounded(&template, context, &mut output)?;
     output.into_string()
 }
 

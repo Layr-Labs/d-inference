@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -25,7 +25,7 @@ unpromoted or explicitly retired hash is not accepted. Catalog size uses the
 largest retained revision as a conservative admission bound during convergence.
 [Model revisions](model-revisions.md) defines this transition policy.
 
-Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. See [model Autopilot](model-autopilot.md).
+Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. Only the explicit verified-machine cohort can acquire live leases. Nonmembers retain ordinary routing behavior, and their hypothetical permissions or placements cannot protect live donor capacity. See [model Autopilot](model-autopilot.md#machine-selected-live-control).
 
 ## Provider lifecycle drain boundary
 
@@ -136,6 +136,17 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 
 ### Entry points
 
+Whether a request carries a prefix-cache plan is decided before the provider
+scan. `CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`,
+bound to the inference owner by `Owner.NewCachePlanner` in
+`coordinator/api/inference/cache_planner.go`) returns the Registry's planning
+result, or an empty result when one of its own prerequisites declines first, and
+records one reason from a closed vocabulary on every call, `planned` included
+(`CachePlanningDecisionReason`,
+`coordinator/internal/inference/routeplan/cache_planning_telemetry.go`). A
+request without a plan is routed exactly like any other request; see
+[cache-aware routing](cache-aware-routing.md).
+
 `ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
 dispatch-time entry point. It scans the fleet
 (`scanCandidatesLocked`), gates each provider
@@ -225,6 +236,15 @@ the [private candidate reference](../reference/qwen4-next-support.md)
 records the unqualified serving boundary.
 
 ### Eligibility gates and the `GateReason` vocabulary
+
+Autopilot reward receipt checks reuse the shared privacy and capability policy
+with authorization evaluated at the original server receive time. Live routing
+continues to evaluate current evidence and final-handoff freshness; historical
+reward checks do not grant routing permission. The shared bodies are
+`coordinator/registry/provider_eligibility_privacy.go` (`privateTextWithAppAttestLocked`)
+and `coordinator/registry/provider_capabilities.go`
+(`providerMeetsModelRequirementsWithAppAttestLocked`). See the
+[billing mechanism](billing.md#autopilot-rewards) for consent journaling.
 
 Gates run in the order below. The first failing gate names the rejection;
 `scanCandidatesLocked` tallies exactly one `GateReason` per rejected provider.
@@ -361,7 +381,7 @@ and stores every term in `costBreakdown` with `Total = cost`
 | `firstContentFastBandMs` | `100.0` | Expected-first-content band in `selectFirstContentCandidate` (`coordinator/registry/first_content_selection.go`). |
 | `defaultRequestedMaxTokens` | `256` | Used for `max_tokens` when the request does not set one. |
 | `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`effectiveDecodeTPS`). |
-| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. |
+| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when neither a slot report nor matching fresh cold-model evidence is available. |
 | `modelMemoryHeadroomFactor` | `2.0` | `modelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. |
 | `maxPrefillTPS` | `20_000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `resolvePrefillTPS`, `coordinator/registry/scheduler.go`). |
 | `defaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. |
@@ -526,7 +546,11 @@ request's avoidable prefill work with the confirmed endpoint's restore cost.
 Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[`cache-aware-routing.md`](cache-aware-routing.md). Cache planning first requires
+an acknowledged tokenizer and current exact Registry eligibility. If verified
+contracts exceed sidecar capacity, bounded authenticated demand selects the
+preloaded subset without waiting for tokenizer preload or raising that capacity;
+see [tokenizer selection](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
 
 ### Native model capacity and registry identity
 
@@ -713,7 +737,7 @@ resident it is `ColdTokenBudgetWithOffload`:
 ```text
 weightsGiB   = measured resident GiB (model in servabilityMeasuredResidentGiB) else catalogGB × coldLoadCatalogGBToMemGiB
 postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # mirrors the provider cap fraction
-tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # kvCacheBytesPerToken when unreported
+tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # reported rate, cold forecast, then fallback
 ```
 
 `coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30))` (≈ 1.1176,
@@ -740,6 +764,47 @@ The consumer path turns an unservable verdict into an immediate `429` instead
 of queueing; the coordinator binary enables this by default and
 `EIGENINFERENCE_SERVABILITY_GATE=false` disables it
 (`coordinator/app/routing.go`, `SetServabilityGate`).
+
+### Cold-model KV forecasts
+
+A cold candidate has no authoritative per-slot KV report. The coordinator can
+instead estimate its per-token cost from the maximum fresh native rate reported
+by publicly eligible providers with the same model artifact and verified
+runtime identity. It does not infer memory from model names or weight quantization,
+or average away a higher observed native rate. Missing or incompatible evidence
+retains `kvCacheBytesPerToken`.
+
+`coldKVEstimatesLocked` in `coordinator/registry/cold_kv_estimate.go` captures
+operation-local evidence through the existing model index. Model ID, weight hash,
+provider version and verified MLX metallib hash must match. Donors need a valid
+native prompt-work identity for that artifact, a healthy loaded slot and accepted
+capacity no older than `DefaultProviderHeartbeatTimeout`; `CapacityAcceptedAt`,
+not a merely received heartbeat, supplies freshness. The registry retains no
+cross-operation rate history: disconnects, model changes, trust loss and cleared
+capacity are re-evaluated on the next capture.
+
+The fleet profiler reuses one forecast table per sample and bounds donor lock
+leases separately from row projection. Its [sampling contract](system-profiler.md#tables)
+does not introduce a persistent rate cache or extra request admission work.
+
+The estimate is separate from `KVBytesPerToken` in a live slot report. It prices
+cold structural and memory checks and cold-model coordinator-pending work, but
+does not synthesize a slot maximum, override an authoritative zero budget, change
+the provider pool's reported capacity or usage, or enable byte accounting for a
+legacy pool. A reservation rechecks current evidence under the registry's locking
+contract rather than retaining a disconnected provider's rate indefinitely.
+`memorypolicy.Input.EstimatedKVBytesPerToken`
+(`coordinator/internal/registry/memorypolicy/input.go`) carries the forecast;
+`kvbudget.Budget.AddColdRate` (`coordinator/internal/registry/kvbudget/rates.go`)
+prices absent-model pending work without changing the reported pool totals.
+
+This is an empirical forecast, not a guaranteed upper bound or proof that two
+providers allocate identical caches. Backend fallback, native precision, assistant
+availability, fixed workspace and concurrent load can still make a provider
+decline a request. Full model-load quotations, activation and minimum-KV reserves,
+live shared-memory admission and actual engine byte-fit checks remain unchanged;
+the existing refusal/retry path handles forecast misses. Loaded slot reports
+replace the cold forecast rather than being widened by it.
 
 ### Gray-box capacity signals
 
@@ -1144,7 +1209,7 @@ concurrency or memory limits.
 
 ## Account-scoped first-content SLA
 
-`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build. Enforcement is selected before media and admission; a concrete native-media post-fetch recount may correct the input-token term once, anchored to the original receive time. Alias fallback and retries retain that clock. Configuration details are in [configuration.md](../reference/configuration.md).
+`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build. Enforcement is selected before media and admission. A concrete native-media post-fetch recount and an artifact/contract-bound exact text count matching the candidate provider’s advertised renderer before preflight or dispatch may correct the input-token term, anchored to the original receive time. Other candidates retain the fallback cutoff. The outer scan envelope covers both absolute clocks; each candidate’s feasibility, reservation and wire budget use its own cutoff. Earlier caller context deadlines still win. Calibrated uncertainty, stale/malformed work and provider recount do not expand the SLA duration (`Owner.PromptWorkDeadline`, `coordinator/api/inference/first_content_prompt_deadline.go`). Alias fallback and retries retain that ingress anchor; planning never receives a fresh clock. Configuration details are in [configuration.md](../reference/configuration.md).
 
 Concrete native MiMo requests replace recognized media fallback costs with
 processor-aware estimates (`coordinator/internal/inference/media/media_prompt_work.go`,

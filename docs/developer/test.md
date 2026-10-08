@@ -346,6 +346,19 @@ swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
 
 Native complete-checkpoint fixtures materialize their synthetic model/scalar parameters before either comparison arm and join donation writers before asserting reservation cleanup. Their bitwise state and continuation checks remain exact.
 
+`SSDShorterNativeBlockRestoreTests` and `SSDNativeCheckpointOracleTests` each run
+in a mandatory fresh process through `scripts/run-provider-tests.sh` and the
+nonempty/no-skip wrapper. Swift's task-local CPU selection does not change the
+native default-stream key used by MLX's per-thread compiled-function cache. A
+prior GPU trace can therefore contaminate a later CPU recomputation after an
+executor hop. These CPU tests must not share that trace history with GPU suites.
+The shorter-restore test retains its exact cold-state and suffix assertions and
+also compares the actual donor's host byte copies with authenticated SSD bytes
+and adopted state. The no-SSD controls compare the same frozen parameters on one
+thread and across sequential owned threads. Isolation changes neither serving
+policy nor numerical tolerances. `scripts/test-native-gpu-ci.py` verifies both
+gates execute once, reject failures/empty/skipped runs and preserve later gates.
+
 Owned eviction defers while an authenticated reader holds its exact-file lease and retires after the lease drains. External unlink remains an absent miss; epoch-invalidation fixtures explicitly rotate the durable epoch because ordinary per-file maintenance preserves it.
 
 The complete-checkpoint, epoch, owned-retirement and FIFO fixtures accept

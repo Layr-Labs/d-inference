@@ -1126,6 +1126,10 @@ one `<Package>PackageTests.xctest`. CI uses the native build system through
 Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Use `scripts/run-provider-tests.sh` after staging rather than replacing it with
+one unfiltered test process. Its mandatory CPU checkpoint gates own fresh MLX
+compile-cache history; the [test guide](test.md) describes their exact byte/state
+checks and process-isolation controls.
 Live complete-checkpoint tests must also call `bindRuntimeMetallibForMLX`
 before their first MLX diagnostic or model load. Colocation alone does not
 establish the runtime digest required by the cache identity. The model-prefix

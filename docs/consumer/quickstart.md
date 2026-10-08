@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -76,6 +76,8 @@ curl -N https://api.darkbloom.dev/v1/chat/completions \
 ```
 
 You receive `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. There are no keepalive comments; silence means no token has been produced yet (`handleStreamingResponseWithFirstChunkAndError`, `coordinator/internal/inference/relay/consumer_stream.go`).
+
+When parsing a `data:` field, allow the optional space after the colon. Both `data:{...}` and `data: {...}` carry JSON; see the [SSE framing contract](../reference/api-contracts.md#sse-framing).
 
 ### 6. Use the OpenAI SDK
 

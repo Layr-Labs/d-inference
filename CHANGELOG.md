@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - provider SSE data spacing
+
+- Preserve provider text when an SSE `data:` field omits the optional space after the colon. Non-streaming responses and translated Completions, Messages and Responses streams now accept both forms.
+
 ## Unreleased - Autopilot daily earnings floor
 
 - Add a separately funded daily inference-earnings floor only for machines with saved Autopilot consent. Freeze the first-ever opt-in baseline from the exact preceding 168 hours, including sponsored inference; the daily floor is 110% of that seven-day daily average, rounded down once to whole micro-USD. Closed UTC days receive their own shortfall top-up without changing ordinary base rewards.

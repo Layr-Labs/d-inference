@@ -953,6 +953,13 @@ root response marked `incomplete` because generation reached its output limit.
 
 Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/inference/relay/consumer_stream.go`), `coordinator/api/inference/response/sse_response.go`, and `coordinator/api/inference/response/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/inference/dispatch.go`.
 
+Provider JSON data fields may include or omit the single space after `data:`.
+Both forms preserve text when reconstructing non-streaming responses for all
+four inference endpoints (`ExtractMessageWithReasoningPolicy`,
+`coordinator/api/inference/response/stream_message.go`) and translating streams
+for Completions, Messages and Responses (`parseStreamChunkChoices`,
+`coordinator/api/inference/response/responses_stream.go`).
+
 1. **Deferred commit.** No status line, headers, or bytes are written until the first *content* chunk arrives from a provider (`commitFirstContent`). Until then the coordinator can still fail over to another provider or return a JSON error with a real status code (`Recorder.PreContentTerminal`, `coordinator/internal/inference/rejection/terminal.go`). Clients see a delayed 200, never a 200 that turns into an error mid-preamble.
 2. **Headers at commit**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Inference-Job-ID` (`WriteSSEResponseHeader`), plus `X-Timing` and the `X-Provider-*` headers.
 3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `NormalizeSSEChunk` (`coordinator/internal/inference/sse/sse_normalize.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).

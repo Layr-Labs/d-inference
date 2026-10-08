@@ -36,7 +36,7 @@ func ExtractMessageWithReasoningPolicy(chunks []string, preferReasoningContent b
 	acc := newToolCallAccumulator()
 
 	for _, chunk := range chunks {
-		line := strings.TrimPrefix(chunk, "data: ")
+		line := strings.TrimPrefix(chunk, "data:")
 		line = strings.TrimSpace(line)
 		if line == "" || line == "[DONE]" {
 			continue

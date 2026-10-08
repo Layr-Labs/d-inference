@@ -37,7 +37,7 @@ type streamChunkChoice struct {
 // parseStreamChunkChoices decodes the choices array from a provider SSE chunk.
 // Returns nil for non-JSON lines, [DONE], and chunks without choices.
 func parseStreamChunkChoices(chunk string) []streamChunkChoice {
-	line := strings.TrimSpace(strings.TrimPrefix(chunk, "data: "))
+	line := strings.TrimSpace(strings.TrimPrefix(chunk, "data:"))
 	if line == "" || line == "[DONE]" {
 		return nil
 	}

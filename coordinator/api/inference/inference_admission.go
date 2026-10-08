@@ -13,17 +13,33 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// Run performs the shared routing/capacity preflight for both
-// inference handlers. On a rejection it writes the exact terminal response
-// (refunding the reservation) and returns handled=true; on success it returns
-// the (possibly fallback-updated) build model and handled=false. Self-route and
-// prefer modes short-circuit the public capacity gate exactly as before.
+// Run shares preflight policy across both inference handlers.
+// Every gate's provider walk stays inside evaluation; its completed rejection
+// applies refunds, store lookups, telemetry and HTTP output only after permit
+// release. Rejection telemetry includes the model-type lookup for its tag.
 func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[string]any, p AdmissionRequest) AdmissionResult {
-	s := a.owner
 	markPublicModelDemand(r, p)
 	model := p.Model
 	armAutopilotDemand(r, p)
 	defer func() { setAutopilotDemandModel(r, model, p.requestTraitsForModel(model)) }()
+	permit := admissionScanPermit{admission: a, w: w, r: r, parsed: parsed, params: p}
+	defer permit.release()
+	outcome := a.evaluate(w, r, parsed, p, &permit)
+	model = outcome.model
+	permit.release()
+	if outcome.applyRejection != nil {
+		outcome.applyRejection()
+	}
+	return AdmissionResult{Model: outcome.model, Handled: outcome.handled}
+}
+
+// evaluate keeps provider evaluation under permit ownership.
+// A completed rejection returns its terminal effects for the caller to apply
+// after release. Failed acquisition and fallback callbacks already handle their
+// own terminal outcome while no permit is held, so they return no action.
+func (a *Admission) evaluate(w http.ResponseWriter, r *http.Request, parsed map[string]any, p AdmissionRequest, permit *admissionScanPermit) admissionOutcome {
+	s := a.owner
+	model := p.Model
 	publicModel := p.PublicModel
 	refundReservation := p.RefundReservation
 	requestTraits := func() registry.RequestTraits {
@@ -42,32 +58,33 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 		}
 		return modelTraits(currentModel)
 	}
-	rejectProviderBodyTooLarge := func(providerBodyErr error) bool {
+	providerBodyRejection := func(providerBodyErr error) func() {
 		if !errors.Is(providerBodyErr, providerwire.ErrBodyTooLarge) {
-			return false
+			return nil
 		}
-		refundReservation()
-		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "validation",
-			reasonCode:            "payload_too_large",
-			httpStatus:            http.StatusRequestEntityTooLarge,
-			keyID:                 access.KeyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(access.ConsumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                p.Stream,
-			estimatedPromptTokens: p.EstimatedPromptTokens,
-			requestedMaxTokens:    p.RequestedMaxTokens,
-			requiresVision:        p.RequiresVision,
-			hasTools:              p.HasTools,
-			requestBodyBytes:      providerwire.OversizedBodyBytes(providerBodyErr),
-			params:                rejectionSamplingParams(parsed),
-			servabilityComputed:   true,
-		})
-		httpx.WriteJSON(w, http.StatusRequestEntityTooLarge, httpx.ErrorResponse(
-			"invalid_request_error", providerBodyErr.Error(), httpx.WithCode("payload_too_large")))
-		return true
+		return func() {
+			refundReservation()
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "validation",
+				reasonCode:            "payload_too_large",
+				httpStatus:            http.StatusRequestEntityTooLarge,
+				keyID:                 access.KeyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(access.ConsumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                p.Stream,
+				estimatedPromptTokens: p.EstimatedPromptTokens,
+				requestedMaxTokens:    p.RequestedMaxTokens,
+				requiresVision:        p.RequiresVision,
+				hasTools:              p.HasTools,
+				requestBodyBytes:      providerwire.OversizedBodyBytes(providerBodyErr),
+				params:                rejectionSamplingParams(parsed),
+				servabilityComputed:   true,
+			})
+			httpx.WriteJSON(w, http.StatusRequestEntityTooLarge, httpx.ErrorResponse(
+				"invalid_request_error", providerBodyErr.Error(), httpx.WithCode("payload_too_large")))
+		}
 	}
 
 	// Gate EVERY preflight fleet walk (self-route/prefer OwnedProviderSummary,
@@ -83,11 +100,9 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 	// acquisition). On timeout: the same capacity-shaped routing_saturated 429
 	// with the distress-scaled Retry-After, zero walks. On client-gone: refund
 	// and stop silently — never the 429 path or a rejection-ledger row.
-	permit := admissionScanPermit{admission: a, w: w, r: r, parsed: parsed, params: p}
 	if !permit.acquire(model) {
-		return AdmissionResult{Model: model, Handled: true}
+		return admissionOutcome{model: model, handled: true}
 	}
-	defer permit.release()
 
 	// Self-route pre-flight: confirm the caller owns an online machine that can
 	// serve this model, with precise errors and no fallback to the paid fleet.
@@ -100,17 +115,19 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			withoutProtocolFloor.MinPrefixCacheProtocol = 0
 			_, servesWithoutFloor := s.registry.OwnedProviderSummary(
 				p.Policy.OwnerAccountID, model, withoutProtocolFloor, p.RequiresVision)
-			if servesWithFloor == 0 &&
-				servesWithoutFloor > 0 &&
-				rejectProviderBodyTooLarge(p.ProviderBodyErrorForModel(model)) {
-				return AdmissionResult{Model: model, Handled: true}
+			if servesWithFloor == 0 && servesWithoutFloor > 0 {
+				if reject := providerBodyRejection(p.ProviderBodyErrorForModel(model)); reject != nil {
+					return rejectedAdmission(model, reject)
+				}
 			}
 		}
-		if s.selfRouteUnavailable(w, r, p.Policy.OwnerAccountID, model, traits, p.RequiresVision) {
-			refundReservation()
-			return AdmissionResult{Model: model, Handled: true}
+		if reject := s.selfRouteRejection(w, r, p.Policy.OwnerAccountID, model, traits, p.RequiresVision); reject != nil {
+			return rejectedAdmission(model, func() {
+				reject()
+				refundReservation()
+			})
 		}
-		return AdmissionResult{Model: model}
+		return admissionOutcome{model: model}
 	}
 	if p.Policy.Prefer {
 		traits := modelTraits(model)
@@ -143,10 +160,10 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 				publicWithFloor > 0 || publicCapacityWithFloor > 0
 			hadProtocolZeroProvider := ownedWithoutFloor > 0 ||
 				publicWithoutFloor > 0 || publicCapacityWithoutFloor > 0
-			if !hasCompatibleProvider &&
-				hadProtocolZeroProvider &&
-				rejectProviderBodyTooLarge(p.ProviderBodyErrorForModel(model)) {
-				return AdmissionResult{Model: model, Handled: true}
+			if !hasCompatibleProvider && hadProtocolZeroProvider {
+				if reject := providerBodyRejection(p.ProviderBodyErrorForModel(model)); reject != nil {
+					return rejectedAdmission(model, reject)
+				}
 			}
 		}
 		// Prefer mode: SKIP the public fleet pre-flight. QuickCapacityCheck has
@@ -155,7 +172,7 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 		// serve it while the public fleet is busy. Dispatch does owned-first
 		// routing with a paid public fallback and the normal queue, which is the
 		// correct gate for prefer.
-		return AdmissionResult{Model: model}
+		return admissionOutcome{model: model}
 	}
 
 	// Pre-flight capacity check: can ANY provider serve this model right
@@ -177,13 +194,13 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 	}
 	forecast := forecastRequest(model)
 	if forecast == nil {
-		return AdmissionResult{Model: model, Handled: true}
+		return admissionOutcome{model: model, handled: true}
 	}
 	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(model, forecast)
 	if candidateCount == 0 && capacityRejections > 0 {
 		fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.EstimatedPromptTokens, p.RequestedMaxTokens, 0, fallbackTraits(model), p.RequiresVision, p.AllowedProviderSerials, forecastRequest)
 		if !permit.held {
-			return AdmissionResult{Model: model, Handled: true}
+			return admissionOutcome{model: model, handled: true}
 		}
 		if switched {
 			model = fallbackModel
@@ -192,7 +209,7 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			if p.OnModelFallback != nil {
 				permit.release()
 				if !p.OnModelFallback(model) || !permit.acquire(model) {
-					return AdmissionResult{Model: model, Handled: true}
+					return admissionOutcome{model: model, handled: true}
 				}
 			}
 		}
@@ -203,42 +220,43 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 	// capacity fallback so an alias whose Previous build still has capacity
 	// fails over first; an unservable request is then rejected with an
 	// uptime-neutral 429 (OpenRouter fails over) instead of admit→5xx.
-	if s.shedIfUnservable(
+	if reject := s.shedIfUnservable(
 		w, r, parsed, publicModel, model, p.ModelMaxContext, p.Stream,
 		p.EstimatedPromptTokens, p.RequestedMaxTokens, p.RequiresVision,
 		requestTraits(), p.AllowedProviderSerials, refundReservation,
-	) {
-		return AdmissionResult{Model: model, Handled: true}
+	); reject != nil {
+		return rejectedAdmission(model, reject)
 	}
 	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
 		// Providers serve this model but none can ever fit it — non-retryable.
 		// Surface a clear 503 instead of a 429 the client would retry forever.
-		refundReservation()
-		s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
-		s.recordRejection(rejectionInfo{
-			r:                       r,
-			stage:                   "preflight_capacity",
-			reasonCode:              "model_too_large",
-			httpStatus:              http.StatusServiceUnavailable,
-			keyID:                   access.KeyIDFromContext(r.Context()),
-			consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
-			requestedModel:          publicModel,
-			resolvedModel:           model,
-			stream:                  p.Stream,
-			estimatedPromptTokens:   p.EstimatedPromptTokens,
-			requestedMaxTokens:      p.RequestedMaxTokens,
-			requiresVision:          p.RequiresVision,
-			hasTools:                p.HasTools,
-			params:                  rejectionSamplingParams(parsed),
-			servabilityComputed:     true,
-			candidateCount:          candidateCount,
-			capacityRejections:      capacityRejections,
-			modelTooLargeRejections: modelTooLarge,
-			bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+		return rejectedAdmission(model, func() {
+			refundReservation()
+			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
+			s.recordRejection(rejectionInfo{
+				r:                       r,
+				stage:                   "preflight_capacity",
+				reasonCode:              "model_too_large",
+				httpStatus:              http.StatusServiceUnavailable,
+				keyID:                   access.KeyIDFromContext(r.Context()),
+				consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
+				requestedModel:          publicModel,
+				resolvedModel:           model,
+				stream:                  p.Stream,
+				estimatedPromptTokens:   p.EstimatedPromptTokens,
+				requestedMaxTokens:      p.RequestedMaxTokens,
+				requiresVision:          p.RequiresVision,
+				hasTools:                p.HasTools,
+				params:                  rejectionSamplingParams(parsed),
+				servabilityComputed:     true,
+				candidateCount:          candidateCount,
+				capacityRejections:      capacityRejections,
+				modelTooLargeRejections: modelTooLarge,
+				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			})
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("model_unavailable",
+				fmt.Sprintf("model %q is too large for any currently available provider", publicModel), httpx.WithCode("model_unavailable")))
 		})
-		httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("model_unavailable",
-			fmt.Sprintf("model %q is too large for any currently available provider", publicModel), httpx.WithCode("model_unavailable")))
-		return AdmissionResult{Model: model, Handled: true}
 	}
 	var providerBodyErr error
 	if p.ProviderBodyErrorForModel != nil {
@@ -263,8 +281,8 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 		candidateCount == 0 &&
 		capacityRejections == 0 &&
 		modelTooLarge == 0 {
-		if rejectProviderBodyTooLarge(providerBodyErr) {
-			return AdmissionResult{Model: model, Handled: true}
+		if reject := providerBodyRejection(providerBodyErr); reject != nil {
+			return rejectedAdmission(model, reject)
 		}
 	}
 	if candidateCount == 0 && capacityRejections > 0 {
@@ -291,35 +309,36 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 		} else {
 			// Fast-shed: immediate 429 when queue-before-shed is disabled.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "machine_busy",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   access.KeyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.Stream,
-				estimatedPromptTokens:   p.EstimatedPromptTokens,
-				requestedMaxTokens:      p.RequestedMaxTokens,
-				requiresVision:          p.RequiresVision,
-				hasTools:                p.HasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			return rejectedAdmission(model, func() {
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   access.KeyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  p.Stream,
+					estimatedPromptTokens:   p.EstimatedPromptTokens,
+					requestedMaxTokens:      p.RequestedMaxTokens,
+					requiresVision:          p.RequiresVision,
+					hasTools:                p.HasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter), httpx.WithCode("rate_limit_exceeded")))
 			})
-			httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorResponse("rate_limit_exceeded",
-				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter), httpx.WithCode("rate_limit_exceeded")))
-			return AdmissionResult{Model: model, Handled: true}
 		}
 	}
 	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
@@ -354,35 +373,36 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			// so shed to OpenRouter as a 429 + Retry-After (clean failover)
 			// rather than a 503 (which can get the endpoint marked unhealthy /
 			// deranked). Mirrors the capacity_429 path above.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "machine_busy",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   access.KeyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.Stream,
-				estimatedPromptTokens:   p.EstimatedPromptTokens,
-				requestedMaxTokens:      p.RequestedMaxTokens,
-				requiresVision:          p.RequiresVision,
-				hasTools:                p.HasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			return rejectedAdmission(model, func() {
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "machine_busy",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   access.KeyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  p.Stream,
+					estimatedPromptTokens:   p.EstimatedPromptTokens,
+					requestedMaxTokens:      p.RequestedMaxTokens,
+					requiresVision:          p.RequiresVision,
+					hasTools:                p.HasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorResponse("rate_limit_exceeded",
+					fmt.Sprintf("no provider dedicated to model %q is available right now — retry after %ds", publicModel, retryAfter), httpx.WithCode("rate_limit_exceeded")))
 			})
-			httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorResponse("rate_limit_exceeded",
-				fmt.Sprintf("no provider dedicated to model %q is available right now — retry after %ds", publicModel, retryAfter), httpx.WithCode("rate_limit_exceeded")))
-			return AdmissionResult{Model: model, Handled: true}
 		} else {
 			// The catalog still sells this model, but no provider is eligible
 			// right now: the fleet may be reconnecting after a coordinator
@@ -392,35 +412,36 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			// counting the event as a provider outage. A 503 here caused the
 			// post-deploy OpenRouter uptime collapse while the in-memory
 			// provider registry repopulated.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "no_provider",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   access.KeyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.Stream,
-				estimatedPromptTokens:   p.EstimatedPromptTokens,
-				requestedMaxTokens:      p.RequestedMaxTokens,
-				requiresVision:          p.RequiresVision,
-				hasTools:                p.HasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			return rejectedAdmission(model, func() {
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				refundReservation()
+				s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "preflight_capacity",
+					reasonCode:              "no_provider",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   access.KeyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  p.Stream,
+					estimatedPromptTokens:   p.EstimatedPromptTokens,
+					requestedMaxTokens:      p.RequestedMaxTokens,
+					requiresVision:          p.RequiresVision,
+					hasTools:                p.HasTools,
+					retryAfterMs:            retryAfter * 1000,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				})
+				httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorResponse("rate_limit_exceeded",
+					fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter), httpx.WithCode("rate_limit_exceeded")))
 			})
-			httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorResponse("rate_limit_exceeded",
-				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter), httpx.WithCode("rate_limit_exceeded")))
-			return AdmissionResult{Model: model, Handled: true}
 		}
 	}
 	ttftThreshold := p.remainingFirstContentBudget()
@@ -444,43 +465,44 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			if p.OnModelFallback != nil {
 				permit.release()
 				if !p.OnModelFallback(model) {
-					return AdmissionResult{Model: model, Handled: true}
+					return admissionOutcome{model: model, handled: true}
 				}
 			}
 		} else {
 			if !permit.held {
-				return AdmissionResult{Model: model, Handled: true}
+				return admissionOutcome{model: model, handled: true}
 			}
 			// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
 			// and feed the autoscaler a TTFT-miss so warm capacity grows.
 			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
 			s.triggerWarmPool()
 			retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
-			refundReservation()
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "routing_ttft",
-				reasonCode:              "ttft_too_slow",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   access.KeyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.Stream,
-				estimatedPromptTokens:   p.EstimatedPromptTokens,
-				requestedMaxTokens:      p.RequestedMaxTokens,
-				requiresVision:          p.RequiresVision,
-				hasTools:                p.HasTools,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+			return rejectedAdmission(model, func() {
+				refundReservation()
+				s.recordRejection(rejectionInfo{
+					r:                       r,
+					stage:                   "routing_ttft",
+					reasonCode:              "ttft_too_slow",
+					httpStatus:              http.StatusTooManyRequests,
+					keyID:                   access.KeyIDFromContext(r.Context()),
+					consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
+					requestedModel:          publicModel,
+					resolvedModel:           model,
+					stream:                  p.Stream,
+					estimatedPromptTokens:   p.EstimatedPromptTokens,
+					requestedMaxTokens:      p.RequestedMaxTokens,
+					requiresVision:          p.RequiresVision,
+					hasTools:                p.HasTools,
+					params:                  rejectionSamplingParams(parsed),
+					servabilityComputed:     true,
+					candidateCount:          candidateCount,
+					capacityRejections:      capacityRejections,
+					modelTooLargeRejections: modelTooLarge,
+					bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+				})
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 			})
-			s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
-			return AdmissionResult{Model: model, Handled: true}
 		}
 	}
-	return AdmissionResult{Model: model}
+	return admissionOutcome{model: model}
 }

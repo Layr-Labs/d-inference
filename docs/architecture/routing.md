@@ -27,6 +27,34 @@ largest retained revision as a conservative admission bound during convergence.
 
 Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. Only the explicit verified-machine cohort can acquire live leases. Nonmembers retain ordinary routing behavior, and their hypothetical permissions or placements cannot protect live donor capacity. See [model Autopilot](model-autopilot.md#machine-selected-live-control).
 
+## Preflight scan permit lifetime
+
+Both inference handlers share `Admission.Run` in
+`coordinator/api/inference/inference_admission.go`. It owns one
+`admissionScanPermit` while `Admission.evaluate` in the same file evaluates
+public capacity, owner/prefer eligibility, alias fallback, body compatibility,
+servability and cold spill.
+A completed rejection returns its terminal action (`admissionOutcome` in
+`coordinator/api/inference/inference_admission_outcome.go`); the wrapper
+releases its permit before applying refunds, self-route store lookups,
+rejection recording or HTTP output. Successful admission releases the permit
+without a refund.
+Slow terminal dependencies therefore do not retain completed scan capacity.
+
+External prompt planning and fallback body rebuilding also release the permit,
+then reacquire it against the original remaining request budget before any
+further provider walk. Acquisition failure or an already handled fallback keeps
+its existing single response/refund; the wrapper does not apply it again.
+Saturation still skips the counterfactual walk. Client cancellation while
+acquiring a scan permit writes no rejection, and retained dispatch plans retain
+their existing gate bypass.
+`selfRouteUnavailable` in `coordinator/api/inference/self_route.go` preserves its
+immediate response contract for the media-resolution caller
+(`Availability.Unavailable` in
+`coordinator/internal/inference/routeplan/self_route_availability.go`);
+preflight instead applies its evaluated rejection (`Availability.Rejection`)
+after releasing the permit.
+
 ## Provider lifecycle drain boundary
 
 `provider_drain` fences a live connection until disconnect or an explicit,

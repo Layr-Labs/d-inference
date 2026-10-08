@@ -272,6 +272,10 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 
 - Add a standalone static status-page placeholder: "The status page will return in the future." Publishing it requires a separate hosting change; the existing Instatus content is preserved.
 
+## Unreleased — preflight routing permits
+
+- Release shared routing scan capacity once rejection evaluation finishes, before refunds, self-route store lookups and response writes. Preserve admission gates, rejection responses and billing behavior.
+
 ## Unreleased - provider availability wizard
 
 - Add `darkbloom start --schedule` for optional interactive background setup and `darkbloom schedule` for editing saved settings without starting or stopping the provider. Support saved windows, overnight/weekend presets, custom add/edit/remove, inspection, disabling and custom config paths.

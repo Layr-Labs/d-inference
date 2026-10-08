@@ -37,3 +37,7 @@ func (s *Owner) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 func (s *Owner) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, owner, model string, traits registry.RequestTraits, vision bool) bool {
 	return (inroute.Availability{Registry: s.registry, Store: s.store}).Unavailable(w, r, owner, model, traits, vision)
 }
+
+func (s *Owner) selfRouteRejection(w http.ResponseWriter, r *http.Request, owner, model string, traits registry.RequestTraits, vision bool) func() {
+	return (inroute.Availability{Registry: s.registry, Store: s.store}).Rejection(w, r, owner, model, traits, vision)
+}

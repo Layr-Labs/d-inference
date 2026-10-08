@@ -229,11 +229,12 @@ constants.
 
 For ordinary PRs, follow the
 [changelog contribution guidance](CONTRIBUTING.md#changelog-entries-with-less-merge-contention):
-keep user-visible changes in a small topic-specific `Unreleased` section,
-update it in place, and preserve other PRs' entries when resolving conflicts.
-Do not assign a release version, rewrite unrelated sections or claim shipment
-without an explicitly requested release operation. Topic-local edits reduce
-contention but cannot prevent same-location insertion conflicts.
+put user-visible changes in one uniquely named `changelog.d/<topic>.md` fragment
+and update it in place. Do not edit or regenerate `CHANGELOG.md` in ordinary
+PRs. Run `make changelog-check`; release preparation alone renders selected
+fragments into the root history. Preserve other PRs' fragments and verify tag
+inclusion before assigning a version. Never claim publication or activation
+from a source merge or version bump.
 
 ## Deploying
 

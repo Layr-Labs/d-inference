@@ -21,6 +21,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate changelog fragments
+        run: |
+          python3 scripts/test-changelog.py
+          make changelog-check
       - name: Check source, fallback, and installer parity
         run: |
           python3 scripts/check-go-toolchain.py

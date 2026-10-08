@@ -48,8 +48,6 @@ func (s *ModelLoadPreparation) warmLocked(p *Provider, model string, now time.Ti
 	if providerDrainingLocked(p, now) || !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
 		return false
 	}
-	// A warm mixed-catalog box cannot cover demand for a dedicated-family model:
-	// routing will not send it requests, so it must not suppress load planning.
 	if !r.providerServesRoutableModelLocked(p, model, false) {
 		return false
 	}
@@ -75,7 +73,7 @@ func (s *ModelLoadPreparation) warmLocked(p *Provider, model string, now time.Ti
 
 // coldCandidateLocked requires the planning lease and p.mu. Keep the gates in
 // this order: the first failure determines the reported disqualification reason.
-// In particular, folding liveness/catalog/dedication into the routing helpers
+// In particular, folding liveness/catalog into the routing helpers
 // would lose the distinct warm-pool reason buckets and interleaved load gates.
 func (s *ModelLoadPreparation) coldCandidateLocked(p *Provider, model string, now time.Time) (warmplan.Candidate, warmplan.ColdReason) {
 	r := s.registry
@@ -108,11 +106,6 @@ func (s *ModelLoadPreparation) coldCandidateLocked(p *Provider, model string, no
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {
 		return warmplan.Candidate{}, warmplan.WarmColdNotServing
-	}
-	// Do not pre-warm a dedicated-family model onto a mixed-catalog box:
-	// routing will never use it, and it would falsely cover demand.
-	if r.providerExcludedByDedicatedRuleLocked(p, model) {
-		return warmplan.Candidate{}, warmplan.WarmColdDedicated
 	}
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
 	gpuActiveGB := 0.0

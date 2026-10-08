@@ -173,7 +173,7 @@ func TestSoloSeedIsChipClassScoped(t *testing.T) {
 // shipped, and the chip-class-scoped CSV now in prod.env — and every class
 // other than M4|Max must come out no more permissive than either baseline.
 // Note the pre-seed cap is the provider's REPORTED 8, not a proxy-derived
-// number: with no registration benchmark and a non-dedicated model,
+// number: with no registration benchmark or model-specific evidence,
 // effectiveMaxConcurrencyForModelRateLocked refuses to cap from the
 // model-agnostic sqrt-bandwidth rate at all and returns base.
 func TestSoloSeedNoMorePermissiveOnSlowerClasses(t *testing.T) {

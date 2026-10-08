@@ -292,15 +292,6 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 		// it. The dispatch/queue path still returns a 429 when the queue is
 		// full or the wait times out (true saturation). The reservation is
 		// kept for dispatch.
-		// Dedicated-family models (e.g. Gemma 4) queue like every other model.
-		// They used to fast-429 here (f28e89a9: a TTFT-SLA caution against
-		// waiting on a dedicated slot), but the wait is bounded by the queue's
-		// maxWait and drains fire fleet-wide on every request completion and
-		// heartbeat — across a large dedicated pool a slot frees within
-		// seconds, while each fast 429 was an uptime-visible shed to
-		// OpenRouter. The drain path (ReserveProviderEx) still applies the
-		// dedicated-box routing gate, so a queued request only ever lands on a
-		// dedicated provider.
 		if s.queueBeforeShedEnabled() {
 			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 		} else {
@@ -360,43 +351,6 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, modelTraits(model), p.RequiresVision, p.AllowedProviderSerials) {
 			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 			// Fall through to dispatch+queue; reservation kept.
-		} else if s.registry.IsDedicatedModel(model) && s.registry.HasProviderForModel(model, p.AllowedProviderSerials...) {
-			// Dedicated-box model (e.g. Gemma 4): the fleet DOES serve this
-			// model, but no provider DEDICATED to it can take the request right
-			// now — either none are dedicated, or the dedicated ones are busy/
-			// cooling. That is transient capacity pressure, not an absent model,
-			// so shed to OpenRouter as a 429 + Retry-After (clean failover)
-			// rather than a 503 (which can get the endpoint marked unhealthy /
-			// deranked). Mirrors the capacity_429 path above.
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.observation.Incr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
-			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "machine_busy",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   access.KeyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.Stream,
-				estimatedPromptTokens:   p.EstimatedPromptTokens,
-				requestedMaxTokens:      p.RequestedMaxTokens,
-				requiresVision:          p.RequiresVision,
-				hasTools:                p.HasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
-			})
-			httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorResponse("rate_limit_exceeded",
-				fmt.Sprintf("no provider dedicated to model %q is available right now — retry after %ds", publicModel, retryAfter), httpx.WithCode("rate_limit_exceeded")))
-			return AdmissionResult{Model: model, Handled: true}
 		} else {
 			// The catalog still sells this model, but no provider is eligible
 			// right now: the fleet may be reconnecting after a coordinator

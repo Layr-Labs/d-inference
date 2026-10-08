@@ -163,7 +163,7 @@ func TestAutopilotInventoryOnlyDeclaredSelectedSuccessorBecomesOrdinary(t *testi
 	}
 }
 
-func TestAutopilotShadowProjectsDedicatedPermissionAfterActivation(t *testing.T) {
+func TestAutopilotShadowProjectsMixedInventoryAfterActivation(t *testing.T) {
 	var planner *production.ReservationPlanner
 	r, c, now := newAutopilotControllerTest(t, true, func(deps *production.Dependencies) {
 		deps.Reservations = func(actual *production.ReservationPlanner) production.ReservationPreparation {
@@ -171,26 +171,25 @@ func TestAutopilotShadowProjectsDedicatedPermissionAfterActivation(t *testing.T)
 			return actual
 		}
 	})
-	p := autopilotControllerProvider(t, r, "dedicated", now, autopilotTestDonor)
-	r.SetDedicatedModels([]string{autopilotTestDonor})
+	p := autopilotControllerProvider(t, r, "mixed", now, autopilotTestDonor)
 	p.Mu().Lock()
 	p.Models[0].WeightHash = "cached"
 	r.states[p.ID].RegisterInventory(p.Models[1:], []protocol.ModelInfo{p.Models[0]}, p.ModelAutopilot)
 	p.Mu().Unlock()
-	// The user's current single-model serving set remains dedicated and useful.
+	// Projection must retain the selected donor while allowing the cached target.
 	eligibility := planner.PrepareEligibility()
 	routes, _ := eligibility.Routing(p.ID, autopilotTestDonor, production.RequestTraits{}, false, now, false, false)
-	projects := eligibility.AutopilotGates(p.ID, p.Models[1], production.RequestTraits{}, now)
+	projectsDonor := eligibility.AutopilotGates(p.ID, p.Models[1], production.RequestTraits{}, now)
+	projectsTarget := eligibility.AutopilotGates(p.ID, p.Models[0], production.RequestTraits{}, now)
+	servesTarget := eligibility.ServesCatalog(p.ID, autopilotTestTarget)
 	eligibility.Close()
-	if !routes {
-		t.Fatal("shadow inventory destroyed the normal dedicated serving set")
+	if !routes || !projectsDonor || !projectsTarget {
+		t.Fatalf("mixed-inventory projection lost eligibility: donor routes=%v projected donor=%v target=%v", routes, projectsDonor, projectsTarget)
 	}
-	// But a full live grant would make that permission set mixed. Do not claim
-	// the donor survives such an activation in a hypothetical plan.
-	if projects {
-		t.Fatal("shadow promised dedicated capacity that live permission would fence")
+	if servesTarget {
+		t.Fatal("projected cached target acquired ordinary serving permission")
 	}
-	if autopilotcontrol.Plan(c.Fleet(now), r.cfg, now) != nil {
-		t.Fatal("a plan ignored the dedicated resident lost on activation")
+	if action := autopilotcontrol.Plan(c.Fleet(now), r.cfg, now); action == nil || action.Load != autopilotTestTarget || len(action.Unload) != 0 {
+		t.Fatalf("mixed inventory should plan a target load without evicting its donor: %+v", action)
 	}
 }

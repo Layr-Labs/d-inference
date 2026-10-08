@@ -45,7 +45,10 @@ runbook neither funds rewards nor repairs historical first-opt-in evidence.
    `shadow` (not activated) after a valid shadow lease. `waiting` means consent
    exists but no valid coordinator lease is acknowledged. In shadow, ordinary
    startup loading, cold loading and the configured idle policy remain in force.
-   Cached inventory and hypothetical proposals are not proof of ready capacity.
+    Cached inventory and hypothetical proposals are not proof of ready capacity.
+    Mixed-model inventory alone does not disqualify a candidate. Check the actual
+    catalog, authorization, memory and capacity reasons rather than expecting a
+    model-family isolation gate.
    Confirm the normal startup selection is unchanged: a Gemma-only selection
    must not cold-load another cached model in `waiting` or `shadow`. The separate
    `autopilot_inventory` may list additional candidates. Older coordinators keep

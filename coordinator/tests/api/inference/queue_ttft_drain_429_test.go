@@ -17,7 +17,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func TestDedicatedRequestRejectsUnforecastableCapacityWait(t *testing.T) {
+func TestMixedModelRequestRejectsUnforecastableCapacityWait(t *testing.T) {
 	t.Setenv(envQueueBeforeShed, "true")
 	t.Setenv(envColdDispatch, "false")
 	t.Setenv("EIGENINFERENCE_SERVABILITY_GATE", "false")
@@ -31,7 +31,6 @@ func TestDedicatedRequestRejectsUnforecastableCapacityWait(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	reg.SetDedicatedModels([]string{"gemma-4"})
 	const queueMaxWait = 10 * time.Second
 	reg.SetQueue(registry.NewRequestQueue(5, queueMaxWait))
 
@@ -41,12 +40,13 @@ func TestDedicatedRequestRejectsUnforecastableCapacityWait(t *testing.T) {
 	gemma := "gemma-4-26b-test"
 	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
 		{ID: gemma, ModelType: "chat", Quantization: "4bit"},
+		{ID: "qwen-3-test", ModelType: "chat", Quantization: "4bit"},
 	}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
 
-	// Phase 1: saturated token budget — the preflight capacity-spills and the
-	// dispatch path queues the request.
+	// A saturated mixed-model provider has no known release forecast. The
+	// public first-content budget must reject rather than wait for maxWait.
 	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{{

@@ -28,7 +28,6 @@ func startupEnv(port string) map[string]string {
 		"EIGENINFERENCE_ADMIN_KEY":                    "startup-test-admin-key",
 		"EIGENINFERENCE_ADMIN_EMAILS":                 "admin@example.test",
 		"EIGENINFERENCE_DRAIN_GRACE":                  "1s",
-		"EIGENINFERENCE_DEDICATED_MODELS":             "none",
 		"EIGENINFERENCE_RELEASE_POLICY_MODE":          "enforce",
 		"EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE": "5m",
 		"EIGENINFERENCE_BINARYHASH_ENFORCE":           "true",

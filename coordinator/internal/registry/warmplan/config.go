@@ -19,7 +19,6 @@ type Config struct {
 	SpeculativeStartThreshold int
 	SpeculativeWinThreshold   int
 	ColdDispatchThreshold     int
-	LoadDurationThreshold     time.Duration
 
 	// Little's Law target inputs (see warm_pool_target.go).
 	//
@@ -105,7 +104,7 @@ func (c Config) Check() error {
 	if c.Interval <= 0 {
 		return fmt.Errorf("registry: warm pool interval must be > 0")
 	}
-	if c.MinDwell < 0 || c.QueueAgeThreshold < 0 || c.LoadDurationThreshold < 0 {
+	if c.MinDwell < 0 || c.QueueAgeThreshold < 0 {
 		return fmt.Errorf("registry: warm pool durations must be >= 0")
 	}
 	if c.WarmSaturationThreshold < 0 || c.WarmSaturationThreshold > 1 {

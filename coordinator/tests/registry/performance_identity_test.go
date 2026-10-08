@@ -44,7 +44,7 @@ func TestQualifiedPerformanceProfileExactIdentityAndCap(t *testing.T) {
 	}
 	cap := func() int {
 		base := quality.ConcurrencyLimit(identity.Capacity, identity.Hardware, "model", 1)
-		return policy.Cap("model", base, quality.Rate{TPS: 35, PerModel: true}, false, false, .39, catalog.Qualified(identity, "model"))
+		return policy.Cap("model", base, quality.Rate{TPS: 35, PerModel: true}, false, .39, catalog.Qualified(identity, "model"))
 	}
 	if got := cap(); got != 16 {
 		t.Fatalf("qualified curve replaced by legacy M4 model: got %d", got)

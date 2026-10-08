@@ -13,11 +13,11 @@ import (
 // clears a threshold derived from (floor, k, overcommit) — and the CBv2
 // measured gemma-4 solo rate clears the N=8 threshold with room to spare.
 //
-// Raising engine_v2_max_concurrent alone does NOT buy coordinator-visible
-// concurrency: the provider-reported number is only the `base` operand of a MIN
-// against the quality cap, so the solo rate the coordinator RESOLVES for the
-// model is what decides whether the bump is real. That is why prod needs a
-// gemma-4 entry in EIGENINFERENCE_MODEL_SOLO_TPS_SEED (see
+// With benchmark or model-specific evidence, raising engine_v2_max_concurrent
+// alone does NOT buy coordinator-visible concurrency: the provider-reported
+// number is only the `base` operand of a MIN against the quality cap, so the
+// resolved solo rate decides whether the bump is real. A model seed enforces
+// this relationship before measurements arrive (see
 // TestQualityCapEightRequiresSoloRateNotOvercommit).
 func TestQualityCapReachesProviderReportedConcurrency(t *testing.T) {
 	const floor = 15.0
@@ -70,12 +70,10 @@ func TestQualityCapReachesProviderReportedConcurrency(t *testing.T) {
 // TestQualityCapEightRequiresSoloRateNotOvercommit is the config question the
 // v0.8.0 rollout actually has to answer, pinned as behavior.
 //
-// In production the Swift provider never sends decode_tps, so without a solo
-// source the cap is computed from resolvedDecodeTPS's sqrt(memory_bandwidth)
-// proxy — 16-28 tok/s across Apple silicon, a MODEL-AGNOSTIC number that has
-// nothing to do with gemma-4 and lands at or under the floor. Whether that
-// arrives as the proxy or as a low seed, the answer is the same: a provider
-// reporting 8 is capped at 2, at any measured k.
+// A low per-model seed is evidence that tightens the cap even when a mixed
+// provider reports a fast registration benchmark. At 14 tok/s, a provider
+// reporting 8 is capped at 2, at any measured k. A hardware-only proxy does not
+// qualify as that evidence and leaves the reported limit unchanged.
 //
 // EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL can force it to 8 —
 // the plumbing works, config-only — but only above a multiplier of 7, which is
@@ -85,8 +83,7 @@ func TestQualityCapReachesProviderReportedConcurrency(t *testing.T) {
 // quality merit at the default 1.2 and keeps the bar intact.
 func TestQualityCapEightRequiresSoloRateNotOvercommit(t *testing.T) {
 	const floor = 15.0
-	// starvedSoloTPS stands in for what prod resolves today: the sqrt(546) ≈ 23
-	// M4 Max bandwidth proxy, or an equally low seed. Both cap at 2.
+	// starvedSoloTPS is a stale per-model seed that caps the provider at 2.
 	const starvedSoloTPS = 14.0
 	// prodSeedTPS is the value EIGENINFERENCE_MODEL_SOLO_TPS_SEED should carry.
 	// It is deliberately well under the engine's measured 99.5 tok/s solo rate

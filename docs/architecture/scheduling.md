@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -599,7 +599,6 @@ and which cold providers to load. Configuration is read once in `ReadConfig`
 | `SpeculativeStartThreshold` | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` |
 | `SpeculativeWinThreshold` | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` |
 | `ColdDispatchThreshold` | `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` |
-| `LoadDurationThreshold` | `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` |
 | `DecodeFloorTPS` | `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` |
 | `BurstBuffer` | `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` |
 | `FallbackQualityConcurrency` | `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` |
@@ -630,7 +629,7 @@ after ten minutes without new work the assumed shapes remain the fallback.
 First snapshots, resets, stale sequence numbers, reconnects and reporting gaps
 longer than `firstContentPerformanceFreshness = 2 * time.Minute` supply no new
 work. Only providers and models eligible for public routing contribute measured
-work; private-only, untrusted, off-catalog and dedicated-pool-excluded reports
+work; private-only, untrusted and off-catalog reports
 clear their baselines. Trust or model eligibility loss also invalidates baselines
 between heartbeats, so the first recovered report cannot replay excluded work.
 Partial output and prompt computation before later cancellation count as
@@ -677,7 +676,9 @@ and legacy quality concurrency.
 `WarmPoolArrivalEWMAAlpha = 0.3` (`coordinator/internal/registry/warmplan/warm_pool_state.go`).
 `Controller.TargetWarm` (`coordinator/internal/registry/warmplan/planner.go`) then applies anti-flap and floors: a target lower than the last
 one is held for `MinDwell`, and `MinWarmByModel` raises the target (both
-capped at `warm + eligibleCold`).
+capped at `warm + eligibleCold`). Model-family names do not force a whole-pool
+target. Load duration remains an observed EWMA, not a thresholded pressure signal
+(`State.RecordLoad`, `coordinator/internal/registry/warmplan/warm_pool_state.go`).
 
 **Ramp.** The gap between target and warm is closed at
 `warmplan.RampLoadsThisTick(gap, MaxLoadsPerTick, MaxLoadsPerTickCeiling,
@@ -687,7 +688,7 @@ to `MaxGlobalPendingLoads` outstanding loads fleet-wide. Cold candidates are
 ranked by `warmPoolCandidateReasonLocked`; those disqualified are tallied by
 reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `thermal_critical`, `trust_or_runtime`, `stale_challenge`,
-`not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
+`not_serving_catalog`, `model_too_large`,
 `no_free_for_load`, `state_restoring`, `placement_dwell`).
 
 The active controller owns model-load planning; `TriggerModelSwaps` coalesces

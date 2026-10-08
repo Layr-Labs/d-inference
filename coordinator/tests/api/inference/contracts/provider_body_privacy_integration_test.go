@@ -197,10 +197,9 @@ func TestProviderBodyPrivacyQueuedEncrypted(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
 				const model = "privacy-queued"
-				reg.SetDedicatedModels([]string{model})
 				fp := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 					Name: "privacy-queue-provider", Version: "0.8.10", DecodeTPS: 100,
-					Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
+					Models: []failoverModelSpec{{ID: model}, {ID: "privacy-other"}}, Script: fullServeScript(model),
 				})
 				setPrefixCacheProtocol(t, reg, fp, 0)
 				p := reg.GetProvider(fp.registryID)

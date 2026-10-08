@@ -14,7 +14,7 @@ import "time"
 //
 // (plus modelLoadCandidatePendingLocked, the load planner). They share two
 // exactly-identical sub-pipelines — the liveness/trust/privacy core and the
-// catalog+dedicated model gate — extracted here so the shared decision cannot
+// catalog model gate — extracted here so the shared decision cannot
 // drift. The function-specific gates (dispatch / inference-error cooldowns, the
 // node-health breaker, trait eligibility, slot-state, hardware-fit, the
 // warm-loaded check, and the warm pool's idle/thermal/free-for-load gates) stay
@@ -93,40 +93,31 @@ func providerStateRestoreRequiredLocked(p *Provider) bool {
 }
 
 // providerServesRoutableModelLocked reports whether the provider advertises a
-// catalog-allowed build of model AND is not excluded from it by the
-// dedicated-box isolation rule. allowDedicated exempts the dedicated rule — the
-// owner self-route context, where an owner may run a mixed box. That owner
-// context also permits off-catalog models (still requiring an exact provider
-// advertisement), but it does NOT lift the weight-hash gate on models the
-// catalog tracks: the exemption widens WHICH models an owner may route to,
-// not the tamper tripwire on catalog builds. Shared by the dispatch gate,
-// alias routability, warm detection, and the load planner so the catalog +
-// dedicated decision cannot drift across them. Caller holds r.mu and p.mu.
-func (r *Registry) providerServesRoutableModelLocked(p *Provider, model string, allowDedicated bool) bool {
-	ok, _ := r.providerServesRoutableModelReasonLocked(p, model, allowDedicated)
+// catalog-allowed build of model. selfRouteOwner also permits off-catalog models
+// (still requiring an exact provider advertisement), but does not lift the
+// weight-hash gate on models the catalog tracks. Shared by dispatch, alias
+// routability, warm detection, and the load planner so catalog decisions cannot
+// drift across them. Caller holds r.mu and p.mu.
+func (r *Registry) providerServesRoutableModelLocked(p *Provider, model string, selfRouteOwner bool) bool {
+	ok, _ := r.providerServesRoutableModelReasonLocked(p, model, selfRouteOwner)
 	return ok
 }
 
 // providerServesRoutableModelReasonLocked is providerServesRoutableModelLocked
-// returning the failing gate (GateNotServingModel or GateDedicated; meaningful
-// only when ok is false). Caller holds r.mu and p.mu.
-func (r *Registry) providerServesRoutableModelReasonLocked(p *Provider, model string, allowDedicated bool) (bool, GateReason) {
-	return (&ProviderEligibility{registry: r}).catalogReasonLocked(p, model, allowDedicated)
+// returning GateNotServingModel when ok is false. Caller holds r.mu and p.mu.
+func (r *Registry) providerServesRoutableModelReasonLocked(p *Provider, model string, selfRouteOwner bool) (bool, GateReason) {
+	return (&ProviderEligibility{registry: r}).catalogReasonLocked(p, model, selfRouteOwner)
 }
 
-func (e *ProviderEligibility) catalogReasonLocked(p *Provider, model string, allowDedicated bool) (bool, GateReason) {
-	r := e.registry
+func (e *ProviderEligibility) catalogReasonLocked(p *Provider, model string, selfRouteOwner bool) (bool, GateReason) {
 	var serves bool
-	if allowDedicated {
+	if selfRouteOwner {
 		serves = e.servesOwnedLocked(p, model)
 	} else {
 		serves = e.servesCatalogLocked(p, model)
 	}
 	if !serves {
 		return false, GateNotServingModel
-	}
-	if !allowDedicated && r.providerExcludedByDedicatedRuleLocked(p, model) {
-		return false, GateDedicated
 	}
 	return true, GateReasonCount
 }

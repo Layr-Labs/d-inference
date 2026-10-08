@@ -1,9 +1,15 @@
 # Changelog
 
+## Unreleased - coordinator environment cleanup
+
+- Retire `EIGENINFERENCE_DEDICATED_MODELS` and its model-family isolation policy. Mixed-model providers use ordinary catalog, authorization, quality and memory admission; no-provider responses retain generic 429 and `Retry-After` behavior. Production already disabled the policy with `none`; older binaries still require that opt-out during rollback.
+- Remove the unused `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` configuration and both retired keys from deployment requirements. Keep load-duration telemetry, measured quality caps and operator-owned env values unchanged; remove nonfunctional aliases from the sanitized production reference.
+
 ## Unreleased — Member-only automatic security clearance
 
 - Limit scan-only merge clearance to verified active Layr-Labs organization members. Non-members, bots and unavailable membership require independent formal human review. Use a separate read-only membership token and retain ordinary CI and current-revision checks.
 - Surface fixed validation-failure reasons in incomplete review reports without exposing raw provider output.
+
 ## Unreleased - Autopilot consent journal contention
 
 - Let independent provider sessions record Autopilot consent concurrently instead of serializing the fleet behind the inventory write lock. Preserve per-session ownership, account-erasure fences, and exclusive protection for identity merges and reward settlement.

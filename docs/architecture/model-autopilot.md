@@ -164,10 +164,9 @@ the ordinary selection. Accepted operations retain ownership until completion.
 The coordinator stores observation-only metadata with a separate permission
 marker: `providerOrdinaryModelAllowedLocked` fences public and owner routing,
 capacity and legacy commands, while `providerPassesAutopilotGatesLocked` lets the
-planner inspect candidates through the same remaining safety gates. Dedicated-model
-checks project the permission set after activation; a mixed cached inventory can
-therefore be excluded from a hypothetical plan while ordinary Gemma-only serving
-remains available. See
+planner inspect candidates through the same remaining safety gates. Mixed-model
+inventory does not by itself exclude a placement; ordinary routing permission
+still requires the selected model or an acknowledged live grant. See
 `coordinator/registry/autopilot_inventory.go` and
 `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotInventory.swift`.
 Discovering another build alone does not expand consent. An explicit startup

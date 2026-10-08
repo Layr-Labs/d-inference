@@ -260,11 +260,10 @@ func TestCachePlanningQueuedRequestUsesOneDecision(t *testing.T) {
 			const model = "planning-fixture"
 			fp := startFailoverProvider(t, ctx, transport, reg, failoverProviderConfig{
 				Name: "planning-queue-provider", Version: "0.8.15", DecodeTPS: 200,
-				Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
+				Models: []failoverModelSpec{{ID: model}, {ID: "planning-other"}}, Script: fullServeScript(model),
 			})
 			setPrefixCacheProtocol(t, reg, fp, 1)
 			f := newCachePlanningUDSFixture(t, s.Owner, s.registry, fp.registryID)
-			reg.SetDedicatedModels([]string{model})
 			provider := reg.GetProvider(fp.registryID)
 			capacity := func(used int64) {
 				writeAdaptiveHeartbeat(t, ctx, fp.conn, model, &protocol.BackendCapacity{

@@ -105,10 +105,6 @@ func TestWarmWorkIneligibleReportsCannotLoadPublicFleet(t *testing.T) {
 		{"stale_challenge", func(_ *production.Registry, p *production.Provider) {
 			p.LastChallengeVerified = time.Now().Add(-32 * time.Minute)
 		}},
-		{"dedicated_pool_excluded", func(r *production.Registry, p *production.Provider) {
-			p.Models = append(p.Models, protocol.ModelInfo{ID: "other"})
-			r.SetDedicatedModels([]string{"m"})
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newWarmRegistry(t)
@@ -145,6 +141,27 @@ func TestWarmWorkIneligibleReportsCannotLoadPublicFleet(t *testing.T) {
 				t.Fatalf("public work did not warm public fleet: actions=%+v snapshots=%+v", *sent, snaps)
 			}
 		})
+	}
+}
+
+func TestWarmWorkMixedCatalogDrivesPublicWarming(t *testing.T) {
+	r := newWarmRegistry(t)
+	p := makeSchedulerProvider(t, r, "warm-mixed", gemmaBuild, 100, qwenBuild)
+	cold := makeWarmPoolColdProvider(t, r, "cold-mixed", gemmaBuild, 100, 64, 8, qwenBuild)
+	cfg := testWarmPoolConfig()
+	cfg.HeadroomEnabled = true
+	r.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(r)
+
+	heartbeatWarmWork(t, r, p, 0, 0)
+	heartbeatWarmWork(t, r, p, 8_000_000, 8)
+	b := warmFixtureFor(r).deps.State.Snapshot(time.Now(), time.Minute)[gemmaBuild]
+	if b.PromptWork.Count != 8 || b.PromptWork.Tokens != 1_000_000 {
+		t.Fatalf("mixed-catalog work did not enter public demand: %+v", b)
+	}
+	snaps := warmFixtureFor(r).runtime.Tick(time.Now().Add(2 * time.Second))
+	if len(*sent) != 1 || (*sent)[0].ProviderID != cold.ID || (*sent)[0].ModelID != gemmaBuild {
+		t.Fatalf("mixed-catalog work did not warm public fleet: actions=%+v snapshots=%+v", *sent, snaps)
 	}
 }
 

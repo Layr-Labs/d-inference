@@ -172,16 +172,17 @@ func TestRoutingGateCharacterization(t *testing.T) {
 			want: gateOutcomes{publiclyRoutable: true, warmReason: warmplan.WarmColdNotServing},
 		},
 		{
-			name: "dedicated_excluded_mixed_box",
+			name: "mixed_model_provider",
 			build: func(t *testing.T, reg *gateCharacterizationRegistry) (*production.Provider, string) {
 				p := makeSchedulerProvider(t, reg.Registry, "mixed", gemmaBuild, 80)
 				reg.MergeProviderModels(p.ID, []protocol.ModelInfo{{ID: qwenBuild, ModelType: "chat", Quantization: "4bit"}})
-				reg.SetDedicatedModels([]string{"gemma-4"})
 				return p, gemmaBuild
 			},
 			want: gateOutcomes{
-				routingGatesSelf: true, canRouteRelaxed: true,
-				publiclyRoutable: true, warmReason: warmplan.WarmColdDedicated,
+				routingGates: true, routingGatesSelf: true, routingGatesBypass: true,
+				canRoutePublic: true, canRouteRelaxed: true,
+				hasWarm: true, publiclyRoutable: true,
+				warmReason: warmplan.WarmColdEligible, modelLoadCand: true,
 			},
 		},
 		{

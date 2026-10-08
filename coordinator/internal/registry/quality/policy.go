@@ -139,9 +139,10 @@ func (p *Policy) MinSamples() int {
 	return p.config.MinSamples
 }
 
-// Cap preserves the provider's own limit and only constrains a hardware proxy
-// for dedicated models. Reviewed profiles use their measured conservative curve.
-func (p *Policy) Cap(model string, base int, rate Rate, hasBenchmark, dedicated bool, loadFactor float64, profile *performance.Profile) int {
+// Cap preserves the provider's own limit unless a registration benchmark or
+// model-specific rate supports quality capping. Reviewed profiles use their
+// measured conservative curve regardless of rate provenance.
+func (p *Policy) Cap(model string, base int, rate Rate, hasBenchmark bool, loadFactor float64, profile *performance.Profile) int {
 	if profile != nil {
 		floor := 0.0
 		if p.config.Enabled {
@@ -149,7 +150,7 @@ func (p *Policy) Cap(model string, base int, rate Rate, hasBenchmark, dedicated 
 		}
 		return profile.ConcurrencyForDecodeFloor(base, floor)
 	}
-	if !p.config.Enabled || (!hasBenchmark && !rate.PerModel && !dedicated) {
+	if !p.config.Enabled || (!hasBenchmark && !rate.PerModel) {
 		return base
 	}
 	qc := warmplan.QualityConcurrency(rate.TPS, p.config.FloorTPS, loadFactor, base, p.config.Fallback)

@@ -192,6 +192,9 @@ func TestGateReasonNamesComplete(t *testing.T) {
 	if production.GateReasonCount.String() != "unknown" {
 		t.Fatalf("GateReasonCount.String() = %q, want unknown", production.GateReasonCount.String())
 	}
+	if production.GateReason(8).String() != "dedicated" || production.GateDispatchLoadCooldown != 9 {
+		t.Fatal("retired dedicated slot must not shift persisted gate identifiers")
+	}
 	want := map[production.SelectionPath]string{
 		production.SelectionNone: "none", production.SelectionUniqueMin: "unique_min", production.SelectionTieQueue: "tie_queue",
 		production.SelectionTiePending: "tie_pending", production.SelectionRandom: "random", production.SelectionPrefixAffinity: "prefix_affinity",
@@ -280,11 +283,6 @@ func TestGateRejectionTallies(t *testing.T) {
 		}},
 		{name: "trait_floor", want: production.GateTraitFloor, setup: func(_ *testing.T, _ *production.Registry, _ *production.Provider, pr *production.PendingRequest) []string {
 			pr.Traits.MinPrefixCacheProtocol = 1
-			return nil
-		}},
-		{name: "dedicated", want: production.GateDedicated, model: "mlx/gemma-4-ctx-4bit", setup: func(_ *testing.T, reg *production.Registry, p *production.Provider, _ *production.PendingRequest) []string {
-			reg.SetDedicatedModels([]string{"gemma"})
-			reg.MergeProviderModels(p.ID, []protocol.ModelInfo{{ID: "mlx/qwen-ctx-4bit", ModelType: "chat", Quantization: "4bit"}})
 			return nil
 		}},
 		{name: "dispatch_load_cooldown", want: production.GateDispatchLoadCooldown, setup: func(_ *testing.T, reg *production.Registry, p *production.Provider, pr *production.PendingRequest) []string {

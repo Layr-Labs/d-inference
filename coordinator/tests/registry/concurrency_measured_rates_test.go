@@ -13,9 +13,9 @@ import (
 // batching hypothesis." That was wrong: the provider-reported max_concurrency
 // is only the `base` operand of a MIN against the coordinator's quality cap,
 // and the quality cap is computed from a single-stream decode rate the
-// coordinator has to actually possess. With no real measurement it falls back
-// to a sqrt(memory_bandwidth) hardware proxy that is model-agnostic and far
-// below what gemma-4 really does, which pins the cap near 1.
+// coordinator has to actually possess. The model-agnostic sqrt(memory_bandwidth)
+// proxy underestimates Gemma's measured capacity, so it must not tighten the
+// provider's cap without benchmark or model-specific evidence.
 //
 // The decode rates this file uses are MEASURED, not modelled. The constants
 // below record the paged and contiguous arms and their measurement source.
@@ -57,23 +57,11 @@ func TestGateG0AQualityCapReachesEightOnMeasuredRates(t *testing.T) {
 	}
 }
 
-// The cap is only reachable because a REAL per-model measurement reaches the
-// coordinator. This pins the reason: on the bandwidth fallback the same
-// provider is capped to 1, so B=8 would never be dispatched and Gate G0b would
-// have measured nothing.
-//
-// SCOPE, and it is narrower than it first looks. effectiveMaxConcurrencyForModelRateLocked
-// short-circuits to `base` when a provider reports no decode_tps AND the rate is
-// not per-model AND the model is NOT dedicated -- deliberately, because the
-// bandwidth proxy under-reads fast models and hard-capping them from it would
-// shed healthy traffic. So this pinning applies to DEDICATED models, and
-// gemma-4 is dedicated in production (EIGENINFERENCE_DEDICATED_MODELS=gemma-4,
-// deploy/environments/prod.env:26). That is precisely the model this migration
-// targets, so the guard does not spare it.
-//
-// If someone removes the relaxed solo-rate tier, this test is what says why
-// B=8 stopped happening on gemma-4.
-func TestGateG0ABandwidthFallbackWouldPinTheCapForDedicatedModels(t *testing.T) {
+// Applying quality arithmetic directly to a hardware-only proxy would wrongly
+// pin this provider near 1. Policy.Cap therefore preserves the reported base
+// without benchmark or model-specific evidence; this test pins the arithmetic
+// gap that makes that evidence boundary necessary.
+func TestBandwidthProxyUnderestimatesMeasuredConcurrency(t *testing.T) {
 	got := warmplan.QualityConcurrency(bandwidthProxyTPS, prodFloorTPS, effectiveTPSLoadFactor, engineCeiling, engineCeiling)
 	if got >= engineCeiling {
 		t.Fatalf("bandwidth-proxy cap = %d, want well below %d: if the coarse "+

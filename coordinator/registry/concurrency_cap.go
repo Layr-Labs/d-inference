@@ -30,10 +30,11 @@ import (
 // EWMA: the observed rate collapses under the very overload this cap exists to
 // prevent, which would force the cap to 1 — a feedback loop.
 //
-// Raising a backend's own concurrency ceiling therefore buys NOTHING on its
-// own. The provider-reported number is only the `base` operand of the MIN
-// below; the resolved per-model SOLO RATE decides. Inverting the cap math, a
-// provider is granted its full reported N only above
+// With a registration benchmark or model-specific evidence, raising a backend's
+// own concurrency ceiling therefore buys NOTHING on its own. The reported number
+// is only the `base` operand of the MIN below; the resolved per-model SOLO RATE
+// decides. Inverting the cap math, a provider is granted its full reported N
+// only above
 //
 //	q    = floor((N-1)/overcommit) + 1     # smallest quality batch whose
 //	                                       # ceil(q·overcommit) still reaches N
@@ -154,7 +155,7 @@ func (r *Registry) qualityPolicyLocked() *quality.Policy {
 // trustworthy for capping even when the provider never reported a registration
 // benchmark; false means the rate is the provider-level resolvedDecodeTPS
 // chain (registration benchmark, or the model-agnostic sqrt-bandwidth proxy
-// that only dedicated models may be capped from).
+// that does not support quality capping on its own).
 type soloModelTPS struct {
 	tps      float64
 	perModel bool
@@ -273,18 +274,17 @@ func (r *Registry) effectiveMaxConcurrencyForModelResolvedLocked(p *Provider, mo
 // effectiveMaxConcurrencyForModelRateLocked returns the per-provider admission
 // concurrency cap for model: the MINIMUM of the legacy cap
 // (p.maxConcurrencyForModelLocked — a provider-reported per-slot MaxConcurrency
-// if set, else the flat fallback) and quality_concurrency × overcommit. Taking
-// the min means a provider that self-reports a TIGHTER cap still binds (it knows
-// its backend best), while a provider that reports a looser cap — or none — is
-// still held to the quality bar, so neither path can over-admit. rate must be a
+// if set, else the flat fallback) and the evidence-backed quality cap. Without
+// a benchmark, model-specific rate or reviewed profile, the legacy cap stands.
+// Taking the min preserves a provider's TIGHTER cap while constraining looser
+// reported limits to the quality bar when evidence supports it. rate must be a
 // single-stream (static) decode rate for the model, not the observed-under-load
 // value (which collapses under the overload this cap exists to prevent).
 // Caller holds r.mu and p.mu.
 func (r *Registry) effectiveMaxConcurrencyForModelRateLocked(p *Provider, model string, rate soloModelTPS) int {
 	base := p.maxConcurrencyForModelLocked(model)
-	_, dedicated := r.dedicatedPatternForLocked(model)
 	return r.qualityPolicyLocked().Cap(model, base, quality.Rate{TPS: rate.tps, PerModel: rate.perModel},
-		p.DecodeTPS > 0, dedicated, effectiveTPSLoadFactor, (*performance.Profile)(qualifiedPerformanceProfileLocked(p, model)))
+		p.DecodeTPS > 0, effectiveTPSLoadFactor, (*performance.Profile)(qualifiedPerformanceProfileLocked(p, model)))
 }
 
 // hasConcurrencyHeadroomForModelCapResolvedLocked mirrors

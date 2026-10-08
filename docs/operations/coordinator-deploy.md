@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -531,7 +531,7 @@ and appends any `release-env-defaults` key that is absent (existing values win).
 `APNS_TEAM_ID`, `APNS_TOPIC`, `MICROMDM_API_KEY`, `MDM_PUSH_P12_B64`,
 `MNEMONIC`, `MODEL_REGISTRY_PUBLISHING_KEY`, and these `EIGENINFERENCE_*`
 keys: `ADMIN_KEY`, `BASE_URL`, `COLD_DISPATCH`, `CONSOLE_URL`, `DATABASE_URL`,
-`DEDICATED_MODELS`, `HEALTH_EJECTION`, `MDM_API_KEY` (must be byte-identical
+`HEALTH_EJECTION`, `MDM_API_KEY` (must be byte-identical
 to `MICROMDM_API_KEY`), `MIN_DECODE_TPS`, `MIN_PROVIDER_VERSION`,
 `MODEL_SOLO_TPS_SEED`, `PORT`, `PREFILL_DECODE_RATIO`, `PRIVY_APP_ID`,
 `PRIVY_APP_SECRET`, `PRIVY_VERIFICATION_KEY`, `PROMPT_CALIBRATION`,
@@ -540,11 +540,13 @@ to `MICROMDM_API_KEY`), `MIN_DECODE_TPS`, `MIN_PROVIDER_VERSION`,
 `SERVICE_EXPECTED_OUTPUT_ADMISSION_ENABLED`,
 `SERVICE_EXPECTED_OUTPUT_ADMISSION_FLOOR`,
 `SERVICE_EXPECTED_OUTPUT_ADMISSION_FRACTION`, `SERVICE_RESERVATIONS_ENABLED`,
+`SOFT_DELETE_MUTATIONS_ENABLED`,
 `STATE_EXPORT_ENABLED`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
 `TRUST_GEO_HEADERS`, `TTFT_ADMISSION_MODE`, `TTFT_HARD_REJECT`,
-`TTFT_LIVE_DEADLINE_BASE_MS`, `TTFT_OCCUPANCY_ALPHA`, and the fifteen
+`TTFT_LIVE_DEADLINE_BASE_MS`, `TTFT_OCCUPANCY_ALPHA`, and the
 `WARM_POOL_*` keys (`CAPACITY_REJECT_THRESHOLD`, `COLD_DISPATCH_THRESHOLD`,
-`ENABLED`, `INTERVAL`, `LOAD_DURATION_THRESHOLD`, `MAX_GLOBAL_PENDING_LOADS`,
+`ENABLED`, `HEADROOM`, `HEADROOM_LOAD_WINDOWS`, `HEADROOM_MAX_PROVIDERS`,
+`INTERVAL`, `MAX_GLOBAL_PENDING_LOADS`,
 `MAX_LOADS_PER_TICK`, `MIN_DWELL`, `MIN_WARM`, `OBSERVE_ONLY`,
 `QUEUE_AGE_THRESHOLD`, `SPECULATIVE_START_THRESHOLD`,
 `SPECULATIVE_WIN_THRESHOLD`, `TTFT_MISS_THRESHOLD`,
@@ -568,6 +570,24 @@ for the required Stripe setup.
 (the live file, not `release-env-defaults`, is authoritative; the digests in
 steps 2–4 prove preservation). `deploy/environments/prod.env` is a sanitized
 reference copy; editing it changes nothing on the host.
+
+### Retired settings and rollback
+
+`EIGENINFERENCE_DEDICATED_MODELS` and
+`EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` are no longer consumed or
+required. The refresh script still preserves existing keys; it does not delete
+these settings from a host. The former no longer selects model-family isolation;
+the latter never affected warm-pool planning. Load-duration telemetry remains.
+
+Do not remove the dedicated-model opt-out from a host still running an older
+binary: an absent value there enables the old `gemma-4` default. Preserve
+`EIGENINFERENCE_DEDICATED_MODELS=none` in the captured rollback environment.
+After an approved deployment of the new binary, removal from the live env file
+is a separate approved configuration change, with the same backup and container
+recreation requirements as other env edits. Restore the captured env alongside
+an older image when rolling back. See the
+[2026-10-08 environment audit](../reports/2026-10-08-coordinator-environment-audit.md)
+for other obsolete host keys and settings that must remain.
 
 ## Troubleshooting
 

@@ -92,7 +92,7 @@ func TestDeadlineOnlyProfileDoesNotGrantServingPolicy(t *testing.T) {
 	}
 	cap := func() int {
 		base := quality.ConcurrencyLimit(p.BackendCapacity, p.Hardware, "model", production.DefaultMaxConcurrent)
-		return policy.Cap("model", base, quality.Rate{TPS: 100, PerModel: true}, p.DecodeTPS > 0, false, warmplan.DecodeLoadFactor, serving())
+		return policy.Cap("model", base, quality.Rate{TPS: 100, PerModel: true}, p.DecodeTPS > 0, warmplan.DecodeLoadFactor, serving())
 	}
 	ref := slot.DeadlineProfile
 	slot.DeadlineProfile = nil

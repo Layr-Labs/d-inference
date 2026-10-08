@@ -34,13 +34,12 @@ func enableQualityCap(t *testing.T, reg interface {
 	reg.SetQualityConcurrencyCap(true, env.EnvFloat(key, 2.0), 15, 4)
 }
 
-// TestQualityCapSpreadsAndSheds drives the real routing path: with two dedicated
+// TestQualityCapSpreadsAndSheds drives the real routing path: with two benchmarked
 // Gemma boxes capped at 2, filling box A to its cap forces the next request onto
 // idle box B; with only a capped box available, the request is rejected for
-// capacity (→ the dedicated fast-429 shed upstream) instead of over-admitting.
+// capacity instead of over-admitting.
 func TestQualityCapSpreadsAndSheds(t *testing.T) {
 	reg := production.New(testLogger())
-	reg.SetDedicatedModels([]string{"gemma-4"})
 	enableQualityCap(t, reg, "")
 
 	a := makeSchedulerProvider(t, reg, "gemma-a", gemmaBuild, 23)

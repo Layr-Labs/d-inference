@@ -254,14 +254,8 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 
 func (e *ProviderEligibility) structuralBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
 	r := e.registry
-	// Catalog membership + dedicated-box isolation, mirroring
-	// providerPassesRoutingGatesLockedEx so alias routability (and rollout/drop
-	// measurement) matches actual dispatch routability: a dedicated-family build
-	// is only routable on a provider dedicated to that family. Without this, an
-	// alias whose Desired build is advertised only by a mixed box would resolve
-	// to Desired (then 429 at dispatch) instead of failing over to a Previous
-	// build on a dedicated box. allowPrivate marks the owner self-route context,
-	// exempt like selfRouteOwner.
+	// Mirror dispatch catalog admission, including the owner-only off-catalog
+	// allowance. allowPrivate marks the owner self-route context here.
 	if ok, _ := e.catalogReasonLocked(p, buildID, allowPrivate); !ok {
 		return false
 	}

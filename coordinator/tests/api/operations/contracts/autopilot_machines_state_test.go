@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,8 @@ func TestAutopilotMachinesDesiredModeDoesNotImplyActiveControl(t *testing.T) {
 					Protocol: protocol.ModelAutopilotProtocol, Enabled: true, CachedOnly: true,
 					Revision: "private-consent-revision", SessionID: "private-consent-session",
 					SelectedModels: []string{"saved-model"}, Paused: tc.providerPaused,
+					PinnedModels:   []string{"operator-pinned"},
+					ResidentModels: []protocol.ModelAutopilotResident{{ModelID: "reported-resident"}},
 				}
 			}
 			for _, providerID := range []string{"verified-provider", "unverified-provider"} {
@@ -60,6 +63,9 @@ func TestAutopilotMachinesDesiredModeDoesNotImplyActiveControl(t *testing.T) {
 				if providerID == "verified-provider" && !reg.BindVerifiedMachineIdentity(p, "private-owner", id) {
 					t.Fatal("verified binding rejected")
 				}
+				if !reg.Heartbeat(providerID, &protocol.HeartbeatMessage{ModelAutopilot: state, IdleUnloadMins: new(0)}) {
+					t.Fatal("heartbeat rejected")
+				}
 			}
 			machine := patchAutopilotMachine(t, server, id, store.MachineAutopilotLive)
 			if machine.MachineID != id || machine.DesiredMode != store.MachineAutopilotLive || machine.Revision != 1 || len(machine.Sessions) != 1 {
@@ -68,6 +74,16 @@ func TestAutopilotMachinesDesiredModeDoesNotImplyActiveControl(t *testing.T) {
 			session := machine.Sessions[0]
 			if session.ProviderID != "verified-provider" || session.EffectiveMode != tc.effectiveMode || session.ControlActive || session.CapacityFresh || session.Consented == tc.noConsent || session.Paused != (tc.globalPaused || tc.providerPaused) || session.PrivateOnly != tc.private {
 				t.Fatalf("desired mode bypassed runtime gates: %+v", session)
+			}
+			if session.IdleUnloadMins == nil || *session.IdleUnloadMins != 0 || session.AlwaysReadyConfigured == nil || !*session.AlwaysReadyConfigured || session.LastHeartbeat == nil || session.CapacityAcceptedAt != nil {
+				t.Fatalf("runtime gates hid idle policy or changed freshness: %+v", session)
+			}
+			var wantPins, wantResidents []string
+			if state != nil {
+				wantPins, wantResidents = []string{"operator-pinned"}, []string{"reported-resident"}
+			}
+			if !reflect.DeepEqual(session.PinnedModels, wantPins) || !reflect.DeepEqual(session.ResidentModels, wantResidents) {
+				t.Fatalf("runtime gates hid model reports: %+v", session)
 			}
 			body := autopilotMachineRequest(t, server, http.MethodGet, autopilotMachinesPath, autopilotMachinesAdminKey, "", http.StatusOK)
 			for _, secret := range []string{"private-owner", "private-se-", "private-serial-", "private-app-attest-", "private-consent-revision", "private-consent-session", "unverified-provider", autopilotMachinesAdminKey} {
@@ -82,16 +98,20 @@ func TestAutopilotMachinesDesiredModeDoesNotImplyActiveControl(t *testing.T) {
 				t.Fatalf("unexpected machine fields: %s (%v)", body, err)
 			}
 			var sessions []map[string]json.RawMessage
-			if err := json.Unmarshal(raw.Machines[0]["sessions"], &sessions); err != nil || len(sessions) != 1 || len(sessions[0]) != 7 {
+			if err := json.Unmarshal(raw.Machines[0]["sessions"], &sessions); err != nil || len(sessions) != 1 || len(sessions[0]) != 16 {
 				t.Fatalf("unexpected session fields: %s (%v)", body, err)
 			}
-			for _, field := range []string{"provider_id", "effective_mode", "control_active", "consented", "paused", "private_only", "capacity_fresh"} {
+			for _, field := range []string{
+				"provider_id", "effective_mode", "control_active", "consented", "paused", "private_only", "capacity_fresh",
+				"machine_model", "chip_name", "memory_gb", "last_heartbeat", "capacity_accepted_at",
+				"idle_unload_mins", "always_ready_configured", "pinned_models", "resident_models",
+			} {
 				if _, present := sessions[0][field]; !present {
 					t.Fatalf("session field %s omitted: %s", field, body)
 				}
 			}
 			page := listAutopilotMachines(t, server, "")
-			if len(page.Machines) != 1 || page.Machines[0].DesiredMode != machine.DesiredMode || page.Machines[0].Revision != machine.Revision || len(page.Machines[0].Sessions) != 1 || page.Machines[0].Sessions[0] != session {
+			if len(page.Machines) != 1 || page.Machines[0].DesiredMode != machine.DesiredMode || page.Machines[0].Revision != machine.Revision || len(page.Machines[0].Sessions) != 1 || !reflect.DeepEqual(page.Machines[0].Sessions[0], session) {
 				t.Fatalf("readback disagrees with update: %+v", page)
 			}
 			reg.Disconnect("verified-provider")

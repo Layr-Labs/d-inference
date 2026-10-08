@@ -20,6 +20,12 @@ These isolated trusted inputs replace Apple attestation only in the testbed;
 they do not disable the production cohort gate or the real provider's live-lease
 acknowledgement. See [cohort validation](test.md#autopilot-machine-cohorts).
 
+SSD epoch lookup regressions use the current provider test product and its
+normal source-matched resources. Filesystem permission cases require a non-root
+test user; they change permissions only on each fixture's temporary model root.
+The connected retirement snapshot oracle has an ordinary Go test and does not
+require a model download or running provider.
+
 CI and Integration Tests cancel an older run only when a newer revision of the
 same pull request starts in that workflow. Concurrency groups include the
 workflow and event names; non-PR runs use a unique run ID, so default-branch pushes

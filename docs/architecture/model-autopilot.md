@@ -110,6 +110,17 @@ operation ledger, so a ledger outage cannot hide this in-memory projection. See
 the [inventory response contract](../reference/api-contracts.md#autopilot-inventory-report)
 for the population, freshness and count definitions.
 
+`ListMachineAutopilot` in `coordinator/registry/autopilot_machine_status.go`
+provides the complementary admin-only per-machine view: current verified
+sessions, reported hardware, pins, resident model IDs and ordinary idle policy,
+alongside durable desired mode and effective control. It includes verified
+private-only sessions rather than using the aggregate inventory's public
+enrollment filter. Model reports are independent of active consent/control;
+unsupported or sanitized reports remain unknown. The projection copies values
+under the existing locks and exposes no account, serial, key or consent-revision
+metadata. Disconnected sessions contribute no historical pin or idle-policy
+fallback. See the [machine response contract](../reference/api-contracts.md#autopilot-machine-settings).
+
 ### Enrollment and ownership
 
 `Start.resolveAutopilotChoice` asks once on the normal interactive start path.
@@ -236,6 +247,23 @@ ignore the additional inventory field and issue no protocol-3 control leases;
 selected models continue serving through ordinary routing.
 An accepted operation retains ownership until it finishes even after opt-out,
 pause, connection loss or lease expiry; newer commands cannot overlap it.
+
+Always ready is the ordinary idle policy `[backend] idle_timeout_mins = 0`,
+not a model pin or an Autopilot activation gate. `startIdleMonitor` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` suspends the
+local timer while live control or an explicit provider pause manages residency;
+an accepted operation also blocks the idle tick. Autopilot can still replace or
+unload unpinned models under its own idle/dwell, memory and donor safeguards.
+Outside that ownership, the configured timer resumes, so Always ready matters
+for ordinary, waiting and shadow serving and after control ends. Zero only
+disables timeout-driven unloading, not load-driven eviction or other retirement.
+
+The heartbeat's `idle_unload_mins` comes from the daemon's startup-loaded
+configuration (`provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`,
+`run`; `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`,
+`CoordinatorClientConfig`). It does not observe later idle-policy file edits
+until restart. The admin `always_ready_configured` field derives only from that
+report; neither it nor reported pins certify current residency or routability.
 
 The local diagnostic phases are `off`, `waiting`, `shadow`, `active`, `paused`,
 `transitioning`, and `recovering`. `darkbloom autopilot status` distinguishes

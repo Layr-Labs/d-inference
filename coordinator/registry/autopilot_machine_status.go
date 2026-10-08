@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/autopilot"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -17,13 +19,23 @@ type MachineAutopilotStatus struct {
 }
 
 type MachineAutopilotSession struct {
-	ProviderID    string `json:"provider_id"`
-	EffectiveMode string `json:"effective_mode"`
-	ControlActive bool   `json:"control_active"`
-	Consented     bool   `json:"consented"`
-	Paused        bool   `json:"paused"`
-	PrivateOnly   bool   `json:"private_only"`
-	CapacityFresh bool   `json:"capacity_fresh"`
+	ProviderID            string     `json:"provider_id"`
+	MachineModel          string     `json:"machine_model"`
+	ChipName              string     `json:"chip_name"`
+	MemoryGB              int        `json:"memory_gb"`
+	EffectiveMode         string     `json:"effective_mode"`
+	ControlActive         bool       `json:"control_active"`
+	Consented             bool       `json:"consented"`
+	Paused                bool       `json:"paused"`
+	PrivateOnly           bool       `json:"private_only"`
+	CapacityFresh         bool       `json:"capacity_fresh"`
+	LastHeartbeat         *time.Time `json:"last_heartbeat"`
+	CapacityAcceptedAt    *time.Time `json:"capacity_accepted_at"`
+	IdleUnloadMins        *int       `json:"idle_unload_mins"`
+	AlwaysReadyConfigured *bool      `json:"always_ready_configured"`
+	// Null lists mean no usable report; [] means a report with no entries.
+	PinnedModels   []string `json:"pinned_models"`
+	ResidentModels []string `json:"resident_models"`
 }
 
 func (r *Registry) ListMachineAutopilot(ctx context.Context, after string, limit int) ([]MachineAutopilotStatus, error) {
@@ -66,7 +78,30 @@ func (r *Registry) machineAutopilotStatuses(settings []store.MachineAutopilotSet
 }
 
 func machineAutopilotSessionLocked(c *modelAutopilotController, p *Provider, now time.Time) MachineAutopilotSession {
-	s := MachineAutopilotSession{ProviderID: p.ID, EffectiveMode: "disabled", Consented: providerAutopilotConsentedLocked(p), PrivateOnly: p.PrivateOnly}
+	s := MachineAutopilotSession{
+		ProviderID: p.ID, MachineModel: p.Hardware.MachineModel, ChipName: p.Hardware.ChipName, MemoryGB: p.Hardware.MemoryGB,
+		EffectiveMode: "disabled", Consented: providerAutopilotConsentedLocked(p), PrivateOnly: p.PrivateOnly,
+	}
+	if !p.LastHeartbeat.IsZero() {
+		at := p.LastHeartbeat
+		s.LastHeartbeat = &at
+	}
+	if !p.CapacityAcceptedAt.IsZero() {
+		at := p.CapacityAcceptedAt
+		s.CapacityAcceptedAt = &at
+	}
+	if p.IdleUnloadMins != nil {
+		minutes := *p.IdleUnloadMins
+		alwaysReady := minutes == 0
+		s.IdleUnloadMins, s.AlwaysReadyConfigured = &minutes, &alwaysReady
+	}
+	// Report policy independently of consent/control. Sanitized malformed states
+	// have no cached-only contract and must not look like a known empty pin set.
+	if state := p.ModelAutopilot; state != nil && state.Protocol == protocol.ModelAutopilotProtocol && state.CachedOnly {
+		s.PinnedModels = append([]string{}, state.PinnedModels...)
+		slices.Sort(s.PinnedModels)
+		s.ResidentModels = autopilot.ResidentIDs(state)
+	}
 	s.Paused = p.ModelAutopilot != nil && p.ModelAutopilot.Paused
 	maxAge := DefaultProviderHeartbeatTimeout
 	if c != nil {

@@ -82,10 +82,16 @@ enum SSDNoFollowIO {
         defer { Darwin.close(parentFD) }
         beforeOperation?(.read)
         let fd = name.withCString {
-            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         }
         guard fd >= 0 else { throw posixError("openat read", url: url) }
-        guard isRegularFile(fd) else {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else {
+            let failure = posixError("fstat read target", url: url)
+            Darwin.close(fd)
+            throw failure
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
             Darwin.close(fd)
             throw SSDBlockStoreError.ioFailure("read target is not a regular file")
         }
@@ -96,7 +102,20 @@ enum SSDNoFollowIO {
     /// or any parent component. An indexed symlink/device/directory is invalid,
     /// not present cache data.
     static func regularFileStatus(at url: URL) -> SSDNoFollowFileStatus {
-        guard let (parentFD, name) = try? openVerifiedParent(of: url) else {
+        (try? checkedRegularFileStatus(at: url)) ?? .invalid
+    }
+
+    /// A failed lookup does not establish that a durable identity is invalid.
+    /// Callers which own such an identity must retry I/O failures rather than
+    /// treating the conservative active-file status as a refutation.
+    static func checkedRegularFileStatus(at url: URL) throws -> SSDNoFollowFileStatus {
+        let parentFD: Int32
+        let name: String
+        do {
+            (parentFD, name) = try openVerifiedParent(of: url)
+        } catch SSDBlockStoreError.posixFailure(_, let code) where code == ENOENT {
+            return .missing
+        } catch SSDBlockStoreError.posixFailure(_, let code) where code == ELOOP || code == ENOTDIR {
             return .invalid
         }
         defer { Darwin.close(parentFD) }
@@ -107,7 +126,8 @@ enum SSDNoFollowIO {
         if result == 0 {
             return (info.st_mode & S_IFMT) == S_IFREG ? .regular : .invalid
         }
-        return errno == ENOENT ? .missing : .invalid
+        if errno == ENOENT { return .missing }
+        throw posixError("fstatat file status", url: url)
     }
 
     static func writeAtomically(
@@ -252,11 +272,12 @@ enum SSDNoFollowIO {
         defer { Darwin.close(parentFD) }
         beforeOperation?(.touch)
         let fd = name.withCString {
-            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         }
         guard fd >= 0 else { return }
         defer { Darwin.close(fd) }
-        guard isRegularFile(fd) else { return }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
         let interval = modificationDate.timeIntervalSince1970
         let seconds = time_t(interval.rounded(.down))
         let nanoseconds = Int((interval - Double(seconds)) * 1_000_000_000)
@@ -318,9 +339,7 @@ enum SSDNoFollowIO {
                     openat(current, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
                 }
                 guard next >= 0 else {
-                    throw SSDBlockStoreError.ioFailure(
-                        "openat directory \(component) under \(canonicalPath): "
-                            + String(cString: strerror(errno)))
+                    throw posixError("openat directory", url: directory)
                 }
                 Darwin.close(current)
                 current = next
@@ -427,11 +446,6 @@ enum SSDNoFollowIO {
             && left.st_ino == right.st_ino
     }
 
-    private static func isRegularFile(_ fd: Int32) -> Bool {
-        var info = stat()
-        return fstat(fd, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
-    }
-
     static func posixError(_ operation: String, url: URL) -> SSDBlockStoreError {
         // Capture before formatting or cleanup can replace the thread's errno.
         // Keep the typed code so callers never need to parse a private message.
@@ -464,10 +478,16 @@ enum SSDNoFollowIO {
     }
 
     static func regularFileStatus(at url: URL) -> SSDNoFollowFileStatus {
-        guard let values = try? url.resourceValues(
-            forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        else {
-            return FileManager.default.fileExists(atPath: url.path) ? .invalid : .missing
+        (try? checkedRegularFileStatus(at: url)) ?? .invalid
+    }
+
+    static func checkedRegularFileStatus(at url: URL) throws -> SSDNoFollowFileStatus {
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
+            return .missing
         }
         return values.isRegularFile == true && values.isSymbolicLink != true
             ? .regular : .invalid

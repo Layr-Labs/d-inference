@@ -394,6 +394,16 @@ block size, layout epoch or key fingerprint drift), so `epoch_change` means a
 whole-root rebuild, not capacity pressure. Providers older than this change
 still rotate on eviction.
 
+Before retiring an owned SSD entry, `SSDCacheEpochStore` rereads the durable
+epoch record. Failed parent-directory opens and file-status probes refuse the
+operation without disowning the store; the next pass retries the same record.
+Successfully observed missing, non-regular, malformed, oversized or replaced
+records still revoke ownership. `SSDNoFollowIO.checkedRegularFileStatus` keeps
+lookup failures separate from observed invalid entries, while ordinary active
+file lookups remain conservative. The connected retirement fixture checks the
+original provider/model capability in both the eviction-observing snapshot and
+the refreshed snapshot before reporting epoch preservation.
+
 Because a provider that removes one file keeps its epoch, the coordinator
 learns of the removal from the next lookup: a miss at the attempted boundaries
 (`miss_invalidation`), or a valid hit below a boundary recorded for that
@@ -408,6 +418,25 @@ or hit re-teaches them. Neither path fences the provider or moves its sequence
 watermark. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
+
+The file and its in-memory index commit are coordinated through
+`SSDCheckpointFileCoordinator` in
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift`.
+Complete-checkpoint `performWrite` and attention `SSDWriteBehind.consume` hold
+cancellable per-file access through durable rename (or duplicate authentication)
+and index insertion. They release it before whole-root/disk-budget maintenance,
+so a committed new file can still be evicted under pressure. Startup scans use
+the same file-access boundary for index insertion. Under its epoch barrier,
+`SSDOwnedEntryRetirement.remove` uses nonblocking `tryAcquire` and skips busy
+files rather than waiting for a writer that may need the epoch lock. Unrelated
+victims remain eligible. Complete-checkpoint donation and `publishReady` also
+require a regular no-follow file before announcing a new anchor
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`).
+This prevents owned retirement from deleting a renamed-but-not-yet-indexed
+checkpoint without reintroducing generation-wide invalidation for routine LRU.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Routing uses in-memory attempt and holder maps;
@@ -442,6 +471,21 @@ minutes is accepted and logged as a warning at startup, because providers keep
 their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### SSD reconciliation and native retry authority
+
+Missing-file reconciliation rechecks the pathname while holding the index
+publication barrier and exact-file lease. Busy writers defer reconciliation; a
+same-tag replacement remains indexed and reusable. Budget enforcement rechecks
+usage after stale accounting disappears before choosing another physical victim.
+Accounting-only cleanup does not increment physical eviction counters.
+
+AR allocation-time capacity refusal stays cold because the pinned SDK can queue
+native retirement without exposing a completion receipt. Host refund does not
+authorize another import. Native-block refusals and pre-allocation provider
+budget refusals retain their existing bounded shorter-checkpoint behavior.
+
+See [bounded shorter complete-checkpoint fallback](../reference/ssd-kv-cache.md#bounded-shorter-complete-checkpoint-fallback) for retry authority and remaining-budget rules.
 
 ### Attempt-record memory accounting
 

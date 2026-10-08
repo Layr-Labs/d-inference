@@ -75,6 +75,16 @@ runbook neither funds rewards nor repairs historical first-opt-in evidence.
    current session. Do not substitute a WebSocket provider ID, account ID, serial
    or public key.
 
+   Check each session's `pinned_models`, `resident_models`, `idle_unload_mins`
+   and `always_ready_configured` alongside `effective_mode`, `control_active`
+   and `capacity_fresh`. Use `capacity_accepted_at`, not `last_heartbeat` alone,
+   to identify old model observations. Keep offline sessions and null model or
+   idle-policy reports unknown; an empty model array means a report with no
+   entries. Always ready is not required for promotion and does not pin all
+   models under live Autopilot. See the
+   [machine field definitions](../reference/api-contracts.md#autopilot-machine-settings)
+   and [idle-policy ownership](../architecture/model-autopilot.md#enrollment-and-ownership).
+
    After explicit approval for each production machine-mode edit, submit
    `PATCH /v1/admin/autopilot/machines/{machine_id}` with
    `{"desired_mode":"live"}`. Use the approved coordinator URL, admin credential

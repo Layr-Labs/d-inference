@@ -29,7 +29,9 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 	}
 	// This retired component has no background caller. Keep the attempted late
 	// write and the complete evidence census on the actual retained generation.
-	old.StoreAttemptLocked("late", cachetracker.Attempt[*production.Provider]{ExpiresAt: time.Now().Add(time.Hour)})
+	if old.StoreAttemptLocked("late", cachetracker.Attempt[*production.Provider]{ExpiresAt: time.Now().Add(time.Hour)}) {
+		t.Error("retired tracker admitted a late insertion")
+	}
 	if oldConfig.Attempts.Len() != 0 || oldConfig.Holders.Len() != 0 || oldConfig.Sequences.Len() != 0 || oldFences.Len() != 0 {
 		t.Error("retired tracker retained or recreated evidence")
 	}

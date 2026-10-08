@@ -52,25 +52,30 @@ func TestProfilerDiff(t *testing.T) {
 	buf := testbed.NewEventBuffer()
 	p := NewProfiler(cfg, buf)
 
-	inst := testbed.NewInstrument(buf)
-
-	rid := inst.NewRequestID()
-	inst.RequestStart(rid)
-	timer := inst.StartSegment(rid, testbed.SegmentTTFT)
-	time.Sleep(1 * time.Millisecond)
-	timer.Stop()
-	inst.RequestEnd(rid, 0)
+	recordTTFT := func(requestID string, duration time.Duration) {
+		startedAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+		buf.Consume(testbed.Event{
+			Kind: testbed.EventRequestStart, RequestID: requestID, Timestamp: startedAt,
+		})
+		buf.Consume(testbed.Event{
+			Kind: testbed.EventSegmentStart, RequestID: requestID,
+			Segment: testbed.SegmentTTFT, Timestamp: startedAt,
+		})
+		buf.Consume(testbed.Event{
+			Kind: testbed.EventSegmentEnd, RequestID: requestID,
+			Segment: testbed.SegmentTTFT, Timestamp: startedAt.Add(duration), Duration: duration,
+		})
+		buf.Consume(testbed.Event{
+			Kind: testbed.EventRequestEnd, RequestID: requestID, Timestamp: startedAt.Add(duration),
+		})
+	}
+	recordTTFT("previous", time.Millisecond)
 
 	previous := p.BuildProfile()
 
 	buf.Reset()
 
-	rid2 := inst.NewRequestID()
-	inst.RequestStart(rid2)
-	timer2 := inst.StartSegment(rid2, testbed.SegmentTTFT)
-	time.Sleep(5 * time.Millisecond)
-	timer2.Stop()
-	inst.RequestEnd(rid2, 0)
+	recordTTFT("current", 5*time.Millisecond)
 
 	diff := p.Diff(previous)
 
@@ -78,7 +83,14 @@ func TestProfilerDiff(t *testing.T) {
 	require.True(t, ok, "expected TTFT in diff")
 	require.NotNil(t, ttftDiff.Previous)
 	require.NotNil(t, ttftDiff.Current)
-	assert.Positive(t, ttftDiff.MeanDelta)
+	assert.Equal(t, 1, ttftDiff.Previous.Count)
+	assert.Equal(t, 1, ttftDiff.Current.Count)
+	assert.Equal(t, time.Millisecond, ttftDiff.Previous.Mean)
+	assert.Equal(t, 5*time.Millisecond, ttftDiff.Current.Mean)
+	assert.Equal(t, 4*time.Millisecond, ttftDiff.MeanDelta)
+	assert.Equal(t, 4*time.Millisecond, ttftDiff.P95Delta)
+	assert.Equal(t, 400.0, ttftDiff.MeanPctChange)
+	assert.Equal(t, 400.0, ttftDiff.P95PctChange)
 }
 
 func TestProfileRunSummaryTable(t *testing.T) {

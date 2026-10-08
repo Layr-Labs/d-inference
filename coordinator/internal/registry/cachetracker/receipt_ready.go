@@ -1,6 +1,7 @@
 package cachetracker
 
 import (
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
@@ -58,13 +59,14 @@ func (t *Tracker[P]) ApplyReadyV2(
 	if !t.AcceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
 		return RejectCacheReceipt(CacheReceiptSequence)
 	}
+	final.ChainHash = strings.Clone(final.ChainHash)
 	t.proofs.ResetStrikes(providerID, msg.ModelID, msg.Tier, capability, now)
 	if msg.Tier == "memory" {
 		attempt.MemoryLastReadyAnchor = final
 	} else {
 		attempt.LastReadyAnchor = final
 	}
-	t.StoreAttemptLocked(msg.CacheReceiptNonce, attempt)
+	t.attempts.Store(strings.Clone(msg.CacheReceiptNonce), attempt)
 	for _, anchor := range msg.ReadyAnchors {
 		recompute := min(msg.RequiredRecomputeTokens, anchor.TokenCount)
 		key := CacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)

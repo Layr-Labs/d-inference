@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/routeplan"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -12,11 +13,17 @@ import (
 // not enable cache participation, create cache keys, or wait for tokenizer load.
 func (s *Owner) planPromptRoute(ctx context.Context, account, model string, body []byte, hasMedia, hasTools bool, estimate int) promptwork.Result {
 	result := promptwork.Result{Work: promptwork.Heuristic(calibratedContextPromptTokens(model, estimate))}
+	cachePlanner := s.NewCachePlanner()
+	cacheInput := routeplan.CachePlanningInput{Account: account, Model: model, Body: body, HasMedia: hasMedia}
+	// The two early returns call the planner only to record why this request
+	// has no cache plan; they do not use its result.
 	if hasMedia || s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
+		cachePlanner.PlanResult(ctx, cacheInput)
 		return result
 	}
 	status, ok := s.promptArtifacts.Status(model)
 	if !ok || !status.ArtifactReady || status.PromptContractID == "" {
+		cachePlanner.PlanResult(ctx, cacheInput)
 		return result
 	}
 	return promptwork.Account(ctx, s.promptWorkGate, len(body), result, func(ctx context.Context) promptwork.Result {
@@ -27,7 +34,8 @@ func (s *Owner) planPromptRoute(ctx context.Context, account, model string, body
 				}
 			}
 		}
-		if !s.promptPreloader.ReadyFor(status.PromptContractID) {
+		planned := cachePlanner.PlanResult(ctx, cacheInput)
+		if !planned.SidecarCalled && !s.promptPreloader.ReadyFor(status.PromptContractID) {
 			return result
 		}
 		input := registry.CachePlanInput{
@@ -36,8 +44,6 @@ func (s *Owner) planPromptRoute(ctx context.Context, account, model string, body
 		}
 		return promptwork.Plan(ctx, s.promptContract, input, result.Work,
 			func(ctx context.Context) registry.CachePlanResult {
-				planned := s.registry.PlanCacheRouteWithResult(ctx, s.promptContract, input)
-				s.observation.EmitExactCachePlan(planned)
 				return planned
 			})
 	})

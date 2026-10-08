@@ -1000,7 +1000,7 @@ public actor StandaloneServer {
     }
 
     /// Shared by native/ordinary loads and serving-set reserve raises. A local
-    /// model must retain the same native workspace floor as a network provider.
+    /// model must retain the same workspace floor as a network provider.
     nonisolated static func resliceKeepsSlotsServiceable(
         _ targets: [String: Int], existing: [ExistingSlotGrant]
     ) -> Bool {
@@ -1030,7 +1030,7 @@ public actor StandaloneServer {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
-                    minimumGrantBytes: await slot.bridge.minimumServiceableNativeGrantBytes(),
+                    minimumGrantBytes: await slot.bridge.minimumServiceableGrantBytes(),
                     bridge: slot.bridge))
         }
         return existing

@@ -186,6 +186,58 @@ class BudgetTests(unittest.TestCase):
             self.state.admit(10)
         self.assertFalse(self.state.read("ledger.json")[0]["requests"])
 
+    def test_daily_mode_continues_existing_pilot_without_resetting_history(self):
+        old = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        for pr in range(10):
+            ticket = self.state.reserve(pr, f"{pr}-1", "deep", 2_500_000, old)
+            self.state.settle(ticket, 2_500_000)
+        before = self.state.read("ledger.json")[0]
+        daily = State(self.service.github, "daily")
+        daily.admit(12)
+        daily.reserve(12, "100-1", "normal", 1_000_000)
+        after = daily.read("ledger.json")[0]
+        for ticket, row in before["requests"].items():
+            self.assertEqual(after["requests"][ticket], row)
+        self.assertEqual(after["prs"], before["prs"] + [12])
+        with self.assertRaisesRegex(BudgetStopped, "Ten-PR"):
+            self.state.reserve(13, "101-1", "normal", 1)
+
+    def test_daily_mode_preserves_all_four_spending_caps(self):
+        daily = State(self.service.github, "daily")
+        daily.reserve(12, "1-1", "normal", 1_000_000)
+        with self.assertRaisesRegex(BudgetStopped, "normal"):
+            daily.reserve(12, "1-1", "normal", 1)
+        daily.reserve(12, "1-1", "deep", 3_000_000)
+        with self.assertRaisesRegex(BudgetStopped, "deep"):
+            daily.reserve(12, "1-1", "deep", 1)
+        daily.reserve(12, "2-1", "normal", 1_000_000)
+        with self.assertRaisesRegex(BudgetStopped, "pr_day"):
+            daily.reserve(12, "3-1", "normal", 1)
+        for pr in range(20, 24):
+            daily.reserve(pr, f"{pr}-1", "deep", 3_000_000)
+            daily.reserve(pr, f"{pr}-2", "deep", 2_000_000)
+        with self.assertRaisesRegex(BudgetStopped, "repo_day"):
+            daily.reserve(24, "24-1", "normal", 1)
+
+    def test_daily_mode_retains_old_unknown_charges_and_circuit_breaker(self):
+        old = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        daily = State(self.service.github, "daily")
+        for index in range(5):
+            daily.reserve(12, f"{index}-1", "normal", 1_000_000, old)
+        with self.assertRaisesRegex(BudgetStopped, "pr_day"):
+            daily.reserve(12, "100-1", "normal", 1)
+        ticket = daily.reserve(13, "101-1", "normal", 1)
+        daily.settle(ticket, 2)
+        with self.assertRaisesRegex(BudgetStopped, "circuit"):
+            daily.reserve(14, "102-1", "normal", 1)
+
+    def test_invalid_budget_mode_cannot_enable_spending(self):
+        before = self.state.read("ledger.json")
+        for mode in (None, "", "unlimited", "DAILY", True):
+            with self.subTest(mode=mode), self.assertRaisesRegex(BudgetStopped, "Invalid review budget mode"):
+                State(self.service.github, mode)
+        self.assertEqual(self.state.read("ledger.json"), before)
+
     def test_missing_or_unwritable_ledger_fails_closed(self):
         self.service.fail_write = True
         with self.assertRaises(APIError):
@@ -222,6 +274,44 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(self.service.state.read("preflight.json")[0]["paid_requests"], 0)
         self.assertFalse(self.service.calls)
         self.assertEqual(len(self.reads), 2)
+
+    def test_preflight_rejects_exhausted_pilot_without_changing_ledger(self):
+        for pr in range(10):
+            self.service.state.admit(pr)
+        before = self.service.state.read("ledger.json")
+        with self.assertRaisesRegex(ReviewUnavailable, "Capacity: Ten-PR"):
+            preflight(self.service.state, "synthetic", self.funding)
+        self.assertEqual(self.service.state.read("ledger.json"), before)
+        daily = State(self.service.github, "daily")
+        preflight(daily, "synthetic", self.funding)
+        self.assertEqual(daily.read("ledger.json"), before)
+        self.assertFalse(self.service.calls)
+
+    def test_preflight_requires_normal_attempt_capacity_including_unknown_charges(self):
+        daily = State(self.service.github, "daily")
+        old = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        for pr in range(5):
+            daily.reserve(pr, f"{pr}-1", "deep", 3_000_000, old)
+            daily.reserve(pr, f"{pr}-2", "deep", 2_000_000, old)
+        before = daily.read("ledger.json")
+        with self.assertRaisesRegex(ReviewUnavailable, "Capacity: repo_day"):
+            preflight(daily, "synthetic", self.funding)
+        self.assertEqual(daily.read("ledger.json"), before)
+        # Only evidence-based settlement releases old reservations.
+        for ticket in before[0]["requests"]:
+            daily.settle(ticket, 0)
+        preflight(daily, "synthetic", self.funding)
+        self.assertFalse(self.service.calls)
+
+    def test_preflight_rejects_invalid_or_full_ledger_in_daily_mode(self):
+        daily = State(self.service.github, "daily")
+        for rows in ({"broken": {}}, {str(i): {"charge": 0, "settled": True,
+                      "day": "2026-09-01", "pr": 1, "run": str(i), "tier": "normal"}
+                      for i in range(1000)}):
+            daily.mutate(lambda ledger: ledger.update(requests=rows))
+            with self.assertRaisesRegex(ReviewUnavailable, "Capacity:"):
+                preflight(daily, "synthetic", self.funding)
+        self.assertFalse(self.service.calls)
 
     def test_exhausted_key_and_account_are_distinct_failures(self):
         self.limit = 0
@@ -391,6 +481,17 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(result["findings"])
         self.assertTrue(self.service.state.read("ledger.json")[0]["halted"])
 
+    def test_final_reviewer_uncertainty_cannot_clear_merge(self):
+        from threat_review.merge_policy import clean
+        self.service.reply = lambda body: self.service.completion(body, [], uncertain=body["model"] == SOL)
+        result, _ = self.scan(force=True)
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS, SOL])
+        self.assertEqual(result["depth_batches_pending"], 0)
+        self.assertIn("Final reviewer requests further review", result["errors"][0])
+        report = {"head": fixtures.HEAD, "base": fixtures.BASE, "review": result}
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        self.assertTrue(self.checkpoints[-1]["errors"])
+
     def test_followup_push_reuses_unaffected_batches_but_reintegrates(self):
         self.files = [{"filename": name, "status": "modified", "source_complete": True,
                        "base_text": "old\n" * 7000, "head_text": "new\n" * 7000,
@@ -444,6 +545,14 @@ class ScanTests(unittest.TestCase):
             self.assertNotIn("cache_control", sol["messages"][0]["content"][0])
             self.assertNotIn("temperature", sol)
 
+    def test_sonnet_55_reservation_and_provider_ceiling_match_selected_model(self):
+        self.files[0]["filename"] = "ordinary.go"
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        sonnet = self.service.calls[0]
+        self.assertEqual(sonnet["model"], "anthropic/claude-sonnet-5.5")
+        self.assertEqual(sonnet["provider"]["max_price"], {"prompt": 2, "completion": 10, "request": 0})
+
     def test_invalid_citations_are_never_saved_as_findings(self):
         self.service.reply = lambda body: self.service.completion(body, [dict(fixtures.FINDING, line=999)])
         result, _ = self.scan()
@@ -482,6 +591,16 @@ class LifecycleTests(unittest.TestCase):
 
     def run_review(self, event=fixtures.EVENT):
         return run(event, self.root, self.env, self.github, self.service.state, self.factory)
+
+    def test_runner_uses_trusted_daily_policy_for_funded_review_after_pilot(self):
+        for pr in range(100, 110):
+            self.service.state.admit(pr)
+        self.env.update(THREAT_REVIEW_BUDGET_MODE="daily", THREAT_REVIEW_STATE_TOKEN="synthetic")
+        with patch("threat_review.budget_runner.GitHub", return_value=self.service.github):
+            result = run(fixtures.EVENT, self.root, self.env, self.github, paid_factory=self.factory)
+        self.assertIn("cross-file integration complete", result)
+        self.assertTrue(self.service.calls)
+        self.assertGreater(len(self.service.state.read("ledger.json")[0]["prs"]), 10)
 
     def test_disabled_gate_keeps_previous_findings_without_any_spend(self):
         self.env.pop("THREAT_REVIEW_ENABLED")

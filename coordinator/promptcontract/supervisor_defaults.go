@@ -75,10 +75,10 @@ func applySupervisorDefaults(config *SupervisorConfig) {
 		config.MaxBodyBytes = sidecar.DefaultMaxRequestBytes
 	}
 	if config.MaxConcurrency <= 0 {
-		config.MaxConcurrency = 4
+		config.MaxConcurrency = sidecar.DefaultMaxConcurrency
 	}
 	if config.MaxConnections <= 0 {
-		config.MaxConnections = 64
+		config.MaxConnections = sidecar.DefaultMaxConnections
 	}
 	if config.MaxLoadedContracts <= 0 {
 		config.MaxLoadedContracts = 8

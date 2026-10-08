@@ -68,13 +68,17 @@ func TestGlobalPayoutRejectionFencesFutureDispatch(t *testing.T) {
 			if _, err := g.BeginGlobalPayout(p.AccountID, p.ID, now); err != nil {
 				t.Fatal(err)
 			}
-			if ok, err := g.ClaimGlobalPayout(p.ID, now); err != nil || !ok {
+			if ok, err := g.ClaimGlobalPayout(p.ID, now); err != nil || ok == nil {
 				t.Fatal(err)
 			}
-			if err := g.RecordGlobalPayoutRejection(p.ID, 1, "forbidden"); err != nil {
+			claimed, _ := g.GetGlobalPayout(p.ID)
+			if err := g.StartGlobalPayoutDispatch(p.ID, claimed.LeaseUntil, now); err != nil {
 				t.Fatal(err)
 			}
-			if ok, err := g.ClaimGlobalPayout(p.ID, now.Add(2*time.Minute)); err != nil || !ok {
+			if err := g.RecordGlobalPayoutRejection(p.ID, 1, "forbidden", claimed.LeaseUntil); err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := g.ClaimGlobalPayout(p.ID, now.Add(2*time.Minute)); err != nil || ok == nil {
 				t.Fatal(err)
 			}
 			got, err := g.GetGlobalPayout(p.ID)
@@ -92,8 +96,16 @@ func TestGlobalPayoutRejectionFencesFutureDispatch(t *testing.T) {
 			ambiguous := payoutFixture(t, s, g, "ambiguous", "ambiguous")
 			_, _ = g.BeginGlobalPayout(ambiguous.AccountID, ambiguous.ID, now)
 			_, _ = g.ClaimGlobalPayout(ambiguous.ID, now)
+			first, _ := g.GetGlobalPayout(ambiguous.ID)
+			if err = g.StartGlobalPayoutDispatch(ambiguous.ID, first.LeaseUntil, now); err != nil {
+				t.Fatal(err)
+			}
 			_, _ = g.ClaimGlobalPayout(ambiguous.ID, now.Add(2*time.Minute))
-			if err = g.RecordGlobalPayoutRejection(ambiguous.ID, 1, "forbidden"); !errors.Is(err, store.ErrPayoutConflict) {
+			second, _ := g.GetGlobalPayout(ambiguous.ID)
+			if err = g.StartGlobalPayoutDispatch(ambiguous.ID, second.LeaseUntil, now.Add(2*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			if err = g.RecordGlobalPayoutRejection(ambiguous.ID, 1, "forbidden", first.LeaseUntil); !errors.Is(err, store.ErrPayoutConflict) {
 				t.Fatal("stale rejection accepted after a subsequent send")
 			}
 		})

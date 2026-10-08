@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -17,6 +17,18 @@ artifact verification, not a failed model test or notarization rejection. A
 retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
+
+### 0.9.19 candidate rollout
+
+**0.9.19 is prepared, not published or qualified.** This candidate adds the
+[SSD write-endurance correction](../../CHANGELOG.md#0919---prepared-candidate-not-published).
+Before publication, verify `scripts/check-release-version.sh 0.9.19`, the full
+provider/MLX build, LaunchAgent integration and provider regression suites, and
+the exact signed artifact. Confirm that cache reconstruction and provider
+restart retain the write budget, and measure live disk writes separately from
+accelerated accounting tests. A development signature is not a Developer ID
+distribution signature. Preserve existing provider workloads during validation;
+version preparation is not authorization to tag, register, publish or deploy.
 
 ### 0.9.18 candidate rollout
 

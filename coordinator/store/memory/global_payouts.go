@@ -21,7 +21,7 @@ func cloneGlobalPayout(p store.GlobalPayout) store.GlobalPayout {
 }
 
 func globalPayoutReconcile(p store.GlobalPayout, now time.Time) bool {
-	return !p.RequiresManualReconciliation() && (p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.SubmittedAt) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
+	return !p.RequiresManualReconciliation() && (p.Status == "queued" || p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.ReconciliationWindowStart()) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
 }
 
 var _ store.GlobalPayoutStore = (*MemoryStore)(nil)
@@ -158,22 +158,20 @@ func (s *MemoryStore) globalPayoutLedgerLocked(p store.GlobalPayout, amount int6
 	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{ID: s.ledgerSeq, AccountID: p.AccountID, Type: kind, AmountMicroUSD: amount, BalanceAfter: s.balances[p.AccountID], Reference: ref, CreatedAt: now})
 }
 
-func (s *MemoryStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) {
+func (s *MemoryStore) ClaimGlobalPayout(id string, now time.Time) (*store.GlobalPayout, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.globalPayouts[id]
 	if !ok {
-		return false, store.ErrNotFound
+		return nil, store.ErrNotFound
 	}
 	if p.Status == "quoted" || p.Refunded || p.RequiresManualReconciliation() || p.LeaseUntil.After(now) {
-		return false, nil
+		return nil, nil
 	}
-	if p.ExternalID == "" && p.Rejection == nil {
-		p.DispatchAttempts++
-	}
-	p.LeaseUntil = now.Add(time.Minute)
+	p.LeaseUntil = now.Add(2 * time.Minute)
 	s.globalPayouts[id] = p
-	return true, nil
+	p = cloneGlobalPayout(p)
+	return &p, nil
 }
 
 func (s *MemoryStore) ApplyGlobalPayout(id string, r store.GlobalPayoutResult, now time.Time) error {

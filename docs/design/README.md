@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -17,6 +17,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [autopilot-quality-improvements.md](autopilot-quality-improvements.md) | Proposed | 2026-10-07 | Evidence-led workload calibration, explainable placement valuation, load timing and bounded live measurement |
 | [first-content-performance.md](first-content-performance.md) | In progress | 2026-09-28 | Coordinator first-content routing, followed by qualified provider profiles and fleet placement |
 | [routing-v2.md](routing-v2.md) | Implemented | 2026-06-16 | Admit by measurement, serve all compute, never ship bad streams — the plan behind today's [`../architecture/routing.md`](../architecture/routing.md) |
 | [routing-v2-attestation-churn.md](routing-v2-attestation-churn.md) | Implemented | 2026-06-16 | W5 root cause of code-attestation churn and its fix |

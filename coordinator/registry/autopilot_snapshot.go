@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/autopilotcontrol"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/kvbudget"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 
 	memorypolicy "github.com/eigeninference/d-inference/coordinator/internal/registry/memorypolicy"
@@ -43,14 +44,27 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 		}
 	}
 	f.LegacyPending = r.pendingLoads.CountStartedBeforeExpiry(now)
+	providers := make([]*Provider, 0, len(r.providers))
 	for _, p := range r.providers {
+		providers = append(providers, p)
+	}
+	estimates := r.coldKVEstimatesLocked(providers, "", now)
+	for _, p := range providers {
 		p.mu.Lock()
 		placement := p.autopilotState.Placement(p.ModelAutopilot, now, c.config.CommandWatchdog)
-		n := autopilot.Node{ID: p.ID, Seq: p.capacitySeq, Managed: providerAutopilotManagedLocked(p) || (c.config.ObserveOnly && providerAutopilotConsentedLocked(p) && !p.ModelAutopilot.Paused), Pending: placement.Pending, MemoryPressure: p.SystemMetrics.MemoryPressure, Fits: map[string]autopilot.ModelFit{}}
+		observeOnly := !c.liveMachineLocked(p)
+		n := autopilot.Node{
+			ID: p.ID, Seq: p.capacitySeq, ObserveOnly: observeOnly,
+			Consented:     !p.PrivateOnly && providerAutopilotConsentedLocked(p),
+			ControlActive: !observeOnly && providerAutopilotControlActiveLocked(p),
+			Managed:       providerAutopilotManagedLocked(p) || (observeOnly && providerAutopilotConsentedLocked(p) && !p.ModelAutopilot.Paused),
+			Pending:       placement.Pending, MemoryPressure: p.SystemMetrics.MemoryPressure, Fits: map[string]autopilot.ModelFit{},
+			HypotheticalFits: map[string]autopilot.ModelFit{},
+		}
 		n.UnscopedBusy = unscoped[p.ID]
 		n.Uncertain = placement.Uncertain
 		maxAge := c.config.ControlSnapshotMaxAge()
-		if !providerAutopilotControlActiveLocked(p) {
+		if !n.ControlActive {
 			// Ordinary, waiting, observed and explicitly paused providers may
 			// legitimately use a slower heartbeat. Preserve their donor credit
 			// through the normal serving window. Active control renewals force
@@ -72,39 +86,70 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 			f.Excluded["unreconciled_state"]++
 		}
 		for _, model := range p.Models {
-			if p.ModelAutopilot != nil && p.ModelAutopilot.Enabled && !providerAutopilotAllowsLocked(p, model.ID) {
-				continue
+			hypothetical := (p.ModelAutopilot == nil || !p.ModelAutopilot.Enabled || providerAutopilotAllowsLocked(p, model.ID)) &&
+				r.providerPassesAutopilotGatesLocked(p, model, RequestTraits{}, now)
+			serving := hypothetical
+			if !n.ControlActive {
+				// Waiting, expired and shadow peers retain only their ordinary
+				// serving permissions as real donors. Cached residency alone cannot
+				// protect a live action; hypothetical grants can also lose dedication.
+				serving = r.providerPassesRoutingGatesLocked(p, model.ID, RequestTraits{}, false, now)
 			}
 			// Keep base residency independent of a specialized request shape.
 			// Each cohort earns capacity only from providers qualified for it.
-			if !r.providerPassesAutopilotGatesLocked(p, model, RequestTraits{}, now) {
+			if !serving && !hypothetical {
 				continue
 			}
 			found := false
 			for key, d := range byModel[model.ID] {
 				found = true
-				if !r.providerPassesAutopilotGatesLocked(p, model, RequestTraitsForAutopilot(d.Requirements), now) || (d.RequiresVision && !model.IsVision) {
+				if d.RequiresVision && !model.IsVision {
 					continue
 				}
-				fit := r.autopilotModelFitLocked(p, model.ID, d, c.config)
+				traits := RequestTraitsForAutopilot(d.Requirements)
+				hypotheticalShape := hypothetical && r.providerPassesAutopilotGatesLocked(p, model, traits, now)
+				servingShape := hypotheticalShape
+				if !n.ControlActive {
+					servingShape = serving && r.providerPassesRoutingGatesLocked(p, model.ID, traits, false, now)
+				}
+				if !servingShape && !hypotheticalShape {
+					continue
+				}
+				fit := r.autopilotModelFitLocked(p, model.ID, d, c.config, estimates)
 				if fit.Rate > 0 {
-					n.Fits[key] = fit
+					if servingShape {
+						n.Fits[key] = fit
+					}
+					if hypotheticalShape {
+						n.HypotheticalFits[key] = fit
+					}
 				}
 			}
 			if !found {
-				n.Fits[model.ID] = r.autopilotModelFitLocked(p, model.ID, autopilot.DemandView{}, c.config)
+				fit := r.autopilotModelFitLocked(p, model.ID, autopilot.DemandView{}, c.config, estimates)
+				if serving {
+					n.Fits[model.ID] = fit
+				}
+				if hypothetical {
+					n.HypotheticalFits[model.ID] = fit
+				}
 			}
 
 			for _, slot := range p.BackendCapacity.Slots {
 				if slot.Model == model.ID && (slot.State == "idle" || slot.State == "running") {
-					n.Residents = append(n.Residents, model.ID)
+					if serving {
+						n.Residents = append(n.Residents, model.ID)
+					}
+					if hypothetical {
+						n.HypotheticalResidents = append(n.HypotheticalResidents, model.ID)
+					}
 					break
 				}
 			}
 		}
 		// Do not authorize a plan that ignores an off-catalog/local resident or
 		// resident rejected by current safety gates. Its owner retains control.
-		if n.Managed && !slices.Equal(autopilot.SortedStrings(n.Residents), autopilot.ResidentIDs(n.State)) {
+		if n.Managed && !slices.Equal(autopilot.SortedStrings(n.HypotheticalResidents), autopilot.ResidentIDs(n.State)) {
 			n.Idle = false
 			f.Excluded["unmanaged_resident"]++
 		}
@@ -119,7 +164,7 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 	return f
 }
 
-func (r *Registry) autopilotModelFitLocked(p *Provider, model string, d autopilot.DemandView, cfg autopilot.Config) autopilot.ModelFit {
+func (r *Registry) autopilotModelFitLocked(p *Provider, model string, d autopilot.DemandView, cfg autopilot.Config, estimates coldKVEstimates) autopilot.ModelFit {
 	solo := r.resolvedSoloModelTPSLocked(p, model)
 	_, prefill := resolvedModelTPSLocked(p, model)
 	cap := r.effectiveMaxConcurrencyForModelRateLocked(p, model, solo)
@@ -154,13 +199,20 @@ func (r *Registry) autopilotModelFitLocked(p *Provider, model string, d autopilo
 			weights = offload
 		}
 		_, sampleCount := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware))
+		rate := estimates.Rate(p, model)
+		for _, slot := range evidence.Slots {
+			if slot.Model == model && slot.KVBytesPerToken > 0 {
+				rate = kvbudget.ClampRate(slot.KVBytesPerToken)
+				break
+			}
+		}
 		// Structural KV is only a cold-model prefilter; a completed load must
 		// still report actual usable budgets before receiving capacity credit.
 		return autopilotcontrol.FitLimits{
 			WeightsGiB: weights, Restricted: len(entry.RequiredProviderCapabilities) > 0,
 			Measured:        sampleCount >= r.qualityPolicyLocked().MinSamples(),
 			HardwareFits:    modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), float64(p.Hardware.MemoryGB)),
-			ColdTokenBudget: memorypolicy.ColdTokenBudgetWithOffload(float64(p.Hardware.MemoryGB), r.catalogSizeGBLocked(model), offload, 0, model),
+			ColdTokenBudget: memorypolicy.ColdTokenBudgetWithOffload(float64(p.Hardware.MemoryGB), r.catalogSizeGBLocked(model), offload, rate, model),
 		}
 	})
 }

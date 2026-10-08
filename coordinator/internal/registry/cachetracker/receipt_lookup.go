@@ -1,6 +1,7 @@
 package cachetracker
 
 import (
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
@@ -60,7 +61,7 @@ func (t *Tracker[P]) ApplyLookupV2(
 	} else {
 		attempt.LookupSeen = true
 	}
-	t.StoreAttemptLocked(msg.CacheReceiptNonce, attempt)
+	t.attempts.Store(strings.Clone(msg.CacheReceiptNonce), attempt)
 	switch msg.Outcome {
 	case "hit":
 		anchor := *msg.MatchedAnchor

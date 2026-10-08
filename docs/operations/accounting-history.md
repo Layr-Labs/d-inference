@@ -1,6 +1,6 @@
 # Queryable accounting history
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Preserve complete accounting-history snapshots in private Cloud Storage and
 query them through BigQuery. This copy-only phase does not change billing,
@@ -13,6 +13,11 @@ Use for `usage`, `provider_earnings`, `ledger_entries`, and
 defined by `scripts/telemetry_archive/src/telemetry_archive/tables.py`
 (`ACCOUNTING_FIELDS`). Current balances, users, authentication material and
 live withdrawal workflows are not exportable with this worker.
+
+Autopilot top-up ledger/earning rows fall within those existing captures, but
+the new reward pool, baseline, consent and settlement tables do not. Consult the
+[reward archive boundary](../architecture/storage.md#retention-and-archive-boundary)
+before treating a capture as restoration or complete financial audit evidence.
 
 ## Prerequisites
 

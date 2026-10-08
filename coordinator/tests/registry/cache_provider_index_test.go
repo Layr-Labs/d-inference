@@ -17,11 +17,14 @@ type providerIndexFixture struct {
 }
 
 func newProviderIndexFixture(t *testing.T) *providerIndexFixture {
-	return &providerIndexFixture{
-		t:       t,
-		tracker: newCacheIndexKernelFixture(cachetracker.Settings{TTL: 25 * time.Minute, MaxHolders: indexKernelMaxHolders, MaxEntries: indexKernelMaxEntries, MaxAttempts: indexKernelMaxAttempts}),
-		now:     time.Unix(1_700_000_000, 0),
+	fixture := &providerIndexFixture{
+		t:   t,
+		now: time.Unix(1_700_000_000, 0),
 	}
+	now := func() time.Time { return fixture.now }
+	fixture.tracker = newCacheIndexKernelFixture(cachetracker.Settings{TTL: 25 * time.Minute, MaxHolders: indexKernelMaxHolders, MaxEntries: indexKernelMaxEntries, MaxAttempts: indexKernelMaxAttempts},
+		func(config *cachetracker.Config[*production.Provider]) { config.Now = now })
+	return fixture
 }
 
 // seed gives every provider one holder per model, tier and content key, one

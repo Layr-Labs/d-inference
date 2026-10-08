@@ -1,4 +1,4 @@
-"""Persistent pilot state. Contents SHA compare-and-swap serializes all spend.
+"""Persistent review budget state. Contents SHA compare-and-swap serializes all spend.
 
 The dedicated branch must be initialized by a maintainer. A missing ledger,
 permission failure, conflict exhaustion or uncertain write never permits spend.
@@ -28,8 +28,11 @@ def fresh():
 
 
 class State:
-    def __init__(self, github):
+    def __init__(self, github, budget_mode="pilot"):
+        if budget_mode not in ("pilot", "daily"):
+            raise BudgetStopped("Invalid review budget mode; expected pilot or daily")
         self.github = github
+        self.budget_mode = budget_mode
 
     def read(self, path):
         try:
@@ -55,14 +58,18 @@ class State:
             body["sha"] = sha
         return self.github.call(f"/contents/{path}", body, "PUT")
 
+    def read_ledger(self):
+        ledger, sha = self.read("ledger.json")
+        if (not sha or not isinstance(ledger, dict) or ledger.get("version") != 1
+                or type(ledger.get("halted")) is not bool
+                or not isinstance(ledger.get("requests"), dict)
+                or not isinstance(ledger.get("prs"), list)):
+            raise BudgetStopped("Budget ledger is not initialized or is invalid; no paid request allowed")
+        return ledger, sha
+
     def mutate(self, update):
         for _ in range(8):
-            ledger, sha = self.read("ledger.json")
-            if (not sha or not isinstance(ledger, dict) or ledger.get("version") != 1
-                    or type(ledger.get("halted")) is not bool
-                    or not isinstance(ledger.get("requests"), dict)
-                    or not isinstance(ledger.get("prs"), list)):
-                raise BudgetStopped("Budget ledger is not initialized or is invalid; no paid request allowed")
+            ledger, sha = self.read_ledger()
             result = update(ledger)
             try:
                 self.write("ledger.json", ledger, sha)
@@ -72,34 +79,48 @@ class State:
                     raise
         raise BudgetStopped("Concurrent budget updates did not settle; no paid request allowed")
 
+    def check_reservation(self, ledger, pr, run, tier, amount, day):
+        if ledger["halted"]:
+            raise BudgetStopped("Budget circuit breaker is open; maintainer investigation required")
+        rows = list(ledger["requests"].values())
+        # Validate every row before arithmetic; never default missing cost to zero.
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get("charge")) is not int
+                    or row["charge"] < 0 or type(row.get("settled")) is not bool
+                    or not all(k in row for k in ("day", "pr", "run", "tier"))):
+                raise BudgetStopped("Invalid budget ledger; no paid request allowed")
+        if len(rows) >= 1000:
+            raise BudgetStopped("Review ledger request capacity reached; maintainer maintenance required")
+        if self.budget_mode == "pilot" and pr not in ledger["prs"] and len(ledger["prs"]) >= CAPS["prs"]:
+            raise BudgetStopped("Ten-PR pilot complete; maintainer evaluation required")
+        checks = [
+            ("repo_day", [r for r in rows if r["day"] == day or not r["settled"]]),
+            ("pr_day", [r for r in rows if r["pr"] == pr and (r["day"] == day or not r["settled"])]),
+            (tier, [r for r in rows if r["run"] == run and r["tier"] == tier]),
+        ]
+        if self.budget_mode == "pilot":
+            checks.insert(0, ("pilot", rows))
+        for name, selected in checks:
+            if sum(r["charge"] for r in selected) + amount > CAPS[name]:
+                raise BudgetStopped(f"{name} spending limit reached; remaining coverage deferred")
+
+    def check_capacity(self):
+        """Read-only snapshot: a new PR must have room for a normal attempt.
+
+        This does not reserve funds or guarantee a later request. Every actual
+        reservation still rechecks caps atomically, including unknown charges.
+        """
+        ledger, _ = self.read_ledger()
+        self.check_reservation(ledger, None, None, "normal", CAPS["normal"],
+                               datetime.now(timezone.utc).date().isoformat())
+
     def reserve(self, pr, run, tier, amount, now=None):
         if tier not in ("normal", "deep") or type(amount) is not int or amount <= 0:
             raise BudgetStopped("Invalid cost reservation")
         day = (now or datetime.now(timezone.utc)).date().isoformat()
         ticket = uuid4().hex
         def update(ledger):
-            if ledger["halted"]:
-                raise BudgetStopped("Budget circuit breaker is open; maintainer investigation required")
-            rows = list(ledger["requests"].values())
-            # Validate every row before arithmetic; never default missing cost to zero.
-            for row in rows:
-                if (type(row.get("charge")) is not int or row["charge"] < 0
-                        or type(row.get("settled")) is not bool
-                        or not all(k in row for k in ("day", "pr", "run", "tier"))):
-                    raise BudgetStopped("Invalid budget ledger; no paid request allowed")
-            if len(rows) >= 1000:
-                raise BudgetStopped("Pilot request capacity reached")
-            if pr not in ledger["prs"] and len(ledger["prs"]) >= CAPS["prs"]:
-                raise BudgetStopped("Ten-PR pilot complete; maintainer evaluation required")
-            checks = [
-                ("pilot", rows),
-                ("repo_day", [r for r in rows if r["day"] == day or not r["settled"]]),
-                ("pr_day", [r for r in rows if r["pr"] == pr and (r["day"] == day or not r["settled"])]),
-                (tier, [r for r in rows if r["run"] == run and r["tier"] == tier]),
-            ]
-            for name, selected in checks:
-                if sum(r["charge"] for r in selected) + amount > CAPS[name]:
-                    raise BudgetStopped(f"{name} spending limit reached; remaining coverage deferred")
+            self.check_reservation(ledger, pr, run, tier, amount, day)
             if pr not in ledger["prs"]:
                 ledger["prs"].append(pr)
             ledger["requests"][ticket] = {"pr": pr, "run": run, "tier": tier, "day": day,
@@ -108,10 +129,10 @@ class State:
         return self.mutate(update)
 
     def admit(self, pr):
-        """Count even cache-only PRs toward the bounded pilot before scanning."""
+        """Record PR admission; the default pilot also counts cache-only reviews."""
         def update(ledger):
             if pr not in ledger["prs"]:
-                if len(ledger["prs"]) >= CAPS["prs"]:
+                if self.budget_mode == "pilot" and len(ledger["prs"]) >= CAPS["prs"]:
                     raise BudgetStopped("Ten-PR pilot complete; maintainer evaluation required")
                 ledger["prs"].append(pr)
         self.mutate(update)

@@ -3230,10 +3230,18 @@ such command is a stub that records its arguments. It also reads
 `vars.DEV_DEPLOY_PAUSED` to `deploy.sh`, the steps must run in `bash` with
 `pipefail`, and the file must not contain
 `--override-pause`, a job environment, a pull request trigger or a secret.
-It runs `scripts/devnet-suite.sh` against a stub `curl`, and it checks the
+The tests also pin its `master`-only push and dispatch triggers, the
+permissions of each job (the cloud token and `actions: write` are in different
+jobs), the concurrency groups with `cancel-in-progress: false`, and the
+provider release pairing against the commit deployed before; the pairing
+script runs against a stub `gh`.
+It runs `scripts/devnet-suite.sh` against a stub `curl` and `git` (the tested
+commit must be on `origin/master`), and it checks the
 rules of `.github/workflows/devnet-suite.yml`: the concurrency group, the
 `DEVNET_SUITE_ENABLED` switch on each job, the 3-hour schedule, the threshold
-of 10 commits, no job environment, and no printed secret. Failure fixtures also prove
+of 10 commits, no job environment, no printed secret, and a failed gate job
+when `/health` is down (the gate script runs against a stub `curl`).
+`deploy.sh` ignores the check runs of that workflow. Failure fixtures also prove
 that host setup cannot format a blank or signed disk without the exact one-shot
 authorization; the seed ownership gate precedes mutation; pause and master are
 reread before SSH; CI waivers match every and only current failure; database

@@ -3,13 +3,20 @@
 # endpoints. .github/workflows/devnet-suite.yml runs it; a human can run it too.
 #
 # Usage:
-#   EXPECTED_COMMIT=<40-hex commit> [COORD=https://<host>] [API_KEY=<dev key>] scripts/devnet-suite.sh
+#   EXPECTED_COMMIT=<40-hex commit> [COORD=https://<host>] [API_KEY=<dev key>]
+#       [MASTER_REF=origin/master] scripts/devnet-suite.sh
 #
-# COORD defaults to https://<DOMAIN of deploy/gcp/dev/env-overrides>.
+# COORD defaults to https://<DOMAIN of deploy/gcp/dev/env-overrides>. The
+# checkout must have the history of MASTER_REF.
 # Checks:
 #   1. /health: status ok and build_commit = EXPECTED_COMMIT. Hard.
-#   2. /v1/stats: active_providers >= 1. Report only.
-#   3. scripts/smoke-dev.sh with the authenticated chat test, only when API_KEY
+#   2. EXPECTED_COMMIT is on MASTER_REF. Hard. The workflow takes
+#      EXPECTED_COMMIT from /health, so this is the check that can fail when
+#      dev runs a commit that is not on master.
+#   3. The number of MASTER_REF first-parent commits after EXPECTED_COMMIT.
+#      Report only: a paused deploy lags on purpose.
+#   4. /v1/stats: active_providers >= 1. Report only.
+#   5. scripts/smoke-dev.sh with the authenticated chat test, only when API_KEY
 #      is set. Hard when it runs. smoke-dev.sh also fails when no provider is
 #      attached.
 # Writes a Markdown report to GITHUB_STEP_SUMMARY when it is set, else to
@@ -22,6 +29,7 @@ DEV_DOMAIN=$(awk -F= '$1 == "DOMAIN" { print $2; exit }' "$ROOT/deploy/gcp/dev/e
 COORD=${COORD:-https://$DEV_DOMAIN}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:-}
 API_KEY=${API_KEY:-}
+MASTER_REF=${MASTER_REF:-origin/master}
 REPORT=${GITHUB_STEP_SUMMARY:-/dev/stdout}
 
 [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "usage: EXPECTED_COMMIT=<40-hex commit> $0" >&2; exit 2; }
@@ -39,6 +47,17 @@ else
     add_row "$label" hard fail
     hard_fail=1
     echo "::error::/health does not report $EXPECTED_COMMIT: ${body:-no answer}"
+fi
+
+label="the tested commit is on $MASTER_REF"
+if git -C "$ROOT" merge-base --is-ancestor "$EXPECTED_COMMIT" "$MASTER_REF" 2>/dev/null; then
+    add_row "$label" hard pass
+    behind=$(git -C "$ROOT" rev-list --first-parent --count "$EXPECTED_COMMIT..$MASTER_REF" 2>/dev/null) || behind=""
+    add_row "master commits after the tested commit (now ${behind:-unknown})" report "$([[ "$behind" =~ ^[0-9]+$ ]] && echo pass || echo fail)"
+else
+    add_row "$label" hard fail
+    hard_fail=1
+    echo "::error::$EXPECTED_COMMIT is not on $MASTER_REF, or the checkout has no history of $MASTER_REF"
 fi
 
 providers=$(curl -fsS --max-time 10 "$COORD/v1/stats" 2>/dev/null | jq -r '.active_providers // 0' 2>/dev/null) || providers=""

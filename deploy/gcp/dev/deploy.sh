@@ -79,6 +79,9 @@ REQUIRED_CHECKS=(
 # not decide whether the coordinator can deploy, so the gate ignores them.
 # jq programs that read status contexts start with this definition.
 GATED_STATUS_JQ='def gated: .context | ascii_downcase | startswith("vercel") | not; '
+# The jobs of devnet-suite.yml test the deployed coordinator; they are not a
+# deploy gate either. Each one is named "DevNet suite...".
+GATED_RUN_JQ='def gated: .name | startswith("DevNet suite") | not; '
 BUILD_WAIT_S=${BUILD_WAIT_S:-1200}
 CI_WAIT_S=${CI_WAIT_S:-1200}
 MIGRATE_ONLY=${MIGRATE_ONLY:-1}
@@ -303,13 +306,18 @@ verify_ci() {
     running=$(printf '%s' "$checks" | jq -r '.[].check_runs[] | select(.status != "completed") | .name' |
         LC_ALL=C sort -u | paste -sd, -)
     [ -z "$running" ] || echo "REPORT not required and not finished: $running"
-    ungated=$(printf '%s' "$statuses" | jq -r "$GATED_STATUS_JQ"'.[].statuses[] | select(gated | not) | "\(.context)=\(.state)"' |
-        LC_ALL=C sort -u | paste -sd, -)
+    ungated=$(
+        {
+            printf '%s' "$checks" | jq -r "$GATED_RUN_JQ"'.[].check_runs[] |
+                select(.status == "completed" and (gated | not)) | "\(.name)=\(.conclusion)"'
+            printf '%s' "$statuses" | jq -r "$GATED_STATUS_JQ"'.[].statuses[] | select(gated | not) | "\(.context)=\(.state)"'
+        } | LC_ALL=C sort -u | paste -sd, -
+    )
     [ -z "$ungated" ] || echo "REPORT not a deploy gate: $ungated"
     failures=$(
         {
-            printf '%s' "$checks" | jq -r '.[].check_runs[] |
-                select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not)) | .name'
+            printf '%s' "$checks" | jq -r "$GATED_RUN_JQ"'.[].check_runs[] |
+                select(.status == "completed" and gated and (.conclusion | IN("success", "neutral", "skipped") | not)) | .name'
             printf '%s' "$statuses" | jq -r "$GATED_STATUS_JQ"'.[].statuses[] |
                 select(.state != "success" and .state != "pending" and gated) | .context'
         } | LC_ALL=C sort -u

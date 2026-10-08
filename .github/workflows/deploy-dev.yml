@@ -44,8 +44,12 @@ on:
 permissions:
   contents: read
 
+# GitHub keeps one running and one pending run per group, and a newer run
+# replaces the pending one. A rollback has its own group, so a push cannot
+# replace a pending rollback. swap.sh holds a lock on the VM, so two swaps do
+# not interleave.
 concurrency:
-  group: deploy-dev
+  group: deploy-dev-${{ inputs.mode == 'rollback' && 'rollback' || 'deploy' }}
   cancel-in-progress: false
 
 # An explicit bash shell adds pipefail, so `deploy.sh | tee` fails when deploy.sh fails.
@@ -68,9 +72,12 @@ jobs:
     permissions:
       contents: read
       id-token: write   # WIF token
-      actions: write    # dispatch release-swift.yml on a provider version bump
     env:
       MODE: ${{ inputs.mode || 'deploy' }}
+    outputs:
+      healthy: ${{ steps.health.outcome == 'success' }}
+      mode: ${{ inputs.mode || 'deploy' }}
+      before_commit: ${{ steps.before.outputs.commit }}
     steps:
       - name: Record start
         run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
@@ -103,11 +110,14 @@ jobs:
         with:
           skip_install: ${{ steps.gcloud.outputs.present }}
 
-      - name: Read attached providers before the swap
+      - name: Read attached providers and the deployed commit before the swap
         id: before
         run: |
           n=$(curl -fsS --max-time 10 "$COORD/v1/stats" | jq -r '.active_providers // 0') || n=unknown
           echo "providers=$n" >> "$GITHUB_OUTPUT"
+          commit=$(curl -fsS --max-time 10 "$COORD/health" | jq -r '.build_commit // empty') || commit=""
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || commit=""
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Build wait, step 1 and swap (deploy/gcp/dev/deploy.sh)
         id: deploy
@@ -172,22 +182,6 @@ jobs:
         continue-on-error: true
         run: scripts/smoke-dev.sh
 
-      - name: Dispatch dev provider release on a version bump
-        id: pair
-        if: github.event_name == 'push' && steps.health.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BEFORE: ${{ github.event.before }}
-        run: |
-          if [[ "$BEFORE" =~ ^0+$ ]]; then echo "result=no base commit" >> "$GITHUB_OUTPUT"; exit 0; fi
-          read_version() { awk -F'"' '/^var LatestProviderVersion =/ { print $2 }'; }
-          now=$(read_version < coordinator/api/server.go)
-          git fetch --no-tags --depth=1 origin "$BEFORE"
-          was=$(git show "$BEFORE:coordinator/api/server.go" | read_version)
-          if [ "$now" = "$was" ]; then echo "result=not needed ($now)" >> "$GITHUB_OUTPUT"; exit 0; fi
-          gh workflow run release-swift.yml --repo "$GITHUB_REPOSITORY" --ref master -f environment=dev
-          echo "result=dispatched release-swift.yml environment=dev for $was -> $now" >> "$GITHUB_OUTPUT"
-
       - name: Remove the OS Login key
         if: always() && steps.deploy.outcome != 'skipped'
         continue-on-error: true
@@ -201,7 +195,6 @@ jobs:
           DEPLOYED: ${{ steps.deploy.outputs.deployed }}
           REATTACH: ${{ steps.after.outcome }}
           SMOKE: ${{ steps.smoke.outcome }}
-          PAIR: ${{ steps.pair.outputs.result }}
         run: |
           d() { if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then echo "$(( $2 - $1 )) s"; else echo "n/a"; fi; }
           # A dispatch has no head commit; `date -d ""` would give midnight.
@@ -233,7 +226,7 @@ jobs:
             echo
             echo "Providers attached: before ${BEFORE_N:-n/a}, after ${AFTER_N} (check: ${REATTACH:-skipped})"
             echo
-            echo "Smoke: ${SMOKE:-skipped}. Provider release: ${PAIR:-skipped}."
+            echo "Smoke: ${SMOKE:-skipped}. Provider release: see the job of that name."
             echo
             echo '<details><summary>REPORT lines</summary>'
             echo
@@ -242,3 +235,46 @@ jobs:
             echo '```'
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # A separate job, so the token that can dispatch workflows is never in the
+  # job that has the cloud token.
+  pair-release:
+    name: Dispatch dev provider release on a version bump
+    needs: deploy
+    if: needs.deploy.outputs.healthy == 'true' && needs.deploy.outputs.mode == 'deploy'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write    # dispatch release-swift.yml
+    steps:
+      # Compare with the commit that /health reported before the swap, not
+      # with the push base: a push run that the pause skipped, or a dispatch,
+      # can carry the version bump.
+      - name: Compare LatestProviderVersion with the commit deployed before
+        id: pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ needs.deploy.outputs.before_commit }}
+        run: |
+          read_version() { awk -F'"' '/^var LatestProviderVersion =/ { print $2 }'; }
+          version_at() {
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/$GITHUB_REPOSITORY/contents/coordinator/api/server.go?ref=$1" | read_version
+          }
+          if [[ ! "$BEFORE" =~ ^[0-9a-f]{40}$ ]]; then
+            result="no commit was deployed before"
+          else
+            now=$(version_at "$GITHUB_SHA")
+            was=$(version_at "$BEFORE")
+            [[ "$now" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$was" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+              { echo "::error::cannot read LatestProviderVersion at $BEFORE and $GITHUB_SHA"; exit 1; }
+            if [ "$now" = "$was" ]; then
+              result="not needed ($now)"
+            else
+              gh workflow run release-swift.yml --repo "$GITHUB_REPOSITORY" --ref master -f environment=dev
+              result="dispatched release-swift.yml environment=dev for $was -> $now"
+            fi
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "Provider release: $result" >> "$GITHUB_STEP_SUMMARY"

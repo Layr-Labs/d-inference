@@ -1077,6 +1077,24 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("REPORT GitHub CI/check contexts are green", result.stdout)
         self.assert_read_only(box)
 
+    def test_devnet_suite_check_runs_do_not_gate_a_deploy(self):
+        # devnet-suite.yml is not a deploy gate. A red run on the candidate
+        # commit (for example a scheduled run on the master head) must not
+        # stop its deploy. Each of its jobs is named "DevNet suite...".
+        job_names = re.findall(r"(?m)^    name: (.+)$", SUITE_WORKFLOW.read_text())
+        self.assertEqual(len(job_names), 2)
+        self.assertTrue(all(name.startswith("DevNet suite") for name in job_names), job_names)
+        extra = [{"name": name, "status": "completed", "conclusion": "failure"} for name in job_names]
+        rules = self.deploy_rules()
+        self.set_rule(rules, "gh", "^api .*check-runs", self.check_runs(extra=extra))
+        box = Sandbox(self, MUTATORS, rules)
+        result = box.run([DEV / "deploy.sh", "--dry-run"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("REPORT GitHub CI/check contexts are green", result.stdout)
+        for name in job_names:
+            self.assertIn(f"{name}=failure", result.stdout)
+        self.assert_read_only(box)
+
     def test_ci_gate_waits_for_unfinished_required_checks(self):
         statuses = [{"context": name, "state": "success"} for name in GATED_STATUSES]
         statuses[0]["state"] = "pending"
@@ -2081,6 +2099,74 @@ class DeployWorkflowTests(unittest.TestCase):
             self.assertNotIn(banned, self.text, f"deploy-dev.yml has {banned}")
 
 
+    def jobs(self):
+        body = self.text.split("\njobs:\n", 1)[1]
+        heads = list(re.finditer(r"^  ([a-z0-9_-]+):\n", body, re.MULTILINE))
+        return {m.group(1): body[m.end():heads[i + 1].start() if i + 1 < len(heads) else len(body)]
+                for i, m in enumerate(heads)}
+
+    def test_triggers_are_master_pushes_and_dispatch_only(self):
+        on = self.text.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["push", "workflow_dispatch"])
+        self.assertIn("  push:\n    branches: [master]\n", on)
+        self.assertNotIn("tags:", on)
+
+    def test_permissions_are_least_privilege_per_job(self):
+        self.assertIn("\npermissions:\n  contents: read\n\n", self.text)
+        jobs = self.jobs()
+        self.assertEqual(sorted(jobs), ["deploy", "pair-release"])
+        self.assertIn("    permissions:\n      contents: read\n      id-token: write   # WIF token\n    env:",
+                      jobs["deploy"])
+        self.assertNotIn("actions: write", jobs["deploy"])
+        self.assertNotIn("id-token", jobs["pair-release"])
+        self.assertIn("    permissions:\n      contents: read\n      actions: write", jobs["pair-release"])
+
+    def test_concurrency_never_cancels_and_keeps_a_rollback_apart(self):
+        # GitHub keeps one pending run per group; a newer one replaces it. A
+        # push must not replace a pending rollback. swap.sh's VM lock keeps two
+        # swaps from interleaving.
+        self.assertIn("\nconcurrency:\n  group: deploy-dev-${{ inputs.mode == 'rollback' && 'rollback' || 'deploy' }}\n"
+                      "  cancel-in-progress: false\n", self.text)
+
+    def pair_script(self):
+        step = self.jobs()["pair-release"].split("        id: pair\n", 1)[1].split("\n      - ", 1)[0]
+        return step
+
+    def test_release_pairing_compares_with_the_commit_deployed_before(self):
+        # A push run that the pause skipped, or a dispatch, must still pair a
+        # provider version bump: compare with what /health reported before.
+        jobs = self.jobs()
+        self.assertIn("          commit=$(curl -fsS --max-time 10 \"$COORD/health\" | jq -r '.build_commit // empty')",
+                      jobs["deploy"])
+        step = self.pair_script()
+        self.assertIn("          BEFORE: ${{ needs.deploy.outputs.before_commit }}\n", step)
+        self.assertNotIn("github.event.before", self.text)
+        self.assertRegex(jobs["pair-release"],
+                         r"(?m)^    if: needs\.deploy\.outputs\.healthy == 'true' && needs\.deploy\.outputs\.mode == 'deploy'$")
+        script = "\n".join(line[10:] for line in step.split("        run: |\n", 1)[1].splitlines()) + "\n"
+        deployed = "b" * 40
+        for before, was, dispatched in ((COMMIT, "0.0.1", True), (COMMIT, "0.0.2", False), ("", "0.0.1", False)):
+            with self.subTest(before=before, was=was):
+                api = r"^api -H Accept: application/vnd\.github\.raw repos/Layr-Labs/d-inference/contents/coordinator/api/server\.go\?ref="
+                box = Sandbox(self, ["gh"], [
+                    ["gh", api + COMMIT + "$", f'var LatestProviderVersion = "{was}"\n', 0],
+                    ["gh", api + deployed + "$", 'var LatestProviderVersion = "0.0.2"\n', 0],
+                ])
+                output, summary = box.root / "output", box.root / "summary"
+                output.touch()
+                summary.touch()
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=box.root,
+                                        env={**box.env, "BEFORE": before, "GITHUB_SHA": deployed,
+                                             "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
+                                             "GITHUB_REPOSITORY": "Layr-Labs/d-inference"},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                runs = [c for c in box.calls("gh") if c[1:3] == ["workflow", "run"]]
+                self.assertEqual(runs, [["gh", "workflow", "run", "release-swift.yml", "--repo", "Layr-Labs/d-inference",
+                                         "--ref", "master", "-f", "environment=dev"]] if dispatched else [])
+                self.assertIn("Provider release: ", summary.read_text())
+
+
 class DevnetSuiteWorkflowTests(unittest.TestCase):
     """devnet-suite.yml implements the DBLM-575 cadence and never prints a secret."""
 
@@ -2117,6 +2203,31 @@ class DevnetSuiteWorkflowTests(unittest.TestCase):
         for banned in ("environment:", "id-token", "pull_request"):
             self.assertNotIn(banned, self.text, f"devnet-suite.yml has {banned}")
 
+    def decide_step(self):
+        step = self.text.split("        id: decide\n", 1)[1].split("\n      - ", 1)[0]
+        script = step.split("        run: |\n", 1)[1]
+        return "\n".join(line[10:] for line in script.splitlines()) + "\n"
+
+    def test_gate_fails_and_says_so_when_health_is_down(self):
+        box = Sandbox(self, ["curl", "gh"], [["curl", "/health$", "", 7]])
+        output, summary = box.root / "output", box.root / "summary"
+        output.touch()
+        summary.touch()
+        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", self.decide_step()], cwd=ROOT,
+                                env={**box.env, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
+                                     "FORCE": "false", "RUNNER_TEMP": str(box.root)},
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("run=false", output.read_text())
+        self.assertRegex(summary.read_text(), r"Gate: fail\. https://\S+/health is down or gives no build_commit")
+        self.assertIn("::error::", result.stdout)
+        self.assertEqual(box.calls("gh"), [])
+
+    def test_suite_job_has_the_master_history(self):
+        suite = self.jobs()["suite"]
+        self.assertRegex(suite, r"(?m)^          fetch-depth: 0( +#.*)?$")
+        self.assertIn("          filter: tree:0\n", suite)
+
     def test_no_secret_is_echoed(self):
         secret_lines = [line for line in self.text.splitlines() if "secrets." in line]
         self.assertEqual(len(secret_lines), 2)
@@ -2132,16 +2243,18 @@ class DevnetSuiteWorkflowTests(unittest.TestCase):
 class DevnetSuiteScriptTests(unittest.TestCase):
     COORD = "https://dev.example.invalid"
 
-    def run_suite(self, health_commit=COMMIT, providers=2, api_key=""):
+    def run_suite(self, health_commit=COMMIT, providers=2, api_key="", on_master=True):
         health = json.dumps({"status": "ok", "build_commit": health_commit})
         rules = [
+            ["git", f"merge-base --is-ancestor {COMMIT} origin/master$", "", 0 if on_master else 1],
+            ["git", f"rev-list --first-parent --count {COMMIT}\\.\\.origin/master$", "3\n", 0],
             ["curl", "/health$", health, 0],
             ["curl", "/v1/stats$", json.dumps({"active_providers": providers}), 0],
             ["curl", "/v1/models/catalog$", json.dumps({"models": [{"id": "m"}]}), 0],
             ["curl", "/install.sh$", f"COORD={self.COORD}\n", 0],
             ["curl", "/v1/chat/completions$", "200", 0],
         ]
-        box = Sandbox(self, ["curl"], rules)
+        box = Sandbox(self, ["curl", "git"], rules)
         summary = box.root / "summary.md"
         summary.touch()
         result = box.run([SUITE], {"COORD": self.COORD, "EXPECTED_COMMIT": COMMIT, "API_KEY": api_key,
@@ -2171,6 +2284,17 @@ class DevnetSuiteScriptTests(unittest.TestCase):
         self.assertIn("/v1/chat/completions", json.dumps(box.calls()))
         for text in (result.stdout, result.stderr, summary):
             self.assertNotIn(key, text)
+
+    def test_the_tested_commit_must_be_on_master(self):
+        # /health and EXPECTED_COMMIT come from the same answer in the gate,
+        # so the master history is the check that can fail.
+        _, result, summary = self.run_suite()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("| the tested commit is on origin/master | hard | pass |", summary)
+        self.assertIn("| master commits after the tested commit (now 3) | report | pass |", summary)
+        _, result, summary = self.run_suite(on_master=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("| the tested commit is on origin/master | hard | fail |", summary)
 
     def test_usage_error_without_a_commit(self):
         box = Sandbox(self, ["curl"], [])

@@ -354,13 +354,23 @@ What one run does:
 3. Notify only: providers attach again within 120 s, and
    `scripts/smoke-dev.sh`. The workflow has no secrets, so the authenticated
    chat test does not run.
-4. When a push changes the `var LatestProviderVersion` line, the job starts
-   `release-swift.yml` with `environment=dev` on `master`. It does not wait
-   for that run.
-5. It removes the SSH key from the OS Login profile and writes the job
+4. It removes the SSH key from the OS Login profile and writes the job
    summary: the time from merge to healthy, the `dev-build` times, the swap
-   result line, the provider counts, the smoke and provider release results,
-   and the `REPORT` lines.
+   result line, the provider counts, the smoke result and the `REPORT` lines.
+5. After a healthy deploy (a push or a `mode=deploy` dispatch), a separate job
+   compares `LatestProviderVersion` of the deployed commit with the commit
+   that `/health` reported before the swap. If they are different, it starts
+   `release-swift.yml` with `environment=dev` on `master`. It does not wait
+   for that run. This job has the only `actions: write` token, and it has no
+   cloud token. A push run that the pause skipped, or a dispatch, does not
+   cause a missed release.
+
+A rollback dispatch has its own concurrency group (`deploy-dev-rollback`);
+deploys use `deploy-dev-deploy`. In each group one run is active and one is
+pending; a newer run replaces the pending run, and no run is cancelled. So a
+push cannot replace a pending rollback. The VM lock of `swap.sh` keeps a
+rollback and a deploy from swapping at the same time; the second one stops
+with `FAIL another swap or rollback holds ...`. Run it again.
 
 Manual runs (always `--ref master`; WIF refuses other branches):
 
@@ -469,8 +479,9 @@ Each row is a separate store write, so a large run takes a long time. Keep
 tests the deployed dev coordinator with
 [`scripts/devnet-suite.sh`](../../scripts/devnet-suite.sh) (Linear DBLM-575).
 It uses only public endpoints. It has no GCP access, it is not a deploy gate,
-and it does not touch production. Each deploy keeps its own check in
-`deploy-dev.yml` (step 7).
+and it does not touch production. `deploy.sh` ignores its check runs (each
+job name starts with `DevNet suite`) and lists them in a `REPORT not a deploy
+gate` line. Each deploy keeps its own check in `deploy-dev.yml` (step 7).
 
 Cadence:
 
@@ -480,7 +491,8 @@ Cadence:
 - The run is skipped when the deployed commit is the last tested commit. A
   dispatch with `-f force=true` always runs.
 - The deployed commit is `build_commit` of the public `/health`. If `/health`
-  does not answer, the run is skipped with a notice, also with `force=true`.
+  is down or gives no `build_commit`, the gate job fails, its summary says
+  so, and the suite does not run. This is also true with `force=true`.
 - The last tested commit is in the artifact `devnet-suite-tested-commit` of
   the newest successful run (kept 90 days). If there is no artifact, the
   suite runs.
@@ -492,6 +504,8 @@ Checks:
 | Check | Kind |
 |---|---|
 | `/health` `status` `ok` and `build_commit` = the tested commit | hard |
+| The tested commit is on `origin/master`. The gate takes the tested commit from `/health`, so this is the check that fails when dev runs a commit that is not on `master` | hard |
+| The number of first-parent `master` commits after the tested commit. A paused deploy lags on purpose | report only |
 | `active_providers` >= 1 | report only |
 | `scripts/smoke-dev.sh` with the authenticated chat test, only when the repository secret `DEVNET_SMOKE_API_KEY` is set | hard when it runs |
 

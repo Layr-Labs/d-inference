@@ -8,8 +8,9 @@ name: DevNet Suite
 # Cadence: every 3 hours, or after MERGE_THRESHOLD first-parent master commits
 # since the last tested commit, whichever comes first. A run is skipped when
 # the deployed commit is the last tested commit; workflow_dispatch with
-# force=true runs then too. A run is always skipped when the public /health
-# gives no build_commit.
+# force=true runs then too. When the public /health is down or gives no
+# build_commit, the gate job fails and says so in its summary; the suite does
+# not run. The deploy gate in deploy.sh ignores the jobs of this workflow.
 #
 # Master switch: every job runs only when vars.DEVNET_SUITE_ENABLED is "true".
 # Runbook: docs/operations/dev-environment.md, step 13.
@@ -48,7 +49,7 @@ env:
 
 jobs:
   gate:
-    name: Decide whether to test
+    name: DevNet suite gate
     if: vars.DEVNET_SUITE_ENABLED == 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
@@ -80,9 +81,10 @@ jobs:
           domain=$(awk -F= '$1 == "DOMAIN" { print $2; exit }' deploy/gcp/dev/env-overrides)
           deployed=$(curl -fsS --max-time 10 "https://$domain/health" 2>/dev/null | jq -r '.build_commit // empty' 2>/dev/null) || deployed=""
           if [[ ! "$deployed" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::notice::https://$domain/health gives no build_commit; the suite is skipped"
-            decide false "no deployed commit from /health"
-            exit 0
+            echo "::error::https://$domain/health is down or gives no build_commit"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Gate: fail. https://$domain/health is down or gives no build_commit; the suite did not run." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
           echo "commit=$deployed" >> "$GITHUB_OUTPUT"
           if [ "$FORCE" = true ]; then decide true "force, deployed $deployed"; exit 0; fi
@@ -119,6 +121,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0       # the suite checks that the tested commit is on master
+          filter: tree:0
           sparse-checkout: |
             deploy/gcp/dev
             scripts

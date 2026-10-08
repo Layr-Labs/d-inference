@@ -1,12 +1,15 @@
 import Foundation
 
-/// Continuous-refill endurance budget. A repeat reserve optionally limits novel
+/// Continuous-refill admission budget, additionally fenced by the production
+/// factories' persistent root-wide rolling-day write budget. A repeat reserve limits novel
 /// writes through a second, smaller bucket. Both kinds still consume the same
 /// total budget. Unlike a fixed balance floor, novel writes resume as their
 /// share refills rather than waiting for the entire reserved balance to refill.
 final class SSDWriteRateLimiter: @unchecked Sendable {
     enum Decision { case accepted, rateLimited, priorityLimited }
     private let capBytesPerDay: Double
+    private let writeBudget: SSDWriteBudget?
+    private let dailyByteLimit: Int
     private let novelCapBytesPerDay: Double
     private var tokens: Double
     private var novelTokens: Double
@@ -15,10 +18,13 @@ final class SSDWriteRateLimiter: @unchecked Sendable {
     private let lock = NSLock()
 
     init(capBytesPerDay: Int, repeatReserveFraction: Double = 0,
+         writeBudget: SSDWriteBudget? = nil,
          nowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
         let cap = Double(max(0, capBytesPerDay))
         let reserve = repeatReserveFraction.isFinite ? min(1, max(0, repeatReserveFraction)) : 0
         self.capBytesPerDay = cap
+        self.dailyByteLimit = max(0, capBytesPerDay)
+        self.writeBudget = writeBudget
         self.novelCapBytesPerDay = cap * (1 - reserve)
         self.tokens = cap
         self.novelTokens = cap * (1 - reserve)
@@ -42,6 +48,8 @@ final class SSDWriteRateLimiter: @unchecked Sendable {
             lastRefill = max(lastRefill, now)
             let result = decision(bytes: bytes, repeated: repeated, available: available)
             guard result == .accepted else { return result }
+            guard writeBudget?.admit(bytes: bytes, capBytesPerDay: dailyByteLimit,
+                                     now: now, consume: true) != false else { return .rateLimited }
             tokens -= Double(bytes)
             if !repeated { novelTokens -= Double(bytes) }
             return .accepted
@@ -57,7 +65,11 @@ final class SSDWriteRateLimiter: @unchecked Sendable {
         guard bytes >= 0 else { return .rateLimited }
         guard capBytesPerDay > 0 else { return .accepted }
         return lock.withLock {
-            decision(bytes: bytes, repeated: repeated, available: refilled(now: nowSeconds()))
+            let now = nowSeconds()
+            let result = decision(bytes: bytes, repeated: repeated, available: refilled(now: now))
+            guard result == .accepted else { return result }
+            return writeBudget?.admit(bytes: bytes, capBytesPerDay: dailyByteLimit,
+                                      now: now, consume: false) == false ? .rateLimited : .accepted
         }
     }
 

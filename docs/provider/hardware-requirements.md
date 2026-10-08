@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -249,6 +249,10 @@ charges assistant pages/history, and ordinary runtime memory gates remain in for
 checkpoints preserve immutable trusted history and restore independent assistant
 state. Captured verification and adaptive depth do not imply a qualified device tier.
 See [engine MTP constraints](../architecture/inference.md#multi-token-prediction).
+Ordinary fixed-state engines can reduce their reported concurrency to preserve
+useful KV space rather than reserve every possible future workspace. See
+[per-slot memory admission](../architecture/scheduling.md#token-budget-admission-per-slot);
+the reduction does not lower the load, activation or operating-system reserves.
 
 ## Disk for the SSD prefix cache
 

@@ -20,6 +20,7 @@ const (
 	indexKernelSweepRemovals      = 1024
 	indexKernelAttemptTTL         = 2 * time.Minute
 	indexKernelInFlightAttemptTTL = 2 * time.Hour
+	indexKernelMaxAttemptBytes    = 64 << 20
 )
 
 type indexKernelHolder = cachetracker.Holder[*production.Provider]
@@ -32,18 +33,22 @@ type cacheIndexKernelFixture struct {
 	config cachetracker.Config[*production.Provider]
 }
 
-func newCacheIndexKernelFixture(settings cachetracker.Settings) *cacheIndexKernelFixture {
+func newCacheIndexKernelFixture(settings cachetracker.Settings, configure ...func(*cachetracker.Config[*production.Provider])) *cacheIndexKernelFixture {
 	generation := &cacheplan.Generation{}
 	fences := cacheindex.NewRecords[cachetracker.FenceKey, cachetracker.FenceRecord]()
 	config := cachetracker.Config[*production.Provider]{
 		Settings: settings, Generation: generation,
 		Holders:     cacheindex.NewHolders[indexKernelHolder](),
 		Attempts:    cacheindex.NewRecords[string, indexKernelAttempt](),
-		HolderOrder: cacheindex.NewHolderOrder(), AttemptOrder: cacheindex.NewAttemptOrder(),
+		HolderOrder: cacheindex.NewHolderOrder(), AttemptOrder: cacheindex.NewAttemptOrder(), TerminalOrder: cacheindex.NewAttemptOrder(),
 		HolderProviders:  cacheindex.NewProviderIndex[*cacheindex.Entry[cacheindex.HolderRef]](),
 		AttemptProviders: cacheindex.NewProviderIndex[*cacheindex.Entry[cacheindex.AttemptRef]](),
 		Sequences:        cacheindex.NewRecords[cachetracker.SequenceKey, uint64](),
 		Proofs:           cachetracker.NewProofs(generation, fences),
+		AttemptBudget:    cachetracker.NewAttemptBudget(indexKernelMaxAttemptBytes),
+	}
+	for _, apply := range configure {
+		apply(&config)
 	}
 	return &cacheIndexKernelFixture{Tracker: cachetracker.New(config), config: config}
 }

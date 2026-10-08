@@ -15,6 +15,7 @@ import (
 	startup "github.com/eigeninference/d-inference/coordinator/internal/startup"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/payments/autopilotrewards"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -41,6 +42,10 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 			"min_uptime", brCfg.MinUptimeFrac)
 	} else {
 		logger.Info("base rewards disabled (set EIGENINFERENCE_BASE_REWARDS=true to enable)")
+	}
+	if cfg.ServerConfig.AutopilotRewardsEnabled {
+		srv.SetAutopilotRewards(autopilotrewards.NewEngine(st, logger, nil))
+		logger.Info("Autopilot rewards enabled; independent durable pool cap applies")
 	}
 
 	// Derive the coordinator's long-lived X25519 key.

@@ -28,7 +28,8 @@ type Config struct {
 	MigrationTimeout           time.Duration
 	ConcurrentIndexLockTimeout time.Duration
 	readError                  error
-	// Now supplies the clock for memory-backed account creation. Nil uses time.Now.
+	// Now supplies the clock for memory-backed account creation and Autopilot
+	// reward accounting in both backends. Nil uses time.Now.
 	Now func() time.Time `json:"-"`
 }
 

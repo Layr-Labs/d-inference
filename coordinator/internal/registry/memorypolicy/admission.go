@@ -38,6 +38,7 @@ func Admits(snap *Input, reqPromptTokens, reqMaxTokens int) bool {
 		ActiveGB: snap.GPUMemoryActiveGB, NativeLoadGB: snap.EstimatedOffloadedMemoryGB,
 		ModelLoaded: snap.ModelLoaded, AvailableOnDisk: snap.AvailableOnDisk,
 		TotalPending: snap.TotalPending, LoadReported: snap.FreeForLoadGB != nil,
+		KVBytesPerToken: snap.requestKVBytesPerToken(),
 	}
 	if memory.LoadReported {
 		memory.FreeForLoadGB = *snap.FreeForLoadGB

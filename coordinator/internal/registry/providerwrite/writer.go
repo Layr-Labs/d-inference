@@ -51,12 +51,13 @@ var ErrTimeout = writertransport.ErrTimeout
 // Per-frame write deadlines are enforced by a single watchdog goroutine per
 // connection (see watchWrites) rather than a goroutine+timer per frame.
 type Writer struct {
-	transport Transport
-	lanes     *Lanes
-	stop      chan struct{}
-	done      chan struct{}
-	acceptMu  sync.Mutex
-	dead      atomic.Bool
+	transport       Transport
+	lanes           *Lanes
+	stop            chan struct{}
+	done            chan struct{}
+	transportClosed chan struct{}
+	acceptMu        sync.Mutex
+	dead            atomic.Bool
 }
 
 // New retains the transport and bounded mailboxes. The owner starts Run after
@@ -65,7 +66,7 @@ func New(transport Transport, lanes *Lanes) *Writer {
 	if lanes == nil {
 		lanes = NewLanes(DataQueueSize, ControlQueueSize)
 	}
-	return &Writer{transport: transport, lanes: lanes, stop: make(chan struct{}), done: make(chan struct{})}
+	return &Writer{transport: transport, lanes: lanes, stop: make(chan struct{}), done: make(chan struct{}), transportClosed: make(chan struct{})}
 }
 
 func NewSocket(conn *websocket.Conn) *Writer {
@@ -153,13 +154,18 @@ func (w *Writer) Close() {
 	w.acceptMu.Lock()
 	if !w.dead.CompareAndSwap(false, true) {
 		w.acceptMu.Unlock()
+		<-w.transportClosed
 		return
 	}
 	close(w.stop)
+	w.acceptMu.Unlock()
+	// Admissions already see stop. A concurrent WebSocket close can make the
+	// transport wait; it must not retain a sender's registry/provider locks.
+	// Close callers still join the transport fence, not Run's own completion.
+	defer close(w.transportClosed)
 	if w.transport != nil {
 		w.transport.Close()
 	}
-	w.acceptMu.Unlock()
 }
 
 func (w *Writer) Run() {

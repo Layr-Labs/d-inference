@@ -227,7 +227,7 @@ func (s *MemoryStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID string)
 }
 
 // ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
-// status created before olderThan, oldest first. Limits <= 0 or above the cap
+// status whose reconciliation age starts before olderThan, oldest first. Limits <= 0 or above the cap
 // are clamped to MaxStripeWithdrawalsByStatusLimit.
 func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]store.StripeWithdrawal, error) {
 	if limit <= 0 || limit > store.MaxStripeWithdrawalsByStatusLimit {
@@ -237,11 +237,17 @@ func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan tim
 	defer s.mu.RUnlock()
 	out := []store.StripeWithdrawal{}
 	for _, w := range s.stripeWithdrawalsByID {
-		if w.Status == status && w.CreatedAt.Before(olderThan) {
+		if w.Status == status && w.ReconciliationStartedAt().Before(olderThan) {
 			out = append(out, *w)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		iAt, jAt := out[i].ReconciliationStartedAt(), out[j].ReconciliationStartedAt()
+		if iAt.Equal(jAt) {
+			return out[i].ID < out[j].ID
+		}
+		return iAt.Before(jAt)
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
@@ -249,7 +255,7 @@ func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan tim
 }
 
 // ListStripeWithdrawalsForStripeAccount returns withdrawals destined for the
-// given connected account in the given status, oldest first. Capped at
+// given connected account in the given status, oldest update first. Capped at
 // MaxStripeWithdrawalsByStatusLimit (see the postgres impl for rationale).
 func (s *MemoryStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]store.StripeWithdrawal, error) {
 	s.mu.RLock()
@@ -260,7 +266,12 @@ func (s *MemoryStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, sta
 			out = append(out, *w)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].UpdatedAt.Before(out[j].UpdatedAt)
+	})
 	if len(out) > store.MaxStripeWithdrawalsByStatusLimit {
 		out = out[:store.MaxStripeWithdrawalsByStatusLimit]
 	}

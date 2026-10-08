@@ -1168,7 +1168,7 @@ struct EngineV2KVBackendGateTests {
             mtpStatus: .disabled(.configDisabled, configured: false),
             mtpArtifact: nil)
 
-        return try await EngineV2SlotFactory.makeProductionBundle(
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
             modelId: modelID,
             modelType: isQwen ? "qwen3_5_moe" : "gemma4",
             isVLM: true,
@@ -1180,7 +1180,8 @@ struct EngineV2KVBackendGateTests {
                 fp16KVBytesPerToken: 1_024,
                 maxContextLength: 2_048,
                 defaultMaxTokens: 32),
-            kvBytesCapacity: gateTestCapacity,
+            // Qwen's fixed state must clear the serving floor; the pool stays lazy.
+            kvBytesCapacity: isQwen ? 2 << 30 : gateTestCapacity,
             maxConcurrentRequests: 2,
             kvBudget: nil,
             kvBackendConfig: kvBackendConfig,
@@ -1193,6 +1194,11 @@ struct EngineV2KVBackendGateTests {
             assemblyOverrides: .init(pagedPreflight: pagedPreflightOverride),
             environment: gateEnvironment(environment.merging(
                 [PrefixCachePolicy.environmentFlag: "0"]) { _, disabled in disabled }))
+        if isQwen, await bundle.bridge.kvBackendKind == .paged {
+            let snapshot = await bundle.bridge.capacitySnapshot()
+            #expect(snapshot.pagedStorage?.committedBytes == 0)
+        }
+        return bundle
     }
 
     /// The other side of the same gate, and the reason it is a gate rather

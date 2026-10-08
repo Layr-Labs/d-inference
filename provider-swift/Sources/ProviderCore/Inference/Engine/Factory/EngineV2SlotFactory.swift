@@ -545,6 +545,15 @@ enum EngineV2SlotFactory {
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 
+        do {
+            try await bridge.requireServiceableOrdinaryGrant()
+        } catch {
+            await bridge.shutdown()
+            EngineV2Factory.emitRefusalTelemetry(
+                modelId: modelId, reason: .noKVHeadroom, error: error, emitTelemetry: emitTelemetry)
+            throw error
+        }
+
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
         await bridge.configureMTPStatus(mtpStatus,

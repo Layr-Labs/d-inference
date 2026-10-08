@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)

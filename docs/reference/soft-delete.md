@@ -1,6 +1,6 @@
 # Soft delete
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Reference for the coordinator store's soft-delete columns: which tables have
 `deleted_at`, every read that hides a soft-deleted row in `PostgresStore` and

@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled, machine-selected live rollout.

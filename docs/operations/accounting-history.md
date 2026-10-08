@@ -1,6 +1,6 @@
 # Queryable accounting history
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Preserve complete accounting-history snapshots in private Cloud Storage and
 query them through BigQuery. This copy-only phase does not change billing,

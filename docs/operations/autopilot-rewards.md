@@ -1,6 +1,6 @@
 # Autopilot reward funding and recovery
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Operate the separately funded daily inference-earnings floor for machines with
 saved Autopilot consent. Use this runbook to inspect enrollment, approve an

@@ -1,6 +1,6 @@
 # Experimental Autopilot operation and recovery
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Use this runbook to observe explicitly enrolled providers in shadow and prepare
 a separately approved machine-selected live rollout. Startup opt-in records interest/consent, not

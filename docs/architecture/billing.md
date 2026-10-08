@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,

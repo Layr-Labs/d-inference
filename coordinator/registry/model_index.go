@@ -13,8 +13,8 @@ import "github.com/eigeninference/d-inference/coordinator/internal/registry/mode
 // only providers that could possibly pass. It prunes NOTHING else: every
 // eligibility gate still runs per visited provider exactly as before, and the
 // index is keyed purely on advertisement (p.Models), not on catalog, trust,
-// status or capacity — so owner self-route to an off-catalog model, dedicated
-// families, aliases and every other rule keep working unchanged.
+// status or capacity — so owner self-route to an off-catalog model, aliases
+// and every other rule keep working unchanged.
 //
 // Invariant (pinned by TestModelIndexMatchesBruteForceAfterEveryMutation):
 //

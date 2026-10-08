@@ -80,17 +80,6 @@ type Registry struct {
 
 	MinTrustLevel TrustLevel
 
-	// dedicatedModels holds lowercased substring patterns identifying model
-	// families that may ONLY route to providers dedicated to that family (a
-	// provider whose entire advertised catalog matches the pattern). A request
-	// whose resolved build id contains one of these patterns is restricted to
-	// such dedicated boxes — for both routing candidate selection and the
-	// capacity preflight that decides whether to shed (429) to OpenRouter. Empty
-	// = feature disabled (default in tests and the e2e testbed, which never set
-	// it). Configured once at startup from EIGENINFERENCE_DEDICATED_MODELS; see
-	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
-	dedicatedModels []string
-
 	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
 	// the per-provider concurrency cap for a model is tightened from the flat
 	// fallback to quality_concurrency × overcommit, computed from the provider's

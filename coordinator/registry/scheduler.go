@@ -1411,13 +1411,8 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 }
 
 func (e *ProviderEligibility) routingLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
-	// Catalog membership + dedicated-box isolation: a request for a dedicated
-	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
-	// advertised catalog is that family. This single gate is shared by the
-	// dispatch hot path and the OpenRouter capacity preflight, so the filter
-	// restricts the routing candidate set AND the shed (429) decision together
-	// with no drift. A caller self-routing to its OWN machine is exempt — owners
-	// may run mixed boxes.
+	// Dispatch and capacity preflight share catalog admission. Only an owner
+	// self-route may use an off-catalog model; tracked builds retain hash checks.
 	if ok, reason := e.catalogReasonLocked(p, model, selfRouteOwner); !ok {
 		return false, reason
 	}

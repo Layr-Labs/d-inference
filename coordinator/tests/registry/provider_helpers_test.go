@@ -9,7 +9,7 @@ import (
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-// Shared model-build fixtures used by the dedicated-models, concurrency-cap,
+// Shared model-build fixtures used by the mixed-model routing, concurrency-cap,
 // and warm-pool tests.
 const (
 	ctxModel       = "test/model-a-4bit"

@@ -840,6 +840,12 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `WithCode` in `coo
 
 When every dispatched provider rejects a request with the same deterministic client error (for example a chat template that cannot render the messages, or a body the provider caps), the provider's own 4xx status is passed through once as `invalid_request_error` with `code: model_capability` (or `payload_too_large`) rather than being retried or reclassified (`terminalClientError` handling in the exhausted branch of `dispatchState.run`, `coordinator/api/inference/dispatch.go`).
 
+Models advertised alongside other model families use the same admission path.
+When no eligible provider remains after the cold-dispatch check, `Admission.Run`
+(`coordinator/api/inference/inference_admission.go`) returns the generic 429
+`rate_limit_exceeded` response with `Retry-After`; there is no model-family-specific
+capacity response.
+
 A client that disconnects before commit receives nothing; the coordinator records status 499 internally and cancels the provider job (`sendProviderCancel`, `coordinator/api/inference/consumer.go`).
 
 ## Inference request and response shapes

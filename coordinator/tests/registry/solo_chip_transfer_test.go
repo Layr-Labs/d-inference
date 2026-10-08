@@ -44,8 +44,8 @@ func TestSoloResolverConvergesAcrossManyBoxes(t *testing.T) {
 // drop to the provider-level chain instead. It must NOT refuse the bounded
 // transfers — that would make a real fix out of a blunt one.
 func TestSoloSeedAbsentRefusesUnboundedCrossClassTransfer(t *testing.T) {
-	// gemma-4 is dedicated in production, so the fall-through is the
-	// sqrt(memory_bandwidth) proxy and the cap difference is observable.
+	// Refusing unbounded transfer leaves only the hardware proxy, which cannot
+	// tighten the reported cap without a benchmark or model-specific evidence.
 	const fastTPS = 70.0
 	newFleet := func(seed string) (*qualityFixture,
 
@@ -54,11 +54,8 @@ func TestSoloSeedAbsentRefusesUnboundedCrossClassTransfer(t *testing.T) {
 	) {
 		reg := newQualityRegistry(testLogger())
 		enablePerModelQualityCap(t, reg, seed, "", "")
-		reg.SetDedicatedModels([]string{"gemma-4"})
 		return reg, classProvider(t, reg, "m1pro", gemmaBuild, "M1", "Pro")
 	}
-	// The cap one unbounded M4 Max sample would have granted the M1 Pro.
-	unboundedCap := wantQualityCap(fastTPS, 15, 8, defaultQualityCapOvercommit)
 
 	// (a) The reviewer's case: one fast-class sample, no seed, and a provider
 	// on a slower class that has never been sampled.
@@ -74,9 +71,8 @@ func TestSoloSeedAbsentRefusesUnboundedCrossClassTransfer(t *testing.T) {
 		if got.TPS != wantFallback {
 			t.Fatalf("unseeded M1|Pro resolved %v, want the provider-level fallback %v", got.TPS, wantFallback)
 		}
-		if cap := effCapResolved(reg, p, gemmaBuild); cap >= unboundedCap {
-			t.Fatalf("unseeded M1|Pro cap = %d, want < %d (the cap the unbounded %v tok/s transfer granted)",
-				cap, unboundedCap, fastTPS)
+		if cap := effCapResolved(reg, p, gemmaBuild); cap != 8 {
+			t.Fatalf("unseeded M1|Pro cap = %d, want reported 8 without benchmark or model evidence", cap)
 		}
 	})
 
@@ -121,6 +117,9 @@ func TestSoloSeedAbsentRefusesUnboundedCrossClassTransfer(t *testing.T) {
 
 		if got := resolveSolo(reg, p, gemmaBuild); got.TPS != 12 || !got.PerModel {
 			t.Fatalf("unseeded M2|Pro resolved %+v, want 12 (min across two sampled classes), never the fast %v", got, fastTPS)
+		}
+		if cap := effCapResolved(reg, p, gemmaBuild); cap != 2 {
+			t.Fatalf("bounded cross-class cap = %d, want 2 from the 12 tok/s model evidence", cap)
 		}
 	})
 
@@ -177,7 +176,6 @@ func TestSoloCrossClassTransferClampedToDestinationHardware(t *testing.T) {
 	t.Run("min_of_two_fast_classes_clamped_to_own_rate", func(t *testing.T) {
 		reg := newQualityRegistry(testLogger())
 		enablePerModelQualityCap(t, reg, "", "", "")
-		reg.SetDedicatedModels([]string{"gemma-4"})
 		p := benchClassProvider(t, reg, "m1pro", gemmaBuild, "M1", "Pro", 18)
 		twoFastClasses(reg)
 

@@ -131,7 +131,7 @@ func explicitRateCap(f *qualityFixture, p *production.Provider, model string, ra
 	p.Mu().Lock()
 	benchmark := p.DecodeTPS > 0
 	p.Mu().Unlock()
-	return f.policy.Cap(model, base, rate, benchmark, f.IsDedicatedModel(model), effectiveTPSLoadFactor, nil)
+	return f.policy.Cap(model, base, rate, benchmark, effectiveTPSLoadFactor, nil)
 }
 
 func effCap(f *qualityFixture, p *production.Provider, model string) int {

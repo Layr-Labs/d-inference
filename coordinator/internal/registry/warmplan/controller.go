@@ -15,7 +15,6 @@ type Dependencies[A any] struct {
 	Reserve      func([]A, time.Time) []A
 	Send         func([]A)
 	NewAction    func(string, string) A
-	Dedicated    func(string) bool
 	Logger       *slog.Logger
 }
 

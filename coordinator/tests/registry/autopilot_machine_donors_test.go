@@ -63,24 +63,23 @@ func TestAutopilotLiveDonorsRequireActualServingPermission(t *testing.T) {
 	}
 }
 
-func TestAutopilotActualShadowDonorRetainsOrdinaryDedicatedPermission(t *testing.T) {
+func TestAutopilotActualShadowDonorRetainsMixedInventoryPermission(t *testing.T) {
 	cfg := autopilot.DefaultConfig()
 	cfg.ObserveOnly = false
 	r, c, now := newAutopilotControllerTestConfig(t, cfg)
 	r.selectLiveMachines(t, 0)
 	p := autopilotMachineProvider(t, r, "shadow", r.machineID(t, 1), now, autopilotTestDonor)
-	r.SetDedicatedModels([]string{autopilotTestDonor})
 	p.Mu().Lock()
 	p.Models[0].WeightHash = "cached-target-weights"
 	r.states[p.ID].RegisterInventory(p.Models[1:], p.Models[:1], p.ModelAutopilot)
 	p.Mu().Unlock()
 	fleet := c.Fleet(now)
 	if autopilot.Coverage(fleet.Fleet).Warm[autopilotTestDonor] != 1 {
-		t.Fatal("hypothetical expanded permissions hid a real ordinary dedicated donor")
+		t.Fatal("hypothetical expanded permissions hid a real ordinary donor")
 	}
 	shadowCfg := cfg
 	shadowCfg.ObserveOnly = true
-	if autopilotcontrol.Plan(fleet, shadowCfg, now) != nil {
-		t.Fatal("shadow proposal ignored dedication lost after hypothetical activation")
+	if action := autopilotcontrol.Plan(fleet, shadowCfg, now); action == nil || action.Node.ID != p.ID || action.Load != autopilotTestTarget || len(action.Unload) != 0 {
+		t.Fatalf("shadow proposal should add a cached target without losing its donor: %+v", action)
 	}
 }

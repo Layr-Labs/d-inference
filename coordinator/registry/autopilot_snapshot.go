@@ -92,7 +92,7 @@ func (r *Registry) autopilotFleetSnapshotLocked(c *modelAutopilotController, dem
 			if !n.ControlActive {
 				// Waiting, expired and shadow peers retain only their ordinary
 				// serving permissions as real donors. Cached residency alone cannot
-				// protect a live action; hypothetical grants can also lose dedication.
+				// protect a live action.
 				serving = r.providerPassesRoutingGatesLocked(p, model.ID, RequestTraits{}, false, now)
 			}
 			// Keep base residency independent of a specialized request shape.

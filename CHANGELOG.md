@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - coordinator environment cleanup
+
+- Retire `EIGENINFERENCE_DEDICATED_MODELS` and its model-family isolation policy. Mixed-model providers use ordinary catalog, authorization, quality and memory admission; no-provider responses retain generic 429 and `Retry-After` behavior. Production already disabled the policy with `none`; older binaries still require that opt-out during rollback.
+- Remove the unused `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` configuration and both retired keys from deployment requirements. Keep load-duration telemetry, measured quality caps and operator-owned env values unchanged; remove nonfunctional aliases from the sanitized production reference.
+
 ## Unreleased — demanded prefix reuse
 
 - Retain bounded demanded checkpoint capture, retention and continuation from MLX-LM PR #289 within the newer merged SDK pin, including native cancellation retirement and typical MTP acceptance. Rebuild and validate the combined SDK and provider; earlier full-model measurements retain their recorded dependency pins and acceptance settings.

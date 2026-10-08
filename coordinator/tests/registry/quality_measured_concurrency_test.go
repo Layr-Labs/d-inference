@@ -10,29 +10,15 @@ import (
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-// TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed pins the DURABLE fix
-// for the B=8 shortfall, and the reason the shortfall existed.
+// TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed pins the evidence used
+// for a provider with no registration benchmark and a reported limit of 8.
+// Without model-specific evidence the hardware proxy cannot tighten that limit.
+// A seed or solo-gated measurement can, and even an under-sampled measurement
+// outranks a seed. The trust floor still selects a well-sampled median first.
 //
-// Production shape, reproduced exactly here: gemma-4 is a DEDICATED model
-// (EIGENINFERENCE_DEDICATED_MODELS=gemma-4), and the Swift provider never
-// sends decode_tps at registration — the field exists on RegisterMessage and
-// is encoded, but nothing in provider-swift/Sources ever assigns it. So
-// p.DecodeTPS == 0, the dedicated guard in
-// effectiveMaxConcurrencyForModelRateLocked does NOT hold the model to its
-// reported base, and the rate reaching qualityConcurrency is
-// resolvedDecodeTPS's sqrt(memory_bandwidth) — a MODEL-AGNOSTIC hardware proxy
-// (20 tok/s at the 400 GB/s test fixture, ~23 on a real 546 GB/s M4 Max)
-// against a measured ~99.5 tok/s. Raising engine_v2_max_concurrent to 8 buys
-// nothing against that.
-//
-// The provider is NOT silent about its real rate: it reports the measured
-// per-model EWMA in observed_decode_tps on every heartbeat
-// (EngineV2Bridge+Capacity.swift populates it from
-// EngineV2Bridge.observedDecodeTpsEwma), and the heartbeat ingest already
-// converts the uncontended ones into solo samples. The only thing standing
-// between that measurement and the cap was the qualityCapSoloMinSamples floor:
-// under 5 samples the chain skipped straight past a real, solo-gated,
-// per-model measurement to the hardware proxy. It now prefers the measurement.
+// The Swift provider reports its per-model EWMA in observed_decode_tps on
+// heartbeats, and uncontended observations become solo samples. The measured
+// ~99.5 tok/s clears the quality threshold for 8, unlike a stale 14 tok/s seed.
 func TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed(t *testing.T) {
 	const floor = 15.0
 	const base = 8
@@ -41,21 +27,21 @@ func TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed(t *testing.T) {
 	// 101.8):
 	// libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-qat4bit-paged-gate-2026-07-09.md
 	const measuredGemmaSoloTPS = 99.5
-	// The starved seed the pre-fix chain was stuck with, standing in for the
-	// sqrt-bandwidth proxy: both land at or under the floor.
+	// A stale seed below the decode floor must yield to measured evidence.
 	const starvedSeedTPS = 14.0
 
 	// threshold is the solo rate at which a provider reporting `base` is granted
 	// all of it, derived from (floor, k, overcommit) rather than hard-coded.
 	threshold := soloTPSForCap(floor, base, defaultQualityCapOvercommit)
 
-	// prodBox is the production shape: dedicated model, NO registration
-	// benchmark, provider-reported concurrency of 8.
-	prodBox := func(t *testing.T, reg *qualityFixture,
-
-	) *production.Provider {
-		reg.SetDedicatedModels([]string{"gemma-4"})
-		return qualityProvider(t, reg, "prod-box", gemmaBuild, 0)
+	// prodBox has no registration benchmark and reports concurrency of 8.
+	prodBox := func(t *testing.T, reg *qualityFixture) *production.Provider {
+		p := qualityProvider(t, reg, "prod-box", gemmaBuild, 0)
+		p.Mu().Lock()
+		p.BackendCapacity.Slots[0].MaxConcurrency = base
+		p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 500_000
+		p.Mu().Unlock()
+		return p
 	}
 	// slot is the heartbeat slot the provider sends. observedTPS <= 0 models a
 	// provider that has completed no request: observedDecodeTpsEwma is still 0,
@@ -112,12 +98,9 @@ func TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed(t *testing.T) {
 
 	// --- Cold start: a provider that has served nothing ----------------------
 	//
-	// This is the case the fallback chain must not break. The provider reports
-	// NO observed_decode_tps (the field is absent, not zero-on-the-wire), so no
-	// solo sample is ingested, nothing per-model resolves, and the chain lands
-	// on the hardware proxy. That must stay a SANE positive cap — the box has
-	// to be able to serve in order to ever measure itself.
-	t.Run("cold_start_reports_nothing_and_still_gets_a_sane_cap", func(t *testing.T) {
+	// With no observed_decode_tps, no sample is ingested and the resolver uses
+	// the hardware proxy. That proxy alone must not restrict the reported cap.
+	t.Run("cold_start_without_evidence_preserves_reported_cap", func(t *testing.T) {
 		reg := newQualityRegistry(testLogger())
 		p := prodBox(t, reg)
 		enablePerModelQualityCap(t, reg, "", "", "")
@@ -134,30 +117,19 @@ func TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed(t *testing.T) {
 			providerDecodeFallback(p) {
 			t.Fatalf("cold-start rate = %.2f, want the provider-level proxy %.2f", rate.TPS, providerDecodeFallback(p))
 		}
-		got := effCapResolved(reg, p, gemmaBuild)
-		// Pinned as the closed form of the proxy rate, not as a literal: the
-		// integer moves with k, the contract ("the proxy's own answer, and it
-		// is a servable one") does not.
-		if want := wantQualityCap(providerDecodeFallback(p), floor, base, defaultQualityCapOvercommit); got != want {
-			t.Fatalf("cold-start cap = %d, want %d — the proxy's own derived answer", got, want)
-		}
-		if got < 2 {
-			t.Fatalf("cold-start cap = %d, want >= 2 — a fresh provider must not be strangled to 1 by its own silence; it has to be able to serve in order to ever measure itself", got)
-		}
-		if got >= base {
-			t.Fatalf("cold-start cap = %d, want < %d: with no measurement the proxy must NOT grant the full bump", got, base)
+		if got := effCapResolved(reg, p, gemmaBuild); got != base {
+			t.Fatalf("cold-start cap = %d, want reported %d without benchmark or model evidence", got, base)
 		}
 	})
 
 	// --- The fix: one measured, solo-gated sample is enough ------------------
-	t.Run("one_measured_sample_under_the_floor_reaches_eight", func(t *testing.T) {
+	t.Run("one_measured_sample_below_sample_floor_is_used", func(t *testing.T) {
 		reg := newQualityRegistry(testLogger())
 		p := prodBox(t, reg)
 		enablePerModelQualityCap(t, reg, "", "", "")
 
-		// Pre-fix baseline, same registry: the proxy caps this box at 2.
-		if got := effCapResolved(reg, p, gemmaBuild); got >= base {
-			t.Fatalf("before any measurement the cap is %d — the proxy baseline this test contrasts against is gone", got)
+		if got := effCapResolved(reg, p, gemmaBuild); got != base {
+			t.Fatalf("before any measurement the cap is %d, want reported %d", got, base)
 		}
 
 		observe(reg, 1, measuredGemmaSoloTPS)
@@ -197,9 +169,8 @@ func TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed(t *testing.T) {
 
 	// The first sample is taken as the box drops to one running request, so the
 	// alpha=0.3 EWMA still carries batched history and UNDER-states the solo
-	// rate. Worst realistic case is a fully contaminated rate(B=2) reading at
-	// the cap gemma is stuck on today. Even that clears the bar — the fix is
-	// not resting on a perfectly converged EWMA.
+	// rate. Even a fully contaminated rate(B=2) reading clears the bar, so the
+	// measurement path is not resting on a perfectly converged EWMA.
 	t.Run("contaminated_first_sample_still_reaches_eight", func(t *testing.T) {
 		contended := measuredGemmaSoloTPS / (1 + effectiveTPSLoadFactor*2)
 		if contended >= measuredGemmaSoloTPS || contended <= threshold {
@@ -225,13 +196,13 @@ func TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed(t *testing.T) {
 		reg := newQualityRegistry(testLogger())
 		p := prodBox(t, reg)
 		enablePerModelQualityCap(t, reg, "", "", "")
+		if got := effCapResolved(reg, p, gemmaBuild); got != base {
+			t.Fatalf("before measured evidence cap = %d, want reported %d", got, base)
+		}
 		observe(reg, 1, slow)
 		got := effCapResolved(reg, p, gemmaBuild)
-		if got >= base {
-			t.Fatalf("cap = %d at a measured %.0f tok/s, want < %d — a slow box must not be granted the bump", got, slow, base)
-		}
-		if got < 1 {
-			t.Fatalf("cap = %d, want >= 1", got)
+		if want := wantQualityCap(slow, floor, base, defaultQualityCapOvercommit); got != want || got >= base {
+			t.Fatalf("cap = %d at a measured %.0f tok/s, want quality cap %d below reported %d", got, slow, want, base)
 		}
 	})
 

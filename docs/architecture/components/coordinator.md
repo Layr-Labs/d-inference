@@ -130,7 +130,7 @@ failure in any step marked *fatal* exits the process before it listens.
    admin key — otherwise the memory store
    with its 15 minute pruner. Provider sessions orphaned by the previous
    process are closed, best-effort, with a 10 second budget.
-4. **Registry.** `registry.New`, trust floor, dedicated models, quality
+4. **Registry.** `registry.New`, trust floor, quality
    concurrency cap, cache routing (*fatal* on an invalid mode or key), then the
    warm-pool controller starts.
 5. **Server.** `api.NewRuntime` with the live TTFT deadline base, media fetch

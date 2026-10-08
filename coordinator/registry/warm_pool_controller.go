@@ -21,7 +21,7 @@ func newWarmPoolController(r *Registry, cfg warmplan.Config) *warmPoolController
 		NewAction: func(provider, model string) ModelLoadAction {
 			return ModelLoadAction{ProviderID: provider, ModelID: model}
 		},
-		Dedicated: r.IsDedicatedModel, Logger: r.logger,
+		Logger: r.logger,
 	}
 	if r.warmPlanningFactory != nil {
 		c.runtime = r.warmPlanningFactory(deps)

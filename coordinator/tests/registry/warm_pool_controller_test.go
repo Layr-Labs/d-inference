@@ -222,7 +222,6 @@ func testWarmPoolConfig() warmplan.Config {
 		SpeculativeStartThreshold: 1,
 		SpeculativeWinThreshold:   1,
 		ColdDispatchThreshold:     1,
-		LoadDurationThreshold:     time.Second,
 		MaxLoadsPerTick:           1,
 		MaxGlobalPendingLoads:     10,
 	}
@@ -559,6 +558,27 @@ func TestWarmPoolNoPressureForLongActiveDecodeAlone(t *testing.T) {
 	}
 }
 
+func TestWarmPoolLoadDurationIsDiagnosticWithoutDemand(t *testing.T) {
+	reg := newWarmRegistry(t)
+	const model = "warm-pool-load-duration"
+	makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold", model, 80, 64, 8)
+	reg.ConfigureWarmPool(testWarmPoolConfig())
+	sent := captureWarmPoolLoads(reg)
+	reg.RecordWarmPoolLoadResult(model, true, 10*time.Second)
+	reg.RecordWarmPoolLoadResult(model, false, 30*time.Second)
+
+	now := time.Now()
+	pressure := warmFixtureFor(reg).deps.State.Snapshot(now, time.Minute)[model]
+	if pressure.LoadSuccesses != 1 || pressure.LoadFailures != 1 || pressure.LoadDurationEWMA != 15*time.Second {
+		t.Fatalf("load result tracking = %+v, want success/failure and 15s EWMA", pressure)
+	}
+	snaps := warmFixtureFor(reg).runtime.Tick(now)
+	if len(snaps) != 1 || snaps[0].LoadDurationEWMA != 15*time.Second || snaps[0].TargetWarm != 1 || len(*sent) != 0 {
+		t.Fatalf("load duration must remain diagnostic without demand: snapshots=%+v sent=%+v", snaps, *sent)
+	}
+}
+
 func TestWarmPoolMinWarmFloorLoadsWithoutPressure(t *testing.T) {
 	reg := newWarmRegistry(t)
 	model := "warm-pool-min-floor"
@@ -757,36 +777,33 @@ func TestWarmPoolSkipsIneligibleProviders(t *testing.T) {
 	}
 }
 
-// TestWarmPoolDedicatedQueueSpillStillDrivesWarming pins the demand signals the
-// controller sees now that dedicated-pool overflow QUEUES instead of fast-429ing:
-// the admission preflight still records a capacity reject on the queue-spill
-// branch, and the enqueue records queue pressure. Either signal alone must keep
-// growing the dedicated pool — toward the WHOLE eligible dedicated set — and
-// never target a mixed (non-dedicated) box.
-func TestWarmPoolDedicatedQueueSpillStillDrivesWarming(t *testing.T) {
-	signals := map[string]func(reg *production.Registry, model string){
-		"capacity_reject": func(reg *production.Registry, model string) {
+func TestWarmPoolMixedCatalogPressureUsesDemandTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		feed   func(*production.Registry, string)
+		target int
+	}{
+		{"capacity_reject", func(reg *production.Registry, model string) {
 			reg.RecordWarmPoolCapacityReject(model)
-		},
-		"queue_pressure_only": func(reg *production.Registry, model string) {
+		}, 2},
+		{"queue_pressure_only", func(reg *production.Registry, model string) {
 			reg.RecordWarmPoolQueueEnqueued(model, 3, 3*time.Second)
-		},
-	}
-	for name, feed := range signals {
-		t.Run(name, func(t *testing.T) {
+		}, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			reg := newWarmRegistry(t)
-			reg.SetDedicatedModels([]string{"gemma-4"})
-			makeSchedulerProvider(t, reg, "warm-dedicated", gemmaBuild, 80)
-			coldA := makeWarmPoolColdProvider(t, reg, "cold-dedicated-a", gemmaBuild, 80, 64, 8)
-			coldB := makeWarmPoolColdProvider(t, reg, "cold-dedicated-b", gemmaBuild, 80, 64, 8)
-			makeWarmPoolColdProvider(t, reg, "cold-mixed", gemmaBuild, 80, 64, 8, qwenBuild)
+			makeSchedulerProvider(t, reg, "warm-mixed", gemmaBuild, 20, qwenBuild)
+			makeWarmPoolColdProvider(t, reg, "cold-a", gemmaBuild, 20, 64, 8)
+			makeWarmPoolColdProvider(t, reg, "cold-b", gemmaBuild, 20, 64, 8)
+			mixed := makeWarmPoolColdProvider(t, reg, "cold-mixed", gemmaBuild, 20, 128, 8, qwenBuild)
 
 			cfg := testWarmPoolConfig()
+			cfg.DecodeFloorTPS = 15
 			cfg.MaxLoadsPerTick = 4
 			reg.ConfigureWarmPool(cfg)
 			sent := captureWarmPoolLoads(reg)
 
-			feed(reg, gemmaBuild)
+			tc.feed(reg, gemmaBuild)
 			snaps := warmFixtureFor(reg).runtime.Tick(time.Now())
 
 			var snap production.WarmPoolSnapshot
@@ -801,24 +818,21 @@ func TestWarmPoolDedicatedQueueSpillStillDrivesWarming(t *testing.T) {
 			if !found {
 				t.Fatalf("no warm-pool snapshot for %q in %+v", gemmaBuild, snaps)
 			}
-			// Dedicated pool under demand pressure warms the whole eligible set:
-			// 1 warm + 2 eligible cold (the mixed box is excluded).
-			if snap.TargetWarm != 3 {
-				t.Fatalf("TargetWarm = %d, want 3 (whole dedicated pool)", snap.TargetWarm)
+			if snap.TargetWarm != tc.target {
+				t.Fatalf("TargetWarm = %d, want demand target %d", snap.TargetWarm, tc.target)
 			}
-			if snap.EligibleCold != 2 {
-				t.Fatalf("EligibleCold = %d, want 2 (mixed box excluded)", snap.EligibleCold)
+			if snap.WarmProviders != 1 || snap.EligibleCold != 3 || snap.ColdIneligible != 0 || len(snap.ColdDisqualifiers) != 0 {
+				t.Fatalf("mixed-catalog providers must count as warm/eligible: %+v", snap)
 			}
-			if snap.ColdDisqualifiers["dedicated_excluded"] != 1 {
-				t.Fatalf("ColdDisqualifiers = %v, want mixed box tallied as dedicated_excluded", snap.ColdDisqualifiers)
+			if len(*sent) != tc.target-1 {
+				t.Fatalf("sent loads = %d, want %d", len(*sent), tc.target-1)
 			}
-			if len(*sent) != 2 {
-				t.Fatalf("sent loads = %d, want 2 (both cold dedicated boxes)", len(*sent))
+			// The mixed provider has the most free memory, so ordinary scoring
+			// selects it first without warming the entire eligible fleet.
+			if (*sent)[0].ProviderID != mixed.ID {
+				t.Fatalf("first load = %+v, want mixed-catalog provider %q", (*sent)[0], mixed.ID)
 			}
 			for _, action := range *sent {
-				if action.ProviderID != coldA.ID && action.ProviderID != coldB.ID {
-					t.Fatalf("load sent to %q, want only dedicated boxes", action.ProviderID)
-				}
 				if action.ModelID != gemmaBuild {
 					t.Fatalf("load model = %q, want %q", action.ModelID, gemmaBuild)
 				}

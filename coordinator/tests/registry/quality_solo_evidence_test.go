@@ -103,8 +103,8 @@ func TestQualityCapPerModelTPSKillSwitchRestoresOldBehavior(t *testing.T) {
 // TestQualityCapPerModelRateCapsWithoutRegistrationBenchmark: the DecodeTPS<=0
 // guard exists because the sqrt-bandwidth fallback is model-agnostic — but a
 // PER-MODEL rate (solo median / seed) is trustworthy by construction, so a
-// non-dedicated model on a benchmark-less box is still capped from it. Without
-// any per-model source the old guard semantics hold (flat cap).
+// model on a benchmark-less box is still capped from it. Without any per-model
+// source the provider's flat cap is preserved.
 func TestQualityCapPerModelRateCapsWithoutRegistrationBenchmark(t *testing.T) {
 	reg := newQualityRegistry(testLogger())
 	enablePerModelQualityCap(t, reg, "", "", "")
@@ -125,8 +125,8 @@ func TestQualityCapPerModelRateCapsWithoutRegistrationBenchmark(t *testing.T) {
 	if got := effCapResolved(reg, p, gemmaBuild); got != 2 {
 		t.Fatalf("no-benchmark box with solo median: gemma cap = %d, want 2", got)
 	}
-	// No per-model source (gpt-oss): non-dedicated + bandwidth fallback → the
-	// old guard keeps the flat cap (don't shed a fast model on a coarse proxy).
+	// No per-model source (gpt-oss): bandwidth fallback keeps the flat cap
+	// (don't shed a fast model on a coarse proxy).
 	if got := effCapResolved(reg, p, gptossBuild); got != 24 {
 		t.Fatalf("no-benchmark box without per-model source: gpt-oss cap = %d, want flat 24", got)
 	}

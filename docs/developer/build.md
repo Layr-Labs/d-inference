@@ -612,6 +612,12 @@ only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildD
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
 `GET /health` (`coordinator/api/inference/consumer.go`, `HandleHealth`).
 
+Retiring coordinator environment readers requires a rebuilt binary, not just
+an edit to the sanitized deployment reference. Run the
+[environment-retirement checks](test.md#coordinator-environment-retirement)
+against the rebuilt source; production env removal and rollback follow the
+[deployment runbook](../operations/coordinator-deploy.md#retired-settings-and-rollback).
+
 ### 4. Prompt-contract sidecar (Rust)
 
 ```bash

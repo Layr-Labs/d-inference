@@ -141,17 +141,6 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 		actions := c.allocateLoads(model, f.EligibleCold, need, assigned, now, activeReserve)
 		loadsRemaining -= len(actions)
 		c.state.RememberTarget(model, target, now)
-		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool
-		// this explains a gap between the raw cold count and what we can actually warm.
-		if f.ColdIneligible > 0 && c.deps.Dedicated != nil && c.deps.Logger != nil && c.deps.Dedicated(model) {
-			c.deps.Logger.Info("warm-pool cold-ineligible (dedicated)",
-				"model", model,
-				"warm", f.Warm,
-				"eligible_cold", len(f.EligibleCold),
-				"cold_ineligible", f.ColdIneligible,
-				"reasons", ColdReasonStrings(f.ColdDisq),
-			)
-		}
 		out = append(out, Snapshot[A]{
 			Model:                model,
 			TargetWarm:           target,
@@ -272,21 +261,6 @@ func (c *Controller[A]) TargetWarm(fleet Fleet, pressure Pressure, queue QueuePr
 		target = floor
 		if maxReachable := fleet.Warm + len(fleet.EligibleCold); target > maxReachable {
 			target = maxReachable
-		}
-	}
-	// Dedicated pools (e.g. Gemma): when a dedicated build is under demand, warm the
-	// ENTIRE eligible pool rather than demand-tracking it — this lifts idle dedicated
-	// boxes into service and removes cold-start lag (a cold box's ~30s load makes it
-	// un-routable on the request hot path, so proactive warming is the only way it
-	// ever serves). Gated on demand for THIS build so we don't force-warm every
-	// build a box advertises matching the family pattern — e.g. during an alias
-	// migration where desired+previous Gemma builds are both catalog-allowed, only
-	// the build actually receiving traffic gets the whole pool, not the stale one
-	// (which would otherwise burn model slots/memory and evict the live build).
-	// Bounded by warm+eligibleCold; the per-tick ramp still throttles the load rate.
-	if c.deps.Dedicated != nil && c.deps.Dedicated(fleet.Model) && c.hasDemandPressure(fleet, pressure, queue) {
-		if whole := fleet.Warm + len(fleet.EligibleCold); whole > target {
-			target = whole
 		}
 	}
 	return target

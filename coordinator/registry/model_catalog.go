@@ -189,7 +189,7 @@ func (e *ProviderEligibility) servesOwnedLocked(p *Provider, model string) bool 
 // model as a vision-capable (VLM) build — required to route image/video requests
 // so the media is actually perceived rather than silently dropped. allowOffCatalog
 // is the owner self-route context (mirrors providerServesRoutableModelLocked's
-// allowDedicated): an owner's off-catalog local VLM passes the routable gate, so
+// selfRouteOwner): an owner's off-catalog local VLM passes the routable gate, so
 // the vision gate must accept the same advertisement or media requests would be
 // listed/accepted but never routable. It relaxes only catalog MEMBERSHIP — a
 // catalog-tracked build still has to pass the weight-hash gate, mirroring the

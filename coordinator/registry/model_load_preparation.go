@@ -39,8 +39,8 @@ func (s *ModelLoadPreparation) Candidate(providerID, model string, now time.Time
 		return 0, false
 	}
 
-	// This is a public load target, with no owner relaxation. Private-only and
-	// mixed-catalog dedicated-model providers cannot qualify for public demand.
+	// This is a public load target, with no owner relaxation. Private-only
+	// providers cannot qualify for public demand.
 	if providerDrainingLocked(p, now) || !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
 		return 0, false
 	}

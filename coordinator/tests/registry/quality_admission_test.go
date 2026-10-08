@@ -3,6 +3,7 @@ package registry_test
 import (
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/quality"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -49,38 +50,49 @@ func TestQualityCapScalesWithModelSpeed(t *testing.T) {
 	}
 }
 
-// TestQualityCapFallbackRateOnlyCapsDedicated guards the P1 regression: when a
-// provider has NOT reported a real decode benchmark (DecodeTPS==0), resolvedDecodeTPS
-// falls back to sqrt(memory_bandwidth) — a model-agnostic hardware proxy that
-// under-estimates fast models. The cap must therefore bite only DEDICATED models
-// from that fallback; a non-dedicated model keeps the flat cap (so healthy
-// fast-model traffic isn't shed on a bad rate estimate).
-func TestQualityCapFallbackRateOnlyCapsDedicated(t *testing.T) {
-	reg := newQualityRegistry(testLogger())
-	reg.SetDedicatedModels([]string{"gemma-4"})
-	enableQualityCap(t, reg, "")
+// TestQualityCapRequiresRateEvidence distinguishes a registration benchmark
+// from the numerically identical hardware-only proxy. Without model evidence,
+// no model is capped from sqrt(memory_bandwidth), which can underestimate it.
+func TestQualityCapRequiresRateEvidence(t *testing.T) {
+	for _, model := range []string{gemmaBuild, qwenBuild} {
+		t.Run(model, func(t *testing.T) {
+			reg := newQualityRegistry(testLogger())
+			enablePerModelQualityCap(t, reg, "", "", "")
+			p := qualityProvider(t, reg, "box", model, 0)
+			p.Mu().Lock()
+			p.Hardware.MemoryBandwidthGBs = 800
+			p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 500_000
+			p.Mu().Unlock()
 
-	// No DecodeTPS benchmark; rate comes from sqrt(bandwidth)=sqrt(800)≈28.
-	mkFallback := func(id, model string) *production.Provider {
-		p := qualityProvider(t, reg, id, model, 0) // DecodeTPS unset
-		p.Mu().Lock()
-		p.Hardware.MemoryBandwidthGBs = 800
-		p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 500_000
-		p.Mu().Unlock()
-		return p
+			proxy := providerDecodeFallback(p)
+			if got := effCap(reg, p, model); got != 24 {
+				t.Fatalf("hardware-only cap = %d, want flat 24 without rate evidence", got)
+			}
+
+			p.Mu().Lock()
+			p.DecodeTPS = proxy
+			p.Mu().Unlock()
+			want := wantQualityCap(proxy, 15, 24, defaultQualityCapOvercommit)
+			if want >= 24 {
+				t.Fatalf("benchmark %.2f does not distinguish the quality cap from the flat cap", proxy)
+			}
+			if got := effCap(reg, p, model); got != want {
+				t.Fatalf("benchmark-backed cap = %d, want %d for the same %.2f tok/s rate", got, want, proxy)
+			}
+		})
 	}
+}
 
-	// Non-dedicated on the fallback rate → NOT capped (flat 24): don't shed a fast
-	// model on a hardware proxy that can't see its true ~57 tok/s rate.
-	nonDed := mkFallback("qwen-box", qwenBuild)
-	if got := effCap(reg, nonDed, qwenBuild); got != 24 {
-		t.Fatalf("non-dedicated fallback-rate cap = %d, want 24 (no benchmark → not capped from sqrt(bw))", got)
+func TestQualityCapReviewedProfileNeedsNoFallbackRate(t *testing.T) {
+	identity, _, catalog := reviewedProfileEvidence(t)
+	policy := quality.New(quality.Config{Enabled: true, FloorTPS: 30, Fallback: 1})
+	const base = 24
+	if got := policy.Cap("model", base, quality.Rate{}, false, effectiveTPSLoadFactor, nil); got != base {
+		t.Fatalf("cap without rate or profile evidence = %d, want %d", got, base)
 	}
-
-	// Dedicated on the same fallback rate → capped (best-effort): qc from ~28 tok/s.
-	ded := mkFallback("gemma-box", gemmaBuild)
-	if got := effCap(reg, ded, gemmaBuild); got >= 24 || got < 1 {
-		t.Fatalf("dedicated fallback-rate cap = %d, want a tightened value < 24 (dedicated capped even without a benchmark)", got)
+	profile := catalog.Qualified(identity, "model")
+	if got := policy.Cap("model", base, quality.Rate{}, false, effectiveTPSLoadFactor, profile); got != 16 {
+		t.Fatalf("reviewed profile cap = %d, want 16 without a fallback rate or registration benchmark", got)
 	}
 }
 
@@ -138,7 +150,6 @@ func TestQualityCapAppliedAtAdmitRecheck(t *testing.T) {
 			return preparation
 		}
 	})
-	reg.SetDedicatedModels([]string{"gemma-4"})
 	enableQualityCap(t, reg, "")
 	p := qualityProvider(t, reg, "gemma", gemmaBuild, 23)
 	budgetSlot(p, 2.6)

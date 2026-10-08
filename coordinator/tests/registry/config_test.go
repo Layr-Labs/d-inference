@@ -1,14 +1,14 @@
 package registry_test
 
 import (
+	"encoding/base64"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
-
-	"encoding/base64"
-
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -26,9 +26,19 @@ func clearWarmPoolEnv(t *testing.T) {
 		"WARM_POOL_SPECULATIVE_START_THRESHOLD",
 		"WARM_POOL_SPECULATIVE_WIN_THRESHOLD",
 		"WARM_POOL_COLD_DISPATCH_THRESHOLD",
-		"WARM_POOL_LOAD_DURATION_THRESHOLD",
+		"WARM_POOL_DECODE_FLOOR_TPS",
+		"WARM_POOL_BURST_BUFFER",
+		"WARM_POOL_HEADROOM",
+		"WARM_POOL_HEADROOM_PROVIDERS",
+		"WARM_POOL_HEADROOM_MAX_PROVIDERS",
+		"WARM_POOL_HEADROOM_LOAD_WINDOWS",
+		"WARM_POOL_FALLBACK_QUALITY_CONCURRENCY",
+		"WARM_POOL_ASSUMED_PROMPT_TOKENS",
+		"WARM_POOL_ASSUMED_COMPLETION_TOKENS",
 		"WARM_POOL_MIN_WARM",
 		"WARM_POOL_MAX_LOADS_PER_TICK",
+		"WARM_POOL_MAX_LOADS_PER_TICK_CEILING",
+		"WARM_POOL_RAMP_GAP_FRACTION",
 		"WARM_POOL_MAX_GLOBAL_PENDING_LOADS",
 	}
 	for _, key := range keys {
@@ -90,6 +100,52 @@ func TestReadConfigWarmPoolCanBeDisabled(t *testing.T) {
 	}
 	if !cfg.ObserveOnly {
 		t.Fatal("warm pool observe-only override was not honored")
+	}
+}
+
+func TestReadConfigIgnoresRetiredWarmPoolLoadDurationThreshold(t *testing.T) {
+	clearWarmPoolEnv(t)
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_LOAD_DURATION_THRESHOLD", "")
+	baseline := production.ReadConfig()
+	if err := baseline.Check(); err != nil {
+		t.Fatalf("default registry config is invalid: %v", err)
+	}
+	for _, value := range []string{"", "-1s", "not-a-duration", "90s"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(env.EnvPrefix+"_WARM_POOL_LOAD_DURATION_THRESHOLD", value)
+			cfg := production.ReadConfig()
+			if err := cfg.Check(); err != nil {
+				t.Fatalf("retired load-duration threshold %q invalidated config: %v", value, err)
+			}
+			if !reflect.DeepEqual(cfg, baseline) {
+				t.Fatalf("retired load-duration threshold %q changed registry config", value)
+			}
+		})
+	}
+}
+
+func TestReadConfigWarmPoolValidatesActiveSettings(t *testing.T) {
+	for _, tc := range []struct {
+		key   string
+		value string
+		want  string
+	}{
+		{"WARM_POOL_INTERVAL", "0s", "warm pool interval must be > 0"},
+		{"WARM_POOL_MIN_DWELL", "-1s", "warm pool durations must be >= 0"},
+		{"WARM_POOL_QUEUE_AGE_THRESHOLD", "-1s", "warm pool durations must be >= 0"},
+		{"WARM_POOL_CAPACITY_REJECT_THRESHOLD", "0", "warm pool pressure thresholds must be >= 1"},
+		{"WARM_POOL_WARM_SATURATION_THRESHOLD", "1.1", "warm pool saturation threshold must be in [0,1]"},
+		{"WARM_POOL_MAX_LOADS_PER_TICK", "-1", "warm pool load limits must be >= 0"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			clearWarmPoolEnv(t)
+			t.Setenv(env.EnvPrefix+"_WARM_POOL_LOAD_DURATION_THRESHOLD", "not-a-duration")
+			t.Setenv(env.EnvPrefix+"_"+tc.key, tc.value)
+			err := production.ReadConfig().Check()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s=%q: Check() = %v, want %q", tc.key, tc.value, err, tc.want)
+			}
+		})
 	}
 }
 

@@ -80,7 +80,6 @@ func ReadConfig() Config {
 			SpeculativeStartThreshold: env.EnvInt(env.EnvPrefix+"_WARM_POOL_SPECULATIVE_START_THRESHOLD", 2),
 			SpeculativeWinThreshold:   env.EnvInt(env.EnvPrefix+"_WARM_POOL_SPECULATIVE_WIN_THRESHOLD", 1),
 			ColdDispatchThreshold:     env.EnvInt(env.EnvPrefix+"_WARM_POOL_COLD_DISPATCH_THRESHOLD", 1),
-			LoadDurationThreshold:     envDuration(env.EnvPrefix+"_WARM_POOL_LOAD_DURATION_THRESHOLD", 20*time.Second),
 
 			DecodeFloorTPS:             env.EnvFloat(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", 15),
 			BurstBuffer:                env.EnvInt(env.EnvPrefix+"_WARM_POOL_BURST_BUFFER", 1),

@@ -30,7 +30,8 @@ const (
 	GatePrivateText
 	GateChallengeStale
 	GateTraitFloor
-	GateDedicated
+	// gateReservedDedicated preserves the retired diagnostic slot. Never emitted.
+	gateReservedDedicated
 	GateDispatchLoadCooldown
 	GateErrorCooldown
 	GateCapacityCooldown
@@ -64,7 +65,7 @@ var gateReasonNames = [GateReasonCount]string{
 	GatePrivateText:          "private_text",
 	GateChallengeStale:       "challenge_stale",
 	GateTraitFloor:           "trait_floor",
-	GateDedicated:            "dedicated",
+	gateReservedDedicated:    "dedicated",
 	GateDispatchLoadCooldown: "dispatch_load_cooldown",
 	GateErrorCooldown:        "error_cooldown",
 	GateCapacityCooldown:     "capacity_cooldown",

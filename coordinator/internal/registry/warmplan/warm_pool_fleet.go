@@ -2,9 +2,8 @@ package warmplan
 
 // warmColdReason labels why a cold (on-disk, not-warm) provider is or isn't an
 // eligible warm-pool target. Empty ("") means eligible. Used to instrument why
-// the eligible-cold set is smaller than the raw cold-provider count (e.g. a
-// dedicated pool reporting many cold boxes but warming few) — counts only, no
-// provider identities, so it is privacy-safe to log/expose.
+// the eligible-cold set is smaller than the raw cold-provider count. Counts omit
+// provider identities, so they are privacy-safe to log/expose.
 type ColdReason string
 
 const (
@@ -16,7 +15,6 @@ const (
 	WarmColdTrust          ColdReason = "trust_or_runtime"
 	WarmColdStaleChallenge ColdReason = "stale_challenge"
 	WarmColdNotServing     ColdReason = "not_serving_catalog"
-	WarmColdDedicated      ColdReason = "dedicated_excluded"
 	WarmColdTooLarge       ColdReason = "model_too_large"
 	WarmColdNoFreeForLoad  ColdReason = "no_free_for_load"
 	WarmColdStateRestoring ColdReason = "state_restoring"

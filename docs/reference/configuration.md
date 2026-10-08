@@ -218,7 +218,6 @@ Trust floor, model routing and per-request quality:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_MIN_TRUST` | `none`, `self_signed`, `hardware` | `hardware` (`registry.New`) | `coordinator/registry/config.go` (`ReadConfig`, `Check`) | Minimum trust level a provider needs to receive public traffic; an unknown value refuses startup. |
-| `EIGENINFERENCE_DEDICATED_MODELS` | comma-separated family patterns, or `none` | `gemma-4` | `coordinator/app/registry.go`; `coordinator/registry/dedicated_models.go` (`ParseDedicatedModels`) | Model families that get dedicated-provider routing; `none` disables. |
 | `EIGENINFERENCE_REJECT_MODELS` | comma-separated model ids | unset | `coordinator/app/routing.go` (`SetRejectModels`) | Sheds the listed models with 429 at admission. |
 | `EIGENINFERENCE_MIN_DECODE_TPS` | float ≥ 0 (`0` disables) | `15` | `coordinator/app/routing.go` (`SetMinDecodeTPS`) | Per-request decode floor (tokens/s) used by admission; see [`../architecture/scheduling.md`](../architecture/scheduling.md). |
 | `EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN` | bool | `true` (*live*) | `coordinator/registry/scheduler.go` (`decodeFloorUseFleetMedian`) | Lets the per-request decode projection fall back to the fleet-median solo rate before the static benchmark. |
@@ -275,6 +274,11 @@ Reservation commit lock:
 
 Quality concurrency cap:
 
+`Policy.Cap` (`coordinator/internal/registry/quality/policy.go`) uses reviewed
+profiles, benchmark rates, or measured/seeded per-model rates. A hardware-only
+proxy does not tighten an otherwise unmeasured model's provider limit. Models
+may share a provider; catalog, trust, memory and capacity gates still apply.
+
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_CAP` | bool | `true` | `coordinator/registry/config.go` (`ReadConfig`) | Per-provider admission cap derived from each model's quality concurrency instead of the flat cap. |
@@ -303,7 +307,6 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` | integer ≥ 1 | `2` | `coordinator/registry/config.go` | Speculative dispatch starts per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Speculative wins per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Cold dispatches per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` | Go duration | `20s` | `coordinator/registry/config.go` | Load duration above which a load is counted as slow. |
 | `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | float (≤ 0 disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
 | `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` | integer ≥ 0 | `1` | `coordinator/registry/config.go` | Spare warm providers added to the demand-derived target. |
 | `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` | integer ≥ 1 | `4` | `coordinator/registry/config.go` | Per-provider concurrency assumed when rates are unknown. |

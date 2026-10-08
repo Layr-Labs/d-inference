@@ -25,15 +25,20 @@ printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET=whsec_test_do_not_pr
 chmod 0600 "$ENV_FILE"
 
 before_secret=$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")
-check_output=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
-    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
-if printf '%s' "$check_output" | grep -Eq "$before_secret|whsec_test_do_not_print"; then
-    echo "refresh check leaked an existing secret value" >&2
-    exit 1
-fi
+assert_no_secret_values() {
+    if printf '%s' "$1" | grep -Eq "$before_secret|whsec_test_do_not_print|existing-EIGENINFERENCE_(ADMIN_KEY|RELEASE_KEY|DATABASE_URL|PRIVY_APP_SECRET|STRIPE_SECRET_KEY)"; then
+        echo "refresh leaked an existing secret value" >&2
+        exit 1
+    fi
+}
 
-SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
-    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+check_output=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check 2>&1)
+assert_no_secret_values "$check_output"
+
+apply_output=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply 2>&1)
+assert_no_secret_values "$apply_output"
 
 [ "$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")" = "$before_secret" ]
 [ "$(awk -F= '$1=="EIGENINFERENCE_PROMPT_SIDECAR_ENABLED" { print $2 }' "$ENV_FILE")" = "true" ]
@@ -51,6 +56,39 @@ grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_IN_WINDOW=3' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_RESTART_COOLDOWN_MS=30000' "$ENV_FILE"
 [ "$(ls "$ENV_DIR"/env.bak.* | wc -l | tr -d ' ')" -eq 1 ]
 
+# Retired settings are optional, never reintroduced, and never deleted from an
+# existing host. Test stock and custom values as well as absent and blank keys.
+retired_keys=(EIGENINFERENCE_DEDICATED_MODELS EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD)
+for state in absent blank stock custom; do
+    retired_env="$ENV_DIR/retired-$state.env"
+    awk -F= '$1 != "EIGENINFERENCE_DEDICATED_MODELS" && $1 != "EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD"' \
+        "$ENV_FILE" > "$retired_env"
+    case "$state" in
+        blank) printf '%s=\n' "${retired_keys[@]}" >> "$retired_env" ;;
+        stock) printf 'EIGENINFERENCE_DEDICATED_MODELS=gemma-4\nEIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD=20s\n' >> "$retired_env" ;;
+        custom) printf 'EIGENINFERENCE_DEDICATED_MODELS=none\nEIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD=-1s\n' >> "$retired_env" ;;
+    esac
+    cp "$retired_env" "$retired_env.before"
+    if ! check_output=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$retired_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check 2>&1); then
+        assert_no_secret_values "$check_output"
+        echo "refresh rejected retired keys in $state state: $check_output" >&2
+        exit 1
+    fi
+    assert_no_secret_values "$check_output"
+    cmp "$retired_env.before" "$retired_env"
+    apply_output=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$retired_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply 2>&1)
+    assert_no_secret_values "$apply_output"
+    cmp "$retired_env.before" "$retired_env"
+done
+for retired_key in "${retired_keys[@]}"; do
+    if grep -Fxq "$retired_key" "$REQUIRED" || grep -q "^$retired_key=" "$DEFAULTS"; then
+        echo "retired key $retired_key remains required or defaulted" >&2
+        exit 1
+    fi
+done
+
 # Negative cases MUST live inside $ENV_DIR: an env file outside it trips the
 # path guard before any manifest check runs, so a case placed outside would
 # pass whatever the manifest logic did. Assert the reason, not just the exit.
@@ -62,6 +100,7 @@ expect_refresh_failure() {
         echo "refresh accepted $label" >&2
         exit 1
     fi
+    assert_no_secret_values "$out"
     if ! printf '%s' "$out" | grep -Fq "$want"; then
         echo "refresh rejected $label for the wrong reason: $out" >&2
         exit 1
@@ -92,11 +131,18 @@ SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$payout_paused" \
     REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
 grep -Fxq 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false' "$payout_paused"
 
-missing="$ENV_DIR/missing.env"
-awk '$0 !~ /^EIGENINFERENCE_HEALTH_EJECTION=/' "$ENV_FILE" > "$missing"
-chmod 0600 "$missing"
-expect_refresh_failure "a dropped live tuning key" "$missing" \
-    "required existing variables are missing or empty: EIGENINFERENCE_HEALTH_EJECTION"
+# Retiring optional settings must not relax active tuning or credential checks.
+for active_key in EIGENINFERENCE_HEALTH_EJECTION EIGENINFERENCE_WARM_POOL_MIN_DWELL \
+    EIGENINFERENCE_BASE_URL EIGENINFERENCE_CONSOLE_URL EIGENINFERENCE_DATABASE_URL \
+    EIGENINFERENCE_ADMIN_KEY EIGENINFERENCE_RELEASE_KEY EIGENINFERENCE_PRIVY_APP_SECRET \
+    EIGENINFERENCE_STRIPE_SECRET_KEY; do
+    grep -Fxq "$active_key" "$REQUIRED"
+    missing="$ENV_DIR/missing-$active_key.env"
+    awk -F= -v key="$active_key" '$1 != key' "$ENV_FILE" > "$missing"
+    chmod 0600 "$missing"
+    expect_refresh_failure "a dropped active key" "$missing" \
+        "required existing variables are missing or empty: $active_key"
+done
 
 duplicate="$ENV_DIR/duplicate.env"
 cp "$ENV_FILE" "$duplicate"

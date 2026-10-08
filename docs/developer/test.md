@@ -3263,7 +3263,27 @@ run in CI job "Release Integrity". The production env refresh test checks automa
 payout activation, preservation of an explicit off switch, and rejection of missing
 payout prerequisites before the live env is changed. It also verifies that the
 required soft-delete mutation flag bootstraps to `false` while preserving explicit
-`false` and `true` choices. These tests use temporary env files, not production.
+`false` and `true` choices. Retired settings are neither required nor reintroduced;
+existing unlisted values remain preserved. These tests use temporary env files,
+not production.
+
+#### Coordinator environment retirement
+
+Run with the pinned Go toolchain from the repository root:
+
+```bash
+go test -p 2 ./coordinator/tests/registry ./coordinator/tests/app ./coordinator/tests/cmd/coordinator
+python3 scripts/run-coordinator-tests.py --jobs 2 ./coordinator/tests/api/inference ./coordinator/tests/api/inference/contracts
+bash scripts/test-prod-env-refresh.sh
+```
+
+The registry tests cover ignored retired warm-pool settings, mixed-model
+eligibility and measured quality caps. Application tests exercise actual startup
+with absent and stale dedicated-model values. Inference tests retain generic
+429/`Retry-After`, queue-full and queue-timeout behavior without a family-specific
+branch. The env-refresh tests require retired settings to stay absent on clean
+inputs and preserve any existing values, without relaxing active-key checks.
+These are isolated checks, not production probes or approval to edit a host.
 
 The Go toolchain guard runs without Docker or a Go download. Its regression suite
 rejects the former Go 1.25 builder with the Go 1.26 module, mismatched local pins,

@@ -77,13 +77,17 @@ func equalRuntimeCapabilities(left, right []string) bool {
 // Legacy attestations without signed claim fields remain trusted for unrelated
 // models but receive no capabilities.
 func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) (reconcileError error) {
+	// The registry read lock stays held for the whole decision: the App Attest
+	// check below reads the registry's deny set and policy generations. It is
+	// released in the deferred block, before the pair invalidation that needs
+	// the write lock.
 	r.mu.RLock()
 	provider := r.providers[providerID]
-	pair := r.verifiedPairs.connections[provider]
-	r.mu.RUnlock()
 	if provider == nil {
+		r.mu.RUnlock()
 		return fmt.Errorf("provider not found")
 	}
+	pair := r.verifiedPairs.connections[provider]
 
 	provider.mu.Lock()
 	defer func() {
@@ -111,6 +115,7 @@ func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) (reco
 			!provider.RuntimeManifestChecked || !provider.MetallibVerified ||
 			!provider.CodeAttested || !provider.FreshCodeAttested
 		provider.mu.Unlock()
+		r.mu.RUnlock()
 		if pair != nil && pairRevoked {
 			r.invalidateVerifiedPairState(pair)
 		}

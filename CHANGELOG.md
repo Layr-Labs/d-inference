@@ -2,6 +2,10 @@
 
 ## Unreleased - Autopilot daily earnings floor
 
+### Autopilot reward recording and authorization
+
+- Evaluate reward authorization at the declaration's original server receive time, preventing later grants from qualifying an earlier day. Record consent independently of baseline computation and batch PostgreSQL cohort lookups so fleet size does not multiply socket-path database round trips.
+
 - End new Autopilot floor accrual after November 7, 2026 UTC for every machine, regardless of opt-in date. November 7 settles at midnight November 8; pending rewards for earlier eligible days remain payable without resetting baselines or ordinary base rewards.
 - Add a separately funded daily inference-earnings floor only for machines with saved Autopilot consent. Freeze the first-ever opt-in baseline from the exact preceding 168 hours, including sponsored inference. Machines with shorter earnings history use comparable mature machines with the same chip, performance tier and memory; no matching cohort leaves the baseline pending. The daily floor is 110% of the seven-day daily average, rounded down to whole micro-USD, and remains frozen through Autopilot off/on.
 - Require trusted macOS 27 or later, at least two distinct downloaded eligible models and saved Autopilot consent at daily close, plus at least 90% uptime across each UTC day. Merge overlapping sessions and identity aliases when measuring uptime; unqualified days receive no top-up and do not consume the independent pool.

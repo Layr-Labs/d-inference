@@ -38,39 +38,14 @@ func (s *MemoryStore) ObserveAutopilotConsent(ctx context.Context, consent earni
 		return earningsfloor.Enrollment{}, err
 	}
 	consent.At = consent.At.UTC().Truncate(time.Microsecond)
-	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (!consent.Supported && consent.OptedIn) ||
-		len(consent.Chip) > 128 || !utf8.ValidString(consent.Chip) || consent.MemoryGB < 0 || math.IsNaN(consent.MemoryGB) || math.IsInf(consent.MemoryGB, 0) {
-		return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if consent.At.After(s.now()) {
-		return earningsfloor.Enrollment{}, errors.New("future autopilot consent")
-	}
-	if s.erasedAccounts[consent.AccountID] || s.erasedProviderLocked(consent.SessionID) {
-		return earningsfloor.Enrollment{}, store.ErrErasureConflict
-	}
-	if err := s.accountAdmissionLocked(consent.AccountID); err != nil {
+	if err := s.validateAutopilotConsentLocked(ctx, consent); err != nil {
 		return earningsfloor.Enrollment{}, err
-	}
-	history := s.autopilotRewardConsents[consent.SessionID]
-	if history.accountID != "" && history.accountID != consent.AccountID {
-		return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
-	}
-	for _, session := range s.history.ProviderSessions {
-		if session.SessionID == consent.SessionID && session.AccountID != "" && session.AccountID != consent.AccountID {
-			return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
-		}
-	}
-	if provider := s.providerRecords[consent.SessionID]; provider != nil && provider.AccountID != "" && provider.AccountID != consent.AccountID {
-		return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
 	}
 	var machine autopilotRewardMachine
 	if inventory := s.machineInventory; inventory != nil {
-		if observation, known := inventory.Sessions[consent.SessionID]; known {
-			if observation.AccountID != consent.AccountID {
-				return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
-			}
+		if _, known := inventory.Sessions[consent.SessionID]; known {
 			id := inventory.SessionMachines[consent.SessionID]
 			if inventory.Machines[id].Assurance != "provisional" {
 				var err error
@@ -81,28 +56,8 @@ func (s *MemoryStore) ObserveAutopilotConsent(ctx context.Context, consent earni
 			}
 		}
 	}
-	// Other sessions can reach storage out of receive-time order. Preserve
-	// their earlier declarations; projection still selects the latest time.
-	changed := consent.At.After(history.observedAt)
-	if changed {
-		history.accountID, history.observedAt = consent.AccountID, consent.At
-		history.events = append([]autopilotRewardConsentEvent(nil), history.events...)
-		last := len(history.events) - 1
-		// Same-state checkpoints never cross a UTC day. Their last observation
-		// remains sufficient for exact day-end ordering after identity merges.
-		if last < 0 || !sameAutopilotRewardConsent(history.events[last].Consent, consent) || !floorpolicy.Day(history.events[last].At).Equal(floorpolicy.Day(consent.At)) {
-			history.events = append(history.events, autopilotRewardConsentEvent{Consent: consent, observedAt: consent.At})
-		} else {
-			history.events[last].observedAt = consent.At
-		}
-	}
-	if err := ctx.Err(); err != nil {
+	if err := s.journalAutopilotConsentLocked(ctx, consent); err != nil {
 		return earningsfloor.Enrollment{}, err
-	}
-	// The accepted declaration is independent evidence. A later baseline
-	// calculation failure must not lose the original first-opt-in instant.
-	if changed {
-		s.autopilotRewardConsents[consent.SessionID] = history
 	}
 	var enrollment earningsfloor.Enrollment
 	if machine.id != "" {
@@ -122,6 +77,84 @@ func (s *MemoryStore) ObserveAutopilotConsent(ctx context.Context, consent earni
 		s.autopilotRewardEnrollments[enrollment.MachineID] = enrollment
 	}
 	return projectAutopilotRewardEnrollment(enrollment, machine.id), nil
+}
+
+func (s *MemoryStore) RecordAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	consent.At = consent.At.UTC().Truncate(time.Microsecond)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.validateAutopilotConsentLocked(ctx, consent); err != nil {
+		return err
+	}
+	return s.journalAutopilotConsentLocked(ctx, consent)
+}
+
+func (s *MemoryStore) validateAutopilotConsentLocked(ctx context.Context, consent earningsfloor.Consent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (!consent.Supported && consent.OptedIn) ||
+		len(consent.Chip) > 128 || !utf8.ValidString(consent.Chip) || consent.MemoryGB < 0 || math.IsNaN(consent.MemoryGB) || math.IsInf(consent.MemoryGB, 0) {
+		return earningsfloor.ErrIdentity
+	}
+	if consent.At.After(s.now()) {
+		return errors.New("future autopilot consent")
+	}
+	if s.erasedAccounts[consent.AccountID] || s.erasedProviderLocked(consent.SessionID) {
+		return store.ErrErasureConflict
+	}
+	if err := s.accountAdmissionLocked(consent.AccountID); err != nil {
+		return err
+	}
+	history := s.autopilotRewardConsents[consent.SessionID]
+	if history.accountID != "" && history.accountID != consent.AccountID {
+		return earningsfloor.ErrIdentity
+	}
+	for _, session := range s.history.ProviderSessions {
+		if session.SessionID == consent.SessionID && session.AccountID != "" && session.AccountID != consent.AccountID {
+			return earningsfloor.ErrIdentity
+		}
+	}
+	if provider := s.providerRecords[consent.SessionID]; provider != nil && provider.AccountID != "" && provider.AccountID != consent.AccountID {
+		return earningsfloor.ErrIdentity
+	}
+	if inventory := s.machineInventory; inventory != nil {
+		if observation, known := inventory.Sessions[consent.SessionID]; known && observation.AccountID != consent.AccountID {
+			return earningsfloor.ErrIdentity
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStore) journalAutopilotConsentLocked(ctx context.Context, consent earningsfloor.Consent) error {
+	history := s.autopilotRewardConsents[consent.SessionID]
+	// Other sessions can reach storage out of receive-time order. Preserve
+	// their earlier declarations; projection still selects the latest time.
+	changed := consent.At.After(history.observedAt)
+	if changed {
+		history.accountID, history.observedAt = consent.AccountID, consent.At
+		history.events = append([]autopilotRewardConsentEvent(nil), history.events...)
+		last := len(history.events) - 1
+		// Same-state checkpoints never cross a UTC day. Their last observation
+		// remains sufficient for exact day-end ordering after identity merges.
+		if last < 0 || !sameAutopilotRewardConsent(history.events[last].Consent, consent) || !floorpolicy.Day(history.events[last].At).Equal(floorpolicy.Day(consent.At)) {
+			history.events = append(history.events, autopilotRewardConsentEvent{Consent: consent, observedAt: consent.At})
+		} else {
+			history.events[last].observedAt = consent.At
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The accepted declaration is independent evidence. A later baseline
+	// calculation failure must not lose the original first-opt-in instant.
+	if changed {
+		s.autopilotRewardConsents[consent.SessionID] = history
+	}
+	return nil
 }
 
 func sameAutopilotRewardConsent(a, b earningsfloor.Consent) bool {

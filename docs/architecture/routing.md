@@ -237,6 +237,15 @@ records the unqualified serving boundary.
 
 ### Eligibility gates and the `GateReason` vocabulary
 
+Autopilot reward receipt checks reuse the shared privacy and capability policy
+with authorization evaluated at the original server receive time. Live routing
+continues to evaluate current evidence and final-handoff freshness; historical
+reward checks do not grant routing permission. The shared bodies are
+`coordinator/registry/provider_eligibility_privacy.go` (`privateTextWithAppAttestLocked`)
+and `coordinator/registry/provider_capabilities.go`
+(`providerMeetsModelRequirementsWithAppAttestLocked`). See the
+[billing mechanism](billing.md#autopilot-rewards) for consent journaling.
+
 Gates run in the order below. The first failing gate names the rejection;
 `scanCandidatesLocked` tallies exactly one `GateReason` per rejected provider.
 `GateReasonCount` is the "passed every gate" sentinel and is reported as

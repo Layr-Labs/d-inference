@@ -429,10 +429,11 @@ do not extend the program (`coordinator/internal/payments/floorpolicy/math.go`,
 
 ```mermaid
 flowchart TD
-  A["Authenticated saved-consent declaration"] --> B["ObserveAutopilotConsent: persist original receive time"]
-  B --> C{"Verified canonical machine and account?"}
-  C -->|"not yet"| D["Retain raw journal; retry binding"]
-  D --> C
+  A["Authenticated saved-consent declaration"] --> B["RecordAutopilotConsent: persist original receive time"]
+  B --> W["Worker or enrollment listing"]
+  W --> C{"Verified canonical machine and account?"}
+  C -->|"not yet"| D["Retain raw journal; await inventory binding"]
+  D --> W
   C -->|"yes"| E{"First-ever history known?"}
   E -->|"no"| F["Hold baseline unknown; preserve anchor"]
   E -->|"yes"| Q{"Enough personal earnings history?"}
@@ -461,10 +462,10 @@ machine `first_seen` is not evidence of that time. New authenticated socket
 declarations carry no trusted client historical timestamp. The coordinator
 stamps receive time before decoding or authentication, journals accepted
 authenticated declarations, and later materializes enrollment under verified
-machine/account ownership. An identity-not-ready result can therefore leave a durable raw
-declaration even though it cannot yet freeze a baseline or pay
+machine/account ownership. A successful journal write can leave a durable raw
+declaration without a machine binding, frozen baseline or payment
 (`coordinator/api/provider/autopilot_rewards.go`, `autopilotRewardCapture`;
-`coordinator/store/postgres/autopilot_rewards_consent.go`, `ObserveAutopilotConsent`).
+`coordinator/store/postgres/autopilot_rewards_consent.go`, `RecordAutopilotConsent`).
 
 Automatic freezing requires tracked history from the machine's first observation.
 A machine seen before `tracking_started_at`, a gap before its first supported
@@ -517,6 +518,14 @@ not an automatic correction or another import (`ensureAutopilotRewardEnrollment`
 
 #### Capture failure boundary
 
+Socket capture records only the authenticated declaration through
+`store.AutopilotConsentJournal`. A successful unbound write does not occupy the
+retry queue. Baseline materialization belongs to worker/listing paths and uses
+set-based PostgreSQL peer queries; it cannot consume the socket's short journal
+budget. Existing explicit `ObserveAutopilotConsent` store callers still request
+immediate materialization (`coordinator/store/earnings_floor.go`,
+`coordinator/store/postgres/autopilot_rewards_cohort_peers.go`).
+
 Only committed raw declarations survive socket or coordinator-process loss.
 `autopilotRewardCapture` uses a bounded in-memory retry queue, not a durable spool.
 A journal outage that outlasts the connection and its final bounded retry can
@@ -530,7 +539,8 @@ continuous history from a receive timestamp, pending-write log or later reconnec
 The store selects the last durable declaration strictly before each UTC close
 and requires saved opt-in plus the qualification captured with that declaration;
 it does not skip a later nonqualifying declaration to reuse an earlier one.
-Qualification uses trusted OS evidence and accepted downloaded catalog inventory,
+Qualification evaluates the lease interval at the original server receive time,
+retains current revocation/binding/privacy checks, and uses accepted downloaded catalog inventory,
 under the [daily policy](../reference/pricing-model.md#autopilot-rewards).
 The machine's daily uptime comes from the union of attributable provider sessions,
 with heartbeat and disconnect boundaries clipped to that UTC day. Aliases and

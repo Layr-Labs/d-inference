@@ -53,8 +53,19 @@ func (r *Registry) AutopilotRewardSnapshot(p *Provider) (optedIn, supported, qua
 // current qualification. The first registration receipt precedes asynchronous
 // machine inventory, so later identity binding must use this original hardware
 // when selecting its baseline cohort. The socket owner supplies the authenticated
-// account, session and receive timestamp after releasing these locks.
+// account and session after releasing these locks.
 func (r *Registry) AutopilotRewardDeclaration(p *Provider) (declaration earningsfloor.Consent) {
+	return r.autopilotRewardDeclaration(p, time.Now(), true)
+}
+
+// AutopilotRewardDeclarationAt evaluates the current accepted declaration and
+// evidence at the socket's receive instant. A lease granted while this frame
+// waits for processing cannot retroactively qualify the earlier receipt.
+func (r *Registry) AutopilotRewardDeclarationAt(p *Provider, receivedAt time.Time) earningsfloor.Consent {
+	return r.autopilotRewardDeclaration(p, receivedAt, false)
+}
+
+func (r *Registry) autopilotRewardDeclaration(p *Provider, receivedAt time.Time, inspection bool) (declaration earningsfloor.Consent) {
 	if p == nil {
 		return declaration
 	}
@@ -65,6 +76,10 @@ func (r *Registry) AutopilotRewardDeclaration(p *Provider) (declaration earnings
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if inspection {
+		receivedAt = r.appAttestNow(receivedAt)
+	}
+	declaration.At = receivedAt
 	declaration.OptedIn, declaration.Supported = p.autopilotRewardConsentLocked()
 	chip := p.Hardware.ChipName
 	if utf8.ValidString(chip) {
@@ -79,13 +94,13 @@ func (r *Registry) AutopilotRewardDeclaration(p *Provider) (declaration earnings
 	if p.Hardware.MemoryGB > 0 {
 		declaration.MemoryGB = float64(p.Hardware.MemoryGB)
 	}
-	declaration.Qualified = r.autopilotRewardQualifiedLocked(p, declaration.OptedIn, declaration.Supported)
+	declaration.Qualified = r.autopilotRewardQualifiedLocked(p, declaration.OptedIn, declaration.Supported, receivedAt)
 	return declaration
 }
 
-func (r *Registry) autopilotRewardQualifiedLocked(p *Provider, optedIn, supported bool) bool {
+func (r *Registry) autopilotRewardQualifiedLocked(p *Provider, optedIn, supported bool, receivedAt time.Time) bool {
 	if !optedIn || !supported || !p.ModelAutopilot.Enabled || p.PrivateOnly ||
-		!r.providerAppAttestServingAuthorizedLocked(p, time.Now()) ||
+		!r.providerAppAttestServingAuthorizedAtLocked(p, receivedAt) ||
 		!rewardeligibility.OSVersionEligible(p.appAttestAuthorization.OSVersion) {
 		return false
 	}
@@ -113,7 +128,7 @@ func (r *Registry) autopilotRewardQualifiedLocked(p *Provider, optedIn, supporte
 		entry, exists := r.modelCatalog[model.ID]
 		if !exists || entry.WeightHash == "" || model.WeightHash == "" ||
 			!entry.acceptsWeightHash(model.WeightHash) ||
-			!r.providerMeetsModelRequirementsLocked(p, model.ID) ||
+			!r.providerMeetsModelRequirementsWithAppAttestLocked(p, model.ID, true) ||
 			!r.providerEligibleForTraitsLocked(p, model.ID, RequestTraits{}) ||
 			!modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
 			continue

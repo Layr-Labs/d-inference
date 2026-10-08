@@ -13,6 +13,7 @@ import (
 )
 
 var _ store.AutopilotRewardsStore = (*PostgresStore)(nil)
+var _ store.AutopilotConsentJournal = (*PostgresStore)(nil)
 
 func readAutopilotRewardEnrollment(ctx context.Context, tx pgx.Tx, ancestors []string) (*earningsfloor.Enrollment, error) {
 	var enrollment earningsfloor.Enrollment

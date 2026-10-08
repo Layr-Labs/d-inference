@@ -196,7 +196,8 @@ prevents new accrual and does not disable Autopilot or ordinary base rewards.
   at payout time. A later strong day must not erase an earlier weak day's top-up.
 - For `ineligible`, inspect the day-close captured qualification and union of
   canonical-machine session uptime for that UTC day. A current OS upgrade,
-  inventory refresh or reconnect does not manufacture earlier qualification.
+  inventory refresh, reconnect or lease granted after the recorded receive time
+  does not manufacture earlier qualification.
   Duplicate sessions cannot multiply uptime, and short first enrollment days
   still use the full-day denominator. Confirm no wallet credit or pool spending.
 

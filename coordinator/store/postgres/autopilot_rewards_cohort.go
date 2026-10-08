@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/payments/floorpolicy"
@@ -30,66 +29,9 @@ func autopilotRewardBaseline(ctx context.Context, tx pgx.Tx, machine autopilotRe
 	if !known {
 		return 0, "", "", earningsfloor.ErrHistory
 	}
-	rows, err := tx.Query(ctx, `SELECT id FROM darkbloom_machines
-	 WHERE merged_into IS NULL AND assurance<>'provisional' AND id<>$1 AND first_seen<=$2 ORDER BY id`, machine.id, start)
+	peers, err := autopilotRewardCohortEarnings(ctx, tx, machine.id, key, start, anchor)
 	if err != nil {
 		return 0, "", "", err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, "", "", err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return 0, "", "", err
-	}
-	peers := make(map[string]int64)
-	for _, id := range ids {
-		peer, err := resolveAutopilotRewardMachine(ctx, tx, id)
-		if errors.Is(err, earningsfloor.ErrIdentity) || errors.Is(err, earningsfloor.ErrHistory) {
-			continue
-		}
-		if err != nil {
-			return 0, "", "", err
-		}
-		if err := checkPersonalAccount(ctx, tx, peer.account); errors.Is(err, store.ErrErasureConflict) {
-			continue
-		} else if err != nil {
-			return 0, "", "", err
-		}
-		// Match memory-store admission without acquiring another account's
-		// row lock after the privacy fence, which would invert scrub lock order.
-		var deleted bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE account_id=$1 AND deleted_at IS NOT NULL)`, peer.account).Scan(&deleted); err != nil {
-			return 0, "", "", err
-		}
-		if deleted {
-			continue
-		}
-		if peer.id == machine.id || peer.firstSeen.After(start) {
-			continue
-		}
-		peerKey, known, err := autopilotRewardCohortKey(ctx, tx, peer, anchor)
-		if err != nil {
-			return 0, "", "", err
-		}
-		if !known || peerKey != key {
-			continue
-		}
-		total, err := sumAutopilotInference(ctx, tx, peer, start, anchor)
-		if errors.Is(err, earningsfloor.ErrIdentity) || errors.Is(err, earningsfloor.ErrHistory) {
-			continue
-		}
-		if err != nil {
-			return 0, "", "", err
-		}
-		peers[peer.id] = total
 	}
 	total, evidence, err := floorpolicy.CohortBaselineValue(key, anchor, peers)
 	if err != nil {

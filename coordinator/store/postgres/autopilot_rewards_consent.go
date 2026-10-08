@@ -13,21 +13,41 @@ import (
 )
 
 func (s *PostgresStore) ObserveAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) (earningsfloor.Enrollment, error) {
-	consent.At = consent.At.UTC().Truncate(time.Microsecond)
-	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (consent.OptedIn && !consent.Supported) ||
-		len(consent.Chip) > 128 || !utf8.ValidString(consent.Chip) || consent.MemoryGB < 0 || math.IsNaN(consent.MemoryGB) || math.IsInf(consent.MemoryGB, 0) {
-		return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
-	}
-	if consent.At.After(s.now()) {
-		return earningsfloor.Enrollment{}, errors.New("future autopilot consent")
+	consent, err := s.validateAutopilotConsent(consent)
+	if err != nil {
+		return earningsfloor.Enrollment{}, err
 	}
 	machineID, err := s.journalAutopilotConsent(ctx, consent)
 	if err != nil {
 		return earningsfloor.Enrollment{}, err
 	}
+	if machineID == "" {
+		return earningsfloor.Enrollment{}, earningsfloor.ErrIdentity
+	}
 	// The journal commits first, even when binding or baseline calculation fails.
 	// A reconnect can therefore recover the original first-positive instant.
 	return s.autopilotRewardEnrollment(ctx, machineID)
+}
+
+func (s *PostgresStore) RecordAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) error {
+	consent, err := s.validateAutopilotConsent(consent)
+	if err != nil {
+		return err
+	}
+	_, err = s.journalAutopilotConsent(ctx, consent)
+	return err
+}
+
+func (s *PostgresStore) validateAutopilotConsent(consent earningsfloor.Consent) (earningsfloor.Consent, error) {
+	consent.At = consent.At.UTC().Truncate(time.Microsecond)
+	if consent.SessionID == "" || consent.AccountID == "" || consent.At.IsZero() || (consent.OptedIn && !consent.Supported) ||
+		len(consent.Chip) > 128 || !utf8.ValidString(consent.Chip) || consent.MemoryGB < 0 || math.IsNaN(consent.MemoryGB) || math.IsInf(consent.MemoryGB, 0) {
+		return consent, earningsfloor.ErrIdentity
+	}
+	if consent.At.After(s.now()) {
+		return consent, errors.New("future autopilot consent")
+	}
+	return consent, nil
 }
 
 func (s *PostgresStore) journalAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) (string, error) {
@@ -100,7 +120,10 @@ func (s *PostgresStore) journalAutopilotConsent(ctx context.Context, consent ear
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
-	return machine.id, identityErr
+	if identityErr != nil {
+		return "", nil
+	}
+	return machine.id, nil
 }
 
 func bindAutopilotRewardConsents(ctx context.Context, tx pgx.Tx, machine autopilotRewardMachine) error {

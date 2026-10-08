@@ -3277,13 +3277,15 @@ threats:
       A queued request may outlive a grant, credential revocation, endpoint replacement
       or policy change. Selection-time authorization and a public snapshot are insufficient.
     adversaries: [ADV-001, ADV-003]
-    affected_assets: [A-001, A-015, A-016]
+    affected_assets: [A-001, A-009, A-015, A-016]
     affected_files:
       - coordinator/appattest/verify.go
       - coordinator/appattest/service/authorizer.go
       - coordinator/registry/app_attest_authorization.go
       - coordinator/registry/app_attest_presenter.go
       - coordinator/registry/inference_authorization.go
+      - coordinator/registry/autopilot_reward_snapshot.go
+      - coordinator/api/provider/autopilot_rewards.go
     mitigations:
       - description: >
           Verified transcript/credential/counter and current account/session/endpoint
@@ -3293,6 +3295,13 @@ threats:
       - description: >
           Explicit credential revocation denies matching live presenters and retained
           grant keys across both paths; failed storage reads never extend readiness.
+        status: implemented
+      - description: >
+          Autopilot reward qualification evaluates the lease interval at the original
+          server receive time while retaining current binding, policy, revocation
+          and privacy checks. A grant accepted during delayed frame processing cannot
+          retroactively qualify an earlier UTC day. Consent journaling preserves that
+          original timestamp through deferred baseline materialization and retries.
         status: implemented
       - description: Committed in-flight frames and already delivered plaintext cannot be recalled.
         status: accepted

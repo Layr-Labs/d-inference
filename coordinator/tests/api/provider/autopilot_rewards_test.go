@@ -40,7 +40,7 @@ func TestAutopilotConsentCaptureDelayedInventoryAndChallengeRetry(t *testing.T) 
 			releaseToken()
 			f.sync(t)
 			calls := st.snapshot()
-			if len(calls) != 1 || !errors.Is(calls[0].err, earningsfloor.ErrIdentity) {
+			if len(calls) != 1 || calls[0].err != nil {
 				t.Fatalf("initial unbound declaration was not journaled: %+v", calls)
 			}
 			first := calls[0].consent
@@ -59,13 +59,13 @@ func TestAutopilotConsentCaptureDelayedInventoryAndChallengeRetry(t *testing.T) 
 			case <-f.ctx.Done():
 				t.Fatal("asynchronous inventory never completed")
 			}
-			// A response retries already accepted consent; it must not invent
-			// either a new receive instant or a new declaration.
+			// Identity binding does not retry an already durable declaration.
+			// The original receive instant is materialized by the later read.
 			f.write(t, map[string]any{"type": response})
 			f.sync(t)
 			calls = st.snapshot()
-			if len(calls) != 2 || calls[1].err != nil || calls[1].consent != first {
-				t.Fatalf("challenge path did not retry the original declaration: %+v", calls)
+			if len(calls) != 1 || calls[0].consent != first {
+				t.Fatalf("challenge path rewrote an already durable declaration: %+v", calls)
 			}
 			rows := f.enrollments(t)
 			if len(rows) != 1 || !rows[0].OptedIn || rows[0].BaselineKnown || rows[0].FirstOptInAt != nil || !rows[0].FirstObservedAt.Equal(first.At.Truncate(time.Microsecond)) {
@@ -81,28 +81,28 @@ func TestAutopilotConsentCaptureJournalsOptOutBeforeIdentity(t *testing.T) {
 	first := f.store.snapshot()[0].consent
 	f.heartbeat(t, savedConsent(false), 1)
 	calls := f.store.snapshot()
-	if len(calls) != 3 || calls[1].consent != first || calls[2].consent.OptedIn || !calls[2].consent.Supported {
+	if len(calls) != 2 || calls[0].consent != first || calls[1].consent.OptedIn || !calls[1].consent.Supported {
 		t.Fatalf("unresolved first declaration blocked the later opt-out: %+v", calls)
 	}
 	for _, call := range calls {
-		if !errors.Is(call.err, earningsfloor.ErrIdentity) {
-			t.Fatalf("unverified machine acquired financial enrollment: %+v", call)
+		if call.err != nil {
+			t.Fatalf("unbound authenticated declaration did not commit: %+v", call)
 		}
 	}
 	if len(f.enrollments(t)) != 0 {
 		t.Fatal("provisional session enrolled")
 	}
-	// Adjacent retries keep the earliest timestamp, including an explicit
-	// false declaration with no revision/selection.
-	optOut := calls[2].consent
+	// A successful repeat advances the durable watermark without replaying
+	// the earlier opt-in, including an explicit false with no selection.
+	optOut := calls[1].consent
 	state := savedConsent(false)
 	state.Revision, state.SelectedModels = "", nil
 	f.heartbeat(t, state, 2)
 	calls = f.store.snapshot()
-	if len(calls) != 6 || calls[3].consent != first || calls[4].consent != optOut || !calls[5].consent.At.After(optOut.At) {
-		t.Fatalf("pending duplicate lost original transition timestamps: %+v", calls)
+	if len(calls) != 3 || !calls[2].consent.At.After(optOut.At) {
+		t.Fatalf("successful checkpoint replayed or lost a transition: %+v", calls)
 	}
-	latestOptOut := calls[5].consent
+	latestOptOut := calls[2].consent
 	f.bind(t, first, consentCaptureAccount)
 	// Listing must recover both raw journal entries even without a live
 	// capture retry, as after loss of the original connection.
@@ -110,19 +110,19 @@ func TestAutopilotConsentCaptureJournalsOptOutBeforeIdentity(t *testing.T) {
 	if len(rows) != 1 || rows[0].OptedIn || !rows[0].FirstObservedAt.Equal(first.At.Truncate(time.Microsecond)) || !rows[0].ObservedAt.Equal(latestOptOut.At.Truncate(time.Microsecond)) {
 		t.Fatalf("durable journal lost first opt-in or subsequent opt-out: %+v", rows)
 	}
-	// Listing leaves the socket's explicit opt-out pending. A later missing
-	// declaration must not coalesce with that supported false declaration.
+	// A later missing declaration must not coalesce with the successfully
+	// journaled supported false declaration.
 	f.heartbeat(t, nil, 3)
 	calls = f.store.snapshot()
-	if len(calls) != 9 || calls[6].consent != first || calls[7].consent != optOut {
-		t.Fatalf("missing consent coalesced with explicit opt-out or changed pending history: %+v", calls)
+	if len(calls) != 4 {
+		t.Fatalf("missing consent replayed earlier durable history: %+v", calls)
 	}
-	for _, call := range calls[6:] {
+	for _, call := range calls {
 		if call.err != nil {
 			t.Fatalf("bound session did not flush pending declarations: %+v", call)
 		}
 	}
-	unknown := calls[8].consent
+	unknown := calls[3].consent
 	if unknown.OptedIn || unknown.Supported || !unknown.At.After(optOut.At) {
 		t.Fatalf("missing consent became explicit opt-out or lost its receipt time: %+v", unknown)
 	}
@@ -147,10 +147,10 @@ func TestAutopilotConsentCaptureAcceptedStateAndRepeatCheckpoints(t *testing.T) 
 		f.heartbeat(t, state, seq)
 	}
 	calls := f.store.snapshot()
-	if len(calls) != 5 {
+	if len(calls) != 4 {
 		t.Fatalf("successful duplicate heartbeats skipped store checkpoints: %+v", calls)
 	}
-	for i := 2; i < len(calls); i++ {
+	for i := 1; i < len(calls); i++ {
 		if calls[i].err != nil || !calls[i].consent.OptedIn || !calls[i].consent.Supported || !calls[i].consent.At.After(calls[i-1].consent.At) {
 			t.Fatalf("repeat observation failed to advance saved consent watermark: %+v", calls)
 		}
@@ -160,11 +160,11 @@ func TestAutopilotConsentCaptureAcceptedStateAndRepeatCheckpoints(t *testing.T) 
 		t.Fatalf("stale capacity frame journaled raw unaccepted consent: calls=%d", got)
 	}
 	rows := f.enrollments(t)
-	if len(rows) != 1 || !rows[0].OptedIn || !rows[0].ObservedAt.Equal(calls[4].consent.At.Truncate(time.Microsecond)) {
+	if len(rows) != 1 || !rows[0].OptedIn || !rows[0].ObservedAt.Equal(calls[3].consent.At.Truncate(time.Microsecond)) {
 		t.Fatalf("stale heartbeat or scheduler pause changed saved consent: %+v", rows)
 	}
 	f.heartbeat(t, nil, 4)
-	last := f.store.snapshot()[5]
+	last := f.store.snapshot()[4]
 	if last.err != nil || last.consent.OptedIn || last.consent.Supported || f.enrollments(t)[0].OptedIn {
 		t.Fatalf("missing field silently retained previous positive consent: %+v", last)
 	}
@@ -211,8 +211,8 @@ func TestAutopilotConsentCaptureWrongOwnerCannotEnroll(t *testing.T) {
 	if len(f.enrollments(t)) != 0 {
 		t.Fatal("authenticated session acquired another account's financial enrollment")
 	}
-	for _, call := range f.store.snapshot() {
-		if call.consent.AccountID != consentCaptureAccount || !errors.Is(call.err, earningsfloor.ErrIdentity) {
+	for i, call := range f.store.snapshot() {
+		if call.consent.AccountID != consentCaptureAccount || (i == 0 && call.err != nil) || (i > 0 && !errors.Is(call.err, earningsfloor.ErrIdentity)) {
 			t.Fatalf("capture changed account to match a conflicting binding: %+v", call)
 		}
 	}
@@ -260,7 +260,7 @@ func TestAutopilotConsentCaptureRegistrationSurvivesLostSocket(t *testing.T) {
 	f.register(t, savedConsent(true))
 	first := f.store.snapshot()[0].consent
 	// Confirmed disconnects forbid later identity changes. Bind first, without
-	// sending another heartbeat or retrying the pending declaration.
+	// sending another heartbeat. The original declaration is already durable.
 	f.bind(t, first, consentCaptureAccount)
 	if err := f.conn.CloseNow(); err != nil {
 		t.Fatal(err)
@@ -273,7 +273,38 @@ func TestAutopilotConsentCaptureRegistrationSurvivesLostSocket(t *testing.T) {
 		t.Fatalf("disconnect lost the original positive declaration: %+v", rows)
 	}
 	calls := f.store.snapshot()
-	if len(calls) != 2 || calls[1].err != nil || calls[1].consent != first {
-		t.Fatalf("disconnect did not retry only the original declaration: %+v", calls)
+	if len(calls) != 1 || calls[0].err != nil || calls[0].consent != first {
+		t.Fatalf("disconnect retried or rewrote a durable declaration: %+v", calls)
+	}
+}
+
+func TestAutopilotConsentCaptureDefersBaselineAndPreservesFirstPositive(t *testing.T) {
+	f := newConsentSocket(t, nil)
+	p, state := f.registerRewardInventory(t)
+	first := f.store.snapshot()[0].consent
+	// A bound new machine has no mature comparable cohort. The socket must
+	// still commit its first positive and later opt-out without trying to
+	// calculate a baseline or waiting for reward enrollment.
+	f.bind(t, first, consentCaptureAccount)
+	f.heartbeat(t, state, 1)
+	f.heartbeat(t, savedConsent(false), 2)
+	if calls := f.store.snapshot(); len(calls) != 3 {
+		t.Fatalf("deferred enrollment obstructed authenticated journal writes: %+v", calls)
+	} else {
+		for _, call := range calls {
+			if call.err != nil {
+				t.Fatalf("missing cohort reached the socket write path: %+v", calls)
+			}
+		}
+	}
+	if got := f.store.baselineCallCount(); got != 0 {
+		t.Fatalf("socket invoked reward baseline materialization %d times", got)
+	}
+	if f.owner.registry.GetProvider(p.ID) != p {
+		t.Fatal("deferred baseline disconnected the provider")
+	}
+	rows := f.enrollments(t)
+	if len(rows) != 1 || rows[0].BaselineKnown || rows[0].FirstOptInAt != nil || rows[0].OptedIn || !rows[0].FirstObservedAt.Equal(first.At.Truncate(time.Microsecond)) {
+		t.Fatalf("later materialization lost the original positive or invented a cohort: %+v", rows)
 	}
 }

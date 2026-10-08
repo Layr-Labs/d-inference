@@ -277,3 +277,29 @@ func TestAutopilotRewardsCohortExcludesAmbiguousLegacyPeer(t *testing.T) {
 		}
 	})
 }
+
+func TestAutopilotRewardsCohortLegacyKeyCountsEqualEarningsSeparately(t *testing.T) {
+	autopilotRewardsBackends(t, func(t *testing.T, f *autopilotRewardsFixture) {
+		for _, session := range []string{"peer", "peer-reconnect"} {
+			if err := f.backend.OpenProviderSession(t.Context(), session, "", "peer-owner"); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.backend.TouchProviderSession(t.Context(), session, "", "peer-owner", "shared-peer-key", f.start); err != nil {
+				t.Fatal(err)
+			}
+			f.observe(t, store.MachineObservation{SessionID: session, AccountID: "peer-owner", SEKey: "shared-peer-se", Chip: "M4 Max", MemoryGB: 128, At: f.start})
+		}
+		for _, job := range []string{"first", "second"} {
+			if err := f.backend.RecordProviderEarning(&store.ProviderEarning{AccountID: "peer-owner", ProviderID: "legacy-" + job, ProviderKey: "shared-peer-key", JobID: job, Model: "inference", AmountMicroUSD: 35, CreatedAt: f.optIn.Add(-time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		firstSeen := f.optIn.Add(-time.Hour)
+		observeAutopilotCohortMachine(t, f, "target", "owner", "M4 Max", 128, firstSeen)
+		f.consent(t, "target", "owner", false, firstSeen)
+		got := f.consent(t, "target", "owner", true, f.optIn)
+		if !got.BaselineKnown || got.BaselineSource != earningsfloor.CohortBaseline || got.SevenDayEarningsMicroUSD != 70 || got.DailyFloorMicroUSD != 11 {
+			t.Fatalf("legacy session aliases multiplied or collapsed distinct earnings: %+v", got)
+		}
+	})
+}

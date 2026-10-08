@@ -1544,6 +1544,11 @@ See [persistence](../architecture/storage.md#autopilot-machine-settings) and
 
 ### Autopilot reward administration
 
+Provider WebSocket capture records consent without calculating a baseline.
+This admin listing may materialize a previously journaled enrollment using its
+original opt-in timestamp; the [billing mechanism](../architecture/billing.md#autopilot-rewards)
+describes that separation.
+
 `coordinator/api/autopilot/rewards.go` (`RewardsHandler`) owns the payloads;
 `rewards_decode.go` in that directory rejects ambiguous JSON. The adapter
 `coordinator/api/autopilot_handlers.go` (`handleAdminAutopilotRewards`) requires

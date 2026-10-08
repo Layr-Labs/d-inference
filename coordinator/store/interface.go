@@ -36,4 +36,5 @@ type Store interface {
 	InviteStore
 	ProviderEarningsStore
 	ProviderStore
+	AccountErasureStore
 }

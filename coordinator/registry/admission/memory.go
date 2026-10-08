@@ -55,6 +55,7 @@ type Memory struct {
 	ModelSizeGB, TotalGB, ActiveGB, NativeLoadGB, FreeForLoadGB float64
 	ModelLoaded, AvailableOnDisk, LoadReported                  bool
 	TotalPending                                                int
+	KVBytesPerToken                                             int64
 }
 
 // MemoryAdmits is the legacy fallback after slot, pool and cold serviceability
@@ -75,7 +76,11 @@ func MemoryAdmits(snap Memory, requestTokens int64) bool {
 	if tokens > maxTokensForCalc {
 		tokens = maxTokensForCalc
 	}
-	kvCacheGB := float64(tokens*KVCacheBytesPerToken) / float64(BytesPerGB)
+	rate := snap.KVBytesPerToken
+	if rate <= 0 {
+		rate = KVCacheBytesPerToken
+	}
+	kvCacheGB := float64(tokens) * float64(rate) / float64(BytesPerGB)
 	required += kvCacheGB
 	if snap.AvailableOnDisk && !snap.ModelLoaded && snap.TotalPending == 0 {
 		if admit, reported := ReportedLoadAdmits(snap.ModelSizeGB, snap.NativeLoadGB, snap.FreeForLoadGB, snap.LoadReported); reported {

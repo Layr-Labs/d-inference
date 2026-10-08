@@ -117,7 +117,7 @@ func TestValidateSummaryRequiresStableProcessAndCleanMetrics(t *testing.T) {
 		Inventory: promptproof.InventorySummary{UniqueContracts: 3, SupportedVectors: 42},
 		ColdStart: promptproof.ColdStartSummary{
 			Contracts: 3, Requests: 48, Succeeded: 48,
-			ColdLoads: 3, WarmLoads: 42, WaitedLoads: 3,
+			ColdLoads: 3, PreloadRotations: 3, WarmLoads: 48,
 			ChildGenerationStart: 1, ChildGenerationEnd: 1,
 			RSSBaselineBytes: 32 << 20, RSSPeakBytes: 600 << 20,
 			RSSEndBytes: 520 << 20, RSSLimitBytes: 1024 << 20,
@@ -147,6 +147,16 @@ func TestValidateSummaryRequiresStableProcessAndCleanMetrics(t *testing.T) {
 	}
 	if err := promptproof.ValidateSummary(summary); err != nil {
 		t.Fatalf("clean proof rejected: %v", err)
+	}
+	unadmitted := summary
+	unadmitted.ColdStart.PreloadRotations = 0
+	if err := promptproof.ValidateSummary(unadmitted); err == nil {
+		t.Fatal("cold plans without explicit preload admission were accepted")
+	}
+	missingLoad := summary
+	missingLoad.ColdStart.ColdLoads--
+	if err := promptproof.ValidateSummary(missingLoad); err == nil {
+		t.Fatal("missing cold rotation was accepted")
 	}
 	summary.Process.Restarts = 1
 	summary.Metrics.AtCapacity = 1

@@ -8,6 +8,9 @@ import (
 type PreloadController struct{ controller *preload.PreloadController }
 type PreloadControllerConfig = preload.PreloadControllerConfig
 type PreloadControllerStatus = preload.PreloadControllerStatus
+type PreloadDemandIdentity = preload.PreloadDemandIdentity
+type PreloadPlanningState = preload.PreloadPlanningState
+type PreloadSelectionSource = preload.PreloadSelectionSource
 
 // The supervisor retains process ownership; the controller consumes only the
 // detached generation/readiness view needed to fence active-set preloading.
@@ -22,6 +25,9 @@ func NewPreloadController(provisioner *Provisioner, supervisor *Supervisor, conf
 	if provisioner == nil || supervisor == nil || supervisor.Client() == nil {
 		return nil, ErrInvalidConfig
 	}
+	// Full verified membership follows the actual immutable provisioning bound,
+	// including programmatic construction outside the application assembly.
+	config.MaxCatalogModels = provisioner.maxModels
 	controller, err := preload.New(provisioner, preloadChild{supervisor}, supervisor.Client(), config)
 	if err != nil {
 		return nil, err
@@ -47,4 +53,16 @@ func (c *PreloadController) Status() PreloadControllerStatus {
 }
 func (c *PreloadController) ReadyFor(promptContractID string) bool {
 	return c != nil && c.controller.ReadyFor(promptContractID)
+}
+func (c *PreloadController) SetSelectionSource(source PreloadSelectionSource) bool {
+	return c != nil && c.controller.SetSelectionSource(source)
+}
+func (c *PreloadController) NoteDemand(identity PreloadDemandIdentity) bool {
+	return c != nil && c.controller.NoteDemand(identity)
+}
+func (c *PreloadController) PlanningState(identity PreloadDemandIdentity) PreloadPlanningState {
+	if c == nil {
+		return PreloadPlanningState{}
+	}
+	return c.controller.PlanningState(identity)
 }

@@ -27,6 +27,9 @@ func autopilotStateMatchesCapacity(p *Provider) bool {
 // messages alone never clear reservations or manufacture warm slot capacity.
 func (r *Registry) reconcileAutopilotHeartbeatLocked(p *Provider, state *protocol.ModelAutopilotState, reported *protocol.BackendCapacity, now time.Time) {
 	p.ModelAutopilot = autopilot.CloneState(state)
+	if p.BackendCapacity != nil && p.BackendCapacity.CapacitySeq > 0 && p.BackendCapacity.CapacitySeq == p.capacitySeq {
+		p.autopilotState.AcknowledgeControl(p.ModelAutopilot, p.ID, now)
+	}
 	if p.autopilotState.Reconcile(p.ID, state, reported, p.capacitySeq, now, r.queueAutopilotEvent) {
 		p.recordDeadlineActivityLocked(now)
 	}

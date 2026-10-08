@@ -39,4 +39,7 @@ type User struct {
 	StripeDestinationType  string `json:"stripe_destination_type,omitempty"` // "bank" | "card" | ""
 	StripeDestinationLast4 string `json:"stripe_destination_last4,omitempty"`
 	StripeInstantEligible  bool   `json:"stripe_instant_eligible,omitempty"` // debit-card destination supports Instant Payouts
+
+	// DeletedAt marks a soft-deleted user; no read returns it.
+	DeletedAt *time.Time `json:"-"`
 }

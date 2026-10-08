@@ -9,6 +9,19 @@ import Testing
 @Suite("LaunchAgent paths and errors")
 struct LaunchAgentPathsAndErrorsTests {
 
+    @Test("SSD capacity and endurance overrides reach the launchd provider")
+    func cacheBudgetsAreForwarded() {
+        let environment = [
+            "DARKBLOOM_PREFIX_CACHE_DISK_GB": "50",
+            "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY": "25",
+        ]
+        let forwarded = LaunchAgent.passthroughEnvironment(from: environment)
+        for (key, value) in environment { #expect(forwarded[key] == value) }
+        #expect(LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY": "0",
+        ])["DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY"] == "0")
+    }
+
     @Test("the plist lives in the user LaunchAgents folder under the service label")
     func plistPathShape() {
         let path = LaunchAgent.plistPath()

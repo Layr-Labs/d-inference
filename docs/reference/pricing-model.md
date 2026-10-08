@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-08
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -132,10 +132,16 @@ type is in [billing.md](../architecture/billing.md#ledger).
 | `admin_reward` | `LedgerAdminReward` | `POST /v1/admin/reward` | yes |
 | `migration` | `LedgerMigration` | balance moved between account identities | both columns move |
 | `provider_floor_draw` | `LedgerFloorDraw` | base-rewards epoch draw, reference `<epoch_id>` | yes |
+| `autopilot_floor_topup` | `LedgerAutopilotFloor` | [Autopilot daily shortfall](#autopilot-rewards), reference `autopilot-floor:<original enrollment machine ID>:<YYYY-MM-DD>` (`coordinator/store/ledger_types.go`) | yes |
+| `erasure_forfeit` | `LedgerErasureForfeit` | account erasure zeroes the balance, reference `erasure:<request_id>` | debit (both columns to 0) |
 
 `RewardLedgerTypes = [referral_reward, admin_reward]` — counted as "reward"
 rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
-(`coordinator/store/interface.go` `IsRewardLedgerType`).
+(`coordinator/store/ledger_types.go`, `IsRewardLedgerType`).
+
+`autopilot_floor_topup` is not in `RewardLedgerTypes`: its single synthetic
+`provider_earnings` row already contributes to earnings totals, so adding the
+ledger credit again would double count (`coordinator/store/ledger_types.go`).
 
 ## Balance primitives
 
@@ -149,6 +155,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 | `CreditProviderAccount` | + | + | on `provider_earnings.job_id` | `CreditProviderAccount`; index `idx_provider_earnings_job` |
 | `FinalizeConsumerCharge` | consumer adjustment; + reward to referrer | consumer debit cap; + reward to referrer | on `consumer_charge_settlements.job_id`; consumer settlement and reward share one transaction | `coordinator/store/postgres/consumer_settlement.go` |
 | `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres/base_rewards.go` |
+| `SettleAutopilotRewardDay` | + | + | one finalized canonical-machine/UTC-day receipt across aliases; credit, earning, summary, receipt and pool spending are atomic | `coordinator/store/postgres/autopilot_rewards_settlement.go`; `coordinator/store/memory/autopilot_rewards_settlement.go` |
 
 ## Per-key spend caps
 
@@ -172,7 +179,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 ## Stripe Connect withdrawal states
 
 `stripe_withdrawals.status` (`coordinator/api/billing/payouts/stripe_withdraw.go`
-`HandleStripeWithdraw`): `pending` → `transferred` → `paid` \| `failed`.
+`HandleStripeWithdraw`): states are `queued`, `pending`, `transferred`, `paid`, and `failed`. The funded path is `pending` → `transferred` → `paid` \| `failed`; a funding rejection adds `pending` → `queued` → `pending`. `queued` reserves the gross debit until platform funding returns; other definitive failures retain the atomic refund path.
 Connected-account status `users.stripe_account_status`
 (`coordinator/api/billing/payouts/`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):
@@ -221,6 +228,68 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 
 `settleCandidatePlan` commits all pending rows atomically through `FloorDrawBatchStore`, rechecking current session authorization before each planned credit and before commit. A late rejection rolls back the pending plan and triggers reallocation under the same pool/account caps. Canonical identities, endpoint continuity and prior finalized rows follow the [provider authorization contract](provider-authorization.md#machine-identity-and-base-rewards). Code: `coordinator/payments/baserewards/settlement_plan.go`, `coordinator/store/floor_draw_batch.go`.
 
+## Autopilot rewards
+
+This independently funded daily inference-earnings floor applies only to saved
+Autopilot opt-ins. The [billing mechanism](../architecture/billing.md#autopilot-rewards)
+explains consent history and settlement; [operations](../operations/autopilot-rewards.md)
+covers funding and historical baseline repair. Ordinary [base rewards](#base-rewards)
+remain separate and unchanged.
+
+| Rule | Contract | Citation |
+|---|---|---|
+| Baseline instant `T` | Machine's first-ever Autopilot opt-in, frozen once; restart, reconnect, key rotation, configuration revision and off/on do not re-anchor it | `coordinator/store/postgres/autopilot_rewards.go` (`ensureAutopilotRewardEnrollment`, `RestoreAutopilotBaseline`); `coordinator/store/memory/autopilot_rewards.go` |
+| Baseline window | Exactly `[T - 168 hours, T)`, not seven preceding UTC dates or a common launch cutoff | `coordinator/internal/payments/floorpolicy/math.go` (`BaselineDuration`); `coordinator/store/postgres/autopilot_rewards.go` |
+| Earnings basis | Sum attributed inference payout `AmountMicroUSD`, including sponsored/promotional inference; exclude `model='base_reward'`, other rewards and referral income. Not consumer-funded-only earnings | `coordinator/store/postgres/autopilot_rewards_identity.go` (`sumAutopilotInference`); `coordinator/store/memory/autopilot_rewards_identity.go` |
+| Fixed daily floor | `floor(seven_day_earnings_micro_usd * 11 / 70)`: divide by seven and multiply by 110%, rounding down only once to whole micro-USD, with overflow-safe integer arithmetic | `coordinator/internal/payments/floorpolicy/math.go` (`DailyFloor`) |
+| Daily top-up | `max(0, daily_floor_micro_usd - inference_micro_usd)` for that closed UTC day only. A strong later day does not cancel an earlier day's shortfall | `coordinator/store/postgres/autopilot_rewards_settlement.go` (`SettleAutopilotRewardDay`); `coordinator/store/memory/autopilot_rewards_settlement.go` |
+| Day eligibility | Last durable consent strictly before the next UTC midnight must qualify as saved opt-in. Pause, shadow/observation, absent live lease and disconnect do not themselves opt out | `coordinator/store/postgres/autopilot_rewards_consent.go` (`autopilotConsentAt`); `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardConsentSnapshot`) |
+| First partial day | Full daily floor less all inference earnings in that UTC day, including earnings before a midday enrollment; no prorating. Accrual begins with the first positive observation under this tracker, not a backfilled historical opt-in day | `coordinator/store/postgres/autopilot_rewards.go` (`ensureAutopilotRewardEnrollment`); `coordinator/store/postgres/autopilot_rewards_settlement.go` |
+| Pool | Separate cumulative `cap_micro_usd` and `spent_micro_usd`, both initially `0`. Admin sets an absolute nonnegative cap, never below spending; raising it funds/refills the remaining allowance. No automatic calendar reset, base-budget binding, 10%-of-base funding, aggregate October cap or 30-day expiry | `coordinator/store/postgres/schema/migrations/00031_autopilot_rewards.sql`; `coordinator/store/postgres/autopilot_rewards_pool.go` (`SetAutopilotRewardPoolCap`) |
+
+For a seven-day inference sum of $70, the daily floor is $11. Daily inference
+earnings of $8, $10 and $12 produce separate top-ups of $3, $1 and $0 respectively,
+subject to eligibility and pool funding (`DailyFloor`, `SettleAutopilotRewardDay`).
+
+History state is independent of funding and current connection state:
+
+| History state | Contract | Citation |
+|---|---|---|
+| Missing first-ever history | Unknown baseline is not zero: `baseline_known=false`, `first_opt_in_at=null`; verified admin evidence is required before payment. Backfill cannot rewrite a frozen baseline or manufacture earlier daily consent | `coordinator/store/earningsfloor/types.go` (`Enrollment`, `Baseline`); `coordinator/store/postgres/autopilot_rewards.go` |
+| Automatic history revalidation | Automatically frozen baselines recheck the same creation-history proof after late binding/merges, including older unsupported declarations and pretracking ancestors; frozen earnings are not recalculated. An evidenced admin import does not conflict merely because that pretracking/unsupported history exists. Source values are defined in the [enrollment API](api-contracts.md#autopilot-reward-administration), not inferred from evidence text | `coordinator/store/postgres/autopilot_rewards.go` (`autopilotRewardTrackingComplete`); `coordinator/store/memory/autopilot_rewards_consent.go` (`autopilotRewardTrackingCompleteLocked`) |
+| Conflicting frozen history | `history_conflict=true` when automatic history proof fails or linked positive history predates either source's frozen anchor, including an unknown-baseline ancestor's earlier observation. Preserve frozen values and finalized receipts; withhold unfinalized days without advancing, including opted-out days. Ordinary baseline import cannot repair a frozen conflict | `coordinator/store/postgres/autopilot_rewards.go` (`ensureAutopilotRewardEnrollment`, `readAutopilotRewardEnrollment`); `coordinator/store/postgres/autopilot_rewards_settlement.go`; `coordinator/store/memory/autopilot_rewards_consent.go` (`autopilotRewardEnrollmentLocked`) |
+
+Settlement statuses are the closed vocabulary in
+`coordinator/store/earningsfloor/types.go` (`Settlement`), implemented by
+`SettleAutopilotRewardDay` in both backends:
+
+| `status` | Payment | Final / cursor effect |
+|---|---|---|
+| `paid` | Full shortfall | Final; advance `next_day` |
+| `zero` | None; eligible day's inference already meets the floor, including a known zero floor | Final; advance `next_day` |
+| `opted_out` | None; last declaration before close is not qualifying | Final; advance `next_day` |
+| `pool_exhausted` | None; available pool cannot fund the full shortfall | Pending; keep `next_day`, retry after funding and recompute actual inference earnings; never partial payment or final zero |
+| `history_required` | None; frozen history conflicts, or a qualifying day lacks a known baseline or required inference history | Pending; keep `next_day`; never infer zero from missing or conflicting history |
+
+`Engine.SettleClosedDays` counts unknown-baseline or `history_conflict=true`
+enrollments as `history_pending` without calling daily settlement, so a pending
+day need not have a receipt yet. Other machines continue through the same pass.
+The memory backend can also return `history_required` after necessary inference
+evidence has been pruned; restoring a baseline does not restore that evidence
+(`coordinator/store/memory/autopilot_rewards_settlement.go`, `SettleAutopilotRewardDay`).
+
+Actual earnings are the committed rows visible when that calculation reads
+them, not a guarantee that every future backdated financial row has arrived.
+Pending receipts recalculate; finalized receipts are neither reopened nor
+clawed back (`coordinator/store/postgres/autopilot_rewards_settlement.go`,
+`finalizedAutopilotRewardDay`).
+
+| Worker bound | Value | Citation |
+|---|---|---|
+| Enrollment page | `pageSize = 100` per store call; keyset pagination across the pass | `coordinator/payments/autopilotrewards/engine.go` (`SettleClosedDays`) |
+| Catch-up | `catchUpDays = 31` closed days per machine per pass; a work bound, not an expiry | same |
+| Schedule | Startup pass, then wait until the next UTC midnight. After a pass with pending history, funding, errors or remaining catch-up, wait at most `retryInterval = time.Minute`, or until midnight if sooner | same (`Run`) |
+
 ## Routes
 
 Registered in `coordinator/api/routes.go`. "Auth" is the middleware plus any
@@ -267,6 +336,8 @@ the financial rate limiter ([Constants](#constants)).
 | `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/billing/admin_balance_adjustment.go` (`HandleAdminCredit`) |
 | `POST /v1/admin/reward` | requireAuth; admin | `HandleAdminReward` |
 | `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/billing/base_rewards_handlers.go` (`HandleAdminBaseRewards`) |
+| `GET /v1/admin/autopilot/rewards` | requireAuth; admin | `coordinator/api/autopilot/rewards.go` (`RewardsHandler`); [payloads](api-contracts.md#autopilot-reward-administration) |
+| `PATCH /v1/admin/autopilot/rewards/pool`, `POST /v1/admin/autopilot/rewards/machines/{machine_id}/baseline` | requireAuth + financial; admin | same; independent funding and verified history repair, not live-controller activation |
 
 ### `GET /v1/pricing` response
 
@@ -330,6 +401,7 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_BILLING_MOCK` | mock billing; `Config.Check` rejects it alongside a real Stripe key | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | in-memory reservation holds for `RoleService` accounts | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_BASE_REWARDS`, `EIGENINFERENCE_BASE_REWARDS_K`, `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO`, `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME`, `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | base-rewards engine switch, reduction factor `k`, monthly pool (µUSD), eligibility uptime fraction, per-account cap fraction | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `EIGENINFERENCE_AUTOPILOT_REWARDS` | Daily Autopilot settlement worker only; consent tracking and stored pool cap are independent | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | read by billing config but used for the coordinator's X25519 request-encryption key, not for money | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`IsAdminAuthorized`, `coordinator/api/access/authorize.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`RequirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
@@ -342,10 +414,14 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | User fee | Zero for standard bank withdrawals; platform pays Stripe charges | `coordinator/api/billing/payouts/global_payouts_withdraw.go` (`HandleGlobalPayoutQuote`) |
 | USD input | Decimal with at most two fractional digits; $1 to $1,000,000, further constrained by balance and published recipient limits in local currency | `coordinator/api/billing/payouts/global_payouts_withdraw.go` (`payoutUSDCents`) |
 | Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/billing/payouts/global_payouts_withdraw.go` (`payoutCurrencyExponent`) |
-| Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/billing/payouts/global_payouts_withdraw.go` (`HandleGlobalPayoutQuote`) |
+| Quote validity | At most two minutes, shortened only by a nonzero Stripe FX lock expiry, including renewed queued quotes | `coordinator/api/billing/payouts/global_payouts_withdraw.go` (`HandleGlobalPayoutQuote`) |
 | Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`) |
-| Retry window without remote ID | Twelve hours, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`syncGlobalPayout`) |
-| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`) |
+| Retry window without remote ID | Twelve hours from dispatch start, excluding the funding queue wait, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`syncGlobalPayout`) |
+| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days from `dispatch_started_at`, falling back to `submitted_at` for legacy records with a missing or zero dispatch time; the same window blocks account erasure, and later returns are handled by events | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`) |
+| Funding queue | Both rails return `queued` with reserved earnings; no additional withdrawal fee or ledger debit on retry | `coordinator/api/billing/payouts/stripe_dispatch.go` (`dispatchStripeWithdrawal`); `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`) |
+| Connect preflight deferral | Five-minute eligibility backoff; updates queue ordering without advancing dispatch generation, count or start; only a still-queued matching generation can be deferred | `coordinator/store/memory/stripe_withdrawal_queue.go`, `coordinator/store/postgres/stripe_withdrawal_queue.go` (`DeferStripeWithdrawal`) |
+| Connect reconciliation age | Pending uses `transfer_started_at` with `created_at` fallback; transferred uses `updated_at`. Stuck filters and age ordering run before the cap; automatic-sweep candidates use `updated_at`, then ID | `coordinator/store/stripe_withdrawal_types.go` (`ReconciliationStartedAt`); `coordinator/store/postgres/stripe_withdrawals.go` (`ListStripeWithdrawalsByStatus`, `ListStripeWithdrawalsForStripeAccount`) |
+| Queued FX estimate | Requoted at dispatch after expiry; USD principal and bank destination stay fixed; destination limits and platform fees are revalidated | `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/billing/payouts/global_payouts_withdraw.go`, `HandleGlobalPayoutQuote`).
 
@@ -371,11 +447,22 @@ The cutover preserves the existing user-facing standard withdrawal fee and
 minimum; it does not introduce instant-card payouts. `RequiredFundingCents`
 (`coordinator/billing/globalpayouts/funding.go`) checks the financial account's
 available USD against principal plus rounded-up quoted USD Stripe fees before
-the first debit. The platform pays these fees. This is an availability check,
-not a reservation: definitive send rejection still refunds atomically.
+the first send. The platform pays these fees. Confirmation reserves the user's earnings once; low platform funding returns `queued` and retries automatically.
+This does not reserve Stripe funds: a definitive low-funding send rejection also
+queues, while other definitive first-send rejections refund atomically.
 
-Confirmed Connect rejections refund gross principal and mark the row refunded in
+Confirmed Connect rejections other than `balance_insufficient` refund gross principal and mark the row refunded in
 one transaction (`coordinator/store/postgres/stripe_settlement.go`,
 `RefundRejectedStripeWithdrawal`). Historical failures without a verified
 rejection marker are not automatically credited; follow the
 [cutover runbook](../operations/stripe-migration.md).
+
+## Refused credit replay identity
+
+After irreversible erasure, positive credits remain outside the zeroed balance
+and are recorded for review. `CreditWithdrawableOnce` deduplicates by account,
+entry type and original reference hash, including references whose personal
+text is omitted from the audit. Ordinary `CreditWithdrawable` calls retain
+separate audit records. Code: `coordinator/store/postgres/ledger.go`
+(`CreditWithdrawableOnce`), `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql`
+(`erasure_refuse_ledger_credit`), `coordinator/store/memory/ledger.go`.

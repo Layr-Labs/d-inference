@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-06
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -15,6 +15,12 @@ and is not restated here.
 Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
 
 A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
+
+Account erasure also clears delayed account-specific proof writes and frozen
+legacy-MDM membership; [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys)
+retains another live account's device evidence. Unshared APNs tokens and pending
+challenges are removed from the coordinator's runtime cache too; stale replies
+cannot restore them ([identity cleanup](../architecture/security/identity-binding.md#account-erasure-and-apns-runtime-state)).
 
 ## Read current verification in the dashboard
 
@@ -86,7 +92,8 @@ Under the upcoming [frozen legacy policy](../architecture/security/enrollment.md
 devices whose stored account, SE key and serial enter the durable cohort
 continue through legacy verification. The first upgraded production coordinator
 startup drains eligible historical inventory after revocation replay before
-freezing; restart, a new account, a new device or a new
+freezing. Soft-deleted accounts and provider records cannot qualify for that
+initial snapshot; see the [cohort qualification rules](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort). A restart, a new account, a new device or a new
 account association does not reopen eligibility. Reenrollment requires the
 existing key under its frozen account and the [authenticated signed enrollment
 request](../reference/api-contracts.md#legacy-mdm-enrollment-proof). Preserve your

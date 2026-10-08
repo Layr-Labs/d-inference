@@ -191,6 +191,11 @@ func (s *Server) routes() {
 
 	// Admin account management (service-role + per-account platform fee)
 	s.mux.HandleFunc("PUT /v1/admin/users/role", s.access.RequireAuth(s.accounts.HandleAdminSetUserRole))
+	// Account erasure (GDPR): plan, confirm, status, cancel. Admin only.
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure/plan", s.access.RequireAuth(s.erasure.HandlePlan))
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure", s.access.RequireAuth(s.erasure.HandleRequest))
+	s.mux.HandleFunc("GET /v1/admin/accounts/{account_id}/erasure", s.access.RequireAuth(s.erasure.HandleStatus))
+	s.mux.HandleFunc("POST /v1/admin/accounts/{account_id}/erasure/cancel", s.access.RequireAuth(s.erasure.HandleCancel))
 	s.mux.HandleFunc("PUT /v1/admin/users/platform-fee", s.access.RequireAuth(s.accounts.HandleAdminSetUserPlatformFee))
 
 	// Admin model registry (manifest-backed). The legacy supported_models CRUD
@@ -283,6 +288,11 @@ func (s *Server) routes() {
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
 	s.mux.HandleFunc("GET /v1/admin/autopilot", s.access.RequireAuth(s.handleAdminAutopilot))
 	s.mux.HandleFunc("GET /v1/admin/autopilot/inventory", s.access.RequireAuth(s.handleAdminAutopilotInventory))
+	s.mux.HandleFunc("GET /v1/admin/autopilot/machines", s.access.RequireAuth(s.handleAdminAutopilotMachines))
+	s.mux.HandleFunc("PATCH /v1/admin/autopilot/machines/{machine_id}", s.access.RequireAuth(s.handleAdminAutopilotMachines))
+	s.mux.HandleFunc("GET /v1/admin/autopilot/rewards", s.access.RequireAuth(s.handleAdminAutopilotRewards))
+	s.mux.HandleFunc("PATCH /v1/admin/autopilot/rewards/pool", s.access.RequireAuth(s.handleAdminAutopilotRewards))
+	s.mux.HandleFunc("POST /v1/admin/autopilot/rewards/machines/{machine_id}/baseline", s.access.RequireAuth(s.handleAdminAutopilotRewards))
 	s.mux.HandleFunc("POST /v1/admin/autopilot", s.access.RequireAuth(s.handleAdminAutopilot))
 	s.mux.HandleFunc("POST /v1/admin/drain", s.access.RequireAuth(s.operations.HandleAdminDrain))
 

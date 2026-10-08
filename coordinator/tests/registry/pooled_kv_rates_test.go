@@ -57,3 +57,33 @@ func TestPooledBudgetReconstructionAllocatesNothing(t *testing.T) {
 		t.Fatal("pool reconstruction produced nothing")
 	}
 }
+
+func TestPooledColdRateChangesChargesNotReportedCapacity(t *testing.T) {
+	for _, slots := range [][]protocol.BackendSlotCapacity{
+		nil,
+		{{Model: "legacy", ActiveTokenBudgetMax: 100_000}},
+		{{Model: "known-zero", KVBytesPerToken: 20_480}},
+		{{Model: "resident", ActiveTokenBudgetMax: 100_000, ActiveTokenBudgetUsed: 100, KVBytesPerToken: 10_000}},
+	} {
+		pool := kvbudget.FromSlots(slots)
+		before := pool
+		pool.AddColdRate("cold", 20_480)
+		if pool.Reported != before.Reported || pool.ByteMode != before.ByteMode || pool.Total != before.Total ||
+			pool.TotalBytes != before.TotalBytes || pool.UsedBytes != before.UsedBytes || pool.CommittedBytes != before.CommittedBytes {
+			t.Fatalf("cold estimate changed reported capacity: before=%+v after=%+v", before, pool)
+		}
+		want := int64(0)
+		if pool.ByteMode {
+			want = 20_480
+		}
+		if got := pool.RateFor("cold"); got != want {
+			t.Fatalf("cold rate=%d, want %d for byteMode=%v", got, want, pool.ByteMode)
+		}
+		for _, slot := range slots {
+			pool.AddColdRate(slot.Model, 600_000)
+			if got := pool.RateFor(slot.Model); got != slot.KVBytesPerToken {
+				t.Fatalf("estimate replaced own rate for %s: got %d, want %d", slot.Model, got, slot.KVBytesPerToken)
+			}
+		}
+	}
+}

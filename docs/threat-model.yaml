@@ -1,5 +1,6 @@
 version: "1.1"
 created: "2026-05-14"
+# Initial legacy MDM cohort soft-delete filtering verified 2026-10-06.
 # Upcoming frozen legacy MDM policy documented 2026-10-04, not a production
 # activation claim or a revalidation of the older threat entries. Cohort gates
 # restrict coordinator authorization; generic profiles remain directly copyable.
@@ -17,6 +18,13 @@ created: "2026-05-14"
 # Optional App Attest diagnostic boundary re-checked 2026-09-26 against cf5982227:
 # the added TB-002 paragraph covers diagnostic metadata only; it does not
 # re-verify the older threat entries or change the serving-trust assumptions.
+# Caller-field minimization re-checked 2026-09-27 against d621f9772 plus the
+# provider-body privacy candidate: parseInferencePrelude removes only top-level
+# user and generic metadata before provider-body preparation. Nested or other
+# caller content can still identify a person; providers remain plaintext endpoints
+# for routed requests. Authentication/account cache scopes are unchanged. This
+# does not re-verify the other historical threat entries; see encryption.md's
+# provider-bound-field-minimization section for the exact boundary.
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
 # and T-011 were corrected to the shipped design (the coordinator is a plaintext
 # endpoint on every request; the provider X25519 key is per-process and never on
@@ -980,7 +988,9 @@ trust_boundaries:
       - "Upcoming legacy MDM policy freezes authenticated account/SE-key/serial
         membership for already successfully MDM-verified devices on first upgraded
         startup after revocation replay. FreezeLegacyMDMCohort persists the cutoff
-        and cohort across restarts, including an empty cohort. New accounts,
+        and cohort across restarts, including an empty cohort. Initial qualification
+        excludes soft-deleted users and provider records; later reads preserve
+        the frozen snapshot. See docs/architecture/security/enrollment.md. New accounts,
         devices, keys and associations are excluded. Lost or hashless historical
         evidence may be conservatively omitted; retained hardware snapshots plus
         authenticated inventory may supplement it. Membership never replaces
@@ -3446,3 +3456,90 @@ threats:
     detection_hint: >
       Review public payloads, archives, logs and cache timing separately; never expose
       raw evidence or infer authorization from client-supplied diagnostics.
+
+  - id: T-059
+    trust_boundary: TB-006
+    stride: Information_Disclosure
+    title: Account erasure leaves personal data behind or erases the wrong account
+    description: >
+      An erased account's email, serial numbers, MDA chains, locations, labels,
+      codes, raw logs or Stripe IDs can survive in an unlisted column, a late
+      heartbeat write, an in-memory cache, a second account made at login, a
+      backup or a log. A mistyped or replayed admin request can soft delete the
+      wrong account. A late credit can refill a forfeited balance.
+    adversaries: [ADV-003]
+    affected_assets: [A-007, A-008, A-009, A-010]
+    affected_files:
+      - coordinator/internal/store/erasure/rules.go
+      - coordinator/internal/store/erasure/keys.go
+      - coordinator/internal/store/erasure/confirm.go
+      - coordinator/store/postgres/erasure.go
+      - coordinator/store/postgres/erasure_rules.go
+      - coordinator/store/postgres/erasure_keys.go
+      - coordinator/store/memory/erasure.go
+      - coordinator/store/memory/erasure_rules.go
+      - coordinator/store/cached.go
+      - coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql
+      - coordinator/store/postgres/erasure_personal_writes.go
+      - coordinator/store/postgres/app_attest_archive.go
+      - coordinator/store/postgres/app_attest_receipts.go
+      - coordinator/store/postgres/billing_erasure.go
+      - coordinator/internal/provider/legacymdm/erasure.go
+      - coordinator/internal/provider/identity/erasure.go
+      - coordinator/api/accounts/erasure/handlers.go
+      - coordinator/api/accounts/erasure/loop.go
+      - coordinator/auth/privy.go
+      - coordinator/api/accounts/erasure/outbox.go
+      - coordinator/api/accounts/erasure/outbox_redaction.go
+      - coordinator/billing/stripe_redaction.go
+    mitigations:
+      - description: >
+          The plan returns the account email and a 15-minute confirm token; the token
+          and the planned wallet list are stored hashed, and the confirm call must
+          repeat the account ID, the token, the email and the same wallet list. The
+          soft delete revokes keys and provider tokens before the providers are
+          disconnected and refuses while a withdrawal is open, including a Stripe
+          payout paid within 30 days. The scrub is one transaction bounded by keys it
+          collects first, skips Secure Enclave and App Attest keys another account
+          also uses, and checks each statement's affected rows against a count read
+          in the same transaction. Every Express account and recipient the account
+          used is queued in the outbox for Stripe deletion. After the commit the
+          registry, trust-reuse cache, MDM scheduler, ledger usage and API key cache
+          drop the account. After the scrub, database triggers keep late credits out
+          of the balance and record them for review, and a late Checkout completion
+          credits nothing. A Privy login during the grace period answers 403
+          account_pending_deletion instead of creating a second account.
+          Soft-deleted provider rows ignore late heartbeat upserts and restores, and
+          CachedStore drops cached users. A shared transaction fence drains delayed
+          personal writers before scrub collects keys; archive, session, log and
+          code-attestation writes recheck ownership afterward. Shared key receipts
+          remain only for live owners, and frozen runtime cohort snapshots forget
+          erased accounts. Runtime APNs proofs, challenges and push bookkeeping
+          are cleared for unshared keys. Hash-only generation fences prevent
+          in-flight proof replies, resume setup, startup reads and budget resets
+          from repopulating erased tokens; unrelated keys and fresh proofs remain
+          usable. Checkout revalidates its captured referrer identity and
+          the webhook uses local attribution instead of old personal metadata. Marker tests search every text, JSON,
+          array and bytea column (and every MemoryStore value) after a scrub of the
+          seeded tables.
+        status: implemented
+      - description: >
+          Backups, point-in-time recovery and Datadog logs keep data until their
+          retention ends; after a restore an operator replays the completed
+          erasures. Until PR 1327 merges, some process log lines hold emails, IP
+          addresses or serial numbers. Financial records, shared mda_serial machine
+          aliases and rows of shared keys are kept on purpose. Stripe-side data stays
+          until the outbox worker deletes or redacts it; rows that end in
+          manual_action (a balance, Redaction Jobs access, sessions of the earlier
+          Stripe account, a stuck job) keep it until an operator resolves them. The
+          erasure_log record survives a restore only in a Datadog log archive.
+          Old referral metadata on another live payer's Stripe session is outside
+          this account's local scrub. Audit actor identifiers and the reason are
+          retained; operators must use non-personal ticket references in the reason.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Run the marker tests after every schema change; check each new column that
+      holds user-chosen text, a device identifier or a location against
+      coordinator/internal/store/erasure/rules.go (docs/developer/personal-data.md).

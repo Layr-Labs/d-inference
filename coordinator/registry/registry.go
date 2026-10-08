@@ -275,6 +275,7 @@ type Registry struct {
 	warmLifecycleFactory         func(string) warmplan.LoadLifecycle
 	modelLoadPlanner             ModelLoadPlanning
 	autopilot                    *modelAutopilotController
+	autopilotMachines            machineAutopilotPolicy
 	autopilotControlFactory      autopilotcontrol.Factory[*Provider]
 	autopilotDemand              *autopilot.DemandTracker
 	capacitySamplesFactory       func(string) *capacityvalue.SampleHistory

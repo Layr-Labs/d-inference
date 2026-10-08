@@ -122,8 +122,8 @@ func (t *cacheRoutingTracker) invalidateProviderModels(providerID string, models
 	t.maintenance.InvalidateProviderModels(providerID, models)
 }
 
-func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAttempt) {
-	t.core.StoreAttemptLocked(nonce, attempt)
+func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAttempt) bool {
+	return t.core.StoreAttemptLocked(nonce, attempt)
 }
 
 func (t *cacheRoutingTracker) removeAttemptLocked(nonce string) {

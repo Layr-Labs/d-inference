@@ -28,6 +28,10 @@ func (s *Owner) HandleNetworkSeries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cacheKey := "network_series:" + spec.Label
+	if s.analyticsSnapshotPath != "" {
+		s.archivedNetworkSeries(w, spec.Label)
+		return
+	}
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		httpx.WriteCachedJSON(w, cached)
 		return
@@ -69,6 +73,6 @@ func (s *Owner) HandleNetworkSeries(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "failed to encode network series"))
 		return
 	}
-	s.readCache.Set(cacheKey, body, time.Minute)
+	s.readCache.Set(cacheKey, body, 5*time.Minute)
 	httpx.WriteCachedJSON(w, body)
 }

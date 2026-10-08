@@ -1,5 +1,113 @@
 # Changelog
 
+## Unreleased - Autopilot daily earnings floor
+
+- Add a separately funded daily inference-earnings floor only for machines with saved Autopilot consent. Freeze the first-ever opt-in baseline from the exact preceding 168 hours, including sponsored inference; the daily floor is 110% of that seven-day daily average, rounded down once to whole micro-USD. Closed UTC days receive their own shortfall top-up without changing ordinary base rewards.
+- Persist authenticated consent evidence, baseline and canonical-machine daily receipts across reconnects and identity aliases. Historical opt-in dates were not recorded by older software: unknown history requires an evidenced admin backfill, never a guessed deployment/reconnect date or a reset through off/on. Backfill does not create earlier consent or reward days. Earlier positive evidence linked after freezing exposes `history_conflict` and holds further payments without rewriting the baseline or finalized receipts.
+- Add admin inspection, absolute pool-cap funding and baseline-repair endpoints. The independent cumulative pool starts unfunded, does not reset automatically and never pays a partial shortfall; pending funding retries recalculate income, while finalized days remain final. Payments default off and do not activate live Autopilot control. Provider publication and production activation remain separate approvals; existing accounting archives do not yet cover the new financial tables.
+
+## Unreleased - machine model diagnostics
+
+- Extend the authenticated admin machine view with per-session reported pins, resident models, hardware, snapshot freshness and the running provider's Always ready/idle-timeout configuration. Unknown reports remain distinct from empty pin sets or disabled settings. These read-only diagnostics do not activate Autopilot, change pins or idle policy, or guarantee ready capacity.
+
+## Unreleased - machine-scoped Autopilot
+
+- Persist each canonical machine's desired Autopilot mode in the database, defaulting to shadow. Admins list and edit machines through authenticated endpoints without a coordinator restart; live control still requires verified identity, provider consent and acknowledgement, with global shadow and pause overriding intent. Other machines retain ordinary serving and hypothetical planning; memory, pins and donor safeguards remain enforced.
+- Distinguish desired machine mode from current session activity, and report live-cohort, acknowledged-live and shadow populations separately. Mode revisions revoke stale grants, failed policy reads remove live authority, and demotion preserves accepted-operation recovery. This change does not deploy or activate a production cohort by itself.
+- Keep capacity freshness checks current across policy reads and durable command delivery, so slow database operations cannot extend a provider snapshot's lifetime.
+- Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
+
+## Unreleased - KV admission estimates
+
+- Reduce ordinary engine concurrency when fixed recurrent or MTP workspace would otherwise consume its KV grant before any request can run. Heartbeats and local admission use the same memory-limited width; load and reserve-raise preflights preserve a serviceable workspace-aware grant, without lowering activation or minimum-KV safeguards.
+- Estimate cold-model KV cost from fresh native reports for the same artifact and verified runtime instead of always using the generic bytes-per-token fallback. Live slot budgets remain authoritative; missing evidence retains the fallback, and provider memory checks still decide whether a load or request actually fits.
+- Share cold-rate evidence once per fleet sample instead of scanning peers for every provider. Unused on-disk advertisements do not trigger forecast work, and registry read leases do not span donor walks.
+
+## Unreleased - withdrawal funding queue
+
+- Queue confirmed withdrawals when Stripe payout funding is insufficient. Earnings stay reserved, the coordinator retries automatically, and Billing shows a Queued status. International exchange estimates refresh when queued payments are sent; uncertain Stripe outcomes keep their existing payment identity and funds reserved. Funding waits do not shorten the return-check and account-erasure protection windows after Global Payouts dispatch.
+
+## Unreleased — Bedrock review and conditional merge clearance
+
+- Support an explicitly approved ongoing OpenRouter budget with daily and per-attempt caps, retaining historical charges and unknown reservations. Preflight now rejects exhausted budget capacity even when provider funding is available.
+
+- Limit scanner checkouts to trusted scripts and threat definitions so preflight does not spend its timeout fetching unrelated repository content.
+- Preserve exact source coordinates in review excerpts and keep summaries below strict output limits. Require human review when the final model still reports uncertainty.
+
+- Add attributed Bedrock review with bounded OpenRouter fallback, explicit usage reporting, and optional current-revision merge clearance. Medium/high findings, incomplete scans, and review-control changes require an independent formal security override. Cloud and merge-policy activation remain a separate verified rollout.
+- Validate the enabled Sonnet 5.5 profile for the first pass and matching OpenRouter backup, retaining Opus 5.5 and Sol 6.1. Exercise the full production response schema in the bounded Bedrock smoke test and record the deployed configuration.
+
+## 0.9.19 - prepared candidate (not published)
+
+This candidate contains the SSD write-endurance correction below. The version
+bump does not publish, register or deploy the release; full artifact qualification
+and publication remain separate gates.
+
+- Enforce the SSD prefix-cache write budget across cache instances, model reloads and provider restarts using a persistent root-wide rolling-day ledger. Charge serialized cache-file bytes, including encryption framing, before writing; exhausted budgets retain read access and report `write_rate_limited`.
+- Forward `DARKBLOOM_PREFIX_CACHE_DISK_GB` and `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` into newly installed launchd provider jobs.
+
+## Unreleased - typical MTP acceptance
+
+- Default eligible sampled target-prefix MTP requests to typical acceptance (delta `0.2`) when `[backend] mtp_acceptance` and the model override are absent. Sampled output is approximate, not distribution-exact; explicit `exact` restores exact acceptance and invalid values remain safely exact. Greedy behavior, native MiMo exact acceptance, disabled MTP and model eligibility are unchanged. Benchmark acceptance still defaults to `exact`; the recorded single-host B=1 runs do not qualify sampled quality or fleet-wide speed.
+- Add per-model typical MTP draft acceptance for sampled requests (`[backend] mtp_acceptance`, `mtp_acceptance_by_model`), ported from mlx-serve PR #427. Greedy requests are unchanged; slot posture telemetry reports `mtp_acceptance`.
+- Pin the merged SDK implementation from `mlx-swift-lm` main; its file tree matches the engine revision used in the recorded acceptance benchmarks.
+
+## 0.9.18 - prepared candidate (not published)
+
+The next provider release is prepared from changes merged since `v0.9.17`.
+This is not signed-artifact qualification or a release announcement. Included
+changes are detailed in the retained topic entries below:
+
+- [Provider service replacement](#unreleased--provider-service-replacement) (#1315), [shared-host memory admission](#unreleased--shared-host-memory-admission) (#1264), and [system tool output readers](#unreleased--system-tool-output-readers) (#1327).
+- [Authenticated legacy enrollment](#unreleased---frozen-legacy-mdm-authorization) (#1344), including the signed CLI eligibility check. Older providers cannot use the new authenticated reenrollment contract; coordinate the bridge rollout before publication.
+- [Native queued cancellation retirement](#unreleased---native-queued-cancellation-retirement) in the pinned SDK and [provider lifecycle coverage](#unreleased---provider-test-coverage) (#1253).
+- [MLX gather row tiles](#unreleased---mlx-gather-row-tiles) (#1237), including the compiled nested MLX and regenerated Swift kernels. Changed numerical paths require fresh qualification; earlier full-model results do not qualify this candidate.
+- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere (#1322).
+- The merged [DevNet installer binding](#unreleased--devnet) is included; pending provider build-environment and release-qualification PRs are not.
+
+The bundled coordinator build fix aligns the digest-pinned Go builder and local
+toolchain at Go 1.26.8, satisfying the unchanged `go.mod` minimum of 1.26.0.
+Release Integrity now rejects missing pins, local/container drift and toolchains
+below the module minimum. The bundled [upgrade safety changes](#unreleased---coordinator-upgrade-safety)
+add migration budgets, early trust preflight and a default-off soft-delete
+mutation gate. Coordinator deployment and provider publication remain
+separate approvals; see the [candidate rollout checks](docs/operations/provider-release.md#0918-candidate-rollout).
+
+## Unreleased - coordinator upgrade safety
+
+- Add `EIGENINFERENCE_MIGRATION_TIMEOUT` (default `15m`) for the positive total `--migrate-only` deadline, and `EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` (default `1m`, minimum `1ms`) for all concurrent index builders on dedicated connections. Ordinary SQL DDL retains its 3-second lock and 10-minute statement defaults.
+- Preserve invalid indexes and fail with operator inspection guidance, including legacy earnings indexes; never automatically drop a potentially active external build. Schema versions and financial semantics are unchanged.
+- Validate production App Attest serving prerequisites before database access or migrations, reusing the later pre-freeze validator. Explicit development and actual opted-in memory-store startup remain exempt; database-only maintenance intentionally skips full application validation.
+- Default `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED` to `false`, blocking new erasure confirmations (including `force`) and owned-provider removal with 503 `soft_delete_mutations_disabled` after authorization. Plan/status/cancel and accepted scrub/outbox work continue. Prior tombstones or erasures still require compatible fallback code; disabling the flag does not restore old-image compatibility. Production env refresh preserves explicit opt-ins.
+
+## Unreleased - MLX gather row tiles
+
+- Backport row-tile selection for `gather_mm` and `gather_qmm` in the provider's pinned MLX dependencies, with matching regenerated Swift kernel sources. Rebuild with a source-matched metallib; earlier full-model measurements do not qualify performance on these pins.
+
+## Unreleased — account erasure
+
+- Keep upstream error text out of erasure-outbox manual-action logs; retain safe correlation IDs, target, state and attempt count, with details available in restricted outbox records.
+- Exclude pending-erasure users from provider-email exports after machine-owner ranking, and retain a private `resend_contact` cleanup obligation before clearing the account email. Resend contact, segment and scheduled-broadcast cleanup remains manual.
+- Route late memory-store referral settlement credits through the erasure-aware credit path, matching PostgreSQL: erased referrers stay at zero balance and receive a refused-credit audit record instead.
+
+- Preserve successful account-erasure results when the caller cancels after commit, so confirmation and scrub still disconnect providers and clear runtime caches.
+
+- Clear unshared APNs token proofs, pending challenges and push bookkeeping from runtime memory after erasure; fence delayed cache publication while preserving live shared keys and fresh ownership.
+
+- Fence delayed App Attest proof and receipt writes, APNs token persistence, session backfills and admitted log uploads against completed erasure. Preserve shared live device ownership, clear the frozen runtime MDM cohort by account, and keep late Checkout referral codes local and tied to their original owner.
+
+- Fence in-flight credential creation, provider persistence, financial admission and delayed Stripe responses against deletion. Preserve late external IDs for cleanup, strip late telemetry locations while retaining accounting, and remove frozen MDM cohort/hardware-interest records. Shared identities are removed after the last owner is erased; replayed refused refunds remain idempotent.
+
+- Add admin account erasure (GDPR): `POST /v1/admin/accounts/{account_id}/erasure/plan` (dry run and a 15-minute confirm token), `POST …/erasure` (soft delete; `force` scrubs at once), `GET …/erasure` and `POST …/erasure/cancel`. The confirm call must repeat the token and the account email, and refuses while a withdrawal is in flight.
+- The soft delete revokes the account's API keys and provider tokens, disconnects its providers and starts a grace period (`EIGENINFERENCE_ERASURE_GRACE`, default 30 days). A Privy login during the grace period gets 403 `account_pending_deletion`; after the scrub the same login creates a new account.
+- The scrub removes emails, labels, serial numbers, MDA chains, locations, raw logs, App Attest proofs, referrer codes, Stripe IDs and the named wallet addresses in one checked transaction, forfeits the balance with an `erasure_forfeit` ledger entry, and queues the deletion of every Stripe account and recipient the account used. Rows of a Secure Enclave or App Attest key another account shares are kept. IDs and financial records stay.
+- The confirm call repeats the account ID and the planned wallet list. A Stripe payout paid within 30 days still blocks erasure. After the scrub, any late credit is kept out of the balance and listed for review as `refused_credits`.
+- An outbox worker deletes the Stripe Express account, closes the Global Payouts recipient, redacts Checkout Sessions with Stripe Redaction Jobs (public preview; waits when transactions are under 90 days old) and writes one `erasure_log` record to Datadog (tag `erasure_log:true`). Definitive refusals, exhausted retries, stuck jobs and Checkout Sessions Stripe cannot find (each on its own row, the rest of the batch continues) end in `manual_action` for an operator; `GET …/erasure` shows each row's state. Each delivery claims its row just before contacting Stripe; expired workers cannot overwrite newer progress or create duplicate manual-action rows. Permission failures, invalid-account responses and ambiguous 404s retain the Stripe account ID for manual resolution rather than reporting deletion as complete.
+
+## Unreleased - pull-request stack tooling
+
+- Add a checked, signed same-tree ancestry repair for dependent PRs after each parent squash, with atomic non-force pushes and optional retargeting. Document linear bases, manual reconciliation on content differences, and renewed signature, CI and approval checks; the tool does not merge PRs or automate conflict resolution.
+
 ## Unreleased — personal data in coordinator logs
 
 - Stop writing email addresses, IP addresses, device serial numbers and MDA UDIDs to coordinator process logs, which are forwarded to Datadog. Log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`; the access log no longer has a `remote` field and the MDM webhook debug line no longer includes a body preview. Logs written before this change are not affected.
@@ -18,6 +126,13 @@
 - Fail startup without recording the baseline when a required schema statement fails, so a later startup retries missing columns. Preserve current consumer-settlement, legacy MDM cohort, small-model interest and Stripe refund-index schema changes as subsequent versions.
 - Check in the schema as `coordinator/store/postgres/schema/schema.sql` and test that the migrations build exactly that schema. New schema changes go in a new numbered migration file.
 
+## Unreleased — soft-delete schema
+
+- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Account erasure and ordinary provider removal write `deleted_at` behind the [mutation gate](#unreleased---coordinator-upgrade-safety). After these migrations run, roll back only to compatible goose-based coordinator images.
+
+- Exclude soft-deleted users from small-model interest exports before pagination, and exclude deleted users and provider records from initial legacy MDM cohort qualification. Repeated cohort reads preserve the frozen snapshot.
+- Suppress stale registry-supplied provider locations in memory-store usage flows when the stored provider record is soft-deleted.
+
 ## Unreleased — Stripe refund clock skew
 
 - Refund a rejected Stripe withdrawal when the coordinator clock is ahead of the PostgreSQL clock. Before, the refund check missed the withdrawal debit, refused the refund, and the recovery loop and `payout-audit --apply-refund` retried without success. The check still credits each withdrawal at most once and still refuses a ledger that does not show the exact debit.
@@ -34,6 +149,16 @@
 ## Unreleased - Mac CI cost controls
 
 - Cancel superseded pull-request CI and integration runs without cancelling default-branch pushes. Bound provider unit-test stalls with the existing diagnostic watchdog, and reuse compatible integration build caches while retaining every test gate and parallel job.
+
+## Unreleased - archived analytics reader
+
+- Add bounded asynchronous historical SELECT submission, polling, pagination and cancellation over pinned archive catalogs. Keep query results private and source retirement disabled while preparing the 14-day completed-detail storage plan.
+- Allow explicit recapture generations, shard large completion catalogs, enforce replay deadlines and verify reused BigQuery catalog contents before publication.
+- Pin and validate prior coverage before republishing, rejecting altered or duplicate catalog rows rather than incorporating them into a new verified digest. Unverifiable legacy catalogs fail closed without changing reader aliases.
+- Add an opt-in validated local snapshot path for leaderboard, network totals and network series with source freshness checks and 503 responses when unavailable. Persist accepted source cutoffs and generation checksums in a separate private state file; snapshot mode fails closed if that file is missing or corrupt.
+- Refresh database-backed network totals every 5 minutes with a 15-minute stale-success ceiling and cache successful network series for 5 minutes. Preserve shared top-200 leaderboard caching, failure cooldowns and the 30-second stats refresh.
+- Reconcile aligned usage buckets across public series and reject reused BigQuery external tables whose manifest, configuration or schema differs from the verified publication.
+- Replace the earlier telemetry-only retirement proposal with a 14-day completed-detail target covering telemetry and accounting. Keep active state and financial replay fences operational; continuous capture, broad reader migration and source retirement remain unimplemented and disabled.
 
 ## Unreleased - provider test coverage
 
@@ -86,12 +211,32 @@
 
 - An installer served by a coordinator other than production (for example dev) now writes that coordinator's `[coordinator] url` into `~/.config/darkbloom/provider.toml` and keeps the file's other settings, so `darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog connect to it instead of production. The production installer removes that `url` line (and creates no file), so a Mac bound to dev returns to the production default. A running provider changes coordinator at its next `darkbloom start`.
 - Add `coordinator/cmd/devnet-seed`, which fills an empty dev database with fake accounts, API keys, provider sessions, usage, ledger entries and balances. It refuses a database whose `users` table has rows.
-- The dev coordinator uses the production env contract and the production swap steps. `deploy/gcp/dev/seed-env.sh` writes `/etc/d-inference/env` once from `deploy/gcp/dev/env-overrides`, Secret Manager and `deploy/environments/prod.env`. `deploy/gcp/dev/deploy.sh` swaps the `dev-build` image with `deploy/gcp/dev/swap.sh`. `deploy/gcp/host-setup.sh` and `deploy/gcp/dev/preflight.sh` set up and check the host. The old dev boot path (`vm-startup.sh`, `refresh-env.sh`, `cloudbuild.yaml`, `bootstrap.sh`) is removed. Dev does not set `EIGENINFERENCE_IPAPI_KEY`.
+- The dev coordinator uses the production env contract and the production swap steps. `deploy/gcp/dev/seed-env.sh` writes `/etc/d-inference/env` once from `deploy/gcp/dev/env-overrides`, Secret Manager and `deploy/environments/prod.env`. `deploy/gcp/dev/deploy.sh` swaps the `dev-build` image with `deploy/gcp/dev/swap.sh`. `deploy/gcp/host-setup.sh` and `deploy/gcp/dev/preflight.sh` set up and check the host. The old dev boot path (`vm-startup.sh`, `refresh-env.sh`, `cloudbuild.yaml`, `bootstrap.sh`) is removed. Dev does not set `EIGENINFERENCE_IPAPI_KEY`. Host setup now formats only a verified blank expected disk with a one-shot flag; deploys hard-gate root-owned seed state, live pause/master and exact CI status, keep database credentials out of argv, and restore env/tooling/link state after explicit or unexpected swap failures.
 
 ## Unreleased — leaderboard availability
 
 - Add a concurrent BRIN time index for recent provider-earnings rankings, enable range autosummarization, and keep planner statistics current. Return an uncached 503 when ranking queries fail instead of showing and caching an empty leaderboard.
 - Share one top-200 ranking fill across caller limits and equivalent window aliases. Coalesce concurrent misses, pause failed fills for 10 seconds, and include the remaining retry delay in leaderboard 503 responses.
+
+## Unreleased — cache reliability
+
+- Preserve healthy SSD checkpoints when missing-file reconciliation alone satisfies the disk limit, and retain same-tag publications across reconciliation. Keep AR allocation refusals cold until the SDK can prove native retirement completion before a shorter retry.
+
+- Preserve negotiated healthy preload incumbents across interrupted response bodies and readiness-probe transport failures. Keep malformed completed reports fail-closed, and do not acknowledge newcomers or retain explicitly failed members after an uncertain partial attempt.
+- Align preload model-ID validation with the registration request bound so an already accepted long identifier cannot disable unrelated verified contracts. Keep the explicit artifact allowlist and tokenizer capacity limits unchanged.
+- Preserve negotiated preload incumbents through uncertain control transport completion, and keep configured catalogs above 128 models usable without expanding cache-routing allowlists or native tokenizer capacity.
+
+- Remove caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and `prompt_cache_key` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.
+- Bound retained cache-attempt bookkeeping by logical bytes as well as record count. Detach retained metadata, preserve receipt and dispatch ownership checks, and fall back to ordinary inference when the optional cache record cannot be admitted. Under byte pressure, reclaim up to 64 completed attempts' late-receipt grace records, never live ones, before refusing, and report retained bytes, refusals and reclamations as aggregate cache status fields and gauges.
+- Preserve healthy verified prompt contracts when unrelated artifacts or preload members fail. Bind Go participation to the current catalog, child and exact verified set; keep strict preload reports, fresh partial-readiness confirmation, bounded retries and Rust replacement/cancellation ownership.
+- Account for optional cache-planning decisions across the inference endpoints, recorded when a request's plan is first computed (during admission preflight for public requests), and keep planning within the original first-content deadline. Preserve eligibility, inference contexts and independent retry/receipt ownership. Legacy plan metrics keep their definitions; one population grows: a media request to a verified, preloaded model is now counted once as `ineligible` in `exact_cache_plan_total` / `exact_cache.plan` because the planner is consulted to record its decision, with no routing or billing effect.
+- Align cache-planning client concurrency with sidecar workers and reserve health/control connection headroom under nondefault worker configurations. Bound waiting requests and payload bytes within the original deadline, preserving cancellation, independent health/control traffic, exact prefix identities and fail-cold behavior.
+- Select a bounded, demand-driven tokenizer preload set when the verified catalog exceeds the configured loaded-contract capacity. Keep the full verified set within capacity, current Registry eligibility, fair replacement and failure backoff; do not raise the sidecar limit or wait for preloading on inference requests. Negotiate incremental tokenizer preload so healthy acknowledged contracts remain usable during a retry or selection change without exceeding loaded-contract capacity, keeping legacy fallback explicit and failing closed on protocol loss.
+- Allow one bounded, fully authenticated shorter complete-checkpoint restore after a proven pre-allocation capacity refusal. Retire failed native/host owners before retrying, retain request/epoch fences and original remaining read/time budgets, and leave generic allocation, corruption and cancellation cold. No capture-cap, precision, encryption or first-attempt admission change.
+- Reject substituted FIFO cache entries without blocking encrypted-cache read or touch operations; preserve descriptor-based path checks and regular-file behavior.
+- Preserve surviving encrypted SSD checkpoints and routing announcements during routine active-store capacity/TTL eviction. Coordinate durable writes and index commits with retirement to prevent rename-to-index races without global invalidation. Keep destructive epoch fencing for unsafe changes, native authentication and bounded stale-hint invalidation.
+- Refuse and retry SSD epoch checks when parent-directory opens or metadata status probes fail transiently, preserving the existing store's ownership. Continue disowning proven missing, substituted, malformed or oversized records; verify the original capability again when connected retirement observes an eviction.
+- Use actual malformed files in the resident-preflight corruption fixture, retaining its no-I/O and corruption assertions; cover confirmed missing-parent status and typed `ENOENT` reads separately.
 
 ## Unreleased — provider 0.9.17
 
@@ -236,6 +381,12 @@
 - Price native MiMo pixel preparation from actual request geometry rather than the machine-sized configured ceiling. Count video attention scores independently per temporal frame; preserve full lazy-graph, allocator, and native ownership safeguards.
 - Correct native MiMo image/video admission to charge all retained RGB plus the largest sequential decode workspace. Release temporary image/frame objects each iteration and convert video BGRA directly to RGB; video no longer reserves a decoded raster for every unsampled source frame. Preserve transport, pixel, native-workspace, KV and OS memory gates.
 - Align `ProviderCore.version` and the coordinator's latest-provider display fallback at `0.9.13`. The coordinator keeps enforcing reported token budgets and per-model concurrency; no admission bypass or production configuration change is included. Publication remains a separate operation.
+
+## Unreleased - idle provider routing recovery
+
+- Let idle providers with missing or stale measurements compete using fleet-median prefill and decode rates, replacing each rate independently while preserving reviewed profiles and deadline confidence. Expire independently dated decode estimates after 30 minutes only on loaded, idle providers with no pending work. Selection is not guaranteed, and physical admission remains unchanged.
+- Back off failed exploration attempts and retain corroborated slow-rate evidence across reconnects, without treating deadline refusals as provider-health faults. Median-priced requests also feed back when they have no deadline or contain vision input. The TTFT calibrator does not learn from median-priced predictions.
+- Deduplicate retained observations across reconnects, preserve newer healthy clears during identity merges, and treat explicitly missing performance evidence separately from an undated legacy EWMA. Replayed or invalid metadata cannot manufacture slow-rate corroboration.
 
 ## Unreleased — native MiMo standing wired residency by default
 

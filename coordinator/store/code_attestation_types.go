@@ -13,6 +13,7 @@ import "time"
 // observed same-process continuity. Coverage never changes AttestedAt or grants
 // trust: a fresh encrypted process-possession challenge is always required.
 type CodeAttestation struct {
+	AccountID string `json:"-"` // admission identity for queued writes; not persisted in the shared device proof
 	// Coordinator-observed continuity of this exact verified application process.
 	ContinuousCoverageUntil *time.Time `json:"continuous_coverage_until,omitempty"`
 	SEPubKey                string     `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)

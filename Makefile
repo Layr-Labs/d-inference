@@ -29,8 +29,7 @@ coordinator-build-linux: ## Cross-compile coordinator for linux/amd64 (EigenClou
 
 coordinator: coordinator-test coordinator-build ## Test + build coordinator
 
-# sqlc v1.31.1 needs Go 1.26, newer than go.mod, so it runs pinned through
-# `go run` instead of a go.mod tool directive.
+# Keep sqlc pinned independently of application dependencies.
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 SQLC_CONFIG := coordinator/store/postgres/sqlc.yaml
 

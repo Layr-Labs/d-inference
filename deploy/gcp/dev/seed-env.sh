@@ -34,6 +34,8 @@ fail() {
     echo "FAIL dev env seed: $*" >&2
     exit 1
 }
+# shellcheck source=deploy/gcp/dev/refresh-backup.sh
+. "$SCRIPT_DIR/refresh-backup.sh" || fail "cannot read $SCRIPT_DIR/refresh-backup.sh"
 
 case "$MODE" in
     --check|--seed|--reseed) ;;
@@ -99,10 +101,12 @@ if [ "$MODE" = --check ]; then
         exit 1
     fi
     echo "PASS $ENV_FILE exists"
-    if [ -n "$(find "$ENV_FILE" -maxdepth 0 -perm 0600)" ] && [ -n "$(find "$ENV_DIR" -maxdepth 0 -perm 0700)" ]; then
-        echo "PASS $ENV_FILE has mode 0600 in a 0700 directory"
+    file_security=$(stat -c '%U:%G:%a' "$ENV_FILE" 2>/dev/null || true)
+    dir_security=$(stat -c '%U:%G:%a' "$ENV_DIR" 2>/dev/null || true)
+    if [ "$file_security" = root:root:600 ] && [ "$dir_security" = root:root:700 ]; then
+        echo "PASS $ENV_FILE is root:root 0600 in a root:root 0700 directory"
     else
-        echo "FAIL $ENV_FILE must have mode 0600 and $ENV_DIR mode 0700. Fix: chmod 0600 $ENV_FILE; chmod 0700 $ENV_DIR"
+        echo "FAIL $ENV_FILE must be root:root 0600 and $ENV_DIR root:root 0700. Fix: chown root:root $ENV_DIR $ENV_FILE; chmod 0700 $ENV_DIR; chmod 0600 $ENV_FILE"
         status=1
     fi
     while IFS=$'\t' read -r kind key value; do
@@ -179,8 +183,22 @@ if [ -e "$ENV_FILE" ]; then
     echo "REPORT the old file is kept as $backup"
     [ -z "$dropped" ] || echo "REPORT keys of the old file that the new file does not have: $dropped"
 fi
+written_sha256=$(sha256sum "$tmp" | cut -d' ' -f1)
 mv -f "$tmp" "$ENV_FILE"
 trap - EXIT
 sync "$ENV_FILE" "$ENV_DIR" 2>/dev/null || sync
-ENV_FILE="$ENV_FILE" "$REFRESH" --apply | sed 's/^/REPORT /'
+if ! refresh_out=$(ENV_FILE="$ENV_FILE" "$REFRESH" --apply); then
+    fail "the written file could not be refreshed: $refresh_out"
+fi
+printf '%s\n' "$refresh_out" | sed 's/^/REPORT /'
+# The env file is in place and refreshed. A backup that stays is reported, not
+# a failure: a second --seed finds the file and does nothing. A backup that is
+# not the file the seed wrote holds a change made since then, so it stays.
+if ! refresh_backup=$(reported_refresh_backup "$ENV_FILE" "$refresh_out"); then
+    echo "REPORT the refresh did not report one regular timestamped backup; nothing removed"
+elif ! refresh_backup_is_copy_of "$refresh_backup" "$written_sha256"; then
+    echo "REPORT the refresh backup $refresh_backup is not the file the seed wrote; it is kept"
+elif ! rm -f -- "$refresh_backup"; then
+    echo "REPORT could not remove the redundant post-seed refresh backup $refresh_backup"
+fi
 echo "OK wrote $ENV_FILE"

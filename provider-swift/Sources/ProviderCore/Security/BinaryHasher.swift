@@ -8,9 +8,10 @@ import os
 
 private let hashLogger = Logger(subsystem: "dev.darkbloom.provider", category: "security")
 
-enum RuntimeMetallibBindingError: Error {
+enum RuntimeMetallibBindingError: Error, Equatable {
     case sourceUnavailable
     case snapshotCreateFailed
+    case invalidTemporaryDirectory
     case snapshotUnlinkFailed
 }
 
@@ -212,6 +213,7 @@ func locateRuntimeMetallib(
 /// replacements of the public colocated pathname cannot change loaded bytes.
 func makeRuntimeMetallibSnapshot(
     sourceURL: URL,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
     onAnonymousReady: ((String) -> Void)? = nil
 ) throws -> RuntimeMetallibSnapshot {
     guard let source = FileHandle(forReadingAtPath: sourceURL.path) else {
@@ -219,9 +221,21 @@ func makeRuntimeMetallibSnapshot(
     }
     defer { try? source.close() }
 
-    var template = Array(
-        (NSTemporaryDirectory() + "darkbloom-mlx-metallib.XXXXXX").utf8CString
-    )
+    // Foundation can choose the per-user system temporary directory even
+    // when TMPDIR is explicitly set. Honor that process setting without
+    // changing permissions or falling back outside a caller's allowed root.
+    let directory: String
+    if let configured = environment["TMPDIR"] {
+        guard configured.hasPrefix("/"), !configured.utf8.contains(0) else {
+            throw RuntimeMetallibBindingError.invalidTemporaryDirectory
+        }
+        directory = configured
+    } else {
+        directory = NSTemporaryDirectory()
+    }
+    let temporaryURL = URL(fileURLWithPath: directory, isDirectory: true)
+        .appendingPathComponent("darkbloom-mlx-metallib.XXXXXX")
+    var template = Array(temporaryURL.path.utf8CString)
     let descriptor = template.withUnsafeMutableBufferPointer {
         mkstemp($0.baseAddress)
     }

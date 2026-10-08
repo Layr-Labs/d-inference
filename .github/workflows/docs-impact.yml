@@ -40,6 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: Test documentation-impact validation
         run: python3 scripts/test-docs-impact-check.py

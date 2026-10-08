@@ -14,7 +14,7 @@ import (
 // applied its routing gates. It overwrites caller-owned storage, so reused
 // snapshots cannot retain slots or budgets from another model/provider.
 // Selection-only headroom and heartbeat-age fields are filled by its caller.
-func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time, report capacityvalue.ServiceReport) {
+func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time, report capacityvalue.ServiceReport, estimates coldKVEstimates) {
 	*snap = routingSnapshot{}
 	snap.CandidateBinding = BindCandidate(p, model)
 	snap.chipFamily = p.Hardware.ChipFamily
@@ -33,7 +33,8 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 
 	var pendingBuffer [16]forecast.PendingWork
-	pendingWork := fillPendingSnapshot(snap, p, model, pendingBuffer[:0])
+	pendingWork := fillPendingSnapshot(snap, p, model, pendingBuffer[:0], estimates)
+	snap.estimatedKVBytesPerToken = estimates.Rate(p, model)
 	snap.firstContentPendingKnown = true
 
 	snap.hasBackendCapacity = p.BackendCapacity != nil
@@ -90,4 +91,5 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 		snap.deadlineProfile = nil
 	}
 	r.fillFirstContentSnapshot(snap, p, now, pendingWork, report)
+	r.fillExplorationRates(snap, p, now)
 }

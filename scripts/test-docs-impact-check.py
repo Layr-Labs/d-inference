@@ -12,6 +12,15 @@ CHECK = ROOT / "scripts" / "docs-impact-check.py"
 
 
 class DocsImpactCheckTests(unittest.TestCase):
+    def test_ci_checks_pr_head_instead_of_synthetic_merge(self) -> None:
+        workflow = (ROOT / ".github/workflows/docs-impact.yml").read_text()
+        self.assertIn(
+            "          ref: ${{ github.event.pull_request.head.sha }}\n"
+            "          fetch-depth: 0\n",
+            workflow,
+        )
+        self.assertIn("DOCS_IMPACT_BASE: ${{ github.event.pull_request.base.sha }}", workflow)
+
     def run_check(self, *paths: str, labels: list[str] | None = None) -> subprocess.CompletedProcess[str]:
         command = ["python3", str(CHECK)]
         for path in paths:
@@ -64,12 +73,13 @@ class DocsImpactCheckTests(unittest.TestCase):
         documents = ("docs/developer/sqlc.md", "docs/reference/sqlc-type-mapping.md")
         for source in sources:
             with self.subTest(source=source):
+                related = ("docs/reference/soft-delete.md",) if source.endswith("queries/api_keys.sql") else ()
                 for unrelated in ((), ("docs/architecture/storage.md",)):
-                    missing = self.run_check(source, *unrelated)
+                    missing = self.run_check(source, *related, *unrelated)
                     self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
                     self.assertIn("sqlc queries and type mappings source changed", missing.stderr)
                 for document in documents:
-                    covered = self.run_check(source, document)
+                    covered = self.run_check(source, *related, document)
                     self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
                 overridden = self.run_check(source, labels=["docs-not-needed"])
                 self.assertEqual(overridden.returncode, 0, overridden.stdout + overridden.stderr)
@@ -77,6 +87,42 @@ class DocsImpactCheckTests(unittest.TestCase):
         ignored = self.run_check(
             "coordinator/tests/store/postgres/storedb/models_test.go",
             "coordinator/store/postgres/storedb/models_test.go",
+        )
+        self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
+
+    def test_soft_delete_reads_and_writes_require_canonical_docs(self) -> None:
+        sources = (
+            "coordinator/store/memory/small_models_interest.go",
+            "coordinator/store/memory/legacy_mdm_cohort.go",
+            "coordinator/store/postgres/small_models_interest.go",
+            "coordinator/store/postgres/legacy_mdm_cohort.go",
+            "coordinator/store/memory/users.go",
+            "coordinator/store/postgres/users.go",
+            "coordinator/store/memory/device_auth.go",
+            "coordinator/store/postgres/device_auth.go",
+            "coordinator/store/memory/providers.go",
+            "coordinator/store/postgres/provider_read.go",
+            "coordinator/store/postgres/provider_record_write.go",
+            "coordinator/store/memory/apikey.go",
+            "coordinator/store/postgres/queries/api_keys.sql",
+            "coordinator/store/postgres/storedb/api_keys.sql.go",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                related = ("docs/reference/sqlc-type-mapping.md", "docs/architecture/storage.md",
+                           "docs/architecture/security/enrollment.md")
+                missing = self.run_check(source, *related)
+                self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+                self.assertIn("soft-delete reads and writes source changed", missing.stderr)
+                covered = self.run_check(source, *related, "docs/reference/soft-delete.md")
+                self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+        overridden = self.run_check(*sources, labels=["docs-not-needed"])
+        self.assertEqual(overridden.returncode, 0, overridden.stdout + overridden.stderr)
+        ignored = self.run_check(
+            "coordinator/tests/store/postgres/soft_delete_reads_test.go",
+            "coordinator/store/postgres/users_test.go",
+            "coordinator/store/postgres/usage.go",
+            "coordinator/store/memory/ledger.go",
         )
         self.assertEqual(ignored.returncode, 0, ignored.stdout + ignored.stderr)
 
@@ -88,6 +134,7 @@ class DocsImpactCheckTests(unittest.TestCase):
             ("coordinator/registry/selection/affinity.go", "docs/architecture/routing.md"),
             ("coordinator/app/startup_config.go", "docs/reference/configuration.md"),
             ("coordinator/store/postgres/migrations.go", "docs/architecture/storage.md"),
+            ("coordinator/store/postgres/migration_indexes.go", "docs/architecture/storage.md"),
             ("coordinator/store/postgres/schema/migrations/00010_example.sql", "docs/architecture/storage.md"),
             ("coordinator/store/postgres/schema/schema.sql", "docs/architecture/storage.md"),
             ("coordinator/store/postgres/example_schema.go", "docs/architecture/storage.md"),
@@ -294,6 +341,10 @@ class DocsImpactCheckTests(unittest.TestCase):
 
     def test_relocated_domain_owners_require_behavior_documentation(self) -> None:
         cases = {
+            "trust and attestation": (
+                "coordinator/store/memory/legacy_mdm_cohort.go",
+                "coordinator/store/postgres/legacy_mdm_cohort.go",
+            ),
             "HTTP and API contracts": (
                 "coordinator/api/releases/artifact_metadata.go",
             ),

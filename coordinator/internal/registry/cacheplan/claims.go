@@ -26,3 +26,11 @@ func NewClaims(boundaries []protocol.PrefixCacheAnchor, blockSize uint32, prompt
 func (c *Claims) Matches(anchor protocol.PrefixCacheAnchor) bool {
 	return c != nil && c.expected[anchor.TokenCount] == anchor.ChainHash
 }
+
+// Len counts the frozen bindings; a nil claim set has none.
+func (c *Claims) Len() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.expected)
+}

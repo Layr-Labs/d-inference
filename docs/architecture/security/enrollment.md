@@ -40,7 +40,11 @@ The upcoming policy freezes a durable cohort on the first upgraded production
 coordinator startup, **after revocation replay**. Membership binds the stored account,
 Secure Enclave public key and serial of a device already successfully
 MDM-verified before the freeze. It is not a list of every MicroMDM enrollment,
-every saved `hardware` label, or every account that owns a provider. Subsequent
+every saved `hardware` label, or every account that owns a provider. Initial
+qualification excludes soft-deleted accounts and provider records in both
+`coordinator/store/postgres/legacy_mdm_cohort.go` and
+`coordinator/store/memory/legacy_mdm_cohort.go` (`FreezeLegacyMDMCohort`). These
+filters do not recompute an already frozen snapshot. Subsequent
 restarts reuse the frozen cohort, even when empty; new accounts, devices, keys and new
 account/device associations cannot expand it. Reenrollment requires the
 existing key under its frozen account. A new identity requires macOS 27 or later
@@ -78,16 +82,20 @@ The policy gate applies at registration identity recovery, scheduler submission,
 live MDM verification, late callbacks and cached trust reuse. A saved grant or an
 already outstanding command cannot authorize a nonmember.
 
-`Policy.Initialize` requires production App Attest serving enabled with
-full rollout before freezing; invalid configuration fails startup before the
-freeze. The [deployment prerequisites](../../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
+`AppConfig.Check` calls the pure `service.Config.CheckProductionServing`
+(`coordinator/appattest/service/config.go`) before database access or migrations.
+`Policy.Initialize` repeats the same production-serving check before freezing,
+still after revocation replay. The database-only `--migrate-only` command
+intentionally bypasses full application validation and never freezes membership.
+The [deployment prerequisites](../../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
 own the required settings. New identities also require App Attest on owner
 self/prefer routes; lowering the legacy trust floor cannot bypass that gate.
 
 The [deployment classification](../../reference/configuration.md#deployment-environment)
 defaults to production. Explicit development or actual opted-in memory-store
-fallback skips the startup freeze; neither telemetry tags nor the App Attest
-proof environment select that exception. A later production startup freezes
+fallback skips both serving preflight and startup freeze; allowing memory
+fallback does not exempt a configured Postgres store. Neither telemetry tags nor
+the App Attest proof environment select that exception. A later production startup freezes
 then-current eligible membership.
 
 ```mermaid

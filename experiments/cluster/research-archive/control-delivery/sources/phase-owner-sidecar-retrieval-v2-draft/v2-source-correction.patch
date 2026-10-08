@@ -1,0 +1,115 @@
+--- v1/owner_retrieval_fixture.py
++++ v2/owner_retrieval_fixture.py
+@@ -1,7 +1,8 @@
+ """Fabricated archive/pipe fixtures only; no candidate inputs or network calls."""
+ import ast
+ import json
+-from pathlib import Path
++from pathlib import Path, PurePosixPath
++import re
+ from types import SimpleNamespace
+ from sidecar_files import sha
+ 
+@@ -11,7 +12,8 @@
+ 
+ 
+ FROZEN = Path(__file__).resolve().parent.parent / 'remote-long-solo-owner-launcher-draft'
+-PINS = {'launch_remote_long_solo.py': '04ea975234e7abd3b71b35ca9f9cca74f8d65a63110afe2b5638301446475f83',
++PINS = {'remote_prefill_paths.py': '2f394109b46b076b9a4a7f99c3dae860ce81e9a3503335e76d6d5520d6e5c7f7',
++        'launch_remote_long_solo.py': '04ea975234e7abd3b71b35ca9f9cca74f8d65a63110afe2b5638301446475f83',
+         'long_reference_configuration.py': '545f1cad8e1821598e8a3872274cf1e3b1576b5a76f4cda3061e1c42e37865bb'}
+ 
+ 
+@@ -19,6 +21,16 @@
+     raw = (FROZEN / name).read_bytes()
+     assert sha(raw) == PINS[name]
+     return raw
++
++
++def frozen_layout(run_id):
++    tree = ast.parse(frozen_source('remote_prefill_paths.py'))
++    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
++                 and node.name in ('absolute_path', 'paths')]
++    assert len(functions) == 2
++    namespace = dict(re=re, PurePosixPath=PurePosixPath)
++    exec(compile(ast.Module(body=functions, type_ignores=[]), '<frozen-pure-paths>', 'exec'), namespace)
++    return namespace['paths']('/home/fixture', '/tmp/owned-test', '/tmp/model-fixture', run_id)
+ 
+ 
+ def frozen_configuration(layout, bundle_hash, prompt_hash):
+@@ -48,9 +60,7 @@
+         allRequestStateRetired=True, modelReleased=True, profile=first['profile'],
+         execution=dict(request=dict(fingerprint=fingerprint)))
+     run_id = 'a' * 32
+-    layout = dict(root='/tmp/owned-test', run='/tmp/owned-test/' + run_id,
+-                  native='/tmp/owned-test/' + run_id + '/native',
+-                  bundle='/tmp/owned-test/' + run_id + '/bundle', model='/tmp/model-fixture')
++    layout = frozen_layout(run_id)
+     rank = frozen_configuration(layout, sha(b'{}\n'), 'e' * 64)
+     entries = []
+     for name, raw in [('rank.json', encoded(rank)), ('stdout.jsonl', encoded(first) + encoded(final)),
+@@ -59,7 +69,7 @@
+         entries.append(dict(path='native/' + name, sha256=sha(raw), size_bytes=len(raw),
+                             hash_omitted_because_oversized=False))
+     launchers = []
+-    for name in ('launch_remote_long_solo.py', 'long_reference_configuration.py'):
++    for name in ('launch_remote_long_solo.py', 'long_reference_configuration.py', 'remote_prefill_paths.py'):
+         raw = frozen_source(name)
+         (run / 'launcher' / name).write_bytes(raw)
+         launchers.append(dict(path=name, sha256=sha(raw), size_bytes=len(raw)))
+--- v1/owner_sidecar_admission.py
++++ v2/owner_sidecar_admission.py
+@@ -7,6 +7,7 @@
+ 
+ MAX_STDOUT = 8 * 1024 * 1024
+ OWNER_RUNTIME = {
++    'remote_prefill_paths.py': '2f394109b46b076b9a4a7f99c3dae860ce81e9a3503335e76d6d5520d6e5c7f7',
+     'launch_remote_long_solo.py': '04ea975234e7abd3b71b35ca9f9cca74f8d65a63110afe2b5638301446475f83',
+     'long_reference_configuration.py': '545f1cad8e1821598e8a3872274cf1e3b1576b5a76f4cda3061e1c42e37865bb',
+ }
+--- v1/owner_sidecar_configuration.py
++++ v2/owner_sidecar_configuration.py
+@@ -12,7 +12,7 @@
+     for key in ('bundle', 'model'):
+         require(type(paths[key]) is str and paths[key].startswith('/') and '\x00' not in paths[key],
+                 'Missing absolute declared bundle/model path')
+-    require(paths['bundle'] == paths['run'] + '/bundle', 'Bundle is outside the owned run')
++    require(paths['bundle'] == paths['native'] + '/bundle', 'Bundle is outside the owned solo native directory')
+     prompt_sha256 = pin(receipt['inputs']['prompt_file_sha256'])
+     expected = dict(bundle=paths['bundle'], bundle_sha256=pin(receipt['bundle_manifest_sha256']),
+         rank=0, persistent=False, model_directory=paths['model'], artifact_aggregate_sha256=ARTIFACT,
+--- v1/test_owner_retrieval.py
++++ v2/test_owner_retrieval.py
+@@ -7,7 +7,7 @@
+ 
+ import owner_sidecar_remote_reader as remote_owner
+ import phase_sidecar_remote_reader as remote_phase
+-from owner_retrieval_fixture import encoded, make_run, make_response, response_bytes
++from owner_retrieval_fixture import encoded, frozen_configuration, frozen_layout, make_run, make_response, response_bytes
+ from owner_sidecar_admission import admit_run
+ from owner_sidecar_response import decode_response
+ from retrieve_owner_sidecars import retrieve
+@@ -111,6 +111,23 @@
+             mutate(value)
+             with self.assertRaises(ValueError):
+                 admit_run(self.run, self.replace_native('rank.json', encoded(value), copy.deepcopy(self.receipt)))
++
++    def test_frozen_solo_path_constructor_admitted_and_old_rank_layout_rejected(self):
++        layout = frozen_layout(self.receipt['run_id'])
++        self.assertEqual(self.receipt['remote_paths'], layout)
++        self.assertEqual(layout['bundle'], layout['native'] + '/bundle')
++        self.assertNotEqual(layout['bundle'], layout['run'] + '/bundle')
++        self.assertEqual(admit_run(self.run, self.pin), self.context)
++        wrong = copy.deepcopy(self.receipt)
++        wrong['remote_paths']['bundle'] = layout['run'] + '/bundle'
++        config = frozen_configuration(wrong['remote_paths'], wrong['bundle_manifest_sha256'],
++                                      wrong['inputs']['prompt_file_sha256'])
++        wrong_pin = self.replace_native('rank.json', encoded(config), wrong)
++        with self.assertRaisesRegex(ValueError, 'owned solo native directory'):
++            admit_run(self.run, wrong_pin)
++        result = retrieve(self.run, wrong_pin, self.folder / 'old-layout',
++                          reader=lambda *args: self.fail('No SSH for incorrect layout'))
++        self.assertFalse(result['passed'])
+ 
+     def test_archive_pin_changes_or_relabelled_runtime_source_rejected(self):
+         for name in ('native/stdout.jsonl', 'source-manifest.json', 'bundle/bundle.json'):

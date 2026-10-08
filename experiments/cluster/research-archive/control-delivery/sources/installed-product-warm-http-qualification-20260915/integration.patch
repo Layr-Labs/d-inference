@@ -1,0 +1,72 @@
+--- /Users/developer/DarkbloomDev/cluster-research/installed-product-lookahead-http-qualification-20260915/run.py
++++ /Users/developer/DarkbloomDev/cluster-research/installed-product-warm-http-qualification-20260915/run.py
+@@ -1,4 +1,4 @@
+-"""One real installed distributed session and one external authenticated request."""
++"""One installed session, one recorded warmup request, then one measured request."""
+ from pathlib import Path
+ import argparse, base64, hashlib, json, os, shlex, subprocess, threading, time
+ import urllib.request
+@@ -18,17 +18,22 @@
+     parser.add_argument('--declared-prompt-tokens',type=int)
+     parser.add_argument('--rendered-prompt',type=Path)
+     parser.add_argument('--expected-token-ids',type=Path)
++    parser.add_argument('--warmup-prompt-file',required=True,type=Path)
++    parser.add_argument('--warmup-prompt-tokens',required=True,type=int)
+     args=parser.parse_args()
+     assert 1<=args.attempt<=99
++    assert 1<=args.warmup_prompt_tokens<=8192
+     assert args.declared_prompt_tokens is None or 1<=args.declared_prompt_tokens<=8192
+     assert (args.rendered_prompt is None)==(args.expected_token_ids is None)
+     output=BASE/('physical-'+str(args.attempt));output.mkdir(mode=0o700)
+-    remote_run=REMOTE+'/qualification/attempt'+str(args.attempt)
++    remote_run=REMOTE+'/qualification/warm-attempt'+str(args.attempt)
+     record={'schema':'installed_distributed_http_attempt_v1','startedUnix':time.time(),
+             'representativePerformanceQualified':False,'openRouterQualified':False,
+-            'numericalReferenceCompared':False,'requestCount':1}
++            'numericalReferenceCompared':False,'plannedRequestCount':2,'plannedMeasuredRequestCount':1,
++            'plannedWarmupRequestCount':1,'warmupClientAttempts':0,'measuredClientAttempts':0,
++            'warmupExcludedFromMeasuredRequest':True}
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+-    codefiles=sorted(BASE.glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file]
++    codefiles=sorted(BASE.glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file,args.warmup_prompt_file]
+     if args.rendered_prompt is not None:
+         codefiles.extend([args.rendered_prompt,args.expected_token_ids])
+     pins={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in codefiles}
+@@ -99,7 +104,28 @@
+                  '--output',str(output/'client'),'--timeout','90']
+         if args.declared_prompt_tokens is not None:
+             command.extend(['--declared-prompt-tokens',str(args.declared_prompt_tokens)])
++        warmup_command=list(command)
++        warmup_command[warmup_command.index('--prompt-file')+1]=str(args.warmup_prompt_file)
++        warmup_command[warmup_command.index('--output')+1]=str(output/'warmup-client')
++        if '--declared-prompt-tokens' in warmup_command:
++            warmup_command[warmup_command.index('--declared-prompt-tokens')+1]=str(args.warmup_prompt_tokens)
++        else:
++            warmup_command.extend(['--declared-prompt-tokens',str(args.warmup_prompt_tokens)])
++        record['warmupClientCommand']=warmup_command
++        record['warmupClientAttempts']=1
++        with (output/'warmup-client.stdout').open('xb') as out,(output/'warmup-client.stderr').open('xb') as err:
++            warmup_result=subprocess.run(warmup_command,stdout=out,stderr=err,timeout=100)
++        record['warmupClientExitCode']=warmup_result.returncode
++        if warmup_result.returncode!=0:
++            raise RuntimeError('Warmup request failed; measured request not sent')
++        warmup_receipt=json.loads((output/'warmup-client/receipt.json').read_text())
++        record['warmupUsage']=warmup_receipt['measurement']['usage']
++        if record['warmupUsage'].get('prompt_tokens')!=args.warmup_prompt_tokens or record['warmupUsage'].get('completion_tokens')!=128:
++            raise RuntimeError('Warmup token usage differs; measured request not sent')
++        for monitor in monitors: monitor.require()
++        if supervisor.poll() is not None: raise RuntimeError('Product exited after warmup')
+         record['clientCommand']=command
++        record['measuredClientAttempts']=1
+         with (output/'client.stdout').open('xb') as out,(output/'client.stderr').open('xb') as err:
+             result=subprocess.run(command,stdout=out,stderr=err,timeout=100)
+         record['clientExitCode']=result.returncode
+@@ -160,7 +186,7 @@
+         if token_file.exists(): token_file.unlink()
+     record['elapsedSeconds']=time.monotonic()-started
+     record['pinsUnchanged']=all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==pin for p,pin in pins.items())
+-    record['completed']=record.get('clientExitCode')==0 and record.get('supervisorExitCode')==0 and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
++    record['completed']=record.get('warmupClientExitCode')==0 and record.get('clientExitCode')==0 and record.get('supervisorExitCode')==0 and record.get('nativeProcessesAbsent') is True and record.get('journalsEmpty') is True and record.get('aliasCleanup',{}).get('restored') is True and not guard_errors and all(m['exitCode']==0 and not m['errors'] for m in record['monitors']) and record['pinsUnchanged'] and 'error' not in record
+     (output/'execution.json').write_text(json.dumps(record,indent=2)+'\n')
+     print(json.dumps({k:record.get(k) for k in ['completed','error','clientExitCode','supervisorExitCode','nativeProcessesAbsent','journalsEmpty','elapsedSeconds']}),flush=True)
+     raise SystemExit(0 if record['completed'] else 1)

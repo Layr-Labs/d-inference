@@ -1,0 +1,647 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
+@@ -0,0 +1,89 @@
++import Foundation
++
++/// Names understood by this protocol revision, not a second artifact catalog.
++/// Artifact, configuration, profile and Plan hashes come from the native adapter.
++public enum ClusterRuntimeAdapter: String, Sendable {
++    case qwen35Dense = "qwen35-dense-layer-stage"
++    public var version: Int { 1 }
++    public var runtimeModelID: String { "registered_qwen35_9b" }
++    public var profileID: String { "registered_qwen35_9b_greedy_generation_v1" }
++}
++
++public struct ClusterRuntimeStage: Equatable, Sendable {
++    public let rank: Int
++    public let sourceLayerStart: Int
++    public let sourceLayerEnd: Int
++    public let stagePlanSHA256: String
++    public let constructionConfigurationSHA256: String
++    public init(rank: Int, sourceLayerStart: Int, sourceLayerEnd: Int,
++                stagePlanSHA256: String, constructionConfigurationSHA256: String) {
++        self.rank = rank; self.sourceLayerStart = sourceLayerStart; self.sourceLayerEnd = sourceLayerEnd
++        self.stagePlanSHA256 = stagePlanSHA256
++        self.constructionConfigurationSHA256 = constructionConfigurationSHA256
++    }
++}
++
++/// Opaque native Plan identity plus explicit complete rank ownership. Decoding
++/// checks consistency; it does not recreate the adapter's Plan/hash algorithms.
++public struct ClusterRuntimePartition: Equatable, Sendable {
++    public let kind: String
++    public let planSHA256: String
++    public let stages: [ClusterRuntimeStage]
++    public init(kind: String = "contiguousWholeLayers", planSHA256: String, stages: [ClusterRuntimeStage]) {
++        self.kind = kind; self.planSHA256 = planSHA256; self.stages = stages
++    }
++}
++
++/// Installed software description only: no membership epoch, device identity,
++/// readiness, memory capacity or authority to construct a model/request.
++public struct ClusterRuntimeCapability: Equatable, Sendable {
++    public static let schema = "darkbloom_cluster_runtime_capability_v1"
++    public let workerProtocolVersion = ClusterWorkerLimits.version
++    public let ownerProtocolVersion = 1
++    public let bootstrapABIVersion = 1
++    public let runtimeBinarySHA256: String
++    public let adapterID: String
++    public let adapterVersion: Int
++    public let runtimeModelID: String
++    public let artifactSHA256: String
++    public let configurationSHA256: String
++    public let manifestSHA256: String
++    public let profile: ClusterWorkerProfile
++    public let profileFingerprint: String
++    public let partitions: [ClusterRuntimePartition]
++    public let arithmeticPolicyID: String
++    public let arithmeticPolicySHA256: String
++    public let stateSemantics = "requestOwnedKVAndRecurrent"
++    public let rankCount = 2
++    public let batchSize = 1
++    public let maxActiveRequests = 1
++    public let maxLifetimeSeconds: Int
++    public let maxRequests: Int
++    public let schedulingPolicy = "serial"
++    public let selectionPolicy = "greedy"
++    public let modality = "text"
++    public let stopPolicy = "selectedTokenIDs"
++    public let speculation = "off"
++    public let prefixReuse = false
++
++    public init(runtimeBinarySHA256: String, adapterID: String, adapterVersion: Int,
++                runtimeModelID: String, artifactSHA256: String, configurationSHA256: String,
++                manifestSHA256: String, profile: ClusterWorkerProfile, profileFingerprint: String,
++                partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
++                arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int) throws {
++        self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
++        self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
++        self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
++        self.profile = profile; self.profileFingerprint = profileFingerprint; self.partitions = partitions
++        self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
++        self.maxLifetimeSeconds = maxLifetimeSeconds; self.maxRequests = maxRequests
++        try ClusterRuntimeCapabilityValidation.check(self)
++    }
++
++    public func selection(planSHA256: String) throws -> ClusterRuntimePartition {
++        guard let selected = partitions.first(where: { $0.planSHA256 == planSHA256 }) else {
++            throw ClusterWorkerProtocolError.invalid("Unknown installed runtime partition")
++        }
++        return selected
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
+@@ -0,0 +1,88 @@
++import Foundation
++
++/// Exactly one canonical, sorted-key JSON object and LF, bounded to 16 KiB.
++/// Reuses the protocol scanner and strict typed object reader; never hashes Plans.
++public enum ClusterRuntimeCapabilityCodec {
++    public static let maximumBytes = 16 * 1024
++
++    public static func encode(_ value: ClusterRuntimeCapability) throws -> Data {
++        try ClusterRuntimeCapabilityValidation.check(value)
++        let p = value.profile
++        let object: [String: Any] = [
++            "schema": ClusterRuntimeCapability.schema,
++            "workerProtocolVersion": value.workerProtocolVersion, "ownerProtocolVersion": value.ownerProtocolVersion,
++            "bootstrapABIVersion": value.bootstrapABIVersion, "runtimeBinarySHA256": value.runtimeBinarySHA256,
++            "adapterID": value.adapterID, "adapterVersion": value.adapterVersion, "runtimeModelID": value.runtimeModelID,
++            "artifactSHA256": value.artifactSHA256, "configurationSHA256": value.configurationSHA256,
++            "manifestSHA256": value.manifestSHA256, "profileFingerprint": value.profileFingerprint,
++            "profile": ["id": p.id, "vocabularySize": p.vocabularySize, "maximumPromptTokens": p.maximumPromptTokens,
++                "maximumOutputTokens": p.maximumOutputTokens, "maximumChunkTokens": p.maximumChunkTokens,
++                "maximumContextTokens": p.maximumContextTokens],
++            "partitions": value.partitions.map { partition in
++                ["kind": partition.kind, "planSHA256": partition.planSHA256,
++                 "stages": partition.stages.map { stage in
++                    ["rank": stage.rank, "sourceLayerStart": stage.sourceLayerStart, "sourceLayerEnd": stage.sourceLayerEnd,
++                     "stagePlanSHA256": stage.stagePlanSHA256,
++                     "constructionConfigurationSHA256": stage.constructionConfigurationSHA256] as [String: Any]
++                 }] as [String: Any]
++            },
++            "arithmeticPolicyID": value.arithmeticPolicyID, "arithmeticPolicySHA256": value.arithmeticPolicySHA256,
++            "stateSemantics": value.stateSemantics, "rankCount": value.rankCount, "batchSize": value.batchSize,
++            "maxActiveRequests": value.maxActiveRequests, "maxLifetimeSeconds": value.maxLifetimeSeconds,
++            "maxRequests": value.maxRequests, "schedulingPolicy": value.schedulingPolicy,
++            "selectionPolicy": value.selectionPolicy, "modality": value.modality, "stopPolicy": value.stopPolicy,
++            "speculation": value.speculation, "prefixReuse": value.prefixReuse,
++        ]
++        var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
++        try workerRequire(data.count < maximumBytes, "Runtime capability exceeds its byte bound")
++        data.append(10); return data
++    }
++
++    public static func decode(_ data: Data) throws -> ClusterRuntimeCapability {
++        try workerRequire(!data.isEmpty && data.count <= maximumBytes && data.last == 10
++            && !data.dropLast().contains(10), "Expected one complete bounded capability record")
++        try validateClusterWorkerJSON(data)
++        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
++            throw ClusterWorkerProtocolError.invalid("Capability must be an object")
++        }
++        var r = WorkerObject(object)
++        try workerRequire(try r.string("schema") == ClusterRuntimeCapability.schema
++            && r.int("workerProtocolVersion") == ClusterWorkerLimits.version
++            && r.int("ownerProtocolVersion") == 1 && r.int("bootstrapABIVersion") == 1,
++            "Unsupported runtime protocol or bootstrap ABI")
++        var p = WorkerObject(try r.object("profile"))
++        let profile = try ClusterWorkerProfile(id: p.string("id"), vocabularySize: p.int("vocabularySize"),
++            maximumPromptTokens: p.int("maximumPromptTokens"), maximumOutputTokens: p.int("maximumOutputTokens"),
++            maximumChunkTokens: p.int("maximumChunkTokens"), maximumContextTokens: p.int("maximumContextTokens"))
++        try p.finish()
++        let partitions = try r.objects("partitions").map { object -> ClusterRuntimePartition in
++            var partition = WorkerObject(object)
++            let stages = try partition.objects("stages").map { object -> ClusterRuntimeStage in
++                var stage = WorkerObject(object)
++                let value = try ClusterRuntimeStage(rank: stage.int("rank"), sourceLayerStart: stage.int("sourceLayerStart"),
++                    sourceLayerEnd: stage.int("sourceLayerEnd"), stagePlanSHA256: stage.string("stagePlanSHA256"),
++                    constructionConfigurationSHA256: stage.string("constructionConfigurationSHA256"))
++                try stage.finish(); return value
++            }
++            let value = try ClusterRuntimePartition(kind: partition.string("kind"), planSHA256: partition.string("planSHA256"), stages: stages)
++            try partition.finish(); return value
++        }
++        let value = try ClusterRuntimeCapability(runtimeBinarySHA256: r.string("runtimeBinarySHA256"),
++            adapterID: r.string("adapterID"), adapterVersion: r.int("adapterVersion"), runtimeModelID: r.string("runtimeModelID"),
++            artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
++            manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
++            partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
++            arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), maxLifetimeSeconds: r.int("maxLifetimeSeconds"),
++            maxRequests: r.int("maxRequests"))
++        try workerRequire(try r.string("stateSemantics") == value.stateSemantics
++            && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize
++            && r.int("maxActiveRequests") == value.maxActiveRequests
++            && r.string("schedulingPolicy") == value.schedulingPolicy
++            && r.string("selectionPolicy") == value.selectionPolicy && r.string("modality") == value.modality
++            && r.string("stopPolicy") == value.stopPolicy && r.string("speculation") == value.speculation
++            && r.bool("prefixReuse") == value.prefixReuse, "Unsupported runtime execution policy")
++        try r.finish()
++        try workerRequire(try encode(value) == data, "Capability record is not canonical")
++        return value
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
+@@ -0,0 +1,51 @@
++import Foundation
++
++enum ClusterRuntimeCapabilityValidation {
++    static func check(_ value: ClusterRuntimeCapability) throws {
++        guard let adapter = ClusterRuntimeAdapter(rawValue: value.adapterID),
++              value.adapterVersion == adapter.version, value.runtimeModelID == adapter.runtimeModelID,
++              value.profile.id == adapter.profileID else {
++            throw ClusterWorkerProtocolError.invalid("Unknown runtime adapter, version, model or profile")
++        }
++        try workerRequire([value.runtimeBinarySHA256, value.artifactSHA256, value.configurationSHA256,
++            value.manifestSHA256, value.profileFingerprint, value.arithmeticPolicySHA256]
++            .allSatisfy(ClusterWorkerValidation.hash), "Malformed runtime capability identity")
++        let p = value.profile
++        try workerRequire((1...ClusterWorkerLimits.vocabularySize).contains(p.vocabularySize)
++            && (1...ClusterWorkerLimits.promptTokens).contains(p.maximumPromptTokens)
++            && (1...ClusterWorkerLimits.outputTokens).contains(p.maximumOutputTokens)
++            && (1...p.maximumPromptTokens).contains(p.maximumChunkTokens)
++            && (1...ClusterWorkerLimits.contextTokens).contains(p.maximumContextTokens)
++            && p.maximumPromptTokens <= p.maximumContextTokens - p.maximumOutputTokens
++            ,
++            "Runtime profile exceeds protocol geometry")
++        // These are implementation ceilings, not runtime admission or a hardware
++        // promise. The producer obtains its exact values from the shared adapter.
++        try workerRequire((1...300).contains(value.maxLifetimeSeconds) && (1...16).contains(value.maxRequests),
++                          "Unsupported resident lifetime or request count")
++        try workerRequire(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
++                          "Unknown runtime arithmetic policy")
++        try workerRequire((1...16).contains(value.partitions.count)
++            && Set(value.partitions.map(\.planSHA256)).count == value.partitions.count,
++            "Missing or duplicate runtime partitions")
++        var layerCount: Int?
++        var previousCut = 0
++        for selection in value.partitions {
++            try workerRequire(selection.kind == "contiguousWholeLayers" && ClusterWorkerValidation.hash(selection.planSHA256)
++                && selection.stages.count == 2, "Unknown partition kind or stage count")
++            let a = selection.stages[0], b = selection.stages[1]
++            try workerRequire(a.rank == 0 && b.rank == 1 && a.sourceLayerStart == 0
++                && a.sourceLayerEnd > 0 && a.sourceLayerEnd == b.sourceLayerStart
++                && b.sourceLayerEnd > b.sourceLayerStart && b.sourceLayerEnd <= 128,
++                "Partition is not a complete ordered two-stage interval")
++            try workerRequire(a.sourceLayerEnd > previousCut, "Partitions must be unique and ordered by cut")
++            previousCut = a.sourceLayerEnd
++            if let layerCount { try workerRequire(layerCount == b.sourceLayerEnd, "Partitions disagree on layer coverage") }
++            layerCount = b.sourceLayerEnd
++            try workerRequire(selection.stages.allSatisfy {
++                ClusterWorkerValidation.hash($0.stagePlanSHA256)
++                    && ClusterWorkerValidation.hash($0.constructionConfigurationSHA256)
++            } && a.stagePlanSHA256 != b.stagePlanSHA256, "Malformed or repeated stage identity")
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerCodec.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerCodec.swift
+@@ -139,54 +139,3 @@
+     }
+ }
+ 
+-private struct WorkerObject {
+-    var values: [String: Any]
+-    init(_ values: [String: Any]) { self.values = values }
+-    mutating func take(_ key: String) throws -> Any {
+-        guard let value = values.removeValue(forKey: key) else { throw ClusterWorkerProtocolError.invalid("Missing field: " + key) }
+-        return value
+-    }
+-    mutating func string(_ key: String) throws -> String {
+-        guard let value = try take(key) as? String else { throw ClusterWorkerProtocolError.invalid("Expected string: " + key) }
+-        return value
+-    }
+-    mutating func number(_ key: String) throws -> NSNumber {
+-        guard let value = try take(key) as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else {
+-            throw ClusterWorkerProtocolError.invalid("Expected integer: " + key)
+-        }
+-        return value
+-    }
+-    mutating func int(_ key: String) throws -> Int {
+-        guard let value = Int(try number(key).stringValue) else { throw ClusterWorkerProtocolError.invalid("Integer overflow: " + key) }
+-        return value
+-    }
+-    mutating func uint(_ key: String) throws -> UInt64 {
+-        guard let value = UInt64(try number(key).stringValue) else { throw ClusterWorkerProtocolError.invalid("Unsigned overflow: " + key) }
+-        return value
+-    }
+-    mutating func uuid(_ key: String) throws -> UUID {
+-        let text = try string(key)
+-        guard let value = UUID(uuidString: text), value.uuidString.lowercased() == text else {
+-            throw ClusterWorkerProtocolError.invalid("Expected canonical lowercase UUID: " + key)
+-        }
+-        return value
+-    }
+-    mutating func optionalUUID(_ key: String) throws -> UUID? { values[key] == nil ? nil : try uuid(key) }
+-    mutating func enumeration<T: RawRepresentable>(_ key: String) throws -> T where T.RawValue == String {
+-        guard let value = T(rawValue: try string(key)) else { throw ClusterWorkerProtocolError.invalid("Unknown enum: " + key) }
+-        return value
+-    }
+-    mutating func object(_ key: String) throws -> [String: Any] {
+-        guard let value = try take(key) as? [String: Any] else { throw ClusterWorkerProtocolError.invalid("Expected object: " + key) }
+-        return value
+-    }
+-    mutating func objects(_ key: String) throws -> [[String: Any]] {
+-        guard let value = try take(key) as? [[String: Any]] else { throw ClusterWorkerProtocolError.invalid("Expected object array: " + key) }
+-        return value
+-    }
+-    mutating func ints(_ key: String) throws -> [Int] {
+-        guard let value = try take(key) as? [Any] else { throw ClusterWorkerProtocolError.invalid("Expected integer array: " + key) }
+-        return try value.map { item in var r = WorkerObject([key: item]); return try r.int(key) }
+-    }
+-    func finish() throws { try workerRequire(values.isEmpty, "Unknown worker record fields") }
+-}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerObject.swift
+@@ -0,0 +1,60 @@
++import Foundation
++import CoreFoundation
++
++struct WorkerObject {
++    var values: [String: Any]
++    init(_ values: [String: Any]) { self.values = values }
++    mutating func take(_ key: String) throws -> Any {
++        guard let value = values.removeValue(forKey: key) else { throw ClusterWorkerProtocolError.invalid("Missing field: " + key) }
++        return value
++    }
++    mutating func string(_ key: String) throws -> String {
++        guard let value = try take(key) as? String else { throw ClusterWorkerProtocolError.invalid("Expected string: " + key) }
++        return value
++    }
++    mutating func bool(_ key: String) throws -> Bool {
++        guard let value = try take(key) as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else {
++            throw ClusterWorkerProtocolError.invalid("Expected Boolean: " + key)
++        }
++        return value.boolValue
++    }
++    mutating func number(_ key: String) throws -> NSNumber {
++        guard let value = try take(key) as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else {
++            throw ClusterWorkerProtocolError.invalid("Expected integer: " + key)
++        }
++        return value
++    }
++    mutating func int(_ key: String) throws -> Int {
++        guard let value = Int(try number(key).stringValue) else { throw ClusterWorkerProtocolError.invalid("Integer overflow: " + key) }
++        return value
++    }
++    mutating func uint(_ key: String) throws -> UInt64 {
++        guard let value = UInt64(try number(key).stringValue) else { throw ClusterWorkerProtocolError.invalid("Unsigned overflow: " + key) }
++        return value
++    }
++    mutating func uuid(_ key: String) throws -> UUID {
++        let text = try string(key)
++        guard let value = UUID(uuidString: text), value.uuidString.lowercased() == text else {
++            throw ClusterWorkerProtocolError.invalid("Expected canonical lowercase UUID: " + key)
++        }
++        return value
++    }
++    mutating func optionalUUID(_ key: String) throws -> UUID? { values[key] == nil ? nil : try uuid(key) }
++    mutating func enumeration<T: RawRepresentable>(_ key: String) throws -> T where T.RawValue == String {
++        guard let value = T(rawValue: try string(key)) else { throw ClusterWorkerProtocolError.invalid("Unknown enum: " + key) }
++        return value
++    }
++    mutating func object(_ key: String) throws -> [String: Any] {
++        guard let value = try take(key) as? [String: Any] else { throw ClusterWorkerProtocolError.invalid("Expected object: " + key) }
++        return value
++    }
++    mutating func objects(_ key: String) throws -> [[String: Any]] {
++        guard let value = try take(key) as? [[String: Any]] else { throw ClusterWorkerProtocolError.invalid("Expected object array: " + key) }
++        return value
++    }
++    mutating func ints(_ key: String) throws -> [Int] {
++        guard let value = try take(key) as? [Any] else { throw ClusterWorkerProtocolError.invalid("Expected integer array: " + key) }
++        return try value.map { item in var r = WorkerObject([key: item]); return try r.int(key) }
++    }
++    func finish() throws { try workerRequire(values.isEmpty, "Unknown worker record fields") }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ClusterMetadataHashing.swift
+@@ -0,0 +1,6 @@
++import CryptoKit
++import Foundation
++
++func sha256(_ data: Data) -> String {
++    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenModelConstruction.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenModelConstruction.swift
+@@ -1,4 +1,3 @@
+-import CryptoKit
+ import Foundation
+ import MLX
+ import MLXLLM
+@@ -18,6 +17,3 @@
+     return Qwen35TextModel(try JSONDecoder().decode(Qwen35TextConfiguration.self, from: data))
+ }
+ 
+-func sha256(_ data: Data) -> String {
+-    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+-}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift
+@@ -0,0 +1,17 @@
++import Foundation
++
++/// One definition for the currently admitted resident adapter and its metadata.
++/// Describing these limits does not allocate a model or admit a request.
++enum QwenResidentAdapterDefinition {
++    static let profileID = "registered_qwen35_9b_greedy_generation_v1"
++    static let maximumLifetimeNanoseconds: UInt64 = 300_000_000_000
++    static let maximumRequests = 16
++    static let supportedCuts = [4, 8, 12, 16]
++
++    static func profile(specification: QwenDenseRegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
++        guard specification.model == .qwen35NineB else { throw ProbeError("Unsupported resident model") }
++        return try .init(identifier: profileID, vocabularySize: 248_320,
++            hiddenSize: specification.hidden, activationDType: "bfloat16", maximumPromptTokens: 8192,
++            maximumChunkTokens: 512, maximumOutputTokens: 128, maximumContextTokens: 8320)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift
+@@ -22,9 +22,9 @@
+ }
+ 
+ struct QwenResidentAdmission {
+-    static let profileID = "registered_qwen35_9b_greedy_generation_v1"
+-    static let maximumLifetimeNanoseconds: UInt64 = 300_000_000_000
+-    static let maximumRequests = 16
++    static let profileID = QwenResidentAdapterDefinition.profileID
++    static let maximumLifetimeNanoseconds = QwenResidentAdapterDefinition.maximumLifetimeNanoseconds
++    static let maximumRequests = QwenResidentAdapterDefinition.maximumRequests
+     let configuration: QwenResidentLoadConfiguration
+     let configBytes: Data, manifestBytes: Data
+     let specification: QwenDenseRegisteredSpecification
+@@ -38,7 +38,7 @@
+          environment: [String: String], now: UInt64,
+          read: (URL, Int) throws -> Data) throws {
+         let identity = configuration.identity
+-        guard (0...1).contains(configuration.rank), [4, 8, 12, 16].contains(configuration.stageCut),
++        guard (0...1).contains(configuration.rank), QwenResidentAdapterDefinition.supportedCuts.contains(configuration.stageCut),
+               configuration.modelDirectory.isFileURL,
+               identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
+               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
+@@ -64,9 +64,7 @@
+         specification = spec
+         plan = try QwenLayerStagePlan(configuration: configBytes,
+             ranges: [0..<configuration.stageCut, configuration.stageCut..<spec.layers], activeMTP: false)
+-        profile = try .init(identifier: Self.profileID, vocabularySize: 248_320,
+-            hiddenSize: spec.hidden, activationDType: "bfloat16", maximumPromptTokens: 8192,
+-            maximumChunkTokens: 512, maximumOutputTokens: 128, maximumContextTokens: 8320)
++        profile = try QwenResidentAdapterDefinition.profile(specification: spec)
+         // Recalculate the existing named-state formula at the generation cap;
+         // never relabel the separate exact 8192/512/output1 admission receipt.
+         let maximum = try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(),
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
+@@ -0,0 +1,45 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++/// Pure metadata from the same registered specification, profile and Plan
++/// constructors used by live admission. No checkpoint payload or GPU is read.
++/// The binary hash is a caller binding; the worker command verifies its installed
++/// executable bytes before calling this function. Neither proves loaded code,
++/// libraries, physical readiness, available memory or numerical qualification.
++public enum QwenResidentCapabilityMetadata {
++    public static func describe(configuration: Data, manifest: Data,
++                                runtimeBinarySHA256: String) throws -> ClusterRuntimeCapability {
++        guard (1...1_048_576).contains(configuration.count), (1...4_194_304).contains(manifest.count),
++              qwenStageWireIsSHA256(runtimeBinarySHA256),
++              let spec = QwenDenseRegisteredSpecification.all.first(where: { $0.model == .qwen35NineB }),
++              sha256(configuration) == spec.configurationSHA256, sha256(manifest) == spec.manifestSHA256 else {
++            throw ProbeError("Capability metadata requires the exact registered 9B configuration and manifest")
++        }
++        let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
++        let partitions = try QwenResidentAdapterDefinition.supportedCuts.map { cut -> ClusterRuntimePartition in
++            let plan = try QwenLayerStagePlan(configuration: configuration,
++                ranges: [0..<cut, cut..<spec.layers], activeMTP: false)
++            return ClusterRuntimePartition(planSHA256: plan.fingerprint, stages: plan.stages.map {
++                ClusterRuntimeStage(rank: $0.index, sourceLayerStart: $0.sourceRange.lowerBound,
++                    sourceLayerEnd: $0.sourceRange.upperBound, stagePlanSHA256: $0.fingerprint,
++                    constructionConfigurationSHA256: sha256($0.constructionConfiguration))
++            })
++        }
++        // Describe the required source contract. This is not a claim that the
++        // current process environment or an installed native library was admitted.
++        let arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(QwenLongPrefillArithmeticEnvironment.requiredValues)
++        let adapter = ClusterRuntimeAdapter.qwen35Dense
++        return try ClusterRuntimeCapability(runtimeBinarySHA256: runtimeBinarySHA256,
++            adapterID: adapter.rawValue, adapterVersion: adapter.version, runtimeModelID: spec.model.rawValue,
++            artifactSHA256: spec.artifactSHA256, configurationSHA256: spec.configurationSHA256,
++            manifestSHA256: spec.manifestSHA256,
++            profile: .init(id: profile.identifier, vocabularySize: profile.vocabularySize,
++                maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
++                maximumChunkTokens: profile.maximumChunkTokens, maximumContextTokens: profile.maximumContextTokens),
++            profileFingerprint: profile.fingerprint, partitions: partitions,
++            arithmeticPolicyID: QwenLongPrefillArithmeticEnvironment.contract,
++            arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
++            maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
++            maxRequests: QwenResidentAdapterDefinition.maximumRequests)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerCapabilityCommand.swift
+@@ -0,0 +1,75 @@
++import DarkbloomClusterProtocol
++import DarkbloomClusterRuntime
++import Darwin
++import Foundation
++
++/// Optional, metadata-only entry. It returns before WorkerConfiguration, model
++/// loading, bootstrap, resource admission or MLX initialization is invoked.
++enum WorkerCapabilityCommand {
++    struct Arguments {
++        let configurationPath: String, manifestPath: String, expectedExecutableSHA256: String
++        init(_ values: [String]) throws {
++            guard values.count == 7, values[0] == "--describe-runtime",
++                  values[1] == "--config", values[3] == "--manifest", values[5] == "--expected-executable-sha256",
++                  values[6].utf8.count == 64, values[6].utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
++                  [values[2], values[4]].allSatisfy({ $0.hasPrefix("/") && !$0.utf8.contains(0) && $0.utf8.count <= 4096 }) else {
++                throw WorkerCapabilityError.invalid("Expected --describe-runtime --config PATH --manifest PATH --expected-executable-sha256 SHA256")
++            }
++            configurationPath = values[2]; manifestPath = values[4]; expectedExecutableSHA256 = values[6]
++        }
++    }
++
++    static func run(arguments: [String]) throws {
++        let request = try Arguments(arguments)
++        let deadline = DispatchTime.now().uptimeNanoseconds + 15_000_000_000
++        signal(SIGPIPE, SIG_IGN)
++        signal(SIGALRM) { _ in Darwin._exit(124) }
++        alarm(15)
++        defer { alarm(0) }
++        let executable = try executablePath()
++        let actual = try WorkerCapabilityInput.hash(executable, maximumBytes: 256 * 1024 * 1024, deadline: deadline)
++        guard actual == request.expectedExecutableSHA256 else {
++            throw WorkerCapabilityError.invalid("Installed executable bytes differ from the expected binary SHA-256")
++        }
++        let configuration = try WorkerCapabilityInput.read(request.configurationPath, maximumBytes: 1_048_576, deadline: deadline)
++        let manifest = try WorkerCapabilityInput.read(request.manifestPath, maximumBytes: 4_194_304, deadline: deadline)
++        let capability = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
++                                                                    runtimeBinarySHA256: actual)
++        try write(ClusterRuntimeCapabilityCodec.encode(capability), deadline: deadline)
++    }
++
++    private static func executablePath() throws -> String {
++        var capacity: UInt32 = 0
++        _ = _NSGetExecutablePath(nil, &capacity)
++        guard capacity > 1, capacity <= 4096 else { throw WorkerCapabilityError.invalid("Executable path exceeds bound") }
++        var bytes = [CChar](repeating: 0, count: Int(capacity))
++        guard _NSGetExecutablePath(&bytes, &capacity) == 0 else { throw WorkerCapabilityError.invalid("Cannot resolve installed executable") }
++        guard let path = String(bytes: bytes.prefix(while: { $0 != 0 }).map({ UInt8(bitPattern: $0) }), encoding: .utf8) else {
++            throw WorkerCapabilityError.invalid("Installed executable path is not UTF-8")
++        }
++        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
++    }
++
++    private static func write(_ data: Data, deadline: UInt64) throws {
++        let flags = fcntl(STDOUT_FILENO, F_GETFL)
++        guard flags >= 0, fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK) == 0 else {
++            throw WorkerCapabilityError.invalid("Cannot bound metadata output")
++        }
++        defer { _ = fcntl(STDOUT_FILENO, F_SETFL, flags) }
++        var offset = 0
++        while offset < data.count {
++            try WorkerCapabilityInput.check(deadline)
++            let count = data.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress!.advanced(by: offset), $0.count - offset) }
++            if count < 0 && errno == EINTR { continue }
++            if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
++                var descriptor = pollfd(fd: STDOUT_FILENO, events: Int16(POLLOUT), revents: 0)
++                let result = poll(&descriptor, 1, 100)
++                if result < 0 && errno != EINTR { throw WorkerCapabilityError.invalid("Metadata output poll failed") }
++                continue
++            }
++            guard count > 0 else { throw WorkerCapabilityError.invalid("Metadata output failed") }
++            offset += count
++        }
++        try WorkerCapabilityInput.check(deadline)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerCapabilityInput.swift
+@@ -0,0 +1,66 @@
++import CryptoKit
++import Darwin
++import Foundation
++
++enum WorkerCapabilityError: Error { case invalid(String) }
++
++/// Bounded regular-file snapshots. The descriptor and its pathname must retain
++/// the same identity/size/timestamps through the read. No checkpoint is opened.
++enum WorkerCapabilityInput {
++    static func check(_ deadline: UInt64) throws {
++        guard DispatchTime.now().uptimeNanoseconds < deadline else {
++            throw WorkerCapabilityError.invalid("Metadata deadline expired")
++        }
++    }
++
++    static func read(_ path: String, maximumBytes: Int, deadline: UInt64) throws -> Data {
++        var result = Data()
++        try chunks(path, maximumBytes: maximumBytes, deadline: deadline) { result.append($0) }
++        return result
++    }
++
++    static func hash(_ path: String, maximumBytes: Int, deadline: UInt64) throws -> String {
++        var digest = SHA256()
++        try chunks(path, maximumBytes: maximumBytes, deadline: deadline) { digest.update(data: $0) }
++        return digest.finalize().map { String(format: "%02x", $0) }.joined()
++    }
++
++    private static func chunks(_ path: String, maximumBytes: Int, deadline: UInt64,
++                               consume: (Data) throws -> Void) throws {
++        try check(deadline)
++        guard path.hasPrefix("/"), !path.utf8.contains(0), path.utf8.count <= 4096,
++              maximumBytes > 0 else { throw WorkerCapabilityError.invalid("Invalid metadata input path/bound") }
++        let fd = Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
++        guard fd >= 0 else { throw WorkerCapabilityError.invalid("Cannot open metadata input") }
++        defer { Darwin.close(fd) }
++        var before = stat()
++        guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
++              before.st_size > 0, before.st_size <= maximumBytes else {
++            throw WorkerCapabilityError.invalid("Metadata input is not a bounded nonempty regular file")
++        }
++        var remaining = Int(before.st_size)
++        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
++        while remaining > 0 {
++            try check(deadline)
++            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, min(remaining, $0.count)) }
++            if count < 0 && errno == EINTR { continue }
++            guard count > 0 else { throw WorkerCapabilityError.invalid("Metadata input ended or failed during snapshot") }
++            try consume(Data(buffer.prefix(count))); remaining -= count
++        }
++        var trailing: UInt8 = 0
++        var count: Int
++        repeat { try check(deadline); count = Darwin.read(fd, &trailing, 1) } while count < 0 && errno == EINTR
++        var after = stat(), pathAfter = stat()
++        guard count == 0, fstat(fd, &after) == 0, lstat(path, &pathAfter) == 0,
++              same(before, after), same(before, pathAfter) else {
++            throw WorkerCapabilityError.invalid("Metadata input changed during snapshot")
++        }
++        try check(deadline)
++    }
++
++    private static func same(_ a: stat, _ b: stat) -> Bool {
++        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode && a.st_size == b.st_size
++            && a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec
++            && a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec
++    }
++}
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
+@@ -4,8 +4,13 @@
+ @main enum WorkerMain {
+     static func main() {
+         do {
++            let arguments = Array(CommandLine.arguments.dropFirst())
++            if arguments.first == "--describe-runtime" {
++                try WorkerCapabilityCommand.run(arguments: arguments)
++                Darwin.exit(0)
++            }
+             let now = DispatchTime.now().uptimeNanoseconds
+-            let configuration = try WorkerConfiguration(arguments: Array(CommandLine.arguments.dropFirst()), now: now)
++            let configuration = try WorkerConfiguration(arguments: arguments, now: now)
+             let deadline = configuration.load.deadlineUptimeNanoseconds
+             // Fixed before any native initialization. The signal handler neither
+             // allocates nor claims cleanup: the parent must observe process exit.

@@ -1,0 +1,11 @@
+--- before/libs/darkbloom-cluster/Package.swift
++++ libs/darkbloom-cluster/Package.swift
+@@ -21,7 +21,7 @@
+         .target(name: "DarkbloomClusterBootstrap"),
+         .target(name: "DarkbloomClusterProtocol"),
+         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
+-        .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess"]),
++        .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess", "DarkbloomClusterBootstrap"]),
+         .target(name: "DarkbloomClusterRuntime", dependencies: [
+             "DarkbloomClusterProtocol", "DarkbloomClusterBootstrap",
+             .product(name: "Cmlx", package: "mlx-swift"),

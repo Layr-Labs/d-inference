@@ -1,0 +1,10 @@
+{
+  "files": [
+    {
+      "baseSHA256": "047aa2e6c047a8f2595a9c4446500cec24c1833eed4afd1b260dce0e7261fcf7",
+      "bytes": 6569,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberControlTests.swift",
+      "proposedSHA256": "54d6619ae43ecb5dbbd56a9d5b4ad93678bf3a3d9a081e01cf32c46ba7d8910b"
+    }
+  ]
+}

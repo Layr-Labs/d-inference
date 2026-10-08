@@ -1,0 +1,39 @@
+{
+  "baseManifest": "/Users/developer/DarkbloomDev/cluster-research/distributed-http-terminal-delivery-draft/manifest.json",
+  "baseManifestSHA256": "8415e69acb4109936765afc3bbda129f21d063176ff51c21d61d69724de79870",
+  "applyAfterFrozenBase": true,
+  "files": [
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPBodyLifetime.swift",
+      "sha256": "b241f888a3911acba5ed785b759157e97844b203e5f26942dcef864413fddb76",
+      "baseSHA256": null
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift",
+      "sha256": "0a635b86ac600945371e308a730372e47e8c0167cd0c9246a73165bcf33fa6c2",
+      "baseSHA256": "45c82df0ffba2fec9d2fd8d2191fbbfef52094b494d0ddcc407e3322696ac23c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPFramePump.swift",
+      "sha256": "b93128cdb8caee56b34585e859e0b19d25fc88c536ad52cc173d3839c0392a87",
+      "baseSHA256": "0ee7fe84cd7ca6cc4d4f12fded81b2ce4459f4a3c52d067b622961792ca8e6ee"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponse.swift",
+      "sha256": "8aa32d626bd4ba4e7a488ba9fb69f580bd25551c10c03adfdd44ac903bc8ede2",
+      "baseSHA256": "ccf8dfc102ea9da7001bdf736ec390a59782a4cd3f1f7186e43b47aab003f805"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift",
+      "sha256": "dff2b505d88b5d1eb42ba99ec1709b7bbcf4723e8508b7fe41e823a8bf846af6",
+      "baseSHA256": "7984f07f8d3f606adc4d2bdcda1ba59acfc1b5d6721edb665d67d405b6ce51de"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPFrameWakeupTests.swift",
+      "sha256": "21c1dc1e7f88eb952d5a5a6fd2dfa6f347ed219f921756941cd628de79db665a",
+      "baseSHA256": null
+    }
+  ],
+  "packageChanges": false,
+  "patchSHA256": "08e4070556b25eeff1275768247d69acca6ec061c3f423e5b08cc473c11ff89f"
+}

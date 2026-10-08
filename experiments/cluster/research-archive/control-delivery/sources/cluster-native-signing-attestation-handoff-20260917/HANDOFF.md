@@ -1,0 +1,38 @@
+# Private testbed signing and attestation handoff
+
+Source-only; no workflow dispatch, upload, signing, registration or device command has been performed. Actual final Provider and numerical native identities remain unbound in `artifact-bindings.template.json`.
+
+## Reuse the existing validation workflow
+
+`.github/workflows/release-swift.yml` already accepts `workflow_dispatch`, `environment=dev`, `validation_only=true`. `scripts/resolve-provider-release.sh` sets `publish=false`: signing, notarization, stapling, final-package checks and the older-macOS smoke lane still run; R2 publication, coordinator release registration and GitHub Release creation do not. The retained artifact is `darkbloom-signed-validation-<source-commit>-<run-attempt>`, containing the distribution tar and `darkbloom-validation-identity.json` (14-day CI retention).
+
+The source ref must first contain the exact reviewed private Provider composition, including its `NATIVE_PAIR_HARDWARE_EXPERIMENT` Package definitions and the final test-only successor. The workflow builds its checkout; it does not consume the local private executable automatically. Current MAIN or an older released app is not interchangeable. Any source upload/ref creation or workflow execution remains a separate authorized operation. A workflow rebuild is a new binary, with its actual source, SDK, test and signing results retained alongside the local qualification. Use the version that matches the actual source; no invented version override.
+
+Required existing signing secrets: `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID`, `APPLE_APP_PASSWORD`. The signing identity is `Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)`; `APPLE_TEAM_ID` is the workflow constant `SLDQ2GJ6TL`. Validation-only does not require R2 publishing or DEV_RELEASE_KEY secrets. Access to an authorized team/CI signer is sufficient; the private signing key need not be installed on the local Mac.
+
+## Exact app contract and retained artifacts
+
+- Run the member and installed owner from `Darkbloom.app/Contents/MacOS/darkbloom`. Bundle identifier `io.darkbloom.provider`; executable `darkbloom`; application identifier/keychain group `SLDQ2GJ6TL.io.darkbloom.provider`. Preserve the existing device's persistent SE identity.
+- Main entitlements: `com.apple.application-identifier` above; `com.apple.developer.aps-environment=production`; network client/server true; exact keychain-access-groups entry. `get-task-allow` must not be enabled. The embedded `Contents/embedded.provisionprofile` must authorize the team, keychain group (exact or workflow-accepted team wildcard), application identity and production APNs. Existing workflow rejects a present expiry less than 30 days away. App Attest shadow entitlements are added only when the profile grants them; they do not replace APNs/MDA or add a new pair requirement.
+- Preserve the workflow's staging/signing order: matching `mlx.metallib`, `darkbloom-enclave` with its separate network-client-only entitlement file, dormant `darkbloom-fan-helper` with its own identifier, complete SwiftPM resource bundles, main CLI, then app. The fan helper is not activated by this test. Keep the notarization result, stapled app, final tar, validation identity, code-directory hash, exact signed executable hash and signed Provider metallib hash.
+- `bin/darkbloom`, `bin/darkbloom-enclave`, `bin/mlx.metallib` in the tar are regular verifier copies of the final app files. Their bytes must match the app. Launch the app's executable, not the flat verifier copy. Retain the original local executable, failed attempts and test/source receipts; do not overwrite them while signing or repackaging.
+- Keep the separately qualified numerical native bundle intact: `darkbloom-cluster-worker`, its own `mlx.metallib`, `mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal`, both actual descriptions, `source-identity.json`, `bundle.json` and qualifying receipts. It is the native-owned A/key/record process, not the APNs/persistent-SE signing process. The existing native approval is byte-bound; this handoff does not require changing its signature. If its bytes or resources are changed, obtain new actual hashes/descriptions and explicit matching approval before use. Provider metallib identity and native bundle metallib identity are distinct bindings.
+
+## Private coordinator configuration
+
+| Purpose | Existing names / requirement |
+|---|---|
+| Private store | `EIGENINFERENCE_DATABASE_URL`, or existing explicit `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`; a fresh store has no inherited genuine proofs. |
+| Private release catalog | `EIGENINFERENCE_RELEASE_KEY`, `EIGENINFERENCE_R2_CDN_URL`; the latter can be a loopback HTTP origin. Register only the real final tar/binary/metallib metadata through existing `POST /v1/releases`. This is a later private mutation, not part of validation-only CI. |
+| Genuine APNs | `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_AUTH_KEY_P8_PATH` or `APNS_AUTH_KEY_P8_B64`; `APNS_TOPIC=io.darkbloom.provider` (default), optional `APNS_MODE` (background default). Actual app token/console-session delivery must work on both Macs. |
+| Genuine MDM | `EIGENINFERENCE_MDM_URL`, authorized `EIGENINFERENCE_MDM_API_KEY`; existing solicited-command callback routing, optionally `EIGENINFERENCE_MDM_WEBHOOK_SECRET`. Existing enrollment plus public SE key is insufficient without the valid current bound proof. |
+| Direct private TLS/startup | `DARKBLOOM_PRIVATE_NATIVE_HARDWARE_CONFIG` and `DARKBLOOM_PRIVATE_NATIVE_HARDWARE_SHA256`: exact v2 config with `mode=trust_only`, `listenAddress`, `certificateFile`, `certificateSHA256`, `keyFile`. No approval/devices/receipt in this mode; no native selector. |
+| Member TLS | `DARKBLOOM_PRIVATE_CLUSTER_TLS_CONFIG` and `DARKBLOOM_PRIVATE_CLUSTER_TLS_SHA256`; exact `private_cluster_tls_anchor_v1` file with host/port/caDERFile/caDERSHA256, matching the configured WSS endpoint. This is application-scoped trust, not a system trust-store change. |
+
+`EIGENINFERENCE_ADMIN_KEY` is an optional private administration key, not the release key. Provider-account token linkage is optional in the inspected selector/gate; use the real account flow if attribution is desired. No gcloud/Privy configuration is intrinsically needed for this bounded pair. `PROFILE_SIGNING_P12_*` signs enrollment configuration profiles and is distinct from Provider executable signing. Omitting `APNS_ENFORCE_AFTER` does not remove the pair's unconditional fresh-code-proof checks.
+
+## Late binding before the one-request mode
+
+Bind the final signed Provider SHA to release metadata, the leader input's `cliSHA256`, and the saved local `nativeMember.ownerSHA256` when that owner is the same installed CLI. Bind the actual numerical worker SHA, ordinary capability bytes, protected descriptor bytes, Plan, native metallib/resource files and numerical resource policy to the existing saved attachment, coordinator policy and leader input. Use the final actual descriptor/Ready capacity, never the old smoke-only descriptor or a guessed capacity. `nativeMember.numericalEvidenceDirectory` remains an explicit private local path.
+
+Only after both real members earn current SE possession/hardware/MDA/code/release evidence should the existing one-request configuration receive exact serial/key bindings and the explicit native approval. Genuine cached proofs must still reverify and complete the current connection's challenge. Signing/TLS success alone does not authorize a request or establish cleanup. All secret values stay in the authorized secret/config mechanism; the handoff and eventual receipts contain only public identities and hashes.

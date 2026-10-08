@@ -1,0 +1,7 @@
+# Qualification inputs
+
+No commands were executed beyond source checks. Build/composition.json binds the actual 178-test and CLI receipts, original full 13,876-member inventory, exact one-file preimage and absent new test. Candidate-after.json predicts 13,877 members. Preserve prior diagnostics and clone/retain qualified CLI fc19d073 before any later build mutates its output. Existing matching native helper bytes are unchanged; no helper rebuild or native/GPU execution is required.
+
+For same-cache qualification, root may adapt the already reviewed 5fa1f8d8 owned wrapper to apply only these two overlay rows after full source/dependency checks, then use Build/test-coverage.json's exact 185 labels and filter, jobs 2, existing 900-second owned deadlines, fresh output paths and before/after inventories. No automatic package resolution or blanket acceptance of current cache contents. Runtime admission/retirement/source files outside the one preimage remain pinned. Do not reuse a test counter of 178 for the new filter.
+
+If latest-master composition happens first, that distinct reviewed inventory must be the base; the prospective old-base inventory is not reusable as its identity. The same seven methods and all prior protected HTTP/retirement controls remain required, with final discovered upstream tests counted separately. This package includes no materializer or compiler launcher because root is composing current master and owns its isolation/scheduling.

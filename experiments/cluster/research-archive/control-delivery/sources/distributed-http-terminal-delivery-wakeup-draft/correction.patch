@@ -1,0 +1,440 @@
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPBodyLifetime.swift
+@@ -0,0 +1,14 @@
++import Foundation
++
++/// The closure owns this guard even before Hummingbird invokes its writer. A
++/// discarded body/header-write failure cannot strand the HTTP response hold.
++/// This guard has no lease or terminal/usage authority.
++final class DistributedHTTPBodyLifetime: Sendable {
++    private let response: DistributedHTTPResponse
++    init(_ response: DistributedHTTPResponse) { self.response = response }
++    func completed() { response.finish() }
++    deinit {
++        response.disconnect()
++        response.finish()
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift
+@@ -51,9 +51,10 @@
+     }
+ 
+     static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse) -> Response {
+-        Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-store"],
++        let lifetime = DistributedHTTPBodyLifetime(control)
++        return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-store"],
+             body: .init { writer in
+-                defer { control.finish() }
++                defer { lifetime.completed() }
+                 do {
+                     try await withTaskCancellationHandler {
+                         try await write(frames, control: control, writer: &writer)
+@@ -67,7 +68,19 @@
+     private static func write(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
+                               writer: inout any ResponseBodyWriter) async throws {
+         let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: maximumFrameBytes)
+-        defer { pump.cancel() }
++        do {
++            try await withTaskCancellationHandler {
++                try await consume(pump, control: control, writer: &writer)
++            } onCancel: { _ = pump.cancel() }
++        } catch {
++            let producer = pump.cancel(); await producer?.value
++            throw error
++        }
++        let producer = pump.cancel(); await producer?.value
++    }
++
++    private static func consume(_ pump: DistributedHTTPFramePump, control: DistributedHTTPResponse,
++                                writer: inout any ResponseBodyWriter) async throws {
+         let probe = ": keep-alive\n\n"
+         var nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+         var total = 0
+@@ -77,16 +90,20 @@
+         do {
+             readLoop: while true {
+                 try Task.checkCancellation()
+-                guard let item = pump.take() else {
+-                    if ContinuousClock.now >= nextProbe {
+-                        guard probe.utf8.count <= maximumStreamBytes - maximumTerminalBytes - total else { throw Failure.outputLimit }
+-                        total += probe.utf8.count
+-                        do { try await writer.write(ByteBuffer(string: probe)) }
+-                        catch { writerFailed = true; throw error }
+-                        nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+-                    } else { try await Task.sleep(for: .milliseconds(5)) }
++                let item: DistributedHTTPFramePump.Item
++                switch await pump.next(until: nextProbe) {
++                case .item(let value): item = value
++                case .closed: throw CancellationError()
++                case .probe:
++                    try Task.checkCancellation()
++                    guard probe.utf8.count <= maximumStreamBytes - maximumTerminalBytes - total else { throw Failure.outputLimit }
++                    total += probe.utf8.count
++                    do { try await writer.write(ByteBuffer(string: probe)) }
++                    catch { writerFailed = true; throw error }
++                    nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+                     continue
+                 }
++                try Task.checkCancellation()
+                 let frame: String
+                 switch item {
+                 case .frame(let value): frame = value
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPFramePump.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPFramePump.swift
+@@ -1,13 +1,25 @@
+ import Foundation
+ 
+-/// One pending frame plus the writer's current frame. The producer cannot take
+-/// another source element until the consumer takes this slot. Polling the slot
+-/// lets that same writer issue bounded keepalive comments without a second writer.
++/// One pending frame plus the writer's current frame. One consumer continuation
++/// is notified immediately on arrival; its single timer only schedules an idle
++/// probe. No stream-read task is raced or abandoned on timeout.
+ final class DistributedHTTPFramePump: @unchecked Sendable {
+     enum Item: Sendable { case frame(String), end, failed(any Error) }
++    enum Read: Sendable { case item(Item), probe, closed }
++    private struct Resolution: Sendable {
++        let read: Read
++        let timer: Task<Void, Never>?
++    }
++    private struct Consumer {
++        let id: UUID
++        let continuation: CheckedContinuation<Resolution, Never>
++    }
+     private let lock = NSLock()
+     private var slot: Item?
+     private var taken: CheckedContinuation<Bool, Never>?
++    private var consumer: Consumer?
++    private var consumerActive = false
++    private var wakeTimer: Task<Void, Never>?
+     private var closed = false
+     private var producer: Task<Void, Never>?
+ 
+@@ -28,17 +40,79 @@
+ 
+     private func offer(_ item: Item) async -> Bool {
+         await withCheckedContinuation { continuation in
+-            let refused = lock.withLock { () -> Bool in
+-                guard !closed, slot == nil, taken == nil else { return true }
++            let result = lock.withLock { () -> (Bool?, Consumer?, Task<Void, Never>?) in
++                guard !closed, slot == nil, taken == nil else { return (false, nil, nil) }
++                if let waiting = consumer {
++                    let timer = wakeTimer; consumer = nil; wakeTimer = nil
++                    return (true, waiting, timer)
++                }
+                 slot = item; taken = continuation
+-                return false
++                return (nil, nil, nil)
+             }
+-            if refused { continuation.resume(returning: false) }
++            result.2?.cancel()
++            result.1?.continuation.resume(returning: .init(read: .item(item), timer: result.2))
++            if let accepted = result.0 { continuation.resume(returning: accepted) }
+         }
+     }
+ 
++    /// The writer is the only consumer. Keeping its active bit through timer
++    /// join prevents a second waiter/timer while an old timer is still exiting.
++    func next(until deadline: ContinuousClock.Instant) async -> Read {
++        let accepted = lock.withLock { () -> Bool in
++            guard !consumerActive else { return false }; consumerActive = true; return true
++        }
++        guard accepted else { return .closed }
++        defer { lock.withLock { consumerActive = false } }
++        let resolution = await withTaskCancellationHandler {
++            let result = await wait(until: deadline)
++            result.timer?.cancel()
++            await result.timer?.value
++            return result
++        } onCancel: { _ = self.cancel() }
++        if Task.isCancelled || lock.withLock({ closed }) {
++            let task = cancel(); await task?.value
++            return .closed
++        }
++        return resolution.read
++    }
++
++    private func wait(until deadline: ContinuousClock.Instant) async -> Resolution {
++        await withCheckedContinuation { continuation in
++            let immediate = lock.withLock { () -> (Read?, CheckedContinuation<Bool, Never>?) in
++                guard !closed else { return (.closed, nil) }
++                if let item = slot {
++                    let producer = taken; slot = nil; taken = nil
++                    return (.item(item), producer)
++                }
++                guard ContinuousClock.now < deadline else { return (.probe, nil) }
++                let id = UUID()
++                consumer = .init(id: id, continuation: continuation)
++                wakeTimer = Task { [weak self] in
++                    do { try await ContinuousClock().sleep(until: deadline) }
++                    catch { return }
++                    self?.timeout(id)
++                }
++                return (nil, nil)
++            }
++            immediate.1?.resume(returning: true)
++            if let read = immediate.0 { continuation.resume(returning: .init(read: read, timer: nil)) }
++        }
++    }
++
++    private func timeout(_ id: UUID) {
++        let result = lock.withLock { () -> (Consumer?, Task<Void, Never>?) in
++            guard consumer?.id == id else { return (nil, nil) }
++            let result = (consumer, wakeTimer); consumer = nil; wakeTimer = nil
++            return result
++        }
++        result.0?.continuation.resume(returning: .init(read: .probe, timer: result.1))
++    }
++
++    /// Nonblocking inspection retained for the original bounded-backlog fixture.
++    /// It cannot steal a frame from an active consumer.
+     func take() -> Item? {
+         let result = lock.withLock { () -> (Item?, CheckedContinuation<Bool, Never>?) in
++            guard !consumerActive else { return (nil, nil) }
+             let result = (slot, taken); slot = nil; taken = nil
+             return result
+         }
+@@ -47,14 +121,21 @@
+     }
+ 
+     var pendingFrames: Int { lock.withLock { slot == nil ? 0 : 1 } }
++    var waitingConsumer: Bool { lock.withLock { consumer != nil } }
+ 
++    /// Wake both sides outside the lock. The returned task permits the caller
++    /// to join the producer; the resumed consumer joins its own cancelled timer.
+     @discardableResult func cancel() -> Task<Void, Never>? {
+-        let result = lock.withLock { () -> (Task<Void, Never>?, CheckedContinuation<Bool, Never>?) in
++        let result = lock.withLock { () -> (Task<Void, Never>?, CheckedContinuation<Bool, Never>?, Consumer?, Task<Void, Never>?) in
++            guard !closed else { return (producer, nil, nil, nil) }
+             closed = true; slot = nil
+-            let result = (producer, taken); producer = nil; taken = nil
++            let result = (producer, taken, consumer, wakeTimer)
++            taken = nil; consumer = nil; wakeTimer = nil
+             return result
+         }
+-        result.0?.cancel(); result.1?.resume(returning: false)
++        result.0?.cancel(); result.3?.cancel()
++        result.1?.resume(returning: false)
++        result.2?.continuation.resume(returning: .init(read: .closed, timer: result.3))
+         return result.0
+     }
+ }
+--- a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponse.swift
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponse.swift
+@@ -15,6 +15,7 @@
+     }
+     private let lock = NSLock()
+     private var bound = false
++    private var admissionFinished = false
+     private var deadline: ContinuousClock.Instant?
+     private var timer: Task<Void, Never>?
+     private var cancel: (@Sendable () -> Void)?
+@@ -50,7 +51,12 @@
+     /// Repeat after synchronous admission: a timer may have fired while no
+     /// engine row existed yet. The generation-bound cancel is idempotent.
+     func applyPendingCancellation() {
+-        let action = lock.withLock { expired || disconnected ? cancel : nil }
++        let action = lock.withLock { () -> (@Sendable () -> Void)? in
++            admissionFinished = true
++            let action = expired || disconnected ? cancel : nil
++            if completed { cancel = nil }
++            return action
++        }
+         action?()
+     }
+ 
+@@ -102,7 +108,12 @@
+         let result = lock.withLock { () -> (Bool, Task<Void, Never>?) in
+             guard !completed else { return (false, nil) }
+             completed = true
+-            let task = timer; timer = nil; cancel = nil
++            let task = timer; timer = nil
++            // A full connection close can finish this HTTP hold between bind
++            // and native admission. Keep its weak engine hook for the mandatory
++            // post-admission cancellation recheck, even if the first cancel saw
++            // no row yet. No model/lease is retained by that hook.
++            if admissionFinished || !bound { cancel = nil }
+             return (true, task)
+         }
+         result.1?.cancel()
+--- a/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
++++ b/provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift
+@@ -109,8 +109,13 @@
+                     }
+                     // A full close is definitive. Input half-close alone is
+                     // allowed; the serialized SSE writer probes for write loss.
+-                    channel.closeFuture.whenComplete { [weak response] _ in response?.disconnect() }
+-                    if !channel.isActive { response.disconnect(); throw CancellationError() }
++                    channel.closeFuture.whenComplete { [weak response] _ in
++                        guard let response else { return }
++                        // Delivery is impossible after a full close. This ends
++                        // only the HTTP hold; engine/lease retirement stays held.
++                        response.disconnect(); response.finish()
++                    }
++                    if !channel.isActive { response.disconnect(); response.finish(); throw CancellationError() }
+                     let frames = try await DistributedHTTPResponseScope.$current.withValue(response) {
+                         try await requestService.streamChatCompletionFrames(request: item.request)
+                     }
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPFrameWakeupTests.swift
+@@ -0,0 +1,159 @@
++import Foundation
++import MLXLMCommon
++import MLXLMServer
++import Testing
++@testable import ProviderCore
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedHTTPFrameWakeupTests {
++    @Test func arrivalsBeforeAndAfterConsumerRegistrationAreNotLost() async throws {
++        let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
++        let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: 1024)
++        defer { pump.cancel() }
++        source.yield("before")
++        #expect(try await httpDeliveryEventually { pump.pendingFrames == 1 })
++        guard case .item(.frame("before")) = await pump.next(until: ContinuousClock.now.advanced(by: .seconds(5))) else {
++            Issue.record("Buffered arrival was lost"); return
++        }
++        let waiting = Task { await pump.next(until: ContinuousClock.now.advanced(by: .seconds(5))) }
++        #expect(try await httpDeliveryEventually { pump.waitingConsumer })
++        let arrived = ContinuousClock.now
++        source.yield("after")
++        guard case .item(.frame("after")) = await waiting.value else { Issue.record("Waiting consumer was not notified"); return }
++        #expect(arrived.duration(to: ContinuousClock.now) < .seconds(1)) // five-second timer did not supply the wakeup
++        #expect(!pump.waitingConsumer)
++        source.finish()
++        guard case .item(.end) = await pump.next(until: ContinuousClock.now.advanced(by: .seconds(5))) else {
++            Issue.record("End was lost"); return
++        }
++        let producer = pump.cancel(); await producer?.value
++    }
++
++    @Test func timeoutDoesNotDiscardTheNextFrameOrLeaveAStreamReadBehind() async throws {
++        let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
++        let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: 1024)
++        defer { pump.cancel() }
++        guard case .probe = await pump.next(until: ContinuousClock.now.advanced(by: .milliseconds(10))) else {
++            Issue.record("Idle wait did not time out"); return
++        }
++        #expect(!pump.waitingConsumer && pump.pendingFrames == 0)
++        source.yield("later")
++        #expect(try await httpDeliveryEventually { pump.pendingFrames == 1 })
++        // A queued frame wins an expired *probe* timer; content's independent
++        // absolute deadline is still checked by the writer before acceptance.
++        guard case .item(.frame("later")) = await pump.next(until: ContinuousClock.now.advanced(by: .seconds(-1))) else {
++            Issue.record("Probe timeout consumed a later frame"); return
++        }
++        let producer = pump.cancel(); await producer?.value
++    }
++
++    @Test func sameDeadlineArrivalAndProbeRaceDeliverEachFrameExactlyOnce() async throws {
++        for index in 0..<32 {
++            let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
++            let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: 1024)
++            let end = ContinuousClock.now.advanced(by: .milliseconds(2))
++            let reading = Task { await pump.next(until: end) }
++            let sending = Task {
++                try? await ContinuousClock().sleep(until: end)
++                source.yield("\(index)"); source.finish()
++            }
++            var first = await reading.value
++            if case .probe = first { first = await pump.next(until: ContinuousClock.now.advanced(by: .seconds(2))) }
++            guard case .item(.frame(let value)) = first else {
++                pump.cancel(); await sending.value; Issue.record("Arrival disappeared in timeout race"); return
++            }
++            #expect(value == "\(index)")
++            guard case .item(.end) = await pump.next(until: ContinuousClock.now.advanced(by: .seconds(2))) else {
++                pump.cancel(); await sending.value; Issue.record("Duplicate frame or missing end"); return
++            }
++            await sending.value
++            let producer = pump.cancel(); await producer?.value
++        }
++    }
++
++    @Test func consumerCancellationResumesAndJoinsBothWaits() async throws {
++        let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
++        let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: 1024)
++        let reading = Task { await pump.next(until: ContinuousClock.now.advanced(by: .seconds(30))) }
++        #expect(try await httpDeliveryEventually { pump.waitingConsumer })
++        reading.cancel()
++        guard case .closed = await reading.value else { Issue.record("Cancelled consumer remained open"); return }
++        let producer = pump.cancel(); await producer?.value
++        #expect(!pump.waitingConsumer && pump.pendingFrames == 0)
++        source.finish()
++    }
++
++    @Test func arrivalRacingCancellationCannotStrandEitherContinuation() async throws {
++        for _ in 0..<32 {
++            let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
++            let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: 1024)
++            let reading = Task { await pump.next(until: ContinuousClock.now.advanced(by: .seconds(10))) }
++            #expect(try await httpDeliveryEventually { pump.waitingConsumer })
++            let sending = Task { source.yield("raced"); source.finish() }
++            let cancelling = Task { pump.cancel() }
++            let value = await reading.value
++            switch value {
++            case .item(.frame("raced")), .closed: break
++            default: Issue.record("Unexpected arrival/cancel outcome")
++            }
++            await sending.value
++            let producer = await cancelling.value; await producer?.value
++            #expect(!pump.waitingConsumer && pump.pendingFrames == 0)
++        }
++    }
++
++    @Test func concurrentConsumersCannotAllocateAnotherWaiterOrStealItsFrame() async throws {
++        let (frames, source) = AsyncThrowingStream<String, Error>.makeStream()
++        let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: 1024)
++        defer { pump.cancel() }
++        let first = Task { await pump.next(until: ContinuousClock.now.advanced(by: .seconds(30))) }
++        #expect(try await httpDeliveryEventually { pump.waitingConsumer })
++        guard case .closed = await pump.next(until: ContinuousClock.now.advanced(by: .seconds(30))) else {
++            Issue.record("Concurrent consumer admitted"); return
++        }
++        #expect(pump.waitingConsumer)
++        source.yield("owned")
++        guard case .item(.frame("owned")) = await first.value else { Issue.record("Original consumer lost its frame"); return }
++        let producer = pump.cancel(); await producer?.value
++    }
++
++    @Test func discardedUninvokedBodyReleasesOnlyHTTPHoldAndKeepsLeaseUntilACK() async throws {
++        let owner = DistributedTestOwner(), engine = try distributedTestEngine(owner)
++        let events = try engine.submit(distributedTestRequest(maxTokens: 5))
++        let responses = DistributedHTTPResponses(), response = try responses.begin()
++        try response.bind(deadline: nil) { engine.cancel(owner.last.requestID) }
++        response.applyPendingCancellation()
++        discardBody(response: response, responses: responses)
++        #expect(!responses.hasActiveResponse && response.isComplete)
++        #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0 && response.terminal == nil)
++        owner.last.acknowledge()
++        _ = await distributedCollect(events)
++        #expect(owner.last.releaseCount == 1)
++        await engine.shutdown()
++    }
++
++    @Test func connectionFinishedBeforeAdmissionRetainsThePendingCancellationHook() async throws {
++        let owner = DistributedTestOwner(), engine = try distributedTestEngine(owner)
++        let request = distributedTestRequest(maxTokens: 5)
++        let responses = DistributedHTTPResponses(), response = try responses.begin()
++        try response.bind(deadline: nil) { engine.cancel(request.id) }
++        // Full channel close after bind, before reserve has installed the row.
++        response.disconnect(); response.finish()
++        #expect(!responses.hasActiveResponse && response.isComplete && owner.reserveCount == 0)
++        let events = try engine.submit(request)
++        response.applyPendingCancellation()
++        #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0)
++        #expect(response.terminal == nil)
++        owner.last.acknowledge(); _ = await distributedCollect(events)
++        #expect(owner.last.releaseCount == 1)
++        await engine.shutdown()
++    }
++
++    private func discardBody(response: DistributedHTTPResponse, responses: DistributedHTTPResponses) {
++        let stream = AsyncThrowingStream<String, Error> { $0.finish() }
++        let body = DistributedHTTPEventStream.response(stream, control: response)
++        withExtendedLifetime(body) { #expect(responses.hasActiveResponse && !response.isComplete) }
++        // Deliberately never invoke body.write: its captured lifetime guard owns
++        // the response hold until this last body value is discarded.
++    }
++}

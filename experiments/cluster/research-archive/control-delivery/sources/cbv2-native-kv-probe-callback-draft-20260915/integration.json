@@ -1,0 +1,18 @@
+{
+  "schema": "cbv2_native_kv_probe_callback_source_v1",
+  "files": [
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/NativeKVTypeProbe.swift",
+      "baseSHA256": "4f1ad196cb399b8cab1765d10471774242daff5bbca22baf8edd697d07008699",
+      "proposedSHA256": "8a497deb798554adecaa9ee0dfdf367dc3e3f1106a5167b86bf5fcdcd796b5c6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Tests/MLXLMTests/CBv2PagedNativeDTypeTests.swift",
+      "baseSHA256": "59508a526fc2c7d6b80dadc227b6df800e5d87c72ec9b50bd801ad962bb91863",
+      "proposedSHA256": "e0bef4afebbf3b91d19c70c96382f9eb19ed85e6c16c9371a646404d98840c9c"
+    }
+  ],
+  "mainChanged": false,
+  "compiled": false,
+  "executed": false
+}

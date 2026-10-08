@@ -1,0 +1,435 @@
+--- c43/context.py
++++ numerical/context.py
+@@ -1,9 +1,31 @@
+-"""One owner-Service correction over the actual actor-corrected private workspace."""
++"""Exact private Provider/CLI source composition; no preparation on import."""
++import hashlib
++import importlib.util
+ from pathlib import Path
+-from upstream_context import ADAPTER,ADAPTER_SHA,CORRECTION_SHA,WORKSPACE,SOURCE,SWIFT_FILTER,INVOCATION_METHODS,NATIVE_PAIR_METHODS,isolated_environment
+ BASE=Path(__file__).resolve().parent
+-ACTOR=BASE.parent/'cluster-member-install-actor-correction-20260917'
+-ACTOR_SHA='0f8d48a333f6e6c4be2a0be373ad28ef82bce06b33a792ef243e311f448053cb'
+-PRIOR=BASE.parent/'cluster-member-install-actor-checks-20260917'
+-OUTPUT=BASE.parent/'cluster-member-ready-eligibility-checks-20260917'
+-OLD_HELPER=BASE.parent/'cluster-native-member-shared-requests-swift-checks-2-20260917/helper-1'
++RESEARCH=BASE.parent
++ELIGIBILITY=RESEARCH/'cluster-member-ready-eligibility-correction-20260917'
++ELIGIBILITY_SHA='c43faeb94089f431a15f14c20f5a33060b8a16b652bbae461825a44e105a5654'
++PRIOR=RESEARCH/'cluster-member-ready-eligibility-checks-20260917'
++ACTOR=RESEARCH/'cluster-member-install-actor-checks-20260917'
++DRIVER=RESEARCH/'cluster-native-shared-hardware-driver-draft-20260917'
++DRIVER_SHA='e0d428fb6c7b7ea93d67ff6d31aad8f8ca7e47aec9d8f4918f1c0d64340cf80f'
++TLS_COMPOSITION=RESEARCH/'cluster-native-shared-hardware-tls-composition-correction-20260917'
++TLS_COMPOSITION_SHA='a4a149f92efffb3d75115786acd3a1c77a5adcd8e8783b86cf1d6d2a5709dc48'
++NUMERICAL=RESEARCH/'qwen9b-protected-numerical-evidence-draft-20260917'
++NUMERICAL_SHA='948ef71c633789e321bcf4fc1e61a58bf96edd8578ee357fda07329c4149fb4d'
++ADAPTER=RESEARCH/'cluster-native-member-shared-requests-draft-20260917'
++ORIGINAL=RESEARCH/'cluster-native-member-invocation-build-1-20260916'
++WORKSPACE=ORIGINAL/'workspace'
++OUTPUT=RESEARCH/'cluster-native-numerical-provider-checks-20260917'
++OLD_HELPER=PRIOR/'helper-1'
++DRAIN=RESEARCH/'cluster-owner-release-eof-drain-correction-20260917'
++DRAIN_SHA='60417b284854105963be1ad2c5d4d85ea658a5f16eb9ee1ce26796cdf4812045'
++path=ADAPTER/'Tests/context.py'
++if hashlib.sha256(path.read_bytes()).hexdigest()!='6dadabb14514ac98e8ff7020dcb40d892c4e3fdeba464ac3b6d4d7a8b3dae23f':raise ValueError('Exact inherited context differs')
++spec=importlib.util.spec_from_file_location('_numerical_inherited_context',path)
++inherited=importlib.util.module_from_spec(spec);spec.loader.exec_module(inherited)
++SOURCE=inherited.SOURCE
++SWIFT_FILTER=inherited.SWIFT_FILTER+'|NativeHardwareDriverTests'
++NATIVE_PAIR_METHODS=inherited.NATIVE_PAIR_METHODS
++isolated_environment=inherited.isolated_environment
+--- c43/guards.py
++++ numerical/guards.py
+@@ -1,43 +1,91 @@
+-"""Preserve actor/failed-run/helper evidence; derive exactly one new runtime preimage."""
+-import json
++"""Exact final source union and reusable checks; never modifies a workspace."""
++import hashlib,json
+ from pathlib import Path
+-from context import BASE,ACTOR,ACTOR_SHA,PRIOR,OUTPUT,OLD_HELPER,WORKSPACE,SOURCE,INVOCATION_METHODS
+-from upstream_guards import verify as verify_upstream,recheck_sources,require_preserved_cli,freeze,sha,save,require
++import source_inventory as inventory
++from context import BASE,ELIGIBILITY,ELIGIBILITY_SHA,PRIOR,ACTOR,DRIVER,DRIVER_SHA,NUMERICAL,NUMERICAL_SHA,WORKSPACE,SOURCE,ORIGINAL,OUTPUT,TLS_COMPOSITION,TLS_COMPOSITION_SHA,DRAIN,DRAIN_SHA
+ 
+-def verify():
+-    freeze(BASE);freeze(ACTOR,ACTOR_SHA)
+-    _,main,_,shared=verify_upstream()
+-    for row in json.loads((BASE/'evidence-pins.json').read_text()):
+-        p=Path(row['path'])
+-        require(p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Preserved actor/failure/helper evidence changed')
+-    actor=json.loads((ACTOR/'integration.json').read_text())['files'];prior=dict(shared)
+-    require(len(actor)==1 and actor[0]['path']=='provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift','Actor source scope differs')
+-    for row in actor:
+-        require(shared[row['path']]=={'sha256':row['beforeSHA256']} and sha(row['sourcePath'])==row['afterSHA256'],'Actor source ancestry differs')
+-        prior[row['path']]={'sha256':row['afterSHA256']}
+-    require(prior==json.loads((PRIOR/'candidate-before.json').read_text()) and len(prior)==13853,'Actual actor candidate differs')
+-    require(main==json.loads((PRIOR/'source-before.json').read_text())==json.loads((PRIOR/'source-after-preparation.json').read_text()),'Original MAIN authority differs')
+-    step=json.loads((PRIOR/'tests-1/execution.json').read_text())
+-    require(step['exitCode']==1 and step['reaped'] and step['groupAbsent'] and not step['timedOut'] and not step['killedOwnedGroup'],'Actual 112-test failure was not naturally terminal')
+-    require(json.loads((PRIOR/'tests-1/source-recheck.json').read_text())==dict(unchanged=True,priorQualifiedCLIPreserved=True,reusedHelperUnchanged=True),'Failed source changed')
+-    plan=json.loads((BASE/'integration.json').read_text());rows=plan['files'];candidate=dict(prior)
+-    require(plan['actorManifestSHA256']==ACTOR_SHA and plan['actorCandidateSHA256']==sha(PRIOR/'candidate-before.json'),'Correction ancestry differs')
+-    require(len(rows)==1 and rows[0]['path']=='libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift','Only Service eligibility ordering may change')
+-    row=rows[0]
+-    require(prior[row['path']]=={'sha256':row['beforeSHA256']} and sha(BASE/'original'/row['path'])==row['beforeSHA256'] and sha(row['sourcePath'])==row['afterSHA256'],'Service source/preimage differs')
+-    candidate[row['path']]={'sha256':row['afterSHA256']}
+-    require(len(candidate)==13853 and len(INVOCATION_METHODS)==29,'Candidate or named test scope differs')
+-    require(sha(OLD_HELPER/'checks.json')=='aee43c24436ff502e0637618fca53e90f9cca8e021c7d3ad79fb4073d48885ef','Historical helper receipt changed')
+-    return rows,main,prior,candidate
++def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
++def require(value,message):
++    if not value:raise ValueError(message)
++def save(path,value):
++    with Path(path).open('x') as f:json.dump(value,f,sort_keys=True,indent=2);f.write('\n')
++def freeze(root,digest=None):
++    if digest is not None:require(sha(root/'manifest.json')==digest,'Frozen manifest differs')
++    for row in json.loads((root/'manifest.json').read_text())['members' if root==DRIVER else 'files']:
++        p=root/row['path'];require(p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Frozen source differs: '+str(p))
++
++def verify(*, own=True):
++    if own:freeze(BASE)
++    freeze(ELIGIBILITY,ELIGIBILITY_SHA);freeze(DRIVER,DRIVER_SHA);freeze(NUMERICAL,NUMERICAL_SHA);freeze(TLS_COMPOSITION,TLS_COMPOSITION_SHA);freeze(DRAIN,DRAIN_SHA)
++    for row in json.loads((BASE/'context-pins.json').read_text()):
++        p=Path(row['path']);require(p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Inherited source context changed')
++    main=json.loads((ACTOR/'source-before.json').read_text());before=json.loads((ACTOR/'candidate-before.json').read_text())
++    correction=json.loads((ELIGIBILITY/'integration.json').read_text())['files']
++    require(len(correction)==1,'Exact Service correction required')
++    for row in correction:
++        require(before[row['path']]=={'sha256':row['beforeSHA256']} and sha(row['sourcePath'])==row['afterSHA256'],'Eligibility correction preimage differs')
++        before[row['path']]={'sha256':row['afterSHA256']}
++    require(before==json.loads((PRIOR/'candidate-before.json').read_text()) and main==json.loads((PRIOR/'source-before.json').read_text()),'Exact retained c43 inventories differ')
++    plan=json.loads((BASE/'integration.json').read_text());rows=plan['files'];candidate=dict(before)
++    require(plan['driverManifestSHA256']==DRIVER_SHA and plan['numericalManifestSHA256']==NUMERICAL_SHA,'Source layers differ')
++    require(plan['tlsCompositionManifestSHA256']==TLS_COMPOSITION_SHA,'TLS composition identity differs')
++    overrides={r['path']:r for r in json.loads((TLS_COMPOSITION/'integration.json').read_text())['overrides']}
++    require(len(overrides)==2,'Exactly two TLS composition overrides required')
++    preimages={r['path']:r for r in json.loads((DRIVER/'preimages.json').read_text())}
++    declared=[]
++    for p in sorted((DRIVER/'proposed/provider-swift').rglob('*')):
++        if p.is_file():
++            name=str(p.relative_to(DRIVER/'proposed'));pre=preimages.get(name)
++            value=dict(path=name,sourcePath=str(p),beforeSHA256=pre['sha256'] if pre else None,
++                afterSHA256=sha(p),bytes=p.stat().st_size,origin='driver')
++            if name in overrides:
++                override=overrides[name];require(sha(p)==override['e0ProposedSHA256'],'TLS original proposed source differs')
++                value.update(sourcePath=str(TLS_COMPOSITION/'proposed'/name),beforeSHA256=override['beforeSHA256'],
++                    afterSHA256=override['afterSHA256'],bytes=override['bytes'],origin='tls-composition')
++            declared.append(value)
++    for row in json.loads((NUMERICAL/'integration.json').read_text())['files']:
++        if row['path'].startswith('provider-swift/') or '/DarkbloomClusterRemote/' in row['path']:
++            declared.append(dict(path=row['path'],sourcePath=row['sourcePath'],beforeSHA256=row['preimageSHA256'],
++                afterSHA256=row['proposedSHA256'],bytes=row['bytes'],origin='numerical'))
++    drain=json.loads((DRAIN/'integration.json').read_text())
++    require(plan['drainManifestSHA256']==DRAIN_SHA and drain['baseCandidateSHA256']==sha(PRIOR/'candidate-before.json'),'Endpoint base differs')
++    for row in drain['files']:
++        p=Path(row['sourcePath']);declared.append(dict(row,bytes=p.stat().st_size,origin='endpoint-drain'))
++    require(rows==declared and len(rows)==17 and len({r['path'] for r in rows})==17,'Exact12+4+1 source projection required')
++    for row in rows:
++        p=Path(row['sourcePath'])
++        require(before.get(row['path'],{}).get('sha256')==row['beforeSHA256'] and not p.is_symlink()
++                and p.stat().st_size==row['bytes'] and sha(p)==row['afterSHA256'],'Composition preimage/source differs')
++        candidate[row['path']]={'sha256':row['afterSHA256']}
++    require((len(main),len(before),len(candidate))==(13821,13853,13859),'Exact source counts differ')
++    return rows,main,before,candidate
++
++def recheck_sources(candidate,main):
++    actual=inventory.inventory(WORKSPACE);observed=inventory.inventory(SOURCE)
++    require(actual==candidate and observed==main,'Private or MAIN source/dependencies changed')
++    require(json.loads((WORKSPACE/'provider-swift/.build/workspace-state.json').read_text())==
++        json.loads((ORIGINAL/'workspace-state-relocated.json').read_text()),'Dependency resolution changed')
++    return actual,observed
++
++def require_preserved_cli():
++    activation=json.loads((BASE/'activation-1/activation.json').read_text());p=OUTPUT/'prior-binary/darkbloom'
++    require(p.is_file() and not p.is_symlink() and p.stat().st_size==activation['priorBinaryBytes']
++            and sha(p)==activation['priorBinarySHA256'],'Preserved unqualified prior binary changed')
+ 
+ def require_helper(attempt):
+-    folder=OUTPUT/('helper-'+str(attempt));receipt=folder/'checks.json';x=json.loads(receipt.read_text())
++    folder=OUTPUT/('helper-'+str(attempt));x=json.loads((folder/'checks.json').read_text())
+     require(x['passed'] is True and x['phase']=='helper' and x['manifestSHA256']==sha(BASE/'manifest.json')
+-        and x['candidateSHA256']==sha(OUTPUT/'candidate-before.json'),'Corrected helper composition differs')
+-    require(x['details']==dict(helperCompiled=True,legacySSHChecksExecuted=True,newNativeHelperExecuted=False)
+-        and len(x['artifacts'])==6 and len(x['steps'])==17,'Corrected helper/legacy checks incomplete')
++        and x['candidateSHA256']==sha(OUTPUT/'candidate-before.json'),'Current corrected helper differs')
++    require(x['details']==dict(helperCompiled=True,legacySSHChecksExecuted=True,newNativeHelperExecuted=False,
++        baselineBufferedACKLossReproduced=True,actualOwnerDrainGroupsPassed=4)
++        and len(x['artifacts'])==6 and len(x['steps'])==23,'Current helper closure incomplete')
+     for row in x['artifacts']:
+-        p=Path(row['path']);require(p.parent==folder and p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Corrected helper artifact changed')
++        p=Path(row['path']);require(p.parent==folder and p.is_file() and not p.is_symlink()
++            and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Current helper bytes differ')
+     for step in x['steps']:
+-        require(step['exitCode']==0 and step['reaped'] and step['groupAbsent'] and not step['timedOut'] and not step['killedOwnedGroup'],'Corrected helper child incomplete')
++        require(step['exitCode']==0 and step['reaped'] and step['groupAbsent'] and not step['timedOut'] and not step['killedOwnedGroup'],'Current helper child incomplete')
++    require(x['evidencePins'],'Actual helper control evidence absent')
++    for row in x['evidencePins']:
++        p=Path(row['path']);p.relative_to(folder)
++        require(p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Actual helper control evidence changed')
+     return x
+--- c43/prepare.py
++++ numerical/prepare.py
+@@ -1,29 +1,48 @@
+-"""Granted exact one-file overlay into the existing source/cache; no compilation."""
++"""Granted exact17-path source update; preserve failed binary and every preimage."""
+ import argparse,json,os
+ from pathlib import Path
+ from context import BASE,PRIOR,OUTPUT,WORKSPACE,SOURCE,OLD_HELPER
+ from guards import verify,recheck_sources,require_preserved_cli,sha,save,require
++from activation import require_activation
++from check_process import run_owned
+ 
+ def main():
+     p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--apply',action='store_true',required=True);p.parse_args()
+-    rows,main,prior,candidate=verify();recheck_sources(prior,main);require_preserved_cli()
+-    OUTPUT.mkdir(mode=0o700,exist_ok=False)
+-    for name,source in [('source-before.json',PRIOR/'source-before.json'),('prior-candidate-before.json',PRIOR/'candidate-before.json')]:
+-        with (OUTPUT/name).open('xb') as f:f.write(source.read_bytes())
+-    row=rows[0];target=WORKSPACE/row['path'];backup=OUTPUT/'originals'/row['path'];backup.parent.mkdir(parents=True)
+-    require(not target.is_symlink() and sha(target)==row['beforeSHA256'],'Exact current Service preimage differs')
+-    with backup.open('xb') as f:f.write(target.read_bytes())
+-    require(sha(backup)==row['beforeSHA256'],'Preserved Service source differs')
+-    verify();recheck_sources(prior,main)
+-    temporary=target.with_name(target.name+'.ready-eligibility.new')
+-    with temporary.open('xb') as f:f.write(Path(row['sourcePath']).read_bytes());f.flush();os.fsync(f.fileno())
+-    require(sha(temporary)==row['afterSHA256'] and sha(target)==row['beforeSHA256'],'Source changed before replacement')
+-    temporary.chmod(target.stat().st_mode & 0o777);os.replace(temporary,target)
+-    actual,unchanged=recheck_sources(candidate,main);verify();require_preserved_cli()
+-    save(OUTPUT/'candidate-before.json',actual);save(OUTPUT/'source-after-preparation.json',unchanged)
+-    save(OUTPUT/'preparation.json',dict(workspace=str(WORKSPACE),source=str(SOURCE),wrapperManifestSHA256=sha(BASE/'manifest.json'),
+-        integrationSHA256=sha(BASE/'integration.json'),priorCandidateSHA256=sha(PRIOR/'candidate-before.json'),candidateSHA256=sha(OUTPUT/'candidate-before.json'),
+-        historicalHelperSHA256=sha(OLD_HELPER/'checks.json'),changedFiles=[row['path']],sourceFiles=len(main),candidateFiles=len(candidate),
+-        workspaceCreated=False,buildCacheCopied=False,compilerRun=False,mainUnchanged=True,correctedHelperRequired=True))
+-    print(json.dumps(dict(prepared=str(OUTPUT),changedFiles=1,candidateFiles=len(candidate)),sort_keys=True))
++    rows,main,before,candidate=verify();activation=require_activation();recheck_sources(before,main)
++    binary=WORKSPACE/'provider-swift/.build/debug/darkbloom'
++    require(not binary.is_symlink() and sha(binary)==activation['priorBinarySHA256'],'Current unqualified binary differs')
++    OUTPUT.mkdir(mode=0o700);receipt=dict(status='failed',compilerRun=False,workspaceCreated=False,buildCacheCopied=False)
++    try:
++        (OUTPUT/'prior-binary').mkdir(mode=0o700)
++        receipt['preservation']=run_owned(['/bin/cp','-c',str(binary),str(OUTPUT/'prior-binary/darkbloom')],OUTPUT,'preserve-prior-binary',60)
++        require_preserved_cli()
++        for name,source in [('source-before.json',PRIOR/'source-before.json'),('prior-candidate-before.json',PRIOR/'candidate-before.json')]:
++            with (OUTPUT/name).open('xb') as f:f.write(source.read_bytes())
++        for row in rows:
++            path=WORKSPACE/row['path']
++            if row['beforeSHA256'] is None:require(not path.exists() and not path.is_symlink(),'New source path already exists')
++            else:
++                require(not path.is_symlink() and sha(path)==row['beforeSHA256'],'Exact source preimage differs')
++                backup=OUTPUT/'originals'/row['path'];backup.parent.mkdir(parents=True,exist_ok=True)
++                with backup.open('xb') as f:f.write(path.read_bytes())
++                require(sha(backup)==row['beforeSHA256'],'Preserved source preimage differs')
++        verify();require_activation();recheck_sources(before,main)
++        for row in rows:
++            path=WORKSPACE/row['path'];path.parent.mkdir(parents=True,exist_ok=True)
++            temporary=path.with_name(path.name+'.numerical-provider.new')
++            with temporary.open('xb') as f:f.write(Path(row['sourcePath']).read_bytes());f.flush();os.fsync(f.fileno())
++            require(sha(temporary)==row['afterSHA256'],'Prepared source bytes differ')
++            if row['beforeSHA256'] is None:
++                os.link(temporary,path);temporary.unlink()
++            else:
++                require(not path.is_symlink() and sha(path)==row['beforeSHA256'],'Preimage changed before replacement');os.replace(temporary,path)
++        actual,unchanged=recheck_sources(candidate,main);verify();require_activation();require_preserved_cli()
++        save(OUTPUT/'candidate-before.json',actual);save(OUTPUT/'source-after-preparation.json',unchanged)
++        receipt.update(status='passed',workspace=str(WORKSPACE),source=str(SOURCE),wrapperManifestSHA256=sha(BASE/'manifest.json'),
++            integrationSHA256=sha(BASE/'integration.json'),candidateSHA256=sha(OUTPUT/'candidate-before.json'),
++            historicalHelperSHA256=sha(OLD_HELPER/'checks.json'),activationSHA256=sha(BASE/'activation-1/activation.json'),
++            changedFiles=[r['path'] for r in rows],retainedPreimages=sum(r['beforeSHA256'] is not None for r in rows),sourceFiles=len(main),candidateFiles=len(candidate),mainUnchanged=True,correctedHelperRequired=True)
++    finally:save(OUTPUT/'preparation.json',receipt)
++    print(json.dumps(receipt,sort_keys=True))
++
+ if __name__=='__main__':os.umask(0o077);main()
+--- c43/run.py
++++ numerical/run.py
+@@ -1,34 +1,35 @@
+-"""Granted corrected helper/legacy checks, complete 112 Provider tests, then CLI build."""
++"""One coherent helper, owner-drain controls, all117 Provider tests, matching CLI."""
+ import argparse,json,os,resource,sys
+ from pathlib import Path
+ sys.dont_write_bytecode=True
+-from context import BASE,ADAPTER,WORKSPACE,OUTPUT,SOURCE,SWIFT_FILTER,OLD_HELPER,isolated_environment
++from context import BASE,ADAPTER,WORKSPACE,OUTPUT,SOURCE,SWIFT_FILTER,OLD_HELPER,DRAIN,isolated_environment
+ from guards import verify,recheck_sources,require_preserved_cli,require_helper,sha,save,require
+ from check_process import run_owned
+ from coverage import validate
++from activation import require_activation
+ 
+ def main():
+     p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--prepared',type=Path,required=True)
+     p.add_argument('--phase',choices=['helper','tests','build'],required=True);p.add_argument('--attempt',type=int,required=True);a=p.parse_args()
+     require(1<=a.attempt<=9 and a.prepared.resolve()==OUTPUT,'Exact retry output and bounded attempt required')
+     _,main,_,candidate=verify();prep=json.loads((OUTPUT/'preparation.json').read_text())
+-    require(prep['workspace']==str(WORKSPACE) and prep['source']==str(SOURCE) and prep['wrapperManifestSHA256']==sha(BASE/'manifest.json')
++    require(prep['status']=='passed' and prep['activationSHA256']==sha(BASE/'activation-1/activation.json') and prep['workspace']==str(WORKSPACE) and prep['source']==str(SOURCE) and prep['wrapperManifestSHA256']==sha(BASE/'manifest.json')
+         and prep['integrationSHA256']==sha(BASE/'integration.json') and prep['candidateSHA256']==sha(OUTPUT/'candidate-before.json')
+         and prep['historicalHelperSHA256']==sha(OLD_HELPER/'checks.json'),'Preparation binding differs')
+     require(candidate==json.loads((OUTPUT/'candidate-before.json').read_text()) and main==json.loads((OUTPUT/'source-before.json').read_text()),'Prepared exact inventories differ')
+-    def recheck():verify();recheck_sources(candidate,main);require_preserved_cli()
++    def recheck():verify();require_activation();recheck_sources(candidate,main);require_preserved_cli()
+     recheck()
+     if a.phase in ['tests','build']:require_helper(a.attempt)
+     if a.phase=='build':
+         tests=OUTPUT/('tests-'+str(a.attempt));x=json.loads((tests/'checks.json').read_text())
+         require(x['passed'] is True and x['manifestSHA256']==sha(BASE/'manifest.json') and x['candidateSHA256']==sha(OUTPUT/'candidate-before.json')
+-            and x['details']['testsPassed']==112 and x['details']['suitesPassed']==18 and x['details']['invocationMethodsPassed']==29,'Matching complete 112/18/29 tests required')
++            and x['details']['testsPassed']==117 and x['details']['suitesPassed']==19 and x['details']['invocationMethodsPassed']==29,'Matching complete117/19/29 tests required')
+         require(x['executionSHA256']==sha(tests/'execution.json'),'Actual test execution changed')
+         require(validate((tests/'execution.stdout').read_text()+'\n'+(tests/'execution.stderr').read_text())==x['details'],'Actual passed lines changed')
+     out=OUTPUT/(a.phase+'-'+str(a.attempt));out.mkdir(mode=0o700,exist_ok=False)
+     isolated_environment()
+     old_limit=resource.getrlimit(resource.RLIMIT_FSIZE);resource.setrlimit(resource.RLIMIT_FSIZE,(512*1024*1024,old_limit[1]))
+-    steps=[];details={};artifacts=[];failure=None
++    steps=[];details={};artifacts=[];evidence_pins=[];failure=None
+     def execute(argv,name,bound):
+         try:steps.append(run_owned(argv,out,name,bound))
+         finally:recheck()
+@@ -58,9 +59,32 @@
+             execute([str(out/'RemoteOwnerTests'),str(out/'FakeOwner'),str(out/'FakeClusterWorker')],'legacy-remote',30)
+             execute([str(out/'RetirementShutdownTests'),str(out/'FakeOwner'),str(out/'FakeClusterWorker'),str(out/'retirement-checks'),'corrected'],'legacy-retirement',30)
+             execute([str(out/'OwnerDiagnosticDrainTests'),str(out/'LateDiagnosticOwner'),str(out/'DiagnosticFailureWorker'),str(out/'diagnostic-checks')],'legacy-diagnostics',30)
++            for mode,library in [('baseline',OLD_HELPER),('candidate',out)]:
++                directory=out/(mode+'-drain');directory.mkdir(mode=0o700)
++                (directory/'module-cache').mkdir(mode=0o700);(directory/'cases').mkdir(mode=0o700)
++                fixture_command=['xcrun','swiftc','-j','2','-swift-version','6','-warnings-as-errors',
++                    '-target','arm64-apple-macos14.0','-parse-as-library','-module-cache-path',str(directory/'module-cache'),
++                    '-I',str(library),'-L',str(library),'-Xlinker','-rpath','-Xlinker',str(library)]
++                fixture_command+=['-l'+name for name,_ in modules]
++                for kind in ['Owner','Checks']:
++                    flags=['-D','OWNER_RELEASE_EOF_DRAIN'] if mode=='candidate' and kind=='Checks' else []
++                    files=[DRAIN/'Tests/FixtureIdentity.swift',DRAIN/'Tests/ReleaseDrainSupport.swift',DRAIN/('Tests/ReleaseDrain'+kind+'.swift')]
++                    execute(fixture_command+flags+list(map(str,files))+['-o',str(directory/('ReleaseDrain'+kind))],mode+'-compile-drain-'+kind.lower(),60)
++                name=mode+'-owner-drain'
++                execute([str(directory/'ReleaseDrainChecks'),str(directory/'ReleaseDrainOwner'),str(directory/'cases')],name,30)
++                expected='owner-release-eof-drain: '+('baseline buffered-ACK loss reproduced' if mode=='baseline' else '4 actual-owner/child groups passed')+'\n'
++                require((out/(name+'.stdout')).read_text()==expected and (out/(name+'.stderr')).stat().st_size==0,'Exact actual-owner drain completion required')
+             for path in [executable]+sorted(out.glob('*.dylib')):artifacts.append(dict(path=str(path),sha256=sha(path),bytes=path.stat().st_size))
+-            require(len(steps)==17 and len(artifacts)==6,'Corrected helper closure differs')
+-            details=dict(helperCompiled=True,legacySSHChecksExecuted=True,newNativeHelperExecuted=False)
++            require(len(steps)==23 and len(artifacts)==6,'Combined helper closure differs')
++            details=dict(helperCompiled=True,legacySSHChecksExecuted=True,newNativeHelperExecuted=False,
++                baselineBufferedACKLossReproduced=True,actualOwnerDrainGroupsPassed=4)
++            for path in sorted(out.iterdir()):
++                if path.is_file() and path.suffix in ['.json','.stdout','.stderr']:
++                    evidence_pins.append(dict(path=str(path),bytes=path.stat().st_size,sha256=sha(path)))
++            for mode in ['baseline','candidate']:
++                for path in sorted((out/(mode+'-drain')).rglob('*')):
++                    if path.is_file() and 'module-cache' not in path.parts:
++                        evidence_pins.append(dict(path=str(path),bytes=path.stat().st_size,sha256=sha(path)))
+         else:
+             os.chdir(WORKSPACE/'provider-swift')
+             command=['swift','build' if a.phase=='build' else 'test','-j','2','--disable-automatic-resolution','--disable-build-manifest-caching']
+@@ -77,14 +101,14 @@
+         failure=type(error).__name__+': '+str(error);raise
+     finally:
+         resource.setrlimit(resource.RLIMIT_FSIZE,old_limit)
+-        try:recheck();save(out/'source-recheck.json',dict(unchanged=True,priorQualifiedCLIPreserved=True))
++        try:recheck();save(out/'source-recheck.json',dict(unchanged=True,priorFailedCandidateBinaryPreserved=True))
+         except BaseException as error:
+             if failure is None:failure=type(error).__name__+': '+str(error)
+             raise
+         finally:
+-            save(out/'checks.json',dict(passed=failure is None,phase=a.phase,details=details,failure=failure,steps=steps,artifacts=artifacts,
++            save(out/'checks.json',dict(passed=failure is None,phase=a.phase,details=details,failure=failure,steps=steps,artifacts=artifacts,evidencePins=evidence_pins,
+                 executionSHA256=sha(out/'execution.json') if (out/'execution.json').exists() else None,
+                 manifestSHA256=sha(BASE/'manifest.json'),candidateSHA256=sha(OUTPUT/'candidate-before.json'),
+-                historicalHelperSHA256=sha(OLD_HELPER/'checks.json'),helperRebuilt=a.phase=='helper',modelOrRDMAOrRemoteExecuted=False))
++                historicalHelperSHA256=sha(OLD_HELPER/'checks.json'),tlsQualified=False,physicalUseAuthorized=False,helperRebuilt=a.phase=='helper',modelOrRDMAOrRemoteExecuted=False))
+     print(json.dumps(dict(passed=True,phase=a.phase,details=details),sort_keys=True))
+ if __name__=='__main__':os.umask(0o077);main()
+--- c43/coverage.py
++++ numerical/coverage.py
+@@ -1,4 +1,4 @@
+-"""Require every actual discovered method, including both previously failed controls."""
++"""All inherited112 and exact five new methods must complete, including parameters."""
+ import json,re
+ from context import BASE
+ from corrected_results import validate_swift_results
+@@ -6,17 +6,17 @@
+ def validate(text):
+     details=validate_swift_results(text)
+     prior=json.loads((BASE/'prior-coverage.json').read_text())
+-    discovery=json.loads((BASE/'discovered-coverage.json').read_text())
++    expected=json.loads((BASE/'coverage.json').read_text())
+     labels=re.findall(r'(?m)^✔ Test (.+?) passed after \d+(?:\.\d+)? seconds\.$',text)
+     labels=[x for x in labels if not x.startswith('run with ')]
+-    for name in prior['priorCompletionLabels']:
+-        if labels.count(name)!=1:raise ValueError('Prior completion absent/repeated: '+name)
++    for label in prior['priorCompletionLabels']:
++        if labels.count(label)!=1:raise ValueError('Inherited completion absent/repeated: '+label)
+     for group,names in prior['groups'].items():
+         for name in names:
+             if labels.count(name+'()')!=1:raise ValueError('Required '+group+' method absent/repeated: '+name)
+-    if sorted(labels)!=discovery['completionLabels'] or len(labels)!=112 or details['testsPassed']!=112 or details['suitesPassed']!=18:
+-        raise ValueError('All 112 discovered methods and 18 suites must pass exactly once')
++    if sorted(labels)!=expected['completionLabels'] or len(labels)!=117 or details['testsPassed']!=117 or details['suitesPassed']!=19:
++        raise ValueError('Exactly117 methods/19 suites including all prior112 and five additions required')
+     details.update(priorCompletionLabelsPreserved=len(prior['priorCompletionLabels']),
+-        requiredMethodGroups={k:len(v) for k,v in prior['groups'].items()},invocationMethodsPassed=sum(map(len,prior['groups'].values())),
+-        actualDiscoveredMethodsPassed=112,allDiscoveredCompletionsPreserved=True)
++        requiredMethodGroups={k:len(v) for k,v in prior['groups'].items()},invocationMethodsPassed=29,
++        actualDiscoveredMethodsPassed=117,allDiscoveredCompletionsPreserved=True,newNumericalAndDriverMethodsPassed=5)
+     return details
+--- c43/test_coverage.py
++++ numerical/test_coverage.py
+@@ -1,12 +1,14 @@
+-"""Parser controls use retained text and explicitly fabricated pass text, never claimed as tests."""
++"""Parser regression controls use explicit fabricated text, never product evidence."""
+ import hashlib,json,re,unittest
+ from pathlib import Path
+-from context import BASE
++from context import BASE,PRIOR
+ from coverage import validate
+ 
+ def original():
+-    proof=json.loads((BASE/'discovered-coverage.json').read_text());raw=Path(proof['sourceStdout']).read_bytes()
+-    if hashlib.sha256(raw).hexdigest()!=proof['sourceSHA256']:raise ValueError('Retained actual failed log changed')
++    path=PRIOR/'tests-1/execution.stdout'
++    expected=next(x for x in json.loads((BASE/'context-pins.json').read_text()) if x['path']==str(path))
++    raw=path.read_bytes()
++    if hashlib.sha256(raw).hexdigest()!=expected['sha256']:raise ValueError('Retained failed log changed')
+     return raw.decode()
+ 
+ def fabricated_success():
+@@ -14,21 +16,28 @@
+     text=re.sub(r'(?m)^✘ Test .+ recorded an issue .+\n','',text)
+     text=re.sub(r'(?m)^✘ Test (.+?) failed after ([0-9.]+) seconds with 1 issue\.$',r'✔ Test \1 passed after \2 seconds.',text)
+     text=re.sub(r'(?m)^✘ Suite (.+?) failed after ([0-9.]+) seconds with 1 issue\.$',r'✔ Suite \1 passed after \2 seconds.',text)
+-    return text.replace('✘ Test run with 112 tests in 18 suites failed after 10.073 seconds with 2 issues.',
+-        '✔ Test run with 112 tests in 18 suites passed after 10.073 seconds.')
++    new=json.loads((BASE/'coverage.json').read_text())['newMethods']
++    completions='\n'.join('✔ Test '+x+'() passed after 0.001 seconds.' for x in new)
++    return text.replace('✘ Test run with 112 tests in 18 suites failed after 10.039 seconds with 1 issue.',
++        completions+'\n✔ Test run with 117 tests in 19 suites passed after 10.039 seconds.')
+ 
+ class CoverageTests(unittest.TestCase):
+-    def test_actual_failure_is_never_a_pass(self):
++    def test_retained_failure_never_qualifies(self):
+         with self.assertRaises(ValueError):validate(original())
+-    def test_all_112_and_parameterized_completions_required(self):
+-        self.assertEqual(validate(fabricated_success())['actualDiscoveredMethodsPassed'],112)
+-    def test_each_newly_discovered_inherited_case_is_required(self):
+-        proof=json.loads((BASE/'discovered-coverage.json').read_text())
+-        for label in proof['additionalInheritedLabels']:
+-            text=re.sub(r'(?m)^✔ Test '+re.escape(label)+r' passed after [^\n]+\n','',fabricated_success())
+-            with self.subTest(label=label),self.assertRaises(ValueError):validate(text)
+-    def test_duplicate_or_stale_total_refused(self):
+-        text=fabricated_success();line=next(x for x in text.splitlines() if x.startswith('✔ Test keyOnlyOwner'))
+-        for changed in [text+'\n'+line+'\n',text.replace('112 tests in 18 suites','107 tests in 18 suites')]:
++    def test_exact_117_members_and_both_websocket_cases_required(self):
++        self.assertEqual(validate(fabricated_success())['actualDiscoveredMethodsPassed'],117)
++    def test_each_inherited_and_new_completion_is_required(self):
++        proof=json.loads((BASE/'coverage.json').read_text())
++        for label in proof['completionLabels']:
++            changed=re.sub(r'(?m)^✔ Test '+re.escape(label)+r' passed after [^\n]+\n','',fabricated_success())
++            with self.subTest(label=label),self.assertRaises(ValueError):validate(changed)
++    def test_duplicate_stale_count_and_start_only_are_refused(self):
++        text=fabricated_success();line=next(x for x in text.splitlines() if x.startswith('✔ Test savedNumerical'))
++        for changed in [text+'\n'+line+'\n',text.replace('117 tests in 19 suites','112 tests in 18 suites'),
++            text.replace(line,'◇ Test savedNumericalEvidenceDirectoryIsExplicitLocalAndOptional() started.')]:
++            with self.assertRaises(ValueError):validate(changed)
++    def test_parameterized_wrong_count_and_duplicate_case_refused(self):
++        text=fabricated_success();case=next(x for x in text.splitlines() if 'acknowledge → false' in x)
++        for changed in [text.replace('with 2 test cases passed','with 1 test cases passed'),text+'\n'+case+'\n']:
+             with self.assertRaises(ValueError):validate(changed)
+ if __name__=='__main__':unittest.main()

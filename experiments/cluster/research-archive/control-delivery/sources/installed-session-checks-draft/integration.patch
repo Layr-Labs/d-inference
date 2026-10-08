@@ -1,0 +1,455 @@
+diff --git a/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFakeOwner.swift b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFakeOwner.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFakeOwner.swift
+@@ -0,0 +1,49 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++@testable import DarkbloomClusterRemote
++
++@main enum InstalledFakeOwner {
++    static func main() throws {
++        guard CommandLine.arguments.count == 5, let rank = Int(CommandLine.arguments[3]) else { exit(64) }
++        let worker = URL(fileURLWithPath: CommandLine.arguments[1]), directory = URL(fileURLWithPath: CommandLine.arguments[2])
++        let behavior = CommandLine.arguments[4]
++        if behavior == "no-proof" { return }
++        let filtered = behavior == "drop-release"
++        let pipe = Pipe(), finished = DispatchGroup()
++        if filtered {
++            finished.enter()
++            DispatchQueue.global().async {
++                defer { finished.leave() }
++                var buffered = Data()
++                while true {
++                    let bytes = pipe.fileHandleForReading.availableData
++                    if bytes.isEmpty { break }; buffered.append(bytes)
++                    while let index = buffered.firstIndex(of: 10) {
++                        let line = Data(buffered.prefix(through: index)); buffered.removeSubrange(...index)
++                        if let frame = try? OwnerWire.decode(line, commandStream: false), frame.kind == "released" { continue }
++                        try! FileHandle.standardOutput.write(contentsOf: line)
++                    }
++                }
++            }
++        }
++        defer { try? pipe.fileHandleForWriting.close(); if filtered { finished.wait() } }
++        try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
++            output: filtered ? pipe.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
++            clusterID: "installed-fixture", leaseDirectory: directory, maximumLifetimeNanoseconds: 20_000_000_000,
++            bootstrapProfile: .mesh2, binding: { epoch, lease, incarnation in
++                guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fixture epoch differs") }
++                return try .init(clusterID: "installed-fixture", ownerIncarnation: incarnation, leaseID: lease,
++                    identity: fixtureIdentity, profile: fixtureProfile, rank: rank, executionPlanSHA256: fixturePlan)
++            }, native: { binding, deadline, attachment in
++                guard let attachment else { throw ClusterOwnerStateError.invalid("Fixture attachment missing") }
++                return try .init(launch: .init(executable: worker,
++                    arguments: [String(rank), "bootstrap"] + attachment.workerArguments,
++                    environment: ["FIXTURE_READY_PATH": ProcessInfo.processInfo.environment["FIXTURE_READY_PATH"]!]),
++                    expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
++                    executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, lifetimeDeadline: deadline)
++            })
++        if behavior == "nonzero-owner" { exit(7) }
++    }
++}
+diff --git a/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixture.swift b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixture.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixture.swift
+@@ -0,0 +1,69 @@
++import Foundation
++import CryptoKit
++import Darwin
++import DarkbloomClusterProtocol
++import ProviderCoreFoundation
++@testable import InstalledContract
++
++struct InstalledFixture: Sendable {
++    let root: URL, probe: URL, owner: URL, worker: URL
++    let configuration: ClusterConfiguration, capability: ClusterRuntimeCapability
++    let reference: ClusterConfigurationReference, paths: ClusterUserPaths
++    let manifestBytes: Data
++    func prepare() throws -> DistributedInstalledPreparation {
++        try .prepare(reference: reference, paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
++    }
++    static func make(root: URL, probe: URL, owner: URL, worker: URL, lifetimeSeconds: Int = 10) throws -> Self {
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
++        let model = root.appendingPathComponent("model", isDirectory: true)
++        try FileManager.default.createDirectory(at: model, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++        func bytes(_ object: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) }
++        func hash(_ data: Data) -> String { ClusterConfigurationCodec.sha256(data) }
++        func pin(_ character: Character) -> String { String(repeating: String(character), count: 64) }
++        let config = try bytes(["model_type":"qwen3_5", "text_config":["eos_token_id":7,"vocab_size":248320]])
++        let named: [(String, String, Data)] = [("config.json","config",config),("tokenizer.json","tokenizer",Data("{}".utf8)),
++            ("tokenizer_config.json","tokenizer",Data("{}".utf8)),("chat_template.jinja","template",Data("synthetic template".utf8))]
++        for (name, _, data) in named { try data.write(to: model.appendingPathComponent(name)) }
++        // The fabricated weight inventory has no corresponding payload file.
++        let inventory = named + [("model.safetensors","weight",Data("no payload read".utf8))]
++        var aggregate = SHA256()
++        for (_,_,data) in inventory.sorted(by: { $0.0 < $1.0 }) { aggregate.update(data: Data(SHA256.hash(data: data))) }
++        let artifact = aggregate.finalize().map { String(format:"%02x",$0) }.joined()
++        let manifest = try bytes(["schema_version":1,"model_id":"fixture/public-model","version":"fixture-v1","r2_prefix":"fixture/prefix",
++            "aggregate_sha256":artifact,"total_size_bytes":inventory.reduce(0){$0+$1.2.count},"file_count":inventory.count,
++            "created_at":"2026-09-15T00:00:00Z","files":inventory.map { ["path":$0.0,"role":$0.1,"sha256":hash($0.2),"size_bytes":$0.2.count] as [String:Any] }])
++        try manifest.write(to: model.appendingPathComponent("manifest.json"))
++        let binary = hash(try Data(contentsOf: probe))
++        let profile = ClusterWorkerProfile(id:"registered_qwen35_9b_greedy_generation_v1",vocabularySize:248320,
++            maximumPromptTokens:8192,maximumOutputTokens:128,maximumChunkTokens:512,maximumContextTokens:8320)
++        let cap = try ClusterRuntimeCapability(runtimeBinarySHA256:binary,adapterID:"qwen35-dense-layer-stage",adapterVersion:1,
++            runtimeModelID:"registered_qwen35_9b",artifactSHA256:artifact,configurationSHA256:hash(config),manifestSHA256:hash(manifest),
++            profile:profile,profileFingerprint:pin("e"),partitions:[.init(planSHA256:pin("f"),stages:[
++                .init(rank:0,sourceLayerStart:0,sourceLayerEnd:4,stagePlanSHA256:pin("1"),constructionConfigurationSHA256:pin("2")),
++                .init(rank:1,sourceLayerStart:4,sourceLayerEnd:32,stagePlanSHA256:pin("3"),constructionConfigurationSHA256:pin("4"))])],
++            arithmeticPolicyID:"qwen_cbv2_query128_bf16_tf32_default_v1",arithmeticPolicySHA256:pin("5"),maxLifetimeSeconds:lifetimeSeconds,maxRequests:16)
++        let capBytes = try ClusterRuntimeCapabilityCodec.encode(cap), capHash = hash(capBytes)
++        try capBytes.write(to: model.appendingPathComponent("fixture-capability.json"))
++        let key=root.appendingPathComponent("key"),hosts=root.appendingPathComponent("known_hosts")
++        try Data("synthetic-private-key-fixture".utf8).write(to:key); chmod(key.path,0o600)
++        let known=Data("synthetic public host pin\n".utf8);try known.write(to:hosts)
++        func peer(_ rank:Int)->[String:Any] {
++            ["id":"peer-\(rank)","rank":rank,"host":"peer-\(rank).local","port":22,"user":"fixture",
++             "ownerExecutable":owner.path,"workerExecutable":probe.path,"modelDirectory":model.path,
++             "runtimeBinarySHA256":binary,"jacclDevice":"rdma_en\(rank)"]
++        }
++        let object:[String:Any]=["schema":ClusterConfiguration.schemaName,"clusterID":"installed-fixture","memberID":"peer-0","role":"leader",
++            "publicModelID":"fixture/public-model","capabilitySHA256":capHash,"selectedPlanSHA256":pin("f"),"chunkTokens":2,"requestTimeoutSeconds":lifetimeSeconds,
++            "peers":[peer(0),peer(1)],"coordinator":["address":"192.168.2.1","port":12345],
++            "trust":["identityFile":key.path,"knownHostsFile":hosts.path,"knownHostsSHA256":hash(known)],
++            "tokenizerFiles":named.filter{$0.1 != "config"}.map{["path":$0.0,"sha256":hash($0.2),"purpose":$0.1 == "template" ? "chatTemplate":"tokenizer"]}]
++        let input=root.appendingPathComponent("input.json"),capInput=root.appendingPathComponent("capability.json")
++        try bytes(object).write(to:input);try capBytes.write(to:capInput)
++        let configuration=try ClusterConfigurationCodec.decode(bytes(object),capability:cap,capabilitySHA256:capHash)
++        let paths=try ClusterUserPaths(homeDirectory:root)
++        var reference:ClusterConfigurationReference?
++        _ = try ClusterConfigurationStore(paths:paths).save(configurationInput:input,capabilityInput:capInput,capabilitySHA256:capHash) { reference=$0 }
++        return .init(root:root,probe:probe,owner:owner,worker:worker,configuration:configuration,capability:cap,
++            reference:reference!,paths:paths,manifestBytes:manifest)
++    }
++}
+diff --git a/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixtureIdentity.swift b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixtureIdentity.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixtureIdentity.swift
+@@ -0,0 +1,12 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++let fixtureReady: ClusterWorkerReady = {
++    let path = ProcessInfo.processInfo.environment["FIXTURE_READY_PATH"]!
++    let frame = try! ClusterWorkerCodec.decodeEvent(Data(contentsOf: URL(fileURLWithPath: path)))
++    guard case .ready(let ready) = frame.event else { fatalError("fixture ready missing") }
++    return ready
++}()
++let fixtureIdentity = fixtureReady.identity
++let fixtureProfile = fixtureReady.profile
++let fixturePlan = fixtureReady.executionPlanSHA256
+diff --git a/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledProbeFixture.swift b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledProbeFixture.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledProbeFixture.swift
+@@ -0,0 +1,25 @@
++import Foundation
++import Darwin
++import CryptoKit
++
++@main enum InstalledProbeFixture {
++    static func main() throws {
++        let args = Array(CommandLine.arguments.dropFirst())
++        if args.count == 1 {
++            switch args[0] {
++            case "--fixture-overflow": try FileHandle.standardOutput.write(contentsOf: Data(repeating: 32, count: 16385))
++            case "--fixture-stderr": try FileHandle.standardError.write(contentsOf: Data("synthetic refusal\n".utf8))
++            case "--fixture-exit": exit(7)
++            case "--fixture-hang": signal(SIGTERM, SIG_IGN); while true { pause() }
++            default: exit(64)
++            }; return
++        }
++        guard args.count == 7, args[0] == "--describe-runtime", args[1] == "--config", args[3] == "--manifest",
++              args[5] == "--expected-executable-sha256" else { exit(64) }
++        let executable = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[0]))
++        guard SHA256.hash(data: executable).map({ String(format: "%02x", $0) }).joined() == args[6] else { exit(65) }
++        // This is explicitly fabricated CPU metadata, never the native producer.
++        let path = URL(fileURLWithPath: args[2]).deletingLastPathComponent().appendingPathComponent("fixture-capability.json")
++        try FileHandle.standardOutput.write(contentsOf: Data(contentsOf: path))
++    }
++}
+diff --git a/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledSessionCheck.swift b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledSessionCheck.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledSessionCheck.swift
+@@ -0,0 +1,181 @@
++import Foundation
++import Darwin
++import CryptoKit
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++@testable import DarkbloomClusterRemote
++import MLXLMCommon
++@testable import InstalledContract
++
++struct CheckFailure: Error { let message:String }
++func require(_ value:Bool,_ message:String) throws { if !value { throw CheckFailure(message:message) } }
++func rejected(_ body:() throws->Void) throws {
++    do { try body() } catch is CheckFailure { throw CheckFailure(message:"assertion inside refusal") } catch { return }
++    throw CheckFailure(message:"expected refusal")
++}
++final class EndpointBox: @unchecked Sendable {
++    let lock=NSLock(); var values:[ClusterRemoteWorkerEndpoint]=[]
++    func add(_ value:ClusterRemoteWorkerEndpoint){ lock.withLock { values.append(value) } }
++    var snapshot:[ClusterRemoteWorkerEndpoint]{ lock.withLock { values } }
++}
++
++@main enum InstalledSessionCheck {
++    static func main() async throws {
++        signal(SIGALRM){_ in Darwin._exit(124)};alarm(50);defer{alarm(0)}
++        let root=URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("installed-check-"+UUID().uuidString)
++        defer{try? FileManager.default.removeItem(at:root)}
++        let fixture=try InstalledFixture.make(root:root,probe:URL(fileURLWithPath:CommandLine.arguments[1]),
++            owner:URL(fileURLWithPath:CommandLine.arguments[2]),worker:URL(fileURLWithPath:CommandLine.arguments[3]))
++        let prepared=try fixture.prepare()
++        try require(prepared.manifest.modelID==fixture.configuration.publicModelID && prepared.model.eosTokenIDs==[7],"public/native metadata join failed")
++        try require(prepared.model.modelType=="qwen3_5" && prepared.model.directory.lastPathComponent=="model","model discovery metadata differs")
++        try require(!FileManager.default.fileExists(atPath:prepared.model.directory.appendingPathComponent("model.safetensors").path),"fixture unexpectedly has payload")
++        try require(try prepared.model.stopTokenIDs(tokenizerEOS:9)==[7,9],"loaded tokenizer EOS union differs")
++        try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
++        try metadataChecks(fixture,prepared)
++        try fileAndProbeChecks(fixture,prepared)
++        try await normalAndDrain(fixture,prepared)
++        try await exhausted(fixture,prepared)
++        try await failedStart(fixture,prepared)
++        try await missingRelease(fixture,prepared)
++        try await expired(fixture)
++        print("Installed owner/session: metadata, bounded IO and 6 lifecycle scenarios passed; no native model, SSH or network")
++    }
++    static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
++        var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
++        return try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:object),capability:f.capability,capabilitySHA256:f.configuration.capabilitySHA256)
++    }
++    static func metadataChecks(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
++        for change in [0,1,2] {
++            let c=try changedConfiguration(f){ object in
++                if change==0 { object["publicModelID"]="unrelated/public-model" }
++                else { var files=object["tokenizerFiles"] as! [[String:Any]]
++                    if change==1 { files.removeLast() } else { files[0]["sha256"]=String(repeating:"0",count:64) };object["tokenizerFiles"]=files }
++            }
++            try rejected{_ = try DistributedInstalledManifest.validate(f.manifestBytes,configuration:c,capability:f.capability)}
++        }
++        func altered(_ bytes:Data) throws {
++            var cap=try JSONSerialization.jsonObject(with:ClusterRuntimeCapabilityCodec.encode(f.capability)) as! [String:Any]
++            cap["manifestSHA256"]=ClusterConfigurationCodec.sha256(bytes)
++            var encoded=try JSONSerialization.data(withJSONObject:cap,options:[.sortedKeys,.withoutEscapingSlashes]);encoded.append(10)
++            let value=try ClusterRuntimeCapabilityCodec.decode(encoded)
++            try rejected{_ = try DistributedInstalledManifest.validate(bytes,configuration:f.configuration,capability:value)}
++        }
++        var original=try JSONSerialization.jsonObject(with:f.manifestBytes) as! [String:Any]
++        original["schema_version"]=true;try altered(JSONSerialization.data(withJSONObject:original))
++        original=try JSONSerialization.jsonObject(with:f.manifestBytes) as! [String:Any];original["unexpected"]=1
++        try altered(JSONSerialization.data(withJSONObject:original))
++        original=try JSONSerialization.jsonObject(with:f.manifestBytes) as! [String:Any];original["total_size_bytes"]=1
++        try altered(JSONSerialization.data(withJSONObject:original))
++        let text=String(decoding:f.manifestBytes,as:UTF8.self)
++        try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
++        let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
++        try require(environment.count==9 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1","native environment widened")
++        let local=try ClusterLocalOwnerConfiguration(installedDarkbloom:f.owner).launch()
++        try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")
++        try rejected{_ = try ClusterLocalOwnerConfiguration(installedDarkbloom:URL(fileURLWithPath:"/unsafe/../owner"))}
++    }
++    static func fileAndProbeChecks(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
++        let deadline=DispatchTime.now().uptimeNanoseconds+2_000_000_000
++        let file=f.root.appendingPathComponent("bounded-file");try Data("safe".utf8).write(to:file)
++        let pin=ClusterConfigurationCodec.sha256(Data("safe".utf8))
++        let held=try DistributedInstalledFiles.verify(file,expectedSHA256:pin,maximumBytes:4,deadline:deadline)
++        try rejected{_ = try DistributedInstalledFiles.verify(file,expectedSHA256:pin,maximumBytes:3,deadline:deadline)}
++        try rejected{_ = try DistributedInstalledFiles.verify(file,expectedSHA256:String(repeating:"0",count:64),maximumBytes:4,deadline:deadline)}
++        try Data("edit".utf8).write(to:file);try rejected{try held.requireUnchanged()}
++        let fifo=f.root.appendingPathComponent("fifo");try require(mkfifo(fifo.path,0o600)==0,"fifo create failed")
++        try rejected{_ = try DistributedInstalledFiles.verify(fifo,expectedSHA256:pin,maximumBytes:4,deadline:deadline)}
++        for behavior in ["--fixture-overflow","--fixture-stderr","--fixture-exit","--fixture-hang"] {
++            try rejected{_ = try DistributedCapabilityProbe.run(executable:f.probe,arguments:[behavior],deadline:DispatchTime.now().uptimeNanoseconds+150_000_000)}
++        }
++        let fallback=prepared.model.directory.appendingPathComponent("chat_template.json");try Data("{}".utf8).write(to:fallback)
++        try rejected{try prepared.requireUnchanged()};try FileManager.default.removeItem(at:fallback)
++        try prepared.requireUnchanged()
++    }
++    static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false) throws->(DistributedInstalledSession,EndpointBox) {
++        let base=f.root.appendingPathComponent("session-"+UUID().uuidString);try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
++        let box=EndpointBox()
++        let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay in
++            if failSecond && rank==1 { throw CheckFailure(message:"fabricated second launch refusal") }
++            let directory=base.appendingPathComponent("rank-\(rank)");try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
++            let ready=base.appendingPathComponent("ready-\(rank).json")
++            let frame=ClusterWorkerEventFrame(membershipEpoch:id.membershipEpoch,sequence:0,requestID:nil,
++                event:.ready(.init(identity:id,rank:rank,profile:plan.capability.profile,executionPlanSHA256:plan.partition.planSHA256,requestCapacityBytes:1024)))
++            try ClusterWorkerCodec.encode(frame).write(to:ready)
++            let endpoint=try ClusterRemoteWorkerEndpoint(transport:.init(executable:f.owner,
++                arguments:[f.worker.path,directory.path,String(rank),behavior],environment:["FIXTURE_READY_PATH":ready.path]),
++                clusterID:plan.configuration.clusterID,expectedIdentity:id,profile:plan.capability.profile,rank:rank,
++                executionPlanSHA256:plan.partition.planSHA256,lifetimeDeadlineUptimeNanoseconds:lifetime,bootstrapRelay:relay)
++            box.add(endpoint);return endpoint
++        })
++        return(session,box)
++    }
++    static func request(_ session:DistributedInstalledSession,_ id:UInt64) throws->any DistributedResidentRequestLease {
++        try session.reserve(.init(id:.init(id),promptTokens:[1,2,3],sampling:.init(temperature:0),maxTokens:2),
++            identity:session.expectedIdentity,profileID:session.profile.id,capacityLimit:1800,
++            deadlineContext:.init(generationDeadline:ContinuousClock.now.advanced(by:.seconds(100))))
++    }
++    static func normalAndDrain(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
++        let(s,box)=try session(f,p);try require(s.status == .prepared && s.readiness()==nil && !s.canRotate,"preparation fabricated readiness")
++        try await s.start();try require(s.readiness() != nil && s.admissionState?.admissionsRemaining==16,"actual ready missing: status=\(s.status), state=\(String(describing:s.admissionState)), endpoints=\(box.snapshot.map { String(describing:$0.ownerTermination) + ":" + String(decoding:$0.diagnosticTail,as:UTF8.self) })")
++        try require(s.admissionState!.remainingLifetimeNanoseconds < 10_000_000_000,"minimum endpoint lifetime lost")
++        let lease=try request(s,1);try require(s.readiness() != nil,"post-reserve readiness falsely lost")
++        try lease.start{_ in true};await lease.waitUntilRetired()
++        let drain=Task { await s.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) }
++        try await Task.sleep(for:.milliseconds(40))
++        try require(s.admissionState?.hasActiveRequest==true && !s.canRotate && lease.bytesInUse>0,"retirement erased explicit release obligation")
++        try rejected{_ = try request(s,2)}
++        lease.releaseResources();let result=await drain.value;try require(result == .released,"clean drain lacked release: status=\(result), endpoints=\(box.snapshot.map { String(describing:$0.ownerTermination) + ":native=\($0.nativeCleanupObserved):ack=\($0.ownerDeviceLeaseReleasedObserved):" + String(decoding:$0.diagnosticTail,as:UTF8.self) })")
++        try require(s.canRotate && box.snapshot.allSatisfy{$0.nativeCleanupObserved && $0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0)},"rotation preceded cleanup ACK and exit")
++        do {try await s.start();throw CheckFailure(message:"session restarted")} catch DistributedEngineError.unavailable {}
++    }
++    static func exhausted(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
++        let(s,_)=try session(f,p);try await s.start()
++        for id in 1...16 {
++            let lease=try request(s,UInt64(id));try require(s.readiness() != nil,"last active reservation lost readiness")
++            try lease.start{_ in true};await lease.waitUntilRetired();lease.releaseResources()
++        }
++        try require(s.admissionState?.admissionsRemaining==0 && s.readiness()==nil,"exhausted session advertised ready")
++        try rejected{_ = try request(s,17)}
++        try require(await s.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) == .released,"exhausted drain failed")
++    }
++    static func failedStart(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
++        let(s,box)=try session(f,p,failSecond:true)
++        var refused = false
++        do { try await s.start() }
++        catch let error as CheckFailure where error.message == "fabricated second launch refusal" { refused = true }
++        try require(refused, "second launch refusal accepted")
++        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+6_000_000_000)
++        try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint")
++        try require(result == .released || result == .quarantined,"partial startup returned live readiness")
++        try require(!s.canRotate || box.snapshot[0].ownerDeviceLeaseReleasedObserved,"partial rotate missing release")
++    }
++    static func expired(_ f:InstalledFixture) async throws {
++        let short=try InstalledFixture.make(root:f.root.appendingPathComponent("short-life"),probe:f.probe,owner:f.owner,worker:f.worker,lifetimeSeconds:1)
++        let prepared=try short.prepare(),(s,box)=try session(short,prepared)
++        try await s.start()
++        guard let deadline=s.lifetimeDeadlineUptimeNanoseconds else {throw CheckFailure(message:"missing fixed lifetime")}
++        let now=DispatchTime.now().uptimeNanoseconds
++        if deadline>now {try await Task.sleep(nanoseconds:deadline-now+50_000_000)}
++        try require(s.admissionState?.remainingLifetimeNanoseconds==0 && s.readiness()==nil,"expired lifetime advertised ready")
++        try rejected{_ = try request(s,77)}
++        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000)
++        try require(result == .quarantined || result == .released,"expired session kept accepting")
++        try require(box.snapshot.allSatisfy(\.nativeCleanupObserved),"expired fixture child lacked actual terminal proof")
++        try require(!s.canRotate || box.snapshot.allSatisfy{$0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0)},"expiry substituted for owner release")
++    }
++    static func missingRelease(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
++        for behavior in ["drop-release","nonzero-owner"] {
++            let(s,box)=try session(f,p,behavior:behavior);try await s.start()
++            let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+3_000_000_000)
++            try require(result == .quarantined && !s.canRotate && box.snapshot.allSatisfy(\.nativeCleanupObserved),"owner failure/release loss fabricated reusable slot")
++            if behavior == "drop-release" {
++                try require(box.snapshot.allSatisfy { !$0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0) },
++                    "missing-ACK case did not reach the intended natural owner exit")
++            } else {
++                try require(box.snapshot.allSatisfy { $0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(7) },
++                    "nonzero-owner case did not retain the intended ACK and exit status")
++            }
++        }
++    }
++}
+diff --git a/provider-swift/Tests/ClusterInstalledSessionChecks/README.md b/provider-swift/Tests/ClusterInstalledSessionChecks/README.md
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/README.md
+@@ -0,0 +1,20 @@
++# Installed-session control checks
++
++Run from a writable checkout on macOS with the Swift toolchain installed:
++
++```sh
++./provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
++```
++
++The runner directly compiles the current Protocol, Bootstrap, Process, Remote, configuration and installed-session sources with Swift 6 warnings-as-errors. It reuses the existing `MLXLMCommonContractValues.swift` value stubs and `FakeClusterWorker.swift` child. It does not run SwiftPM or link the native MLX runtime. Temporary binaries and fabricated metadata live in a private directory under `provider-swift`, removed on exit. A checkout-local directory avoids weakening the real no-symlink installed-file policy to accommodate temporary-directory aliases.
++
++The checks exercise public model/manifest/tokenizer joins, bounded metadata-command output and deadlines, then six actual local owner/stand-in lifecycle scenarios:
++
++- Clean drain retains the active request until explicit resource release, then requires native cleanup, owner release acknowledgements and natural owner exits.
++- The sixteenth active request retains readiness, while further admission is refused after quota exhaustion.
++- A second-owner construction refusal preserves ownership and cleanup of the first launched endpoint.
++- A missing release acknowledgement prevents rotation despite native cleanup.
++- A nonzero owner exit prevents rotation despite a release acknowledgement.
++- Fixed lifetime expiry removes readiness and refuses admission; elapsed time never replaces cleanup proof.
++
++The command protocol, local Unix bootstrap, filesystem gates and subprocess supervision are real; the metadata producer and model workers are fabricated CPU children. Fixtures contain no weights or usable credentials. The absent fake payload confirms that metadata preflight does not read weights. These checks do not qualify native inference, real SSH authentication, a two-host deployment, the HTTP server, or the full Provider/CLI build. The test executable has an outer alarm to bound a broken regression.
+diff --git a/provider-swift/Tests/ClusterInstalledSessionChecks/run.sh b/provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
+new file mode 100755
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
+@@ -0,0 +1,64 @@
++#!/bin/bash
++set -euo pipefail
++task_provider="$(cd "$(dirname "$0")/../.." && pwd)"
++task_repo="$(cd "$task_provider/.." && pwd)"
++task_cluster="$task_repo/libs/darkbloom-cluster"
++task_sources="$task_provider/Sources/ProviderCore"
++task_fixtures="$task_provider/Tests/ClusterInstalledSessionChecks"
++# The real installed-file policy rejects symlinked path components, including
++# /var aliases. Keep the test-owned binaries and files in the checkout tree.
++task_build="$(mktemp -d "$task_provider/.cluster-installed-session.XXXXXXXX")"
++trap 'rm -rf "$task_build"' EXIT
++task_target="$(uname -m)-apple-macos14.0"
++task_flags=(-swift-version 6 -warnings-as-errors -target "$task_target")
++task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
++
++build_module() {
++  local task_name="$1"
++  shift
++  local task_dependencies=("${task_links[@]}")
++  case "$task_name" in
++    DarkbloomClusterProcess) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
++    DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap) ;;
++    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation) ;;
++  esac
++  xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
++    -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
++    "${task_dependencies[@]}" "$@" \
++    -o "$task_build/lib$task_name.dylib" \
++    -Xlinker -install_name -Xlinker "@rpath/lib$task_name.dylib"
++}
++
++build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
++build_module DarkbloomClusterBootstrap "$task_cluster"/Sources/DarkbloomClusterBootstrap/*.swift
++build_module DarkbloomClusterProcess "$task_cluster"/Sources/DarkbloomClusterProcess/*.swift
++build_module DarkbloomClusterRemote "$task_cluster"/Sources/DarkbloomClusterRemote/*.swift
++build_module MLXLMCommon "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
++build_module ProviderCoreFoundation "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
++build_module InstalledContract \
++  "$task_sources/Config/ClusterConfiguration.swift" \
++  "$task_sources/Config/ClusterConfigurationCodec.swift" \
++  "$task_sources/Config/ClusterConfigurationFiles.swift" \
++  "$task_sources/Config/ClusterConfigurationPaths.swift" \
++  "$task_sources/Config/ClusterConfigurationStore.swift" \
++  "$task_sources/Inference/Distributed/DistributedRequestDeadlineContext.swift" \
++  "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
++  "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
++  "$task_sources"/Inference/Distributed/Installed/*.swift
++
++task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
++  -lDarkbloomClusterProcess -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
++for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker InstalledSessionCheck; do
++  case "$task_name" in
++    InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
++    InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
++    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
++    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift") ;;
++  esac
++  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
++    "${task_inputs[@]}" -o "$task_build/$task_name"
++done
++
++cd "$task_build"
++"$task_build/InstalledSessionCheck" "$task_build/InstalledProbeFixture" \
++  "$task_build/InstalledFakeOwner" "$task_build/InstalledFakeWorker"

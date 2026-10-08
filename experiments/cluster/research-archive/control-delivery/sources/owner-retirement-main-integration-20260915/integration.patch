@@ -1,0 +1,359 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
+@@ -184,6 +184,7 @@
+                 let command = try frame.localCommand(now: now, lifetimeDeadline: deadline)
+                 guard command.sequence == nextWorkerCommand else { throw OwnerWire.invalid("Native command replay") }
+                 try session.accept(command, now: now)
++                var forwardToNative = true
+                 switch command.command {
+                 case .reserve(let r):
+                     guard let id = command.requestID else { throw OwnerWire.invalid("Missing request") }
+@@ -195,13 +196,25 @@
+                     admissionDeadline = min(end.partialValue, deadline)
+                 case .start: try control(.start(requestID: command.requestID!), now: now)
+                 case .cancel(let reason): try control(.cancel(requestID: command.requestID!, reason: reason), now: now)
+-                case .shutdown: try control(.shutdown, now: now)
++                case .shutdown:
++                    // A valid shutdown can already be in transit when an exhausted
++                    // worker becomes unavailable and this owner starts fencing.
++                    // Keep the release handshake alive; actual native terminal and
++                    // request release remain required, and no shutdownComplete is
++                    // synthesized for a child that no longer accepts commands.
++                    if state.requiresNativeFence || state.status.nativeTerminal != nil {
++                        forwardToNative = false
++                    } else {
++                        try control(.shutdown, now: now)
++                    }
+                 case .tokenDecision: break
+                 }
+                 guard let delivery = frame.deliveryRemaining else { throw OwnerWire.invalid("Missing delivery duration") }
+                 let deliveryEnd = now.addingReportingOverflow(delivery)
+                 guard !deliveryEnd.overflow else { throw OwnerWire.invalid("Delivery duration overflow") }
+-                try child!.sendWorkerCommand(command.command, requestID: command.requestID, deadline: min(deadline, deliveryEnd.partialValue))
++                if forwardToNative {
++                    try child!.sendWorkerCommand(command.command, requestID: command.requestID, deadline: min(deadline, deliveryEnd.partialValue))
++                }
+                 nextWorkerCommand += 1
+             default: throw OwnerWire.invalid("Invalid owner command")
+             }
+--- a/libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift
++++ b/libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift
+@@ -59,7 +59,7 @@
+                     if rank == 1 {
+                         let reason: ClusterWorkerFinishReason = reservation!.stopTokenIDs.contains(9) ? .eos
+                             : behavior == "clean-stop" ? .clientStop : .length
+-                        try emit(.finished(reason)); try emit(.retired(.clean))
++                        try emit(.finished(reason)); try emit(.retired(.clean)); if behavior == "exhausted" { try emit(.unavailable(.runtimeError)) }
+                     } else if behavior == "bad-sequence" || behavior == "bad-token" {
+                         let frame = ClusterWorkerEventFrame(membershipEpoch: fixtureIdentity.membershipEpoch,
+                             sequence: sequence + (behavior == "bad-sequence" ? 1 : 0), requestID: requestID,
+@@ -72,7 +72,7 @@
+                     let last = 8 + selected
+                     let reason: ClusterWorkerFinishReason? = reservation!.stopTokenIDs.contains(last) ? .eos
+                         : selected == reservation!.outputCount ? .length : decision == .cleanStop ? .clientStop : nil
+-                    if let reason { try emit(.finished(reason)); try emit(.retired(.clean)) }
++                    if let reason { try emit(.finished(reason)); try emit(.retired(.clean)); if behavior == "exhausted" { try emit(.unavailable(.runtimeError)) } }
+                     else {
+                         try emit(.committedToken(ordinal: selected, tokenID: 9 + selected,
+                             committedTokens: reservation!.promptTokenIDs.count + selected)); selected += 1
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/RetirementOwnerConnection.swift
+@@ -0,0 +1,141 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++@testable import DarkbloomClusterRemote
++
++func retirementRequire(_ condition: @autoclosure () -> Bool, _ message: String) throws {
++    if !condition() { throw ClusterOwnerStateError.invalid(message) }
++}
++
++/// Actual local service and child. Only transport scheduling is controlled here;
++/// production service/state/process code supplies terminal and journal evidence.
++final class RetirementOwnerConnection {
++    let process = Process(), input = Pipe(), output = Pipe()
++    let directory: URL, rank: Int, deadline: UInt64
++    let lease = UUID(), request = UUID()
++    let pipe: ClusterOwnerPipe
++    let diagnostics: FileHandle
++    private(set) var incarnation: UUID!
++    private(set) var terminal: OwnerWire?
++    private(set) var nativeEvents: [ClusterWorkerEventFrame] = []
++    private(set) var released = false
++    private var nextWire: UInt64 = 1, nextCommand: UInt64 = 0, nextEvent: UInt64 = 0
++
++    init(owner: URL, worker: String, directory: URL, rank: Int, behavior: String) throws {
++        self.directory = directory; self.rank = rank
++        deadline = DispatchTime.now().uptimeNanoseconds + 12_000_000_000
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
++            attributes: [.posixPermissions: 0o700])
++        let errorURL = directory.appendingPathComponent("owner.stderr")
++        guard FileManager.default.createFile(atPath: errorURL.path, contents: nil,
++            attributes: [.posixPermissions: 0o600]) else { throw OwnerWire.invalid("Cannot retain stderr") }
++        diagnostics = try FileHandle(forWritingTo: errorURL)
++        pipe = try ClusterOwnerPipe(input: output.fileHandleForReading.fileDescriptor,
++            output: input.fileHandleForWriting.fileDescriptor, readingCommands: false)
++        process.executableURL = owner
++        process.arguments = [worker, directory.path, String(rank), behavior]
++        process.environment = [:]
++        process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
++        try process.run()
++        try input.fileHandleForReading.close(); try output.fileHandleForWriting.close()
++        let open = OwnerWire(kind: "open", epoch: fixtureIdentity.membershipEpoch, lease: lease,
++            incarnation: nil, sequence: 0, clusterID: "cpu-test", remaining: 10_000_000_000)
++        try pipe.write(open.encoded(commandStream: true), until: deadline)
++        let hello = try receive()
++        try retirementRequire(hello.kind == "hello" && hello.launchID != nil, "Missing owner hello")
++        incarnation = hello.incarnation
++        try retirementRequire(incarnation != nil, "Missing incarnation")
++        let ready = try receive()
++        try retirementRequire(ready.kind == "event" && nativeEvents.count == 1, "Missing actual ready")
++    }
++
++    func receive() throws -> OwnerWire {
++        guard let bytes = try pipe.read(until: deadline) else { throw OwnerWire.invalid("Owner read timed out") }
++        let frame = try OwnerWire.decode(bytes, commandStream: false)
++        try retirementRequire(frame.epoch == fixtureIdentity.membershipEpoch && frame.lease == lease
++            && frame.sequence == nextEvent, "Owner event identity/sequence differs")
++        if let incarnation { try retirementRequire(frame.incarnation == incarnation, "Owner incarnation changed") }
++        nextEvent += 1
++        if frame.kind == "event", let payload = frame.payload {
++            nativeEvents.append(try ClusterWorkerCodec.decodeEvent(payload))
++        }
++        if frame.kind == "terminal" {
++            try retirementRequire(frame.termination != nil && terminal == nil, "Missing/repeated native terminal")
++            terminal = frame
++        }
++        if frame.kind == "released" { released = true }
++        return frame
++    }
++
++    func command(_ command: ClusterWorkerCommand, requestID: UUID?, wireOffset: UInt64 = 0) throws {
++        let now = DispatchTime.now().uptimeNanoseconds
++        let frame = ClusterWorkerCommandFrame(membershipEpoch: fixtureIdentity.membershipEpoch,
++            sequence: nextCommand, requestID: requestID, command: command)
++        let wire = try OwnerWire.command(frame, lease: lease, incarnation: incarnation,
++            sequence: nextWire + wireOffset, now: now, deliveryDeadline: deadline)
++        try pipe.write(wire.encoded(commandStream: true), until: deadline)
++        nextWire += 1; nextCommand += 1
++    }
++
++    func reserve() throws {
++        try command(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2],
++            stopTokenIDs: [], outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline,
++            capacityLimitBytes: 1024)), requestID: request)
++        _ = try receive()
++        try retirementRequire(nativeEvents.last?.event == .admitted(reservedBytes: 800), "Missing actual admission")
++    }
++
++    func completeRequest() throws {
++        try reserve()
++        try command(.start, requestID: request)
++        if rank == 0 {
++            for ordinal in 0..<2 {
++                _ = try receive()
++                try retirementRequire(nativeEvents.last?.event == .committedToken(ordinal: ordinal,
++                    tokenID: 9 + ordinal, committedTokens: 2 + ordinal), "Two-token sequence differs")
++                try command(.tokenDecision(ordinal: ordinal, decision: .proceed), requestID: request)
++            }
++        }
++        _ = try receive()
++        try retirementRequire(nativeEvents.last?.event == .finished(.length), "Missing clean length")
++        _ = try receive()
++        try retirementRequire(nativeEvents.last?.event == .retired(.clean), "Missing actual request retirement")
++        try retirementRequire(journalBytes > 0, "Request retirement cleared device journal")
++    }
++
++    func awaitTerminal() throws {
++        while terminal == nil { _ = try receive() }
++        try retirementRequire(journalBytes > 0, "Native terminal cleared journal before explicit release")
++    }
++
++    func release() throws {
++        let frame = OwnerWire(kind: "release", epoch: fixtureIdentity.membershipEpoch, lease: lease,
++            incarnation: incarnation, sequence: nextWire)
++        try pipe.write(frame.encoded(commandStream: true), until: deadline); nextWire += 1
++    }
++
++    func awaitOwnerExit() throws {
++        while process.isRunning && DispatchTime.now().uptimeNanoseconds < deadline { usleep(5_000) }
++        try retirementRequire(!process.isRunning, "Owner failed to exit within fixed bound")
++        process.waitUntilExit()
++    }
++
++    var journalBytes: Int {
++        (try? Data(contentsOf: directory.appendingPathComponent("native-device.lease")).count) ?? -1
++    }
++    var summary: [String: Any] {
++        ["rank": rank, "requestRetired": nativeEvents.contains { $0.event == .retired(.clean) },
++         "nativeTerminalObserved": terminal != nil, "released": released, "journalBytes": journalBytes,
++         "shutdownCompleteCount": nativeEvents.filter { $0.event == .shutdownComplete }.count,
++         "ownerExited": !process.isRunning, "ownerStatus": process.isRunning ? -999 : process.terminationStatus]
++    }
++    func close() {
++        pipe.closeOutput(); try? input.fileHandleForWriting.close()
++        let end = DispatchTime.now().uptimeNanoseconds + 4_000_000_000
++        while process.isRunning && DispatchTime.now().uptimeNanoseconds < end { usleep(5_000) }
++        if process.isRunning { process.terminate() }
++        if !process.isRunning { process.waitUntilExit() }
++        try? output.fileHandleForReading.close(); try? diagnostics.close()
++    }
++    deinit { close() }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/RetirementShutdownTests.swift
+@@ -0,0 +1,90 @@
++import Foundation
++import Darwin
++import DarkbloomClusterProtocol
++@testable import DarkbloomClusterRemote
++
++@main struct RetirementShutdownTests {
++    static func main() throws {
++        signal(SIGPIPE, SIG_IGN)
++        guard CommandLine.arguments.count == 5 else { exit(64) }
++        let owner = URL(fileURLWithPath: CommandLine.arguments[1]), worker = CommandLine.arguments[2]
++        let root = URL(fileURLWithPath: CommandLine.arguments[3]), mode = CommandLine.arguments[4]
++        var results: [[String: Any]] = [], error: String?
++        do {
++            try lateShutdown(owner, worker, root, &results)
++            if mode == "corrected" {
++                try rejection(owner, worker, root, "active", &results)
++                try rejection(owner, worker, root, "duplicate", &results)
++                try rejection(owner, worker, root, "replay", &results)
++                try missingRelease(owner, worker, root, &results)
++            }
++        } catch let failure { error = String(describing: failure) }
++        let report: [String: Any] = ["schema": "owner_retirement_shutdown_cpu_v1", "mode": mode,
++            "passed": error == nil, "error": error as Any? ?? NSNull(), "cases": results,
++            "nativeModelNetworkExecuted": false]
++        let raw = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted])
++        try FileHandle.standardOutput.write(contentsOf: raw + Data([10]))
++        exit(error == nil ? 0 : 1)
++    }
++
++    static func lateShutdown(_ owner: URL, _ worker: String, _ root: URL, _ results: inout [[String: Any]]) throws {
++        var peers: [RetirementOwnerConnection] = []
++        defer { for peer in peers { peer.close() } }
++        for rank in 0..<2 {
++            peers.append(try .init(owner: owner, worker: worker,
++                directory: root.appendingPathComponent("late-rank\(rank)"), rank: rank, behavior: "exhausted"))
++        }
++        var failures: [String] = []
++        for peer in peers {
++            do {
++                try peer.completeRequest()
++                // Delay only the command transport: the worker emits the actual
++                // MTP sequence finished/retired/unavailable. Service fencing and
++                // actual child wait have completed before this late shutdown.
++                try peer.awaitTerminal()
++                try peer.command(.shutdown, requestID: nil)
++                try peer.release()
++                while !peer.released { _ = try peer.receive() }
++                try peer.awaitOwnerExit()
++            } catch { failures.append(String(describing: error)); peer.close() }
++            results.append(["case": "late_shutdown_after_exhaustion", "observed": peer.summary])
++        }
++        try retirementRequire(failures.isEmpty && peers.allSatisfy { $0.released && $0.journalBytes == 0
++            && !$0.process.isRunning && $0.process.terminationStatus == 0
++            && !$0.nativeEvents.contains { $0.event == .shutdownComplete } },
++            "Late shutdown lost release ACK or synthesized shutdownComplete: \(failures)")
++    }
++
++    static func rejection(_ owner: URL, _ worker: String, _ root: URL, _ kind: String,
++                          _ results: inout [[String: Any]]) throws {
++        let peer = try RetirementOwnerConnection(owner: owner, worker: worker,
++            directory: root.appendingPathComponent(kind), rank: 0, behavior: kind == "active" ? "hang" : "exhausted")
++        defer { peer.close() }
++        if kind == "active" {
++            try peer.reserve()
++            try peer.command(.shutdown, requestID: nil) // A live reservation forbids shutdown.
++        } else {
++            try peer.completeRequest(); try peer.awaitTerminal()
++            try peer.command(.shutdown, requestID: nil, wireOffset: kind == "replay" ? 1 : 0)
++            if kind == "duplicate" { try peer.command(.shutdown, requestID: nil) }
++        }
++        do { while true { _ = try peer.receive() } } catch { }
++        try peer.awaitOwnerExit()
++        results.append(["case": kind + "_shutdown_refused", "observed": peer.summary])
++        try retirementRequire(!peer.released && peer.journalBytes > 0 && peer.process.terminationStatus != 0,
++            "Invalid shutdown obtained a release or cleared journal")
++    }
++
++    static func missingRelease(_ owner: URL, _ worker: String, _ root: URL,
++                               _ results: inout [[String: Any]]) throws {
++        let peer = try RetirementOwnerConnection(owner: owner, worker: worker,
++            directory: root.appendingPathComponent("missing-release"), rank: 1, behavior: "exhausted")
++        defer { peer.close() }
++        try peer.completeRequest(); try peer.awaitTerminal()
++        try peer.command(.shutdown, requestID: nil)
++        peer.close() // EOF is not the explicit release handshake.
++        try peer.awaitOwnerExit()
++        results.append(["case": "missing_release_retains_journal", "observed": peer.summary])
++        try retirementRequire(!peer.released && peer.journalBytes > 0, "Shutdown/EOF fabricated device release")
++    }
++}
+--- a/libs/darkbloom-cluster/Tests/SSHChecks/run.sh
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/run.sh
+@@ -8,21 +8,24 @@
+   task_links=(-I "$task_build" -L "$task_build")
+   if [[ "$task_module" != DarkbloomClusterProtocol ]]; then task_links+=(-lDarkbloomClusterProtocol); fi
+   if [[ "$task_module" == DarkbloomClusterRemote ]]; then task_links+=(-lDarkbloomClusterProcess -lDarkbloomClusterBootstrap); fi
+-  xcrun swiftc -swift-version 6 -warnings-as-errors -enable-testing -target "$task_target" -emit-library -emit-module \
++  xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -enable-testing -target "$task_target" -emit-library -emit-module \
+     -module-name "$task_module" -emit-module-path "$task_build/$task_module.swiftmodule" \
+     -I "$task_build" -L "$task_build" "${task_links[@]}" -Xlinker -rpath -Xlinker "$task_build" \
+     "$task_root/Sources/$task_module"/*.swift -o "$task_build/lib$task_module.dylib"
+ done
+-for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests; do
++for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests RetirementShutdownTests; do
+   task_source="$task_root/Tests/SSHChecks/$task_name.swift"
+   if [[ "$task_name" == FakeClusterWorker ]]; then task_source="$task_root/Tests/ProcessChecks/$task_name.swift"; fi
+-  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
++  task_sources=("$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_source")
++  if [[ "$task_name" == RetirementShutdownTests ]]; then task_sources+=("$task_root/Tests/SSHChecks/RetirementOwnerConnection.swift"); fi
++  xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+     -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
+-    -Xlinker -rpath -Xlinker "$task_build" "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" \
+-    "$task_source" -o "$task_build/$task_name"
++    -Xlinker -rpath -Xlinker "$task_build" "${task_sources[@]}" -o "$task_build/$task_name"
+ done
+ "$task_build/RemoteOwnerTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker"
++mkdir "$task_build/retirement-checks"
++"$task_build/RetirementShutdownTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker" "$task_build/retirement-checks" corrected
+ 
+-xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" \
++xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" \
+   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
+   -Xlinker -rpath -Xlinker "$task_build" "$task_root/Tools/ConfiguredOwner/main.swift" -o "$task_build/configured-owner"
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/SSHChecks/README.md
+@@ -0,0 +1,28 @@
++# Owner transport and retirement checks
++
++Run from the repository root:
++
++```sh
++bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh
++```
++
++The runner compiles the actual Foundation-only Protocol, Process, Bootstrap and
++Remote sources with Swift 6 warnings as errors, using at most two compiler jobs.
++It launches local CPU stand-in owners/workers over pipes and local Unix sockets.
++It performs no SSH, network-peer, model, MLX or GPU execution.
++
++The existing thirteen groups remain, followed by six retirement/shutdown cases:
++
++- Both ranks complete a two-token request and emit clean retirement followed by
++  unavailable, matching a worker that exhausts its single allowed request. A
++  valid shutdown delayed until after actual native-child termination must leave
++  the explicit release handshake usable. Both owners exit zero and clear their
++  own journal only after release; no shutdownComplete event is synthesized.
++- An active request, duplicate shutdown and replayed owner sequence are refused
++  without an authenticated release or journal clearance.
++- Valid late shutdown followed by EOF retains the journal if explicit release
++  never arrives.
++
++The temporary test directory is owned by the runner and removed on exit. Any
++nonempty journals in refusal tests are fabricated test artifacts, not production
++recovery. Cleanup observations do not establish physical peer or model behavior.

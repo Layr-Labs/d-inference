@@ -1,0 +1,11 @@
+# Installed balanced Qwen9B HTTP observation
+
+Source derivative of the frozen normal HTTP delivery harness and exact-default configuration transaction. Both selected configurations change only clusterID and selectedPlanSHA256 to the installed capability’s 16/16 split; timeout120s, chunk512, MTPoff and one-chunk lookahead remain unchanged. Providerc408 and nativeffcbd remain installed on both Macs.
+
+The outer transaction stages the real cluster configure CLI on both hosts, switches both existing default references only after both preparations succeed, runs one normal authenticated external8K request, then attempts exact original restoration independently on both hosts on every path. Remote transaction and qualification output names are fresh. Only the large embedded configuration command disables SSH multiplexing; normal persistent connections remain configured.
+
+The nested harness root is corrected to resolve the original private credential directory. The original normal client and source-text8K prompt/token IDs are pinned externally. Actual Swift tokenization must match all8192IDs before timed inference. Client success includes first nonempty content before18.192s, terminal usage/DONE/EOF; the parent separately requires live status before/after, clean worker shutdown, zero journals, resource guards and alias restoration. The first inference request receives no warmup in its fresh process session; earlier driver/kernel activity is not reset.
+
+12 inherited transaction/file/recovery tests plus14 status tests passed. No deadline-error contract is reused as a normal-success test. Separate source review535a36a8 and actual15-file remote preflights are retained. The first local preparation stopped on a manifest field-name mismatch before any copy, remote action or configuration mutation; preparation was corrected before this frozen package.
+
+Run `/usr/bin/python3 -B run_configured.py --attempt 1 --execute` from this directory. Use the originalattempt with `--restore-only` if restoration remains unresolved. No compiler or competing remote work may overlap physical timing. The goal remains active; this one observation cannot qualify representative SLA, optimized solo speedup, numerical equivalence for this prompt, 27B, MTP or M3Ultra performance.

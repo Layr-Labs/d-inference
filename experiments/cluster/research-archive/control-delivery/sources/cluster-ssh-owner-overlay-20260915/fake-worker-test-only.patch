@@ -1,0 +1,16 @@
+--- a/libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift
++++ b/libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift
+@@ -32,11 +32,13 @@
+                 switch command.command {
+                 case .reserve(let value):
+                     requestID = command.requestID; reservation = value; selected = 0
++                    if behavior == "slow-admit" { usleep(400_000) }
+                     if behavior == "refuse" { try emit(.refused(.capacity)) }
+                     else { try emit(.admitted(reservedBytes: behavior == "larger" ? 1400 : 800)) }
+                 case .start:
+                     if behavior == "hang" { continue }
+                     if behavior == "exit" { exit(7) }
++                    if behavior == "delayed-exit" { usleep(250_000); exit(7) }
+                     if behavior == "partial" { try FileHandle.standardOutput.write(contentsOf: Data("{\"kind\":".utf8)); exit(0) }
+                     if behavior == "stderr" { try FileHandle.standardError.write(contentsOf: Data(repeating: 120, count: 1_100_000)); continue }
+                     if rank == 1 {

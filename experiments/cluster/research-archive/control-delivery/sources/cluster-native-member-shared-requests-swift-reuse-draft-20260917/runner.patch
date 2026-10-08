@@ -1,0 +1,70 @@
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/Tests/run.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/run.py
+@@ -9,8 +9,9 @@
+ sys.dont_write_bytecode = True
+ import source_inventory as inventory
+ from check_process import run_owned
+-from context import BASE, SOURCE, SWIFT_FILTER, INVOCATION_METHODS, sha, save, verify, isolated_environment
+-from corrected_results import validate_swift_results
++from context import BASE, ADAPTER, ADAPTER_SHA, WORKSPACE, OUTPUT, SOURCE, SWIFT_FILTER, INVOCATION_METHODS, isolated_environment
++from guards import sha, save, verify, recheck_sources, require_preserved_cli, require
++from coverage import validate as validate_swift_results
+ 
+ def main():
+     p = argparse.ArgumentParser(allow_abbrev=False)
+@@ -19,22 +20,21 @@
+     p.add_argument('--attempt', type=int, required=True)
+     args = p.parse_args()
+     if not 1 <= args.attempt <= 9: raise ValueError('Attempt bound')
+-    prepared = args.prepared.resolve(); workspace = prepared / 'workspace'
++    prepared = args.prepared.resolve(); workspace = WORKSPACE
++    require(prepared == OUTPUT, 'Exact incremental output root required')
++    _, expected_main, _, expected_candidate = verify()
+     preparation = json.loads((prepared / 'preparation.json').read_text())
+-    if (preparation['workspace'] != str(workspace) or preparation['source'] != str(SOURCE)
+-            or preparation['wrapperManifestSHA256'] != sha(BASE / 'manifest.json')
+-            or preparation['integrationSHA256'] != sha(BASE / 'integration.json')): raise ValueError('Preparation binding')
++    require(preparation['workspace'] == str(workspace) and preparation['source'] == str(SOURCE)
++        and preparation['wrapperManifestSHA256'] == sha(BASE / 'manifest.json')
++        and preparation['adapterManifestSHA256'] == ADAPTER_SHA
++        and preparation['integrationSHA256'] == sha(BASE / 'integration.json')
++        and preparation['candidateSHA256'] == sha(prepared / 'candidate-before.json'), 'Preparation binding differs')
+     before = json.loads((prepared / 'source-before.json').read_text())
+     candidate = json.loads((prepared / 'candidate-before.json').read_text())
++    require(before == expected_main and candidate == expected_candidate, 'Final source composition differs')
+     def recheck():
+-        expected = dict(before)
+-        for row in verify()['files']: expected[row['path']] = {'sha256': row['proposedSHA256']}
+-        if expected != candidate or inventory.inventory(SOURCE) != before or inventory.inventory(workspace) != candidate:
+-            raise ValueError('Source/dependency inventory changed')
+-        if (sha(prepared / 'workspace-state-relocated.json') != preparation['privateWorkspaceStateSHA256']
+-                or json.loads((workspace / 'provider-swift/.build/workspace-state.json').read_text()) != json.loads((prepared / 'workspace-state-relocated.json').read_text())):
+-            raise ValueError('Private dependency resolution changed')
+-    recheck()
++        verify(); recheck_sources(candidate, before)
++    recheck(); require_preserved_cli()
+     helper = prepared / ('helper-' + str(args.attempt))
+     def prior(name):
+         output = prepared / (name + '-' + str(args.attempt))
+@@ -71,7 +71,7 @@
+                     list(map(str, sorted((source / 'Sources' / name).glob('*.swift')))) + ['-o', str(library)], name, 60)
+             links = linkage + ['-l' + name for name, _ in modules]
+             executable = output / 'native-member-fixture'
+-            execute(command + links + list(map(str, sorted((BASE / 'Tests/OwnedChild').glob('*.swift')))) + ['-o', str(executable)], 'compile-helper', 60)
++            execute(command + links + list(map(str, sorted((ADAPTER / 'Tests/OwnedChild').glob('*.swift')))) + ['-o', str(executable)], 'compile-helper', 60)
+             # Existing real owner/retirement/diagnostic regressions, same sources
+             # and arguments as MAIN SSHChecks. No temp-directory deletion.
+             for name in ['FakeClusterWorker', 'FakeOwner', 'RemoteOwnerTests', 'RetirementShutdownTests', 'DiagnosticFailureWorker', 'LateDiagnosticOwner', 'OwnerDiagnosticDrainTests']:
+@@ -109,10 +109,11 @@
+                 details = {'binarySHA256': sha(binary), 'binaryBytes': binary.stat().st_size, 'binaryExecuted': False}
+     finally:
+         resource.setrlimit(resource.RLIMIT_FSIZE, old_limit)
+-        recheck(); save(output / 'source-recheck.json', {'unchanged': True})
++        recheck(); require_preserved_cli(); save(output / 'source-recheck.json', {'unchanged': True, 'priorQualifiedCLIPreserved': True})
+         if args.phase != 'helper': prior('helper')
+     save(output / 'checks.json', {'passed': True, 'phase': args.phase, 'details': details, 'artifacts': artifacts,
+         'steps': steps, 'manifestSHA256': sha(BASE / 'manifest.json'), 'candidateSHA256': sha(prepared / 'candidate-before.json'),
++        'adapterManifestSHA256': ADAPTER_SHA, 'priorQualifiedCLI_SHA256': preparation['qualifiedCLI_SHA256'],
+         'modelOrRDMAOrRemoteExecuted': False, 'productionMembershipQualified': False})
+ 
+ if __name__ == '__main__': main()

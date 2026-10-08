@@ -1,0 +1,56 @@
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-go-qualification-draft-20260917/run.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-hardware-go-maintenance-skip-correction-20260917/run.py
+@@ -4,13 +4,21 @@
+ import os
+ from pathlib import Path
+ import resource
++import sys
++RUN_ROOT=Path(__file__).resolve().parent
++FROZEN=RUN_ROOT.parent/'cluster-native-shared-hardware-go-qualification-draft-20260917'
++sys.path.insert(0,str(FROZEN))
++from successor import verify_source
++from command_results import validate_command
+ from check_process import run_owned
+ from go_coverage import API,completed,combine,discover,exact_filter,require_feature_passes
+-from guards import check_prepared,isolated_environment,load,save,sha
++from guards import check_prepared as frozen_check_prepared,isolated_environment,load,save,sha
+ from inputs import BASE,ANCESTOR,WORKSPACE,GO,GO_SHA,GO_PACKAGES,GO_FILTER,TAG
+ 
+ PREFIX='github.com/eigeninference/d-inference/'
+ COMMAND='coordinator/cmd/coordinator'
++def check_prepared():
++    verify_source();return frozen_check_prepared()
+ def json_stream(raw):
+     decoder=json.JSONDecoder();out=[]
+     while raw.strip():
+@@ -23,12 +31,12 @@
+     if sha(Path(GO))!=GO_SHA:raise ValueError('Go toolchain differs')
+     inventory=sha(BASE/'projected-source.json')
+     if args.phase!='check':
+-        prior=json.loads((BASE/('check-'+str(args.attempt))/'checks.json').read_bytes())
+-        if prior.get('passed') is not True or prior['projectedSourceSHA256']!=inventory:raise ValueError('matching default/private checks required')
+-    output=BASE/(args.phase+'-'+str(args.attempt));output.mkdir(mode=0o700)
++        prior=json.loads((RUN_ROOT/('check-'+str(args.attempt))/'checks.json').read_bytes())
++        if prior.get('passed') is not True or prior['projectedSourceSHA256']!=inventory or prior.get('runnerManifestSHA256')!=sha(RUN_ROOT/'manifest.json'):raise ValueError('matching default/private checks required')
++    output=RUN_ROOT/(args.phase+'-'+str(args.attempt));output.mkdir(mode=0o700)
+     expected=load('expected-tests.json');os.chdir(WORKSPACE);isolated_environment()
+     old_limit=resource.getrlimit(resource.RLIMIT_FSIZE);resource.setrlimit(resource.RLIMIT_FSIZE,(512*1024*1024,old_limit[1]))
+-    receipt={'phase':args.phase,'passed':False,'projectedSourceSHA256':inventory,'executions':[],'modelsOrRemoteExecuted':False}
++    receipt={'phase':args.phase,'passed':False,'runnerManifestSHA256':sha(RUN_ROOT/'manifest.json'),'projectedSourceSHA256':inventory,'executions':[],'modelsOrRemoteExecuted':False}
+     def execute(name,argv,timeout=300):
+         check_prepared();entry={'name':name};receipt['executions'].append(entry)
+         try:run_owned(argv,output,name,timeout,diagnostic_limit=16_777_216)
+@@ -60,10 +68,10 @@
+                 if coverage!=expected[name]:raise ValueError('exact mandatory focus methods did not all pass')
+                 save(output/(name+'-focused.coverage.json'),coverage)
+                 wanted={PREFIX+COMMAND:expected['commandPrivate' if private else 'command']}
+-                command=completed(test(name+'-command',private,[COMMAND],['-timeout=120s']),wanted)
+-                if any(v!='pass' for entries in command.values() for v in entries.values()):raise ValueError('command method did not pass')
++                command=validate_command(test(name+'-command',private,[COMMAND],['-timeout=120s']),wanted)
+                 save(output/(name+'-command.coverage.json'),command)
+-            receipt.update(defaultMethods=51,privateMethods=54,defaultCommandMethods=8,privateCommandMethods=11,raceDetector=True)
++            receipt.update(defaultMethods=51,privateMethods=54,defaultCommandMethods=8,privateCommandMethods=11,defaultCommandPassed=7,privateCommandPassed=10,
++                           commandExplicitSkip="TestMaintenanceProcessDoesNotServeOrSeedAdmin",maintenanceDatabaseBehaviorTested=False,raceDetector=True)
+         elif args.phase=='build':
+             products=[]
+             for private in (False,True):

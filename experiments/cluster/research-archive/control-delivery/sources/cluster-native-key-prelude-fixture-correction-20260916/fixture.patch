@@ -1,0 +1,29 @@
+--- a/Tests/NativeKeyChild.swift
++++ b/Tests/NativeKeyChild.swift
+@@ -48,7 +48,25 @@
+         print("PASS native child"); return
+     }
+     if ["deadline", "substitution", "reflection", "low-order", "binding-mismatch"].contains(mode) {
+-        try rejectNative("invalid key establishment succeeded") { _ = try authority.establish() }
++        let expected: ClusterNativeKeyError?
++        switch mode {
++        case "substitution": expected = .wrongContext
++        case "binding-mismatch": expected = .invalidBinding
++        case "low-order": expected = .invalidKey
++        default: expected = nil
++        }
++        if let expected {
++            // The parent deliberately supplies no later confirmation. A missing
++            // early guard must not pass by eventually reaching the socket deadline.
++            do {
++                _ = try authority.establish()
++                throw NativeFixtureFailure.failed("invalid key establishment succeeded")
++            } catch let observed as ClusterNativeKeyError {
++                try requireNative(observed == expected, "invalid binding failed for the wrong reason")
++            }
++        } else {
++            try rejectNative("invalid key establishment succeeded") { _ = try authority.establish() }
++        }
+         try rejectNative("failed holder made transport") { _ = try authority.makeRecordTransport(io: NativeFixtureByteIO(rank: rank)) }
+         print("PASS native child"); return
+     }

@@ -1,0 +1,17 @@
+# Allocation probe build wrapper
+
+Source-only preparation for the frozen 35-case `CollectiveAllocationCheck` probe. No workspace, cache, compiler, native probe, or remote execution is part of this handoff. The build command runs only `check-arguments` and `list-cases`; actual GPU cases require a separate root-run supervisor and grant. No measured resource profile exists yet, and the protected serving policy remains closed.
+
+The base is the successful `qwen27b-lookahead-native-build-20260915` ordinary worker build (`c35c585c…f830`), with 3040 source members and 8755 dependency members. This avoids the Gemma/tiny fixture ancestry and its defines. `lineage.json` pins the complete prior source/dependency metadata, passed receipt, resource bundle, scope manifest `4338ce5b…e107`, and probe manifest `d024dfc1…698e`.
+
+`integration.json` is the exact restoration ledger: 45 overlays, five explicit exclusions, and both mismatched probe preimages. It produces 3060 source members. `runtime.patch` reconstructs those 50 selected edits directly against their actual pinned ancestral bytes. `RESTORATIONS.md` explains the changes; no old MAIN implementation is silently selected.
+
+Run `commands.json` in order only after the root grants materialization/compiler ownership. Preparation exclusively creates this directory's workspace and cache; it never edits MAIN or the successful ancestry. Every ancestral source member is verified before and after copying. APFS cache copying uses the existing bounded owned-child helper. Only owned cache JSON/YAML paths are rewritten; inherited checkouts must exactly match all 8755 retained members. The prior module cache is retained separately.
+
+The build uses one product, one define (`COLLECTIVE_RECORD_ALLOCATION_CHECK`), release/arm64/macOS 26.2 and two jobs. It has a 900-second owned-child deadline, then three 10-second calls for version/arguments/catalog. The catalog must exactly match all 35 frozen cases, including priming geometry and injected failure selection. Every build boundary rechecks the full source/dependency inventory. Failures remain in the fresh attempt directory; reruns require a fresh name.
+
+`package_native.py` requires a passed build, unchanged executable/snapshots, and exact ancestral `mlx.metallib` and paged-attention resource hashes. Its fresh bundle contains the new executable, those two resources and `source-identity.json`, which binds the wrapper, source/dependency snapshots, upstream manifests, 34 controls, pure catalog and build receipt. It never executes a probe.
+
+The existing unreaped-child cleanup helpers are byte-exact copies. Their post-reap group observation never authorizes signaling. `check_scripts.py` reads only selected sources and retained metadata; it does not hash the full ancestor or materialize a tree. Its first run exposed an ancestry schema mismatch (symlink-only rows), preserved under `source-check-failure-1`. The corrected snapshot function is AST-identical to the qualified worker's function, and preserves the one source alias and three dependency aliases as aliases.
+
+Remaining validation: actual Swift/SDK compilation (including `proc_pid_rusage` ABI), pure executable catalog, root-run 35 fresh-process native cases, conservative observed resource bounds with safety allowance, and the outer admission integration. Compilation and a source-only fixture are not resource qualification or encrypted RDMA execution.

@@ -1,0 +1,73 @@
+--- frozen/qwen_layer_stage_recorded_audit.py
++++ tiny12_recorded.py
+@@ -1,4 +1,4 @@
+-"""CPU-only oracle for recorded, sequentially resident Qwen stage comparison."""
++"""Prospective tiny12 cut4 variant; frozen recorded numerical math retained."""
+ import hashlib
+ import json
+ import math
+@@ -112,7 +112,7 @@
+                 'parameterLayoutSHA256', 'activeParameterLayoutSHA256', 'activeMappingSHA256', 'storageCommitmentSHA256']:
+             sha_string(receipt[key])
+         entries = receipt['activeTensors']
+-        require(isinstance(entries, list) and len(entries) == ([463, 464] if expected else [118, 119])[index], 'Stage tensor count differs')
++        require(isinstance(entries, list) and len(entries) == ([463, 464] if expected else [118, 234])[index], 'Stage tensor count differs')
+         equal(entries, sorted(entries, key=lambda x: x['localName']), 'Active inventory order differs')
+         local_names = set()
+         for tensor in entries:
+@@ -123,8 +123,9 @@
+             match = re.fullmatch(re.escape(namespace) + r'model\.layers\.(\d+)\.(.+)', name)
+             if match:
+                 layer = int(match[1])
+-                require(layer < layers and layer // (layers // 2) == index, 'Wrong source layer owner')
+-                local = namespace + f'model.layers.{layer % (layers // 2)}.' + match[2]
++                start, end = [(0, 4), (4, 12)][index]
++                require(start <= layer < end, 'Wrong tiny12 source layer owner')
++                local = namespace + f'model.layers.{layer - start}.' + match[2]
+             else:
+                 allowed = ([namespace + 'model.embed_tokens.' + s for s in ['weight', 'scales', 'biases']] if index == 0 else
+                     [namespace + 'lm_head.' + s for s in ['weight', 'scales', 'biases']] + [namespace + 'model.norm.weight'])
+@@ -178,7 +179,7 @@
+     # PreparedQwenCheckpoint counts sanitized retained source names, before
+     # composition, not every raw header entry. This pinned converted artifact
+     # excludes vision/MTP and has one retained source tensor per canonical name.
+-    retained_sources = expected['sourceHeaderTensorCount'] - expected['excluded']['count'] if expected else 237
++    retained_sources = expected['sourceHeaderTensorCount'] - expected['excluded']['count'] if expected else 352
+     require(retained_sources == len(full), 'Retained source/canonical inventory differs for the pinned artifact')
+     require(common['schemaVersion'] == 1 and common['canonicalTensorCount'] == len(full)
+         and common['sourceTensorCount'] == retained_sources
+@@ -209,6 +210,7 @@
+ 
+ 
+ def check_recorded_pair(checkpoint: dict, report: dict, expected: dict | None = None) -> dict:
++    require(expected is None, 'Only the prospective tiny12 cut4 fixture is admitted')
+     require(checkpoint['kind'] == 'qwen_layer_stage_baseline_checkpoint'
+         and report['kind'] == 'qwen_layer_stage_comparison_report', 'Wrong outer record kinds')
+     flags(checkpoint, baselineModelReleasedBeforeStageLoading=True)
+@@ -228,7 +230,7 @@
+         sha_string(source[key])
+     flags(source, bf16ConversionEnabled=True)
+     layers, vocab, dtype = source['layerCount'], source['vocabularySize'], source['embeddingActivationDType']
+-    require(integer(layers) == (32 if expected else 8) and integer(vocab) == (248320 if expected else 512)
++    require(integer(layers) == (32 if expected else 12) and integer(vocab) == (248320 if expected else 512)
+         and dtype in ('float16', 'bfloat16', 'float32') and integer(source['sourceModelTensorBytes'], 1), 'Source model geometry differs')
+     if expected:
+         require(expected['kind'] == 'qwen_layer_stage_real9b_expected' and dtype == 'bfloat16', 'Wrong real expected oracle')
+@@ -271,7 +273,7 @@
+         require(original['outputKind'] == kind and original['outputDType'] == dtype, 'Output role/dtype differs')
+         equal(original['outputShape'], shape, 'Output shape differs')
+         state = original['state']; entries = state['entries']
+-        require(state['committedTokens'] == tokens and len(entries) == (72 if expected else 18), 'State frontier/count differs')
++        require(state['committedTokens'] == tokens and len(entries) == (72 if expected else 27), 'State frontier/count differs')
+         identities = []
+         for entry in entries:
+             require(set(entry) == {'globalLayerIndex', 'component', 'shape', 'dtype', 'byteCount', 'sha256'}, 'State entry fields differ')
+@@ -316,7 +318,7 @@
+     conservative = 3 * (layers - layers // 4) * (conv + ssm) + (layers // 4) * (kv + 4) + max(conv, ssm, kv // 2) + 2 * boundary
+     require(report['conservativeStateAndBoundaryBytes'] == conservative, 'Conservative state/boundary estimate differs')
+     return dict(status='passed', vocabularySize=vocab, layerCount=layers, dtype=dtype, frames=6,
+-        stateEntriesPerFrame=72 if expected else 18, stateBytesPerFrame=state_sizes,
++        stateEntriesPerFrame=72 if expected else 27, stateBytesPerFrame=state_sizes,
+         independentlyVerifiedNativeLogitPairs=4, independentlyVerifiedRawLogitRows=8,
+         nativeLogitBytesExact=True, logitLogicalBytesSHA256=logit_hashes,
+         recordedRequestSHA256=recorded_hash, baselineEvidenceSHA256=baseline_hash,

@@ -1,0 +1,726 @@
+diff --git a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalDiscovery.swift b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalDiscovery.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalDiscovery.swift
+@@ -0,0 +1,18 @@
++import Foundation
++
++/// The CLI's existing exclusive serving/PID lock must cover publication and
++/// removal. Conditional removal also preserves a different record encountered
++/// during teardown; it is not a lock against arbitrary same-user file writers.
++struct DistributedLocalDiscovery: Sendable {
++    let publish: @Sendable (LocalEndpoint.Info) throws -> Void
++    let removeIfOwned: @Sendable (LocalEndpoint.Info) -> Void
++
++    static let local = Self(publish: { try LocalEndpoint.writeInfo($0) }, removeIfOwned: { owned in
++        remove(owned, read: LocalEndpoint.readInfo, remove: LocalEndpoint.removeInfo)
++    })
++
++    static func remove(_ owned: LocalEndpoint.Info, read: () -> LocalEndpoint.Info?, remove: () -> Void) {
++        guard read() == owned else { return }
++        remove()
++    }
++}
+diff --git a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift
+@@ -0,0 +1,70 @@
++import Foundation
++import NIOCore
++
++extension DistributedLocalServer {
++    nonisolated func makeApplication() -> LocalInferenceApplication {
++        makeLocalInferenceApplication(config: config, defaultMaxTokens: session.profile.maxOutputTokens,
++            acquire: { try await self.acquire($0) },
++            tokenizerProvider: { try await self.resolveTokenizer($0) },
++            availableModels: { await self.catalog() }, mtpSlots: { [] },
++            onServerRunning: { await self.didBind($0) })
++    }
++
++    func didBind(_ channel: any Channel) {
++        guard phase == .starting,
++              let port = channel.localAddress?.port, let port = UInt16(exactly: port), port != 0,
++              let deadline = session.lifetimeDeadlineUptimeNanoseconds,
++              DispatchTime.now().uptimeNanoseconds < deadline,
++              session.status == .ready, session.readiness() != nil else {
++            failed = true; beginTeardown(drainUntil: nil); return
++        }
++        let info = LocalEndpoint.Info(host: config.host, port: port, apiKey: config.authToken ?? "",
++            version: ProviderCore.version, pid: ProcessInfo.processInfo.processIdentifier,
++            updatedAt: ISO8601DateFormatter().string(from: Date()))
++        do {
++            try discovery?.publish(info)
++            if discovery != nil { ownDiscovery = info }
++            boundPort = port; phase = .serving
++        } catch {
++            failed = true; beginTeardown(drainUntil: nil)
++        }
++    }
++
++    func acquire(_ modelID: String) throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
++        guard modelID == session.model.publicModelID else {
++            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID)
++        }
++        // A single pipeline has one acquisition. No host-side waiting queue can
++        // retain unlimited tokenizers/requests or extend owner lifetime.
++        guard phase == .serving, pin == nil, let entry,
++              session.httpAdmissionAvailable else {
++            throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
++        }
++        let id = UUID(); pin = id
++        return .init(tokenizer: entry.tokenizer,
++            releaseToken: OneShotRelease(release: { _ in await self.release(id) }, modelId: modelID),
++            modelType: entry.modelType, container: nil, isVLM: false,
++            engineV2Bridge: entry.engineV2Bridge, visionGate: nil)
++    }
++
++    private func release(_ id: UUID) {
++        guard pin == id else { return }
++        pin = nil
++        let waiters = pinWaiters; pinWaiters.removeAll()
++        for waiter in waiters { waiter.resume() }
++    }
++
++    func resolveTokenizer(_ modelID: String?) throws -> MultiModelBatchSchedulerEngine.TokenizerResolution {
++        if let modelID, modelID != session.model.publicModelID {
++            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID)
++        }
++        guard phase == .serving, session.status == .ready, let entry else {
++            throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
++        }
++        return .init(tokenizer: entry.tokenizer, modelType: entry.modelType)
++    }
++
++    func catalog() -> [String] {
++        phase == .serving && session.status == .ready ? [session.model.publicModelID] : []
++    }
++}
+diff --git a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift
+@@ -0,0 +1,231 @@
++import Foundation
++import Hummingbird
++import MLXLMCommon
++
++/// One installed cluster session served by the normal local OpenAI HTTP stack.
++/// The caller retains this host, including on start failure or quarantine, until
++/// cleanupComplete. No local model container, device gate, or new epoch is made.
++public actor DistributedLocalServer {
++    let session: any DistributedLocalServerSession
++    let config: LocalInferenceHTTPConfig
++    let firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
++    let tokenizerLoader: @Sendable (URL) async throws -> TokenizerHandle
++    let discovery: DistributedLocalDiscovery?
++    var phase: DistributedLocalServerPhase = .prepared
++    var entry: MultiModelBatchSchedulerEngine.ModelRegistryEntry?
++    var pin: UUID?
++    var boundPort: UInt16?
++    var ownDiscovery: LocalEndpoint.Info?
++    var failed = false
++    var startupTask: Task<Void, Error>?
++    var serviceTask: Task<Void, Never>?
++    var lifetimeTask: Task<Void, Never>?
++    var teardownTask: Task<Void, Never>?
++    var stopWaiters: [CheckedContinuation<DistributedLocalServerStatus, Never>] = []
++    var pinWaiters: [CheckedContinuation<Void, Never>] = []
++
++    public init(session: DistributedInstalledSession, config: LocalInferenceHTTPConfig,
++                firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
++                publishDiscovery: Bool = true) {
++        self.session = session; self.config = config
++        self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
++        tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
++        discovery = publishDiscovery ? .local : nil
++    }
++
++    init(session: any DistributedLocalServerSession, config: LocalInferenceHTTPConfig,
++         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
++         tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
++         discovery: DistributedLocalDiscovery? = nil) {
++        self.session = session; self.config = config
++        self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
++        self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
++    }
++
++    public var status: DistributedLocalServerStatus {
++        .init(phase: phase, publicModelID: session.model.publicModelID,
++              boundPort: boundPort, acquisitions: pin == nil ? 0 : 1,
++              session: session.status, failed: failed)
++    }
++
++    /// Returns only after this application's bind callback, not a TCP/HTTP probe.
++    /// Failure starts retained teardown; it does not erase a partially started owner.
++    public func start(bindTimeout: Duration = .seconds(5)) async throws {
++        guard phase == .prepared else { throw DistributedLocalServerError.alreadyStarted }
++        guard bindTimeout > .zero, bindTimeout <= .seconds(60) else {
++            throw DistributedLocalServerError.bindTimedOut
++        }
++        phase = .starting
++        let task = Task { try await self.prepareAndBind(timeout: bindTimeout) }
++        startupTask = task
++        do {
++            try await withTaskCancellationHandler { try await task.value; try Task.checkCancellation() }
++                onCancel: { Task { await self.beginTeardown(drainUntil: nil) } }
++        } catch {
++            failed = true
++            beginTeardown(drainUntil: nil)
++            throw error
++        }
++    }
++
++    private func prepareAndBind(timeout: Duration) async throws {
++        try requireStarting()
++        try session.validateModelInputs()
++        let tokenizer = try await tokenizerLoader(session.model.directory)
++        try session.validateModelInputs()
++        try requireStarting()
++        let eos = try session.model.stopTokenIDs(tokenizerEOS: tokenizer.inner.eosTokenId)
++        // Reject an invalid optional policy before starting either native owner.
++        try firstTokenBudgetPolicy?.validate(maximumPromptTokens: session.profile.maxPromptTokens)
++        try await session.start()
++        try requireStarting()
++        guard let lifetime = session.lifetimeDeadlineUptimeNanoseconds,
++              lifetime > DispatchTime.now().uptimeNanoseconds else {
++            throw DistributedLocalServerError.lifetimeExpired
++        }
++        entry = try DistributedEngineFactory.makeRegistryEntry(
++            owner: session, expectedIdentity: session.expectedIdentity,
++            publicModelID: session.model.publicModelID, profile: session.profile,
++            tokenizer: tokenizer, eosTokenIDs: eos, modelType: session.model.modelType,
++            firstTokenBudgetPolicy: firstTokenBudgetPolicy)
++        startLifetimeMonitor(deadline: lifetime)
++        let application = makeApplication()
++        serviceTask = Task {
++            do { try await application.runService(gracefulShutdownSignals: []) }
++            catch is CancellationError {} catch { self.failed = true }
++            self.listenerExited()
++        }
++        let end = ContinuousClock.now.advanced(by: timeout)
++        while phase == .starting, ContinuousClock.now < end {
++            try await Task.sleep(for: .milliseconds(10))
++        }
++        if phase == .serving { return }
++        try Task.checkCancellation()
++        throw phase == .starting ? DistributedLocalServerError.bindTimedOut : DistributedLocalServerError.bindFailed
++    }
++
++    private func requireStarting() throws {
++        try Task.checkCancellation()
++        guard phase == .starting else { throw DistributedLocalServerError.startupInterrupted }
++    }
++
++    func listenerExited() {
++        boundPort = nil
++        if teardownTask == nil { failed = true; beginTeardown(drainUntil: nil) }
++    }
++
++    /// Bounds only this caller's wait. Missing proof keeps all ownership here.
++    public func stop(until deadline: UInt64) async -> DistributedLocalServerStatus {
++        beginTeardown(drainUntil: nil)
++        return await waitForTeardown(until: deadline)
++    }
++
++    /// New HTTP acquisitions close first. The installed owner drains its current
++    /// explicit request release; expiration/escalation switches to cancellation.
++    public func drain(until deadline: UInt64) async -> DistributedLocalServerStatus {
++        beginTeardown(drainUntil: deadline)
++        return await waitForTeardown(until: deadline)
++    }
++
++    private func waitForTeardown(until deadline: UInt64) async -> DistributedLocalServerStatus {
++        while teardownTask != nil, DispatchTime.now().uptimeNanoseconds < deadline {
++            do { try await Task.sleep(for: .milliseconds(10)) }
++            catch { break }
++        }
++        if teardownTask != nil {
++            phase = .quarantined
++            publishStopOutcome()
++        }
++        return status
++    }
++
++    /// Returns completed listener/pin/owner teardown OR an explicit bounded-stop
++    /// quarantine. The latter retains the in-flight teardown and all ownership;
++    /// callers can observe status for eventual cleanup and must not rotate.
++    public func waitUntilStopped() async -> DistributedLocalServerStatus {
++        if [.prepared, .stopped, .quarantined].contains(phase) {
++            return status
++        }
++        return await withCheckedContinuation { stopWaiters.append($0) }
++    }
++
++    func beginTeardown(drainUntil: UInt64?) {
++        if phase == .stopped { return }
++        removeDiscovery()
++        if teardownTask != nil {
++            // Explicit stop or fixed lifetime expiry interrupts a graceful drain.
++            if drainUntil == nil {
++                if phase != .quarantined { phase = .stopping }
++                serviceTask?.cancel()
++                Task { _ = await session.stop(until: DispatchTime.now().uptimeNanoseconds) }
++            }
++            return
++        }
++        if phase != .quarantined { phase = drainUntil == nil ? .stopping : .draining }
++        startupTask?.cancel()
++        if drainUntil == nil { serviceTask?.cancel() }
++        teardownTask = Task { await self.finishTeardown(drainUntil: drainUntil) }
++    }
++
++    private func finishTeardown(drainUntil: UInt64?) async {
++        // Joining startup prevents a late tokenizer/load/bridge installation.
++        _ = await startupTask?.result
++        if let drainUntil { _ = await session.drain(until: drainUntil) }
++        serviceTask?.cancel()
++        // Engine cancellation/retirement must run while HTTP streams unwind;
++        // awaiting the listener first can deadlock a stream waiting on the owner.
++        let bridge = entry?.engineV2Bridge
++        let engineStop = Task { await bridge?.shutdown() }
++        await session.shutdown()
++        _ = await engineStop.value
++        _ = await serviceTask?.value
++        if pin != nil { await withCheckedContinuation { pinWaiters.append($0) } }
++        lifetimeTask?.cancel(); lifetimeTask = nil
++        removeDiscovery()
++        boundPort = nil; serviceTask = nil; startupTask = nil
++        if session.status == .released {
++            entry = nil; phase = .stopped
++        } else {
++            // Keep tokenizer, bridge and session on an unresolved owner release.
++            phase = .quarantined
++        }
++        teardownTask = nil
++        publishStopOutcome()
++    }
++
++    private func publishStopOutcome() {
++        let result = status, waiters = stopWaiters
++        stopWaiters.removeAll()
++        for waiter in waiters { waiter.resume(returning: result) }
++    }
++
++    private func startLifetimeMonitor(deadline: UInt64) {
++        lifetimeTask = Task {
++            while !Task.isCancelled {
++                let now = DispatchTime.now().uptimeNanoseconds
++                if now >= deadline {
++                    beginTeardown(drainUntil: nil); return
++                }
++                // A queued session invalidation callback may not yet have
++                // changed status. Pair invalidity is independently abnormal.
++                if [.starting, .serving].contains(phase),
++                   session.status != .ready || session.httpSessionInvalid {
++                    failed = true
++                    beginTeardown(drainUntil: nil); return
++                }
++                if ![.starting, .serving].contains(phase), [.quarantined, .released].contains(session.status) {
++                    beginTeardown(drainUntil: nil); return
++                }
++                if phase == .serving, pin == nil, session.httpSessionExhausted {
++                    beginTeardown(drainUntil: nil); return
++                }
++                do { try await Task.sleep(nanoseconds: min(deadline - now, 100_000_000)) }
++                catch { return }
++            }
++        }
++    }
++
++    func removeDiscovery() {
++        if let ownDiscovery { discovery?.removeIfOwned(ownDiscovery); self.ownDiscovery = nil }
++    }
++}
+diff --git a/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift
+@@ -0,0 +1,46 @@
++import Foundation
++
++// Host-only injection seam for model-free HTTP/lifecycle tests. The public
++// initializer accepts the installed session; it has the sole device ownership.
++protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
++    var model: DistributedInstalledModel { get }
++    var expectedIdentity: DistributedResidentIdentity { get }
++    var profile: DistributedResidentExecutionProfile { get }
++    var status: DistributedInstalledSessionStatus { get }
++    var httpAdmissionAvailable: Bool { get }
++    var httpSessionInvalid: Bool { get }
++    var httpSessionExhausted: Bool { get }
++    var lifetimeDeadlineUptimeNanoseconds: UInt64? { get }
++    func validateModelInputs() throws
++    func start() async throws
++    func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus
++    func drain(until deadline: UInt64) async -> DistributedInstalledSessionStatus
++}
++
++extension DistributedInstalledSession: DistributedLocalServerSession {
++    var httpAdmissionAvailable: Bool { status == .ready && admissionState?.canAdmit() == true }
++    var httpSessionInvalid: Bool { admissionState?.isValid == false }
++    var httpSessionExhausted: Bool {
++        guard let state = admissionState else { return false }
++        return state.isValid && state.admissionsRemaining == 0 && !state.hasActiveRequest
++    }
++}
++
++public enum DistributedLocalServerPhase: String, Sendable {
++    case prepared, starting, serving, draining, stopping, quarantined, stopped
++}
++
++public struct DistributedLocalServerStatus: Sendable {
++    public let phase: DistributedLocalServerPhase
++    public let publicModelID: String
++    public let boundPort: UInt16?
++    public let acquisitions: Int
++    public let session: DistributedInstalledSessionStatus
++    public let failed: Bool
++    /// Listener exit alone never sets this flag.
++    public var cleanupComplete: Bool { phase == .stopped && session == .released && acquisitions == 0 }
++}
++
++public enum DistributedLocalServerError: Error, Sendable {
++    case alreadyStarted, startupInterrupted, bindFailed, bindTimedOut, lifetimeExpired
++}
+diff --git a/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift b/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift
+@@ -0,0 +1,153 @@
++import Foundation
++import MLXLMCommon
++@testable import ProviderCore
++
++/// Fabricated owner/session only: no child, model payload, remote network or MLX
++/// evaluation. Actual HTTP tests use the real application and loopback listener.
++final class LocalHostTestSession: DistributedLocalServerSession, @unchecked Sendable {
++    let base = DistributedTestOwner()
++    let profile = try! distributedTestProfile()
++    let model = DistributedInstalledModel(publicModelID: "public/example", directory: URL(fileURLWithPath: "/fabricated"),
++        modelType: "qwen3_5", eosTokenIDs: [99], vocabularySize: 100)
++    let lock = NSLock()
++    var phase: DistributedInstalledSessionStatus = .prepared
++    var lifetime: UInt64?
++    var validations = 0
++    var starts = 0
++    var stopCalled = false
++    var nativeCleanup = false
++    var holdOwnerACK = false
++    var retainQuarantine = false
++    var failSecondValidation = false
++    var startDelay: Duration = .zero
++    var lifetimeNanoseconds: UInt64 = 5_000_000_000
++    var drainEntered = false
++    var holdDrain = false
++    private var exhausted = false
++    private var invalid = false
++    let ack = LocalHostLatch(), drained = LocalHostLatch()
++    var expectedIdentity: DistributedResidentIdentity { base.identity }
++    var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
++    var httpAdmissionAvailable: Bool { lock.withLock { phase == .ready && !exhausted } }
++    var httpSessionExhausted: Bool { lock.withLock { exhausted } }
++    var httpSessionInvalid: Bool { lock.withLock { invalid } }
++    func exhaustRequests() { lock.withLock { exhausted = true } }
++    func invalidatePairBeforeStatusCallback() { lock.withLock { invalid = true } }
++    func loseSession() { lock.withLock { phase = .quarantined } }
++    var lifetimeDeadlineUptimeNanoseconds: UInt64? { lock.withLock { lifetime } }
++    var nativeCleanupObserved: Bool { lock.withLock { nativeCleanup } }
++    var validationCount: Int { lock.withLock { validations } }
++    var startCount: Int { lock.withLock { starts } }
++    var didEnterDrain: Bool { lock.withLock { drainEntered } }
++
++    func validateModelInputs() throws {
++        let reject = lock.withLock { validations += 1; return failSecondValidation && validations == 2 }
++        if reject { throw DistributedEngineError.unavailable }
++    }
++    func start() async throws {
++        lock.withLock { starts += 1; phase = .starting }
++        if startDelay > .zero { try await Task.sleep(for: startDelay) }
++        try Task.checkCancellation()
++        lock.withLock { lifetime = DispatchTime.now().uptimeNanoseconds + lifetimeNanoseconds; phase = .ready }
++    }
++    func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus {
++        lock.withLock { stopCalled = true; if phase != .released { phase = .stopping } }
++        drained.complete()
++        return status
++    }
++    func drain(until deadline: UInt64) async -> DistributedInstalledSessionStatus {
++        let wait = lock.withLock { drainEntered = true; phase = .draining; return holdDrain }
++        if wait { await drained.wait() }
++        return status
++    }
++    func shutdown() async {
++        let wait = lock.withLock { nativeCleanup = true; return holdOwnerACK }
++        if wait { await ack.wait() }
++        lock.withLock { phase = retainQuarantine ? .quarantined : .released }
++    }
++    func readiness() -> DistributedResidentReadiness? { status == .ready ? base.readiness() : nil }
++    func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
++        base.setReadinessInvalidationHandler(handler)
++    }
++    func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
++        base.projectFirstToken(request, admission: admission)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity,
++                 profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {
++        try base.reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity,
++                 profileID: String, capacityLimit: Int,
++                 deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
++        try reserve(request, identity: identity, profileID: profileID, capacityLimit: capacityLimit)
++    }
++}
++
++final class LocalHostLatch: @unchecked Sendable {
++    private let lock = NSLock()
++    private var done = false
++    private var waiters: [CheckedContinuation<Void, Never>] = []
++    func wait() async {
++        await withCheckedContinuation { continuation in
++            let completed = lock.withLock { if done { return true }; waiters.append(continuation); return false }
++            if completed { continuation.resume() }
++        }
++    }
++    func complete() {
++        let values = lock.withLock { done = true; let result = waiters; waiters.removeAll(); return result }
++        for value in values { value.resume() }
++    }
++}
++
++final class LocalHostDiscovery: @unchecked Sendable {
++    private let lock = NSLock()
++    private var record: LocalEndpoint.Info?
++    private var writes = 0
++    var value: LocalEndpoint.Info? { lock.withLock { record } }
++    var writeCount: Int { lock.withLock { writes } }
++    func replace(_ value: LocalEndpoint.Info) { lock.withLock { record = value } }
++    var client: DistributedLocalDiscovery {
++        .init(publish: { value in self.lock.withLock { self.record = value; self.writes += 1 } },
++              removeIfOwned: { owned in
++                  self.lock.withLock {
++                      DistributedLocalDiscovery.remove(owned, read: { self.record }, remove: { self.record = nil })
++                  }
++              })
++    }
++}
++
++func localHost(_ session: LocalHostTestSession, port: UInt16 = 0,
++               discovery: LocalHostDiscovery? = nil) -> DistributedLocalServer {
++    .init(session: session, config: .init(host: "127.0.0.1", port: port),
++          tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) }, discovery: discovery?.client)
++}
++
++func localHostDeadline(_ milliseconds: UInt64 = 2_000) -> UInt64 {
++    DispatchTime.now().uptimeNanoseconds + milliseconds * 1_000_000
++}
++
++func localHostEventually(_ predicate: () async -> Bool) async throws -> Bool {
++    let end = ContinuousClock.now.advanced(by: .seconds(2))
++    while ContinuousClock.now < end {
++        if await predicate() { return true }
++        try await Task.sleep(for: .milliseconds(5))
++    }
++    return await predicate()
++}
++
++func localHostGET(port: UInt16, path: String) async throws -> (Data, HTTPURLResponse) {
++    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
++    request.timeoutInterval = 2
++    let (data, response) = try await URLSession.shared.data(for: request)
++    return (data, response as! HTTPURLResponse)
++}
++
++func localHostPOST(port: UInt16, model: String) async throws -> HTTPURLResponse {
++    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
++    request.httpMethod = "POST"; request.timeoutInterval = 2
++    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
++    request.httpBody = try JSONSerialization.data(withJSONObject: [
++        "model": model, "messages": [["role": "user", "content": "fixture"]], "stream": true])
++    let (_, response) = try await URLSession.shared.data(for: request)
++    return response as! HTTPURLResponse
++}
+diff --git a/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTests.swift b/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTests.swift
+new file mode 100644
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTests.swift
+@@ -0,0 +1,178 @@
++import Foundation
++import Testing
++@testable import ProviderCore
++
++@Test func distributedLocalServerActualBindPublicRouteAndPinnedShutdown() async throws {
++    let session = LocalHostTestSession(), discovery = LocalHostDiscovery()
++    let host = localHost(session, discovery: discovery)
++    try await host.start()
++    let started = await host.status
++    let port = try #require(started.boundPort)
++    #expect(started.phase == .serving && discovery.value?.port == port)
++    #expect(session.validationCount == 2 && session.startCount == 1)
++    let (models, response) = try await localHostGET(port: port, path: "/v1/models")
++    #expect(response.statusCode == 200)
++    #expect(String(decoding: models, as: UTF8.self).contains(session.model.publicModelID))
++    #expect(!String(decoding: models, as: UTF8.self).contains(session.expectedIdentity.modelID))
++    let wrongRoute = try await localHostPOST(port: port, model: session.expectedIdentity.modelID)
++    #expect(wrongRoute.statusCode == 404 && session.base.reserveCount == 0)
++    do { _ = try await host.acquire(session.expectedIdentity.modelID); Issue.record("Accepted native ID as public route") }
++    catch let error as MultiModelBatchSchedulerEngineError { #expect(error == .modelNotLoaded(session.expectedIdentity.modelID)) }
++    let acquired = try await host.acquire(session.model.publicModelID)
++    #expect(acquired.container == nil && !acquired.isVLM && acquired.engineV2Bridge != nil)
++    let stopped = await host.stop(until: localHostDeadline(20))
++    #expect(stopped.phase == .quarantined && stopped.acquisitions == 1 && !stopped.cleanupComplete)
++    #expect(discovery.value == nil)
++    await acquired.releaseToken.fire(); await acquired.releaseToken.fire()
++    #expect(try await localHostEventually { await host.status.cleanupComplete })
++    let finished = await host.waitUntilStopped()
++    #expect(finished.cleanupComplete && finished.acquisitions == 0)
++}
++
++@Test func distributedLocalServerPortCollisionNeverPublishesForeignListener() async throws {
++    let first = localHost(LocalHostTestSession())
++    try await first.start()
++    let firstStatus = await first.status
++    let port = try #require(firstStatus.boundPort)
++    let secondSession = LocalHostTestSession(), secondDiscovery = LocalHostDiscovery()
++    let second = localHost(secondSession, port: port, discovery: secondDiscovery)
++    do { try await second.start(); Issue.record("Port collision accepted") } catch {}
++    let stopped = await second.waitUntilStopped()
++    #expect(stopped.cleanupComplete && secondDiscovery.writeCount == 0)
++    let (_, response) = try await localHostGET(port: port, path: "/health")
++    #expect(response.statusCode == 200)
++    _ = await first.stop(until: localHostDeadline())
++}
++
++@Test func distributedLocalServerStartupCancellationRetainsCleanup() async throws {
++    let session = LocalHostTestSession(); session.startDelay = .seconds(10); session.holdOwnerACK = true
++    let host = localHost(session)
++    let start = Task { try await host.start() }
++    #expect(try await localHostEventually { session.startCount == 1 })
++    start.cancel()
++    do { try await start.value; Issue.record("Canceled startup returned success") } catch {}
++    let status = await host.stop(until: localHostDeadline(20))
++    #expect(status.phase == .quarantined && !status.cleanupComplete)
++    #expect(session.nativeCleanupObserved)
++    session.ack.complete()
++    #expect(try await localHostEventually { await host.status.cleanupComplete })
++    let done = await host.waitUntilStopped()
++    #expect(done.cleanupComplete)
++}
++
++@Test func distributedLocalServerExpiryStopsWithoutHTTPRequests() async throws {
++    let session = LocalHostTestSession(); session.lifetimeNanoseconds = 1_000_000_000
++    let discovery = LocalHostDiscovery()
++    let host = localHost(session, discovery: discovery)
++    try await host.start()
++    let done = await host.waitUntilStopped()
++    #expect(done.cleanupComplete && session.base.reserveCount == 0 && discovery.value == nil)
++}
++
++@Test func distributedLocalServerDoesNotEquateListenerExitOrNativeCleanupWithOwnerACK() async throws {
++    let session = LocalHostTestSession(); session.holdOwnerACK = true
++    let host = localHost(session)
++    try await host.start()
++    let observer = Task { await host.waitUntilStopped() }
++    #expect(try await localHostEventually { await host.stopWaiters.count == 1 })
++    let stopped = await host.stop(until: localHostDeadline(25))
++    #expect(stopped.phase == .quarantined && !stopped.cleanupComplete)
++    #expect(session.nativeCleanupObserved)
++    let observed = await observer.value
++    #expect(observed.phase == .quarantined && !observed.cleanupComplete)
++    let retained = await host.entry
++    #expect(retained != nil)
++    session.ack.complete()
++    #expect(try await localHostEventually { await host.status.cleanupComplete })
++    let done = await host.waitUntilStopped()
++    #expect(done.cleanupComplete)
++}
++
++@Test func distributedLocalServerExplicitUnresolvedQuarantineIsRetained() async throws {
++    let session = LocalHostTestSession(); session.retainQuarantine = true
++    let host = localHost(session)
++    try await host.start()
++    _ = await host.stop(until: localHostDeadline())
++    let done = await host.waitUntilStopped()
++    #expect(done.phase == .quarantined && done.session == .quarantined && !done.cleanupComplete)
++    let retained = await host.entry
++    #expect(retained != nil)
++}
++
++@Test func distributedLocalServerDiscoveryRemovesOnlyExactOwnRecord() async throws {
++    let discovery = LocalHostDiscovery()
++    let host = localHost(LocalHostTestSession(), discovery: discovery)
++    try await host.start()
++    let owned = try #require(discovery.value)
++    var competitor = owned; competitor.pid = 456; competitor.updatedAt = "two"
++    discovery.replace(competitor)
++    _ = await host.stop(until: localHostDeadline())
++    #expect(discovery.value == competitor)
++    discovery.client.removeIfOwned(competitor)
++    #expect(discovery.value == nil)
++}
++
++@Test func distributedLocalServerChangedTokenizerMetadataRefusesBeforeOwnerStart() async throws {
++    let session = LocalHostTestSession(); session.failSecondValidation = true
++    let discovery = LocalHostDiscovery()
++    let host = localHost(session, discovery: discovery)
++    do { try await host.start(); Issue.record("Changed tokenizer inputs admitted") } catch {}
++    let done = await host.waitUntilStopped()
++    #expect(session.startCount == 0 && session.validationCount == 2 && done.cleanupComplete && discovery.writeCount == 0)
++}
++
++@Test func distributedLocalServerDrainClosesAdmissionsAndWaitsForExplicitRelease() async throws {
++    let session = LocalHostTestSession(); session.holdDrain = true
++    let host = localHost(session)
++    try await host.start()
++    let acquired = try await host.acquire(session.model.publicModelID)
++    let started = await host.status
++    let port = try #require(started.boundPort)
++    let draining = Task { await host.drain(until: localHostDeadline()) }
++    #expect(try await localHostEventually { session.didEnterDrain })
++    let refused = try await localHostPOST(port: port, model: session.model.publicModelID)
++    #expect(refused.statusCode == 503 && session.base.reserveCount == 0)
++    do { _ = try await host.acquire(session.model.publicModelID); Issue.record("Drain admitted request") }
++    catch let error as MultiModelBatchSchedulerEngineError {
++        guard case .requestRejected = error else { throw error }
++    }
++    #expect(!session.nativeCleanupObserved)
++    session.drained.complete()
++    await acquired.releaseToken.fire()
++    let result = await draining.value
++    #expect(result.cleanupComplete)
++}
++
++@Test func distributedLocalServerExhaustionKeepsLastResponseAcquisitionUntilRelease() async throws {
++    let session = LocalHostTestSession()
++    let serving = localHost(session)
++    try await serving.start()
++    let acquired = try await serving.acquire(session.model.publicModelID)
++    session.exhaustRequests()
++    try await Task.sleep(for: .milliseconds(150))
++    let held = await serving.status
++    #expect(held.phase == .serving && held.acquisitions == 1 && !session.nativeCleanupObserved)
++    await acquired.releaseToken.fire()
++    let done = await serving.waitUntilStopped()
++    #expect(done.cleanupComplete && !done.failed)
++}
++
++@Test func distributedLocalServerUnexpectedSessionLossLatchesFailureAfterCleanup() async throws {
++    let session = LocalHostTestSession(), discovery = LocalHostDiscovery()
++    let host = localHost(session, discovery: discovery)
++    try await host.start()
++    session.loseSession()
++    let done = await host.waitUntilStopped()
++    #expect(done.cleanupComplete && done.failed && discovery.value == nil)
++}
++
++@Test func distributedLocalServerInvalidPairBeforeStatusCallbackIsFailureNotQuotaCompletion() async throws {
++    let session = LocalHostTestSession()
++    let serving = localHost(session)
++    try await serving.start()
++    session.exhaustRequests()
++    session.invalidatePairBeforeStatusCallback()
++    #expect(session.status == .ready)
++    let done = await serving.waitUntilStopped()
++    #expect(done.cleanupComplete && done.failed)
++}

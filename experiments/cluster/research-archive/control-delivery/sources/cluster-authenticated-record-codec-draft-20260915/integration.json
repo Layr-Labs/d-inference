@@ -1,0 +1,43 @@
+{
+  "dependencies": [
+    "Foundation",
+    "CryptoKit"
+  ],
+  "files": [
+    {
+      "baseSHA256": "ca0b58ea4616f89d298bfdd81905026d3c161c559b648b1d631da49ab7579f0f",
+      "path": "libs/darkbloom-cluster/Package.swift",
+      "proposedSHA256": "63e93599f6444e87fb02bb49d68afe23896dc8277630d39ead6e8346967b3d00"
+    },
+    {
+      "baseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift",
+      "proposedSHA256": "6d81628e5780612cbedde71b82e5c5e3fd53ef30cc3810ea97e974a788fead9d"
+    },
+    {
+      "baseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordFraming.swift",
+      "proposedSHA256": "1bed76a6016cc18ef4a35b45c2af305bfe5ce1342c925d9e74bd6bcda55effce"
+    },
+    {
+      "baseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordState.swift",
+      "proposedSHA256": "91577a9cf2b9a7d274846e13274764825e3cb1de1459d869955b1d21027b1e61"
+    },
+    {
+      "baseSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTypes.swift",
+      "proposedSHA256": "723e1e63d9b6f8fc0a38f47b94152fa026fba478d05642494b6aab05f6940366"
+    }
+  ],
+  "fixtureGroups": 8,
+  "missingProductionDependencies": [
+    "coordinator pair authorization",
+    "fresh key establishment and single-channel epoch ownership",
+    "complete encrypted record routing",
+    "memory/transfer-envelope admission",
+    "actual numerical/tamper/cleanup/timing qualification"
+  ],
+  "scope": "Standalone codec only; not used by transport/native/Provider",
+  "testRunner": "Tests/run.py"
+}

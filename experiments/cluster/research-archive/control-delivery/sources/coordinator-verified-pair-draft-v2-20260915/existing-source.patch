@@ -1,0 +1,284 @@
+--- a/coordinator/registry/attestation_policy.go
++++ b/coordinator/registry/attestation_policy.go
+@@ -136,6 +136,11 @@
+ 	stillApproved func(ApplicationEvidence) bool,
+ ) (needChallenge []string) {
+ 	r.mu.Lock()
++	if generation != r.releasePolicyGeneration {
++		for state := range r.verifiedPairs.states {
++			r.endVerifiedPairLocked(state)
++		}
++	}
+ 	r.releasePolicyGeneration = generation
+ 	r.releasePolicyRequired = required
+ 	enforced := r.releasePolicyEnforcedLocked()
+@@ -330,7 +335,8 @@
+ 		r.mu.Unlock()
+ 		return
+ 	}
+-	hook := r.onHardUntrust // capture under r.mu (race-safe)
++	hook := r.onHardUntrust           // capture under r.mu (race-safe)
++	r.disconnectVerifiedPairLocked(p) // revoke even a transient pair grant; no resurrection
+ 
+ 	p.mu.Lock()
+ 	if p.Status != StatusUntrusted {
+@@ -407,6 +413,10 @@
+ 	}
+ 	p.mu.Unlock()
+ 
++	if level != TrustHardware {
++		r.invalidateVerifiedPairForProvider(p)
++	}
++
+ 	// Persist trust state.
+ 	r.persistProviderNow(p)
+ 	p.reconcileRuntimeCapabilities()
+@@ -537,6 +547,10 @@
+ 	}
+ 	p.mu.Unlock()
+ 
++	if !transientOnly || count >= MaxFailedChallenges {
++		r.invalidateVerifiedPairForProvider(p)
++	}
++
+ 	// Persist challenge state and reputation.
+ 	r.persistProviderNow(p)
+ 	r.persistReputation(p)
+--- a/coordinator/registry/gate_reason.go
++++ b/coordinator/registry/gate_reason.go
+@@ -46,6 +46,7 @@
+ 	GateAllowlist
+ 	GateNotServingModel
+ 	GateStateRestoring
++	GatePairReserved
+ 	// GateReasonCount is the number of reasons; it sizes the tally arrays and
+ 	// is not itself a reason.
+ 	GateReasonCount
+@@ -80,6 +81,7 @@
+ 	GateAllowlist:            "allowlist",
+ 	GateNotServingModel:      "not_serving_model",
+ 	GateStateRestoring:       "state_restoring",
++	GatePairReserved:         "pair_reserved",
+ }
+ 
+ // String returns the snake_case name of the reason ("unknown" for an
+--- a/coordinator/registry/model_commands.go
++++ b/coordinator/registry/model_commands.go
+@@ -29,6 +29,11 @@
+ 		return fmt.Errorf(
+ 			"provider %q does not satisfy requirements for model %q", providerID, modelID)
+ 	}
++	done, err := r.beginVerifiedPairAwareModelCommand(p, true)
++	if err != nil {
++		return err
++	}
++	defer done()
+ 	if r.loadModelSender != nil {
+ 		if err := r.loadModelSender(providerID, modelID); err != nil {
+ 			return err
+@@ -82,6 +87,11 @@
+ 		return fmt.Errorf(
+ 			"provider %q does not satisfy requirements for model %q", providerID, modelID)
+ 	}
++	done, err := r.beginVerifiedPairAwareModelCommand(p, true)
++	if err != nil {
++		return err
++	}
++	defer done()
+ 	if r.prefetchModelSender != nil {
+ 		return r.prefetchModelSender(providerID, modelID, priority)
+ 	}
+@@ -133,6 +143,12 @@
+ 		return fmt.Errorf("provider %q not found", providerID)
+ 	}
+ 
++	done, err := r.beginVerifiedPairAwareModelCommand(p, originallyNonEmpty)
++	if err != nil {
++		return err
++	}
++	defer done()
++
+ 	// Serialize compute → wire write → last-snapshot update per connection.
+ 	// Registry/provider locks are released before I/O; sendMu preserves order so
+ 	// an untrust revoke always lands after any already-started nonempty frame.
+--- a/coordinator/registry/model_loading.go
++++ b/coordinator/registry/model_loading.go
+@@ -308,7 +308,7 @@
+ 	for _, action := range actions {
+ 		if p, ok := r.providers[action.providerID]; ok {
+ 			p.mu.Lock()
+-			eligible := r.providerCanAcquireCatalogModelLocked(p, action.modelID)
++			eligible := !r.providerPairHeldLocked(p, now, nil) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
+ 			p.mu.Unlock()
+ 			if !eligible {
+ 				continue
+--- a/coordinator/registry/provider.go
++++ b/coordinator/registry/provider.go
+@@ -278,7 +278,9 @@
+ 	runtimeCapabilitiesReconciled     bool
+ 	lastReconciledRuntimeCapabilities []string
+ 	lastDesiredModels                 []protocol.DesiredModelEntry
+-	desiredModelsSendMu               sync.Mutex
++	// Counts command writes that could race pair preparation, under mu.
++	pairModelCommandsInFlight int
++	desiredModelsSendMu       sync.Mutex
+ 
+ 	mu          sync.Mutex
+ 	pendingReqs map[string]*PendingRequest
+--- a/coordinator/registry/provider_capabilities.go
++++ b/coordinator/registry/provider_capabilities.go
+@@ -74,9 +74,10 @@
+ // Apple hardware trust and APNs code identity are promotion prerequisites, not
+ // merely exact-model routing gates. Legacy attestations have no signed claim
+ // fields; they stay trusted for unrelated models but receive no capabilities.
+-func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error {
++func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) (reconcileError error) {
+ 	r.mu.RLock()
+ 	provider := r.providers[providerID]
++	pair := r.verifiedPairs.connections[provider]
+ 	r.mu.RUnlock()
+ 	if provider == nil {
+ 		return fmt.Errorf("provider not found")
+@@ -98,7 +99,16 @@
+ 		}
+ 		provider.lastReconciledRuntimeCapabilities = append(
+ 			[]string(nil), provider.RuntimeCapabilities...)
++		// Runtime/min-version policy can revoke these flags without MarkUntrusted.
++		// Capture that loss under p.mu; a later successful refresh must not revive
++		// the prior start grant. Bind the invalidation to the observed pair only.
++		pairRevoked := reconcileError != nil || changed || !provider.RuntimeVerified ||
++			!provider.RuntimeManifestChecked || !provider.MetallibVerified ||
++			!provider.CodeAttested || !provider.FreshCodeAttested
+ 		provider.mu.Unlock()
++		if pair != nil && pairRevoked {
++			r.invalidateVerifiedPairState(pair)
++		}
+ 		if changed {
+ 			r.notifyRuntimeCapabilitiesPromoted(providerID)
+ 		}
+--- a/coordinator/registry/provider_evidence.go
++++ b/coordinator/registry/provider_evidence.go
+@@ -55,6 +55,9 @@
+ 		p.RuntimeCapabilities = nil
+ 	}
+ 	p.mu.Unlock()
++	if (!attested || trust != TrustHardware) && p.registry != nil {
++		p.registry.invalidateVerifiedPairForProvider(p)
++	}
+ 	p.reconcileRuntimeCapabilities()
+ }
+ 
+@@ -191,6 +194,9 @@
+ 	p.ApplicationEvidence = ApplicationEvidence{}
+ 	p.RuntimeCapabilities = nil
+ 	p.mu.Unlock()
++	if p.registry != nil {
++		p.registry.invalidateVerifiedPairForProvider(p)
++	}
+ 	p.reconcileRuntimeCapabilities()
+ }
+ 
+@@ -332,8 +338,11 @@
+ 
+ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
+ 	p.mu.Lock()
+-	defer p.mu.Unlock()
+ 	p.ChallengeVerifiedSIP = v
++	p.mu.Unlock()
++	if !v && p.registry != nil {
++		p.registry.invalidateVerifiedPairForProvider(p)
++	}
+ }
+ 
+ // SetCodeAttested updates general code-proof state at validated call sites.
+@@ -347,6 +356,9 @@
+ 		p.RuntimeCapabilities = nil
+ 	}
+ 	p.mu.Unlock()
++	if !v && p.registry != nil {
++		p.registry.invalidateVerifiedPairForProvider(p)
++	}
+ 	p.reconcileRuntimeCapabilities()
+ }
+ 
+--- a/coordinator/registry/provider_lifecycle.go
++++ b/coordinator/registry/provider_lifecycle.go
+@@ -299,6 +299,7 @@
+ 			r.mu.Unlock()
+ 			return false
+ 		}
++		r.disconnectVerifiedPairLocked(p)
+ 		delete(r.providers, id)
+ 		// Clear any pending model load entries for this provider.
+ 		for key := range r.pendingModelLoads {
+--- a/coordinator/registry/registry.go
++++ b/coordinator/registry/registry.go
+@@ -26,6 +26,8 @@
+ type Registry struct {
+ 	mu        sync.RWMutex
+ 	providers map[string]*Provider
++	// Opt-in pair membership and exclusive physical-device holds; guarded by mu.
++	verifiedPairs verifiedPairRegistry
+ 
+ 	queue *RequestQueue
+ 	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
+--- a/coordinator/registry/routing_eligibility.go
++++ b/coordinator/registry/routing_eligibility.go
+@@ -51,6 +51,13 @@
+ // The evaluation order is byte-for-byte the boolean gate's, so the two can
+ // never disagree on the verdict. Allocation-free. Caller holds r.mu and p.mu.
+ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) (bool, GateReason) {
++	return r.providerLivenessGateReasonAllowPairLocked(p, minTrust, allowPrivate, now, nil)
++}
++
++func (r *Registry) providerLivenessGateReasonAllowPairLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time, pair *verifiedPairState) (bool, GateReason) {
++	if r.providerPairHeldLocked(p, now, pair) {
++		return false, GatePairReserved
++	}
+ 	if p.Status == StatusOffline {
+ 		return false, GateOffline
+ 	}
+--- a/coordinator/registry/scheduler.go
++++ b/coordinator/registry/scheduler.go
+@@ -1540,6 +1540,12 @@
+ // wrapper — so the verdict and the reason can never drift. Allocation-free.
+ // Caller holds r.mu and p.mu.
+ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
++	return r.providerRoutingGateReasonAllowPairLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil)
++}
++
++// The pair revalidation path may pass only its own exact hold. All ordinary
++// dispatch/plan/preflight callers pass nil and remain excluded.
++func (r *Registry) providerRoutingGateReasonAllowPairLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState) (bool, GateReason) {
+ 	// Catalog membership + dedicated-box isolation: a request for a dedicated
+ 	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
+ 	// advertised catalog is that family. This single gate is shared by the
+@@ -1569,7 +1575,7 @@
+ 	if selfRouteOwner {
+ 		minTrust = TrustNone
+ 	}
+-	if ok, reason := r.providerLivenessGateReasonLocked(p, minTrust, selfRouteOwner, now); !ok {
++	if ok, reason := r.providerLivenessGateReasonAllowPairLocked(p, minTrust, selfRouteOwner, now, pair); !ok {
+ 		return false, reason
+ 	}
+ 	// Trait eligibility: a render-broken build is fenced for EVERY request shape
+--- a/coordinator/registry/warm_pool_controller.go
++++ b/coordinator/registry/warm_pool_controller.go
+@@ -709,6 +709,7 @@
+ 	warmColdTooLarge       warmColdReason = "model_too_large"
+ 	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
+ 	warmColdStateRestoring warmColdReason = "state_restoring"
++	warmColdPairReserved   warmColdReason = "pair_reserved"
+ )
+ 
+ // warmColdReasonStrings converts a reason tally to a string-keyed map for
+@@ -744,6 +745,9 @@
+ // the boolean helpers here would change the reported reason mix — a behavior
+ // change — so the checks are kept inline.
+ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
++	if r.providerPairHeldLocked(p, now, nil) {
++		return warmPoolCandidate{}, warmColdPairReserved
++	}
+ 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
+ 		return warmPoolCandidate{}, warmColdOfflineUntrust
+ 	}

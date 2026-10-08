@@ -1,0 +1,21 @@
+--- a/docs/design/distributed-cluster-execution-plan.md
++++ b/docs/design/distributed-cluster-execution-plan.md
+@@ -2,7 +2,7 @@
+ 
+ > Last updated: 2026-09-15 · commit `605651bb9`
+ 
+-Status: **In progress** — 2026-09-15 — engineering plan reviewed; master `605651bb9` merged with existing work preserved. Solo and two-Mac one-output cohorts completed; [serial and lookahead 128-token continuation correctness](../reports/2026-09-15-cluster-lookahead-generation-and-timing.md) now pass for the registered 9B path. Milestone 1 still requires end-to-end provider HTTP streaming/TTFT and peer-failure/recovery qualification. The [peer-owner addendum](distributed-peer-owner.md) supersedes the SSH-only-for-bootstrap transport decision below.
++Status: **In progress** — 2026-09-15 — engineering plan reviewed; master `605651bb9` merged with existing work preserved. Solo and two-Mac one-output cohorts and [serial/lookahead 128-token continuation correctness](../reports/2026-09-15-cluster-lookahead-generation-and-timing.md) pass for the registered 9B path. [Controlled native-owner cancellation and fresh-epoch restart](../reports/2026-09-15-cluster-cancellation-recovery.md) also pass. Milestone 1 still requires end-to-end provider HTTP streaming/TTFT and broader peer-failure/recovery qualification. The [peer-owner addendum](distributed-peer-owner.md) supersedes the SSH-only-for-bootstrap transport decision below.
+ 
+ This plan implements the confirmed [delivery requirements](distributed-cluster-delivery.md):
+ a reusable Darkbloom cluster framework, measured on the available two M4 Pro
+--- a/docs/reports/README.md
++++ b/docs/reports/README.md
+@@ -11,6 +11,7 @@
+ File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
+ freshness stamp carries its own date, not the current one.
+ 
++- [Two-Mac cancellation and fresh-epoch recovery](2026-09-15-cluster-cancellation-recovery.md) — two controlled native-owner cancellations, retained charges and matching 128-token restart; HTTP recovery remains open.
+ - [Qwen9B lookahead correctness and internal timing](2026-09-15-cluster-lookahead-generation-and-timing.md) — matched 128-token/final-row/state correctness and bounded internal timing; provider HTTP and recovery qualification remain open.
+ - [Two-Mac resident Qwen9B generation correctness](2026-09-15-cluster-resident-generation-correctness.md) — all 128 selected tokens, final BF16 row and complete state digests match the full reference; authenticated cleanup, with no throughput or external TTFT claim.
+ - [Two-Mac Qwen9B resident prefill baseline](2026-09-15-cluster-rdma-prefill-baseline.md) — completed 4/28 JACCL cohort, matching reference digests and clean retirement; 426.98 internal TPS with no speedup yet.

@@ -1,0 +1,16 @@
+{
+  "mainEdits": false,
+  "files": [
+    {
+      "source": "proposed/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "baseSHA256": "67a597484dc15c1c9733e74efc8bc5ab449ff12730ce869058f907ef0150f7ae",
+      "sha256": "b23e811ae3c80de443c1e2c29c43c89c6283cefa74af68a431d1c5a9fc58120b"
+    }
+  ],
+  "nativeWorkerRuntimeChanged": false,
+  "wireChanged": false,
+  "lifetimeOrDeadlineChanged": false,
+  "journalResolutionGuardChanged": false,
+  "defaultReferenceChanged": false
+}

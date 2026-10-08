@@ -1,0 +1,217 @@
+[
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/HANDOFF.md",
+    "sha256": "c23ed5d384f2823f22ba40a83a616f16561c0277e854b4120aca6183ab71fea6",
+    "bytes": 10065
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/TRUST-SOURCES.md",
+    "sha256": "8b94f67a186666a9f5ea4648bd9b265a4ec53ea3c516806f69b49348882549e8",
+    "bytes": 2408
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/Tests/PrivateClusterTLSCheck.swift",
+    "sha256": "5649e9bece52c6f66d9bc56037309c14b3822f86c31318ef47d24058d74e5a30",
+    "bytes": 5234
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/Tests/owned_process.py",
+    "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf",
+    "bytes": 2211
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/Tests/run_tls.py",
+    "sha256": "d94e48be0332d14afb2c69b987420c5bd39a491997942c0d2edd5dd401ce775d",
+    "bytes": 2684
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/Tests/test_smoke_join.py",
+    "sha256": "3a458049fd6ded34314e2ffd258969f8191fa49d62d55ffb1f1f48101cec81fa",
+    "bytes": 5998
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/Tests/tls_group.py",
+    "sha256": "c81d55906304a9958aecb38de95678c7b1d175ae6b95442232f881b8ce7e31c3",
+    "bytes": 2448
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/Tests/tls_server.go",
+    "sha256": "d1e68e7d5b6e08fb9789ebb2ac94e684c5a4c3a06bf98635084639a6e15e38e7",
+    "bytes": 5047
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/check_source.py",
+    "sha256": "7321eae14cb45fe437e7ecf479a1316f9bf875688593d5cf2b9a244ebba4f0bc",
+    "bytes": 3932
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/commands.json",
+    "sha256": "82528fe5c9c44ae4cafe4837dffea0651bb77bb7b6ce0d1937290dad65a94cab",
+    "bytes": 1419
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/context-pins.json",
+    "sha256": "274b315f74c56e6f7cf9f0371d2c12d002a97a88687d3b10dba3df616ad1bfc3",
+    "bytes": 5985
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/coordinator/cmd/coordinator/main.go",
+    "sha256": "d71c9d6604ecf36167f193a9fbc0bdd22b4719a5eb3fe5c10b0a52aaa3b25447",
+    "bytes": 54416
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/coordinator/registry/native_pair_types.go",
+    "sha256": "e5da23b672925c8bb5ef16cfee11283ebdc346c044bb78966794af570a132028",
+    "bytes": 3623
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/coordinator/registry/native_pair_worker.go",
+    "sha256": "d77f541958c27cbe5ceeac58063b21be71eb29667c20dc56ef7493b629ab5960",
+    "bytes": 3768
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/provider-swift/Package.swift",
+    "sha256": "3e898aed8ca2ae925529d3b79ed81f1d68e8b8d0d99d713ec74ce12846989faa",
+    "bytes": 15965
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+    "sha256": "99c1f0ed749c92a890be5890713702a84f341a3af7bf72a3c773c4be602d8927",
+    "bytes": 23075
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift",
+    "sha256": "f0258ef5f00b62f9ec027465369e26af84b768e0cc32b93ab5587fd924d8011d",
+    "bytes": 14793
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift",
+    "sha256": "d905a20347ebdc1f80cfd8680195e31ef8352b0d3548a48292934afb9ad31859",
+    "bytes": 6113
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+    "sha256": "5d857e1865e6662e7376e75e82376a1e39c5a87b420f1b945659c9050c606b53",
+    "bytes": 25272
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/original/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+    "sha256": "6a0b152c8503a8336542d12e8b38dc023aad36f3e23a733d2005a7a4d2f318ae",
+    "bytes": 4192
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/preimages.json",
+    "sha256": "9f96ece46dee23bae6b6e5b626db0c35335bb026eaf678cf315c4530831e893a",
+    "bytes": 2925
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/api/native_pair_hardware.go",
+    "sha256": "f9bb7a6187cafb44a933a2e323ef04b8ff4948e5c7ce2f13a4aca77233b2af29",
+    "bytes": 2029
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/cmd/coordinator/main.go",
+    "sha256": "2d276549c51c404edf138a5c0bf6c311fa0b737d553f7b4c9af33621c015f473",
+    "bytes": 54715
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/cmd/coordinator/native_hardware_disabled.go",
+    "sha256": "067e774ad8dccf434deea18b46ae90ec4d76a84b372ad3f802ff67140ea96c23",
+    "bytes": 435
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/cmd/coordinator/native_hardware_enabled.go",
+    "sha256": "8967276f29e2577f270f485c779920868c381df38c20afebf947fb143e388fb9",
+    "bytes": 6626
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/registry/native_pair_hardware_observation.go",
+    "sha256": "50adcf7dea262da69add855019b0fbbbd8635707c7f5427bc90036f738654e82",
+    "bytes": 6857
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/registry/native_pair_hardware_observation_test.go",
+    "sha256": "61ca0bd5b82d4f5e8f160bd2db2adcce564220d348003e3705ea91cd1fb3e48b",
+    "bytes": 4335
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/registry/native_pair_types.go",
+    "sha256": "e2ead8aad1bf309ff2583966b03e7faf4d031203e370c694e6facd82a62039aa",
+    "bytes": 3707
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/coordinator/registry/native_pair_worker.go",
+    "sha256": "202c1c1741386f5aa62efb4ecde330047fa81043f7a73d5bf385efc4eabd7cb7",
+    "bytes": 3849
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Package.swift",
+    "sha256": "62e591cdda2b0760d0881884d2467fad9186c0f45e6c98ed3a6f61eb10479dc6",
+    "bytes": 16184
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+    "sha256": "d7e0a75e063f556d22f90e257632b41ad264c0c661a873834a9f3a1788cad8ad",
+    "bytes": 23377
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift",
+    "sha256": "f57587331aa846781964526bf386569bee4414507bac989a7f7ee927f5df79fa",
+    "bytes": 14992
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift",
+    "sha256": "b68c522383747f1f59222b008e6c44fddb6fd5047c8152bb0d08550bf239a635",
+    "bytes": 5732
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift",
+    "sha256": "5498869d5cee78c49f1005cc6b69e5fee9682b754a3c0e4174e049a5a0bfb711",
+    "bytes": 6288
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentRequestProvenance.swift",
+    "sha256": "de80621a56d2a472b5adeeaa90ef95ef876685e231fe583cd64eab0238477570",
+    "bytes": 422
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+    "sha256": "2fb3cf13f1a81c599c5fa5afcb2dce04e8d50a0ccf24c8ef56414914d9337638",
+    "bytes": 25788
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/NativeHardwareInput.swift",
+    "sha256": "648f77eb15518e914c13d251779389e5eb352577a9515d7340dc767eda1b383d",
+    "bytes": 6991
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/NativeHardwareRequest.swift",
+    "sha256": "ed8b5ebea379700b32c390e3fb94ef609e9cc624ad80f2f3ed5fe2d57e7f7c05",
+    "bytes": 6092
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+    "sha256": "96d32373967fdc819dd73338eba624165812ace168236165839df1b4afcf747d",
+    "bytes": 4582
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/darkbloom/StartCommand+NativeHardware.swift",
+    "sha256": "6edc3bbdaa6d82281bef8b60edea08ed41e85072be0bd3927322b003e4dfd824",
+    "bytes": 1712
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Tests/DarkbloomCLITests/NativeHardwareDriverTests.swift",
+    "sha256": "5a24d4f5522a13a00534b63eb40dd550a995a96871bfaf4e8f64a381ea9ac447",
+    "bytes": 1988
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/runtime.patch",
+    "sha256": "5372c5334188530cf36829adf11c86a2e611fc438ba07f1e3d33c0598e5ee083",
+    "bytes": 52250
+  },
+  {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/validate_smoke.py",
+    "sha256": "a84af3a2606bd5c85d956f9611e74608076514564666f3576b16337fc3a278f6",
+    "bytes": 8767
+  }
+]

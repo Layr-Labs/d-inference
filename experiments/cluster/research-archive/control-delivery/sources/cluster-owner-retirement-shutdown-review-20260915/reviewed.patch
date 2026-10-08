@@ -1,0 +1,38 @@
+--- baseline/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
++++ proposed/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
+@@ -184,6 +184,7 @@
+                 let command = try frame.localCommand(now: now, lifetimeDeadline: deadline)
+                 guard command.sequence == nextWorkerCommand else { throw OwnerWire.invalid("Native command replay") }
+                 try session.accept(command, now: now)
++                var forwardToNative = true
+                 switch command.command {
+                 case .reserve(let r):
+                     guard let id = command.requestID else { throw OwnerWire.invalid("Missing request") }
+@@ -195,13 +196,25 @@
+                     admissionDeadline = min(end.partialValue, deadline)
+                 case .start: try control(.start(requestID: command.requestID!), now: now)
+                 case .cancel(let reason): try control(.cancel(requestID: command.requestID!, reason: reason), now: now)
+-                case .shutdown: try control(.shutdown, now: now)
++                case .shutdown:
++                    // A valid shutdown can already be in transit when an exhausted
++                    // worker becomes unavailable and this owner starts fencing.
++                    // Keep the release handshake alive; actual native terminal and
++                    // request release remain required, and no shutdownComplete is
++                    // synthesized for a child that no longer accepts commands.
++                    if state.requiresNativeFence || state.status.nativeTerminal != nil {
++                        forwardToNative = false
++                    } else {
++                        try control(.shutdown, now: now)
++                    }
+                 case .tokenDecision: break
+                 }
+                 guard let delivery = frame.deliveryRemaining else { throw OwnerWire.invalid("Missing delivery duration") }
+                 let deliveryEnd = now.addingReportingOverflow(delivery)
+                 guard !deliveryEnd.overflow else { throw OwnerWire.invalid("Delivery duration overflow") }
+-                try child!.sendWorkerCommand(command.command, requestID: command.requestID, deadline: min(deadline, deliveryEnd.partialValue))
++                if forwardToNative {
++                    try child!.sendWorkerCommand(command.command, requestID: command.requestID, deadline: min(deadline, deliveryEnd.partialValue))
++                }
+                 nextWorkerCommand += 1
+             default: throw OwnerWire.invalid("Invalid owner command")
+             }

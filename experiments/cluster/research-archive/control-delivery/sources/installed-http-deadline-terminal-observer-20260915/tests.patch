@@ -1,0 +1,11 @@
+--- a/test_client.py
++++ b/test_client.py
+@@ -235,7 +235,7 @@
+     def test_8k_content_deadline_miss_is_retained_as_miss(self):
+         response, connection = self.response_fixture(dict(prompt_tokens=8192, completion_tokens=128, total_tokens=8320))
+         ticks = iter([0, 0, 1, 18_192_000_000, 18_192_000_001,
+-                      18_192_000_002, 18_192_000_003, 18_192_000_004, 18_192_000_005])
++                      18_192_000_002, 18_192_000_003, 18_192_000_004, 18_192_000_005, 18_192_000_006])
+         with patch("client.http.client.HTTPConnection", return_value=connection), \
+                 patch("client.time.monotonic_ns", side_effect=lambda: next(ticks)):
+             receipt = run("http://127.0.0.1:1/v1/chat/completions", MODEL, self.prompt,

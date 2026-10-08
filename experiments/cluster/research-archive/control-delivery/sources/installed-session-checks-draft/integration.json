@@ -1,0 +1,41 @@
+{
+  "files": [
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFakeOwner.swift",
+      "sha256": "3fcebccc5a8aabfeaa5460c6ab4297e93ef0ead685ac145f322209843ff2b76a",
+      "mode": "100644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixture.swift",
+      "sha256": "3217c874f896e95b8c07be32c203f8b16eb46095c5573a09ac25f6b0fae16395",
+      "mode": "100644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixtureIdentity.swift",
+      "sha256": "09994ce3f38210cc6c947a763d8b8fd877694ae71055d2f20282a63008a38351",
+      "mode": "100644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledProbeFixture.swift",
+      "sha256": "82298b1c5c3f1f2870dd1d0f8b931c654842d2bed9baf95730181d1041f62408",
+      "mode": "100644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/InstalledSessionCheck.swift",
+      "sha256": "ac437ff33af68c427b411c40bebf5254f6c690bc61b2880f0c94041d43fc426a",
+      "mode": "100644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/README.md",
+      "sha256": "527ef05be58766891d50aac5436e83fc0eda59126980e91c181693c1042ca793",
+      "mode": "100644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/run.sh",
+      "sha256": "e4eb283d1dfb3311c2cda17e7d6242a7251d53e049257b86679f51a92dd26fe9",
+      "mode": "100755"
+    }
+  ],
+  "runtimeChanges": false,
+  "packageManifestChanges": false
+}

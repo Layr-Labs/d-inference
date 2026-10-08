@@ -2165,6 +2165,19 @@ threats:
           through v0.9.10 deleted them in a startup sweep; later releases leave
           any remaining ones in place (KEK wipe is the crypto purge).
         status: implemented
+      - description: >
+          Operator-selected cache storage is constrained by CacheVolume.inspect
+          and CacheStorage.validateOpenedDirectory: local writable APFS, ownership
+          enabled, private operator-owned directories, encrypted external volumes,
+          and a pinned filesystem UUID checked against opened descriptors. Missing
+          mounts and changed UUIDs refuse I/O without recreating mount paths or
+          falling back to internal payload storage. Encryption keys and the
+          rolling-day write ledger stay on the Mac. DBK3 payload authentication,
+          HMAC names and TTL remain unchanged. These checks do not authenticate
+          peripheral firmware or defeat UUID cloning, ciphertext retention,
+          denial of service or every replay of still-valid ciphertext; operators
+          must source trusted hardware. See encryption.md, Provider cache storage.
+        status: implemented
     open_findings: [SEC-035]
     severity: medium
     detection_hint: >

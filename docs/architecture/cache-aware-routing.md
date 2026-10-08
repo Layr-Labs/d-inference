@@ -16,6 +16,11 @@ SSD donations also pass the persistent root-wide write budget before publication
 (`SSDWriteRateLimiter`, `SSDWriteBudget`). Reloading a model or restarting the
 provider does not create a new allowance. Budget refusal leaves existing durable
 receipts and cache reads intact; it does not advertise a newly refused write.
+Operators may persist a daily cap or select a UUID-pinned APFS cache volume with
+[`darkbloom cache`](../provider/cache-storage.md). The write ledger remains on the
+Mac when payload storage changes. A missing or unsuitable selected volume refuses
+cache construction or active I/O, leaving inference to recompute. This does not
+change the coordinator's receipt or routing protocol.
 See the [SSD accounting contract](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 A provider that already holds a request's exact token prefix in its local

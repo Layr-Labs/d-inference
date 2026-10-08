@@ -148,7 +148,7 @@ if [ "$MODE" = --apply ]; then
     [ -z "$mounted_at" ] || [ "$mounted_at" = "$DATA_MOUNT" ] ||
         die "$DATA_DEV is already mounted at $mounted_at, not $DATA_MOUNT"
     fs_type=$(lsblk -dn -o FSTYPE "$DATA_DEV" 2>/dev/null) || die "cannot read the filesystem type of $DATA_DEV"
-    signatures=$(wipefs -n --noheadings -o TYPE "$DATA_DEV" 2>/dev/null) ||
+    signatures=$(wipefs -n --noheadings -O TYPE "$DATA_DEV" 2>/dev/null) ||
         die "cannot prove the existing signatures on $DATA_DEV"
     if [ -z "$fs_type" ]; then
         [ -z "${signatures//[[:space:]]/}" ] ||

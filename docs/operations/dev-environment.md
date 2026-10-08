@@ -86,6 +86,12 @@ from production at these keys:
 Dev does not set `EIGENINFERENCE_IPAPI_KEY`: its secret is not one that the VM
 account can read. Geo lookups use the free tier.
 
+Dev does not set `EIGENINFERENCE_MDM_URL`, and this is the same as production.
+The image sets it to `https://localhost:9002`
+([`coordinator/Dockerfile`](../../coordinator/Dockerfile)): the MicroMDM that
+`start.sh` starts inside the coordinator container. It is not a public host
+name, so it does not change with `DOMAIN`.
+
 ### Secrets
 
 The overlay names 22 Secret Manager containers. The VM account
@@ -127,8 +133,9 @@ cannot satisfy this live gate. A rollback obeys the same rule.
 A human can pass `--override-pause "<reason>"`. The reason must be a nonblank
 single line. The script then prints a
 `REPORT pause override by <account> (<user>@<host>): <reason>` line and
-continues. An automatic workflow must pass the variable and must not use the
-override. `--dry-run` reports the pause state and does not stop.
+continues. An automatic workflow must pass the variable. `deploy.sh` refuses
+`--override-pause` under GitHub Actions (`GITHUB_ACTIONS=true`) with exit code
+2. `--dry-run` reports the pause state and does not stop.
 
 Pause and resume (a repository admin):
 
@@ -214,7 +221,10 @@ then does step 1 of the production runbook: the checkout is `origin/master`,
 commit exists (it waits up to 20 minutes), and it reads the image digest. It
 requires the complete paginated GitHub check-run and status-context inventories.
 It waits until each required check run is complete and each status context is
-not pending. This wait ends 20 minutes after the build wait starts
+not pending. Vercel status contexts are not part of the gate: they report
+preview deploys of the web projects, and these do not decide whether the
+coordinator can deploy. The script lists them in a `REPORT not a deploy gate`
+line. This wait ends 20 minutes after the build wait starts
 (`CI_WAIT_S`, default 1200); the two waits overlap. If a required check run or
 status context is not complete at that time, the script stops and nothing
 changes. `--dry-run` does not wait. The script does not wait for other check
@@ -222,21 +232,28 @@ runs, for example its own deploy job or E2E Integration Tests; it prints them
 in a `REPORT not required and not finished` line. A completed check run passes
 when its conclusion is `success`, `neutral` or `skipped`, as in GitHub branch
 protection: `ci.yml` skips jobs that the changed paths do not need. Each other
-conclusion, null included, and each `error` or `failure` status is a failure.
+conclusion, null included, and each `error` or `failure` status other than
+Vercel is a failure.
 Duplicate, malformed or truncated results fail closed. It then rereads both
 `origin/master` and the live pause variable immediately before SSH. A human may
 waive only exact currently failing context names with repeated
 `--allow-ci-failure "<name>"` flags plus a nonblank single-line
 `--ci-waiver-reason`; stale, misspelled, pending or unlisted failures still stop.
 The script prints a `REPORT CI waiver for <commit> by <account> (<user>@<host>): <reason>`
-line. Automatic workflows must never pass a CI waiver. Then it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the commit to
+line. Automatic workflows must never pass a CI waiver. Then it ships `deploy/gcp/prod`, `deploy/gcp/dev` and `prod.env` of the candidate commit (not of
+the checkout `HEAD`) to
 `/usr/local/lib/darkbloom-deploy/<commit>` and runs `swap.sh` under
-`systemd-run`. [`deploy/gcp/dev/swap.sh`](../../deploy/gcp/dev/swap.sh) does
+`systemd-run`. One swap or rollback runs at a time on the VM: each one holds
+`/var/lib/darkbloom-deploy/swap.lock`, and another run stops with `FAIL
+another swap or rollback holds ...; nothing changed`.
+[`deploy/gcp/dev/swap.sh`](../../deploy/gcp/dev/swap.sh) does
 steps 2 to 4, Verification and Rollback: the root-owned seed gate, database
 lock checks (the database URI is parsed without entering argv; nonsecret fields
 use libpq environment variables and the password is held only in a temporary
 root-only `PGPASSFILE` removed on exit), `docker pull` by digest, the label checks,
-`coordinator --migrate-only`, a pre-mutation env/tooling snapshot, the refresh,
+`coordinator --migrate-only` (its output goes to the root-only file
+`/var/lib/darkbloom-deploy/migrate-only-<UTC>.log` on the VM, because it can
+name connection details), a pre-mutation env/tooling snapshot, the refresh,
 the rollback state, the rename to `coordinator_fallback_<ts>`, `docker stop -t
 75`, `docker run`, and the `/health` and `/readyz` checks. A failed hard check
 rolls back by itself. A phase-aware exit trap also restores the env, refresh
@@ -426,6 +443,12 @@ A rollback goes back one deploy. A second rollback in a row stops before it
 changes anything: the last deploy removed the backups of the deploy before
 it.
 
+If no coordinator container runs when a deploy starts (an interrupted swap or
+a manual `docker rm`), the rollback target is the image in `last-good-image`.
+That deploy keeps the older fallback containers and images. A rollback that
+names no previous image after an earlier deploy stops before it changes
+anything; only a rollback of the first deploy starts no container.
+
 Rollback never reverts the schema; see the
 [schema migration rollback rules](schema-migration.md#rollback). A teardown is
 a Terraform change in darkbloom-devnet-infra.
@@ -436,7 +459,9 @@ a Terraform change in darkbloom-devnet-infra.
 |---|---|---|
 | `FAIL deploys are paused or the pause state is unknown ...` | `DEV_DEPLOY_PAUSED` is not `false`, or `gh` cannot read it | Read the variable. Resume, or pass `--override-pause "<reason>"` for a manual run |
 | `FAIL long queries, blocked locks or a goose lock holder; nothing changed` | A query or lock blocks migrations | Wait, then deploy again |
-| `FAIL --migrate-only failed; the current coordinator still serves` | A migration of the commit fails | Read the journal of the unit (`sudo journalctl -u 'darkbloom-dev-swap-*'`). Fix the migration on `master` |
+| `FAIL --migrate-only failed; the current coordinator still serves; its output is on the VM in ...` | A migration of the commit fails | Read the named root-only file on the VM. Fix the migration on `master` |
+| `FAIL another swap or rollback holds .../swap.lock; nothing changed` | A manual run and a workflow run overlap | Wait for the other run (`sudo journalctl -u 'darkbloom-dev-*'`), then run again |
+| `FAIL the rollback state names no previous image, but a previous deploy exists; ...` | An older deploy found no coordinator container and recorded no previous image | Do not roll back. Deploy a good commit of `master` |
 | `FAIL candidate not ready within 180 s; rolled back to ...` | The new coordinator did not start or did not report the commit | Read the saved container log on the VM |
 | `FAIL the running image is not the last verified image ...` | Someone changed the container by hand | Find out why. After review, write the running image ID to `/var/lib/darkbloom-deploy/last-good-image` |
 | `candidate ... is not origin/master` / `is no longer origin/master` | `master` moved before or during build wait | Deploy the new head |

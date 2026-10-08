@@ -34,7 +34,10 @@ REQUIRED_CHECKS = [
     "Provider Prompt Parity", "Provider Tests", "Console UI Lint & Build",
     "Swift Build + Cache",
 ]
-REQUIRED_STATUSES = [
+# The deploy gate requires no status context. A non-Vercel context still
+# gates; Vercel contexts (web preview deploys) never do.
+GATED_STATUSES = ["CI/External-Review"]
+VERCEL_STATUSES = [
     "Vercel – d-inference", "Vercel – d-inference-console-ui-dev",
     "Vercel – d-inference-landing", "Vercel – darkbloom-status",
     "Vercel – eigen-homepages-darkbloom",
@@ -91,6 +94,15 @@ if name == "install" and os.environ.get("STUB_INSTALL_REAL") == "1":
         target.write_bytes(data)
         if mode is not None:
             os.chmod(target, mode)
+    sys.exit(0)
+if name == "flock" and args[:1] == ["-n"] and len(args) == 2:
+    # util-linux flock -n <fd>: flock(2) on the inherited open file, which
+    # the calling shell keeps after this process exits. macOS has no flock.
+    import fcntl
+    try:
+        fcntl.flock(int(args[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(1)
     sys.exit(0)
 if name == "stat" and args[:2] == ["-c", "%U:%G:%a"]:
     mode = os.stat(args[-1]).st_mode & 0o777
@@ -214,6 +226,24 @@ def dev_host_rules(project="darkbloom-dev", missing=(), multiline=()):
     # The value is printed without a newline, like gcloud secrets versions access.
     rules.append(["gcloud", "secrets versions access", "SECRET-FIXTURE-VALUE", 0])
     return rules
+
+
+DATA_DEV = "/dev/disk/by-id/google-darkbloom-coordinator-data"
+
+
+def data_disk_rules(fstype, mountpoints, signatures, mountpoints_code=0):
+    """The exact lsblk and wipefs calls of host-setup.sh for the data disk.
+    Other flags fail, as util-linux fails on a flag that it does not know
+    (wipefs -o is --offset; the column flag is -O)."""
+    dev = re.escape(DATA_DEV)
+    return [
+        ["lsblk", f"^-nr -o TYPE {dev}$", "disk\n", 0],
+        ["lsblk", f"^-dn -o MOUNTPOINTS {dev}$", mountpoints, mountpoints_code],
+        ["lsblk", f"^-dn -o FSTYPE {dev}$", fstype, 0],
+        ["wipefs", f"^-n --noheadings -O TYPE {dev}$", signatures, 0],
+        ["lsblk", "", "", 1],
+        ["wipefs", "", "", 1],
+    ]
 
 
 def snapshot(path):
@@ -357,6 +387,14 @@ class DevEnvContractTests(unittest.TestCase):
             self.assertIn('/refresh-backup.sh" || fail "cannot read ', text, script)
             self.assertNotIn("##*backup=", text, script)
             self.assertNotIn("[0-9]{8}T[0-9]{6}Z", text, script)
+
+    def test_mdm_url_comes_from_the_image_as_in_production(self):
+        # MicroMDM runs inside the coordinator container (start.sh); the image
+        # sets its URL, and no env file overrides it.
+        self.assertIn("ENV EIGENINFERENCE_MDM_URL=https://localhost:9002\n",
+                      (ROOT / "coordinator/Dockerfile").read_text())
+        for path in (OVERRIDES, PROD_ENV, DEFAULTS):
+            self.assertNotIn("EIGENINFERENCE_MDM_URL", env_lines(path), path)
 
     def test_every_required_key_has_a_dev_source(self):
         overlay = env_lines(OVERRIDES)
@@ -613,30 +651,20 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual([c[0] for c in box.calls()], ["id", "curl"])
 
     def test_host_setup_never_formats_without_one_shot_blank_disk_authorization(self):
-        base = dev_host_rules() + [
-            ["lsblk", "-o TYPE", "disk\n", 0],
-            ["lsblk", "-o FSTYPE", "\n", 0],
-            ["lsblk", "-o MOUNTPOINTS", "", 0],
-            ["wipefs", "^-n", "", 0],
-        ]
+        base = dev_host_rules() + data_disk_rules("\n", "", "")
         box = Sandbox(self, MUTATORS, base)
         result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply"])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("verified blank", result.stderr)
         self.assertEqual(box.calls("mkfs.ext4"), [])
 
-        box = Sandbox(self, MUTATORS, base[:-1] + [["wipefs", "^-n", "gpt\n", 0]])
+        box = Sandbox(self, MUTATORS, dev_host_rules() + data_disk_rules("\n", "", "gpt\n"))
         result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply", "--format-data-disk"])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("existing signature", result.stderr)
         self.assertEqual(box.calls("mkfs.ext4"), [])
 
-        box = Sandbox(self, MUTATORS, base)
-        probe_error = [rule[:] for rule in base]
-        for rule in probe_error:
-            if rule[0] == "lsblk" and "MOUNTPOINTS" in rule[1]:
-                rule[3] = 1
-        box.set_rules(probe_error)
+        box = Sandbox(self, MUTATORS, dev_host_rules() + data_disk_rules("\n", "", "", mountpoints_code=1))
         result = box.run([ROOT / "deploy/gcp/host-setup.sh", "--apply", "--format-data-disk"])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("cannot determine whether", result.stderr)
@@ -646,12 +674,7 @@ class ZeroMutationTests(unittest.TestCase):
         """host-setup.sh --apply on a verified ext4 data disk. A copy of the
         script writes /etc/fstab, the Caddyfile and the env file paths inside
         the sandbox; every command that changes the host is a stub."""
-        rules = dev_host_rules() + [
-            ["lsblk", "-o TYPE", "disk\n", 0],
-            ["lsblk", "-o FSTYPE", "ext4\n", 0],
-            ["lsblk", "-o MOUNTPOINTS", "/mnt/disks/userdata\n", 0],
-            ["wipefs", "^-n", "ext4\n", 0],
-        ]
+        rules = dev_host_rules() + data_disk_rules("ext4\n", "/mnt/disks/userdata\n", "ext4\n")
         if not caddy_active:
             rules.append(["systemctl", "^is-active --quiet caddy$", "", 3])
         box = Sandbox(self, MUTATORS, rules)
@@ -749,7 +772,7 @@ class ZeroMutationTests(unittest.TestCase):
             for name in REQUIRED_CHECKS
         ]
         green_checks = json.dumps([{"total_count": len(green_runs), "check_runs": green_runs}])
-        status_values = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+        status_values = [{"context": name, "state": "success"} for name in GATED_STATUSES]
         green_statuses = json.dumps([{
             "total_count": len(status_values), "statuses": status_values,
         }])
@@ -840,6 +863,9 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(out.read_text(), "deployed=true\n")
         ssh = [c for c in box.calls("gcloud") if c[1:3] == ["compute", "ssh"]]
         self.assertEqual(len(ssh), 3)  # ship the files, start the unit, read the result
+        # The shipped files are those of the pinned candidate, even if HEAD moves.
+        self.assertEqual([c[1:4] for c in box.calls("git") if c[1] == "archive"],
+                         [["archive", "--format=tar.gz", COMMIT]])
         self.assertTrue(any("systemd-run" in a and f"CANDIDATE_DIGEST={DIGEST}" in a for a in ssh[1]))
 
     def test_deploy_stops_when_master_moved(self):
@@ -914,23 +940,24 @@ class ZeroMutationTests(unittest.TestCase):
                 self.assertIn("CI failure is not explicitly waived: Coordinator Tests", result.stderr)
 
     def test_status_inventory_is_complete_and_has_unique_contexts(self):
-        required = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+        required = [{"context": name, "state": "success"} for name in GATED_STATUSES]
         extras = [{"context": f"optional-{index}", "state": "success"} for index in range(25)]
+        total = len(required) + len(extras) + 1
         cases = (
-            ("omitted later status", [{"total_count": 31, "statuses": required + extras}],
-             "status-context response is empty or truncated"),
+            ("omitted later status", [{"total_count": total, "statuses": required + extras}],
+             "status-context response is truncated"),
             ("later failure", [
-                {"total_count": 31, "statuses": required + extras},
-                {"total_count": 31, "statuses": [{"context": "hidden-failure", "state": "failure"}]},
+                {"total_count": total, "statuses": required + extras},
+                {"total_count": total, "statuses": [{"context": "hidden-failure", "state": "failure"}]},
              ], "CI failure is not explicitly waived: hidden-failure"),
             ("later pending", [
-                {"total_count": 31, "statuses": required + extras},
-                {"total_count": 31, "statuses": [{"context": "hidden-pending", "state": "pending"}]},
+                {"total_count": total, "statuses": required + extras},
+                {"total_count": total, "statuses": [{"context": "hidden-pending", "state": "pending"}]},
              ], "CI is not complete for"),
-            ("malformed total", [{"total_count": "31", "statuses": required}],
+            ("malformed total", [{"total_count": str(len(required)), "statuses": required}],
              "invalid GitHub status-context response"),
             ("case-variant duplicate", [{"total_count": len(required) + 1,
-                "statuses": required + [{"context": REQUIRED_STATUSES[0].lower(), "state": "success"}]}],
+                "statuses": required + [{"context": GATED_STATUSES[0].lower(), "state": "success"}]}],
              "contains duplicate contexts"),
         )
         for label, pages, expected in cases:
@@ -945,6 +972,24 @@ class ZeroMutationTests(unittest.TestCase):
                 self.assertIn(expected, result.stderr)
                 self.assertEqual([call for call in box.calls("gcloud") if call[1:3] == ["compute", "ssh"]], [])
 
+    def test_vercel_status_contexts_do_not_gate_a_deploy(self):
+        states = ("failure", "error", "pending", "success", "failure")
+        vercel = [{"context": name, "state": state} for name, state in zip(VERCEL_STATUSES, states)]
+        gated = [{"context": name, "state": "success"} for name in GATED_STATUSES]
+        for label, values in (("failing and pending Vercel", gated + vercel),
+                              ("Vercel only", vercel), ("no status context", [])):
+            with self.subTest(label=label):
+                rules = self.deploy_rules()
+                self.set_rule(rules, "gh", "^api .*commits/.*/status",
+                              json.dumps([{"total_count": len(values), "statuses": values}]))
+                box = Sandbox(self, MUTATORS, rules)
+                result = box.run([DEV / "deploy.sh", "--dry-run"])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("REPORT GitHub CI/check contexts are green", result.stdout)
+                if values != []:
+                    self.assertRegex(result.stdout, "REPORT not a deploy gate: .*Vercel – d-inference=failure")
+                self.assert_read_only(box)
+
     def test_ci_waivers_are_rejected_under_github_actions(self):
         box = Sandbox(self, MUTATORS, self.deploy_rules())
         result = box.run([DEV / "deploy.sh", "--allow-ci-failure", "Coordinator Tests",
@@ -954,10 +999,19 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertIn("human-only", result.stderr)
         self.assertEqual(box.calls(), [])
 
+    def test_pause_override_is_rejected_under_github_actions(self):
+        box = Sandbox(self, MUTATORS, self.deploy_rules(paused="true\n"))
+        for argv in ([], ["rollback"]):
+            result = box.run([DEV / "deploy.sh", *argv, "--override-pause", "workflow tries to override"],
+                             {"GITHUB_ACTIONS": "true"})
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("--override-pause is human-only and cannot run under GitHub Actions", result.stderr)
+        self.assertEqual(box.calls(), [])
+
     def test_malformed_status_states_are_not_waiver_eligible(self):
         for state in ("", "unknown"):
             with self.subTest(state=state):
-                values = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+                values = [{"context": name, "state": "success"} for name in GATED_STATUSES]
                 values.append({"context": "malformed-state", "state": state})
                 rules = self.deploy_rules()
                 for rule in rules:
@@ -1019,7 +1073,7 @@ class ZeroMutationTests(unittest.TestCase):
         self.assert_read_only(box)
 
     def test_ci_gate_waits_for_unfinished_required_checks(self):
-        statuses = [{"context": name, "state": "success"} for name in REQUIRED_STATUSES]
+        statuses = [{"context": name, "state": "success"} for name in GATED_STATUSES]
         statuses[0]["state"] = "pending"
         early = [{"name": name, "status": "completed", "conclusion": "success"}
                  for name in REQUIRED_CHECKS if name != "Swift Build + Cache"]
@@ -1030,12 +1084,12 @@ class ZeroMutationTests(unittest.TestCase):
         self.set_rule(rules, "gh", "^api .*commits/.*/status", [
             [json.dumps([{"total_count": len(statuses), "statuses": statuses}]), 0],
             [json.dumps([{"total_count": len(statuses), "statuses": [
-                {"context": name, "state": "success"} for name in REQUIRED_STATUSES]}]), 0]])
+                {"context": name, "state": "success"} for name in GATED_STATUSES]}]), 0]])
         box = Sandbox(self, MUTATORS + ["sleep"], rules)
         result = box.run([DEV / "deploy.sh"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(f"waiting for CI: {early[2]['name']},Swift Build + Cache (not reported),"
-                      f"{REQUIRED_STATUSES[0]}", result.stdout)
+        self.assertIn(f"waiting for CI: {GATED_STATUSES[0]},{early[2]['name']},"
+                      "Swift Build + Cache (not reported)", result.stdout)
         self.assertEqual(box.calls("sleep"), [["sleep", "15"]])
         self.assertIn(f"OK {COMMIT}", result.stdout)
         self.assertEqual(len([c for c in box.calls("gcloud") if c[1:3] == ["compute", "ssh"]]), 3)
@@ -1271,7 +1325,7 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertTrue((remote / COMMIT).is_dir())
 
     def seeded_swap_box(self, with_current=True):
-        stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install", "chown"]
+        stubs = ["id", "curl", "gcloud", "stat", "psql", "docker", "date", "install", "chown", "flock"]
         box = Sandbox(self, stubs, dev_host_rules())
         env_dir = box.root / "etc-d-inference"
         env_dir.mkdir(mode=0o700)
@@ -1733,6 +1787,57 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertTrue(pre_deploy.exists())
 
     @requires_gnu_ln
+    def test_missing_container_uses_the_last_verified_image_as_rollback_target(self):
+        # An interrupted swap or a manual docker rm leaves last-good-image but
+        # no coordinator container.
+        last_good = "sha256:" + "9" * 64
+        box, extra, paths = self.seeded_swap_box()
+        lib = paths[2] / COMMIT
+        lib.mkdir()
+        (lib / "deploy").symlink_to(ROOT / "deploy")
+        extra["LIB"] = str(lib)
+        state = Path(extra["STATE"])
+        state.mkdir()
+        (state / "last-good-image").write_text(last_good + "\n")
+        box.set_rules(self.first_deploy_rules())
+        result = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"the rollback target is the last verified image {last_good}", result.stdout)
+        record = (state / "rollback-state").read_text().splitlines()
+        self.assertEqual(record[0], last_good)
+        self.assertIn(["docker", "image", "inspect", last_good, "--format", "{{.Id}}"], box.calls("docker"))
+        # No fallback container of this run holds the previous image.
+        self.assertEqual([c for c in box.calls("docker") if c[1] in ("rm", "ps") or "prune" in c], [])
+
+        (state / "last-good-image").write_text("not an image id\n")
+        box.log.write_text("")
+        refused = box.run([DEV / "swap.sh"], {**extra, "RESULT": str(box.root / "refused.result")})
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("is not one image ID; nothing changed", (box.root / "refused.result").read_text())
+        self.assertEqual([c for c in box.calls("docker") if c[1] == "run"], [])
+
+    @requires_gnu_ln
+    def test_rollback_that_would_start_nothing_after_a_deploy_fails(self):
+        box, extra, paths = self.seeded_swap_box(with_current=False)
+        _, _, deploy_root = paths
+        box.set_rules(self.first_deploy_rules())
+        first = box.run([DEV / "swap.sh"], extra)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        state = Path(extra["STATE"])
+        record = (state / "rollback-state").read_text().splitlines()
+        self.assertEqual((record[0], record[5]), ("none", "none"))
+        # A record from before this fix: no previous image, but a previous deploy.
+        record[5] = str(deploy_root / "old")
+        (state / "rollback-state").write_text("\n".join(record) + "\n")
+        box.log.write_text("")
+        result_file = box.root / "rollback.result"
+        rollback = box.run([DEV / "swap.sh"], {**extra, "MODE": "rollback", "RESULT": str(result_file)})
+        self.assertNotEqual(rollback.returncode, 0)
+        self.assertIn("names no previous image, but a previous deploy exists; nothing to start",
+                      result_file.read_text())
+        self.assertEqual([c for c in box.calls("docker") if c[1] in ("stop", "rm", "run")], [])
+
+    @requires_gnu_ln
     def test_committed_deploy_removes_only_redundant_env_backups(self):
         box, extra, _ = self.seeded_swap_box(with_current=False)
         env_file = Path(extra["ENV_FILE"])
@@ -1750,6 +1855,53 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertTrue(unique.exists())
         self.assertTrue(lookalike.exists())
         self.assertEqual(sorted(env_file.parent.glob("env.bak.*")), sorted([lookalike, unique]))
+
+    def test_swap_and_rollback_refuse_while_another_run_holds_the_lock(self):
+        import fcntl
+        box, extra, _ = self.seeded_swap_box()
+        state = Path(extra["STATE"])
+        state.mkdir()
+        with open(state / "swap.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for mode in ("deploy", "rollback"):
+                with self.subTest(mode=mode):
+                    box.log.write_text("")
+                    box.set_rules(self.first_deploy_rules())
+                    result_file = box.root / f"{mode}.result"
+                    result = box.run([DEV / "swap.sh"], {**extra, "MODE": mode, "RESULT": str(result_file)})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result_file.read_text().strip(),
+                                     f"FAIL another swap or rollback holds {state / 'swap.lock'}; nothing changed")
+                    self.assertEqual(box.calls("psql"), [])
+                    self.assertEqual(box.calls("docker"), [])
+                    self.assertEqual(sorted(p.name for p in state.iterdir()), ["swap.lock"])
+
+    def test_migrate_only_output_is_kept_in_a_private_file(self):
+        output = ('time=t level=INFO msg="coordinator migrations complete" duration_ms=42\n'
+                  "detail that may name fixture-password\n")
+        for code in (0, 1):
+            with self.subTest(exit_code=code):
+                box, extra, _ = self.seeded_swap_box()
+                rules = self.first_deploy_rules()
+                rules.insert(0, ["docker", "^run --rm .*--migrate-only$", output, code])
+                # Stop after the migration: the database is busy afterwards.
+                rules.insert(0, ["psql", "select count", [["0\n", 0], ["0\n", 0], ["0\n", 0], ["1\n", 0]], 0])
+                box.set_rules(rules)
+                result = box.run([DEV / "swap.sh"], {**extra, "MIGRATE_ONLY": "1"})
+                self.assertNotEqual(result.returncode, 0)
+                logs = list(Path(extra["STATE"]).glob("migrate-only-*.log"))
+                self.assertEqual(len(logs), 1)
+                self.assertEqual(logs[0].read_text(), output)
+                self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)
+                result_line = Path(extra["RESULT"]).read_text()
+                if code == 0:
+                    self.assertIn(f"REPORT --migrate-only done duration_ms=42; its output is on the VM in {logs[0]}",
+                                  result.stdout)
+                    self.assertIn("blocked after --migrate-only", result_line)
+                else:
+                    self.assertIn(f"--migrate-only failed; the current coordinator still serves; "
+                                  f"its output is on the VM in {logs[0]}", result_line)
+                self.assertNotIn("fixture-password", result.stdout + result.stderr + result_line)
 
     @requires_gnu_ln
     def test_committed_deploy_survives_a_credential_cleanup_failure(self):
@@ -1806,6 +1958,9 @@ class ZeroMutationTests(unittest.TestCase):
         state.mkdir()
         aged_log = state / "failed-coordinator-20200101T000000Z.log"
         aged_log.write_text("old generated log\n")
+        aged_migrate_log = state / "migrate-only-20200101T000000Z.log"
+        aged_migrate_log.write_text("old migration output\n")
+        os.utime(aged_migrate_log, (1, 1))
         log_lookalike = state / "failed-coordinator-2020.log"
         log_lookalike.write_text("operator lookalike\n")
         os.utime(log_lookalike, (1, 1))
@@ -1838,6 +1993,7 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertFalse(aged_log.exists())
         self.assertTrue(operator_file.exists())
         self.assertTrue(log_lookalike.exists())
+        self.assertFalse(aged_migrate_log.exists())
         for kept in (previous, lib, unit_result, deploy_root / "old"):
             self.assertTrue(kept.exists(), kept)
         self.assertEqual((deploy_root / "current").resolve(), lib.resolve())

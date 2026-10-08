@@ -75,11 +75,9 @@ REQUIRED_CHECKS=(
     "Provider Prompt Parity" "Provider Tests" "Console UI Lint & Build"
     "Swift Build + Cache"
 )
-REQUIRED_STATUSES=(
-    "Vercel – d-inference" "Vercel – d-inference-console-ui-dev"
-    "Vercel – d-inference-landing" "Vercel – darkbloom-status"
-    "Vercel – eigen-homepages-darkbloom"
-)
+# Vercel status contexts report preview deploys of the web projects. They do
+# not decide whether the coordinator can deploy, so the gate ignores them.
+GATED_STATUS='(.context | ascii_downcase | startswith("vercel") | not)'
 BUILD_WAIT_S=${BUILD_WAIT_S:-1200}
 CI_WAIT_S=${CI_WAIT_S:-1200}
 MIGRATE_ONLY=${MIGRATE_ONLY:-1}
@@ -109,6 +107,9 @@ if [ -n "$CI_WAIVER_REASON" ] && [ "${#CI_FAILURE_ALLOWLIST[@]}" -eq 0 ]; then
 fi
 if [ "${GITHUB_ACTIONS:-false}" = true ] && [ "${#CI_FAILURE_ALLOWLIST[@]}" -gt 0 ]; then
     die "CI failure waivers are human-only and cannot run under GitHub Actions" 2
+fi
+if [ "${GITHUB_ACTIONS:-false}" = true ] && [ -n "$OVERRIDE_REASON" ]; then
+    die "--override-pause is human-only and cannot run under GitHub Actions" 2
 fi
 
 operator_identity() {
@@ -255,8 +256,8 @@ read_ci() {
     status_total_count=$(printf '%s' "$statuses" | jq -r 'first(.[].total_count)') ||
         die "invalid GitHub status-context total for $CANDIDATE_COMMIT; nothing changed" 3
     [[ "$status_count" =~ ^[0-9]+$ ]] && [[ "$status_total_count" =~ ^[0-9]+$ ]] &&
-        [ "$status_count" -gt 0 ] && [ "$status_count" -eq "$status_total_count" ] ||
-        die "GitHub status-context response is empty or truncated ($status_count/$status_total_count); nothing changed" 3
+        [ "$status_count" -eq "$status_total_count" ] ||
+        die "GitHub status-context response is truncated ($status_count/$status_total_count); nothing changed" 3
     duplicate_statuses=$(printf '%s' "$statuses" | jq -r \
         '[.[].statuses[].context | ascii_downcase] | sort | group_by(.)[] | select(length > 1) | .[0]') ||
         die "invalid GitHub status-context names for $CANDIDATE_COMMIT; nothing changed" 3
@@ -265,8 +266,7 @@ read_ci() {
 }
 
 # unfinished_required_ci: the required check runs that have not reported or
-# not completed, the required status contexts that have not reported, and
-# every pending status context.
+# not completed, and every pending status context of the gate.
 unfinished_required_ci() {
     {
         printf '%s' "$checks" | jq -r --args '[.[].check_runs[]] as $runs | $ARGS.positional[] as $name |
@@ -274,21 +274,19 @@ unfinished_required_ci() {
             if ($matching | length) == 0 then "\($name) (not reported)"
             elif any($matching[]; .status != "completed") then $name
             else empty end' "${REQUIRED_CHECKS[@]}"
-        printf '%s' "$statuses" | jq -r --args '[.[].statuses[]] as $all |
-            ($ARGS.positional[] as $name | select(all($all[]; .context != $name)) | "\($name) (not reported)"),
-            ($all[] | select(.state == "pending") | .context)' "${REQUIRED_STATUSES[@]}"
+        printf '%s' "$statuses" | jq -r ".[].statuses[] | select(.state == \"pending\" and $GATED_STATUS) | .context"
     } | LC_ALL=C sort -u
 }
 
-# verify_ci waits for the required check runs and for every status context,
-# but not for other check runs: the job that runs this script is an unfinished
+# verify_ci waits for the required check runs and for every status context
+# except Vercel, but not for other check runs: the job that runs this script is an unfinished
 # check run of the same commit, and optional workflows such as E2E Integration
 # Tests can run longer than the deploy job. Conclusions success, neutral and
 # skipped pass, as in GitHub branch protection: ci.yml skips path-gated jobs,
 # and a skip caused by a failed dependency shows as the failure of that
 # dependency.
 verify_ci() {
-    local checks statuses pending running failures name allowed found
+    local checks statuses pending running ungated failures name allowed found
     while :; do
         read_ci
         pending=$(unfinished_required_ci) ||
@@ -304,11 +302,14 @@ verify_ci() {
     running=$(printf '%s' "$checks" | jq -r '.[].check_runs[] | select(.status != "completed") | .name' |
         LC_ALL=C sort -u | paste -sd, -)
     [ -z "$running" ] || echo "REPORT not required and not finished: $running"
+    ungated=$(printf '%s' "$statuses" | jq -r ".[].statuses[] | select($GATED_STATUS | not) | \"\\(.context)=\\(.state)\"" |
+        LC_ALL=C sort -u | paste -sd, -)
+    [ -z "$ungated" ] || echo "REPORT not a deploy gate: $ungated"
     failures=$(
         {
             printf '%s' "$checks" | jq -r '.[].check_runs[] |
                 select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not)) | .name'
-            printf '%s' "$statuses" | jq -r '.[].statuses[] | select(.state != "success" and .state != "pending") | .context'
+            printf '%s' "$statuses" | jq -r ".[].statuses[] | select(.state != \"success\" and .state != \"pending\" and $GATED_STATUS) | .context"
         } | LC_ALL=C sort -u
     )
     if [ -z "$failures" ]; then
@@ -407,10 +408,10 @@ fi
 stage=
 trap - EXIT'"
 if [ "$DRY_RUN" = 1 ]; then
-    echo "DRY-RUN ship git archive HEAD: ${SHIP[*]}"
+    echo "DRY-RUN ship git archive $CANDIDATE_COMMIT: ${SHIP[*]}"
     echo "DRY-RUN ssh: $extract"
 else
-    git archive --format=tar.gz HEAD "${SHIP[@]}" | "${SSH[@]}" --command="$extract"
+    git archive --format=tar.gz "$CANDIDATE_COMMIT" "${SHIP[@]}" | "${SSH[@]}" --command="$extract"
 fi
 remote_run "darkbloom-dev-swap-${CANDIDATE_COMMIT:0:7}-$(date +%s)" "$LIB/deploy/gcp/dev/swap.sh" \
     MODE=deploy LIB="$LIB" CANDIDATE_COMMIT="$CANDIDATE_COMMIT" CANDIDATE_VERSION="$CANDIDATE_VERSION" \

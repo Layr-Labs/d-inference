@@ -9,6 +9,7 @@ on:
       - .github/workflows/dev-deploy-safety.yml
       - .github/workflows/deploy-dev.yml
       - coordinator/api/server.go
+      - coordinator/Dockerfile
       - deploy/gcp/cloudbuild-prod.yaml
       - deploy/gcp/dev/**
       - deploy/gcp/host-setup.sh

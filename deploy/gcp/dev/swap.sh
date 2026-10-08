@@ -99,6 +99,16 @@ project=$(curl -fsS --max-time 5 -H 'Metadata-Flavor: Google' "$METADATA_URL") |
 # shellcheck source=deploy/gcp/dev/refresh-backup.sh
 . "$LIB/deploy/gcp/dev/refresh-backup.sh" || fail "cannot read $LIB/deploy/gcp/dev/refresh-backup.sh; nothing changed"
 
+# One swap or rollback at a time on the VM: a manual run and a workflow run
+# must not interleave. The lock lasts until the script exits.
+SWAP_LOCK=$STATE/swap.lock
+SWAP_LOCK_HELD=0
+take_swap_lock() {
+    [ "$SWAP_LOCK_HELD" = 0 ] || return 0
+    exec 9>>"$SWAP_LOCK" || fail "cannot open $SWAP_LOCK; nothing changed"
+    flock -n 9 || fail "another swap or rollback holds $SWAP_LOCK; nothing changed"
+    SWAP_LOCK_HELD=1
+}
 refresh() {
     REQUIRED_FILE=$LIB/deploy/gcp/prod/required-env-keys.txt \
         DEFAULTS_FILE=$LIB/deploy/gcp/prod/release-env-defaults \
@@ -310,7 +320,13 @@ rollback() {    # runbook "Rollback"
     [ "$ROLLBACK_ACTIVE" = 0 ] || fail "rollback is already active; recovery context retained"
     ROLLBACK_ACTIVE=1
     CLEANUP_ACTIVE=1
+    [ -d "$STATE" ] || fail "no rollback state; nothing to roll back to"
+    take_swap_lock
     load_rollback_state
+    # Only a pre-first-deploy record (no previous deploy files) may restore
+    # files and start no container.
+    [ "$PREVIOUS_IMAGE" != none ] || [ "$PREVIOUS_CURRENT" = none ] ||
+        fail "the rollback state names no previous image, but a previous deploy exists; nothing to start; nothing stopped"
     if [ "$PREVIOUS_IMAGE" != none ]; then
         docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}' >/dev/null || fail "previous image $PREVIOUS_IMAGE is not on the host"
     fi
@@ -390,6 +406,7 @@ else
         fail "current deploy files do not resolve to an existing directory; nothing changed"
 fi
 install -d -o root -g root -m 0700 "$STATE"
+take_swap_lock
 prepare_psql ||
     fail "EIGENINFERENCE_DATABASE_URL is not a single-host URI with sslmode require, verify-ca or verify-full; nothing changed"
 
@@ -414,11 +431,16 @@ fi
 
 # Optional step (schema-migration.md step 4): database-only migration while the
 # current coordinator serves.
+# Its output can name connection details, so it goes to a root-only file on
+# the VM, as the container log of a failed candidate does.
 if [ "$MIGRATE_ONLY" = 1 ]; then
-    docker run --rm --network host --env-file "$ENV_FILE" \
-        --entrypoint /usr/local/bin/coordinator "$CANDIDATE_IMAGE" --migrate-only >/dev/null 2>&1 ||
-        fail "--migrate-only failed; the current coordinator still serves"
-    echo "REPORT --migrate-only done"
+    migrate_log=$STATE/migrate-only-$(date -u +%Y%m%dT%H%M%SZ).log
+    if ! (umask 077; docker run --rm --network host --env-file "$ENV_FILE" \
+        --entrypoint /usr/local/bin/coordinator "$CANDIDATE_IMAGE" --migrate-only > "$migrate_log" 2>&1); then
+        fail "--migrate-only failed; the current coordinator still serves; its output is on the VM in $migrate_log"
+    fi
+    migrate_ms=$(sed -n 's/.*coordinator migrations complete.*duration_ms=\([0-9][0-9]*\).*/\1/p' "$migrate_log" | tail -n 1)
+    echo "REPORT --migrate-only done duration_ms=${migrate_ms:-unknown}; its output is on the VM in $migrate_log"
     db_clear || fail "blocked after --migrate-only; the current coordinator still serves"
     [ "$CURRENT" = false ] || curl -fsS --max-time 5 localhost:8080/health >/dev/null ||
         fail "the current coordinator is not healthy after --migrate-only"
@@ -432,6 +454,17 @@ if [ "$CURRENT" = true ]; then
     APPROVED_PREVIOUS_IMAGE=$(cat "$LAST_GOOD" 2>/dev/null || true)
     [ "$PREVIOUS_IMAGE" = "$APPROVED_PREVIOUS_IMAGE" ] ||
         fail "the running image is not the last verified image ($LAST_GOOD); nothing changed"
+elif [ -e "$LAST_GOOD" ]; then
+    # An interrupted swap or a manual docker rm leaves no container. The last
+    # verified image is still the image that a rollback starts.
+    PREVIOUS_IMAGE=$(cat "$LAST_GOOD") || fail "cannot read $LAST_GOOD; nothing changed"
+    [[ "$PREVIOUS_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "$LAST_GOOD is not one image ID; nothing changed"
+    if docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}' >/dev/null 2>&1; then
+        echo "REPORT no coordinator container; the rollback target is the last verified image $PREVIOUS_IMAGE"
+    else
+        echo "REPORT no coordinator container, and the last verified image $PREVIOUS_IMAGE is not on the host; a rollback of this deploy will refuse"
+        PREVIOUS_IMAGE=none
+    fi
 else
     PREVIOUS_IMAGE=none
 fi
@@ -574,7 +607,8 @@ prune_generated_history() {
         \( -name "darkbloom-dev-swap-$short_sha-$digit*.result" ! -name 'darkbloom-dev-swap-???????-*[!0-9]*.result' \) -o \
         \( -name "darkbloom-dev-rollback-$digit*.result" ! -name 'darkbloom-dev-rollback-*[!0-9]*.result' \) \
         \) -delete || status=1
-    find "$STATE" -maxdepth 1 -type f -mtime +14 -name "failed-coordinator-$utc.log" -delete || status=1
+    find "$STATE" -maxdepth 1 -type f -mtime +14 \
+        \( -name "failed-coordinator-$utc.log" -o -name "migrate-only-$utc.log" \) -delete || status=1
     return "$status"
 }
 prune_generated_history ||
@@ -598,10 +632,14 @@ prune_redundant_env_backups ||
     echo "REPORT could not remove every redundant $ENV_FILE.bak.* copy" >&2
 
 # Dev housekeeping: keep this run's fallback container, the files of one
-# rollback, and images younger than 7 days or in use.
+# rollback, and images younger than 7 days or in use. A run without a running
+# coordinator made no fallback that holds the previous image, so it keeps the
+# older fallbacks and images.
 prune_superseded_files ||
     echo "REPORT could not remove every superseded directory in $STATE and $DEPLOY_ROOT" >&2
-docker ps -a --format '{{.Names}}' | grep '^coordinator_fallback_' | grep -vx "$FALLBACK" |
-    xargs -r docker rm >/dev/null 2>&1 || true
-docker image prune -af --filter until=168h >/dev/null 2>&1 || true
+if [ "$CURRENT" = true ]; then
+    docker ps -a --format '{{.Names}}' | grep '^coordinator_fallback_' | grep -vx "$FALLBACK" |
+        xargs -r docker rm >/dev/null 2>&1 || true
+    docker image prune -af --filter until=168h >/dev/null 2>&1 || true
+fi
 finish "OK $CANDIDATE_COMMIT drain_s=$((T1 - T0)) start_to_ready_s=$((T2 - T1))$pg_cleanup_report"

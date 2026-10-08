@@ -97,7 +97,7 @@ project=$(curl -fsS --max-time 5 -H 'Metadata-Flavor: Google' "$METADATA_URL") |
 [ "$project" = "$PROJECT" ] || fail "project is $project, not $PROJECT"
 [ -f "$ENV_FILE" ] || fail "$ENV_FILE does not exist; run host-setup.sh --apply and seed-env.sh --seed first"
 # shellcheck source=deploy/gcp/dev/refresh-backup.sh
-. "$LIB/deploy/gcp/dev/refresh-backup.sh"
+. "$LIB/deploy/gcp/dev/refresh-backup.sh" || fail "cannot read $LIB/deploy/gcp/dev/refresh-backup.sh; nothing changed"
 
 refresh() {
     REQUIRED_FILE=$LIB/deploy/gcp/prod/required-env-keys.txt \
@@ -470,7 +470,7 @@ refresh_backup=$(reported_refresh_backup "$ENV_FILE" "$REFRESH_OUTPUT") ||
     restore_then_fail "refresh --apply did not report one regular timestamped backup"
 # A backup that differs from env.before holds an env change made after that
 # snapshot. It is the only copy of that change, so it stays.
-[ "$(sha256sum "$refresh_backup" | cut -d' ' -f1)" = "$PREVIOUS_ENV_BACKUP_SHA256" ] ||
+refresh_backup_is_copy_of "$refresh_backup" "$PREVIOUS_ENV_BACKUP_SHA256" ||
     restore_then_fail "the refresh backup $refresh_backup does not match the pre-refresh env and is kept"
 rm -f -- "$refresh_backup" || restore_then_fail "could not remove the redundant refresh backup"
 if [ "$CURRENT" = true ] && [ "$(cache_env_digest)" != "$BEFORE_DIGEST" ]; then
@@ -582,15 +582,14 @@ prune_generated_history ||
 
 # Each refresh --apply, including the one the boot refresh unit runs, makes a
 # <env file>.bak.<UTC> copy of the secret env file. Remove a copy only when its
-# bytes equal the live file or the env.before that rollback-state names. Any
-# other copy is the only copy of that env state, so it stays.
+# bytes equal the live file. Any other copy can be the last copy of that env
+# state (the next deploy removes this attempt's env.before), so it stays.
 prune_redundant_env_backups() {
-    local file digest live status=0
+    local file live status=0
     live=$(sha256sum "$ENV_FILE" | cut -d' ' -f1) || return 1
     for file in "$ENV_FILE".bak.*; do
         refresh_backup_name_is_valid "$ENV_FILE" "$file" && [ -f "$file" ] && [ ! -L "$file" ] || continue
-        digest=$(sha256sum "$file" | cut -d' ' -f1) || { status=1; continue; }
-        [ "$digest" = "$live" ] || [ "$digest" = "$PREVIOUS_ENV_BACKUP_SHA256" ] || continue
+        refresh_backup_is_copy_of "$file" "$live" || continue
         rm -f -- "$file" || status=1
     done
     return "$status"

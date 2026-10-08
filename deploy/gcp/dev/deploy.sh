@@ -361,7 +361,8 @@ tree_digest() {
     sudo tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \\
         -cf - -C \"\$1\" . | sha256sum | cut -d\" \" -f1
 }
-# A link or state file that cannot be read counts as a use.
+# A link or state file that cannot be read counts as a use, and so does a
+# rollback-state whose line 6 is neither none nor an absolute path.
 in_use() {
     local target
     if sudo test -e $REMOTE/current || sudo test -L $REMOTE/current; then
@@ -370,6 +371,7 @@ in_use() {
     fi
     if sudo test -e $REMOTE_STATE/rollback-state; then
         target=\$(sudo sed -n 6p $REMOTE_STATE/rollback-state) || return 0
+        case \"\$target\" in none) return 1 ;; /*) ;; *) return 0 ;; esac
         if sudo test \"\$target\" -ef $LIB; then return 0; fi
     fi
     return 1
@@ -387,8 +389,14 @@ if sudo test -e $LIB || sudo test -L $LIB; then
     if [ \"\$staged_digest\" != \"\$published_digest\" ]; then
         ! in_use || { echo \"FAIL published candidate files differ from the same commit archive, and current or rollback-state uses them\" >&2; exit 1; }
         aside=\$(sudo mktemp -d $REMOTE/.incoming-$CANDIDATE_COMMIT.XXXXXX)
-        sudo mv -T -- $LIB \"\$aside\"
-        sudo mv -T -- \"\$stage\" $LIB
+        sudo mv -T -- $LIB \"\$aside\" ||
+            { echo \"FAIL could not move the published candidate files aside; nothing changed\" >&2; exit 1; }
+        if ! sudo mv -T -- \"\$stage\" $LIB; then
+            sudo mv -T -- \"\$aside\" $LIB ||
+                { echo \"FAIL could not publish $LIB or restore it: the old files are in \$aside\" >&2; exit 1; }
+            echo \"FAIL could not publish the new candidate files; restored the old files in $LIB\" >&2
+            exit 1
+        fi
         stage=\$aside
         echo \"REPORT replaced unused published candidate files that differ from the same commit archive\"
     fi

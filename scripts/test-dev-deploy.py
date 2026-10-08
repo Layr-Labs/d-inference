@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -224,6 +225,13 @@ def snapshot(path):
     return result
 
 
+def tree_contents(path):
+    """The mode and digest of each entry under path, keyed by its relative
+    name. Unlike snapshot, it ignores mtimes and the location of path."""
+    prefix = str(path)
+    return {name.removeprefix(prefix): (mode, digest) for name, (mode, _, digest) in snapshot(path).items()}
+
+
 def env_lines(path):
     out = {}
     for line in Path(path).read_text().splitlines():
@@ -324,7 +332,7 @@ class DevEnvContractTests(unittest.TestCase):
                 else:
                     self.assertIn("Could not inspect temporary fixture containment", result.stderr)
 
-    def test_workflow_paths_are_one_list_that_covers_every_file_the_suite_reads(self):
+    def test_workflow_paths_are_one_list_that_covers_the_named_suite_inputs(self):
         text = DEV_DEPLOY_WORKFLOW.read_text()
         self.assertEqual(text.count("paths:"), 2)
         self.assertEqual(text.count("    paths: &dev-deploy-safety-paths\n"), 1)
@@ -339,14 +347,14 @@ class DevEnvContractTests(unittest.TestCase):
         inputs |= {"coordinator/api/server.go", "scripts/test-dev-deploy.py"}
         uncovered = sorted(path for path in inputs
                            if not any(path_filter_matches(pattern, path) for pattern in patterns))
-        self.assertEqual(uncovered, [], "suite inputs outside the workflow paths filter")
+        self.assertEqual(uncovered, [], "named suite inputs outside the workflow paths filter")
 
     def test_refresh_backup_contract_has_one_reader(self):
         contract = DEV / "refresh-backup.sh"
         self.assertIn("${2##*backup=}", contract.read_text())
         for script in (SEED, DEV / "swap.sh"):
             text = script.read_text()
-            self.assertIn("/refresh-backup.sh\"\n", text, script)
+            self.assertIn('/refresh-backup.sh" || fail "cannot read ', text, script)
             self.assertNotIn("##*backup=", text, script)
             self.assertNotIn("[0-9]{8}T[0-9]{6}Z", text, script)
 
@@ -487,6 +495,31 @@ class SeedEnvTests(unittest.TestCase):
                 rerun = box.run([seed, "--seed"])
                 self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
                 self.assertIn("nothing to do", rerun.stdout)
+
+    def test_seed_keeps_a_refresh_backup_that_is_not_the_written_file(self):
+        box = self.sandbox()
+        lib = lib_with_refresh_wrapper(
+            box, 'if [ "${1:-}" = --apply ]; then echo CONCURRENT_EDIT=1 >> "$ENV_FILE"; fi')
+        result = box.run([lib / "deploy/gcp/dev/seed-env.sh", "--seed"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("is not the file the seed wrote; it is kept", result.stdout)
+        self.assert_no_value_printed(result)
+        backups = list(box.env_dir.glob("env.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(env_lines(backups[0]).get("CONCURRENT_EDIT"), "1")
+
+    def test_missing_refresh_backup_helper_is_a_named_failure(self):
+        box = self.sandbox()
+        lib = lib_with_refresh_wrapper(box)
+        (lib / "deploy/gcp/dev/refresh-backup.sh").unlink()
+        for mode in ("--check", "--seed"):
+            with self.subTest(mode=mode):
+                result = box.run([lib / "deploy/gcp/dev/seed-env.sh", mode])
+                self.assertNotEqual(result.returncode, 0)
+                failures = [line for line in (result.stdout + result.stderr).splitlines()
+                            if line.startswith("FAIL ")]
+                self.assertTrue(any("refresh-backup.sh" in line for line in failures), result.stderr)
+                self.assertFalse(box.env_dir.exists())
 
     def test_other_project_is_refused_before_any_change(self):
         box = self.sandbox(project="darkbloom-mainnet")
@@ -1079,10 +1112,10 @@ class ZeroMutationTests(unittest.TestCase):
             cwd=ROOT, capture_output=True, check=True,
         ).stdout
 
-        def publish(payload=archive, selected_command=command):
+        def publish(payload=archive, selected_command=command, path_prefix="", env=None):
             return subprocess.run(
-                ["bash", "-c", selected_command], input=payload, cwd=ROOT,
-                capture_output=True, env={"PATH": os.environ["PATH"], "LC_ALL": "C"},
+                ["bash", "-c", selected_command], input=payload, cwd=ROOT, capture_output=True,
+                env={"PATH": path_prefix + os.environ["PATH"], "LC_ALL": "C", **(env or {})},
             )
 
         return command, archive, publish, remote, state
@@ -1124,14 +1157,12 @@ class ZeroMutationTests(unittest.TestCase):
         first = publish()
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         published = remote / COMMIT
-        exact = snapshot(published)
+        exact = tree_contents(published)
         (published / "stray").write_text("left by an earlier run\n")
         replaced = publish()
         self.assertEqual(replaced.returncode, 0, replaced.stdout + replaced.stderr)
         self.assertIn(b"REPORT replaced unused published candidate files", replaced.stdout)
-        def tree(snap):
-            return {path.removeprefix(str(published)): (mode, digest) for path, (mode, _, digest) in snap.items()}
-        self.assertEqual(tree(snapshot(published)), tree(exact))
+        self.assertEqual(tree_contents(published), exact)
         self.assertFalse((published / "stray").exists())
         self.assertEqual(list(remote.glob(".incoming-*")), [])
 
@@ -1152,6 +1183,73 @@ class ZeroMutationTests(unittest.TestCase):
                 self.assertIn(b"and current or rollback-state uses them", refused.stderr)
                 self.assertEqual(snapshot(published), changed)
                 self.assertEqual(list(remote.glob(".incoming-*")), [])
+
+    @requires_gnu_publication_tools
+    def test_short_or_unreadable_rollback_state_counts_as_a_use(self):
+        _, _, publish, remote, state = self.publication()
+        first = publish()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        published = remote / COMMIT
+        state.mkdir()
+        rollback_state = state / "rollback-state"
+        cases = (("empty", "", False), ("five lines", "x\nx\nx\nx\nx\n", False),
+                 ("relative line 6", "x\nx\nx\nx\nx\nrelative/path\n", False),
+                 ("first deploy", "none\nx\nx\nx\nx\nnone\n", True),
+                 ("other directory", f"x\nx\nx\nx\nx\n{remote / ('c' * 40)}\n", True))
+        for label, text, replaced in cases:
+            with self.subTest(label=label):
+                (published / "stray").write_text("left by an earlier run\n")
+                rollback_state.write_text(text)
+                result = publish()
+                if replaced:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertFalse((published / "stray").exists())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b"and current or rollback-state uses them", result.stderr)
+                    self.assertTrue((published / "stray").exists())
+                self.assertEqual(list(remote.glob(".incoming-*")), [])
+
+    @requires_gnu_publication_tools
+    def test_failed_publication_rename_restores_or_names_the_old_files(self):
+        _, _, publish, remote, _ = self.publication()
+        first = publish()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        published = remote / COMMIT
+        exact = tree_contents(published)
+        # mv fails to rename the new tree onto the commit path, and, with
+        # FAIL_RESTORE=1, also fails to rename the old tree (it has "stray") back.
+        tools = remote.parent / "mv-tools"
+        tools.mkdir()
+        (tools / "mv").write_text(
+            "#!/bin/bash\n"
+            f'if [ "$#" -eq 4 ] && [ "$4" = "{published}" ]; then\n'
+            '    if [ -e "$3/stray" ]; then [ "${FAIL_RESTORE:-0}" != 1 ] || exit 71\n'
+            "    else exit 70; fi\n"
+            "fi\n"
+            f'exec {shutil.which("mv")} "$@"\n')
+        (tools / "mv").chmod(0o755)
+        (published / "stray").write_text("left by an earlier run\n")
+        changed = snapshot(published)
+
+        restored = publish(path_prefix=f"{tools}{os.pathsep}")
+        self.assertNotEqual(restored.returncode, 0)
+        self.assertIn(f"restored the old files in {published}".encode(), restored.stderr)
+        self.assertEqual(snapshot(published), changed)
+        self.assertEqual(list(remote.glob(".incoming-*")), [])
+
+        lost = publish(path_prefix=f"{tools}{os.pathsep}", env={"FAIL_RESTORE": "1"})
+        self.assertNotEqual(lost.returncode, 0)
+        self.assertFalse(published.exists())
+        asides = list(remote.glob(f".incoming-{COMMIT}.*"))
+        self.assertEqual(len(asides), 1)
+        self.assertTrue((asides[0] / "stray").exists())
+        self.assertIn(f"could not publish {published} or restore it: the old files are in {asides[0]}".encode(),
+                      lost.stderr)
+
+        recovered = publish()
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+        self.assertEqual(tree_contents(published), exact)
 
     @requires_gnu_publication_tools
     def test_publication_removes_stale_hidden_stage_directories(self):
@@ -1601,6 +1699,38 @@ class ZeroMutationTests(unittest.TestCase):
         self.assertEqual(env_file.read_bytes(), before)
         self.assertNotIn("automatic cleanup", result.stdout + result.stderr)
         self.assertEqual([call for call in box.calls("docker") if call[1] == "run"], [])
+
+    def test_swap_names_a_missing_refresh_backup_helper(self):
+        box, extra, _ = self.seeded_swap_box()
+        lib = lib_with_refresh_wrapper(box)
+        (lib / "deploy/gcp/dev/refresh-backup.sh").unlink()
+        box.set_rules(self.first_deploy_rules())
+        result = box.run([lib / "deploy/gcp/dev/swap.sh"], {**extra, "LIB": str(lib)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(Path(extra["RESULT"]).read_text().strip(),
+                         f"FAIL cannot read {lib}/deploy/gcp/dev/refresh-backup.sh; nothing changed")
+        self.assertEqual(box.calls("psql"), [])
+        self.assertEqual(box.calls("docker"), [])
+
+    @requires_gnu_ln
+    def test_committed_deploy_keeps_an_env_backup_that_only_env_before_matches(self):
+        # The candidate adds a release default, so the live file changes. A
+        # backup of the pre-deploy env is then the same as env.before only,
+        # which the next deploy removes with its attempt directory.
+        box, extra, _ = self.seeded_swap_box(with_current=False)
+        lib = lib_with_refresh_wrapper(box)
+        defaults = lib / "deploy/gcp/prod/release-env-defaults"
+        defaults.unlink()
+        defaults.write_text(DEFAULTS.read_text() + "EIGENINFERENCE_FIXTURE_NEW_DEFAULT=1\n")
+        env_file = Path(extra["ENV_FILE"])
+        pre_deploy = env_file.parent / "env.bak.20200101T000000Z"
+        pre_deploy.write_bytes(env_file.read_bytes())
+        box.set_rules(self.first_deploy_rules())
+        result = box.run([lib / "deploy/gcp/dev/swap.sh"], {**extra, "LIB": str(lib)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(Path(extra["RESULT"]).read_text().startswith(f"OK {COMMIT} "))
+        self.assertEqual(env_lines(env_file).get("EIGENINFERENCE_FIXTURE_NEW_DEFAULT"), "1")
+        self.assertTrue(pre_deploy.exists())
 
     @requires_gnu_ln
     def test_committed_deploy_removes_only_redundant_env_backups(self):

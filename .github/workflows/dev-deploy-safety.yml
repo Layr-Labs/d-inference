@@ -3,8 +3,8 @@ name: Dev Deploy Safety
 on:
   push:
     branches: [master, main]
-    # The repository files that scripts/test-dev-deploy.py and the scripts
-    # under test read, and their docs. deploy-dev.yml arrives with PR 1370.
+    # The inputs of scripts/test-dev-deploy.py and their docs. A test there
+    # checks the inputs that it names. deploy-dev.yml arrives with PR 1370.
     paths: &dev-deploy-safety-paths
       - .github/workflows/dev-deploy-safety.yml
       - .github/workflows/deploy-dev.yml

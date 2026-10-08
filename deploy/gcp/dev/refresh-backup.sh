@@ -19,3 +19,11 @@ reported_refresh_backup() {
     refresh_backup_name_is_valid "$1" "$path" && [ -f "$path" ] && [ ! -L "$path" ] || return 1
     printf '%s\n' "$path"
 }
+
+# refresh_backup_is_copy_of <path> <sha256>: the backup has exactly the bytes
+# of a file that the caller still holds. Only such a backup may be removed.
+refresh_backup_is_copy_of() {
+    local digest
+    digest=$(sha256sum "$1" | cut -d' ' -f1) || return 1
+    [ "$digest" = "$2" ]
+}

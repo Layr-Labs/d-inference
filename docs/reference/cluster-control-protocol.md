@@ -1,9 +1,10 @@
 # Experimental cluster control protocol
 
-> Last updated: 2026-10-07 · staging branch `kimi/cluster-foundation-20261007` (private fork only)
+> Last updated: 2026-10-07
 
 Exact member-role and native-pair public-control shapes on the provider
-WebSocket. Member registration and negotiation are implemented end to end
+WebSocket, as staged on the private `kimi/cluster-foundation-20261007`
+branch. Member registration and negotiation are implemented end to end
 (provider client and coordinator); native-pair authorization is implemented
 on the coordinator and mirrored by the Swift codec; the provider member
 dispatcher consumes committed starts through the staged member control. The

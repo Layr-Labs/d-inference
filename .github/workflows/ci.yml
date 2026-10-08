@@ -358,6 +358,16 @@ jobs:
           DARKBLOOM_PREFIX_CACHE: '0'
           DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
         run: ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+      - name: Run isolated native MiMo lifecycle drain gate
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS: '1'
+          DARKBLOOM_PREFIX_CACHE: '0'
+          DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
+        run: ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
       - name: Restore pinned MiMo audio codec
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57

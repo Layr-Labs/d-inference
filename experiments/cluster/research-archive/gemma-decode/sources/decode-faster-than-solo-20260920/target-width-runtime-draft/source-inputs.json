@@ -1,0 +1,124 @@
+{
+  "schema": "gemma4_target_width_runtime_source_v1",
+  "sourceOnly": true,
+  "compilerOrNativeExecuted": false,
+  "files": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/HANDOFF.md",
+      "bytes": 4787,
+      "sha256": "41b5ed9761d8253b6d7d323af1f824cf98bc8b61056ae81d5f0693aa362b4e72"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/Runtime/Gemma4BenchmarkEntry.swift",
+      "bytes": 6267,
+      "sha256": "8a0741fe638a19eab37c160f50809e21ff4f39006127819b667a137906290813"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/Runtime/Gemma4TargetWidthIsolation.swift",
+      "bytes": 13398,
+      "sha256": "b32efb2d8502f83c6397532a897eb5d477fff76d68aea9c1bbf3fe091384679d"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/Runtime/Gemma4TargetWidthRuntime.swift",
+      "bytes": 13428,
+      "sha256": "b7a19fa66cea6678fc904942604f5a405cf09db5be877dc08b441adbcf1e41cb"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/composition/Gemma4BenchmarkEntry.remote.swift",
+      "bytes": 7217,
+      "sha256": "2b8ddeaa5c7459e60cd0e40e1ef9a3b2c4a0dbbff487f2f701e5af5efea6153d"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/entry-eaeb.patch",
+      "bytes": 1686,
+      "sha256": "550b38d2c54a47c49a883325961f67f41bb60adcfc0cd9e628d5fa1422170fde"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/entry-overlay.json",
+      "bytes": 2191,
+      "sha256": "cd1244cd3deba1afab5a0a58f6d9e81f3b456871c82bd0c13153529c670f87e1"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/entry-remote.patch",
+      "bytes": 1737,
+      "sha256": "f81797c699afcd31f8ee5ae25a834a9dee058bad1889df5fbc03fb2661b23b1c"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/preimages/Gemma4BenchmarkEntry.eaeb.swift",
+      "bytes": 5786,
+      "sha256": "8e7a52d699fda6134703f13ed0938c58f4827eea18a160f745fe9f798794c290"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/preimages/Gemma4BenchmarkEntry.remote.swift",
+      "bytes": 6736,
+      "sha256": "972583f976ffdcaf64215e49284e9ad3a67202cd852024ff76d94d623d7dbfba"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/result-contract.json",
+      "bytes": 3270,
+      "sha256": "9e07f549ed3f6c9563cb88a2087b8f33cfa1ca933869e14ecbe50d068025c5e2"
+    }
+  ],
+  "runtimeAdditions": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/Runtime/Gemma4TargetWidthIsolation.swift",
+      "bytes": 13398,
+      "sha256": "b32efb2d8502f83c6397532a897eb5d477fff76d68aea9c1bbf3fe091384679d"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/Runtime/Gemma4TargetWidthRuntime.swift",
+      "bytes": 13428,
+      "sha256": "b7a19fa66cea6678fc904942604f5a405cf09db5be877dc08b441adbcf1e41cb"
+    }
+  ],
+  "entryOverlay": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-runtime-draft/entry-overlay.json",
+    "bytes": 2191,
+    "sha256": "cd1244cd3deba1afab5a0a58f6d9e81f3b456871c82bd0c13153529c670f87e1"
+  },
+  "requiredFrozenInputs": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-cohort-draft-20260920/Runtime/Gemma4BenchmarkResourceOwner.swift",
+      "bytes": 18993,
+      "sha256": "77e9a0faa92d74db90100b1aa22d31f56b4bbda359d8deabcb32ee5a448af4bb"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-cohort-draft-20260920/Runtime/Gemma4MTPRemoteTargetBudget.swift",
+      "bytes": 2962,
+      "sha256": "ab48bb5c930fedc8591af87583824c4ca43ef4f04dab8a591754d513d3a74532"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-cohort-draft-20260920/Runtime/Gemma4MTPRemoteTargetResources.swift",
+      "bytes": 5724,
+      "sha256": "ed580ee3907335d2ffb2ae0ba71eda6cea9b8efc503bfc46f3c62262fac66cf0"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-cohort-draft-20260920/Runtime/Gemma4MTPPullTransferPlan.swift",
+      "bytes": 2467,
+      "sha256": "3a7b92d1af332969deb1640bdb473f3e24e528f7caf2f3fdc9729d12171e9541"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-cohort-draft-20260920/manifest.json",
+      "bytes": 5671,
+      "sha256": "a57201bc72ef53d8073abdf53ed77861113c1b8fe0f9a3026b0ce254979fc25a"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-session/Gemma4OwnedForwardSession.swift",
+      "bytes": 10556,
+      "sha256": "92fa728bc13abeeec5bbe93190686661da6e709f1ef6af6b753e71fa08ac3173"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-session/Gemma4OwnedMTPVerification.swift",
+      "bytes": 8558,
+      "sha256": "d3675aa3594708c4acbb7abe009960e4eb85defb8e672e31748472883944d50a"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-width-isolation-draft/Gemma4TargetWidthIsolation.swift",
+      "bytes": 11611,
+      "sha256": "9e95c0b564bdb13c9379033cb726faeb61916d157cc64626d305def5fa1b1404"
+    }
+  ],
+  "ownerChanged": false,
+  "entryForwardAndInverseChecksPassed": true,
+  "actualNativeSHA256": null
+}

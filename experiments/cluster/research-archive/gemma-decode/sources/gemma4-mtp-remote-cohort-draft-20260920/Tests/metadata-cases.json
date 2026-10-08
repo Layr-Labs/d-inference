@@ -1,0 +1,22 @@
+{
+  "schema": "gemma4_remote_mtp_metadata_cases_v1",
+  "executed": false,
+  "positive": ["target rank1 exact closed local job", "assistant rank0 same bilateral scope"],
+  "negative": [
+    "unknown role",
+    "changed localMTPJob bytes",
+    "extra wrapper field",
+    "missing native or embedding hash",
+    "native identity differs from local ordinary input",
+    "depth1 or depth3 local job",
+    "ordinary pipeline stage job instead of full target metadata",
+    "O128 or unsupported P/C input through unchanged ordinary job",
+    "relative or noncanonical wrapper path"
+  ],
+  "runtimeNegative": [
+    "actual group is loopback or wrong rank",
+    "actual selected embedding differs from metadata commitment",
+    "missing fresh summed verification/transfer observation",
+    "second cohort after private failure slot is occupied"
+  ]
+}

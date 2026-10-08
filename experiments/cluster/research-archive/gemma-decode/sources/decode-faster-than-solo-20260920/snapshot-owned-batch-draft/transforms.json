@@ -1,0 +1,102 @@
+{
+  "schema": "gemma4_owned_snapshot_shared_transforms_v1",
+  "files": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+        "bytes": 13578,
+        "sha256": "aff36e927b69979e4a57a23164b4fc9446d553f49487a5bd4fd8de983519d102"
+      },
+      "after": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-draft/Runtime/Gemma4MTPPullTarget.swift",
+        "bytes": 14078,
+        "sha256": "8512a8665b65f865fe641ecab1d615623398447dd74fdd4bd21325248c57f55c"
+      },
+      "transforms": [
+        {
+          "before": "    private var pendingCapture: Gemma4OwnedMTPConditioning?\n    private var highestProduced: Int\n",
+          "after": "    private var pendingCapture: Gemma4OwnedMTPConditioning?\n    private var pendingSnapshotBatch: Gemma4MTPPullSnapshotBatch?\n    private var highestProduced: Int\n"
+        },
+        {
+          "before": "            try requireActive()\n            guard ledger.canReseed, branch == nil, outstanding == nil, pendingCapture == nil,\n                  session.committedTokens == ledger.inputFrontier else { throw ProbeError(\"Remote MTP reseed precedes exact branch retirement/frontier\") }\n",
+          "after": "            try requireActive()\n            guard ledger.canReseed, branch == nil, outstanding == nil, pendingCapture == nil, pendingSnapshotBatch == nil,\n                  session.committedTokens == ledger.inputFrontier else { throw ProbeError(\"Remote MTP reseed precedes exact branch retirement/frontier\") }\n"
+        },
+        {
+          "before": "            pendingCapture = capture\n            let response = try withExtendedLifetime(capture) {\n",
+          "after": "            pendingCapture = capture\n            if channel.snapshotPolicy == .ownedBatch {\n                pendingSnapshotBatch = try Gemma4MTPPullSnapshotBatch(plan:plan,direction:.send)\n            }\n            let response = try withExtendedLifetime(capture) {\n"
+        },
+        {
+          "before": "                try channel.exchange(command,expecting:.seeded,transfer:{\n                    try Gemma4MTPPullSnapshot.send(capture,through:self.channel,plan:plan,check:check)\n                },check:check)\n",
+          "after": "                try channel.exchange(command,expecting:.seeded,transfer:{\n                    try Gemma4MTPPullSnapshot.send(capture,through:self.channel,plan:plan,\n                        batch:self.pendingSnapshotBatch,check:check)\n                },check:check)\n"
+        },
+        {
+          "before": "            try requireReply(response,command.changingKind(.seeded))\n            pendingCapture = nil\n",
+          "after": "            try requireReply(response,command.changingKind(.seeded))\n            pendingSnapshotBatch = nil // Exact seeded response above; no early source release.\n            pendingCapture = nil\n"
+        },
+        {
+          "before": "        try Gemma4MTPPullNativeFence.join(check:check)\n        pendingCapture = nil\n",
+          "after": "        try Gemma4MTPPullNativeFence.join(check:check)\n        pendingSnapshotBatch = nil // Both actual original-owner stream fences above.\n        pendingCapture = nil\n"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+        "bytes": 14617,
+        "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+      },
+      "after": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-draft/Runtime/Gemma4RemoteMTPDriver.swift",
+        "bytes": 14674,
+        "sha256": "892831a0dff5667357efdc0dd38974ec19078d36616895e8a33d37f62d148eff"
+      },
+      "transforms": [
+        {
+          "before": "                let channel = try Gemma4MTPPullChannel(collective:group,role:.target,targetRank:1,scopeSHA256:input.wireScope(ordinal),\n                    controlOperations:controlOperations,controlLifetimeCheck:controlLifetimeCheck)\n                let target = try Gemma4MTPPullTarget(channel:channel,scope:input.requestScope(ordinal),\n",
+          "after": "                let channel = try Gemma4MTPPullChannel(collective:group,role:.target,targetRank:1,scopeSHA256:input.wireScope(ordinal),\n                    controlOperations:controlOperations,controlLifetimeCheck:controlLifetimeCheck,\n                    snapshotPolicy:input.snapshotPolicy)\n                let target = try Gemma4MTPPullTarget(channel:channel,scope:input.requestScope(ordinal),\n"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift",
+        "bytes": 6522,
+        "sha256": "61418f1ddb568c9da112cc3e0daa5c36ea6323ab28c0aa254920968374fbeb81"
+      },
+      "after": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-draft/Runtime/Gemma4RemoteMTPInput.swift",
+        "bytes": 6961,
+        "sha256": "ad351203fa181e4abdef4b5996db053e83e8074b073fe5561176eae10d484f9b"
+      },
+      "transforms": [
+        {
+          "before": "    let schema: String, role: String\n    let localMTPJob: String, localMTPJobSHA256: String\n",
+          "after": "    let schema: String, role: String\n    let snapshotPolicy: String?\n    let localMTPJob: String, localMTPJobSHA256: String\n"
+        },
+        {
+          "before": "    func validate() throws {\n        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n",
+          "after": "    func validate() throws {\n        _ = try Gemma4MTPPullSnapshotPolicy(requested:snapshotPolicy)\n        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n"
+        },
+        {
+          "before": "    let verificationDepth: Gemma4RemoteMTPDepth\n    var benchmark: Gemma4BenchmarkInput { local.benchmark }\n",
+          "after": "    let verificationDepth: Gemma4RemoteMTPDepth\n    let snapshotPolicy: Gemma4MTPPullSnapshotPolicy\n    var benchmark: Gemma4BenchmarkInput { local.benchmark }\n"
+        },
+        {
+          "before": "        self.verificationDepth = verificationDepth\n        // Local paths/role are intentionally excluded from the bilateral scope.\n",
+          "after": "        self.verificationDepth = verificationDepth\n        let snapshotPolicy = try Gemma4MTPPullSnapshotPolicy(requested:job.snapshotPolicy)\n        self.snapshotPolicy = snapshotPolicy\n        // Local paths/role are intentionally excluded from the bilateral scope.\n"
+        },
+        {
+          "before": "            \"capture=\\(local.job.captureEvidence)\"]+local.benchmark.requests.map(\\.fingerprint)\n            + (local.targetProjectionPolicy.map { [\"targetProjection=\"+$0] } ?? [])).joined(separator:\"\\n\").utf8))\n    }\n",
+          "after": "            \"capture=\\(local.job.captureEvidence)\"]+local.benchmark.requests.map(\\.fingerprint)\n            + (local.targetProjectionPolicy.map { [\"targetProjection=\"+$0] } ?? [])\n            + snapshotPolicy.scopeComponents).joined(separator:\"\\n\").utf8))\n    }\n"
+        },
+        {
+          "before": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }\n        return try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.withoutEscapingSlashes])\n",
+          "after": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }\n        if snapshotPolicy == .ownedBatch { report[\"snapshotTransferPolicy\"] = snapshotPolicy.rawValue }\n        return try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.withoutEscapingSlashes])\n"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "schema": "gemma4_o128_harness_v2_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2243,
+      "sha256": "88b70756615e9e4c4f8fce18a1cacea936968efc21ee988c2ec8c9605e8bf867"
+    },
+    {
+      "path": "Tests/test_timing_contract.py",
+      "bytes": 3609,
+      "sha256": "2b5cdf358f353053f5148932512ffe7eb6b14aa3183f647ae1672ad65072a898"
+    },
+    {
+      "path": "bindings.json",
+      "bytes": 4189,
+      "sha256": "7a9749b11c060b83e1459a99a9d18aad35565a6f3389635b050c54b5e8d61dda"
+    },
+    {
+      "path": "prepare.py",
+      "bytes": 10094,
+      "sha256": "313e3c5ae2998472dd666ed20b99d207841b363249fa63640b09403268bdd118"
+    },
+    {
+      "path": "proposed/numerical/compare.py",
+      "bytes": 14094,
+      "sha256": "b48b4a84a19f0c471cc1f39482ecd46d00d6fb3973265c07c99e8b6b5d76cef4"
+    },
+    {
+      "path": "proposed/numerical/timing_contract.py",
+      "bytes": 4915,
+      "sha256": "05caa38e8130ad773012b4a714946a68395f3edb1d965867b4c9ad3f8e7e2279"
+    },
+    {
+      "path": "proposed/remote/package/remote_mtp_contract.py",
+      "bytes": 10636,
+      "sha256": "0c2b83c1f14d129a7715374fcb1c3c60659106c9e8e43d2ad648e5122b64918d"
+    },
+    {
+      "path": "proposed/remote/package/timing_contract.py",
+      "bytes": 4915,
+      "sha256": "05caa38e8130ad773012b4a714946a68395f3edb1d965867b4c9ad3f8e7e2279"
+    },
+    {
+      "path": "proposed/timing_contract.py",
+      "bytes": 4915,
+      "sha256": "05caa38e8130ad773012b4a714946a68395f3edb1d965867b4c9ad3f8e7e2279"
+    }
+  ]
+}

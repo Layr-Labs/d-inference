@@ -1,0 +1,81 @@
+{
+  "schema": "gemma4_verification_bound_memo_source_v1",
+  "baseSourceReceipt": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/diagnostics-composition-1/sources.json",
+    "sha256": "05ed94d80782e4177ff90b35dd94caa0f8a766f0cce1fd971f6d2d0d75ee263e",
+    "bytes": 49402
+  },
+  "baseBuildReceipt": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/diagnostics-build-1/receipt.json",
+    "sha256": "6096d8b39b4b4031e7e55c60347e13a8af9cf74623ac95120644e37cf32d2f48",
+    "bytes": 2309
+  },
+  "changes": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPAuxiliaryOwner.swift",
+      "beforeSHA256": "9ba7124b4e36fe3dad984961de3c3e53e0c1f423accd02562b735b3f2c01aa4c",
+      "source": "Runtime/Gemma4MTPAuxiliaryOwner.swift",
+      "sha256": "521c3f6ffffb015a9c87cb70007273bca2c1d44fb53b12c8b7221b81f48d3f70",
+      "bytes": 14000
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift",
+      "beforeSHA256": "ed580ee3907335d2ffb2ae0ba71eda6cea9b8efc503bfc46f3c62262fac66cf0",
+      "source": "Runtime/Gemma4MTPRemoteTargetResources.swift",
+      "sha256": "60b60337c12375693e57adfbcbe53d4de12668beff76d1b5e20126dfdcd40f32",
+      "bytes": 5926
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/InvocationAllocationBoundMemo.swift",
+      "beforeSHA256": null,
+      "source": "Runtime/InvocationAllocationBoundMemo.swift",
+      "sha256": "90cf9a41a64ee2b8f91fb04ea122577f1907dcd5f8fd30d4e76a259b6bda1d20",
+      "bytes": 552
+    }
+  ],
+  "proofSources": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRequestResources.swift",
+      "sha256": "b5633177b10cfda141803b98cfcf74d76be6fdb6d3caf106935d6cccfc8c1b96",
+      "bytes": 6583
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionVerificationPlan.swift",
+      "sha256": "b17a45085beb18a3eaed3d85346846b1dc048fa18f3d651eb434f2c4e495f2ec",
+      "bytes": 3308
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift",
+      "sha256": "77e9a0faa92d74db90100b1aa22d31f56b4bbda359d8deabcb32ee5a448af4bb",
+      "bytes": 18993
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/mlx-swift/Source/MLX/AllocationFootprint.swift",
+      "sha256": "c75f31a38e7607931dcbc8edbe22c06d0a242d6291a0c6887383a13836630a0f",
+      "bytes": 3320
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/mlx-swift/Source/MLX/GPU+Metal.swift",
+      "sha256": "29ec961dbb009b142a1bbd7583ba7aeb8d793245bb29bfa7f4c4cc82384e5abf",
+      "bytes": 12962
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/mlx-swift/Source/MLX/ErrorHandler.swift",
+      "sha256": "d82a8133e8b3b2798bcecb5cbbfc05366cd542b449e2cf15103d4d977e8f640d",
+      "bytes": 12230
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/allocator.cpp",
+      "sha256": "a7b09a409cbe0ad36391cba16ef0a2d86c0a749554a78edead159482953c1146",
+      "bytes": 11492
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/common/allocation_footprint.h",
+      "sha256": "bff38d5da7648632c6feeb4f7dc2304a145a60e676d4c24f14d64b906673f11c",
+      "bytes": 1102
+    }
+  ],
+  "authorExecutedCompiler": false,
+  "authorExecutedTests": false,
+  "authorMutatedWorkspace": false
+}

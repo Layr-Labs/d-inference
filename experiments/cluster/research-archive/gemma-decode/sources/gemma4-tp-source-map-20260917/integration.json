@@ -1,0 +1,22 @@
+{
+  "activation": "closed",
+  "changes": [
+    {
+      "installed": false,
+      "intendedTarget": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/GemmaAttentionPartition.swift",
+      "postimageSHA256": "f2bbcda0f7c087505e1731e15595ebac89cad72ae463f636d4b261d02207b1b4",
+      "preimage": "absent",
+      "source": "proposed/GemmaAttentionPartition.swift"
+    },
+    {
+      "installed": false,
+      "intendedTarget": "/Users/developer/DarkbloomDev/d-inference/experiments/cluster/inference/Sources/ClusterInference/GemmaAttentionPartitionChecks.swift",
+      "postimageSHA256": "8c90d1d0ec72118664c2395989aef63ef7676b3ee91da89e3ed699509d5ae6fa",
+      "preimage": "absent",
+      "source": "Tests/GemmaAttentionPartitionChecks.swift"
+    }
+  ],
+  "qualified": false,
+  "runtimeCallSitesAdded": false,
+  "schema": "gemma_attention_metadata_draft_v1"
+}

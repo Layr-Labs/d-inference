@@ -1,0 +1,101 @@
+{
+  "context": [
+    {
+      "bytes": 26836,
+      "path": "/Users/developer/DarkbloomDev/d-inference/AGENTS.md",
+      "sha256": "a166bb2bac125dd8c26c5c631f30fd4588d4e46daa12cdc6c7e64df3b98cdf25"
+    },
+    {
+      "bytes": 518,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-conditioning-delta-audit-20260920/manifest.json",
+      "sha256": "e714fa376bb70d9d2ddb58f3443141ea41a734e296ca03527143b7864036282b"
+    },
+    {
+      "bytes": 8978,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-conditioning-delta-audit-20260920/REPORT.md",
+      "sha256": "a47745a1cfe0b58f25973f576824a0d8fbe20bc153d368375cc80a7457b41c52"
+    },
+    {
+      "bytes": 6561,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-draft-20260920/Sources/Gemma4MTPPullRecord.swift",
+      "sha256": "8dc97ae5e721f64a3e9aef25f46553714e56397ddc81b5c694c53638279475ad"
+    },
+    {
+      "bytes": 5470,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-draft-20260920/Runtime/Gemma4MTPPullBatchOwner.swift",
+      "sha256": "0e040adc7de79cee2ea01dbd087539b61ce090a56d0ff17c31b3dfcc38550f41"
+    },
+    {
+      "bytes": 2467,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-cohort-draft-20260920/Runtime/Gemma4MTPPullTransferPlan.swift",
+      "sha256": "3a7b92d1af332969deb1640bdb473f3e24e528f7caf2f3fdc9729d12171e9541"
+    },
+    {
+      "bytes": 5652,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-cohort-draft-20260920/Runtime/Gemma4MTPPullSnapshot.swift",
+      "sha256": "2a54033be779fc139ae675cd4bafd0fdba02df8616f421d44fb46741ed893c9f"
+    },
+    {
+      "bytes": 8534,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-dense-activation-draft/Runtime/Gemma4MTPAuxiliaryBudget.swift",
+      "sha256": "3b8829d0e7bb61a41ada352d010b6e42b2f0380f73e865708a634852af2c63ec"
+    },
+    {
+      "bytes": 14617,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4RemoteMTPDriver.swift",
+      "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+    },
+    {
+      "bytes": 5719,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-control-operation-draft/source-inputs.json",
+      "sha256": "acfb284feefae27efb699f8dd854ef5e0ed9b6dac3f311fda6fc76ff3c99258a"
+    },
+    {
+      "bytes": 85742,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/remote-control-composition-1/sources.json",
+      "sha256": "2e5d0419c5cce1abaec52526e269ea289e58e86bad3282e9231f67f6d4425e7f"
+    }
+  ],
+  "controlsExecuted": false,
+  "defaultChanged": false,
+  "members": [
+    {
+      "bytes": 7572,
+      "path": "HANDOFF.md",
+      "sha256": "77b5da2ac6b66399a464a5ac1cb9568189e824423d38d35e23174a10f39001fb"
+    },
+    {
+      "bytes": 5194,
+      "path": "Sources/Gemma4MTPConditioningMirrorPlan.swift",
+      "sha256": "51e6c075356e4a9e409a3e6332a703126a4028b80c3c09d769713d8126407b7f"
+    },
+    {
+      "bytes": 5269,
+      "path": "Sources/Gemma4MTPDeltaAllocationPlan.swift",
+      "sha256": "1ec855d25ba406d4b42d5e2f9aeb70836c7ee89eda659a709e581ff8fa98adf5"
+    },
+    {
+      "bytes": 5215,
+      "path": "Sources/Gemma4MTPDeltaIdentity.swift",
+      "sha256": "ebc1e2c1d1f23bbe698e0aa42839a09011e39cbbcd326c95766d226f022a6a32"
+    },
+    {
+      "bytes": 16415,
+      "path": "Tests/DeltaPlanningChecks.swift",
+      "sha256": "9806a44a0acdc06d1a8f65ef161ea6b2003fc1e23745cce84567c104070c11da"
+    },
+    {
+      "bytes": 2850,
+      "path": "check_sources.py",
+      "sha256": "0b1fe6054a7f9a262eaf1ba4e632657e36583a8f9eeeaf73ec2cb6b7029d68ea"
+    },
+    {
+      "bytes": 55390,
+      "path": "memory-inputs.json",
+      "sha256": "6e89f64ed1681125151869e75cc22d05391a37003d1662b5783cf2107e9d6a26"
+    }
+  ],
+  "nativeIntegrated": false,
+  "schema": "gemma4_mtp_conditioning_delta_prototype_v1",
+  "sourceOnly": true
+}

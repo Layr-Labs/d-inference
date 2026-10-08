@@ -1,0 +1,50 @@
+{
+  "schema": "gemma4_mtp_dense_argument_order_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 451,
+      "sha256": "1b0c16d0299dd5e99a3e0cd34766272a75c8b431954ded955703f8455cb9530e"
+    },
+    {
+      "path": "Runtime/Gemma4LocalMTPDriver.swift",
+      "bytes": 11216,
+      "sha256": "d6a3cf98659ef795f533b8df1dc70024ffa5fd514242147685d7159cb62639be"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullTarget.swift",
+      "bytes": 12658,
+      "sha256": "b04f5469f291ee5635c14b20b79e93759243861e9c1d0e5ee8aaed13d0e8428a"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPDriver.swift",
+      "bytes": 9050,
+      "sha256": "05506682a2dbae706c9ec6a06ef32ffb6a330ea3e16e0b0f0a22806faf2ed375"
+    },
+    {
+      "path": "composition.json",
+      "bytes": 1551,
+      "sha256": "b1d3bee2b5c3413af1cd5a659b1a97e44d477b5a082eb5caf2645f0081095d99"
+    },
+    {
+      "path": "preimages/Gemma4LocalMTPDriver.swift",
+      "bytes": 11216,
+      "sha256": "18159bfeac9bb0e3f4c32719c6491feddcec6403c257bfb0d9f6daca0e3cffc7"
+    },
+    {
+      "path": "preimages/Gemma4MTPPullTarget.swift",
+      "bytes": 12658,
+      "sha256": "a9bd3b788cf07151801f86e96e55254c59f9a633e065c13a6b54e42f37a56988"
+    },
+    {
+      "path": "preimages/Gemma4RemoteMTPDriver.swift",
+      "bytes": 9050,
+      "sha256": "a97a70fc1025590ca29a98b5d0de8025476e2cd5e5796e7292269343fc714be5"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 3627,
+      "sha256": "2e868c6f173aa6fb1c82b73b753ccdefdf817f6ce3f2e7d712f8b3ef1b7a397b"
+    }
+  ]
+}

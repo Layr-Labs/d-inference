@@ -1,0 +1,24 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
+@@ -29,14 +29,18 @@
+         request: QwenLayerStageGenerationRequest, captureEvidence: Bool,
+         prefillPolicy: QwenResidentPrefillPolicy = .serial, bound: (Int) throws -> Int
+     ) throws -> Self {
+-        guard [128,256,1024,4096,8192].contains(request.promptCount), [64,128].contains(request.chunkSize), request.outputCount == 16,
+-              request.stopTokenIDs.isEmpty, request.maximumTokens == request.promptCount + 16,
++        guard [128,256,1024,4096,8192].contains(request.promptCount), [64,128].contains(request.chunkSize),
++              Gemma4BenchmarkOutputEnvelope.allows(outputCount: request.outputCount,
++                  mode: target == .fullReference ? "full" : "stage", promptCount: request.promptCount,
++                  chunkSize: request.chunkSize, cut: plan.stages[0].sourceLayerEnd,
++                  residualDType: request.profile.activationDType),
++              request.stopTokenIDs.isEmpty, request.maximumTokens == request.promptCount + request.outputCount,
+               request.profile.identifier == "registered_gemma4_26b_forward_validation_v1",
+               request.profile.vocabularySize == 262_144, request.profile.hiddenSize == 2816,
+               request.profile.maximumPromptTokens == 8192, request.profile.maximumChunkTokens == 512,
+               request.profile.maximumOutputTokens == 128, request.profile.maximumContextTokens == 8320,
+               ["float16", "bfloat16", "float32"].contains(request.profile.activationDType) else {
+-            throw ProbeError("Gemma short resource budget requires closed P128…8192/C64-or128/O16/no-stop geometry")
++            throw ProbeError("Gemma benchmark resource budget requires the closed output envelope and exact no-stop capacity")
+         }
+         let selected = try Gemma4ForwardSelection.make(plan: plan, target: target)
+         let globals: [Int]

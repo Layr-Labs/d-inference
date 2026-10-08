@@ -1,0 +1,30 @@
+{
+  "schema": "gemma4_tiny_pull_scalar_correction_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 1631,
+      "sha256": "124e704ae1522b3b26ebdc8def371425eae2160aa9f8864b63e64a1937671b70"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualificationSupport.swift",
+      "bytes": 4083,
+      "sha256": "e008d1255b405756aac9dec3b4aae8ef9e323d80b1ff0ff0c03d17d9c2dee201"
+    },
+    {
+      "path": "apply.py",
+      "bytes": 2785,
+      "sha256": "56a533ec41d215258ca3b1f2f7b119cebd71ebcde82cdb7a62a857e6f203ea83"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 1550,
+      "sha256": "83388febba9951592a3c990b0d231db8afb24dabed7b8d632bd56c8b24409cfc"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 1302,
+      "sha256": "6d7eea191d627f0a518b9e2d031a7cfb029f5d889e4c3a0979df10b927950a4f"
+    }
+  ]
+}

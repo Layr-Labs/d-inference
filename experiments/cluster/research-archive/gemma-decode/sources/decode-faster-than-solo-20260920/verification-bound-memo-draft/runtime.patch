@@ -1,0 +1,30 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPAuxiliaryOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPAuxiliaryOwner.swift
+@@ -173,8 +173,11 @@
+             throw ProbeError("Assistant target verification plan differs from its original target owner")
+         }
+         var next = verificationBounds
++        // Invocation-local scalar reuse; each named array remains separately charged.
++        var allocationBounds = InvocationAllocationBoundMemo()
+         for item in plan.additionalArrays {
+-            let bound = try QwenResidentResourceEnvironment.allocationBound(item.bytes)
++            let bound = try allocationBounds.value(for:item.bytes,
++                resolve:QwenResidentResourceEnvironment.allocationBound)
+             next[item.name] = max(next[item.name] ?? 0,bound)
+         }
+         let total = try QwenLongPrefillCheckedBytes.sum(Array(next.values))
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
+@@ -65,8 +65,11 @@
+             throw ProbeError("Remote target verification differs from actual full Gemma owner")
+         }
+         var next = verification
++        // Invocation-local scalar reuse; each named array remains separately charged.
++        var allocationBounds = InvocationAllocationBoundMemo()
+         for item in plan.additionalArrays {
+-            let bound = try QwenResidentResourceEnvironment.allocationBound(item.bytes)
++            let bound = try allocationBounds.value(for:item.bytes,
++                resolve:QwenResidentResourceEnvironment.allocationBound)
+             if bound > (next[item.name]?.allocationBound ?? 0) {
+                 next[item.name] = .init(name:item.name,logicalBytes:item.bytes,allocationBound:bound)
+             }

@@ -1,0 +1,42 @@
+{
+  "schema": "gemma4_memo_nonregression_comparator_source_v1",
+  "members": [
+    {
+      "path": "binding_common.py",
+      "bytes": 2452,
+      "sha256": "9b077c9cf918ff58999c4f3c5f49eb5db9dbe40a5965d1c9c1b70013e48a3e41"
+    },
+    {
+      "path": "compare.py",
+      "bytes": 15282,
+      "sha256": "3e70d396cfff5caf10a5dd35e444c701ed506c2c1b3cc82ede1682a2a1e3b0c5"
+    },
+    {
+      "path": "local_mtp_contract.py",
+      "bytes": 6949,
+      "sha256": "b5956e12a568e6e42bc4dcd53084a24dfaa8f3aef96ca3cc5139d19e0b85285d"
+    },
+    {
+      "path": "owned_process.py",
+      "bytes": 2211,
+      "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+    },
+    {
+      "path": "recorded_math.py",
+      "bytes": 3097,
+      "sha256": "f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914"
+    },
+    {
+      "path": "replay.py",
+      "bytes": 26914,
+      "sha256": "f2dcc1caa9cc6fca58808b54eb58f45e39c305562c6ad1cfec99d75fe91dbfcc"
+    },
+    {
+      "path": "snapshot.py",
+      "bytes": 1300,
+      "sha256": "46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b"
+    }
+  ],
+  "predecessorSHA256": "f55cdfeb2048d2481537127de290e7ade18fa31aca099777af2924aa6df539a5",
+  "correction": "Permit exactly source-manifest zero-byte files in the source reader; no numerical or physical check change."
+}

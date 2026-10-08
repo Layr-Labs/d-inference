@@ -1,0 +1,14 @@
+{
+  "schema": "gemma4_remote_policy_source_checks_v1",
+  "independentTransformsReplayed": true,
+  "mergedForwardInverseReplayed": true,
+  "initializerJoins": 9,
+  "baseSourceCount": 124,
+  "sourceCount": 126,
+  "changedFiles": 12,
+  "batchReseedAndRetirementUnchanged": true,
+  "bonusEpochCreditCeilingPreserved": true,
+  "refillIncluded": false,
+  "compilerExecuted": false,
+  "nativeExecuted": false
+}

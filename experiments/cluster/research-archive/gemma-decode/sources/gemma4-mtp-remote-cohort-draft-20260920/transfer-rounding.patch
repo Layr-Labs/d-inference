@@ -1,0 +1,68 @@
+--- a/Gemma4MTPPullTransferPlan.swift
++++ b/Gemma4MTPPullTransferPlan.swift
+@@ -7,6 +7,7 @@
+     let frontier: Int, hiddenDType: Int
+     let hiddenBytes: Int, snapshotBytes: Int
+     let senderAdditional: [Term]
++    let receiverRoots: [Term]
+     let receiverSnapshotCopies = 3
+     let maximumSingleTransferBytes = 16 * 1024 * 1024
+     init(frontier: Int, hiddenDType: Int) throws {
+@@ -19,11 +20,23 @@
+         // Charge each potential pack separately before any send. Native handles
+         // alias send storage; never count their completion as peer consumption.
+         senderAdditional = [
+-            .init(name:"remoteMTP.sendPack.fullKeys",bytes:2*frontier*512*2),
+-            .init(name:"remoteMTP.sendPack.fullValues",bytes:2*frontier*512*2),
++            .init(name:"remoteMTP.sendPack.fullKeys.head0",bytes:frontier*512*2),
++            .init(name:"remoteMTP.sendPack.fullKeys.head1",bytes:frontier*512*2),
++            .init(name:"remoteMTP.sendPack.fullValues.head0",bytes:frontier*512*2),
++            .init(name:"remoteMTP.sendPack.fullValues.head1",bytes:frontier*512*2),
+             .init(name:"remoteMTP.sendPack.slidingKeys",bytes:8*min(frontier,1024)*256*2),
+             .init(name:"remoteMTP.sendPack.slidingValues",bytes:8*min(frontier,1024)*256*2),
+             .init(name:"remoteMTP.sendPack.hidden",bytes:hiddenBytes),
+             .init(name:"remoteMTP.control",bytes:16*1024)]
++        receiverRoots = [
++            .init(name:"hidden",bytes:hiddenBytes),
++            .init(name:"fullKeys.head0",bytes:frontier*512*2),
++            .init(name:"fullKeys.head1",bytes:frontier*512*2),
++            .init(name:"fullValues.head0",bytes:frontier*512*2),
++            .init(name:"fullValues.head1",bytes:frontier*512*2),
++            .init(name:"fullKeys.assembled",bytes:2*frontier*512*2),
++            .init(name:"fullValues.assembled",bytes:2*frontier*512*2),
++            .init(name:"slidingKeys",bytes:8*min(frontier,1024)*256*2),
++            .init(name:"slidingValues",bytes:8*min(frontier,1024)*256*2)]
+     }
+ }
+--- a/Gemma4MTPPullSnapshot.swift
++++ b/Gemma4MTPPullSnapshot.swift
+@@ -12,6 +12,18 @@
+ }
+ 
+ enum Gemma4MTPPullSnapshot {
++    static func requireReceiverAllowance(plan: Gemma4MTPPullTransferPlan,
++                                         budget: Gemma4MTPAuxiliaryBudget) throws {
++        guard budget.placement == .remoteAssistant, plan.frontier <= budget.maximumFrontier,
++              plan.receiverRoots.count == 9 else { throw ProbeError("Remote MTP receive has no exact auxiliary allocation scope") }
++        let actual = try QwenLongPrefillCheckedBytes.sum(plan.receiverRoots.map {
++            try QwenResidentResourceEnvironment.allocationBound($0.bytes)
++        })
++        let reserved = try QwenLongPrefillCheckedBytes.sum(budget.liveTerms.filter {
++            $0.name.hasPrefix("snapshot")
++        }.map(\.allocationBound))
++        guard actual <= reserved else { throw ProbeError("Remote MTP independently rounded receive/assembly roots exceed the three-set allowance") }
++    }
+     static func typeCode(_ dtype: DType) throws -> Int {
+         switch dtype {
+         case .bfloat16: return 1
+--- a/Gemma4MTPPullAssistant.swift
++++ b/Gemma4MTPPullAssistant.swift
+@@ -56,6 +56,8 @@
+                         let plan = try Gemma4MTPPullTransferPlan(frontier:id.snapshotFrontier,hiddenDType:command.hiddenDType)
+                         guard plan.frontier <= auxiliary.budget.maximumFrontier else { throw ProbeError("Remote MTP receive exceeds admitted snapshot frontier") }
+                         try checked()
++                        try Gemma4MTPPullSnapshot.requireReceiverAllowance(plan:plan,budget:auxiliary.budget)
++                        try checked()
+                         let capture = try Gemma4MTPPullSnapshot.receive(through:channel,plan:plan,staging:receiveStaging,check:checked)
+                         try worker.install(capture,id:id,check:checked)
+                         // Receive/concat fences passed and the branch now owns

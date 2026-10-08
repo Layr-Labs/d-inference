@@ -1,0 +1,78 @@
+{
+  "cases": [
+    {
+      "expectedExit": 0,
+      "name": "accept-p128-full-depth1",
+      "operation": "--describe-local-mtp"
+    },
+    {
+      "expectedExit": 0,
+      "name": "accept-p4096-full-depth2",
+      "operation": "--describe-local-mtp"
+    },
+    {
+      "change": {
+        "maximumDraftTokens": 3
+      },
+      "name": "refuse-depth3"
+    },
+    {
+      "change": {
+        "maximumDraftTokens": 0
+      },
+      "name": "refuse-depth0"
+    },
+    {
+      "change": {
+        "benchmarkJobSHA256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "name": "refuse-original-job-hash-mismatch"
+    },
+    {
+      "name": "refuse-stage-role",
+      "ordinaryJobChange": {
+        "mode": "stage0"
+      },
+      "rebindJobSHA": true
+    },
+    {
+      "name": "refuse-ordinary-evidence-ambiguity",
+      "ordinaryJobChange": {
+        "captureEvidence": true
+      },
+      "rebindJobSHA": true
+    },
+    {
+      "name": "refuse-c128",
+      "ordinaryJobChange": {
+        "chunkSize": 128
+      },
+      "rebindJobSHA": true
+    },
+    {
+      "name": "refuse-p8192-unadmitted",
+      "ordinaryJobChange": {
+        "promptCount": 8192
+      },
+      "rebindJobSHA": true
+    },
+    {
+      "metadataChange": "one actual configuration byte",
+      "name": "refuse-assistant-metadata-drift"
+    },
+    {
+      "change": {
+        "unapproved": true
+      },
+      "name": "refuse-extra-config-key"
+    },
+    {
+      "change": {
+        "assistantModelDirectory": "relative"
+      },
+      "name": "refuse-relative-assistant-path"
+    }
+  ],
+  "nativeExecuted": false,
+  "schema": "gemma4_local_mtp_metadata_controls_v1"
+}

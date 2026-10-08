@@ -1,0 +1,394 @@
+{
+  "actualSourceInventoryCounts": {
+    "after": 48,
+    "before": 46,
+    "changed": 3,
+    "newlyTrackedExistingFiles": 2
+  },
+  "authorNativeExecution": false,
+  "authorSidecarReplay": false,
+  "files": [
+    {
+      "bytes": 17683,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/review/compare_three_roles.py",
+      "sha256": "f3d69a170cf6f35eb778ac9980bb21f902bd2ed4d5864e1949c9e20d02676333"
+    },
+    {
+      "bytes": 11097,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/compare_results.py",
+      "sha256": "f2fe4c335636deb3d6b5938c3ac92cb17aae141f98328702609b7e64dcd856b1"
+    },
+    {
+      "bytes": 22294,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/compare_results_overlap.py",
+      "sha256": "10741437b9dc9db7fc91e5fdc9f18e6860c2d13c723595b2f5f2b18405ef8c44"
+    },
+    {
+      "bytes": 2065,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness/package/jaccl_startup_stderr.py",
+      "sha256": "42c7f01b36392cb69cf177081fd6cf7a953963fd7cfb92b27ca0e784a5b82f29"
+    },
+    {
+      "bytes": 12602,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/review-padded/compare.py",
+      "sha256": "988cd2fb27e1d8244d0d294bad9232d2bccd6633874998548d3a6d7a3c524ae0"
+    },
+    {
+      "bytes": 7661,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/review-padded/policy.py",
+      "sha256": "50d64180b07ebbbe36e94a120215e7ed1e875c12c2f758673fbe54793a936551"
+    },
+    {
+      "bytes": 4639,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/review-padded/decode_summary.py",
+      "sha256": "9ab78d6d4cb025e870786eee951bd526293f67161b42c3ada9a3704828c6e0b1"
+    },
+    {
+      "bytes": 84976,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/review-padded/actual-padded-1/comparison.json",
+      "sha256": "0d7a84f40302cf9c1dd82b7ed51781539d77e25677930944d173ab081293382d"
+    },
+    {
+      "bytes": 1074,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/build/cpu-control-build-1.json",
+      "sha256": "de912b9e1e54a59a8444ce5b2af5f9177964cdb3777c51a5cc402c7b4970c60b"
+    },
+    {
+      "bytes": 10395,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/build/applied-control-frame.json",
+      "sha256": "a2d46fa985b4f78bb2dde0dcb5bae3706a3e76fd3b0154a4554ef3eeee42e343"
+    },
+    {
+      "bytes": 12082,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/applied-cpu-control.json",
+      "sha256": "caa436da7cf7339eed7ae49dc799d212f8ee36dcf7bfb9b19eac8e9f0510f33e"
+    },
+    {
+      "bytes": 1697,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/cpu-control/integration.json",
+      "sha256": "65f5ba7ddf25400d884669fe807d2793c2670fede241de8d153499862673716e"
+    },
+    {
+      "bytes": 3497,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/manifest.json",
+      "sha256": "ed50605b105c0520244ac0b902e4461aed5ace0ff022c7b143503fee5a772bf4"
+    },
+    {
+      "bytes": 6838,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/manifest.json",
+      "sha256": "cd95ee16497c215d132b0dd4c62e46cbbc4f7e34ba6d76286a083cdcb077b23c"
+    },
+    {
+      "bytes": 3722,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/HANDOFF.md",
+      "sha256": "5635f22545136766ab83b573433fbcedb7e8e313898a21392c39f4deecd11434"
+    },
+    {
+      "bytes": 2905,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/alias.py",
+      "sha256": "92d98e36432238e378b7cea1e3c7e7ba83ff6c49c486701cb82e3e589dcbd4ff"
+    },
+    {
+      "bytes": 6970,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/analyze_guard_metrics.py",
+      "sha256": "d023887032c2e421084d18bf38f8e1fad54fb1e1e3ec7f83054640d7888bea82"
+    },
+    {
+      "bytes": 6372,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/analyze_guard_metrics_v1.py",
+      "sha256": "b809c0b44796afee5b20234e78b89a37ee9de175902373147cc615caae7036fe"
+    },
+    {
+      "bytes": 910,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/check_all.py",
+      "sha256": "c540cb28741ab5ca70d6d6619bf0b425f064b8f42160c14ca15127320edb3271"
+    },
+    {
+      "bytes": 2839,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/check_source.py",
+      "sha256": "04dee3b04034eb74023db94f8703e32413b29d9d04319cc7dea793c6f369e47e"
+    },
+    {
+      "bytes": 11097,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/compare_results.py",
+      "sha256": "f2fe4c335636deb3d6b5938c3ac92cb17aae141f98328702609b7e64dcd856b1"
+    },
+    {
+      "bytes": 22294,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/compare_results_overlap.py",
+      "sha256": "10741437b9dc9db7fc91e5fdc9f18e6860c2d13c723595b2f5f2b18405ef8c44"
+    },
+    {
+      "bytes": 13723,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/compare_results_v2.py",
+      "sha256": "066b970a5d832cc4936179aa0ac2dcd6e84e0592e6289fe6cd0aacae6907311b"
+    },
+    {
+      "bytes": 15899,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/copy-provenance.json",
+      "sha256": "a2001ba772601901732610f93ea0b2474c6494285425e824157563da886a65e2"
+    },
+    {
+      "bytes": 4996,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/deploy.py",
+      "sha256": "50e3c954f00b1256b93dd81ba2437aefb3d86b1578ba02b20d97baf6d5c241b4"
+    },
+    {
+      "bytes": 3444,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/lease_source.py",
+      "sha256": "1713853ac303af6e6097d64a84ee1f4376c04c101f7fb3049ba65ef75d9eb90d"
+    },
+    {
+      "bytes": 2211,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/owned_process.py",
+      "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+    },
+    {
+      "bytes": 1532,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/benchmark_package.py",
+      "sha256": "8122bab7e2d6ec0b39fd1e8dcadff7213a3d058bd0059132bfea9f005c6bbe56"
+    },
+    {
+      "bytes": 2452,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/binding_common.py",
+      "sha256": "9b077c9cf918ff58999c4f3c5f49eb5db9dbe40a5965d1c9c1b70013e48a3e41"
+    },
+    {
+      "bytes": 4703,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/binding_inputs.py",
+      "sha256": "5bc55273dc7b3ae4ce6d9966c09ebedf9c12dcc84bf91bda42993cae3f13dbd0"
+    },
+    {
+      "bytes": 573,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/gemma_inputs.py",
+      "sha256": "20790750717524197df51ad962851e1bf340b03d58dd5011cd52e64b442b93d8"
+    },
+    {
+      "bytes": 2065,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/jaccl_startup_stderr.py",
+      "sha256": "42c7f01b36392cb69cf177081fd6cf7a953963fd7cfb92b27ca0e784a5b82f29"
+    },
+    {
+      "bytes": 2631,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/mtp_journal.py",
+      "sha256": "6c3a2d08b994bcbd0a4941ef01f4cf898b1e04a536dbdf21cd322043aa0bec70"
+    },
+    {
+      "bytes": 3987,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/native_gate.py",
+      "sha256": "87b53a820d727346df1e957d048ecf0233775df6d9ca146d1bac58d6bed6ccf0"
+    },
+    {
+      "bytes": 3133,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/reference_resources.py",
+      "sha256": "497f059014a53d3c69f446f7cb6644ca71cbc00c39af7ca2526abcfaa5d7cc28"
+    },
+    {
+      "bytes": 7728,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/run_benchmark.py",
+      "sha256": "f2debf790073541583ee2ead2d5781e2f11e126a865e800160ed575afa635871"
+    },
+    {
+      "bytes": 0,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/stage_checks/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 2393,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/stage_checks/common.py",
+      "sha256": "3fae477275bd7c90f9da2a6be962aa1e9bb4f474171ce1999d13145f05b5f7ed"
+    },
+    {
+      "bytes": 3423,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/target_processes.py",
+      "sha256": "fc2887b87541dd251d6bd1e185bde5c9f16f9f3608ac370dacd6fc85a9979dcb"
+    },
+    {
+      "bytes": 5163,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/worker_contract.py",
+      "sha256": "9898b44c07337ddfc7949e880deb44ad8ccc9eaa700576c7c6ce008a88feefd6"
+    },
+    {
+      "bytes": 15271,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/package/worker_processes.py",
+      "sha256": "b277a0c72a53788a470f0f9634500002c9f7f680fa96fb216c1ebe76e8d784d2"
+    },
+    {
+      "bytes": 343,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/parent_settings.py",
+      "sha256": "482d4facaf255bede388c4737375d9d1203d0208bcee8aacb576abbd8cfea39b"
+    },
+    {
+      "bytes": 2890,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prepare_memory.py",
+      "sha256": "948c7d76d2951f4ab98a4345f73f94145173ac35c7b23034fdbca254b7498322"
+    },
+    {
+      "bytes": 5609,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prompts/prompt-1024.json",
+      "sha256": "87f51c309add729dad3fe189f31fda22143ab7830493f00c0c39dead064b7afe"
+    },
+    {
+      "bytes": 698,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prompts/prompt-128.json",
+      "sha256": "57fdf9e290a7eae90859e0930bfd345d1993a38e80cee1d46ad0c53908e5eed2"
+    },
+    {
+      "bytes": 1400,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prompts/prompt-256.json",
+      "sha256": "fc9e1da6aa2df54ed7ffb110bd1dcb9c1fc05df7d729176fab540b3cbcd466c2"
+    },
+    {
+      "bytes": 22462,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prompts/prompt-4096.json",
+      "sha256": "a9303183551e80e19ef085a5139089eed75e9ccb2b6dcc0f5668fe26e9b5010f"
+    },
+    {
+      "bytes": 45039,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prompts/prompt-8192.json",
+      "sha256": "7d9253ae97116051a27a6458e5ca750eacc8c919b328a3ebef2fe3835aaa593c"
+    },
+    {
+      "bytes": 1176,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prompts/receipt.json",
+      "sha256": "7b605e38543f38def1acebbad13f0ed75ad02942647df0e0633888660ea02f28"
+    },
+    {
+      "bytes": 68959,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/prompts/source.txt",
+      "sha256": "2d176781dce3e7bdad10c9d09dfb91291ba43dbaf02ad4b03d69191543b7c536"
+    },
+    {
+      "bytes": 4314,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/remote_metadata.py",
+      "sha256": "5e57af8be985c8a5b5ab4f116e4e7d8bd8c24c6ed27cf9f8cfad28c7ce2213f4"
+    },
+    {
+      "bytes": 6051,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/root_run.py",
+      "sha256": "5b3d1dca2224dbd784eb2df165635f448676bc23f41405e07316d633543ca667"
+    },
+    {
+      "bytes": 12916,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/run_case.py",
+      "sha256": "7547b660d3aed2ecbd10a9bf5e3272ed287b1b82b8c528ebc90132afaa8e1795"
+    },
+    {
+      "bytes": 5960,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/harness-cpu/source-inputs.json",
+      "sha256": "1a169d0377caad5844acafe349ec4cd52ea025ab362d6597fcf43e0e4a5ad903"
+    },
+    {
+      "bytes": 8002,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/cpu-control/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift",
+      "sha256": "d668e73c39b4a45da25753f12be2584b5b84b830fd220a37d7763be805ca0207"
+    },
+    {
+      "bytes": 9416,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/cpu-control/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift",
+      "sha256": "e5c24b76f4dd3a947a0cafe7df2809011114a054ab508a01784314d08ad3dccc"
+    },
+    {
+      "bytes": 6621,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/cpu-control/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift",
+      "sha256": "7565a9c1b413813f694e1b02f228b2fee52d39311ec2aa221d5e5a9363ee521c"
+    },
+    {
+      "bytes": 990,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness-v2/cases/p4096-cut7-c64-serial-v2/full.json",
+      "sha256": "9a088f045c3e15dce08030c748a58a03957fcc6be0a6852decbce550c51e9346"
+    },
+    {
+      "bytes": 1006,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness-v2/cases/p4096-cut7-c64-overlap-v2/stage0.json",
+      "sha256": "d3fef5cffa0d0cfd5636358b080cf8510572092a79f1442d95a18886970cc2cf"
+    },
+    {
+      "bytes": 1006,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-decode-optimization-20260920/harness-v2/cases/p4096-cut7-c64-overlap-v2/stage1.json",
+      "sha256": "be0f7badc6c70a535137737d68a04bf4dc0728e17bd396ff0a15ee5c869958fb"
+    },
+    {
+      "bytes": 8829,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu/compare.py",
+      "sha256": "9d1fd9068dd0dc20f9d5b3954861225e2a07e6d53d9495cba6c1f243cf6e6bd3"
+    },
+    {
+      "bytes": 3823,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu/dependencies.py",
+      "sha256": "6d7d51660f71dcf96ea9a42c4e824a4041087f328bd98f61391db1d44137369f"
+    },
+    {
+      "bytes": 2752,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu/test_contract.py",
+      "sha256": "6445e00dce72ad216739806a1fbfec936456cb438762129d537408c64cc35495"
+    },
+    {
+      "bytes": 2456,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu/HANDOFF.md",
+      "sha256": "b44c1da62ec07cf94896dc524e08746cfa9a0e0ad7321f2f1644d24088f68385"
+    },
+    {
+      "bytes": 1234,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu/manifest.json",
+      "sha256": "c5cb49cfceeaa8c8b6f4220a9c69f5823316c88d88299bc862f1028b8f4a311b"
+    },
+    {
+      "bytes": 7071,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/cpu-control/preimages/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift",
+      "sha256": "62ccc2ae5ca03f4eaa2059a5fd7b579bd32442ab7c1e17df8dcfe4c23ceb077e"
+    },
+    {
+      "bytes": 6381,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/cpu-control/preimages/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift",
+      "sha256": "5ec2749839feec80425e83e847c61ed49632c4758361f7101b5d1eb6c3b9dff8"
+    },
+    {
+      "bytes": 6727,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/guard-audit/cpu-control/preimages/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift",
+      "sha256": "6418fa6c7549a2a72b27f5e3e857bedd448f21c561d06245bbf6c2b27e89cc9e"
+    },
+    {
+      "bytes": 1914,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/HANDOFF.md",
+      "sha256": "85a1d2bb041697a4c4ce737f2f22ed444afb4c25a362a8686478bcd0bc03e938"
+    },
+    {
+      "bytes": 8829,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/compare.py",
+      "sha256": "9d1fd9068dd0dc20f9d5b3954861225e2a07e6d53d9495cba6c1f243cf6e6bd3"
+    },
+    {
+      "bytes": 4367,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/dependencies.py",
+      "sha256": "fe6a923edbaf5acc71610ed265c3f28aee2fc2b864b863f3f771b984e673eb00"
+    },
+    {
+      "bytes": 3823,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/preimages/dependencies.py",
+      "sha256": "6d7d51660f71dcf96ea9a42c4e824a4041087f328bd98f61391db1d44137369f"
+    },
+    {
+      "bytes": 1234,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/preimages/manifest.json",
+      "sha256": "c5cb49cfceeaa8c8b6f4220a9c69f5823316c88d88299bc862f1028b8f4a311b"
+    },
+    {
+      "bytes": 16086,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/preimages/source-inputs.json",
+      "sha256": "ed17fc98206a0df37e69336f39ca90e9e72c7f41304ff272299c181cdc0b6fa8"
+    },
+    {
+      "bytes": 2807,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/reader.patch",
+      "sha256": "0062023c8e0d8a6315ed79795a4192f6809b059ab25b004d1fbcdc7964d31db3"
+    },
+    {
+      "bytes": 3459,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/review-cpu-source-union-correction/test_contract.py",
+      "sha256": "24cb785d11f6f60311a25a6c8683ef2140b608e7f9a099b096e9946f145c2c96"
+    }
+  ],
+  "parentManifestSHA256": "c5cb49cfceeaa8c8b6f4220a9c69f5823316c88d88299bc862f1028b8f4a311b",
+  "schema": "gemma4_cpu_control_comparison_inputs_v2"
+}

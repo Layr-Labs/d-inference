@@ -1,0 +1,19 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
+@@ -100,9 +100,13 @@
+                 try add(prefix + name, [m, text.queryHeads, dim])
+             }
+             for name in ["kProjection", "kNorm", "kRoPE", "vNorm"] { try add(prefix + name, [m, heads, dim]) }
+-            for name in ["attentionKCopy", "attentionVCopy"] { try add(prefix + name, [n, heads, dim]) }
+-            for name in ["attentionScores", "attentionProbabilities"] { try add(prefix + name, [text.queryHeads, m, n]) }
+-            try add(prefix + "attentionMask", [m, n], bytes: 1)
++            // AttentionV1 consumes WindowedSequenceKV's bounded chronological
++            // chunk view. This changes its key-axis bound only: keep every
++            // term, F32 ceiling and concurrent selected-layer charge.
++            let attentionTokens = full ? n : min(n, try sum([slots - 1, m]))
++            for name in ["attentionKCopy", "attentionVCopy"] { try add(prefix + name, [attentionTokens, heads, dim]) }
++            for name in ["attentionScores", "attentionProbabilities"] { try add(prefix + name, [text.queryHeads, m, attentionTokens]) }
++            try add(prefix + "attentionMask", [m, attentionTokens], bytes: 1)
+             for name in ["sharedGate", "sharedUp", "sharedGELU", "sharedProduct"] { try add(prefix + name, [m, 2112]) }
+             try add(prefix + "routerScale", [text.hiddenSize])
+             for name in ["routerScores", "routerPartition"] { try add(prefix + name, [m, 128]) }

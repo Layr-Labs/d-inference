@@ -1,0 +1,46 @@
+--- a/dependencies.py
++++ b/dependencies.py
+@@ -51,15 +51,22 @@
+     after = {row['path']: row for row in applied['files']}
+     exact(len(before), len(previous['files']), 'Unique before inventory')
+     exact(len(after), len(applied['files']), 'Unique after inventory')
+-    exact(set(after), set(before), 'Same source closure')
+     changed = {row['path']: row for row in integration['changes']}
+     exact(len(changed), 3, 'Unique changed paths')
+-    for path, row in before.items():
++    added = {'libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/' + name
++             for name in ('Collective.swift', 'CollectivePointToPoint.swift')}
++    exact(set(after), set(before) | set(changed), 'Exact source inventory union')
++    exact(set(after) - set(before), added, 'Two existing files newly tracked by this composition')
++    for path in after:
+         if path not in changed:
+-            exact(after[path], row, 'Unchanged source ' + path)
++            exact(after[path], before[path], 'Unchanged source ' + path)
+         else:
+             delta = changed[path]
+-            exact(row['sha256'], delta['beforeSHA256'], 'Source preimage ' + path)
++            preimage = TASK / 'guard-audit/cpu-control/preimages' / path
++            prior = preimage.read_bytes()
++            exact(sha(prior), delta['beforeSHA256'], 'Reviewed source preimage ' + path)
++            if path in before:
++                exact(before[path], dict(path=path, bytes=len(prior), sha256=sha(prior)), 'Prior inventory ' + path)
+             source = TASK / 'guard-audit/cpu-control/proposed' / path
+             raw = source.read_bytes()
+             exact(sha(raw), delta['afterSHA256'], 'Frozen candidate ' + path)
+--- a/test_contract.py
++++ b/test_contract.py
+@@ -39,5 +39,14 @@
+     def test_duplicate_source_refuses(self):
+         applied = copy.deepcopy(self.applied); applied['files'].append(copy.deepcopy(applied['files'][0]))
+         with self.assertRaises(ValueError): d.source_composition(self.build, applied, self.previous, self.integration)
++    def test_extra_unreviewed_inventory_member_refuses(self):
++        applied = copy.deepcopy(self.applied)
++        applied['files'].append(dict(path='unreviewed.swift', bytes=1, sha256='0' * 64))
++        with self.assertRaises(ValueError): d.source_composition(self.build, applied, self.previous, self.integration)
++    def test_newly_tracked_file_preimage_refuses(self):
++        integration = copy.deepcopy(self.integration)
++        integration['changes'][0]['beforeSHA256'] = '0' * 64
++        applied = copy.deepcopy(self.applied); applied['changes'] = copy.deepcopy(integration['changes'])
++        with self.assertRaises(ValueError): d.source_composition(self.build, applied, self.previous, integration)
+ 
+ if __name__ == '__main__': unittest.main()

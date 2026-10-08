@@ -1,0 +1,522 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AsyncMTPProposalLedger.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AsyncMTPProposalLedger.swift
+@@ -41,6 +41,9 @@
+         var committedOutputTokens = 0, reusedProposalsOffered = 0
+         var committedWindows = 0, cancelledBranches = 0
+         var deliveredWhileTargetWindowOutstanding = 0
++        var bonusEpochsStarted = 0, bonusMismatchesContinued = 0
++        var bonusBoundRetirements = 0, bonusNoReadyRetirements = 0
++        var bonusMaximumWindows = 0, bonusMaximumInputAdvance = 0, bonusMaximumProducedAdvance = 0
+     }
+     private struct Proposal { let position: Int, token: Int }
+     private struct Branch {
+@@ -49,14 +52,20 @@
+         var proposals: [Proposal] = []
+         var outstanding: Grant?
+         var needsBonusBridge = false
++        // Starts only at the FIRST admitted mismatch, never on a matching branch.
++        // Subsequent mismatches cannot reset or extend this bounded epoch.
++        var bonusEpochFrontier: Int?
++        var bonusEpochWindows = 0
+         var cancelling = false
+     }
+ 
+     let scope: Scope
+     let maximumDraftTokens: Int
++    let maximumProducerGrantTokens: Int
+     let vocabularySize: Int
+     let maximumBufferedProposals: Int
+     let maximumInputFrontier: Int
++    let bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy
+     private(set) var inputFrontier: Int
+     private(set) var seedToken: Int
+     private(set) var counters = Counters()
+@@ -71,15 +80,23 @@
+     var canReseed: Bool { !requestStopped && branch == nil && activeWindow == nil }
+     var proposalCredit: Int {
+         guard !requestStopped, let branch, !branch.cancelling, branch.outstanding == nil else { return 0 }
+-        return min(maximumDraftTokens, maximumBufferedProposals - branch.proposals.count,
+-                   maximumInputFrontier - branch.highestProducedPosition)
++        let ceiling = branch.bonusEpochFrontier.map {
++            min(maximumInputFrontier, $0 + AsyncMTPBonusContinuationPolicy.maximumPositions)
++        } ?? maximumInputFrontier
++        return min(maximumProducerGrantTokens, maximumBufferedProposals - branch.proposals.count,
++                   ceiling - branch.highestProducedPosition)
+     }
+ 
+     init(scope: Scope, inputFrontier: Int, seedToken: Int,
+-         maximumDraftTokens: Int, maximumInputFrontier: Int, vocabularySize: Int) throws {
++         maximumDraftTokens: Int, maximumInputFrontier: Int, vocabularySize: Int,
++         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,
++         maximumProducerGrantTokens: Int? = nil) throws {
++        let producerLimit = maximumProducerGrantTokens ?? maximumDraftTokens
+         let hashes = [scope.targetBuildSHA256, scope.assistantBuildSHA256,
+             scope.targetArtifactSHA256, scope.assistantArtifactSHA256, scope.embeddingIdentitySHA256]
+         guard hashes.allSatisfy(Self.isSHA), [2, 4, 8].contains(maximumDraftTokens),
++              producerLimit == maximumDraftTokens || (maximumDraftTokens == 2 && producerLimit == 3),
++              !bonusContinuationPolicy.enabled || bonusContinuationPolicy.verificationDepth <= maximumDraftTokens,
+               (1...32_768).contains(maximumInputFrontier),
+               (1...Int(Int32.max)).contains(vocabularySize),
+               (1..<maximumInputFrontier).contains(inputFrontier), (0..<vocabularySize).contains(seedToken) else {
+@@ -87,8 +104,10 @@
+         }
+         self.scope = scope; self.inputFrontier = inputFrontier; self.seedToken = seedToken
+         self.maximumDraftTokens = maximumDraftTokens; self.vocabularySize = vocabularySize
++        self.maximumProducerGrantTokens = producerLimit
+         self.maximumBufferedProposals = 2 * maximumDraftTokens + 1
+         self.maximumInputFrontier = maximumInputFrontier
++        self.bonusContinuationPolicy = bonusContinuationPolicy
+     }
+ 
+     /// The existing owner supplies an actually fenced capture at this frontier.
+@@ -131,6 +150,7 @@
+         // device clocks. Native phase observations are a separate obligation.
+         if activeWindow != nil { counters.deliveredWhileTargetWindowOutstanding += tokens.count }
+         reconcileBonusBridge(&branch)
++        observeBonusEpoch(branch)
+         self.branch = branch
+     }
+ 
+@@ -141,6 +161,7 @@
+               let branch, !branch.cancelling, !branch.needsBonusBridge,
+               (1...maximumDraftTokens).contains(draftCount),
+               inputFrontier <= maximumInputFrontier - (draftCount + 1),
++              bonusWindowAllowed(branch, draftCount: draftCount),
+               branch.proposals.count >= draftCount, nextWindow < UInt64.max else {
+             throw Failure(reason: "Target window unavailable or beyond admitted context")
+         }
+@@ -191,8 +212,13 @@
+         counters.committedOutputTokens += value.targetConfirmedTokens.count
+         counters.committedWindows += 1
+         activeWindow = nil; pendingResolution = nil
++        if branch.bonusEpochFrontier != nil { branch.bonusEpochWindows += 1 }
++        observeBonusEpoch(branch)
+         if value.rejectedDraftTokens > 0 {
+             branch.cancelling = true; counters.cancelledBranches += 1
++        } else if bonusEpochNeedsRefresh(branch) {
++            branch.cancelling = true; counters.cancelledBranches += 1
++            counters.bonusBoundRetirements += 1
+         } else {
+             // The next seed is the target BONUS, not necessarily the next
+             // assistant proposal. Check this extra bridge before reuse.
+@@ -207,8 +233,59 @@
+         guard branch.needsBonusBridge,
+               let bridge = branch.proposals.first(where: { $0.position == inputFrontier }) else { return }
+         if bridge.token == seedToken { branch.needsBonusBridge = false }
+-        else { branch.cancelling = true; counters.cancelledBranches += 1 }
++        else if bonusContinuationPolicy.enabled && !bonusEpochNeedsRefresh(branch) {
++            // The target's BONUS remains seedToken. Never replace it with the
++            // mismatching assistant bridge; only later proposals may be reused.
++            let ready = branch.proposals.contains { $0.position == inputFrontier + 1 }
++            if ready && maximumInputFrontier - inputFrontier >= 2 {
++                if branch.bonusEpochFrontier == nil {
++                    branch.bonusEpochFrontier = inputFrontier
++                    branch.bonusEpochWindows = 0
++                    counters.bonusEpochsStarted += 1
++                }
++                branch.needsBonusBridge = false
++                counters.bonusMismatchesContinued += 1
++                observeBonusEpoch(branch)
++            } else {
++                branch.cancelling = true; counters.cancelledBranches += 1
++                counters.bonusNoReadyRetirements += 1
++            }
++        } else { branch.cancelling = true; counters.cancelledBranches += 1 }
+         branch.proposals.removeAll { $0.position <= inputFrontier }
++    }
++
++    private func bonusWindowAllowed(_ branch: Branch, draftCount: Int) -> Bool {
++        guard bonusContinuationPolicy.enabled else { return true }
++        guard draftCount <= bonusContinuationPolicy.verificationDepth else { return false }
++        guard let origin = branch.bonusEpochFrontier else { return true }
++        return branch.bonusEpochWindows < AsyncMTPBonusContinuationPolicy.maximumWindows
++            && inputFrontier + draftCount + 1 - origin <= AsyncMTPBonusContinuationPolicy.maximumPositions
++    }
++
++    private func bonusEpochNeedsRefresh(_ branch: Branch) -> Bool {
++        guard let origin = branch.bonusEpochFrontier else { return false }
++        let remaining = maximumInputFrontier - inputFrontier
++        // The final single seed is an ordinary target-only step. Otherwise
++        // preflight the actual next narrowed D1/D2 verification width.
++        let nextWidth = remaining >= 2 ? min(bonusContinuationPolicy.verificationDepth + 1, remaining) : 0
++        return branch.bonusEpochWindows >= AsyncMTPBonusContinuationPolicy.maximumWindows
++            || inputFrontier - origin + nextWidth > AsyncMTPBonusContinuationPolicy.maximumPositions
++    }
++
++    private mutating func observeBonusEpoch(_ branch: Branch) {
++        guard let origin = branch.bonusEpochFrontier else { return }
++        counters.bonusMaximumWindows = max(counters.bonusMaximumWindows, branch.bonusEpochWindows)
++        counters.bonusMaximumInputAdvance = max(counters.bonusMaximumInputAdvance, inputFrontier - origin)
++        counters.bonusMaximumProducedAdvance = max(counters.bonusMaximumProducedAdvance, branch.highestProducedPosition - origin)
++    }
++
++    var bonusContinuationReport: AsyncMTPBonusContinuationReport? {
++        guard bonusContinuationPolicy.enabled else { return nil }
++        return .init(verificationDepth: bonusContinuationPolicy.verificationDepth,
++            epochsStarted: counters.bonusEpochsStarted, bonusMismatchesContinued: counters.bonusMismatchesContinued,
++            boundRetirementDecisions: counters.bonusBoundRetirements, noReadyRetirementDecisions: counters.bonusNoReadyRetirements,
++            maximumObservedWindows: counters.bonusMaximumWindows, maximumObservedInputAdvance: counters.bonusMaximumInputAdvance,
++            maximumObservedProducedAdvance: counters.bonusMaximumProducedAdvance)
+     }
+ 
+     mutating func cancelRequest() {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPControlOperation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPControlOperation.swift
+@@ -22,8 +22,11 @@
+                     try native.check(); try lifetimeCheck(); try native.check()
+                     try counters.innerChecked()
+                 }
+-                try BoundedControlResourceOperation().send(resourceCheck:resource,faultCheck:fault) { checkpoint in
+-                    try metrics.measure(.wireSendCompleted) { try body(checkpoint) }
++                let operation = BoundedControlResourceOperation()
++                try withExtendedLifetime(operation) {
++                    try operation.send(resourceCheck:resource,faultCheck:fault) { checkpoint in
++                        try metrics.measure(.wireSendCompleted) { try body(checkpoint) }
++                    }
+                 }
+             }
+             try counters.complete()
+@@ -42,8 +45,11 @@
+                     try native.check(); try lifetimeCheck(); try native.check()
+                     try counters.innerChecked()
+                 }
+-                return try BoundedControlResourceOperation().receive(resourceCheck:resource,faultCheck:fault) { checkpoint in
+-                    try metrics.measure(.wireReceiveCompleted) { try body(checkpoint) }
++                let operation = BoundedControlResourceOperation()
++                return try withExtendedLifetime(operation) {
++                    try operation.receive(resourceCheck:resource,faultCheck:fault) { checkpoint in
++                        try metrics.measure(.wireReceiveCompleted) { try body(checkpoint) }
++                    }
+                 }
+             }
+             try counters.complete()
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullAssistant.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullAssistant.swift
+@@ -6,9 +6,11 @@
+ final class Gemma4MTPPullAssistant {
+     enum Completion { case finished, cancelled }
+     private let channel: Gemma4MTPPullChannel
++    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy
+     private var mirror: Gemma4MTPPullMirror?
+     private let scope: AsyncMTPProposalLedger.Scope
+     private let initialFrontier: Int
++    private let bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy
+     private let worker: Gemma4MTPPullBatchOwner
+     private let auxiliary: Gemma4MTPAuxiliaryOwner
+     private let receiveStaging = Gemma4MTPPullReceiveStaging()
+@@ -16,7 +18,9 @@
+ 
+     init(channel: Gemma4MTPPullChannel, scope: AsyncMTPProposalLedger.Scope,
+          initialFrontier: Int, assistant: Gemma4AssistantDraftModel,
+-         conditioning: Gemma4MTPConditioning, auxiliary: Gemma4MTPAuxiliaryOwner) throws {
++         conditioning: Gemma4MTPConditioning, auxiliary: Gemma4MTPAuxiliaryOwner,
++         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,
++         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {
+         let fingerprint = Gemma4MTPPullRecord.scopeFingerprint(scope,requestSHA256:auxiliary.budget.requestSHA256,
+             initialFrontier:initialFrontier,maximumInputFrontier:auxiliary.budget.maximumFrontier)
+         guard channel.role == .assistant, channel.scopeSHA256 == fingerprint,
+@@ -24,7 +28,9 @@
+             throw ProbeError("Remote MTP service differs from its original request scope")
+         }
+         self.channel = channel; self.scope = scope; self.initialFrontier = initialFrontier; self.auxiliary = auxiliary
+-        worker = try .init(assistant:assistant,conditioning:conditioning,auxiliary:auxiliary)
++        self.bonusContinuationPolicy = bonusContinuationPolicy
++        self.producerCreditPolicy = producerCreditPolicy
++        worker = try .init(assistant:assistant,conditioning:conditioning,auxiliary:auxiliary,producerCreditPolicy:producerCreditPolicy)
+     }
+ 
+     func run(check: (Gemma4BenchmarkGuardObservation?) throws -> Void) throws -> Completion {
+@@ -56,7 +62,9 @@
+                         // The seed is a target-generated token, not a launch-time
+                         // guessed ID. Its exact value is then bound into BranchID.
+                         mirror = try .init(scope:scope,requestSHA256:auxiliary.budget.requestSHA256,
+-                            inputFrontier:initialFrontier,seed:command.seed,maximumInputFrontier:auxiliary.budget.maximumFrontier)
++                            inputFrontier:initialFrontier,seed:command.seed,maximumInputFrontier:auxiliary.budget.maximumFrontier,
++                            bonusContinuationPolicy:bonusContinuationPolicy,
++                            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)
+                     }
+                     guard let mirror else { throw ProbeError("Remote MTP mirror initialization failed") }
+                     switch try mirror.accept(command) {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullBatchOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullBatchOwner.swift
+@@ -1,4 +1,5 @@
+ import Cmlx
++import Foundation
+ import MLX
+ import MLXLMCommon
+ @_spi(DarkbloomCluster) import MLXLLM
+@@ -9,6 +10,9 @@
+     private let assistant: Gemma4AssistantDraftModel
+     private let conditioning: Gemma4MTPConditioning
+     private let auxiliary: Gemma4MTPAuxiliaryOwner
++    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy
++    private var finalBatchCount: Int?
++    private var expectedTokenCount = 0
+     private var branch: Gemma4MTPFrozenProposalBranch?
+     private var capture: Gemma4OwnedMTPConditioning?
+     private var identity: AsyncMTPProposalLedger.BranchID?
+@@ -16,12 +20,13 @@
+     private var submitted = false, completed = false, failed = false
+ 
+     init(assistant: Gemma4AssistantDraftModel, conditioning: Gemma4MTPConditioning,
+-         auxiliary: Gemma4MTPAuxiliaryOwner) throws {
++         auxiliary: Gemma4MTPAuxiliaryOwner, producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {
+         guard auxiliary.budget.placement == .remoteAssistant,
+               auxiliary.budget.maximumDraftTokens == 2, auxiliary.budget.maximumBufferedProposals == 5 else {
+             throw ProbeError("Remote MTP batch owner requires the unchanged depth-two auxiliary ledger")
+         }
+         self.assistant = assistant; self.conditioning = conditioning; self.auxiliary = auxiliary
++        self.producerCreditPolicy = producerCreditPolicy
+     }
+     func install(_ capture: Gemma4OwnedMTPConditioning, id: AsyncMTPProposalLedger.BranchID,
+                  check: () throws -> Void) throws {
+@@ -40,14 +45,43 @@
+     func prepare(_ grant: AsyncMTPProposalLedger.Grant, check: () throws -> Void) throws {
+         guard !failed, identity == grant.branch, let branch, let capture, pending == nil,
+               grant.firstPosition == branch.anchor+branch.generatedProposals+1 else { throw ProbeError("Remote MTP native grant is stale or already live") }
+-        try check(); try auxiliary.requireGrant(count:grant.count,capture:capture)
+-        pending = try branch.build(grantedCount:grant.count)
++        let batches = try producerCreditPolicy.nativeBatchCounts(for:grant.count)
++        expectedTokenCount = grant.count; finalBatchCount = batches.count == 2 ? batches[1] : nil
++        try check(); try auxiliary.requireGrant(count:batches[0],capture:capture)
++        pending = try branch.build(grantedCount:batches[0])
+         submitted = false; completed = false
+         try check()
+     }
+     /// Called AFTER queued ACK. No P2P call occurs until both stream fences
+     /// finish. The target Mac may verify concurrently under its own owner.
+     func execute(check: () throws -> Void) throws -> [Int] {
++        // All ordinary <=2 credits keep the original execution body unchanged.
++        guard expectedTokenCount == 3 else { return try executeSingle(check:check) }
++        do {
++            guard producerCreditPolicy == .threeForDepthTwo, finalBatchCount == 1,
++                  pending?.count == 2, !failed, !submitted, !completed else {
++                throw ProbeError("Remote split credit has no exact first batch")
++            }
++            // Only CPU IDs leave this autorelease scope. The branch deliberately
++            // retains its now-evaluated last token/hidden as continuation inputs.
++            var tokens = try autoreleasepool { try executeSingle(check:check) }
++            guard completed, tokens.count == 2, let branch, let capture else {
++                throw ProbeError("Remote first sub-batch did not complete exactly")
++            }
++            // executeSingle has joined both streams, checked C status, read back
++            // IDs, and freed its C vector. Drop its owned concat before build(1).
++            pending = nil; submitted = false; completed = false; finalBatchCount = nil
++            try check(); try auxiliary.requireGrant(count:1,capture:capture)
++            pending = try branch.build(grantedCount:1)
++            try check()
++            tokens += try autoreleasepool { try executeSingle(check:check) }
++            guard completed, tokens.count == expectedTokenCount else {
++                throw ProbeError("Remote split result differs from exact credit")
++            }
++            return tokens
++        } catch { failed = true; auxiliary.poison(); throw error }
++    }
++    private func executeSingle(check: () throws -> Void) throws -> [Int] {
+         guard !failed, let pending, !submitted, !completed else { throw ProbeError("Remote MTP batch submission is replayed") }
+         do {
+             return try MLX.withError { native in
+@@ -71,12 +105,14 @@
+     func delivered() throws {
+         guard !failed, completed, pending != nil else { throw ProbeError("Remote MTP payload released before completion") }
+         pending = nil; submitted = false; completed = false
++        finalBatchCount = nil; expectedTokenCount = 0
+     }
+     func retire(check: () throws -> Void) throws {
+         guard !failed else { throw ProbeError("Failed remote MTP native work requires original-owner retirement") }
+         try Gemma4MTPPullNativeFence.join(check:check)
+         pending = nil; branch = nil; capture = nil; identity = nil
+         submitted = false; completed = false
++        finalBatchCount = nil; expectedTokenCount = 0
+         try check()
+     }
+     func poison() { failed = true; auxiliary.poison() }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullMirror.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullMirror.swift
+@@ -23,13 +23,15 @@
+     let scopeSHA256: String
+ 
+     init(scope: AsyncMTPProposalLedger.Scope, requestSHA256: String, inputFrontier: Int, seed: Int,
+-         maximumInputFrontier: Int) throws {
++         maximumInputFrontier: Int, bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,
++         maximumProducerGrantTokens: Int = 2) throws {
+         guard (1...8319).contains(maximumInputFrontier), requestSHA256.utf8.count == 64,
+               requestSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+             throw Record.Failure(reason:"Pull request fingerprint/context differs from the admitted auxiliary scope")
+         }
+         ledger = try .init(scope: scope, inputFrontier: inputFrontier, seedToken: seed,
+-            maximumDraftTokens: 2, maximumInputFrontier: maximumInputFrontier, vocabularySize: 262_144)
++            maximumDraftTokens: 2, maximumInputFrontier: maximumInputFrontier, vocabularySize: 262_144,
++            bonusContinuationPolicy: bonusContinuationPolicy, maximumProducerGrantTokens:maximumProducerGrantTokens)
+         scopeSHA256 = Record.scopeFingerprint(scope, requestSHA256:requestSHA256,
+             initialFrontier:inputFrontier, maximumInputFrontier:maximumInputFrontier)
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
+@@ -12,6 +12,7 @@
+         let timing: Gemma4RemoteMTPVerificationTiming
+     }
+     private let channel: Gemma4MTPPullChannel
++    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy
+     private(set) var ledger: AsyncMTPProposalLedger
+     private var branch: AsyncMTPProposalLedger.BranchID?
+     private var outstanding: AsyncMTPProposalLedger.Grant?
+@@ -24,13 +25,18 @@
+     private var failed = false, stopped = false
+ 
+     init(channel: Gemma4MTPPullChannel, scope: AsyncMTPProposalLedger.Scope, requestSHA256: String,
+-         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int) throws {
++         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int,
++         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,
++         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {
+         let mirror = try Gemma4MTPPullMirror(scope:scope,requestSHA256:requestSHA256,
+-            inputFrontier:initialFrontier,seed:initialSeed,maximumInputFrontier:maximumInputFrontier)
++            inputFrontier:initialFrontier,seed:initialSeed,maximumInputFrontier:maximumInputFrontier,
++            bonusContinuationPolicy:bonusContinuationPolicy,
++            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)
+         guard channel.role == .target, channel.scopeSHA256 == mirror.scopeSHA256 else {
+             throw ProbeError("Remote MTP target channel differs from the original request")
+         }
+         self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier
++        self.producerCreditPolicy = producerCreditPolicy
+     }
+ 
+     /// The caller supplies an ACTUALLY reconciled window from this same session.
+@@ -100,7 +106,9 @@
+                 let selected = try ledger.beginVerification(draftCount:draftCount)
+                 activeWindow = selected
+                 let grantStart = DispatchTime.now().uptimeNanoseconds
+-                if ledger.proposalCredit > 0 { try grant(min(2,ledger.proposalCredit),check:checked) }
++                if ledger.proposalCredit > 0 {
++                    try grant(producerCreditPolicy.lookaheadCount(availableCredit:ledger.proposalCredit),check:checked)
++                }
+                 let targetStart = DispatchTime.now().uptimeNanoseconds
+                 let actual = try session.evaluateMTPInputs([selected.seedToken]+selected.draftTokens,
+                     offset:selected.seedPosition,denseProjection:denseProjection,admit:admitVerification,check:checked)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
+@@ -61,7 +61,8 @@
+                         controlOperations:control.controlOperations,controlLifetimeCheck:auxiliary.checkControlLifetime,
+                         snapshotPolicy:input.snapshotPolicy)
+                     let service = try Gemma4MTPPullAssistant(channel:channel,scope:input.requestScope(ordinal),
+-                        initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary)
++                        initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary,
++                        bonusContinuationPolicy:input.bonusPolicy,producerCreditPolicy:input.producerCreditPolicy)
+                     lifetime.service = service; releasedService = service
+                     let completion = try service.run(check:check)
+                     guard completion == .finished else { throw ProbeError("Remote MTP assistant request was cancelled") }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
+@@ -69,7 +69,8 @@
+                     snapshotPolicy:input.snapshotPolicy)
+                 let target = try Gemma4MTPPullTarget(channel:channel,scope:input.requestScope(ordinal),
+                     requestSHA256:input.resourceRequestSHA256,initialFrontier:session.committedTokens,
+-                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens)
++                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens,
++                    bonusContinuationPolicy:input.bonusPolicy,producerCreditPolicy:input.producerCreditPolicy)
+                 lifetime.target = target
+                 func reseed(_ window: Gemma4OwnedMTPWindow) throws {
+                     try target.reseed(after:window,session:session,admitSend:{ plan in
+@@ -166,7 +167,7 @@
+                 let controlDelta = try Gemma4RemoteMTPControlDelta(before:controlBefore,after:controlOperations.counters.snapshot())
+                 guard timings.count == widths.count else { throw ProbeError("Remote MTP timing coverage differs") }
+                 lifetime.target = nil
+-                return try .init(ordinal:ordinal,warmup:ordinal==0,requestID:request.requestID.uuidString.lowercased(),
++                var sample = try Gemma4RemoteMTPSample(ordinal:ordinal,warmup:ordinal==0,requestID:request.requestID.uuidString.lowercased(),
+                     requestSHA256:request.fingerprint,scopeSHA256:input.wireScope(ordinal),selectedTokenIDs:selected,
+                     selectedTokenIDsSHA256:qwenGenerationTokenHash(selected),committedTokens:session.committedTokens,binding:binding,
+                     prefillNanoseconds:first-start,decodeNanoseconds:last-first,
+@@ -175,6 +176,8 @@
+                     branchRestarts:restarts,reusedProposalsOffered:counters.reusedProposalsOffered,
+                     verificationWidths:widths,acceptedPrefixes:accepts,evidence:evidence,
+                     phaseTiming:.init(windows:timings,finalFinishNanoseconds:finalFinishNanoseconds,controlDelta:controlDelta))
++                sample.bonusContinuation = target.ledger.bonusContinuationReport
++                return sample
+             } catch {
+                 let primary = error
+                 if let target = lifetime.target { try? target.cancel(session:session,check:checked) }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
+@@ -2,13 +2,17 @@
+ 
+ struct Gemma4RemoteMTPJob: Codable {
+     let schema: String, role: String
++    let producerCreditPolicy: String?
+     let snapshotPolicy: String?
+     let localMTPJob: String, localMTPJobSHA256: String
+     let targetNativeSHA256: String, assistantNativeSHA256: String, embeddingIdentitySHA256: String
++    let bonusContinuationPolicy: String?
+     var rank: Int { role == "target" ? 1 : 0 }
+     func validate() throws {
+         _ = try Gemma4MTPPullSnapshotPolicy(requested:snapshotPolicy)
+         guard schema == "gemma4_remote_mtp_cohort_job_v1", ["target","assistant"].contains(role),
++              producerCreditPolicy == nil || producerCreditPolicy == Gemma4MTPProducerCreditPolicy.threeForDepthTwo.rawValue,
++              bonusContinuationPolicy == nil || bonusContinuationPolicy == AsyncMTPBonusContinuationPolicy.name,
+               [localMTPJobSHA256,targetNativeSHA256,assistantNativeSHA256,embeddingIdentitySHA256].allSatisfy(qwenStageWireIsSHA256),
+               localMTPJob.hasPrefix("/"), localMTPJob.utf8.count <= 2048, !localMTPJob.contains("\0"),
+               URL(fileURLWithPath:localMTPJob).standardizedFileURL.path == localMTPJob else {
+@@ -25,6 +29,8 @@
+     let scopeSHA256: String
+     let denseProjectionEnabled: Bool
+     let verificationDepth: Gemma4RemoteMTPDepth
++    let producerCreditPolicy: Gemma4MTPProducerCreditPolicy
++    let bonusPolicy: AsyncMTPBonusContinuationPolicy
+     let snapshotPolicy: Gemma4MTPPullSnapshotPolicy
+     var benchmark: Gemma4BenchmarkInput { local.benchmark }
+     init(url: URL, denseProjectionEnabled: Bool = false,
+@@ -39,11 +45,16 @@
+         let local = try Gemma4LocalMTPInput(url:URL(fileURLWithPath:job.localMTPJob),qualifyConditioning:false,
+             denseProjectionEnabled:denseProjectionEnabled,headPolicy:headPolicy)
+         let verificationDepth = try Gemma4RemoteMTPDepth(maximumDraftTokens:local.job.maximumDraftTokens)
++        let bonusPolicy = try AsyncMTPBonusContinuationPolicy(explicitPolicy:job.bonusContinuationPolicy,
++            verificationDepth:verificationDepth.maximumDraftTokens)
+         guard local.benchmark.job.buildIdentitySHA256 == (job.rank == 1 ? job.targetNativeSHA256 : job.assistantNativeSHA256) else {
+             throw ProbeError("Remote MTP requires the actual local native identity")
+         }
+         self.job = job; self.local = local; self.denseProjectionEnabled = denseProjectionEnabled
+         self.verificationDepth = verificationDepth
++        let producerCreditPolicy = try Gemma4MTPProducerCreditPolicy(explicit:job.producerCreditPolicy,verificationDepth:verificationDepth.maximumDraftTokens)
++        self.producerCreditPolicy = producerCreditPolicy
++        self.bonusPolicy = bonusPolicy
+         let snapshotPolicy = try Gemma4MTPPullSnapshotPolicy(requested:job.snapshotPolicy)
+         self.snapshotPolicy = snapshotPolicy
+         // Local paths/role are intentionally excluded from the bilateral scope.
+@@ -54,6 +65,8 @@
+             local.benchmark.plan.fingerprint,local.benchmark.job.promptFileSHA256,
+             verificationDepth.scopeComponent,"buffer=5","targetRank=1","assistantRank=0",
+             "capture=\(local.job.captureEvidence)"]+local.benchmark.requests.map(\.fingerprint)
++            + bonusPolicy.scopeComponents
++            + producerCreditPolicy.scopeComponents
+             + (local.targetProjectionPolicy.map { ["targetProjection="+$0] } ?? [])
+             + snapshotPolicy.scopeComponents).joined(separator:"\n").utf8))
+     }
+@@ -91,7 +104,19 @@
+             "metadataOnly":true,"actualAllocatorBoundsApplied":false,"mtpEnabled":true,"remoteAssistant":true,
+             "servingEnabled":false,"runtimeExecutionAuthorized":false,"numericalComparisonPerformed":false,
+             "physicalRetirementEstablished":false]
++        if bonusPolicy.enabled {
++            report["bonusContinuationPolicy"] = AsyncMTPBonusContinuationPolicy.name
++            report["maximumBonusContinuationWindows"] = AsyncMTPBonusContinuationPolicy.maximumWindows
++            report["maximumBonusContinuationPositions"] = AsyncMTPBonusContinuationPolicy.maximumPositions
++            report["bonusContinuationStartsAtFirstMismatch"] = true
++        }
+         if let policy = local.targetProjectionPolicy { report["targetProjectionPolicy"] = policy }
++        if producerCreditPolicy == .threeForDepthTwo {
++            report["producerCreditPolicy"] = producerCreditPolicy.rawValue
++            report["maximumProducerCredit"] = 3
++            report["maximumNativeProducerBatch"] = 2
++            report["threeCreditBatchSequence"] = [2,1]
++        }
+         if snapshotPolicy == .ownedBatch { report["snapshotTransferPolicy"] = snapshotPolicy.rawValue }
+         return try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.withoutEscapingSlashes])
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift
+@@ -45,6 +45,7 @@
+     let reusedProposalsOffered: Int, verificationWidths: [Int], acceptedPrefixes: [Int]
+     let evidence: Gemma4RemoteMTPRequestEvidence
+     let phaseTiming: Gemma4RemoteMTPRequestTiming
++    var bonusContinuation: AsyncMTPBonusContinuationReport? = nil
+     let mtpEnabled = true, remoteAssistant = true, maximumDraftTokens = 2, maximumBufferedProposals = 5
+     let timingsAreSameProcess = true, rejectedWorkIncluded = true, requestStateRetired = true
+     let targetBatchNumericsQualified = false, physicalOwnerRetirementEstablished = false

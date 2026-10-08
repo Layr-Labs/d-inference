@@ -343,12 +343,12 @@ export function AboutExperience() {
                   <span className="about-model-earnings"><b>$204.89/mo</b></span>
                 </div>
                 <div>
-                  <span className="about-model-details"><b>Gamma 4 26B A4B</b><small>Fits in your 128 GB (18 GB of model weights)</small></span>
-                  <span className="about-model-earnings"><b>$182.40/mo</b></span>
+                  <span className="about-model-details"><b>Gemma 4 26B A4B</b><small>Fits in your 128 GB (17 GB of model weights)</small></span>
+                  <span className="about-model-earnings"><b>$46.43/mo</b></span>
                 </div>
                 <div>
-                  <span className="about-model-details"><b>GPT-OSS 20B</b><small>Fits in your 128 GB (14 GB of model weights)</small></span>
-                  <span className="about-model-earnings"><b>$144.15/mo</b></span>
+                  <span className="about-model-details"><b>GPT-OSS 20B</b><small>Fits in your 128 GB (12 GB of model weights)</small></span>
+                  <span className="about-model-earnings"><b>$17.63/mo</b></span>
                 </div>
               </div>
             </div>

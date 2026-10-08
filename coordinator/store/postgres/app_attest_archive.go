@@ -10,11 +10,17 @@ import (
 )
 
 func (s *PostgresStore) BeginAppAttestEvidence(ctx context.Context, e store.AppAttestEvidence) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := beginErasureObservation(ctx, s.pool)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackErasureTx(tx)
+	if err = checkPersonalSession(ctx, tx, e.SessionID, e.AccountID); err != nil {
+		return err
+	}
+	if err = bindEvidenceAccount(ctx, tx, e.SessionID, e.AccountID); err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO app_attest_evidence(id,session_id,key_id,received_at,action,sha256,context) VALUES($1,$2,$3,$4,$5,$6,$7)`, e.ID, e.SessionID, e.KeyID, e.ReceivedAt, e.Action, e.SHA256, e.Context)
 	if err != nil {
 		return err
@@ -30,14 +36,17 @@ func (s *PostgresStore) BeginAppAttestEvidence(ctx context.Context, e store.AppA
 }
 
 func (s *PostgresStore) CompleteAppAttestEvidence(ctx context.Context, id string, d store.AppAttestDecision) (string, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := beginErasureObservation(ctx, s.pool)
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
-	var outcome string
-	err = tx.QueryRow(ctx, `SELECT outcome FROM app_attest_evidence WHERE id=$1 FOR UPDATE`, id).Scan(&outcome)
+	defer rollbackErasureTx(tx)
+	var outcome, session string
+	err = tx.QueryRow(ctx, `SELECT outcome,session_id FROM app_attest_evidence WHERE id=$1 FOR UPDATE`, id).Scan(&outcome, &session)
 	if err != nil {
+		return "", err
+	}
+	if err = checkPersonalSession(ctx, tx, session, ""); err != nil {
 		return "", err
 	}
 	if outcome != "pending" {

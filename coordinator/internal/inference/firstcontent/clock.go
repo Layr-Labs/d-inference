@@ -8,6 +8,7 @@ type Clock struct {
 	receivedAt    time.Time
 	deadline      time.Duration
 	speculativeAt time.Duration
+	cutoff        time.Time
 }
 
 func NewClock(receivedAt time.Time, deadline, speculativeAt time.Duration) Clock {
@@ -15,6 +16,9 @@ func NewClock(receivedAt time.Time, deadline, speculativeAt time.Duration) Clock
 }
 
 func (c Clock) Remaining() (time.Duration, bool) {
+	if c.deadline > 0 && !c.cutoff.IsZero() {
+		return max(0, time.Until(c.cutoff)), true
+	}
 	if c.deadline <= 0 || c.receivedAt.IsZero() {
 		return 0, false
 	}
@@ -42,6 +46,12 @@ func (c Clock) Expired() bool {
 func (c Clock) CanExtendPreamble() bool { return c.Wait(PreambleContentTimeout) > 0 }
 
 func (c Clock) SpeculativeWait() time.Duration {
+	if c.deadline > 0 && !c.cutoff.IsZero() {
+		if c.receivedAt.IsZero() {
+			return min(max(0, c.speculativeAt), max(0, time.Until(c.cutoff)))
+		}
+		return min(max(0, time.Until(c.receivedAt.Add(c.speculativeAt))), max(0, time.Until(c.cutoff)))
+	}
 	remaining, ok := c.Remaining()
 	if !ok {
 		if c.speculativeAt < 0 {

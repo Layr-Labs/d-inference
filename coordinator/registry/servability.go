@@ -135,14 +135,16 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 	sawUnknown := false
 	providerCount := 0
 	now := time.Now()
+	providers := r.providersForModelLocked(model)
+	estimates := r.coldKVEstimatesLocked(providers, model, now)
 	var snap routingSnapshot // one caller-owned buffer, refilled per provider
 	// Per-model index: visit only providers advertising the model (gates
 	// unchanged; see model_index.go).
-	for _, p := range r.providersForModelLocked(model) {
+	for _, p := range providers {
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
 			continue
 		}
-		if ok, _ := r.snapshotProviderIntoLockedEx(&snap, p, model, traits, false, false, now); !ok {
+		if ok, _ := r.snapshotProviderIntoLockedEx(&snap, p, model, traits, false, false, now, estimates); !ok {
 			continue
 		}
 		// Modality (vision) is intentionally NOT filtered here: a vision-incapable

@@ -1,8 +1,8 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheplan"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachetracker"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -53,37 +53,38 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		!validV2Anchor(promptAnchor, blockSize) {
 		return nil
 	}
-	boundaries, valid := cacheplan.NewClaims(plan.Boundaries, blockSize, promptAnchor)
-	if !valid {
-		return nil
-	}
-
 	nonce, err := r.newCacheReceiptNonce()
 	if err != nil {
 		return err
 	}
 	now := tracker.now()
 	attempt := cacheAttempt{
-		RequestID:          pr.RequestID,
-		ProviderID:         providerID,
-		Provider:           provider,
-		Model:              pr.Model,
-		CreatedAt:          now,
-		ExpiresAt:          now.Add(cacheRoutingInFlightAttemptTTL),
-		V2:                 true,
-		Plan:               plan,
-		V2Capability:       capability,
-		MemoryCapability:   memoryCapability,
-		ExpectedPrompt:     promptAnchor,
-		ExpectedBoundaries: boundaries,
+		RequestID:        pr.RequestID,
+		ProviderID:       providerID,
+		Provider:         provider,
+		Model:            pr.Model,
+		CreatedAt:        now,
+		ExpiresAt:        now.Add(cacheRoutingInFlightAttemptTTL),
+		V2:               true,
+		Plan:             plan,
+		V2Capability:     capability,
+		MemoryCapability: memoryCapability,
+		ExpectedPrompt:   promptAnchor,
 	}
+	if _, valid := cachetracker.CacheAttemptCharge(nonce, attempt); !valid {
+		return nil
+	}
+	tracker.mu.Lock()
+	if !tracker.storeAttemptLocked(nonce, attempt) {
+		tracker.mu.Unlock()
+		return nil // Optional cache bookkeeping must not reject inference.
+	}
+	admitted := tracker.attempts.Lookup(nonce)
 	boundaryMode := ""
 	if capable {
-		boundaryMode = capability.ReadyBoundaryMode
+		boundaryMode = admitted.V2Capability.ReadyBoundaryMode
 	}
-	owner := newCacheAttemptOwner(tracker, plan.Provenance(), nonce, plan.CacheScope, boundaryMode, max(0, plan.RepeatedPrefixTokens))
-	tracker.mu.Lock()
-	tracker.storeAttemptLocked(nonce, attempt)
+	owner := newCacheAttemptOwner(tracker, admitted.Plan.Provenance(), nonce, admitted.Plan.CacheScope, boundaryMode, max(0, admitted.Plan.RepeatedPrefixTokens))
 	if tracker.attempts.Len() > tracker.settings.MaxAttempts {
 		tracker.enforceAttemptCapLocked()
 	}

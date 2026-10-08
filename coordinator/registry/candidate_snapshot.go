@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/identitygate"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/ttftforecast"
 )
@@ -23,20 +24,29 @@ type candidateSnapshot struct {
 	fleetMedianTPS     float64
 	prefillTPS         float64
 	observedPrefillTPS float64
+	// Fleet medians that replace the provider's own rates while evidence
+	// exploration prices it. 0 keeps the provider's own rate.
+	explorationDecodeTPS  float64
+	explorationPrefillTPS float64
 
-	pendingPrefillTokens  float64
-	pendingPrefillUnknown int
-	pendingPrefillKnown   bool
-	modelLoaded           bool
-	hasBackendCapacity    bool
-	wholeMacBusy          bool
-	wholeMacWorkKnown     bool
-	partialPrefillRows    int
-	evidenceGapAgeMs      int32
-	hbAgeMs               int32
-	activeTokenBudgetUsed int64
-	activeTokenBudgetMax  int64
-	queuedPrefillTokens   int64
+	pendingPrefillTokens   float64
+	pendingPrefillUnknown  int
+	pendingPrefillKnown    bool
+	modelLoaded            bool
+	hasBackendCapacity     bool
+	wholeMacBusy           bool
+	wholeMacWorkKnown      bool
+	partialPrefillRows     int
+	evidenceGapAgeMs       int32
+	decodePerformanceAgeMs int32
+	exploration            identitygate.ExplorationView
+	hbAgeMs                int32
+	activeTokenBudgetUsed  int64
+	activeTokenBudgetMax   int64
+	queuedPrefillTokens    int64
+	// Renderer identity selects the ingress-anchored deadline after evaluation.
+	promptWorkArtifactHash string
+	promptWorkContractID   string
 }
 
 func retainCandidateSnapshot(s *routingSnapshot) candidateSnapshot {
@@ -47,13 +57,16 @@ func retainCandidateSnapshot(s *routingSnapshot) candidateSnapshot {
 		backendRunning: s.backendRunning, backendWaiting: s.backendWaiting,
 		decodeTPS: s.decodeTPS, observedDecodeTPS: s.observedDecodeTPS, fleetMedianTPS: s.fleetMedianTPS,
 		prefillTPS: s.prefillTPS, observedPrefillTPS: s.observedPrefillTPS,
+		explorationDecodeTPS: s.explorationDecodeTPS, explorationPrefillTPS: s.explorationPrefillTPS,
 		pendingPrefillTokens: s.pendingPrefillTokens, pendingPrefillUnknown: s.pendingPrefillUnknown,
 		pendingPrefillKnown: s.pendingPrefillKnown, modelLoaded: s.modelLoaded,
 		hasBackendCapacity: s.hasBackendCapacity, wholeMacBusy: s.wholeMacBusy,
 		wholeMacWorkKnown: s.wholeMacWorkKnown, partialPrefillRows: s.partialPrefillRows,
 		evidenceGapAgeMs: s.evidenceGapAgeMs, hbAgeMs: s.hbAgeMs,
+		decodePerformanceAgeMs: s.decodePerformanceAgeMs, exploration: s.exploration,
 		activeTokenBudgetUsed: s.activeTokenBudgetUsed, activeTokenBudgetMax: s.activeTokenBudgetMax,
-		queuedPrefillTokens: s.queuedPrefillTokens,
+		queuedPrefillTokens:    s.queuedPrefillTokens,
+		promptWorkArtifactHash: s.promptWorkArtifactHash, promptWorkContractID: s.promptWorkContractID,
 	}
 }
 
@@ -71,6 +84,8 @@ func (s *candidateSnapshot) rates() performance.Rates {
 	return performance.Rates{Profile: (*performance.Profile)(s.performanceProfile),
 		StaticDecode: s.decodeTPS, ObservedDecode: s.observedDecodeTPS, FleetMedian: s.fleetMedianTPS,
 		StaticPrefill: s.prefillTPS, ObservedPrefill: s.observedPrefillTPS,
+		ExploredDecode: s.explorationDecodeTPS, ExploredPrefill: s.explorationPrefillTPS,
+		IdleLoaded: s.modelLoaded && !s.wholeMacBusy && s.totalPending == 0, DecodeAgeMs: s.decodePerformanceAgeMs,
 		ObservedBatch: s.backendRunning, Occupancy: s.occupancy()}
 }
 

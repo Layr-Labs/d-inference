@@ -9,7 +9,7 @@ import (
 
 // Caller holds p.mu. Evidence is reconciled before the accepted receipt clock
 // advances, preserving the preceding report's lower bound for legacy EWMAs.
-func (p *Provider) reconcileFirstContentMeasurementsLocked(capacity *protocol.BackendCapacity, receivedAt ...time.Time) {
+func (p *Provider) reconcileFirstContentMeasurementsLocked(capacity *protocol.BackendCapacity, receivedAt ...time.Time) []measurements.DecodeObservation {
 	now := time.Now()
 	if len(receivedAt) > 0 {
 		now = receivedAt[0]
@@ -17,7 +17,7 @@ func (p *Provider) reconcileFirstContentMeasurementsLocked(capacity *protocol.Ba
 	if p.firstContentMeasurements == nil {
 		p.firstContentMeasurements = &measurements.History{}
 	}
-	p.firstContentMeasurements.Reconcile(capacity, p.CapacityAcceptedAt, now,
+	return p.firstContentMeasurements.Reconcile(capacity, p.CapacityAcceptedAt, now,
 		time.Duration(firstContentConservativeHandoffMs)*time.Millisecond)
 }
 

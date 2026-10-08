@@ -41,6 +41,9 @@ struct SSDBlockStreamingTests {
         let f = try Fixture()
         defer { f.remove() }
         try f.write()
+        let serializedBytes = try SSDBlockStore.serializedByteCount(metadata: f.metadata)
+        #expect(serializedBytes == (try Data(contentsOf: f.file)).count)
+        #expect(serializedBytes > f.chunks.reduce(0) { $0 + $1.count })
         let (metadata, chunks) = try SSDBlockStore.read(from: f.file, kekKey: f.key)
         #expect(metadata == f.metadata)
         #expect(chunks == f.chunks)

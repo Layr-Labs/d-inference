@@ -55,8 +55,9 @@ func (s *MemoryStore) RefundRejectedStripeWithdrawal(id string) (bool, error) {
 		return false, store.ErrPayoutConflict
 	}
 	if applied {
-		s.creditLocked(w.AccountID, w.AmountMicroUSD, store.LedgerRefund, ref, time.Now())
-		s.withdrawable[w.AccountID] += w.AmountMicroUSD
+		if s.creditLocked(w.AccountID, w.AmountMicroUSD, store.LedgerRefund, ref, time.Now()) {
+			s.withdrawable[w.AccountID] += w.AmountMicroUSD
+		}
 	}
 	w.Refunded, w.UpdatedAt = true, time.Now()
 	return applied, nil
@@ -68,6 +69,9 @@ func (s *MemoryStore) CompleteStripeCheckout(id, externalID, accountID string, a
 	b := s.billingSessions[id]
 	if b == nil {
 		return false, store.ErrNotFound
+	}
+	if b.Status == "erased" || s.erasedAccounts[b.AccountID] {
+		return false, store.ErrCheckoutErased
 	}
 	if !shared.CheckoutMatches(b, externalID, accountID, amount) {
 		return false, store.ErrPayoutConflict

@@ -1,11 +1,11 @@
 # Schema lifecycle
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the
-locks and timeouts around them, and the checked-in schema file that tests
-compare against. Read this before you add a migration
+locks and timeouts around them, the checked-in schema file that tests compare
+against, the sqlc code generated from that file, and the soft-delete model. Read this before you add a migration
 ([how-to](../developer/database-migrations.md)) or apply one in production
 ([runbook](../operations/schema-migration.md)). What the tables hold is in
 [storage](storage.md).
@@ -36,8 +36,14 @@ database.
 it, and calls `migrate` (`coordinator/store/postgres/migrations.go`). It
 returns the store only after every pending version has applied.
 `coordinator --migrate-only` (`coordinator/internal/command/coordinator/maintenance.go`,
-`Maintenance`) calls the same `NewPostgres` with a 15-minute context
-and exits; it seeds no admin key and starts no listener or worker.
+`Maintenance`) calls the same `NewPostgres` with the configured
+`store.Config.MigrationTimeout` total context and exits; it seeds no admin key
+and starts no listener or worker. Store duration settings are validated before
+database access. Unlike normal startup's `AppConfig.Check`, this database-only
+command does not require App Attest serving configuration.
+
+Concurrent-index connections close with the original migration context, so a
+stalled graceful close cannot detach from its cancellation or deadline.
 
 ```mermaid
 flowchart TD
@@ -68,17 +74,37 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 1 | `coordinator/store/postgres/schema/migrations/00001_baseline.sql` | The 255 statements of the pre-goose boot, in the same order, as one `-- +goose NO TRANSACTION` file. Existing object definitions and repaired data are preserved; required statement errors fail the version. |
 | 2 | `checkRetiredBackfills` (`coordinator/store/postgres/retired_backfills.go`) | Guards the retired one-shot backfills; see [Version 2](#version-2-the-retired-backfill-guard). |
 | 3 | `ensureProviderRestoreIndexes` (`coordinator/store/postgres/startup.go`) | Builds `idx_providers_restore_serial` and `idx_providers_restore_se_key` `CONCURRENTLY` through `ensureConcurrentIndex`. |
-| 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres/provider_earnings_index.go`) | Drops an invalid leftover with a plain `DROP INDEX`, fails on duplicate non-empty `job_id`s, then builds the unique `idx_provider_earnings_job` `CONCURRENTLY`. |
+| 4 | `ensureProviderEarningsJobIndex` (`coordinator/store/postgres/provider_earnings_index.go`) | Refuses an invalid leftover, fails on duplicate non-empty `job_id`s, then builds the unique `idx_provider_earnings_job` `CONCURRENTLY`. |
 | 5 | `ensureProviderEarningsWindowIndex` (`coordinator/store/postgres/earnings_window_index.go`) | Builds the BRIN `idx_provider_earnings_created_at_brin` through `ensureConcurrentIndex` and sets `autovacuum_analyze_scale_factor` to `0.005`. |
 | 6 | `coordinator/store/postgres/schema/migrations/00006_consumer_charge_settlements.sql` | Adds consumer charge settlement records and the referrer index. |
 | 7 | `coordinator/store/postgres/schema/migrations/00007_legacy_mdm_cohort.sql` | Adds the legacy MDM cohort and freeze tables; it does not freeze membership. |
 | 8 | `coordinator/store/postgres/schema/migrations/00008_small_models_interest.sql` | Adds saved small-model hardware interest, including the user foreign key and RAM constraint. |
 | 9 | `ensureStripeRefundIndex` (`coordinator/store/postgres/startup.go`) | Builds `idx_ledger_stripe_refund` concurrently through `ensureConcurrentIndex`. |
+| 10–16 | `indexMigrations` (`coordinator/store/postgres/migration_indexes.go`) | One erase-path index per version, `CONCURRENTLY`: `account_id` on `provider_sessions`, `provider_log_reports`, `device_codes`, `darkbloom_machine_sessions`, `model_token_reservations`; `consumer_key_hash` on `inference_routes` and `request_rejections`. |
+| 17 | `coordinator/store/postgres/schema/migrations/00017_soft_delete_columns.sql` | `NO TRANSACTION`: adds `deleted_at TIMESTAMPTZ` (nullable, no default) to `users`, `api_keys`, `providers`, `provider_tokens`, one `ALTER` at a time. |
+| 18 | `indexMigrations` | `CREATE UNIQUE INDEX CONCURRENTLY idx_users_privy_live ON users (privy_user_id) WHERE deleted_at IS NULL`. |
+| 19 | `coordinator/store/postgres/schema/migrations/00019_users_privy_drop_unique_constraint.sql` | One transaction: drops `users_privy_user_id_key`. |
+| 20 | `coordinator/store/postgres/schema/migrations/00020_users_privy_drop_old_index.sql` | `NO TRANSACTION`: `SET lock_timeout = '1min'`, then `DROP INDEX CONCURRENTLY IF EXISTS idx_users_privy`. |
+| 21 | `coordinator/store/postgres/schema/migrations/00021_referrals_referrer_code_cascade.sql` | `NO TRANSACTION`: adds `referrals_referrer_code_cascade_fkey` (`ON UPDATE CASCADE`) `NOT VALID`, validates it, then drops `referrals_referrer_code_fkey`. |
+| 22 | `coordinator/store/postgres/schema/migrations/00022_erasure_tables.sql` | Creates account-erasure requests, external cleanup outbox (including `resend_contact`), and hashed SE/account ownership with primary-key and account indexes in one transaction. |
+| 23 | `indexMigrations` | Builds `idx_billing_sessions_referral_code` concurrently for referrer-code scrubbing. |
+| 24 | `indexMigrations` | Builds `idx_users_privy_deleted` concurrently for pending-erasure login checks. |
+| 25 | `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql` | Creates refused-credit audit records, including a reference hash for once-credit identity, and balance/ledger triggers in one transaction. |
+| 26 | `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql` | One transaction: adds the Stripe redaction-job fields and independent `lease_generation BIGINT NOT NULL DEFAULT 0` to `erasure_outbox`. Constant defaults change only the catalog; `ALTER TABLE` takes a brief exclusive table lock. |
+| 27 | `coordinator/store/postgres/schema/migrations/00027_withdrawal_funding_queue.sql` | One transaction: adds Connect transfer generation, dispatch count, start time and lease columns with constant defaults and `IF NOT EXISTS`, preserving existing definitions and queued data during schema adoption or replay. The alterations take a brief exclusive table lock under the existing migration timeouts. |
+| 28 | `indexMigrations` in `coordinator/store/postgres/migration_indexes.go` | Builds the additional queued Global Payouts reconciliation index with `CREATE INDEX CONCURRENTLY`; checks validity and readiness before recording the version. |
+| 29 | `coordinator/store/postgres/schema/migrations/00029_machine_autopilot.sql` | One transaction: adds constant-default machine desired-mode/revision columns and guarded `NOT VALID` checks. The brief exclusive DDL lock does not include a historical-row validation scan. Existing values survive schema adoption and replay. |
+| 30 | `coordinator/store/postgres/schema/migrations/00030_machine_autopilot_validate.sql` | A separate transaction validates the machine mode and nonnegative revision checks with PostgreSQL's validation lock, permitting ordinary writes while scanning. The version is recorded only after both checks validate. |
+| 31 | `coordinator/store/postgres/schema/migrations/00031_autopilot_rewards.sql` | One transaction creates the separate reward pool, enrollments, raw consent journal and daily settlements with constraints and ordinary indexes on the new tables. Seeds the zero-cap singleton and tracking start once, without rewriting base rewards or inventing historical opt-ins. |
+| 32 | `coordinator/store/postgres/schema/migrations/00032_autopilot_reward_eligibility.sql` | One transaction adds `qualified BOOLEAN NOT NULL DEFAULT false` and bounded receipt-time chip/memory fields to reward declarations and extends baseline-source and receipt-status checks for `cohort` and `ineligible`. Preserves frozen baselines, money and receipts; older declarations remain unqualified. |
 
-Versions 2 to 5 are Go migrations, listed in `goMigrations`. They are the
-startup steps that ran after the old DDL loop, with their code unchanged.
+Versions 2 to 5 are Go migrations, listed in `goMigrations`. They preserve the
+startup steps that ran after the old DDL loop, with concurrent builds now using
+the dedicated-connection lock timeout and preserving invalid indexes.
 Versions 6 to 9 preserve later pre-goose schema additions; version 9 is also
-a Go migration.
+a Go migration. Versions 10 to 16, 18, 23 and 24 are Go migrations in `indexMigrations`;
+`allGoMigrations` passes both lists to goose. Goose runs SQL and Go versions
+in one sequence, so version 17 adds `deleted_at` before version 18 indexes it.
 Goose reads SQL files from the embedded `migrationFiles` and refuses two
 sources with the same version (`found duplicate migration version`) and an
 unapplied version below the highest applied one
@@ -86,21 +112,41 @@ unapplied version below the highest applied one
 
 ### Migration kinds
 
+Version 31 is additive: it changes no existing base-reward table or balances.
+Its foreign keys retain original machine/enrollment references without cascade
+deletion. Financial deduplication and consent evidence must survive rollback;
+disabling the payment worker does not remove them. Existing copy-only archives
+do not cover the new tables. See the
+[reward persistence contract](storage.md#autopilot-reward-persistence) and
+[reward rollback procedure](../operations/autopilot-rewards.md#rollback).
+
+Version 32 alters only the reward tables. Constant-default qualification and hardware columns add a
+brief exclusive table lock without rewriting old rows; replacing and validating
+the source/status checks can scan existing reward rows under the transaction's
+DDL locks. The migration does not derive old qualification from current provider
+state. Rollback must preserve the captured qualification/hardware, cohort source and final unpaid
+receipts: older writers that omit qualification cannot reconstruct lost history.
+
 | Kind | How goose runs it | Why it exists | Example |
 |---|---|---|---|
-| SQL file (default) | All statements and the `goose_db_version` insert in one transaction, on the connection that holds the advisory lock | A change that must apply completely or not at all | Versions 6 to 8 |
-| SQL file with `-- +goose NO TRANSACTION` | Each statement (or each `StatementBegin`/`StatementEnd` block) commits on its own; the version is recorded after the last one | A statement that cannot run in a transaction (`DROP INDEX CONCURRENTLY`), or a file whose locks must be held one at a time | Version 1 |
+| SQL file (default) | All statements and the `goose_db_version` insert in one transaction, on the connection that holds the advisory lock | A change that must apply completely or not at all | Versions 6 to 8 and 19 |
+| SQL file with `-- +goose NO TRANSACTION` | Each statement (or each `StatementBegin`/`StatementEnd` block) commits on its own; the version is recorded after the last one | A statement that cannot run in a transaction (`DROP INDEX CONCURRENTLY`), or a file whose locks must be held one at a time | Versions 1, 17, 20, 21 |
 | Go migration (`goose.NewGoMigration` with `RunDB`) | Goose calls the function, then records the version on the second migration connection; no transaction | A step that must read the database before it acts, or check its result | Versions 2 and 4 |
-| Concurrent index (Go migration through `ensureConcurrentIndex`) | Checks `pg_index`, builds the index with one simple-protocol statement, then checks that it is valid | `CREATE INDEX CONCURRENTLY` cannot run in a transaction, and a failed build leaves an invalid index that `IF NOT EXISTS` would hide | Versions 3, 5 and 9 |
+| Concurrent index (`indexMigrations`, `buildConcurrentIndex`) | Opens a dedicated connection with the configured concurrent-index `lock_timeout`, returns for a valid and ready index, preserves and refuses an invalid or unready index, otherwise builds and checks the result | `CREATE INDEX CONCURRENTLY` cannot run in a transaction, and `IF NOT EXISTS` alone would hide an invalid index | Versions 10 to 16, 18, 23 and 24 |
+| Concurrent index, pre-goose steps (`ensureConcurrentIndex`, `ensureProviderEarningsJobIndex`) | Uses the same dedicated-connection timeout and invalid-index preservation as new index migrations | Preserves the legacy upgrade path without unbounded lock waits or automatic index removal | Versions 3, 4, 5 and 9 |
 
 An SQL file must not contain `CREATE INDEX CONCURRENTLY`
 (`TestSQLMigrationsDoNotBuildIndexesConcurrently` in
 `coordinator/tests/store/postgres/migrations_test.go`). A build that fails, for
 example on `lock_timeout`, leaves an invalid index; on the next attempt
 `IF NOT EXISTS` skips it and goose records the version with a broken index.
-`ensureConcurrentIndex` returns at once for a valid index, refuses an invalid
-one by name (`index ... is invalid; repair the interrupted concurrent index
-build before retrying`), and fails unless the new index is valid and ready.
+All builders preserve and refuse an invalid or unready index with a diagnostic
+naming it. The goose advisory lock does not exclude an external operator's
+concurrent build; an invalid index can be active work, not an abandoned
+artifact. Operators must inspect `pg_stat_progress_create_index` and
+`pg_stat_activity`, wait for active work, and separately approve any repair
+after confirming no builder remains. Neither the new helper nor legacy earnings
+code automatically drops or rebuilds it; see [repair procedure](../operations/schema-migration.md#invalid-index).
 
 ### Locks and timeouts
 
@@ -112,8 +158,17 @@ build before retrying`), and fails unless the new index is valid and ready.
 | URL override | a `lock_timeout` or `statement_timeout` parameter in `EIGENINFERENCE_DATABASE_URL` | `migrateOnce` | The URL value wins over both defaults. |
 | Retries | `migrationAttempts = 3`; pauses of 1 s and 2 s | `migrate`, `isLockTimeout` | Only a lock timeout is retried. Each attempt opens a new migration pool and starts again from the pending check. |
 | Advisory lock | session lock `4097083626` (goose `lock.DefaultLockID`), `pg_try_advisory_lock` every 5 s, 60 retries | `lock.NewPostgresSessionLocker` in `newMigrationProvider` | Two coordinators that start together take turns. The second one gives up after 5 min with `failed to acquire lock`. |
-| Go migrations | no session timeouts unless the URL sets them | `goMigrations` run on the store pool | Keeps the pre-goose behaviour of versions 2 to 5: a `CREATE INDEX CONCURRENTLY` that times out leaves an invalid index. |
-| `--migrate-only` | `context.WithTimeout(..., 15*time.Minute)` | `Maintenance` | The whole run stops after 15 min. The serving path has no such deadline. |
+| All concurrent index builders, including legacy versions 3, 4, 5 and 9 | `store.Config.ConcurrentIndexLockTimeout`, default `1m`; no `statement_timeout` unless the URL sets one | Dedicated index connection | Overrides URL `lock_timeout` for the build only. SQLSTATE `55P03` remains retryable, but an invalid index left by an attempt is preserved and fails diagnostically on retry. |
+| `DROP INDEX CONCURRENTLY` in version 20 | `SET lock_timeout = '1min'` in the file | `00020_users_privy_drop_old_index.sql` | The same wait for older snapshots, inside an SQL migration. |
+| `--migrate-only` | `store.Config.MigrationTimeout`, default `15m` | `Maintenance` | Bounds the whole command, including connection and index work. The serving path has no such total deadline. |
+
+Both duration settings are optional environment variables; explicit invalid or
+nonpositive values fail `store.Config.Check` before the database is opened,
+while programmatic zero uses the default. The concurrent-index duration must
+fit PostgreSQL's millisecond range; see [configuration](../reference/configuration.md).
+Extending the maintenance deadline can accommodate rehearsed online index work;
+it does not remove the need to prebuild, check blockers and budget capacity.
+Do not disable timeouts globally to make a large migration finish.
 
 `CREATE INDEX CONCURRENTLY` blocks no reads or writes, but it waits for every
 transaction that holds an older snapshot. On a busy database it can wait for a
@@ -171,6 +226,113 @@ that a pre-goose boot leaves, checks the upgrade reaches the current schema,
 and verifies those rows are preserved. The
 [how-to](../developer/database-migrations.md) regenerates the file.
 
+### Generated queries (sqlc)
+
+The api_keys queries of `PostgresStore` are SQL in
+`coordinator/store/postgres/queries/api_keys.sql`; the account erasure queries
+are in `coordinator/store/postgres/queries/erasure.sql`. [sqlc](https://sqlc.dev) v1.31.1
+reads those files and `schema.sql` and writes typed Go into
+`coordinator/store/postgres/storedb/` (`coordinator/store/postgres/sqlc.yaml`). The store
+methods in `coordinator/store/postgres/apikey.go` call the generated
+`storedb.Queries` and convert each row to the public store type. The erasure
+methods in `coordinator/store/postgres/erasure.go`,
+`coordinator/store/postgres/erasure_rules.go` and
+`coordinator/store/postgres/erasure_keys.go` run the generated queries on
+`storedb.New(tx)` inside `erasureTx`.
+
+```mermaid
+flowchart TB
+  classDef src fill:#ede9fe,stroke:#6d28d9,color:#1e1035
+  classDef step fill:#dbeafe,stroke:#1d4ed8,color:#0b1220
+  classDef gen fill:#dcfce7,stroke:#15803d,color:#052e16
+  classDef check fill:#fef3c7,stroke:#b45309,color:#1f1300
+  M["schema/migrations/*.sql<br/>and goMigrations"]:::src -- "goose on an empty DB,<br/>then pg_dump" --> S["schema/schema.sql"]:::src
+  Q["queries/api_keys.sql,<br/>queries/erasure.sql"]:::src --> G["make<br/>sqlc-generate<br/>(sqlc.yaml)"]:::step
+  S --> G
+  G --> D["storedb/*.go<br/>Queries, ApiKey, *Params"]:::gen
+  D --> P["PostgresStore methods<br/>postgres/apikey.go,<br/>postgres/erasure*.go"]:::step
+  P --> T["store.APIKey"]:::step
+  C["CI check:<br/>make sqlc-check"]:::check -. "schema test" .-> S
+  C -. "sqlc diff" .-> D
+```
+
+Legend: purple = checked-in source, blue = step or hand-written code,
+green = generated code, amber = CI check.
+
+| Part | What it does | Where |
+|---|---|---|
+| Schema input | `schema: schema/schema.sql`. sqlc reads the dump, not the migrations: the baseline adds many columns inside `DO` blocks, which sqlc cannot see, so a query on such a column fails with `column "..." does not exist`. | `coordinator/store/postgres/sqlc.yaml` |
+| Code generation | `sql_package: pgx/v5`, `emit_pointers_for_null_types: true`, `omit_unused_structs: true`, and `timestamptz` overrides to `time.Time` and `*time.Time` ([type mapping](../reference/sqlc-type-mapping.md)) | `coordinator/store/postgres/sqlc.yaml` |
+| Database handle | `storedb.New(db DBTX)` takes the pool or a `pgx.Tx`; `PostgresStore.queries()` wraps the pool, and `RotateAPIKey` and `erasureTx` use `storedb.New(tx)` | `coordinator/store/postgres/storedb/db.go`, `coordinator/store/postgres/apikey.go`, `coordinator/store/postgres/erasure.go` |
+| Row conversion | `apiKeyFromRow` maps `storedb.ApiKey` to `APIKey`; `insertAPIKeyParams` maps back | `coordinator/store/postgres/apikey.go` |
+| Tool pin | `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1`: sqlc v1.31.1 needs Go 1.26, newer than `go.mod`, so it is not a `go.mod` tool | `Makefile` (`SQLC`) |
+| CI check | `make sqlc-check` runs `TestMigrationsBuildCheckedInSchema`, then `sqlc diff`; the Coordinator Tests job runs it against its Postgres service | `Makefile`, `.github/workflows/ci.yml` |
+
+`SELECT *` in a query is expanded to the column list when the code is
+generated. A running binary therefore selects only the columns it was built
+with, and a new column does not break it. `MemoryStore` and `CachedStore` do
+not use sqlc. Adding a query is [Write store queries with sqlc](../developer/sqlc.md).
+
+### Soft delete
+
+Account erasure must hide an account's rows at once and must let the same
+person sign up again. Four tables carry a nullable `deleted_at TIMESTAMPTZ`
+(version 17). `RequestAccountErasure` sets the column when the grace period
+begins, before the irreversible scrub. Every store read that
+returns a live user, key, provider record or provider token filters
+`deleted_at IS NULL` in `PostgresStore` and checks `DeletedAt` in
+`MemoryStore`. The full list of reads is in the
+[soft-delete reference](../reference/soft-delete.md).
+
+```mermaid
+flowchart LR
+  classDef step fill:#dbeafe,stroke:#1d4ed8,color:#0b1220
+  classDef data fill:#ede9fe,stroke:#6d28d9,color:#1e1035
+  classDef ok fill:#dcfce7,stroke:#15803d,color:#052e16
+  classDef hidden fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+  E["RequestAccountErasure"]:::step -- "SET deleted_at = now()" --> R[("users, api_keys,<br/>providers, provider_tokens")]:::data
+  R --> F{"read filters<br/>deleted_at IS NULL"}:::step
+  F -- "deleted_at set" --> H["absent: not found,<br/>omitted, not authenticated"]:::hidden
+  F -- "deleted_at NULL" --> L["returned as live"]:::ok
+  R --> RP["GetProviderForRestore,<br/>ResolveMachineContinuity"]:::step
+  RP -- "skip soft-deleted rows" --> L
+  R --> U["idx_users_privy_live:<br/>UNIQUE WHERE deleted_at IS NULL"]:::step
+  U --> S["CreateUser with the same<br/>Privy ID succeeds"]:::ok
+```
+
+Legend: purple = table, blue = writer, read path or index, green = live
+result, red = hidden.
+
+- **Read filters.** User lookups, key authentication and listing, provider
+  token lookup, provider record, MDA chain and account listing, usage-flow
+  provider locations, and the machine-inventory backfill skip soft-deleted
+  rows. `UpdateAPIKey` and `RotateAPIKey` also filter, so they cannot change a
+  soft-deleted key.
+- **Write fences.** New credential, provider and payout admissions refuse a
+  deleted account under the same user lock as erasure. Late external creation
+  results retain cleanup IDs in the outbox; delayed usage and route writes
+  omit personal locations after the scrub. Historical accounting and revocation
+  remain available; new HTTP provider removal requires the
+  [mutation gate](../reference/soft-delete.md#writers-of-deleted_at). Provider removal keeps hidden
+  SE/account ownership rows for later erasure and discards reputation. The
+  [soft-delete reference](../reference/soft-delete.md#late-writes) lists the
+  affected methods and the paths that do not filter.
+- **Partial unique index.** `idx_users_privy_live` (version 18) keeps one
+  live user per Privy ID and ignores soft-deleted users. Versions 19 and 20
+  then drop the full-table key `users_privy_user_id_key` and the index
+  `idx_users_privy`. On a fresh database the baseline still creates both, and
+  19 and 20 drop them; goose never runs the baseline again.
+- **Restore paths.** Provider history restore (`GetProviderForRestore`) and
+  machine continuity (`ResolveMachineContinuity`) skip soft-deleted provider
+  records, so an erased account's history is never attached to a new session.
+  Only `CancelAccountErasure` clears `deleted_at`, on the user and provider rows
+  stamped by that request before `scrub_after`; earlier ordinary removals remain
+  hidden, and nothing restores a row after the scrub.
+- **Caches and other readers.** `CachedStore` caches users for `UserTTL`
+  (`30 * time.Second`) and drops them after `RequestAccountErasure`,
+  `CancelAccountErasure` and `ScrubAccount` (`coordinator/store/cached.go`).
+  `admin-ui` reads the replica with its own SQL and does not filter.
+
 ### Tables and files that are not goose versions
 
 `schema_migrations` is an older table. It holds the markers of the one-shot
@@ -189,7 +351,7 @@ Logs carry bounded labels only, never SQL or parameters
 
 | Message | Fields | When |
 |---|---|---|
-| `postgres startup phase` | `phase` (`connect` or an index name), `result`, `duration_ms` | After the ping, and after each index build in versions 3, 5 and 9 |
+| `postgres startup phase` | `phase` (`connect` or an index name), `result`, `duration_ms` | After the ping, and after each index build in versions 3, 5, 9, 10 to 16 and 18 |
 | `postgres migration hit lock_timeout; retrying` (warn) | `attempt` | Before attempt 2 and 3 |
 | `postgres migration` | `version`, `result` (`applied` or `failed`), `duration_ms` | One line per version that goose ran, written after the attempt ends; none when nothing was pending |
 | `coordinator migrations complete` | `duration_ms` | `--migrate-only` succeeded |
@@ -208,18 +370,36 @@ Logs carry bounded labels only, never SQL or parameters
 3. **A failed version is not recorded.** A transactional SQL file rolls back
    with its version row. A `NO TRANSACTION` file or a Go migration records
    the version only after its last statement succeeds.
-4. **An SQL migration statement does not wait more than 3 s for a table lock**
-   unless the database URL sets a longer `lock_timeout`
-   (`migrationLockTimeout`). `TestMigrateRetriesLockTimeout` holds a lock and
-   checks the retry. `TestMigrationsBlockedLegacyColumnRemainsPending` verifies
-   a blocked legacy column is not marked applied and is restored after retry.
-   Go migration helpers use the serving pool and retain its URL timeouts.
+4. **SQL DDL and concurrent builds have separate lock budgets.** SQL migration
+   sessions default to 3 s, subject to the existing URL override. Every
+   concurrent index builder uses `store.Config.ConcurrentIndexLockTimeout`
+   (default `1m`) on a dedicated connection; version 20's SQL drop retains its
+   explicit `1min` setting.
+   `TestMigrateRetriesLockTimeout` and
+   `TestConcurrentIndexMigrationWaitsForOlderSnapshot` cover both.
+   `TestMigrationsBlockedLegacyColumnRemainsPending` verifies a blocked legacy
+   column is not marked applied and is restored after retry. No builder
+   automatically removes an invalid index.
 5. **Migrations build exactly `schema.sql`** on a fresh database
    (`TestMigrationsBuildCheckedInSchema`).
-6. **There are no down migrations.** No migration file has a
+6. **The generated queries match `schema.sql` and the query files.**
+   `make sqlc-check` fails CI when `coordinator/store/postgres/storedb` is stale
+   (`Makefile`, `.github/workflows/ci.yml`).
+7. **There are no down migrations.** No migration file has a
    `-- +goose Down` section. A rollback starts an older image on the migrated
    schema; it never reverts the schema.
-7. **An older goose image applies nothing on a newer database.** Every version
+8. **An index migration is recorded only with a valid index.**
+   `ensureConcurrentIndex` fails unless `indisvalid AND indisready`
+   (`TestIndexMigrationRebuildsInvalidLeftover`,
+   `TestIndexMigrationFailureIsNotRecorded` in
+   `coordinator/tests/store/postgres/migration_index_test.go`).
+9. **A soft-deleted row is never returned as live.** Every read in the
+   [soft-delete reference](../reference/soft-delete.md) filters it, on both
+   backends (`coordinator/tests/store/postgres/soft_delete_reads_test.go`
+   covers the Postgres reads;
+   `coordinator/tests/store/contracts/erasure_soft_delete_reads_test.go`
+   covers both backends after `RequestAccountErasure`).
+10. **An older goose image applies nothing on a newer database.** Every version
    it knows is recorded, and goose ignores recorded versions it does not
    know. A pre-goose image ignores `goose_db_version` and replays its own boot
    DDL.
@@ -231,8 +411,12 @@ Logs carry bounded labels only, never SQL or parameters
 | Exit 1 with `partial migration error (type:sql,version:N): ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)` after two `postgres migration hit lock_timeout; retrying` lines | A long query held a lock that version N needed, through all three attempts | Nothing was recorded for version N; a transactional file rolled back. `pg_stat_activity` for the blocker; [runbook](../operations/schema-migration.md#lock-timeout). |
 | Exit 1 with `failed to initialize: failed to acquire lock` after 5 min | Another process held the goose advisory lock for the whole lock wait | The holder in `pg_locks` (`objid = 4097083626`); [runbook](../operations/schema-migration.md#a-second-coordinator-waits-on-the-lock). |
 | A `NO TRANSACTION` file failed after some statements | Its earlier statements committed; the version is not recorded | The next run executes the whole file again, so every statement in such a file must be safe to run twice (`IF NOT EXISTS`, `IF EXISTS`). |
-| Exit 1 with `index ... is invalid; repair the interrupted concurrent index build before retrying` | A `CONCURRENTLY` build in version 3, 5 or 9 was interrupted | `ensureConcurrentIndex` does not repair it; [runbook](../operations/schema-migration.md#invalid-index). |
+| Exit 1 naming an invalid or unready index | An interrupted or still-active concurrent build left the index unusable | All builders preserve it, including legacy earnings. Check active builders before any approved repair; [runbook](../operations/schema-migration.md#invalid-index). |
+| An index build fails with `canceling statement due to lock timeout` | A transaction held an older snapshot beyond the configured concurrent-index lock budget | `migrate` retries lock timeouts, but an invalid leftover is preserved and stops the retry with a diagnostic. The failed version is not recorded. |
+| Version 18 fails with a unique violation | Two live users share a Privy ID; `users_privy_user_id_key` prevents that until version 19, unless it was removed by hand | Nothing is recorded (`TestIndexMigrationFailureIsNotRecorded`); resolve the duplicate users before redeploying. |
+| A coordinator built before goose fails to boot with a unique violation on `idx_users_privy` | It replays its boot DDL; its non-concurrent `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` fails once a soft-deleted and a live user share a Privy ID | Roll back only to goose images; see the [rollback rules](../operations/schema-migration.md#rollback). |
 | Exit 1 with `found duplicate migration version` | Two sources share a number | Renumber one. |
+| CI fails in `make sqlc-check` | `schema.sql` or `coordinator/store/postgres/storedb` is stale | [sqlc troubleshooting](../developer/sqlc.md#troubleshooting). |
 | Exit 1 with `missing (out-of-order) migration` | A version below the highest applied one was never applied, for example after two branches added migrations | `SELECT version_id FROM goose_db_version ORDER BY id`; renumber the unapplied version above the highest one. |
 | Exit 1 with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has history but never ran a backfill retired after v0.9.10 | Boot a v0.9.10 coordinator against it once, then redeploy (`checkRetiredBackfills`). |
 | Exit 1 with a `provider_earnings` duplicate `job_id` message | Rows share a non-empty `job_id`, so version 4 cannot build its unique index | Run `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` offline, then redeploy. |
@@ -242,18 +426,36 @@ Logs carry bounded labels only, never SQL or parameters
 
 | Concern | Location |
 |---|---|
-| Migration runner, timeouts, retries, Go migration list | `coordinator/store/postgres/migrations.go` (`migrate`, `migrateOnce`, `newMigrationProvider`, `goMigrations`) |
+| Migration runner, timeouts, retries, Go migration list | `coordinator/store/postgres/migrations.go` (`migrate`, `migrateOnce`, `newMigrationProvider`, `goMigrations`, `allGoMigrations`) |
+| Index migrations and lock budget | `coordinator/store/postgres/migration_indexes.go` (`indexMigrations`, `buildConcurrentIndex`); `coordinator/store/config.go` (`Config.ConcurrentIndexLockTimeout`) |
+| Soft-delete reads and tests | [soft-delete reference](../reference/soft-delete.md); `coordinator/tests/store/postgres/soft_delete_reads_test.go` |
+| Frozen pre-goose schema | `coordinator/tests/store/postgres/testdata/legacy_schema.sql` |
 | SQL migrations | `coordinator/store/postgres/schema/migrations/` |
 | Checked-in schema | `coordinator/store/postgres/schema/schema.sql` |
-| Concurrent index helper and startup log line | `coordinator/store/postgres/startup.go` (`ensureConcurrentIndex`, `logStartupMigration`) |
+| Concurrent index helper and startup log line | `coordinator/store/postgres/migration_indexes.go` (`ensureConcurrentIndex`); `coordinator/store/postgres/startup.go` (`logStartupMigration`) |
 | Go migration bodies | `coordinator/store/postgres/retired_backfills.go`, `coordinator/store/postgres/provider_earnings_index.go` (`ensureProviderEarningsJobIndex`), `coordinator/store/postgres/earnings_window_index.go` |
 | Database-only command | `coordinator/internal/command/coordinator/maintenance.go` (`Maintenance`) |
-| Tests | `coordinator/tests/store/postgres/migrations_test.go`, `coordinator/tests/store/postgres/migration_harness_test.go` |
+| sqlc config, queries, generated code | `coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`, `coordinator/store/postgres/storedb/` |
+| api_keys store methods | `coordinator/store/postgres/apikey.go` (`queries`, `apiKeyFromRow`, `insertAPIKeyParams`) |
+| Account erasure store methods | `coordinator/store/postgres/erasure.go` (`erasureTx`), `coordinator/store/postgres/erasure_rules.go`, `coordinator/store/postgres/erasure_keys.go`; queries in `coordinator/store/postgres/queries/erasure.sql` |
+| sqlc targets | `Makefile` (`sqlc-generate`, `sqlc-check`) |
+| Tests | `coordinator/tests/store/postgres/migrations_test.go`, `coordinator/tests/store/postgres/migration_index_test.go`, `coordinator/tests/store/postgres/migration_harness_test.go` |
 | Manual SQL | `coordinator/store/postgres/migrations/` |
+
+### Erasure transaction bounds
+
+Version 25's new refused-credit table retains a non-null `reference_hash`
+computed before reference sanitization by `erasure_refuse_ledger_credit`.
+This changes no existing large-table layout. `erasureTx` passes its two-minute
+context to all transaction queries and commit; rollback uses a separate
+five-second cleanup context (`coordinator/store/postgres/erasure.go`,
+`coordinator/store/postgres/erasure_fences.go`).
 
 ## Related
 
 - [Add a database migration](../developer/database-migrations.md) — the steps
 - [Apply schema migrations in production](../operations/schema-migration.md) — backup, checks, rollback
+- [Write store queries with sqlc](../developer/sqlc.md) and [sqlc type mapping](../reference/sqlc-type-mapping.md)
+- [Soft delete](../reference/soft-delete.md) — every table, read path and index
 - [Storage](storage.md) — what the tables hold and which backend runs
 - [Deploy the coordinator](../operations/coordinator-deploy.md) — the container swap that runs the migrations

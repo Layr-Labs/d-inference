@@ -54,7 +54,7 @@ func TestMachineInventoryReconcileClosesOrphansAndPreservesLiveSessions(t *testi
 					t.Fatal(err)
 				}
 				if provider {
-					if err := st.History.OpenProviderSession(ctx, id, "", "owner"); err != nil {
+					if err := st.History.OpenProviderSession(ctx, id, "", "owner", seen); err != nil {
 						t.Fatal(err)
 					}
 					if err := st.History.TouchProviderSession(ctx, id, "", "owner", "", heartbeat); err != nil {

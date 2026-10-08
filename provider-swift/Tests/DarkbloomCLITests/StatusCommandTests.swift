@@ -123,6 +123,50 @@ struct StatusDaemonHealthLineTests {
     }
 }
 
+@Suite("status lifecycle drain line")
+struct StatusLifecycleDrainLineTests {
+    /// Lifecycle drains from `stop`, `restart` and `start` always record their request.
+    private func line(_ outcome: ProviderDrainStatus.Outcome, remaining: Int = 0) -> String? {
+        Status.lifecycleDrainLine(ProviderDrainStatus(requestID: "drain-1", outcome: outcome, remaining: remaining))
+    }
+
+    @Test("a serving provider, or one with no drain record, adds no line")
+    func servingAddsNothing() {
+        #expect(Status.lifecycleDrainLine(nil) == nil)
+        #expect(line(.serving) == nil)
+    }
+
+    @Test("a drain in progress names the unfinished requests")
+    func draining() {
+        #expect(line(.draining, remaining: 2)
+            == "Not serving: draining, 2 unfinished request(s); new requests are refused until it finishes")
+    }
+
+    @Test("a drain that did not finish says how to drain again or interrupt it")
+    func unfinished() {
+        let expected = "Not serving: the last drain did not finish (1 unfinished request(s)); new requests are "
+            + "refused. Run `darkbloom stop` or `darkbloom restart` to drain again, "
+            + "or add `--force` to interrupt unfinished work"
+        #expect(line(.timedOut, remaining: 1) == expected)
+        #expect(line(.busy, remaining: 1) == expected)
+    }
+
+    @Test("a drained provider that was never relaunched says how to serve again or finish stopping")
+    func drainedWithoutRelaunch() {
+        let expected = "Not serving: drained; new requests are refused until the provider is replaced. "
+            + "Run `darkbloom restart` or `darkbloom start` to serve again, or `darkbloom stop` to finish stopping"
+        #expect(line(.drained) == expected)
+        #expect(line(.forced) == expected)
+    }
+
+    @Test("a scheduled provider idling outside its window adds no line")
+    func scheduledIdleAddsNothing() {
+        // `Start.waitOutsideSchedule` idles as drained with no request; status
+        // already prints `Availability: inactive`, and the window reopens serving.
+        #expect(Status.lifecycleDrainLine(ProviderDrainStatus(outcome: .drained)) == nil)
+    }
+}
+
 @Test("main status renders automatic, forced-on, and forced-off MTP postures")
 func mainStatusBetaPostures() {
     func config(_ mode: MTPMode) -> ProviderConfig {

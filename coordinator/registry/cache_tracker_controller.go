@@ -86,6 +86,13 @@ func newCacheRoutingTrackerWithSettings(settings cachetracker.Settings, deps Cac
 	if attempts == nil {
 		attempts = cacheindex.NewRecords[string, cacheAttempt]()
 	}
+	var attemptBudget *cachetracker.AttemptBudget
+	if deps.AttemptBudgets != nil {
+		attemptBudget = deps.AttemptBudgets()
+	}
+	if attemptBudget == nil {
+		attemptBudget = cachetracker.NewAttemptBudget(cacheRoutingMaxAttemptBytes)
+	}
 	var fences *cacheindex.Records[cacheV2ProviderModelKey, cacheV2Fence]
 	if deps.Fences != nil {
 		fences = deps.Fences()
@@ -123,9 +130,9 @@ func newCacheRoutingTrackerWithSettings(settings cachetracker.Settings, deps Cac
 	config := cachetracker.Config[*Provider]{
 		Settings: settings, Now: deps.Now, Generation: generation,
 		Holders: tracker.holders, Attempts: tracker.attempts,
-		HolderOrder: tracker.holderOrder, AttemptOrder: tracker.attemptOrder,
+		HolderOrder: tracker.holderOrder, AttemptOrder: tracker.attemptOrder, TerminalOrder: cacheindex.NewAttemptOrder(),
 		HolderProviders: tracker.holdersByProvider, AttemptProviders: tracker.attemptsByProvider,
-		Sequences: tracker.v2Sequences, Proofs: proofs,
+		Sequences: tracker.v2Sequences, Proofs: proofs, AttemptBudget: attemptBudget,
 	}
 	if deps.Trackers != nil {
 		tracker.core = deps.Trackers(config)

@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -109,6 +109,33 @@ sequenceDiagram
 | Requirement | The provider must register with `encrypted_response_chunks: true`; otherwise it never passes `providerSupportsPrivateTextLocked` | `coordinator/protocol/messages.go` (`RegisterMessage`) |
 | Violation | A plaintext chunk, a mixed chunk, or a sender key ≠ `K` marks the provider `untrusted` and fails the request with `502` / `FailureCodeEncryptionFailure` | `coordinator/api/inference/provider_inference.go` (`decryptTextResponseChunk`, `errTextChunkViolation`) |
 
+### Provider-bound field minimization
+
+Before serializing and re-sealing an inference request, the shared
+`parseInferencePrelude` (`coordinator/api/inference/prelude_parser.go`) runs
+`Parser.Parse`, which invokes `stripProviderCallerIdentity` to remove only
+caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and
+caller `prompt_cache_key`
+(`coordinator/internal/inference/prelude/request_prelude.go`,
+`coordinator/internal/inference/prelude/provider_body_privacy.go`).
+Direct, queued and retried requests use that prepared body. The original input
+bytes remain available in request memory for existing validation; they are not
+substituted back into the provider payload.
+
+Nested fields, prompt text, tool/schema content, media and generation controls
+remain unchanged. `metadata_details` is a distinct coordinator opt-in, and
+coordinator-authored cache scopes and receipt controls retain their existing
+account-bound derivation. The coordinator may append its own protocol-0 cache-bust
+key after sanitization. Cache scope is a stable account/model pseudonym visible
+to the provider, so it permits linkage within that scope; it does not isolate
+individual end users sharing one authenticated account. Body-size-derived estimates and activation sampling
+can change when unnecessary bytes are removed; authenticated account ownership
+and prompt-bearing content do not change.
+
+This does not provide anonymity: prompts, nested content or other caller fields
+can still identify a person, and a provider can process requests from multiple
+accounts. It remains the plaintext endpoint for requests routed to it.
+
 ### What each party can observe
 
 This table is the privacy statement. [`../../consumer/privacy-expectations.md`](../../consumer/privacy-expectations.md) and [`../../provider/attestation.md`](../../provider/attestation.md) link to it and do not restate it.
@@ -119,22 +146,22 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Completion text | yes | yes, in memory while relaying; never logged or stored | yes (generates it) |
 | Model, sampling parameters, `stream`, `max_tokens` | yes | yes; stored as non-content request params | yes |
 | Token counts, latency, request/trace IDs, selected provider | yes (headers, usage) | yes; stored and logged | own requests only |
-| Consumer identity, API key, Privy DID, balance | own | yes | no |
+| Consumer identity, API key, Privy DID, balance | own | yes | not forwarded as authentication/billing context; caller content can still disclose identity |
 | Provider identity: SE public key, chip, model | yes (`X-Provider-*`, `GET /v1/providers/attestation`) | yes | own |
 | Provider serial, UDID, APNs token, MDA certificate chain | no | yes (stored) | own |
 | Provider X25519 private key, SE private key | no | no | own process / Secure Enclave |
-| Other consumers' prompts | no | yes, in memory, one request at a time | no |
+| Other consumers' prompts | no | for requests it processes | only requests routed to that provider; it may serve multiple accounts |
 
 ### What the coordinator logs and retains
 
 | Retained or logged (metadata only) | Code |
 |---|---|
-| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `remote` (the connection's remote address), `user_id` (account, when authenticated) | `coordinator/internal/api/middleware/middleware.go` (`loggingMiddleware`) |
+| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `user_id` (account, when authenticated) | `coordinator/internal/api/middleware/middleware.go` (`loggingMiddleware`) |
 | `inference request dispatched`: `trace_id`, `request_id`, `model`, `provider_id`, `stream`, `attempt` | `coordinator/api/inference/dispatch.go` |
 | Request / route records: token counts, timing, non-content params (`temperature`, `top_p`); the record types document that they contain no prompt or response content | `coordinator/store/interface.go` |
 | Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |
 | Provider identity rows: SE public key, serial, MDA UDID and chain, posture bits (`ProviderTrustReuse`); code-identity proofs `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}`; push budgets keyed by SE key + APNs token hash | `coordinator/store/interface.go` (`ProviderTrustReuse`, `CodeAttestation`, `CodeAttestPushBudget`); `coordinator/internal/provider/reuse/trust_reuse.go`; `coordinator/internal/provider/identity/code_attest_throttle.go` |
-| MDM webhook body: `body_size` and a 500-byte `body_preview` at `Debug` level (MDM plist, never inference data) | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`) |
+| MDM webhook body: `body_size` at `Debug` level | `coordinator/api/provider/trust/settings.go` (`HandleMDMWebhook`) |
 | Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/access/device/handlers.go` |
 
 | Explicitly avoided | Code |
@@ -144,6 +171,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | The coordinator has no client telemetry ingestion route (the retired `POST /v1/telemetry/events` is unregistered), because provider telemetry had free-form `message` / `stack` fields | `coordinator/api/routes.go` (`routes`); `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` (`TestTelemetryE2E_NoClientIngestionRoute`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`) |
+| Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/tests/api/log_personal_data_test.go` |
 
 ## Invariants
 

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/identitygate"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/performance"
 	"github.com/eigeninference/d-inference/coordinator/registry/firstcontent"
 )
@@ -35,7 +36,9 @@ type firstContentSnapshot struct {
 	capacityAcceptedAt          time.Time
 	capacitySeq                 uint64
 	performanceAgeMs            int32
+	decodePerformanceAgeMs      int32
 	evidenceGapAgeMs            int32
+	exploration                 identitygate.ExplorationView
 	isolatedPrefillTPS          float64
 	isolatedPrefillInitialized  bool
 	wholeMacBusy                bool
@@ -65,7 +68,7 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, s *routingSnapshot,
 		r.cacheRouting.generation.Active() && pr.CachePlan.Present()
 	prompt, conservativePrompt := forecast.PromptCounts(pr.EstimatedPromptTokens, pr.FirstContentPromptTokens, pr.PromptWork,
 		s.promptWorkArtifactHash, s.promptWorkContractID, pr.CachePlan.PromptTokenCount, cacheQualified)
-	request := forecast.Request{Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision, PromptWork: pr.PromptWork, RequestedMaxTokens: pr.RequestedMaxTokens}, PromptTokens: prompt, UpperBoundTokens: conservativePrompt, Deadline: pr.FirstContentDeadline, FreshAfter: pr.RequireFreshFeasibleAfter, MaxTTFTMS: pr.MaxTTFTMs, Hedge: pr.Hedge, RequireFreshFeasible: pr.RequireFreshFeasible, PlanningHorizon: pr.FirstContentPlanningHorizon}
+	request := forecast.Request{Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision, PromptWork: pr.PromptWork, RequestedMaxTokens: pr.RequestedMaxTokens}, PromptTokens: prompt, UpperBoundTokens: conservativePrompt, Deadline: candidateFirstContentDeadline(c, pr), FreshAfter: pr.RequireFreshFeasibleAfter, MaxTTFTMS: pr.MaxTTFTMs, Hedge: pr.Hedge, RequireFreshFeasible: pr.RequireFreshFeasible, PlanningHorizon: pr.FirstContentPlanningHorizon}
 	if !pr.CachePlan.Present() || cacheContractMatches {
 		forecast.CacheBenefit{Tokens: c.firstContentCachedTokens, Weight: c.firstContentCacheWeight,
 			RestoreMS: c.firstContentRestoreMs, ExpiresAt: c.firstContentCacheExpiresAt}.Apply(&request, now)
@@ -80,6 +83,11 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, s *routingSnapshot,
 // firstContentCandidateAllowed retains unknown evidence as a bounded fallback.
 // The existing optional hard ceiling applies only to credible late forecasts.
 func firstContentCandidateAllowed(c *routingCandidate, pr *PendingRequest) bool {
+	if !candidateFirstContentDeadline(c, pr).IsZero() && c.firstContent.BudgetMs <= 0 {
+		// Unknown performance cannot authorize an expired renderer clock. Filter
+		// it here so bounded commit rescans still reach live qualified peers.
+		return false
+	}
 	return forecast.Allows(c.firstContent, forecast.Request{Hedge: pr.Hedge,
 		RequireFreshFeasible: pr.RequireFreshFeasible, MaxTTFTMS: pr.MaxTTFTMs},
 		c.snapshot.wholeMacBusy || c.snapshot.totalPending > 0)

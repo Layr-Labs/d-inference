@@ -20,6 +20,10 @@ import (
 //     which needs a static solo rate that cannot collapse under the very
 //     overload the cap exists to prevent.
 //
+// A third store, prefillSamples (RecordPrefill/PrefillMedian, tps_prefill.go),
+// holds isolated prefill rates. It uses the same ingest rule as samples and
+// prices explored providers (fillExplorationRates).
+//
 // Every read-side aggregate (medians, the cross-class solo aggregate) is
 // maintained on write and served as an O(1), allocation-free lookup — see
 // tps_median_cache.go. The routing scan reads them once per provider.
@@ -28,6 +32,12 @@ type TPSRegistry struct {
 	samples     map[tpsKey][]float64
 	soloSamples map[tpsKey][]float64
 	maxSamples  int
+
+	// prefillSamples and prefillMedians hold isolated prefill rates with the
+	// same ring and median as samples. RecordPrefill creates them on first
+	// use (tps_prefill.go).
+	prefillSamples map[tpsKey][]float64
+	prefillMedians map[tpsKey]float64
 
 	// medians caches the median of samples[key]; refreshed by Record.
 	medians map[tpsKey]float64

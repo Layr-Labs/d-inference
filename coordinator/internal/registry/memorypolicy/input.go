@@ -12,8 +12,18 @@ type Input struct {
 	PendingBytesKnown                                                                  bool
 	ActiveTokenBudgetUsed, ActiveTokenBudgetMax, QueuedTokenBudget, MaxTokensPotential int64
 	KVBytesPerToken                                                                    int64
-	PooledTokenBudget                                                                  kvbudget.Budget
-	BudgetClamped, AutopilotBlocked                                                    bool
-	TotalMemoryGB, ModelSizeGB, GPUMemoryActiveGB, EstimatedOffloadedMemoryGB          float64
-	FreeForLoadGB                                                                      *float64
+	// EstimatedKVBytesPerToken prices cold work, never an authoritative slot max.
+	EstimatedKVBytesPerToken                                                  int64
+	PooledTokenBudget                                                         kvbudget.Budget
+	BudgetClamped, AutopilotBlocked                                           bool
+	TotalMemoryGB, ModelSizeGB, GPUMemoryActiveGB, EstimatedOffloadedMemoryGB float64
+	FreeForLoadGB                                                             *float64
+}
+
+// requestKVBytesPerToken prices work; slot-authority checks use KVBytesPerToken.
+func (s *Input) requestKVBytesPerToken() int64 {
+	if rate := kvbudget.ClampRate(s.KVBytesPerToken); rate > 0 {
+		return rate
+	}
+	return kvbudget.ClampRate(s.EstimatedKVBytesPerToken)
 }

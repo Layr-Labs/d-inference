@@ -17,8 +17,16 @@ func (s *PostgresStore) StoreLogReport(accountID string, logData []byte) (int64,
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return 0, err
+	}
+	defer rollbackErasureTx(tx)
+	if err = checkPersonalAccount(ctx, tx, accountID); err != nil {
+		return 0, err
+	}
 	var reportID int64
-	err := s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO provider_log_reports (account_id, log_data, log_size_bytes)
 		 VALUES ($1, $2, $3)
 		 RETURNING id`,
@@ -27,7 +35,7 @@ func (s *PostgresStore) StoreLogReport(accountID string, logData []byte) (int64,
 	if err != nil {
 		return 0, fmt.Errorf("store: insert log report: %w", err)
 	}
-	return reportID, nil
+	return reportID, tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetLogReport(id int64) (*store.LogReport, error) {

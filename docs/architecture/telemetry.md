@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-07
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -404,8 +404,11 @@ capacity-related supply refusals. No prompt or consumer identity enters them.
 records. Shadow `proposed` records remain hypothetical and deduplicate unchanged
 decisions ([ledger semantics](storage.md#autopilot-operation-ledger)); they are
 not a per-tick time series. Controller summaries and
-tick logs report `observe_only` and distinguish `proposed` from `issued`
-(`coordinator/registry/autopilot_controller.go`, `modelAutopilotController.tick`).
+tick logs report the global `observe_only` switch and distinguish `live_cohort`,
+`live_active` and `shadow` populations. `live_proposed` and `shadow_proposed` sum
+to `proposed`; only live actions can increment `issued`. These aggregate fields
+contain no machine/account identifiers and do not change the telemetry wire
+mirrors (`coordinator/registry/autopilot_control.go`, `newAutopilotControl`).
 Live records capture intended/actual residents and transition timing; use the
 request-outcome ledger to evaluate completion and first-content effects. See
 [Autopilot](model-autopilot.md).

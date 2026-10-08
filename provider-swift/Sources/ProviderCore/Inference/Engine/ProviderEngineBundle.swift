@@ -8,6 +8,8 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
     public let configured: Bool
     public let active: Bool
     public let verificationMode: String?
+    /// `CBv2MTPAcceptance.name` of the installed rule (`exact` / `typical`).
+    public let acceptance: String?
     public let rectangularVerificationRounds: Int
     public let serialVerificationRounds: Int
     public let fallbackReason: MTPFallbackReason?
@@ -50,6 +52,7 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
         // opposite direction.
         self.active = status.active && engineActive && !inertKVUnsupported
         self.verificationMode = metrics?.verificationMode.rawValue
+        self.acceptance = metrics?.acceptance.name
         self.rectangularVerificationRounds = metrics?.rectangularVerificationRounds ?? 0
         self.serialVerificationRounds = metrics?.serialVerificationRounds ?? 0
         // Precedence: engine-says-off outranks engine-says-on-but-idle; the

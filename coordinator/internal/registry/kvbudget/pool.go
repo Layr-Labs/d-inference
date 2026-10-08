@@ -31,8 +31,8 @@ import (
 // small model's), so tokens are not a common unit across slots. When every
 // budget slot reports its KV rate, the pool and all charges against it are
 // normalized into bytes. A pending/incoming request whose cold model has no
-// reported rate is charged at a bounded conservative default so it cannot
-// disable byte accounting for a reconstructable pool. Otherwise (any budget
+// reported rate uses an explicit cold forecast or the conservative fallback,
+// never disabling byte accounting for a reconstructable pool. Otherwise (any budget
 // slot without a rate) the check falls back to token accounting.
 
 // MaxBytesPerToken bounds a slot's reported per-token KV cost before it enters
@@ -70,18 +70,18 @@ func ClampRate(r int64) int64 {
 }
 
 // ResolveRate returns the byte rate used by every pooled-KV
-// charge. A positive provider-reported model rate is clamped and preserved. A
-// cold/unknown model on a byte-reconstructable pool is priced at the larger of
-// the coordinator's conservative cold-model default and the largest resident
+// charge. A positive model rate (reported or an explicit cold forecast) is
+// clamped and preserved. An unknown model on a byte-reconstructable pool uses the
+// larger of the coordinator's conservative cold-model default and the largest resident
 // rate. Resident rates alone cannot safely estimate a different model that has
 // not loaded yet, while retaining a higher observed resident rate avoids
 // weakening the fallback. Legacy/non-reconstructable pools return 0 and retain
 // token accounting.
-func ResolveRate(pool *Budget, reportedRate int64) int64 {
+func ResolveRate(pool *Budget, modelRate int64) int64 {
 	if !pool.ByteMode {
 		return 0
 	}
-	if rate := ClampRate(reportedRate); rate > 0 {
+	if rate := ClampRate(modelRate); rate > 0 {
 		return rate
 	}
 	rate := int64(admission.KVCacheBytesPerToken)
@@ -147,13 +147,10 @@ type Budget struct {
 	// slot reports KVBytesPerToken > 0, i.e. the pool can be reconstructed in
 	// bytes. False ⇒ pooledBudgetAdmits uses token accounting exactly.
 	ByteMode bool
-	// kvRates holds each budget slot's model and its reported (clamped)
-	// per-token KV rate, for normalizing coordinator-pending charges into
-	// bytes — a fixed inline table (a box serves a handful of co-resident
-	// models) that spills to a heap slice only past pooledKVRateInline entries,
-	// so reconstructing a pool once per provider per routing scan allocates
-	// nothing (pooled_kv_rates.go). Read through kvRateFor; empty when no
-	// budget slot reports a rate.
+	// rates holds reported (clamped) model rates and explicit cold forecasts for
+	// normalizing coordinator-pending charges into bytes. Up to InlineRates
+	// models fit without allocation; larger sets spill to a heap slice. Read
+	// through RateFor; empty when no budget slot reports a rate.
 	rates RateTable
 	// maxResidentKVBytesPerToken is the largest clamped rate among budget
 	// slots. It can raise, but never lower, the conservative cold-model default.

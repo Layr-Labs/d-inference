@@ -76,19 +76,20 @@ func (w *FirstWait) Run(ctx context.Context, held *[]string) (result FirstWaitRe
 	pr := w.config.Pending
 	speculativeAt := w.config.SpeculativeAt
 	clock := func() firstcontent.Clock {
-		return firstcontent.NewClock(firstcontent.TimingReceivedAt(w.config.Timing), w.config.Deadline, speculativeAt)
+		return firstcontent.NewClock(firstcontent.TimingReceivedAt(w.config.Timing), w.config.Deadline, speculativeAt).ForPending(pr)
 	}
 	deadlineWait := clock().Wait(w.config.Deadline)
 	speculativeTimer := time.NewTimer(clock().SpeculativeWait())
 	deadlineTimer := clock().Timer(deadlineWait)
 	defer speculativeTimer.Stop()
-	defer deadlineTimer.Stop()
+	defer func() { deadlineTimer.Stop() }()
 	hedgeAdvance := w.config.HedgeAdvance
 
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && firstcontent.HoldPreContentBoilerplate(pr, chunk, held) {
+				clock().RearmExpired(&deadlineTimer)
 				if clock().SpeculativeWait() <= 0 {
 					speculativeTimer.Stop()
 					deadlineTimer.Stop()

@@ -15,6 +15,9 @@ func (s *MemoryStore) StoreLogReport(accountID string, logData []byte) (int64, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.erasedAccounts[accountID] {
+		return 0, store.ErrErasureConflict
+	}
 	s.logReportSeq++
 	cp := make([]byte, len(logData))
 	copy(cp, logData)

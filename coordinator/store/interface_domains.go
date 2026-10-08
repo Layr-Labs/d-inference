@@ -355,14 +355,15 @@ type BillingStore interface {
 	ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsByStatus returns up to limit withdrawals in the
-	// given status created before olderThan, oldest first. Used by the payout
-	// reconciler to find withdrawals stuck in "transferred". A limit <= 0 (or
+	// given status whose reconciliation age starts before olderThan, oldest first.
+	// Pending age uses TransferStartedAt (creation time for historical rows),
+	// transferred age uses UpdatedAt, and other statuses use CreatedAt. A limit <= 0 (or
 	// above MaxStripeWithdrawalsByStatusLimit) is capped at
 	// MaxStripeWithdrawalsByStatusLimit — the result set is never unbounded.
 	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for
-	// the given connected account (acct_…) in the given status, oldest first.
+	// the given connected account (acct_…) in the given status, oldest UpdatedAt first.
 	// Used to resolve Stripe's automatic sweep payouts (whose IDs we never
 	// see at creation time) back to local withdrawal rows.
 	ListStripeWithdrawalsForStripeAccount(stripeAccountID, status string) ([]StripeWithdrawal, error)
@@ -591,11 +592,11 @@ type ProviderStore interface {
 	// ListProvidersByAccount returns stored provider records linked to an account.
 	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
 
-	// DeleteProvidersBySerial removes every persisted provider record sharing the
+	// DeleteProvidersBySerial hides every live persisted provider record sharing the
 	// given stable identity (serial, or a session id when serial is empty),
-	// scoped to ownerAccountID, plus their provider_reputation rows. usage,
-	// provider_earnings and provider_sessions (billing/uptime history) are
-	// preserved. Returns the number of provider rows removed.
+	// scoped to ownerAccountID, and deletes their provider_reputation rows. Hidden
+	// SE/account ownership remains available for account erasure. Usage, earnings
+	// and sessions retain their history. Returns the number of newly hidden rows.
 	DeleteProvidersBySerial(ctx context.Context, ownerAccountID, serialOrID string) (int, error)
 
 	// OpenProviderSession records the start of a provider connection (one row per

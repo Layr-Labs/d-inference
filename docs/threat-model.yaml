@@ -1,5 +1,8 @@
 version: "1.1"
 created: "2026-05-14"
+# Autopilot cohort payout and repair boundaries reviewed 2026-10-08 in T-055
+# and T-060. This does not re-verify unrelated historical entries.
+# Initial legacy MDM cohort soft-delete filtering verified 2026-10-06.
 # Upcoming frozen legacy MDM policy documented 2026-10-04, not a production
 # activation claim or a revalidation of the older threat entries. Cohort gates
 # restrict coordinator authorization; generic profiles remain directly copyable.
@@ -17,6 +20,13 @@ created: "2026-05-14"
 # Optional App Attest diagnostic boundary re-checked 2026-09-26 against cf5982227:
 # the added TB-002 paragraph covers diagnostic metadata only; it does not
 # re-verify the older threat entries or change the serving-trust assumptions.
+# Caller-field minimization re-checked 2026-09-27 against d621f9772 plus the
+# provider-body privacy candidate: parseInferencePrelude removes only top-level
+# user and generic metadata before provider-body preparation. Nested or other
+# caller content can still identify a person; providers remain plaintext endpoints
+# for routed requests. Authentication/account cache scopes are unchanged. This
+# does not re-verify the other historical threat entries; see encryption.md's
+# provider-bound-field-minimization section for the exact boundary.
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
 # and T-011 were corrected to the shipped design (the coordinator is a plaintext
 # endpoint on every request; the provider X25519 key is per-process and never on
@@ -691,9 +701,9 @@ trust_boundaries:
       correlates the callback's CommandUUID against the outstanding commands the
       coordinator itself issued (outstandingCommandTTL 30 min) and processes only the
       read-only request types SecurityInfo and DeviceInformation; uncorrelated callbacks
-      are dropped and never matched by UDID alone. The handler logs body_size and a
-      500-byte body_preview of the plist at Debug level. MicroMDM credentials are used
-      only for outbound API calls to MicroMDM, not to authenticate inbound callbacks.
+      are dropped and never matched by UDID alone. The handler logs body_size, not the
+      body, at Debug level. MicroMDM credentials are used only for outbound API calls
+      to MicroMDM, not to authenticate inbound callbacks.
 
       When a provider registers, the coordinator's store-backed MDM scheduler sends a
       SecurityInfo MDM command to the enrolled device (mdm.go
@@ -735,10 +745,6 @@ trust_boundaries:
         processed — but a forged payload for a live CommandUUID could still grant
         hardware trust without genuine MDM enrollment. No mTLS or IP allowlist
         (server.go HandleMDMWebhook, SEC-004)."
-      - "HandleMDMWebhook logs body_size and a 500-byte body_preview of the MDM plist at
-        Debug level. MDM plists carry device identifiers (UDID, serial), so Debug-level
-        coordinator logs are identity-bearing even though they never contain inference
-        data."
       - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
         visible in the privacy-redacted public attestation status. An attacker can
         pre-compute that binding value; it is not a per-challenge freshness nonce.
@@ -984,7 +990,9 @@ trust_boundaries:
       - "Upcoming legacy MDM policy freezes authenticated account/SE-key/serial
         membership for already successfully MDM-verified devices on first upgraded
         startup after revocation replay. FreezeLegacyMDMCohort persists the cutoff
-        and cohort across restarts, including an empty cohort. New accounts,
+        and cohort across restarts, including an empty cohort. Initial qualification
+        excludes soft-deleted users and provider records; later reads preserve
+        the frozen snapshot. See docs/architecture/security/enrollment.md. New accounts,
         devices, keys and associations are excluded. Lost or hashless historical
         evidence may be conservatively omitted; retained hardware snapshots plus
         authenticated inventory may supplement it. Membership never replaces
@@ -2586,9 +2594,23 @@ threats:
       - coordinator/api/server.go
       - coordinator/api/enroll.go
       - coordinator/api/consumer.go
+      - scripts/install.sh
     mitigations:
       - description: baseURL should be set in production; fallback to Host header is the risk.
         status: open
+      - description: >
+          The installer persists the substituted URL: for any coordinator other
+          than https://api.darkbloom.dev, scripts/install.sh
+          (bind_provider_coordinator) writes it into provider.toml as the
+          provider's [coordinator] url (the production installer removes that
+          url instead), so a Host-derived URL would rebind later
+          login/start traffic, not only the install-time download. The binding
+          accepts only https://host[:port] with a strict host character set
+          (http:// only for localhost/127.0.0.1) and prints the bound URL.
+          Production lists EIGENINFERENCE_BASE_URL in
+          deploy/gcp/prod/required-env-keys.txt and dev sets it in
+          deploy/gcp/refresh-env.sh, so neither serves a Host-derived installer.
+        status: implemented
       - description: >
           enroll.go now generates SCEP/MDM URLs (the ACME payload was removed
           2026-07-03) via the shared resolveBaseURL
@@ -3257,13 +3279,15 @@ threats:
       A queued request may outlive a grant, credential revocation, endpoint replacement
       or policy change. Selection-time authorization and a public snapshot are insufficient.
     adversaries: [ADV-001, ADV-003]
-    affected_assets: [A-001, A-015, A-016]
+    affected_assets: [A-001, A-009, A-015, A-016]
     affected_files:
       - coordinator/appattest/verify.go
       - coordinator/appattest/service/authorizer.go
       - coordinator/registry/app_attest_authorization.go
       - coordinator/registry/app_attest_presenter.go
       - coordinator/registry/inference_authorization.go
+      - coordinator/registry/autopilot_reward_snapshot.go
+      - coordinator/api/provider/autopilot_rewards.go
     mitigations:
       - description: >
           Verified transcript/credential/counter and current account/session/endpoint
@@ -3273,6 +3297,13 @@ threats:
       - description: >
           Explicit credential revocation denies matching live presenters and retained
           grant keys across both paths; failed storage reads never extend readiness.
+        status: implemented
+      - description: >
+          Autopilot reward qualification evaluates the lease interval at the original
+          server receive time while retaining current binding, policy, revocation
+          and privacy checks. A grant accepted during delayed frame processing cannot
+          retroactively qualify an earlier UTC day. Consent journaling preserves that
+          original timestamp through deferred baseline materialization and retries.
         status: implemented
       - description: Committed in-flight frames and already delivered plaintext cannot be recalled.
         status: accepted
@@ -3324,6 +3355,10 @@ threats:
       An operator may rotate credentials, reinstall, create new accounts or inflate
       app-origin hardware claims. Verified aliases identify known continuity, not a
       globally unique physical Mac or an Apple-certified RAM entitlement.
+      Autopilot's cohort fallback can pay a new machine with little or no personal
+      inference history. Provider-origin inventory and connected-session evidence
+      do not prove useful work or prevent an operator from enrolling unlinkable
+      identities to draw multiple cohort floors.
     adversaries: [ADV-001]
     affected_assets: [A-009, A-015]
     affected_files:
@@ -3331,13 +3366,32 @@ threats:
       - coordinator/store/machine_continuity.go
       - coordinator/store/machine_floor_settlement.go
       - coordinator/payments/baserewards/machine_candidates.go
+      - coordinator/registry/autopilot_reward_snapshot.go
+      - coordinator/store/postgres/autopilot_rewards_cohort_peers.go
+      - coordinator/store/postgres/autopilot_rewards_uptime.go
+      - coordinator/store/postgres/autopilot_rewards_settlement.go
+      - coordinator/store/memory/autopilot_rewards_settlement.go
     mitigations:
       - description: >
           Protocol3 binds hardware and the verification key; authenticated associations,
           canonical settlement identity, overlapping-uptime union and account/pool caps
           prevent known duplicate sessions from multiplying base floors.
         status: implemented
+      - description: >
+          Autopilot rejects provisional or ambiguous ownership, unions known machine
+          sessions for uptime, freezes the original baseline and atomically records
+          one finalized payment per canonical machine/day against a shared pool cap.
+          Historical qualification and missing cohort evidence fail closed. These
+          controls bound known duplicate claims, not unlinkable physical identities.
+        status: implemented
       - description: Deliberate unlinkable identities and false capacity require separate abuse policy/qualification.
+        status: open
+      - description: >
+          Autopilot has no minimum personal served-work requirement, cohort-size
+          threshold beyond one eligible peer, or per-account payout cap. Those
+          abuse controls and independent
+          validation of provider-origin inventory need a separate product policy;
+          the current global pool cap only bounds aggregate loss.
         status: open
     open_findings: []
     severity: high
@@ -3436,3 +3490,129 @@ threats:
     detection_hint: >
       Review public payloads, archives, logs and cache timing separately; never expose
       raw evidence or infer authorization from client-supplied diagnostics.
+
+  - id: T-059
+    trust_boundary: TB-006
+    stride: Information_Disclosure
+    title: Account erasure leaves personal data behind or erases the wrong account
+    description: >
+      An erased account's email, serial numbers, MDA chains, locations, labels,
+      codes, raw logs or Stripe IDs can survive in an unlisted column, a late
+      heartbeat write, an in-memory cache, a second account made at login, a
+      backup or a log. A mistyped or replayed admin request can soft delete the
+      wrong account. A late credit can refill a forfeited balance.
+    adversaries: [ADV-003]
+    affected_assets: [A-007, A-008, A-009, A-010]
+    affected_files:
+      - coordinator/internal/store/erasure/rules.go
+      - coordinator/internal/store/erasure/keys.go
+      - coordinator/internal/store/erasure/confirm.go
+      - coordinator/store/postgres/erasure.go
+      - coordinator/store/postgres/erasure_rules.go
+      - coordinator/store/postgres/erasure_keys.go
+      - coordinator/store/memory/erasure.go
+      - coordinator/store/memory/erasure_rules.go
+      - coordinator/store/cached.go
+      - coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql
+      - coordinator/store/postgres/erasure_personal_writes.go
+      - coordinator/store/postgres/app_attest_archive.go
+      - coordinator/store/postgres/app_attest_receipts.go
+      - coordinator/store/postgres/billing_erasure.go
+      - coordinator/internal/provider/legacymdm/erasure.go
+      - coordinator/internal/provider/identity/erasure.go
+      - coordinator/api/accounts/erasure/handlers.go
+      - coordinator/api/accounts/erasure/loop.go
+      - coordinator/auth/privy.go
+      - coordinator/api/accounts/erasure/outbox.go
+      - coordinator/api/accounts/erasure/outbox_redaction.go
+      - coordinator/billing/stripe_redaction.go
+    mitigations:
+      - description: >
+          The plan returns the account email and a 15-minute confirm token; the token
+          and the planned wallet list are stored hashed, and the confirm call must
+          repeat the account ID, the token, the email and the same wallet list. The
+          soft delete revokes keys and provider tokens before the providers are
+          disconnected and refuses while a withdrawal is open, including a Stripe
+          payout paid within 30 days. The scrub is one transaction bounded by keys it
+          collects first, skips Secure Enclave and App Attest keys another account
+          also uses, and checks each statement's affected rows against a count read
+          in the same transaction. Every Express account and recipient the account
+          used is queued in the outbox for Stripe deletion. After the commit the
+          registry, trust-reuse cache, MDM scheduler, ledger usage and API key cache
+          drop the account. After the scrub, database triggers keep late credits out
+          of the balance and record them for review, and a late Checkout completion
+          credits nothing. A Privy login during the grace period answers 403
+          account_pending_deletion instead of creating a second account.
+          Soft-deleted provider rows ignore late heartbeat upserts and restores, and
+          CachedStore drops cached users. A shared transaction fence drains delayed
+          personal writers before scrub collects keys; archive, session, log and
+          code-attestation writes recheck ownership afterward. Shared key receipts
+          remain only for live owners, and frozen runtime cohort snapshots forget
+          erased accounts. Runtime APNs proofs, challenges and push bookkeeping
+          are cleared for unshared keys. Hash-only generation fences prevent
+          in-flight proof replies, resume setup, startup reads and budget resets
+          from repopulating erased tokens; unrelated keys and fresh proofs remain
+          usable. Checkout revalidates its captured referrer identity and
+          the webhook uses local attribution instead of old personal metadata. Marker tests search every text, JSON,
+          array and bytea column (and every MemoryStore value) after a scrub of the
+          seeded tables.
+        status: implemented
+      - description: >
+          Backups, point-in-time recovery and Datadog logs keep data until their
+          retention ends; after a restore an operator replays the completed
+          erasures. Until PR 1327 merges, some process log lines hold emails, IP
+          addresses or serial numbers. Financial records, shared mda_serial machine
+          aliases and rows of shared keys are kept on purpose. Stripe-side data stays
+          until the outbox worker deletes or redacts it; rows that end in
+          manual_action (a balance, Redaction Jobs access, sessions of the earlier
+          Stripe account, a stuck job) keep it until an operator resolves them. The
+          erasure_log record survives a restore only in a Datadog log archive.
+          Old referral metadata on another live payer's Stripe session is outside
+          this account's local scrub. Audit actor identifiers and the reason are
+          retained; operators must use non-personal ticket references in the reason.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Run the marker tests after every schema change; check each new column that
+      holds user-chosen text, a device identifier or a location against
+      coordinator/internal/store/erasure/rules.go (docs/developer/personal-data.md).
+
+  - id: T-060
+    trust_boundary: TB-006
+    stride: Tampering
+    title: Compromised reward administration funds or restores unjustified floors
+    description: >
+      An attacker with administrator authorization, or an administrator relying on
+      false historical evidence, can raise the Autopilot pool cap or restore an
+      unknown baseline. The supplied evidence string records the asserted source;
+      it is not independent proof that the earnings or original opt-in existed.
+    adversaries: [ADV-003]
+    affected_assets: [A-009]
+    affected_files:
+      - coordinator/api/autopilot_handlers.go
+      - coordinator/api/autopilot/rewards.go
+      - coordinator/store/postgres/autopilot_rewards.go
+      - coordinator/store/postgres/autopilot_rewards_pool.go
+    mitigations:
+      - description: >
+          The routes require authentication and administrator authorization, accept
+          bounded strict payloads and return no-store responses. Configured
+          per-account financial rate limits apply except to shared admin-key
+          requests, which bypass them. Restoration requires an unknown baseline, bounded nonempty
+          evidence and a first-opt-in time no later than the first observation;
+          an already frozen baseline cannot be replaced. Pool reductions cannot
+          invalidate money already spent, and settlement still enforces the cap.
+        status: implemented
+      - description: >
+          Independent approval of funding and historical evidence, plus an
+          actor-attributed audit history for every cap and restoration change,
+          remain operator controls; the stored baseline evidence alone does not
+          provide those guarantees.
+        status: open
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Verify unauthorized and malformed requests fail, frozen baselines cannot be
+      overwritten and concurrent settlement cannot overspend; independently review
+      every cap increase and baseline repair before enabling payments.

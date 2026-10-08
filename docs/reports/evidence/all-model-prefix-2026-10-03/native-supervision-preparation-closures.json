@@ -1,0 +1,62 @@
+{
+  "scope": "Retained preparation/lifecycle failures and separately versioned supervision controls, never retrospectively passed native/policy evidence.",
+  "attempts": [
+    {
+      "startedUTC": "2026-10-04T04:00:49.966391+00:00",
+      "endedUTC": "2026-10-04T04:00:52.019059+00:00",
+      "elapsedSeconds": 2.052605625009164,
+      "matrixStatus": "failed_or_incomplete",
+      "exitCode": -15,
+      "cause": "Observed canonical profiler self-child exceeded a single-child supervision rule before inference.",
+      "rawNativeResultPresent": false,
+      "observedOwnedDescendantCount": 2,
+      "directChildReaped": true,
+      "allTrackedOwnedProcessesQuiescent": true,
+      "recordedBindingsUnchanged": true,
+      "nativeOrPolicyQualified": false,
+      "matrixSHA256": "e4af88fb27e6b869224ae0c2a1a7fc2d8b0ad191e8c5a47d9e1ac8f00ad22741",
+      "armReceiptSHA256": "be5d930dde8c4016d3baeff45fa2fe4405152548c97bf0d2f9dd20b345d09db8"
+    },
+    {
+      "startedUTC": "2026-10-04T04:04:46.463495+00:00",
+      "endedUTC": "2026-10-04T04:05:49.334591+00:00",
+      "elapsedSeconds": 62.870558458031155,
+      "matrixStatus": "failed_or_incomplete",
+      "exitCode": 0,
+      "cause": "Nativeexit0 completed six rows, but final supervisor rejected the same-identity root zombie truncated name. This attempt remains wrapper-unqualified.",
+      "rawNativeResultPresent": true,
+      "observedOwnedDescendantCount": 2,
+      "directChildReaped": true,
+      "allTrackedOwnedProcessesQuiescent": true,
+      "recordedBindingsUnchanged": true,
+      "nativeOrPolicyQualified": false,
+      "matrixSHA256": "058b6e2fc913445e7a46bef62c5c9acba468b046e57be0652d561368d44c4571",
+      "armReceiptSHA256": "a7e604d22b592820af3a106e554ee7ff3ca9c4963920bb885323e920cb2048c5"
+    }
+  ],
+  "pureControlInvocations": [
+    {
+      "cohort": "publication-v3",
+      "declaredControlMethods": 72,
+      "receiptSHA256": "cf37db6e759c15f076613003b1cdf2e24a0677aa9fbb0427a6da0ed0b8955915",
+      "observedReceiptStatus": "pass",
+      "scope": "Pure supervision/source controls; copied controls repeat prior methods, not new unique tests or native gains."
+    },
+    {
+      "cohort": "publication-v4",
+      "declaredControlMethods": 84,
+      "receiptSHA256": "434dbe126c49adac1dd25ed6a21e29956279181abedb607e1c4cfde3e39e019d",
+      "observedReceiptStatus": "pass",
+      "scope": "Pure supervision/source controls; copied controls repeat prior methods, not new unique tests or native gains."
+    },
+    {
+      "cohort": "publication-v5",
+      "declaredControlMethods": 94,
+      "receiptSHA256": "12eb8180a7214f058cdb9675a4e0ec5cb00add2f11a0b04b2ebdfde77164dd41",
+      "observedReceiptStatus": "pass",
+      "scope": "Pure supervision/source controls; copied controls repeat prior methods, not new unique tests or native gains."
+    }
+  ],
+  "replacement": "FrozenV5 requires exact canonical profiler graph/executable source and observed root lifecycle, total tracked reap/quiescence.",
+  "noRawProcessIDsOrModelOutputsPublished": true
+}

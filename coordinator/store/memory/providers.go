@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -12,12 +13,20 @@ import (
 func (s *MemoryStore) UpsertProvider(_ context.Context, p store.ProviderRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(p.AccountID); err != nil {
+		return err
+	}
 
 	s.upsertProviderRecordLocked(p)
 	return nil
 }
 
 func (s *MemoryStore) upsertProviderRecordLocked(p store.ProviderRecord) {
+	// Removed and erasing records stay hidden; a late heartbeat must not
+	// bring them back or rewrite their personal fields.
+	if old, ok := s.providerRecords[p.ID]; ok && old.DeletedAt != nil {
+		return
+	}
 	cp := p
 	if p.Location != nil {
 		loc := *p.Location
@@ -31,7 +40,7 @@ func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*store.Pr
 	defer s.mu.RUnlock()
 
 	p, ok := s.providerRecords[id]
-	if !ok {
+	if !ok || p.DeletedAt != nil {
 		return nil, fmt.Errorf("provider %q not found", id)
 	}
 	cp := *p
@@ -54,7 +63,7 @@ func (s *MemoryStore) GetMDAChainBySerial(_ context.Context, serial string) (jso
 	// recently seen non-empty chain.
 	var best *store.ProviderRecord
 	for _, p := range s.providerRecords {
-		if p.SerialNumber != serial || len(p.MDACertChain) == 0 {
+		if p.SerialNumber != serial || len(p.MDACertChain) == 0 || p.DeletedAt != nil {
 			continue
 		}
 		if best == nil || p.LastSeen.After(best.LastSeen) {
@@ -79,7 +88,7 @@ func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string
 
 	records := make([]store.ProviderRecord, 0)
 	for _, p := range s.providerRecords {
-		if p.AccountID == accountID {
+		if p.AccountID == accountID && p.DeletedAt == nil {
 			cp := *p
 			if p.Location != nil {
 				loc := *p.Location
@@ -101,6 +110,9 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(ownerAccountID); err != nil {
+		return 0, err
+	}
 
 	// Iterate the full record map (not just the serial index) so historical
 	// duplicate rows sharing a serial are all caught. Match by serial OR id, but
@@ -108,7 +120,7 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 	// skipped and not counted, leaving the caller to decide 403 vs 404.
 	var matched []string
 	for id, rec := range s.providerRecords {
-		if rec.AccountID != ownerAccountID {
+		if rec.AccountID != ownerAccountID || rec.DeletedAt != nil {
 			continue
 		}
 		if (rec.SerialNumber == serialOrID && rec.SerialNumber != "") || rec.ID == serialOrID {
@@ -116,8 +128,9 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 		}
 	}
 
+	now := time.Now().UTC()
 	for _, id := range matched {
-		delete(s.providerRecords, id)
+		s.providerRecords[id].DeletedAt = &now
 		delete(s.reputationRecords, id)
 		// usage, provider_earnings and provider_sessions are intentionally
 		// preserved — they hold money/uptime history.

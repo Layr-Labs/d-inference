@@ -12,10 +12,14 @@ type Node struct {
 	ID                     string
 	Seq                    uint64
 	Managed, Idle, Pending bool
+	Consented, ObserveOnly bool // public consent and effective per-machine control mode
+	ControlActive          bool // matching acknowledged live grant, not placement eligibility
 	MemoryPressure         float64
 	State                  *protocol.ModelAutopilotState
 	Residents              []string
 	Fits                   map[string]ModelFit
+	HypotheticalResidents  []string // after-activation permission, never live donor evidence
+	HypotheticalFits       map[string]ModelFit
 	Future                 map[string]float64
 	FutureResidents        []string
 	UnscopedBusy           bool // private/local or unattributed GPU work cannot supply public capacity
@@ -55,16 +59,21 @@ type ModelSummary struct {
 	DeficitRPS       float64 `json:"deficit_rps"`
 }
 type Summary struct {
-	Enabled     bool           `json:"enabled"`
-	Running     bool           `json:"running"`
-	Paused      bool           `json:"paused"`
-	At          time.Time      `json:"at"`
-	ObserveOnly bool           `json:"observe_only"`
-	OptedIn     int            `json:"opted_in"`
-	Pending     int            `json:"pending"`
-	Proposed    int            `json:"proposed"`
-	Issued      int            `json:"issued"`
-	Uncertain   int            `json:"uncertain"`
-	Excluded    map[string]int `json:"excluded"`
-	Models      []ModelSummary `json:"models"`
+	Enabled        bool           `json:"enabled"`
+	Running        bool           `json:"running"`
+	Paused         bool           `json:"paused"`
+	At             time.Time      `json:"at"`
+	ObserveOnly    bool           `json:"observe_only"`
+	OptedIn        int            `json:"opted_in"`
+	LiveCohort     int            `json:"live_cohort"`
+	LiveActive     int            `json:"live_active"`
+	Shadow         int            `json:"shadow"`
+	Pending        int            `json:"pending"`
+	Proposed       int            `json:"proposed"`
+	LiveProposed   int            `json:"live_proposed"`
+	ShadowProposed int            `json:"shadow_proposed"`
+	Issued         int            `json:"issued"`
+	Uncertain      int            `json:"uncertain"`
+	Excluded       map[string]int `json:"excluded"`
+	Models         []ModelSummary `json:"models"`
 }

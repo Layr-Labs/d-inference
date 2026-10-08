@@ -11,14 +11,17 @@ type PreloadResult struct {
 }
 
 type PreloadReport struct {
-	Status    string          `json:"status"`
-	Ready     bool            `json:"ready"`
-	Requested int             `json:"requested"`
-	Warm      int             `json:"warm"`
-	Cold      int             `json:"cold"`
-	Failed    int             `json:"failed"`
-	Results   []PreloadResult `json:"results"`
-	Metrics   SidecarMetrics  `json:"metrics"`
+	// ContinuityVersion is 1 only in a continuity-endpoint response; the
+	// replacing endpoint omits it or sends 0.
+	ContinuityVersion uint32          `json:"continuity_version,omitempty"`
+	Status            string          `json:"status"`
+	Ready             bool            `json:"ready"`
+	Requested         int             `json:"requested"`
+	Warm              int             `json:"warm"`
+	Cold              int             `json:"cold"`
+	Failed            int             `json:"failed"`
+	Results           []PreloadResult `json:"results"`
+	Metrics           SidecarMetrics  `json:"metrics"`
 }
 
 type SidecarStatus struct {

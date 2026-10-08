@@ -18,7 +18,7 @@ impl Planner {
     ) -> Result<(Arc<LoadedContract>, CacheAccess), PlanError> {
         let metrics = self.metrics.clone();
         let root = self.artifact_root.clone();
-        let loaded = self.cache.get_or_load(contract_id, || {
+        let loader = || {
             let started = Instant::now();
             let result = artifacts::load(&root, contract_id, &self.tokenizers).map(|artifacts| {
                 LoadedContract {
@@ -28,7 +28,12 @@ impl Planner {
             });
             metrics.cold_load_finished(started.elapsed(), result.is_ok());
             result
-        });
+        };
+        let loaded = if self.continuity.load(std::sync::atomic::Ordering::Acquire) {
+            self.cache.get_or_load_bounded(contract_id, loader)
+        } else {
+            self.cache.get_or_load(contract_id, loader)
+        };
         match loaded {
             Ok((contract, CacheAccess::Warm)) => {
                 self.metrics.warm_load();

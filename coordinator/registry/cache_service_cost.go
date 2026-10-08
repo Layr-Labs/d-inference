@@ -10,11 +10,11 @@ import (
 
 // applyCacheHintLocked prices the provider-aligned endpoint with the same
 // candidate snapshot as the base score. Caller holds provider.mu and r.mu.
-func (r *Registry) applyCacheHintLocked(hint cacheRoutingHint, model string, candidate *routingCandidate) {
-	snapshot := &candidate.snapshot
+func (r *Registry) applyCacheHintLocked(hint cacheRoutingHint, model string, candidate *routingCandidate, snapshot *routingSnapshot) {
 	priced := hint.PriceForProviderLocked(candidate.provider, model, cachepolicy.ServiceCost{
 		Rates: performance.Rates{Profile: (*performance.Profile)(snapshot.performanceProfile), StaticPrefill: snapshot.prefillTPS,
-			ObservedPrefill: snapshot.observedPrefillTPS, Occupancy: snapshotOccupancy(snapshot)},
+			ObservedPrefill: snapshot.observedPrefillTPS, ExploredPrefill: snapshot.explorationPrefillTPS,
+			Occupancy: snapshotOccupancy(snapshot)},
 		PricedPromptTokens: candidate.pricedPromptTokens, PrefillCostMs: candidate.prefillCostMs,
 		CostMs: candidate.costMs, Breakdown: candidate.breakdown, Tier: candidate.cacheTier,
 		EstimatedTTFTSavedMs: candidate.cacheEstimatedTTFTSavedMs, EvidenceWeight: candidate.cacheEvidenceWeight,

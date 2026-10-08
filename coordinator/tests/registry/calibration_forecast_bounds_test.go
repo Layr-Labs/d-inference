@@ -3,6 +3,8 @@ package registry_test
 import (
 	"fmt"
 	"math"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -119,7 +121,7 @@ func TestCalibratedFirstContentBoundsBusyWorkAndContext(t *testing.T) {
 	predict := func() (firstcontent.Prediction, bool) {
 		e := f.evidence(pr, now).Calibration
 		e.Calibration = profile.DeadlineCalibration
-		prediction, _, ok := performance.PredictCalibrated(e, performance.IncomingWork{
+		prediction, _, ok := performance.PredictCalibrated(&e, performance.IncomingWork{
 			PromptWork: pr.PromptWork, PromptTokens: pr.PromptWork.UpperBoundTokens, RequestedMaxTokens: pr.RequestedMaxTokens,
 		}, forecast.CapacityFreshness, forecast.PerformanceFreshness, forecast.DecodeAllowance)
 		return prediction, ok
@@ -145,4 +147,23 @@ func TestCalibratedFirstContentBoundsBusyWorkAndContext(t *testing.T) {
 		t.Fatalf("busy provider bypassed registered root posture: %+v", decision)
 	}
 	p.RemovePending(pr.RequestID)
+}
+
+func TestPredictCalibratedBorrowsImmutableEvidence(t *testing.T) {
+	now := time.Now()
+	f := newCalibrationPolicyFixture(t, now)
+	evidence := f.evidence(f.request, now).Calibration
+	before := evidence
+	before.Work.CompetitorProfileIDs = slices.Clone(evidence.Work.CompetitorProfileIDs)
+	promptBefore := *f.request.PromptWork
+	incoming := performance.IncomingWork{PromptWork: f.request.PromptWork,
+		PromptTokens: f.request.PromptWork.UpperBoundTokens, RequestedMaxTokens: f.request.RequestedMaxTokens}
+	first, age, ok := performance.PredictCalibrated(&evidence, incoming, forecast.CapacityFreshness, forecast.PerformanceFreshness, forecast.DecodeAllowance)
+	if !ok {
+		t.Fatal("qualified borrowed evidence did not predict")
+	}
+	second, secondAge, secondOK := performance.PredictCalibrated(&evidence, incoming, forecast.CapacityFreshness, forecast.PerformanceFreshness, forecast.DecodeAllowance)
+	if !reflect.DeepEqual(evidence, before) || *f.request.PromptWork != promptBefore || second != first || secondAge != age || !secondOK {
+		t.Fatal("prediction mutated borrowed evidence or accumulated incoming work")
+	}
 }

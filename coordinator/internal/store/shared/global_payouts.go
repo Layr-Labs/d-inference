@@ -7,8 +7,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func RecordGlobalRejection(p *store.GlobalPayout, attempt int, code string) error {
-	if attempt != 1 || p.DispatchAttempts != attempt || p.ExternalID != "" || p.Status != "pending" {
+func RecordGlobalRejection(p *store.GlobalPayout, attempt int, code string, leaseUntil time.Time) error {
+	if !p.LeaseUntil.Equal(leaseUntil) || (attempt != 1 && attempt != 0) || p.DispatchAttempts != attempt || p.ExternalID != "" || (p.Status != "pending" && p.Status != "queued") {
 		return store.ErrPayoutConflict
 	}
 	if p.Rejection != nil && (p.Rejection.Attempt != attempt || p.Rejection.Code != code) {
@@ -32,6 +32,9 @@ func globalPayoutRefund(status string) bool {
 // applyGlobalResult refuses state regression from stale concurrent readbacks.
 // A posted payment may return later; already-refunded payments never reopen.
 func ApplyGlobalResult(p *store.GlobalPayout, r store.GlobalPayoutResult, now time.Time) (refund bool, err error) {
+	if !r.ExpectedLease.IsZero() && !p.LeaseUntil.Equal(r.ExpectedLease) {
+		return false, store.ErrPayoutConflict
+	}
 	if p.Status == "quoted" {
 		return false, store.ErrPayoutConflict
 	}
@@ -47,6 +50,19 @@ func ApplyGlobalResult(p *store.GlobalPayout, r store.GlobalPayoutResult, now ti
 		p.ExternalID = r.ExternalID
 	}
 	if r.Status == "" {
+		p.FailureCode = r.FailureCode
+		return false, nil
+	}
+	if r.Status == "queued" {
+		if p.ExternalID != "" || p.Rejection != nil || p.DispatchAttempts > 1 || (p.Status != "pending" && p.Status != "queued") {
+			return false, store.ErrPayoutConflict
+		}
+		if p.Status != "queued" {
+			p.FundingGeneration++
+			p.DispatchAttempts = 0
+			p.DispatchStartedAt = time.Time{}
+		}
+		p.Status = "queued"
 		p.FailureCode = r.FailureCode
 		return false, nil
 	}

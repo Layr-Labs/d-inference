@@ -39,6 +39,9 @@ func (s *Owner) StartAppAttestShadow(ctx context.Context, p *registry.Provider, 
 }
 
 func (s *Owner) AppAttestIdentityCandidate(r *protocol.RegisterMessage, account string) bool {
+	if s.LegacyMDM.Initialized() && !s.LegacyMDM.RegistrationAllowed(r, account) {
+		return true
+	}
 	return s.AppAttestFeature().IdentityCandidate(r, account)
 }
 

@@ -1,0 +1,959 @@
+{
+  "date": "2026-10-04",
+  "base": "c5552d3af7ae725f956a2911b44d3e933da4b94c",
+  "historical_base": "48d2be458b3ce511a2a9006238b923295c9c6718",
+  "optimized_coordinator_diff_sha256": "1281a09b838f66da64fb2131a497c6ed7bd489ce8eb3531a0f721c0a81bf5394",
+  "machine": {
+    "cpu": "Apple M5 Pro",
+    "logical_cpus": 18,
+    "memory_GiB": 48,
+    "os": "macOS 27.0",
+    "Go": "1.25.0"
+  },
+  "measurements": [
+    {
+      "phase": "combined",
+      "pattern": "^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+      "rounds": 6,
+      "benchtime": "700ms",
+      "GOMAXPROCS": "12",
+      "binaries": {
+        "master": {
+          "path": "implementation-master-skew.test",
+          "sha256": "5d82f6956c93c9441ba2095c27ba5643d35f83a350335db98d44d59888dda88b"
+        },
+        "optimized": {
+          "path": "implementation-registry-skew.test",
+          "sha256": "982c7cc5ba293067e806415fb45ece8d6ff2c1e5fd9c4437f37ac48afd821b5b"
+        }
+      },
+      "runs": [
+        {
+          "variant": "master",
+          "round": 1,
+          "started": "2026-10-04T22:45:20.645351+00:00",
+          "finished": "2026-10-04T22:45:45.338690+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-1.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 1,
+          "started": "2026-10-04T22:45:45.339041+00:00",
+          "finished": "2026-10-04T22:46:09.627068+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-1.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 2,
+          "started": "2026-10-04T22:46:09.627378+00:00",
+          "finished": "2026-10-04T22:46:33.949974+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-2.txt"
+        },
+        {
+          "variant": "master",
+          "round": 2,
+          "started": "2026-10-04T22:46:33.950276+00:00",
+          "finished": "2026-10-04T22:46:56.496888+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-2.txt"
+        },
+        {
+          "variant": "master",
+          "round": 3,
+          "started": "2026-10-04T22:46:56.497213+00:00",
+          "finished": "2026-10-04T22:47:19.125806+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-3.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 3,
+          "started": "2026-10-04T22:47:19.126164+00:00",
+          "finished": "2026-10-04T22:47:43.436505+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-3.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 4,
+          "started": "2026-10-04T22:47:43.436850+00:00",
+          "finished": "2026-10-04T22:48:07.770708+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-4.txt"
+        },
+        {
+          "variant": "master",
+          "round": 4,
+          "started": "2026-10-04T22:48:07.771031+00:00",
+          "finished": "2026-10-04T22:48:30.498447+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-4.txt"
+        },
+        {
+          "variant": "master",
+          "round": 5,
+          "started": "2026-10-04T22:48:30.498779+00:00",
+          "finished": "2026-10-04T22:48:53.922679+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-5.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 5,
+          "started": "2026-10-04T22:48:53.923070+00:00",
+          "finished": "2026-10-04T22:49:18.335937+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-5.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 6,
+          "started": "2026-10-04T22:49:18.336302+00:00",
+          "finished": "2026-10-04T22:49:42.592103+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-6.txt"
+        },
+        {
+          "variant": "master",
+          "round": 6,
+          "started": "2026-10-04T22:49:42.592444+00:00",
+          "finished": "2026-10-04T22:50:05.190523+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^(BenchmarkReserveProviderEx_350x2|BenchmarkFleetReserveProviderEx|BenchmarkRequestPathSerial|BenchmarkRequestPathParallel|BenchmarkFleetQuickCapacityCheck|BenchmarkReservationScale|BenchmarkReservationPlan350|BenchmarkReservationParallel350|BenchmarkReservationReservationWriter|BenchmarkReserveProviderExPendingService_350x2|BenchmarkReservationSkewedModels)$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-6.txt"
+        }
+      ]
+    },
+    {
+      "phase": "policy-scale",
+      "pattern": "^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+      "rounds": 6,
+      "benchtime": "700ms",
+      "GOMAXPROCS": "12",
+      "binaries": {
+        "fallback": {
+          "path": "implementation-combined-registry.test",
+          "sha256": "8ad8d26fe02fb12befce92260b3e42d13cce47a6332cecf1b9e055a2f687bde3"
+        },
+        "bounded-hybrid": {
+          "path": "implementation-no-early-fallback.test",
+          "sha256": "06b26a5f4f32fa47488f5d2b68486bd5da35413770d75e5f8e4e5e47b4f01e60"
+        }
+      },
+      "runs": [
+        {
+          "variant": "fallback",
+          "round": 1,
+          "started": "2026-10-04T22:33:24.470380+00:00",
+          "finished": "2026-10-04T22:33:27.523092+00:00",
+          "command": [
+            "implementation-combined-registry.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-1.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 1,
+          "started": "2026-10-04T22:33:27.523434+00:00",
+          "finished": "2026-10-04T22:33:30.535188+00:00",
+          "command": [
+            "implementation-no-early-fallback.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-1.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 2,
+          "started": "2026-10-04T22:33:30.535506+00:00",
+          "finished": "2026-10-04T22:33:33.223018+00:00",
+          "command": [
+            "implementation-no-early-fallback.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-2.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 2,
+          "started": "2026-10-04T22:33:33.223332+00:00",
+          "finished": "2026-10-04T22:33:35.929796+00:00",
+          "command": [
+            "implementation-combined-registry.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-2.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 3,
+          "started": "2026-10-04T22:33:35.930114+00:00",
+          "finished": "2026-10-04T22:33:38.651998+00:00",
+          "command": [
+            "implementation-combined-registry.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-3.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 3,
+          "started": "2026-10-04T22:33:38.652321+00:00",
+          "finished": "2026-10-04T22:33:41.346662+00:00",
+          "command": [
+            "implementation-no-early-fallback.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-3.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 4,
+          "started": "2026-10-04T22:33:41.346991+00:00",
+          "finished": "2026-10-04T22:33:44.008347+00:00",
+          "command": [
+            "implementation-no-early-fallback.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-4.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 4,
+          "started": "2026-10-04T22:33:44.008684+00:00",
+          "finished": "2026-10-04T22:33:46.776589+00:00",
+          "command": [
+            "implementation-combined-registry.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-4.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 5,
+          "started": "2026-10-04T22:33:46.776991+00:00",
+          "finished": "2026-10-04T22:33:49.468623+00:00",
+          "command": [
+            "implementation-combined-registry.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-5.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 5,
+          "started": "2026-10-04T22:33:49.468987+00:00",
+          "finished": "2026-10-04T22:33:52.178934+00:00",
+          "command": [
+            "implementation-no-early-fallback.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-5.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 6,
+          "started": "2026-10-04T22:33:52.179254+00:00",
+          "finished": "2026-10-04T22:33:54.863523+00:00",
+          "command": [
+            "implementation-no-early-fallback.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-6.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 6,
+          "started": "2026-10-04T22:33:54.863866+00:00",
+          "finished": "2026-10-04T22:33:57.540730+00:00",
+          "command": [
+            "implementation-combined-registry.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationScale/providers=(3000|6000)/models=2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-6.txt"
+        }
+      ]
+    },
+    {
+      "phase": "policy-skew",
+      "pattern": "^BenchmarkReservationSkewedModels$",
+      "rounds": 6,
+      "benchtime": "700ms",
+      "GOMAXPROCS": "12",
+      "binaries": {
+        "fallback": {
+          "path": "implementation-registry-skew.test",
+          "sha256": "982c7cc5ba293067e806415fb45ece8d6ff2c1e5fd9c4437f37ac48afd821b5b"
+        },
+        "bounded-hybrid": {
+          "path": "implementation-fallback-experiment-skew.test",
+          "sha256": "e0849c3d29cbedc7961738e820e1cf12cc162d5829acff23a8fb7f7156ed2120"
+        }
+      },
+      "runs": [
+        {
+          "variant": "fallback",
+          "round": 1,
+          "started": "2026-10-04T22:44:20.973717+00:00",
+          "finished": "2026-10-04T22:44:23.986340+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-1.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 1,
+          "started": "2026-10-04T22:44:23.986730+00:00",
+          "finished": "2026-10-04T22:44:26.996353+00:00",
+          "command": [
+            "implementation-fallback-experiment-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-1.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 2,
+          "started": "2026-10-04T22:44:26.996682+00:00",
+          "finished": "2026-10-04T22:44:29.681950+00:00",
+          "command": [
+            "implementation-fallback-experiment-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-2.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 2,
+          "started": "2026-10-04T22:44:29.682288+00:00",
+          "finished": "2026-10-04T22:44:32.318148+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-2.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 3,
+          "started": "2026-10-04T22:44:32.318479+00:00",
+          "finished": "2026-10-04T22:44:34.988198+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-3.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 3,
+          "started": "2026-10-04T22:44:34.988563+00:00",
+          "finished": "2026-10-04T22:44:37.632670+00:00",
+          "command": [
+            "implementation-fallback-experiment-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-3.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 4,
+          "started": "2026-10-04T22:44:37.633016+00:00",
+          "finished": "2026-10-04T22:44:40.320816+00:00",
+          "command": [
+            "implementation-fallback-experiment-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-4.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 4,
+          "started": "2026-10-04T22:44:40.321152+00:00",
+          "finished": "2026-10-04T22:44:43.019802+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-4.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 5,
+          "started": "2026-10-04T22:44:43.020140+00:00",
+          "finished": "2026-10-04T22:44:45.694558+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-5.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 5,
+          "started": "2026-10-04T22:44:45.694903+00:00",
+          "finished": "2026-10-04T22:44:48.376364+00:00",
+          "command": [
+            "implementation-fallback-experiment-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-5.txt"
+        },
+        {
+          "variant": "bounded-hybrid",
+          "round": 6,
+          "started": "2026-10-04T22:44:48.376733+00:00",
+          "finished": "2026-10-04T22:44:51.032809+00:00",
+          "command": [
+            "implementation-fallback-experiment-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "bounded-hybrid-6.txt"
+        },
+        {
+          "variant": "fallback",
+          "round": 6,
+          "started": "2026-10-04T22:44:51.033174+00:00",
+          "finished": "2026-10-04T22:44:53.698367+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReservationSkewedModels$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "fallback-6.txt"
+        }
+      ]
+    },
+    {
+      "phase": "historical350",
+      "pattern": "^BenchmarkReserveProviderEx_350x2$",
+      "rounds": 6,
+      "benchtime": "700ms",
+      "GOMAXPROCS": "12",
+      "binaries": {
+        "master": {
+          "path": "implementation-master-skew.test",
+          "sha256": "5d82f6956c93c9441ba2095c27ba5643d35f83a350335db98d44d59888dda88b"
+        },
+        "optimized": {
+          "path": "implementation-registry-skew.test",
+          "sha256": "982c7cc5ba293067e806415fb45ece8d6ff2c1e5fd9c4437f37ac48afd821b5b"
+        },
+        "pre1324": {
+          "path": "pre-registry-go125.test",
+          "sha256": "4cf4f9366d8d19cdcb38fe8869c674ae370e93e56954c610eb178df087dd9dc1"
+        }
+      },
+      "runs": [
+        {
+          "variant": "master",
+          "round": 1,
+          "started": "2026-10-04T22:50:16.954037+00:00",
+          "finished": "2026-10-04T22:50:17.828573+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-1.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 1,
+          "started": "2026-10-04T22:50:17.828912+00:00",
+          "finished": "2026-10-04T22:50:18.701287+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-1.txt"
+        },
+        {
+          "variant": "pre1324",
+          "round": 1,
+          "started": "2026-10-04T22:50:18.701557+00:00",
+          "finished": "2026-10-04T22:50:19.559656+00:00",
+          "command": [
+            "pre-registry-go125.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "pre1324-1.txt"
+        },
+        {
+          "variant": "pre1324",
+          "round": 2,
+          "started": "2026-10-04T22:50:19.559957+00:00",
+          "finished": "2026-10-04T22:50:20.399596+00:00",
+          "command": [
+            "pre-registry-go125.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "pre1324-2.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 2,
+          "started": "2026-10-04T22:50:20.399923+00:00",
+          "finished": "2026-10-04T22:50:21.275145+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-2.txt"
+        },
+        {
+          "variant": "master",
+          "round": 2,
+          "started": "2026-10-04T22:50:21.275503+00:00",
+          "finished": "2026-10-04T22:50:22.154740+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-2.txt"
+        },
+        {
+          "variant": "master",
+          "round": 3,
+          "started": "2026-10-04T22:50:22.155080+00:00",
+          "finished": "2026-10-04T22:50:23.045424+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-3.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 3,
+          "started": "2026-10-04T22:50:23.045775+00:00",
+          "finished": "2026-10-04T22:50:23.919208+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-3.txt"
+        },
+        {
+          "variant": "pre1324",
+          "round": 3,
+          "started": "2026-10-04T22:50:23.919539+00:00",
+          "finished": "2026-10-04T22:50:24.779737+00:00",
+          "command": [
+            "pre-registry-go125.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "pre1324-3.txt"
+        },
+        {
+          "variant": "pre1324",
+          "round": 4,
+          "started": "2026-10-04T22:50:24.780065+00:00",
+          "finished": "2026-10-04T22:50:25.639675+00:00",
+          "command": [
+            "pre-registry-go125.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "pre1324-4.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 4,
+          "started": "2026-10-04T22:50:25.640020+00:00",
+          "finished": "2026-10-04T22:50:26.516953+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-4.txt"
+        },
+        {
+          "variant": "master",
+          "round": 4,
+          "started": "2026-10-04T22:50:26.517348+00:00",
+          "finished": "2026-10-04T22:50:27.400205+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-4.txt"
+        },
+        {
+          "variant": "master",
+          "round": 5,
+          "started": "2026-10-04T22:50:27.400537+00:00",
+          "finished": "2026-10-04T22:50:28.283967+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-5.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 5,
+          "started": "2026-10-04T22:50:28.284329+00:00",
+          "finished": "2026-10-04T22:50:29.149640+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-5.txt"
+        },
+        {
+          "variant": "pre1324",
+          "round": 5,
+          "started": "2026-10-04T22:50:29.149996+00:00",
+          "finished": "2026-10-04T22:50:30.004662+00:00",
+          "command": [
+            "pre-registry-go125.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "pre1324-5.txt"
+        },
+        {
+          "variant": "pre1324",
+          "round": 6,
+          "started": "2026-10-04T22:50:30.005007+00:00",
+          "finished": "2026-10-04T22:50:30.865222+00:00",
+          "command": [
+            "pre-registry-go125.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "pre1324-6.txt"
+        },
+        {
+          "variant": "optimized",
+          "round": 6,
+          "started": "2026-10-04T22:50:30.865546+00:00",
+          "finished": "2026-10-04T22:50:31.734681+00:00",
+          "command": [
+            "implementation-registry-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "optimized-6.txt"
+        },
+        {
+          "variant": "master",
+          "round": 6,
+          "started": "2026-10-04T22:50:31.735060+00:00",
+          "finished": "2026-10-04T22:50:32.616582+00:00",
+          "command": [
+            "implementation-master-skew.test",
+            "-test.run=^$",
+            "-test.bench=^BenchmarkReserveProviderEx_350x2$",
+            "-test.benchmem",
+            "-test.benchtime=700ms",
+            "-test.count=1"
+          ],
+          "exit": 0,
+          "log": "master-6.txt"
+        }
+      ]
+    }
+  ]
+}

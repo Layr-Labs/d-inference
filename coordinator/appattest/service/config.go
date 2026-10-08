@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -21,6 +22,15 @@ type Config struct {
 	Enabled              bool
 	AppID                string
 	Environment          string
+}
+
+// CheckProductionServing validates the prerequisites for the production trust
+// cutover without reading or freezing legacy MDM membership.
+func (c Config) CheckProductionServing() error {
+	if !c.ServingEnabled || c.Environment != "production" || c.RolloutPercent != 100 {
+		return fmt.Errorf("legacy MDM freeze requires production App Attest serving enabled with a 100%% account rollout")
+	}
+	return nil
 }
 
 func ConfigFromEnvironment() Config {

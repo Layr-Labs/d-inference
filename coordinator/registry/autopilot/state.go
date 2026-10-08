@@ -38,6 +38,10 @@ func CloneState(in *protocol.ModelAutopilotState) *protocol.ModelAutopilotState 
 		}
 	}
 	out := *in
+	if in.ConsentEnabled != nil {
+		consent := *in.ConsentEnabled
+		out.ConsentEnabled = &consent
+	}
 	out.SelectedModels = append([]string(nil), in.SelectedModels...)
 	out.LoadHistory = append([]protocol.ModelAutopilotLoadTiming(nil), in.LoadHistory...)
 	out.PinnedModels = append([]string(nil), in.PinnedModels...)

@@ -146,6 +146,45 @@ struct SSDCheckpointFleetWritePriorityTests {
         await store.closeAndWait()
     }
 
+    @Test("fleet priority pays serialized bytes and reopening preserves the root-wide cap")
+    func fleetRepeatPaysPersistentSerializedBudget() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let bytes = try plaintextBytes(fixture, position: 256)
+        let cap = bytes * 20
+        let novel = Int(Double(cap) * 0.9)
+        let store = try fixture.makeStore(maxWriteBytesPerDay: cap,
+            writeBudget: SSDWriteBudget(root: fixture.root), writeNowSeconds: { 0 })
+        defer { store.close() }
+        #expect(store.rateLimiter.consume(bytes: novel, repeated: false) == .accepted)
+        store.registerDonationDemand(.init(repeatedPrefixTokens: 256), requestID: .init(1))
+        #expect(try await fixture.donate(store, receipt: 1) == [256])
+        let written = store.stats().bytesWritten
+        #expect(written > bytes, "the persistent debit includes the header and authenticated encryption overhead")
+        await store.closeAndWait()
+
+        let ledger = try SSDWriteBudget(root: fixture.root)
+        let remaining = cap - novel - written
+        try #require(remaining > 0)
+        #expect(ledger.admit(bytes: remaining, capBytesPerDay: cap, now: 0, consume: false))
+        #expect(!ledger.admit(bytes: remaining + 1, capBytesPerDay: cap, now: 0, consume: false))
+        let outcomes = PrefixCacheDonationTelemetry()
+        let reopened = try fixture.makeStore(maxWriteBytesPerDay: cap, writeBudget: ledger,
+            donationRecorder: outcomes, writeNowSeconds: { 0 })
+        defer { reopened.close() }
+        #expect(reopened.rateLimiter.consume(bytes: remaining, repeated: true) == .accepted)
+        reopened.registerDonationDemand(.init(repeatedPrefixTokens: 512), requestID: .init(2))
+        // A freshly authenticated duplicate remains reusable without a write;
+        // a new covered endpoint cannot spend a refilled per-store balance.
+        #expect(try await fixture.donate(reopened, receipt: 2) == [256])
+        #expect(try await fixture.donate(reopened, receipt: 2, position: 512).isEmpty)
+        #expect(reopened.stats().filesWritten == 0)
+        #expect(outcomes.snapshot().first { $0.outcome == .alreadyDurable }?.count == 1)
+        #expect(outcomes.snapshot().first { $0.outcome == .writeRateLimited }?.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: fixture.file(reopened, position: 512).path))
+        await reopened.closeAndWait()
+    }
+
     @Test("fleet repeat priority cannot exceed the unchanged total endurance cap")
     func fleetRepeatStillPaysTotalBudget() async throws {
         let fixture = try SSDHybridCheckpointTestFixture()

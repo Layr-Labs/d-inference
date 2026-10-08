@@ -58,8 +58,10 @@ func (t *Tracker[P]) ClearRetired() {
 	t.attempts.Reset()
 	t.holderOrder.Reset()
 	t.attemptOrder.Reset()
+	t.terminalOrder.Reset()
 	t.holdersByProvider.Reset()
 	t.attemptsByProvider.Reset()
 	t.v2Sequences.Reset()
 	t.proofs.ClearRetired()
+	t.attemptBudget.Store(0)
 }

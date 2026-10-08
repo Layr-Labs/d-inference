@@ -18,18 +18,21 @@ import (
 // Lock discipline (no single r.mu hold longer than one provider's work):
 //
 //  1. ONE short r.mu.RLock copies the provider pointer list and nothing else.
-//  2. Per provider, phase A takes only p.mu and copies every provider-level and
+//  2. One operation-local cold forecast captures requirements under p.mu only,
+//     copies each needed model index under a short r.mu.RLock, then validates
+//     each donor with its own r.mu -> p.mu lease. No lease spans the peer walk.
+//  3. Per provider, phase A takes only p.mu and copies every provider-level and
 //     per-slot field into rows (no r.mu held).
-//  3. Per provider, phase B takes r.mu.RLock briefly for the registry-side
+//  4. Per provider, phase B takes r.mu.RLock briefly for the registry-side
 //     state that lives in maps under r.mu (breaker, ejection, cooldowns, clamp,
 //     effective cap, catalog membership) and for the eligibility verdict, which
 //     deliberately reuses the routing gate itself (snapshotProviderIntoLockedEx
 //     + buildCandidateInto — the single source of routing eligibility).
 //     p.mu is taken inside that RLock where needed (r.mu → p.mu is the
-//     established order). A provider that disconnected between 1 and 3 is
+//     established order). A provider that disconnected between 1 and 4 is
 //     dropped rather than sampled from stale registry state.
 //
-// Allocations are O(rows).
+// Row allocations are O(rows); forecast capture is shared across the sample.
 
 const (
 	// fleetSampleProbePromptTokens / fleetSampleProbeMaxTokens shape the plain
@@ -81,16 +84,17 @@ func (r *Registry) FleetSample(now time.Time) []store.FleetSnapshotRow {
 	}
 	r.mu.RUnlock()
 
+	estimates := r.fleetSampleColdKVEstimates(providers, now)
 	rows := make([]store.FleetSnapshotRow, 0, len(providers)*2)
 	for _, p := range providers {
-		rows = r.appendProviderSample(rows, p, probe, now)
+		rows = r.appendProviderSample(rows, p, probe, now, estimates)
 	}
 	return rows
 }
 
 // appendProviderSample appends p's rows: phase A under p.mu only, phase B under
 // a brief per-provider r.mu.RLock. Caller holds NO lock.
-func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provider, probe *PendingRequest, now time.Time) []store.FleetSnapshotRow {
+func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provider, probe *PendingRequest, now time.Time, estimates coldKVEstimates) []store.FleetSnapshotRow {
 	start := len(rows)
 
 	// ---- Phase A: p.mu only. Copy every provider-level and per-slot field.
@@ -268,7 +272,7 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 	for i := range scratch {
 		row := &rows[start+i]
 		raw := scratch[i].rawModel
-		row.EligibilityReason = r.slotEligibilityReasonLocked(p, raw, probe, now)
+		row.EligibilityReason = r.slotEligibilityReasonLocked(p, raw, probe, now, estimates)
 		row.Model = r.fleetSnapshotModelLocked(raw)
 	}
 	return rows
@@ -294,15 +298,16 @@ func (r *Registry) fleetSnapshotModelLocked(raw string) string {
 // + buildCandidateInto pipeline the dispatch scan runs — and returns the
 // first failing GateReason name or "eligible". Caller holds r.mu (read) and
 // must NOT hold p.mu (the snapshot helper takes it).
-func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe *PendingRequest, now time.Time) string {
-	// One stack-resident candidate: the arena variants fill the snapshot in
-	// place and return the closed GateReason the dispatch scan would tally.
+func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe *PendingRequest, now time.Time, estimates coldKVEstimates) string {
+	// The same evaluation pipeline as the scan uses stack-local storage and
+	// returns the closed GateReason the dispatch scan would tally.
 	var c routingCandidate
-	ok, reason := r.snapshotProviderIntoLockedEx(&c.snapshot, p, model, probe.Traits, false, false, now)
+	var snapshot routingSnapshot
+	ok, reason := r.snapshotProviderIntoLockedEx(&snapshot, p, model, probe.Traits, false, false, now, estimates)
 	if !ok {
 		return reason.String()
 	}
-	if _, gateReason, built := r.buildCandidateInto(&c, probe, now); !built {
+	if _, gateReason, built := r.buildCandidateInto(&c, &snapshot, probe, now); !built {
 		return gateReason.String()
 	}
 	return EligibilityReasonEligible

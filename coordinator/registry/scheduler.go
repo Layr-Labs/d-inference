@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepolicy"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
 	kvbudget "github.com/eigeninference/d-inference/coordinator/internal/registry/kvbudget"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/longprompt"
@@ -80,7 +81,7 @@ const (
 	//
 	// Four systems consume this and a too-small k over-states the quality
 	// batch in all of them at once: the admission cap (concurrency_cap.go),
-	// performance.Rates and projectedPerRequestDecodeTPSAtBatch below, and
+	// performance.Rates and candidateSnapshot.projectedDecodeTPS, and
 	// the warm-pool target (warm_pool_controller.go) — which then
 	// under-warms the pool while admission packs batches that miss the
 	// decode floor.
@@ -118,7 +119,7 @@ type routingSnapshot struct {
 	// pendingMaxBytesAllModels is the byte-normalized analog: each pending
 	// request's token budget × its model's reported KVBytesPerToken. Valid
 	// only when pendingBytesKnown. A cold request without a reported model rate
-	// is charged at the bounded conservative default (see
+	// uses a current native forecast or the conservative fallback (see
 	// fillSnapshotPendingAndPool), so it cannot disable byte accounting for a
 	// reconstructable pool. Co-resident models have different per-token byte
 	// rates, so tokens are not a common unit across models (pooled_admission.go).
@@ -169,12 +170,17 @@ type routingSnapshot struct {
 	autopilotBlocked bool
 	// kvBytesPerToken is the provider-reported per-token KV-cache cost (bytes)
 	// for THIS model's slot (BackendSlotCapacity.KVBytesPerToken). 0 = unreported
-	// (callers fall back to admission.KVCacheBytesPerToken). Used by the
-	// servability predictor to estimate a cold provider's post-load token budget
-	// the same way the provider does, instead of the fixed default.
-	kvBytesPerToken    int64
-	fleetMedianTPS     float64
-	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
+	// and never implies that an estimated cold rate is an actual slot report.
+	kvBytesPerToken int64
+	// A cold forecast is separate from the positive-own-rate/zero-max signal.
+	estimatedKVBytesPerToken int64
+	fleetMedianTPS           float64
+	hasBackendCapacity       bool // provider reports BackendCapacity; TTFT estimates are reliable
+	// explorationDecodeTPS and explorationPrefillTPS are fleet medians that
+	// replace the provider's own rates while evidence exploration prices it
+	// (first_content_exploration_pricing.go). 0 keeps the provider's own rate.
+	explorationDecodeTPS  float64
+	explorationPrefillTPS float64
 
 	// Engine-health (first-token wedge) signals, decoded from the slot's
 	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
@@ -219,7 +225,7 @@ type Candidate struct {
 	// Exact base-score work eligible for a cache credit; never includes load or decode.
 	pricedPromptTokens int
 	prefillCostMs      float64
-	snapshot           routingSnapshot
+	snapshot           candidateSnapshot
 	costMs             float64
 	effectiveQueue     int
 	breakdown          costBreakdown
@@ -395,8 +401,8 @@ type RoutingDecision struct {
 	// SnapshotAgeMs is the winner's heartbeat age (now − LastHeartbeat) at the
 	// moment its routing snapshot was taken.
 	SnapshotAgeMs int
-	// PredictedDecodeTPS is projectedPerRequestDecodeTPS(winner snapshot): the
-	// per-request decode rate this request is predicted to receive once admitted.
+	// PredictedDecodeTPS is the per-request decode rate the winning candidate
+	// predicts this request will receive once admitted.
 	PredictedDecodeTPS float64
 	// PendingForModel / TotalPending are the winner's coordinator-side pending
 	// counts (this model / all models) at snapshot time, before this reservation.
@@ -511,6 +517,12 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		pr.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
 
+	// Decorated preparations and public scans keep their own candidate storage.
+	var storage *reservationCandidateStorage
+	if r.reservations == nil {
+		storage = &reservationCandidateStorage{registry: r}
+		defer storage.release()
+	}
 	excluded := append([]string(nil), excludeIDs...)
 	carried := RoutingDecision{Model: model}
 	var last ReservationSelection
@@ -525,11 +537,13 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 	}
 	for scans < maxReservationRescans && pr.RefreshFirstContentBudget(time.Now()) {
 		if r.reservations == nil {
-			if r.reservationPlanner != nil {
-				last = r.reservationPlanner.scan(model, pr, excluded...)
-			} else {
-				last = r.scanProviderReservation(model, pr, excluded...)
+			// Prior retry candidates have no escaping readers.
+			if scans > 0 {
+				storage.reset()
 			}
+			var prepared PreparedReservation
+			r.prepareProviderReservationIntoStorage(&prepared, storage, model, pr, excluded...)
+			last = prepared.Finish()
 		} else {
 			last = r.reservations.Prepare(model, pr, excluded...).Finish()
 		}
@@ -574,25 +588,13 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 	return nil, failedDecision(), nil
 }
 
-// scanProviderReservation performs the expensive fleet walk under a shared
-// registry lock. Concurrent requests may scan together; no provider capacity is
-// consumed until commitProviderReservation takes the winner's p.mu and
-// revalidates it against current cross-model pending debits.
-func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, excludeIDs ...string) ReservationSelection {
-	// Ordinary scans retain a stack-owned preparation. A decorated preparation
-	// transfers ownership across an interface and uses the pointer form instead.
-	var prepared PreparedReservation
-	r.prepareProviderReservationInto(&prepared, model, pr, excludeIDs...)
-	return prepared.Finish()
-}
-
 func (r *Registry) prepareProviderReservation(model string, pr *PendingRequest, excludeIDs ...string) *PreparedReservation {
 	prepared := &PreparedReservation{}
-	r.prepareProviderReservationInto(prepared, model, pr, excludeIDs...)
+	r.prepareProviderReservationIntoStorage(prepared, nil, model, pr, excludeIDs...)
 	return prepared
 }
 
-func (r *Registry) prepareProviderReservationInto(prepared *PreparedReservation, model string, pr *PendingRequest, excludeIDs ...string) {
+func (r *Registry) prepareProviderReservationIntoStorage(prepared *PreparedReservation, storage *reservationCandidateStorage, model string, pr *PendingRequest, excludeIDs ...string) {
 	// Profiler stamps: scan-lock wait (from here to the scan RLock) and the
 	// scan itself land on the decision as LockWaitUS / ScanUS; ~25 ns each.
 	tScanStart := time.Now()
@@ -609,7 +611,7 @@ func (r *Registry) prepareProviderReservationInto(prepared *PreparedReservation,
 		pr.CacheSelectionMode = ""
 		pr.CacheOpportunity = CacheOpportunity{}
 	}
-	selected, candidates := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	selected, candidates := r.selectBestCandidateLockedFullStorage(storage, model, pr, excludeIDs...)
 	result := providerReservationScan{
 		selected:     selected,
 		candidates:   candidates,
@@ -749,6 +751,7 @@ func (s ReservationSelection) commit(
 	}
 	relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 
+	estimates := r.coldKVEstimatesLocked([]*Provider{p}, model, now)
 	// Commit section: snapshot, cost, compare, admit and debit under ONE p.mu
 	// hold, so no other commit can change this provider between the compare
 	// and the debit.
@@ -760,22 +763,22 @@ func (s ReservationSelection) commit(
 	}
 	var snapshot routingSnapshot
 	if ok, _ := r.snapshotProviderIntoPLockedEx(
-		&snapshot, p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker, now); !ok {
+		&snapshot, p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker, now, estimates); !ok {
 		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
 	if pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust) {
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, rejectVisionUnsupported, false)
 	}
-	candidate, reason, ok := r.buildCandidateWithReason(snapshot, pr, now)
+	candidate, reason, ok := r.buildCandidateWithReason(&snapshot, pr, now)
 	if !ok {
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, reason, false)
 	}
-	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
-	r.estimateFirstContent(candidate, pr, now)
+	r.applyCacheRoutingCostPLocked(p, model, pr, candidate, &snapshot)
+	r.estimateFirstContent(candidate, &snapshot, pr, now)
 	if scan.quote != nil {
-		applyFirstContentQuote(candidate, pr, *scan.quote, now)
+		applyFirstContentQuote(candidate, &snapshot, pr, *scan.quote, now)
 	}
 	if !firstContentCandidateAllowed(candidate, pr) {
 		return nil, nil, reservationCandidateRejected,
@@ -833,6 +836,7 @@ func (s ReservationSelection) commit(
 		pr.PromptWork.Source == protocol.PromptWorkExact &&
 		pr.PromptWork.IsQualifiedFor(snapshot.promptWorkArtifactHash, snapshot.promptWorkContractID)
 	pr.RefreshFirstContentBudget(now)
+	pr.SetFirstContentExplored(firstContentEvidenceExplorable(candidate) || candidate.snapshot.explorationUsesMedian())
 	recordReservedPrefill(pr, candidate)
 	p.addPendingLocked(pr)
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
@@ -841,7 +845,10 @@ func (s ReservationSelection) commit(
 	if !slotStateModelLoaded(candidate.snapshot.slotState) {
 		r.RecordWarmPoolColdDispatch(model)
 	}
-	if !pr.RequiresVision && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 {
+	// A prediction built on a fleet median says nothing about this provider,
+	// so the calibrator does not learn from it.
+	if !pr.RequiresVision && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 &&
+		!candidate.snapshot.explorationUsesMedian() {
 		NoteTTFTPrediction(
 			pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily,
 			candidate.breakdown.RawTTFTMs)
@@ -872,7 +879,7 @@ func (r *Registry) currentTTFTShadow(
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var current candidateScan
-	if snapshotOccupancy(&winner.snapshot) > 0 {
+	if winner.snapshot.occupancy() > 0 {
 		current = r.scanCandidatesLocked(model, pr, false, excludeIDs...)
 	}
 	return r.evaluateTTFTShadowLocked(model, pr, winner, current)
@@ -955,7 +962,7 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 	// winner's inputs were, what it was predicted to deliver, and what it was
 	// already carrying — all from the pre-reserve snapshot, no extra locking.
 	decision.SnapshotAgeMs = int(candidate.snapshot.hbAgeMs)
-	decision.PredictedDecodeTPS = projectedPerRequestDecodeTPS(&candidate.snapshot)
+	decision.PredictedDecodeTPS = candidate.snapshot.projectedDecodeTPS(candidate.snapshot.backendRunning)
 	decision.PendingForModel = candidate.snapshot.pendingForModel
 	decision.TotalPending = candidate.snapshot.totalPending
 	// The ratio this candidate was actually scored with (captured at build,
@@ -966,26 +973,26 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 	return decision
 }
 
-// applyCacheRoutingCost reads the candidate's own snapshot (the scan
-// builds it in place; no copy is taken). The caller holds r.mu, but not p.mu;
+// applyCacheRoutingCost borrows the same transient snapshot used for the
+// base score. The caller holds r.mu, but not p.mu;
 // the hint currency and affinity quarantine checks take the provider lock.
-func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
+func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate, snapshot *routingSnapshot) {
 	_, present := pr.cacheRoutingHints[p.ID]
 	if !present && pr.CachePlan.AffinityKey() == "" {
 		return
 	}
 	p.mu.Lock()
-	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
+	r.applyCacheRoutingCostPLocked(p, model, pr, candidate, snapshot)
 	p.mu.Unlock()
 }
 
 // applyCacheRoutingCostPLocked is shared by scan and reservation; both hold
 // r.mu and p.mu so capability/quarantine checks use the current provider state.
-func (r *Registry) applyCacheRoutingCostPLocked(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
+func (r *Registry) applyCacheRoutingCostPLocked(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate, snapshot *routingSnapshot) {
 	if pr.CachePlan.AffinityKey() != "" {
 		candidate.cacheAffinityEligible = r.cacheAffinityEligibleLocked(p, model, pr.CachePlan)
 	}
-	r.applyCacheHintLocked(pr.cacheRoutingHints[p.ID], model, candidate)
+	r.applyCacheHintLocked(pr.cacheRoutingHints[p.ID], model, candidate, snapshot)
 }
 
 // selectBestCandidateLockedFull is the full-fidelity selection that
@@ -1011,14 +1018,18 @@ func (r *Registry) applyCacheRoutingCostPLocked(p *Provider, model string, pr *P
 // metrics are never double-counted. This mirrors servability.go's fail-open
 // philosophy: when in doubt, keep serving.
 func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, candidateScan) {
-	winner, scan := r.selectBestCandidateScanLocked(model, pr, false, excludeIDs...)
+	return r.selectBestCandidateLockedFullStorage(nil, model, pr, excludeIDs...)
+}
+
+func (r *Registry) selectBestCandidateLockedFullStorage(storage *reservationCandidateStorage, model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, candidateScan) {
+	winner, scan := r.selectBestCandidateScanLockedStorage(storage, model, pr, false, excludeIDs...)
 	if !shouldBypassBreakerFailOpen(winner, scan.BreakerRejected, scan.CapacityRejections, scan.TTFTRejections) {
 		return winner, scan
 	}
 	// The node-health breaker is the SOLE reason this request has no route: re-scan
 	// with the breaker bypassed. Use pass 2 only when it actually finds a candidate,
 	// so a genuinely empty fleet still reports pass 1's (accurate) counters.
-	if w2, scan2 := r.selectBestCandidateScanLocked(model, pr, true, excludeIDs...); w2 != nil {
+	if w2, scan2 := r.selectBestCandidateScanLockedStorage(storage, model, pr, true, excludeIDs...); w2 != nil {
 		return w2, scan2
 	}
 	return winner, scan
@@ -1189,7 +1200,15 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 // whether a breaker-bypassed fail-open re-scan could help, and is always 0 in
 // that mode.
 func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, candidateScan) {
-	scan := r.scanCandidatesLocked(model, pr, ignoreProviderBreaker, excludeIDs...)
+	return r.selectBestCandidateScanLockedStorage(nil, model, pr, ignoreProviderBreaker, excludeIDs...)
+}
+
+func (r *Registry) selectBestCandidateScanLockedStorage(storage *reservationCandidateStorage, model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, candidateScan) {
+	planner := r.reservationPlanner
+	if planner == nil {
+		planner = &ReservationPlanner{registry: r}
+	}
+	scan := planner.scanCandidatesLockedStorage(storage, model, pr, ignoreProviderBreaker, excludeIDs...)
 	if len(scan.Candidates) == 0 {
 		return nil, scan
 	}
@@ -1458,22 +1477,18 @@ func (e *ProviderEligibility) postCatalogLocked(p *Provider, model string, trait
 // time-keyed gate (challenge freshness, cooldowns, breaker, clamp) evaluates
 // against that single instant.
 //
-// Writes into caller-owned storage instead of returning the (large) snapshot
-// by value, and names WHICH gate dropped a failing provider. The fleet walks
-// (scanCandidatesLocked, PredictServable) and the fleet sampler
-// (slotEligibilityReasonLocked) hand it the final resting place of the
-// snapshot — a candidate-arena slot or a reused buffer — so a routable
-// provider's snapshot is written exactly once and never copied
-// (routingSnapshot is ~600 bytes; the per-provider return + candidate copies
-// were ~9% of the fleet-scale scan). On a gate failure it returns (false, the
+// Writes into caller-owned evaluation storage and names WHICH gate dropped
+// a failing provider. Fleet walks and the fleet sampler reuse stack storage;
+// only the evidence needed after evaluation is retained in a candidate.
+// On a gate failure it returns (false, the
 // closed GateReason that dropped p) WITHOUT touching *dst; on success *dst is
 // fully overwritten — including hbAgeMs, stamped from the threaded now so the
 // system-profiler record carries the heartbeat age the scan actually saw —
 // and the reason is GateReasonCount.
-func (r *Registry) snapshotProviderIntoLockedEx(dst *routingSnapshot, p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool, now time.Time) (bool, GateReason) {
+func (r *Registry) snapshotProviderIntoLockedEx(dst *routingSnapshot, p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool, now time.Time, estimates coldKVEstimates) (bool, GateReason) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return r.snapshotProviderIntoPLockedEx(dst, p, model, traits, selfRouteOwner, ignoreProviderBreaker, now)
+	return r.snapshotProviderIntoPLockedEx(dst, p, model, traits, selfRouteOwner, ignoreProviderBreaker, now, estimates)
 }
 
 // snapshotProviderIntoPLockedEx is snapshotProviderIntoLockedEx for a caller
@@ -1481,12 +1496,13 @@ func (r *Registry) snapshotProviderIntoLockedEx(dst *routingSnapshot, p *Provide
 // which take the snapshot, rebuild the cost, compare and debit inside one p.mu
 // section so nothing can change the provider in between. Caller holds r.mu
 // (either mode) and p.mu.
-func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool, now time.Time) (bool, GateReason) {
+func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool, now time.Time, estimates coldKVEstimates) (bool, GateReason) {
 	if ok, reason := r.providerRoutingGateReasonLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, false); !ok {
 		return false, reason
 	}
 
-	r.fillRoutingSnapshotPLocked(dst, p, model, now)
+	serviceReport := capacityvalue.NewServiceReport(p.BackendCapacity)
+	r.fillRoutingSnapshotPLocked(dst, p, model, now, serviceReport, estimates)
 	// Heartbeat age from the scan clock (system-profiler record); a zero
 	// LastHeartbeat saturates rather than reading as "fresh".
 	dst.hbAgeMs = heartbeatAgeMs(now, p.LastHeartbeat)
@@ -1499,7 +1515,7 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	// benchmark fallback) — NOT dst.decodeTPS, which stays the provider-level
 	// rate for TTFT/cost estimation, and NOT the observed-under-load value.
 	// No-op (legacy flat cap) when the cap is disabled.
-	dst.hasHeadroom = r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model)
+	dst.hasHeadroom = r.hasConcurrencyHeadroomWithReportLocked(p, model, serviceReport)
 	return true, GateReasonCount
 }
 
@@ -1530,46 +1546,6 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 	return bc.FreeForLoadGB
 }
 
-// fillSnapshotPendingAndPool populates snap's reconstructed pooled budget and
-// its coordinator-pending aggregates — the per-model filtered pair
-// (pendingForModel / pendingMaxTokens) and the all-models totals in token and,
-// when normalizable, byte units. Byte normalization uses each resident model's
-// reported KVBytesPerToken and the same bounded conservative default as
-// incoming/capacity math for a cold model with no resident slot. Only a legacy
-// pool that cannot be reconstructed in bytes leaves pendingBytesKnown false.
-// Shared by the dispatch
-// snapshot (snapshotProviderLockedEx) and the queue preflight
-// (QuickCapacityCheck…) so the two admission paths cannot drift. Caller holds
-// p.mu.
-func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string) {
-	snap.pendingPrefillKnown = true
-	if p.BackendCapacity != nil {
-		snap.pooledTokenBudget = kvbudget.FromSlots(p.BackendCapacity.Slots)
-	}
-	pending := kvbudget.NewPending(&snap.pooledTokenBudget)
-	pending.Tokens = snap.pendingMaxTokensAllModels
-	pending.Bytes = snap.pendingMaxBytesAllModels
-	for _, pr := range p.pendingReqs {
-		tokens := pendingTokenBudget(pr)
-		pending.Add(&snap.pooledTokenBudget, pr.Model, tokens)
-		if pr.Model != model {
-			continue
-		}
-		snap.pendingForModel++
-		snap.pendingMaxTokens += tokens
-		if !pr.ContentCommittedSafe() {
-			if pr.EstimatedPromptTokens > 0 && !pr.CacheRoutingParticipates() {
-				snap.pendingPrefillTokens += float64(pr.EstimatedPromptTokens)
-			} else {
-				snap.pendingPrefillUnknown++
-			}
-		}
-	}
-	snap.pendingMaxTokensAllModels = pending.Tokens
-	snap.pendingMaxBytesAllModels = pending.Bytes
-	snap.pendingBytesKnown = pending.BytesKnown
-}
-
 func pendingTokenBudget(pr *PendingRequest) int {
 	if pr == nil {
 		return 0
@@ -1580,20 +1556,19 @@ func pendingTokenBudget(pr *PendingRequest) int {
 // buildCandidateWithReason returns the candidate plus, on rejection,
 // the reason so callers can split metrics by failure mode.
 // now is the caller's scan clock (see snapshotProviderLockedEx). This is the
-// by-value convenience form for cold callers (the commit re-check, the plan
-// revalidation, tests); the fleet scan uses buildCandidateInto on an arena
-// slot whose snapshot was filled in place.
-func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest, now time.Time) (*routingCandidate, candidateRejection, bool) {
-	c := &routingCandidate{snapshot: snap}
-	reason, _, ok := r.buildCandidateInto(c, pr, now)
+// allocation form for cold callers (commit and plan revalidation); the fleet
+// scan passes an arena slot and its separate stack snapshot to buildCandidateInto.
+func (r *Registry) buildCandidateWithReason(snap *routingSnapshot, pr *PendingRequest, now time.Time) (*routingCandidate, candidateRejection, bool) {
+	c := &routingCandidate{}
+	reason, _, ok := r.buildCandidateInto(c, snap, pr, now)
 	if !ok {
 		return nil, reason, false
 	}
 	return c, rejectNone, true
 }
 
-// buildCandidateInto computes the routing cost for c from c.snapshot (already
-// filled by snapshotProviderIntoLockedEx) and writes the cost fields into c.
+// buildCandidateInto computes routing cost from the transient snapshot and
+// retains only the evidence consumed after evaluation in c.
 // On rejection it returns the candidateRejection class the legacy counters
 // split on (capacity / model-too-large / vision) AND the closed GateReason
 // naming the exact drop, including the drops the candidateRejection enum
@@ -1601,8 +1576,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 // system-profiler routing record can tally them; c is then left partially
 // written and must be discarded by the caller (the arena releases the slot).
 // The counter semantics of candidateRejection are unchanged. Caller holds r.mu.
-func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, now time.Time) (candidateRejection, GateReason, bool) {
-	snap := &c.snapshot
+func (r *Registry) buildCandidateInto(c *routingCandidate, snap *routingSnapshot, pr *PendingRequest, now time.Time) (candidateRejection, GateReason, bool) {
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
 		if snap.slotState == "crashed" {
@@ -1729,6 +1703,7 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	calibrationRatio := ttftCalibration.appliedRatio(snap.model, snap.chipFamily)
 	ttftMs := calibratedTTFTMsWithRatio(snap, rawTTFTMs, calibrationRatio)
 
+	c.snapshot = retainCandidateSnapshot(snap)
 	c.CandidateBinding = snap.CandidateBinding
 	if c.provider != nil {
 		c.ProviderID = c.provider.ID
@@ -1814,23 +1789,30 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 // resolveEffectiveTPS returns the best available decode TPS estimate.
 // Qualified curves use their measured conservative width point; unmatched
 // configurations fall back through observed EWMA, fleet median and benchmark.
+// A provider that evidence exploration admits uses the fleet median before
+// its own decode EWMA while that EWMA is missing or old.
+// Independently dated stale decode also expires for loaded, wholly idle Macs.
 func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 	return (performance.Rates{Profile: (*performance.Profile)(snap.performanceProfile),
 		StaticDecode: snap.decodeTPS, ObservedDecode: snap.observedDecodeTPS,
-		FleetMedian: snap.fleetMedianTPS, ObservedBatch: snap.backendRunning,
-		Occupancy: snapshotOccupancy(snap)}).EffectiveDecode(effectiveTPSLoadFactor)
+		FleetMedian: snap.fleetMedianTPS, ExploredDecode: snap.explorationDecodeTPS,
+		IdleLoaded:    snap.modelLoaded && !snap.wholeMacBusy && snap.totalPending == 0,
+		DecodeAgeMs:   snap.decodePerformanceAgeMs,
+		ObservedBatch: snap.backendRunning, Occupancy: snapshotOccupancy(snap)}).EffectiveDecode(effectiveTPSLoadFactor)
 }
 
 // resolvePrefillTPS uses the qualified conservative width point for TTFT,
 // matching resolveEffectiveTPS. A workload-specific live EWMA cannot replace
 // that reviewed rate. Without a fitting point, prefer observed prefill EWMA,
 // then snap.prefillTPS (registration benchmark or decode×prefillToDecodeRatio).
+// A provider that evidence exploration admits uses the fleet median isolated
+// prefill rate first while its own isolated prefill evidence is missing or old.
 // The fallback is clamped to maxPrefillTPS; profile validation enforces the same
 // bound for reviewed points.
 func resolvePrefillTPS(snap *routingSnapshot) float64 {
 	return (performance.Rates{Profile: (*performance.Profile)(snap.performanceProfile),
 		StaticPrefill: snap.prefillTPS, ObservedPrefill: snap.observedPrefillTPS,
-		Occupancy: snapshotOccupancy(snap)}).Prefill()
+		ExploredPrefill: snap.explorationPrefillTPS, Occupancy: snapshotOccupancy(snap)}).Prefill()
 }
 
 // snapshotOccupancy is the per-(provider,model) in-flight occupancy the
@@ -1892,18 +1874,12 @@ func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
 }
 
-// ttftOccupancyAlpha scales the Phase-0 occupancy term (see ttftOccupancyMs),
-// which is added ONLY inside occupancyAwareTTFTMsFromSnapshot — the shadow
-// evaluator's estimate — NEVER inside the live ttftMsFromSnapshot. It is the
-// decode-token-times of head-of-line wait charged per occupying peer, divided by
-// the per-request decode rate the new request would see. Because the term never
-// reaches ttftMsFromSnapshot, the routing cost's TTFTMs, the candidate-loop
-// MaxTTFTMs ceiling, and the preflight bestTTFT are occupancy-free at ANY alpha:
-// raising alpha changes only the shadow signal, not the live routing decision
-// (the HARD_REJECT safety invariant — see occupancyAwareTTFTMsFromSnapshot). 0
-// (the default) also makes ttftOccupancyMs itself a no-op. Configured once at
-// startup via SetTTFTOccupancyAlpha (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA),
-// read-only on routing paths thereafter, mirroring prefillToDecodeRatio.
+// ttftOccupancyAlpha scales the Phase-0 head-of-line occupancy term in
+// candidateSnapshot.shadowTTFT. The term never reaches the live
+// ttftMsFromSnapshot, routing cost, MaxTTFTMs ceiling or preflight bestTTFT;
+// raising alpha changes only the shadow signal. Zero disables the term.
+// Configured once at startup via SetTTFTOccupancyAlpha
+// (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA), read-only on routing paths thereafter.
 var ttftOccupancyAlpha = 0.0
 
 // SetTTFTOccupancyAlpha overrides the occupancy-term coefficient. Negative
@@ -2000,37 +1976,8 @@ func resolvedPrefillTPS(p *Provider) float64 {
 	return quality.PrefillFallback(p.PrefillTPS, resolvedDecodeTPS(p), prefillToDecodeRatio)
 }
 
-// projectedPerRequestDecodeTPS estimates the decode tokens/sec a NEWLY admitted
-// request would receive on this snapshot's provider once it joins the batch
-// (backendRunning+1 concurrent). Continuous batching is memory-bandwidth bound,
-// so per-request decode degrades with batch size by the same effectiveTPSLoadFactor
-// model used elsewhere: rate(b) = solo / (1 + k·b). The measured observed decode
-// rate (when present) is unwound from the current batch to a solo rate and then
-// reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
-// decode-floor quality preference (PendingRequest.MinDecodeTPS).
-func projectedPerRequestDecodeTPS(snap *routingSnapshot) float64 {
-	return projectedPerRequestDecodeTPSAtBatch(snap, snap.backendRunning)
-}
-
-// projectedPerRequestDecodeTPSAtBatch is projectedPerRequestDecodeTPS with an
-// EXPLICIT batch the new request would join, used when the heartbeat gauge
-// (backend_running) understates real contention. The observed-rate UNWIND always
-// uses the batch the observation was actually taken at (snap.backendRunning —
-// the heartbeat's observedDecodeTPS pairs with that gauge), while the REAPPLY
-// uses joinBatch. Passing joinBatch == snap.backendRunning reproduces the
-// original result exactly, so the decode-floor caller is byte-for-byte unchanged;
-// the occupancy term passes joinBatch == occ so a herd that has already reserved
-// peers the heartbeat has not yet reflected (occ > backend_running) is charged at
-// the contended rate it will actually see — not the idle/low-batch rate.
-func projectedPerRequestDecodeTPSAtBatch(snap *routingSnapshot, joinBatch int) float64 {
-	useFleetMedian := !(snap.observedDecodeTPS > 0) && decodeFloorUseFleetMedian()
-	return (performance.Rates{Profile: (*performance.Profile)(snap.performanceProfile),
-		StaticDecode: snap.decodeTPS, ObservedDecode: snap.observedDecodeTPS,
-		FleetMedian: snap.fleetMedianTPS, ObservedBatch: snap.backendRunning}).ProjectedDecode(joinBatch, effectiveTPSLoadFactor, useFleetMedian)
-}
-
 // decodeFloorUseFleetMedian gates the tier-2 (fleet-median) solo-rate source in
-// projectedPerRequestDecodeTPS. Read LIVE (no restart); default ON. Set
+// candidateSnapshot.projectedDecodeTPS. Read LIVE (no restart); default ON. Set
 // EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN=false for byte-for-byte pre-fix
 // behavior (idle boxes fall straight to the static benchmark).
 func decodeFloorUseFleetMedian() bool {
@@ -2138,9 +2085,11 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 	unknownTTFTCandidate := false
 	now := time.Now()
+	providers := r.providersForModelLocked(model)
+	estimates := r.coldKVEstimatesLocked(providers, model, now)
 	// Per-model index: visit only providers advertising the model (gates
 	// unchanged; see model_index.go).
-	for _, p := range r.providersForModelLocked(model) {
+	for _, p := range providers {
 		// Filter by allowed serials before acquiring the provider lock
 		// (providerMatchesAllowedSerial takes p.mu internally).
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
@@ -2221,7 +2170,8 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// snapshot — resolves the model's own static solo rate internally so
 		// routing and the shed preflight stay consistent and a slow model's
 		// quality cap counts a saturated box as a capacity rejection here too).
-		if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) {
+		serviceReport, hasHeadroom := r.concurrencyHeadroomReportLocked(p, model)
+		if !hasHeadroom {
 			p.mu.Unlock()
 			capacityRejections++
 			continue
@@ -2229,7 +2179,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		// Project the same locked provider state used by reservation scoring.
 		var snap routingSnapshot
-		r.fillRoutingSnapshotPLocked(&snap, p, model, now)
+		r.fillRoutingSnapshotPLocked(&snap, p, model, now, serviceReport, estimates)
 
 		p.mu.Unlock()
 
@@ -2302,68 +2252,6 @@ func ttftMsFromSnapshot(snap *routingSnapshot, reqPromptTokens int) float64 {
 	return (ttftforecast.Estimate{HasCapacity: true, StatePenalty: statePenalty,
 		PrefillTPS: resolvePrefillTPS(snap), DecodeTPS: resolveEffectiveTPS(snap),
 		Work: ttftWork(snap)}).Base(reqPromptTokens)
-}
-
-// occupancyAwareTTFTMsFromSnapshot is the occupancy-aware TTFT estimate: the base
-// estimate (ttftMsFromSnapshot — what the LIVE cost / MaxTTFTMs ceiling / bestTTFT
-// consume) PLUS the Phase-0 head-of-line occupancy term (ttftOccupancyMs, gated by
-// EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA).
-//
-// It is used ONLY by the shadow evaluator today; a future enforce step will wire
-// it (against the verified ~10s base) into the live path. Keeping the occupancy
-// term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: prod runs HARD_REJECT
-// (pr.MaxTTFTMs set from the pinned request-local deadline), so if the term
-// leaked into ttftMsFromSnapshot, raising alpha would tighten the live ceiling
-// and over-shed ~2x (telemetry-db findings §2). The term may therefore only
-// ever reach the shadow estimate, never breakdown.TTFTMs.
-func occupancyAwareTTFTMsFromSnapshot(snap *routingSnapshot, reqPromptTokens int) float64 {
-	base := ttftMsFromSnapshot(snap, reqPromptTokens)
-	if base <= 0 {
-		// No reliable base (provider without BackendCapacity) → no occupancy-aware
-		// estimate either, matching ttftMsFromSnapshot's contract.
-		return base
-	}
-	return ttftforecast.Shadow(base, ttftOccupancyMs(snap))
-}
-
-// ttftOccupancyMs is the Phase-0 occupancy term: the head-of-line wait while the
-// box's already-occupying work (the herd) clears enough for a newly admitted
-// request to emit its first token. The base estimate (ttftMsFromSnapshot) counts
-// only WAITING prefill and a single decode step, so it is flat in running
-// occupancy — exactly where the ~11s of "dark time" lives. It is added ONLY in
-// occupancyAwareTTFTMsFromSnapshot (the shadow estimate), never in the live
-// ttftMsFromSnapshot.
-//
-// The term reuses the occupancy the snapshot ALREADY carries
-// (snapshotOccupancy = max(pendingForModel, backend_running+backend_waiting)),
-// not a new parallel counter, so it is herd-aware for free: a burst onto a box
-// still reporting backend_running=0 shows up through pendingForModel. Magnitude
-// per occupying peer is alpha decode-token-times divided by the per-request
-// decode rate the new request will actually see — projected at the SAME occupancy
-// (occ), not the stale backend_running gauge, so in the herd case (pendingForModel
-// > backend_running) it is charged the contended rate, not an idle-batch rate.
-// The rate itself shrinks with occ, making the term super-linear in occupancy.
-//
-// Returns 0 when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA is 0 (the default) or
-// occupancy is 0 (an idle box never pays the term, so route-to-idle is
-// preserved). The deadline this is gated against in the shadow evaluator is the
-// model's upstream SLA (standard ~10s), not the shorter live coordinator cutoff.
-// Conflating those clocks over-sheds (telemetry-db findings §2).
-func ttftOccupancyMs(snap *routingSnapshot) float64 {
-	alpha := ttftOccupancyAlpha
-	if alpha <= 0 {
-		return 0
-	}
-	occ := snapshotOccupancy(snap)
-	if occ <= 0 {
-		return 0
-	}
-	// Project the per-request rate at the batch the request ACTUALLY joins (occ),
-	// not the bare heartbeat backend_running: in the herd case the new request
-	// waits behind occ peers, so charging the idle/low-batch rate would under-
-	// state the term in exactly the case it exists to catch.
-	perReqDecodeTPS := projectedPerRequestDecodeTPSAtBatch(snap, occ)
-	return ttftforecast.OccupancyDelay(alpha, occ, perReqDecodeTPS)
 }
 
 func queuedPrefillTokensAhead(snap *routingSnapshot, reqPromptTokens int) float64 {

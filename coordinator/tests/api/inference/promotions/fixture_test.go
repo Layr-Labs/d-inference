@@ -50,11 +50,11 @@ func (s *promotionStore) useSettlement(backend store.ModelTokenPromotionStore) {
 	s.mu.Unlock()
 }
 
-func (s *promotionStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
+func (s *promotionStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning, referralEligible bool) (store.ModelTokenSettlement, error) {
 	s.mu.Lock()
 	backend := s.settlement
 	s.mu.Unlock()
-	return backend.SettleModelTokenReservation(id, actual, quote, earning)
+	return backend.SettleModelTokenReservation(id, actual, quote, earning, referralEligible)
 }
 
 func (s *promotionStore) RenewModelTokenReservations(ids []string, at time.Time) error {
@@ -108,7 +108,7 @@ func billingTestServer(t *testing.T) (*reservationFixture, *memory.MemoryStore, 
 	s := newComposedServer(registry.New(logger), store.NewCached(fault, store.CacheConfig{}), TestServerConfig{}, logger)
 	s.fault = fault
 	s.server.SetChallengeInterval(200 * time.Millisecond)
-	s.bindBilling(billing.NewService(s.store, s.ledger, logger, billing.Config{MockMode: true, ReferralSharePercent: 20}))
+	s.bindBilling(billing.NewService(s.store, s.ledger, logger, billing.Config{MockMode: true}))
 	_ = mem.Credit(store.LegacyAccountID("test-key"), 100_000_000, store.LedgerDeposit, "test-setup")
 	return s, mem, s.ledger
 }

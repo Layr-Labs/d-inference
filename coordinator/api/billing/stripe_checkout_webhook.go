@@ -63,6 +63,13 @@ func (s *Owner) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err = repo.CompleteStripeCheckout(id, obj.ID, account, obj.AmountTotal*10_000)
+	if errors.Is(err, store.ErrCheckoutErased) {
+		// Redelivery cannot credit an erased account; acknowledge so Stripe
+		// stops retrying. The payment needs a refund in the Stripe dashboard.
+		s.logger.Error("stripe Checkout completed for an erased account; refund it in Stripe", "billing_session_id", id)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, store.ErrPayoutConflict) {
@@ -73,11 +80,16 @@ func (s *Owner) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Checkout settlement not confirmed", status)
 		return
 	}
-	// Referral.Apply is idempotent; repeat deliveries can recover its failure
-	// without re-crediting the payment.
-	if code := obj.Metadata["referral_code"]; code != "" {
+	// Legacy checkout attribution affects future inference, not the deposit.
+	// Referral.Apply is idempotent; retries recover without re-crediting payment.
+	storedSession, err := s.billing.Store().GetBillingSession(id)
+	if err != nil {
+		http.Error(w, "Referral attribution unavailable", http.StatusInternalServerError)
+		return
+	}
+	if code := storedSession.ReferralCode; code != "" {
 		if err := s.billing.Referral().Apply(account, code); err != nil {
-			if errors.Is(err, billing.ErrReferralAlreadyAssigned) || errors.Is(err, billing.ErrReferralSelf) || errors.Is(err, billing.ErrReferralInvalidCode) {
+			if errors.Is(err, billing.ErrInvalidReferral) || errors.Is(err, store.ErrReferralConflict) {
 				// The payment is settled. A permanent, inapplicable referral
 				// cannot improve on retry and must never change attribution.
 				w.WriteHeader(http.StatusOK)

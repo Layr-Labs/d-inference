@@ -14,3 +14,11 @@ func (r *Registry) newConnectionOrigin(id string, at time.Time) *connectiontime.
 	}
 	return connectiontime.New(at)
 }
+
+// RegisteredAt returns the connection's immutable creation time, not a persistence time.
+func (p *Provider) RegisteredAt() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.connectionOrigin.Time()
+}

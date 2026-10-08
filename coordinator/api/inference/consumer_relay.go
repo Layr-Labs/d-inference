@@ -15,7 +15,7 @@ func (s *Owner) NewRelay() *relay.Controller {
 		Observation: s.observation,
 		Refund:      s.refundReservedBalance, Success: s.noteInferenceSuccess,
 		Error: s.noteInferenceError, Outcome: s.updateInferenceRouteOutcomeForPending,
-		ProviderError: s.writeGenericProviderError,
+		ProviderError: s.writeGenericProviderError, ResponseLimits: s.responseLimits,
 	}
 }
 

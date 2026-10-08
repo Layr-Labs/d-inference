@@ -66,6 +66,7 @@ func TestExactCacheDatadogGaugesAreAggregateAndPrivacySafe(t *testing.T) {
 	for _, metric := range []string{
 		"exact_cache.artifact_allowlist.configured",
 		"exact_cache.artifact_allowlist.count",
+		"exact_cache.artifact_allowlist.stale_models",
 		"exact_cache.memory_ready_models",
 		"exact_cache.eligibility_state",
 		"exact_cache.eligibility_reason",
@@ -75,6 +76,9 @@ func TestExactCacheDatadogGaugesAreAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache.donation_outcome",
 		"exact_cache.fence",
 		"exact_cache.fenced_capabilities",
+		"exact_cache.attempt_bytes",
+		"exact_cache.attempt_budget_refused",
+		"exact_cache.attempt_grace_reclaimed",
 		"exact_cache.demand_entries",
 		"exact_cache.demand_cap_evictions",
 	} {

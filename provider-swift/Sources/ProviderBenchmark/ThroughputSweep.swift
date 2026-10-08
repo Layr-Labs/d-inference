@@ -280,7 +280,8 @@ public enum ThroughputSweep {
     /// refuses. `requestedBatchSizes` versus `unmeasuredCells` is that
     /// partial case — invisible in `resolvedBackends`, which stays non-empty
     /// as long as ANY cell built.
-    private struct DecodeOutcome {
+    /// Internal, not private, so unit tests pin it without a GPU.
+    struct DecodeOutcome {
         var samples: [ThroughputSweepReport.DecodeSample] = []
         /// Distinct resolved-backend descriptors, in first-seen order. EMPTY
         /// means no cell ever built an engine.
@@ -665,7 +666,8 @@ public enum ThroughputSweep {
         return nil
     }
 
-    private static func makeNotes(
+    /// Internal, not private, so unit tests pin it without a GPU.
+    static func makeNotes(
         hardware: HardwareInfo,
         efficiency: Double,
         derived: ThroughputSweepReport.Derived,

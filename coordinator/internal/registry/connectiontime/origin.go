@@ -9,6 +9,14 @@ type Origin struct {
 
 func New(at time.Time) *Origin { return &Origin{at: at} }
 
+// Time returns the immutable creation time, or zero for an unknown origin.
+func (o *Origin) Time() time.Time {
+	if o == nil {
+		return time.Time{}
+	}
+	return o.at
+}
+
 // Age retains full duration precision; an undated connection has unknown age.
 func (o *Origin) Age(now time.Time) (time.Duration, bool) {
 	if o == nil || o.at.IsZero() {

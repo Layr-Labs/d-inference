@@ -28,17 +28,18 @@ func TestFirstContentRetainedAffinitySurvivesShortlistAndQuotes(t *testing.T) {
 			FirstContent: production.FirstContentEstimate{Status: production.FirstContentFeasible, ExpectedMs: 200, ConservativeMs: 1200},
 		}}
 	}
+	project := func(c *production.QuoteCandidate) selection.Candidate {
+		return selection.Candidate{ProviderID: c.ProviderID, ExpectedMs: c.FirstContent.ExpectedMs, AffinityEligible: c.CacheAffinityEligible}
+	}
 	choose := func(candidates []*production.QuoteCandidate) *production.QuoteCandidate {
-		d := selection.Select(candidates, func(c *production.QuoteCandidate) selection.Candidate {
-			return selection.Candidate{ProviderID: c.ProviderID, ExpectedMs: c.FirstContent.ExpectedMs, AffinityEligible: c.CacheAffinityEligible}
-		}, rand.Intn, affinity)
+		d := selection.Select(candidates, project, rand.Intn, affinity)
 		return candidates[d.Winner]
 	}
 	var want []string
 	for rotation := range pool {
 		ordered := append(slices.Clone(pool[rotation:]), pool[:rotation]...)
 		winner := choose(ordered)
-		entries := selection.Retain(ordered, winner, shortlist.MaxAlternates, choose, func(c *production.QuoteCandidate) production.QuoteCandidate {
+		entries := selection.RetainRanked(ordered, winner, shortlist.MaxAlternates, project, rand.Intn, affinity, func(c *production.QuoteCandidate) production.QuoteCandidate {
 			entry := *c
 			entry.ForecastAt = time.Now()
 			return entry
@@ -235,8 +236,8 @@ func TestFirstContentQuoteCannotRenewUnknownMeasurementsOrWork(t *testing.T) {
 			pr := forecast.Request{PromptTokens: 1000, UpperBoundTokens: 1000, Incoming: performance.IncomingWork{RequestedMaxTokens: 128}, Deadline: now.Add(10 * time.Second), RequireFreshFeasible: true, FreshAfter: now.Add(-time.Millisecond)}
 			c := reservationQuoteEvidence(now.Add(-2 * time.Millisecond))
 			tc.change(&c)
-			result := forecast.Evaluate(c, pr, now)
-			estimate := forecast.ApplyQuote(result, c, pr, forecast.Quote{Confirmed: true, Confidence: protocol.CapacityConfidenceHigh, ObservedAt: now, TTFTP50: time.Millisecond, TTFTP90: 2 * time.Millisecond}, forecast.QuoteContext{}, now)
+			result := forecast.Evaluate(&c, pr, now)
+			estimate := forecast.ApplyQuote(result, &c, pr, forecast.Quote{Confirmed: true, Confidence: protocol.CapacityConfidenceHigh, ObservedAt: now, TTFTP50: time.Millisecond, TTFTP90: 2 * time.Millisecond}, forecast.QuoteContext{}, now)
 			if estimate.Status != forecast.Unknown || forecast.Allows(estimate, pr, c.Workload.WholeMacBusy) {
 				t.Fatalf("fresh reply renewed invalid evidence: %+v", estimate)
 			}
@@ -249,9 +250,9 @@ func TestFirstContentQuoteCannotUndercutCurrentCacheAdjustedWork(t *testing.T) {
 	pr := forecast.Request{PromptTokens: 4000, UpperBoundTokens: 4000, Incoming: performance.IncomingWork{RequestedMaxTokens: 128}, Deadline: now.Add(2 * time.Second), RequireFreshFeasible: true, FreshAfter: now.Add(-time.Millisecond)}
 	c := reservationQuoteEvidence(now.Add(-2 * time.Millisecond))
 	forecast.CacheBenefit{Tokens: 2000, Weight: 1, RestoreMS: 80, ExpiresAt: now.Add(time.Minute)}.Apply(&pr, now)
-	result := forecast.Evaluate(c, pr, now)
+	result := forecast.Evaluate(&c, pr, now)
 	local := result.Estimate
-	estimate := forecast.ApplyQuote(result, c, pr, forecast.Quote{Confirmed: true, Confidence: protocol.CapacityConfidenceHigh, ObservedAt: now, TTFTP50: time.Millisecond, TTFTP90: 2 * time.Millisecond}, forecast.QuoteContext{}, now)
+	estimate := forecast.ApplyQuote(result, &c, pr, forecast.Quote{Confirmed: true, Confidence: protocol.CapacityConfidenceHigh, ObservedAt: now, TTFTP50: time.Millisecond, TTFTP90: 2 * time.Millisecond}, forecast.QuoteContext{}, now)
 	if estimate.ExpectedMs != local.ExpectedMs || estimate.ConservativeMs != local.ConservativeMs || estimate.Status != forecast.PredictedLate {
 		t.Fatalf("historically cached quote undercut current work: local=%+v quote=%+v", local, estimate)
 	}

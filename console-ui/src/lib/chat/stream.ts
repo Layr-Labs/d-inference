@@ -23,6 +23,7 @@ import type {
 } from "../api/types";
 import { ThinkStreamParser } from "./think-parser";
 import { readSsePayloads } from "./sse";
+import { assertChatRequestBudget, ChatRequestTooLargeError } from "./request-budget";
 
 import { parseVerification } from "../verification";
 
@@ -100,11 +101,15 @@ async function prepareBody(
   requestBody: unknown,
   selfRouteHeader: Record<string, string>,
 ): Promise<{ headers: Record<string, string>; body: string; sealCtx: SealContext | null }> {
-  if (!isEncryptionEnabled()) {
-    return { headers: proxyHeaders(selfRouteHeader), body: JSON.stringify(requestBody), sealCtx: null };
+  const body = JSON.stringify(requestBody);
+  const willSeal = isEncryptionEnabled();
+  assertChatRequestBudget(body, willSeal);
+  if (!willSeal) {
+    return { headers: proxyHeaders(selfRouteHeader), body, sealCtx: null };
   }
   const coordKey = await getCoordinatorKey();
   const sealed = sealRequest(requestBody, coordKey);
+  assertChatRequestBudget(sealed.envelopeJson);
   return {
     headers: proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE, ...selfRouteHeader }),
     body: sealed.envelopeJson,
@@ -133,6 +138,10 @@ export async function streamChat(
   try {
     ({ headers, body, sealCtx } = await prepareBody(requestBody, selfRouteHeader));
   } catch (err) {
+    if (err instanceof ChatRequestTooLargeError) {
+      callbacks.onError(err.message);
+      return;
+    }
     callbacks.onError(
       `Encryption setup failed: ${err instanceof Error ? err.message : String(err)} — disable "Encrypt to coordinator" in Settings to continue in plaintext.`,
     );

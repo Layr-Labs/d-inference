@@ -15,6 +15,7 @@ import (
 	startup "github.com/eigeninference/d-inference/coordinator/internal/startup"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/payments/autopilotrewards"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -42,6 +43,10 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 	} else {
 		logger.Info("base rewards disabled (set EIGENINFERENCE_BASE_REWARDS=true to enable)")
 	}
+	if cfg.ServerConfig.AutopilotRewardsEnabled {
+		srv.SetAutopilotRewards(autopilotrewards.NewEngine(st, logger, nil))
+		logger.Info("Autopilot rewards enabled; independent durable pool cap applies")
+	}
 
 	// Derive the coordinator's long-lived X25519 key.
 	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.EncryptionMnemonic); err == nil {
@@ -59,7 +64,7 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 	// Configure admin accounts.
 	if len(cfg.AdminEmails) > 0 {
 		srv.SetAdminEmails(cfg.AdminEmails)
-		logger.Info("admin accounts configured", "emails", cfg.AdminEmails)
+		logger.Info("admin accounts configured", "count", len(cfg.AdminEmails))
 	}
 
 	// Configure Privy authentication.
@@ -81,7 +86,7 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 		for _, m := range methods {
 			names = append(names, string(m.Method))
 		}
-		logger.Info("billing enabled", "methods", names, "referral_share_pct", billingCfg.ReferralSharePercent)
+		logger.Info("billing enabled", "methods", names, "referral_share_pct", billingSvc.Referral().SharePercent())
 	}
 
 	// Configure MDM client for provider security verification.
@@ -172,5 +177,8 @@ func configureBillingAndTrust(ctx context.Context, cfg config.AppConfig, srv *ap
 		)
 		os.Exit(1)
 	}
-
+	if err := startup.InitializeLegacyMDMPolicy(ctx, cfg, srv.Trust()); err != nil {
+		logger.Error("refusing to start: legacy MDM cohort initialization failed", "error", err)
+		os.Exit(1)
+	}
 }

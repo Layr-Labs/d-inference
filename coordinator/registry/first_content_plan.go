@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"math/rand"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/forecast"
@@ -13,10 +14,7 @@ import (
 // selector would make after successively removing each winner. This keeps the
 // 100-ms band, service load and affinity semantics out of a second comparator.
 func firstContentPlanEntries(pool []*routingCandidate, winner *routingCandidate, affinity string) []planEntry {
-	return selection.Retain(pool, winner, dispatchPlanMaxAlternates, func(remaining []*routingCandidate) *routingCandidate {
-		chosen, _, _, _ := selectRoutingCandidateWithAffinity(remaining, affinity)
-		return chosen
-	}, func(chosen *routingCandidate) planEntry {
+	return selection.RetainRanked(pool, winner, dispatchPlanMaxAlternates, selectionCandidate, rand.Intn, affinity, func(chosen *routingCandidate) planEntry {
 		return planEntry{PlanEntry: planViewOf(chosen), EvidenceQualified: chosen.firstContentEvidenceQualified, ForecastAt: time.Now(), CacheEvidenceWeight: chosen.cacheEvidenceWeight, CacheEstimatedTTFTSavedMs: chosen.cacheEstimatedTTFTSavedMs, CacheAffinityEligible: chosen.cacheAffinityEligible}
 	})
 }
@@ -28,7 +26,7 @@ func planViewOf(c *routingCandidate) PlanEntry {
 // Quote captures the identity and forecast used to assemble a retained plan.
 // Reservation always revalidates the session and admission state before debit.
 func (c *Candidate) Quote() PlanEntry {
-	return PlanEntry{CandidateBinding: c.snapshot.CandidateBinding, ProviderID: c.provider.ID, CostMs: c.costMs, FirstContent: c.firstContent, HealthMs: c.breakdown.HealthMs, CapacityRateMs: c.breakdown.CapacityRateMs,
+	return PlanEntry{CandidateBinding: c.CandidateBinding, ProviderID: c.provider.ID, CostMs: c.costMs, FirstContent: c.firstContent, HealthMs: c.breakdown.HealthMs, CapacityRateMs: c.breakdown.CapacityRateMs,
 		TTFTMs: c.firstContent.ExpectedMs, RawTTFTMs: c.breakdown.RawTTFTMs,
 		StateMs: c.breakdown.StateMs, ModelLoaded: c.snapshot.modelLoaded,
 		SlotState: c.snapshot.slotState, ChipFamily: c.snapshot.chipFamily}
@@ -96,6 +94,13 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 		views := make(map[string]PlanEntry, len(entries))
 		r.mu.RLock()
 		now := time.Now()
+		providers := make([]*Provider, 0, len(entries))
+		for _, entry := range entries {
+			if r.providers[entry.ProviderID] == entry.provider {
+				providers = append(providers, entry.provider)
+			}
+		}
+		estimates := r.coldKVEstimatesLocked(providers, model, now)
 		for _, entry := range entries {
 			id, p := entry.ProviderID, entry.provider
 			reason := PlanSkipReason("")
@@ -116,17 +121,17 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 			if reason == "" {
 				p.mu.Lock()
 				var snap routingSnapshot
-				ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, owned && (pr.PreferOwner || pr.SelfRouteOnly), false, now)
+				ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, owned && (pr.PreferOwner || pr.SelfRouteOnly), false, now, estimates)
 				if ok {
-					candidate, _, ok = r.buildCandidateWithReason(snap, pr, now)
+					candidate, _, ok = r.buildCandidateWithReason(&snap, pr, now)
 				}
 				if ok && pr.RequiresVision {
 					ok = r.providerServesVisionModelLocked(p, model, owned && (pr.PreferOwner || pr.SelfRouteOnly))
 				}
 				if ok {
-					r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
-					r.estimateFirstContent(candidate, pr, now)
-					applyFirstContentQuote(candidate, pr, entry.PlanEntry, now)
+					r.applyCacheRoutingCostPLocked(p, model, pr, candidate, &snap)
+					r.estimateFirstContent(candidate, &snap, pr, now)
+					applyFirstContentQuote(candidate, &snap, pr, entry.PlanEntry, now)
 					ok = firstContentCandidateAllowed(candidate, pr)
 				}
 				p.mu.Unlock()
@@ -162,7 +167,9 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 			pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool { return providerVersion(c.provider) != pr.Traits.AvoidVersion })
 		}
 		if pr.MinDecodeTPS > 0 {
-			pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool { return projectedPerRequestDecodeTPS(&c.snapshot) >= pr.MinDecodeTPS })
+			pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool {
+				return c.snapshot.projectedDecodeTPS(c.snapshot.backendRunning) >= pr.MinDecodeTPS
+			})
 		}
 		scan.candidates.Candidates = pool
 		scan.candidates.CandidateCount = len(pool)
@@ -207,13 +214,14 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 	return nil, RoutingDecision{Model: model}, skips
 }
 
-func applyFirstContentQuote(c *routingCandidate, pr *PendingRequest, quote PlanEntry, now time.Time) {
-	c.firstContent = forecast.ApplyQuote(forecast.Result{Estimate: c.firstContent, Calibrated: c.snapshot.calibratedForecastQualified},
-		firstContentForecastEvidence(&c.snapshot, c.firstContent.PromptTokens),
+func applyFirstContentQuote(c *routingCandidate, snapshot *routingSnapshot, pr *PendingRequest, quote PlanEntry, now time.Time) {
+	evidence := firstContentForecastEvidence(snapshot, c.firstContent.PromptTokens)
+	c.firstContent = forecast.ApplyQuote(forecast.Result{Estimate: c.firstContent, Calibrated: snapshot.calibratedForecastQualified},
+		&evidence,
 		forecast.Request{PromptTokens: c.firstContent.PromptTokens, FreshAfter: pr.RequireFreshFeasibleAfter,
 			Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision}, Deadline: candidateFirstContentDeadline(c, pr),
 			Hedge: pr.Hedge, RequireFreshFeasible: pr.RequireFreshFeasible, PlanningHorizon: pr.FirstContentPlanningHorizon},
-		forecastQuote(quote), forecast.QuoteContext{CapacitySeq: c.snapshot.capacitySeq, NewestReservationAt: c.snapshot.newestReservationAt}, now)
+		forecastQuote(quote), forecast.QuoteContext{CapacitySeq: snapshot.capacitySeq, NewestReservationAt: snapshot.newestReservationAt}, now)
 }
 
 func forecastQuote(quote PlanEntry) forecast.Quote {

@@ -15,7 +15,7 @@ func (s *Owner) NewDispatcher() *dispatch.Dispatcher {
 		RecordPolicy: func(ap *registry.AttemptProfile, p dispatch.Scope, vision bool) {
 			s.recordPredictivePolicy(ap, selfRoutePolicy{enabled: p.SelfRouteOnly, prefer: p.PreferOwner, ownerAccountID: p.OwnerAccountID}, vision)
 		},
-	}, dispatch.Config{BillingEnabled: s.billing != nil, HardTTFTReject: s.ttftHardReject, MinDecodeTPS: s.minDecodeTPS})
+	}, dispatch.Config{BillingEnabled: s.billing != nil, HardTTFTReject: s.ttftHardReject, MinDecodeTPS: s.minDecodeTPS, ResponseLimits: s.responseLimits})
 }
 
 // dispatchExclusions adapts the owner's private exclusion set to the transport's

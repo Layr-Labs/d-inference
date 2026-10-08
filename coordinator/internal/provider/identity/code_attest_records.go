@@ -8,17 +8,22 @@ import (
 )
 
 func (t *Throttle) RecordAttestedForProcess(
+	generation uint64,
 	seKey, version, token, nodeKey, binaryHash string,
-) {
+) bool {
 	if seKey == "" {
-		return
+		return false
 	}
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.publicationCurrentLocked(seKey, generation) {
+		return false
+	}
 	t.attested[seKey] = proofRecord{
 		At: t.Now().Truncate(time.Microsecond), Version: version, Token: token, NodeKey: nodeKey,
 		BinaryHash: binaryHash,
 	}
-	t.mu.Unlock()
+	return true
 }
 
 // invalidateReuse drops any cached reuse record for a device so the NEXT
@@ -47,13 +52,13 @@ func (t *Throttle) InvalidateReuse(seKey string) {
 // reuseAttestation re-validates version, freshness, token, and exact process key
 // on every read. A stale, mismatched, or legacy process-key-less row still
 // forces a real challenge.
-func (t *Throttle) Seed(rows []store.CodeAttestation) int {
+func (t *Throttle) Seed(generation uint64, rows []store.CodeAttestation) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.Now()
 	n := 0
 	for _, r := range rows {
-		if r.SEPubKey == "" {
+		if r.SEPubKey == "" || !t.publicationCurrentLocked(r.SEPubKey, generation) {
 			continue
 		}
 		candidate := proofRecord{At: r.AttestedAt, Version: r.Version, Token: r.APNsToken, NodeKey: r.NodePublicKey, BinaryHash: r.BinaryHash, CoveredUntil: trustreuse.CoverageFromStore(r.ContinuousCoverageUntil)}

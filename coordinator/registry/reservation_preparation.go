@@ -15,10 +15,6 @@ type ReservationPreparation interface {
 
 type ReservationPlanner struct{ registry *Registry }
 
-func (p *ReservationPlanner) scan(model string, pending *PendingRequest, excludeIDs ...string) ReservationSelection {
-	return p.registry.scanProviderReservation(model, pending, excludeIDs...)
-}
-
 func (p *ReservationPlanner) Prepare(model string, pending *PendingRequest, excludeIDs ...string) *PreparedReservation {
 	return p.registry.prepareProviderReservation(model, pending, excludeIDs...)
 }

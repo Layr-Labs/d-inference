@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheindex"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachetracker"
+	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 func TestCacheHolderCapEvictsSoonestExpiringFirst(t *testing.T) {
@@ -104,8 +105,10 @@ func TestCacheSweepTouchesOnlyExpiredHolders(t *testing.T) {
 // An attempt's deadline is rewritten when it turns terminal (two hours in
 // flight, two minutes after), so creation order is not expiry order.
 func TestCacheAttemptSweepAndCapFollowExpiry(t *testing.T) {
-	tracker := newCacheIndexKernelFixture(cachetracker.Settings{TTL: time.Minute, MaxHolders: indexKernelMaxHolders, MaxEntries: indexKernelMaxEntries, MaxAttempts: 2})
 	base := time.Unix(1_700_000_000, 0)
+	now := func() time.Time { return base }
+	tracker := newCacheIndexKernelFixture(cachetracker.Settings{TTL: time.Minute, MaxHolders: indexKernelMaxHolders, MaxEntries: indexKernelMaxEntries, MaxAttempts: 2},
+		func(config *cachetracker.Config[*production.Provider]) { config.Now = now })
 	store := func(nonce string, after time.Duration) {
 		t.Helper()
 		created := base.Add(after)

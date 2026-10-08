@@ -38,6 +38,9 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawa
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := lockAccountAdmission(ctx, tx, w.AccountID); err != nil {
+		return err
+	}
 
 	// Guarded dual-column debit: both the total and withdrawable balances
 	// must cover the amount, so the debit is symmetric with CreditWithdrawable
@@ -73,11 +76,11 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawa
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at, transfer_attempt, transfer_started_at, transfer_lease_until, transfer_dispatch_attempts)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
-		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
+		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt, w.TransferAttempt, w.TransferStartedAt, w.TransferLeaseUntil, w.TransferDispatchAttempts,
 	); err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
 	}
@@ -87,13 +90,13 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *store.StripeWithdrawa
 
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-	failure_reason, refunded, fee_refunded, created_at, updated_at`
+	failure_reason, refunded, fee_refunded, created_at, updated_at, transfer_attempt, transfer_started_at, transfer_lease_until, transfer_dispatch_attempts`
 
 func scanStripeWithdrawal(row rowScanner) (*store.StripeWithdrawal, error) {
 	var w store.StripeWithdrawal
 	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID, &w.SweepPayoutID,
 		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Status,
-		&w.FailureReason, &w.Refunded, &w.FeeRefunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		&w.FailureReason, &w.Refunded, &w.FeeRefunded, &w.CreatedAt, &w.UpdatedAt, &w.TransferAttempt, &w.TransferStartedAt, &w.TransferLeaseUntil, &w.TransferDispatchAttempts); err != nil {
 		return nil, err
 	}
 	return &w, nil
@@ -277,7 +280,7 @@ func (s *PostgresStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID strin
 }
 
 // ListStripeWithdrawalsByStatus returns up to limit withdrawals in the given
-// status created before olderThan, oldest first. Limits <= 0 or above the cap
+// status whose reconciliation age starts before olderThan, oldest first. Limits <= 0 or above the cap
 // are clamped to MaxStripeWithdrawalsByStatusLimit — never unbounded.
 func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]store.StripeWithdrawal, error) {
 	if limit <= 0 || limit > store.MaxStripeWithdrawalsByStatusLimit {
@@ -286,8 +289,9 @@ func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan t
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	ageStart := `CASE WHEN status='pending' THEN COALESCE(NULLIF(transfer_started_at,'0001-01-01 00:00:00+00'::timestamptz),created_at) WHEN status='transferred' THEN updated_at ELSE created_at END`
 	q := `SELECT ` + stripeWithdrawalSelectColumns + ` FROM stripe_withdrawals
-		 WHERE status = $1 AND created_at < $2 ORDER BY created_at ASC LIMIT $3`
+		 WHERE status = $1 AND ` + ageStart + ` < $2 ORDER BY ` + ageStart + ` ASC,id ASC LIMIT $3`
 	args := []any{status, olderThan, limit}
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -307,7 +311,7 @@ func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan t
 }
 
 // ListStripeWithdrawalsForStripeAccount returns withdrawals destined for the
-// given connected account in the given status, oldest first. Capped at
+// given connected account in the given status, oldest update first. Capped at
 // MaxStripeWithdrawalsByStatusLimit as a webhook-path safety bound (a single
 // account should never approach it; stragglers are picked up on redelivery
 // or the next sweep since completed rows drop out of the status filter).
@@ -317,7 +321,7 @@ func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, s
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
-		 WHERE stripe_account_id = $1 AND status = $2 ORDER BY created_at ASC LIMIT $3`,
+		 WHERE stripe_account_id = $1 AND status = $2 ORDER BY updated_at ASC,id ASC LIMIT $3`,
 		stripeAccountID, status, store.MaxStripeWithdrawalsByStatusLimit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list stripe withdrawals for stripe account: %w", err)

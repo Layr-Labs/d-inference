@@ -11,14 +11,26 @@ actor FanActivityLease {
         category: "fan-lease"
     )
     private let providerVersion: String
-    private var running = false
+    private let helperURL: URL
+    private let machServiceName: String
+    private(set) var running = false
     private var connection: FanXPCConnectionBox?
     private var renewalTask: Task<Void, Never>?
-    private var lastReportedError: String?
+    private(set) var lastReportedError: String?
 
-    init(providerVersion: String) {
+    /// Production uses the installed helper path and its launchd service.
+    /// Tests pass a temp file and a service name that nothing registers.
+    init(
+        providerVersion: String,
+        helperURL: URL = FanServicePaths.production.helper,
+        machServiceName: String = FanIPC.machServiceName
+    ) {
         self.providerVersion = providerVersion
+        self.helperURL = helperURL
+        self.machServiceName = machServiceName
     }
+
+    var hasConnection: Bool { connection != nil }
 
     func start() {
         guard !running else { return }
@@ -57,9 +69,7 @@ actor FanActivityLease {
 
     private func renew() {
         guard running else { return }
-        guard FileManager.default.fileExists(
-            atPath: FanServicePaths.production.helper.path
-        ) else {
+        guard FileManager.default.fileExists(atPath: helperURL.path) else {
             connection?.value.invalidate()
             connection = nil
             return
@@ -85,7 +95,7 @@ actor FanActivityLease {
 
     private func connect() {
         let rawConnection = NSXPCConnection(
-            machServiceName: FanIPC.machServiceName,
+            machServiceName: machServiceName,
             options: .privileged
         )
         let newConnection = FanXPCConnectionBox(rawConnection)
@@ -112,7 +122,7 @@ actor FanActivityLease {
         connection = nil
     }
 
-    private func handleRenewalReply(_ data: Data) {
+    func handleRenewalReply(_ data: Data) {
         do {
             let reply = try FanIPCCoding.decode(FanIPCReply.self, from: data)
             guard !reply.ok else {
@@ -144,7 +154,16 @@ func withFanActivityLease<T>(
     providerVersion: String,
     operation: () async throws -> T
 ) async rethrows -> T {
-    let lease = FanActivityLease(providerVersion: providerVersion)
+    try await withFanActivityLease(
+        FanActivityLease(providerVersion: providerVersion),
+        operation: operation
+    )
+}
+
+func withFanActivityLease<T>(
+    _ lease: FanActivityLease,
+    operation: () async throws -> T
+) async rethrows -> T {
     await lease.start()
     return try await withTaskCancellationHandler {
         do {

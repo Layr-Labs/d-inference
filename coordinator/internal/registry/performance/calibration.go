@@ -39,7 +39,9 @@ type IncomingWork struct {
 
 // PredictCalibrated prices incoming prompt work and only a bounded early
 // decode, never the incoming completion's entire memory commitment.
-func PredictCalibrated(e CalibrationEvidence, incoming IncomingWork, capacityFreshness, performanceFreshness time.Duration, decodeAllowance int) (firstcontent.Prediction, int32, bool) {
+// It borrows non-nil immutable evidence for this call and copies Work before
+// adding incoming work. Neither the evidence nor its nested inputs are retained.
+func PredictCalibrated(e *CalibrationEvidence, incoming IncomingWork, capacityFreshness, performanceFreshness time.Duration, decodeAllowance int) (firstcontent.Prediction, int32, bool) {
 	calibration := e.Calibration
 	if calibration == nil || !e.WorkKnown ||
 		!e.HasCapacity || e.CapacityAgeMS < 0 || time.Duration(e.CapacityAgeMS)*time.Millisecond > capacityFreshness ||

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-08
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -25,6 +25,12 @@ The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) us
 App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
 
 `ready` replies may also carry optional deep diagnostics (`process_started_at`, `previous_exit`, `start_reason`, `console_user_active`, `sip_enabled`, `authenticated_root`, `preflight`, `key_history`, `push_history`), and failed `attestation`/`assertion` replies with result `apple_error` or `apple_invalid_key` may carry `native_error_chain`; `coordinator/protocol/app_attest_deep_diagnostic.go` strips each invalid or misplaced member without rejecting the frame. See [Provider diagnostics](app-attest-shadow.md#provider-diagnostics).
+
+Non-streaming response limits are enforced by the coordinator after decryption.
+An over-limit attempt uses the existing `cancel` frame; no provider wire field
+or failure-code vocabulary changes. The internal `response_limit` cause has
+`json:"-"` and cannot be claimed by provider JSON. See the
+[API limits](api-contracts.md#limits-and-validation).
 
 ## Provider lifecycle drain
 
@@ -944,8 +950,15 @@ Memory holder lifetime is `min(configured TTL, 30s)` (`receiptTTL`,
 staging for resident KV. Sequences increase independently per tier/model/epoch;
 nonce, connection, model/hash/contract, epoch, order, and replay checks still
 apply. Repeated ready anchors cannot refresh expired evidence. Resident LRU
-removal uses bounded TTL and exact-miss invalidation; there is no per-anchor
+removal, and routine owned retirement in active SSD stores, use bounded TTL and
+verified-miss invalidation; there is no per-anchor
 eviction frame. Unload/reconnect replaces the capability snapshot.
+
+An SSD epoch describes reusable-state identity, not guaranteed presence of every
+previously advertised file. An accepted absent/corrupt lookup removes the
+provider's hints for all boundaries in that attempt's plan. Native authentication,
+nonce/sequence/scope/connection checks and generation-wide invalidation on unsafe
+changes remain required; a stale routing hint never grants a cache hit.
 
 ### `capacity_quote`
 
@@ -1181,7 +1194,8 @@ support.
 | JSON key | Go / Swift | Presence | Meaning |
 |---|---|---|---|
 | `protocol` | `int` / `Int` | req | `3` for separate planning inventory and session activation |
-| `enabled`, `cached_only` | `bool` / `Bool` | req | Explicit consent and cached-only scope; both must be true for planning |
+| `enabled`, `cached_only` | `bool` / `Bool` | req | Current scheduling participation and cached-only scope; both must be true for planning |
+| `consent_enabled` | `*bool` / `Bool?` | opt; absent remains unknown | Saved `ModelAutopilotSettings.hasConsent`, independent of readiness, inventory refresh, pause, shadow mode or control lease; explicit false is distinct from missing/null |
 | `active`, `paused` | `bool` / `Bool` | req | Acknowledged live control and explicit local pause |
 | `observe_only` | `bool` / `Bool` | req; always emitted | Acknowledged shadow mode; a valid shadow lease reports `true` with `active=false` and the matching session |
 | `session_id` | `string` / `String?` | opt | Acknowledged control connection; shadow acknowledgement is not live ownership |
@@ -1213,14 +1227,38 @@ State validation and malformed-report fencing are in
 replace the paired heartbeat, clear an uncertain operation by age alone or
 make unconfirmed slots routable.
 
-Provider `enabled` reports eligible consent, not activation. Saved consent stays
-local when an ordinary successor extends serving permission beyond cached
-consent: the provider reports `enabled=false` and local phase `waiting_inventory`
+Provider `enabled` reports eligible scheduling participation, not activation.
+When an ordinary successor extends serving permission beyond cached consent,
+the provider reports `enabled=false` and local phase `waiting_inventory`
 until explicit inventory refresh, preserving ordinary serving with old peers.
+Saved consent remains independently visible as `consent_enabled=true`.
 It does not itself
 activate warm-only network admission. The default shadow rollout sends leases for
 explicit mode/status but no residency commands. Shadow lease acknowledgement is
 not live ownership or actual capacity credit.
+
+The saved declaration is defined in `coordinator/protocol/model_autopilot.go`
+(`ModelAutopilotState.ConsentEnabled`) and
+`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift`
+(`ModelAutopilotSnapshot.consentEnabled`).
+`ModelAutopilotSnapshot+Decoding.swift` in that Swift directory preserves old
+omission as `nil` and accepts the local daemon reader's converted key too.
+`publishModelAutopilotSnapshot`
+(`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`)
+emits the saved setting explicitly, including false for unenrolled state.
+
+`AutopilotRewardConsentSnapshot`
+(`coordinator/registry/autopilot_reward_snapshot.go`) reads the accepted registry
+state, not an unaccepted raw heartbeat. A supported protocol-3 explicit false
+is a valid opt-out even without a selected inventory. True additionally requires
+cached-only scope, a nonempty revision of at most 64 bytes, and the bounded
+nonempty selection above; it does not require `enabled=true`. Missing,
+unsupported or malformed declarations are nonqualifying unknown history, never
+proof that no earlier opt-in occurred. Saved-consent capture uses the authenticated
+socket account and server receive time, with no trusted client opt-in timestamp.
+See [history and payout limits](../architecture/billing.md#autopilot-rewards).
+This additive field does not change protocol-3 control negotiation; qualifying
+reward declarations require an updated provider build to be released separately.
 
 The `selected_models` allowlist is populated by verified active downloaded network
 inventory, not a model picker, arbitrary local/off-catalog discovery or a download
@@ -1276,7 +1314,7 @@ backend-capacity heartbeat. See [autopilot architecture](../architecture/model-a
 | Layer | Files |
 |---|---|
 | Go shape and envelope | `coordinator/tests/protocol/messages_register_heartbeat_test.go`, `messages_backend_capacity_test.go`, `messages_inference_test.go`, `messages_terminal_cause_test.go`, `messages_attestation_test.go`, `messages_model_lifecycle_test.go`, `messages_envelope_test.go`, `prefix_cache_v2_test.go`, `prefix_cache_telemetry_test.go`, `capacity_test.go`, `inference_failure_test.go`, `tool_constraints_test.go`, `type_scan_test.go` |
-| Autopilot command/state | `coordinator/tests/protocol/model_autopilot_test.go`; `provider-swift/Tests/ProviderCoreTests/Autopilot/ModelAutopilotTests.swift` |
+| Autopilot command/state and saved consent | `coordinator/tests/protocol/model_autopilot_test.go`; `provider-swift/Tests/ProviderCoreTests/Autopilot/ModelAutopilotTests.swift`, `AutopilotSnapshotCodingTests.swift`, `AutopilotInventoryTests.swift` in the same directory |
 | Go ↔ Swift key pinning | `coordinator/tests/api/inference/provider_wire_test.go`; `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift`, `CapacityQuoteProtocolTests.swift` |
 | `profile` fixture | `coordinator/tests/protocol/testdata/profiler_wire_fixture.json` — written by Go, loaded by Swift |
 

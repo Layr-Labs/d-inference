@@ -49,6 +49,7 @@ func (s *Service,
 		s.InstallPendingRevocations(journalEntries)
 	}
 
+	publication := s.trustReuseCache.PublicationGeneration()
 	rows, err := s.store.ListProviderTrustReuse(ctx)
 	if err != nil {
 		if len(journalEntries) > 0 {
@@ -79,7 +80,7 @@ func (s *Service,
 				}
 				continue
 			}
-			s.trustReuseCache.InstallAuthoritativeTrustReuse(authoritative)
+			s.trustReuseCache.InstallAuthoritativeTrustReuse(publication, authoritative)
 		}
 		// A hard untrust during a store outage for an identity with no
 		// provider_trust_reuse row leaves an entry that matches nothing above.
@@ -96,7 +97,7 @@ func (s *Service,
 					replayErr = fmt.Errorf("replay hard-untrust revocation: %w", err)
 				}
 			} else {
-				s.trustReuseCache.InstallAuthoritativeTrustReuse(authoritative)
+				s.trustReuseCache.InstallAuthoritativeTrustReuse(publication, authoritative)
 			}
 		}
 		if !matched || !replayed {

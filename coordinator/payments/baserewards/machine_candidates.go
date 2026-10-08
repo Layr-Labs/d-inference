@@ -19,9 +19,9 @@ type machineRewardGroup struct {
 }
 
 // buildCandidates uses one floor identity per verified canonical machine while
-// retaining original encryption keys for accounting. Legacy providers without
-// inventory retain their existing key; App Attest providers fail closed without
-// a matching durable binding. App Attest does not certify physical uniqueness.
+// retaining original encryption keys for accounting. Eligible App Attest providers
+// fail closed without a matching durable binding. App Attest does not certify
+// physical uniqueness.
 func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]candidate, error) {
 	return e.buildCandidatesWithBindings(ctx, start, end, nil)
 }
@@ -46,7 +46,6 @@ func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end tim
 		}
 	}
 	normalizeRewardBindings(bindings)
-	accountByKey := latestAccountByProviderKey(sessions)
 	groups := make(map[string]*machineRewardGroup)
 	for _, p := range live {
 		if !rewardSnapshotEligible(p) {
@@ -57,24 +56,17 @@ func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end tim
 			continue
 		}
 		account := p.AccountID
-		if account == "" && !p.AppAttestAuthorized {
-			account = accountByKey[p.ProviderKey]
-		}
 		if account == "" {
 			continue
 		}
 		binding, bound := bindings[p.ID]
-		bound = bound && binding.AccountID == account && (p.MachineID == "" && !p.AppAttestAuthorized || slices.Contains(binding.MachineAliases, p.MachineID))
-		if p.AppAttestAuthorized && (!bound || p.MachineID == "") {
+		if !bound || binding.AccountID != account || p.MachineID == "" || !slices.Contains(binding.MachineAliases, p.MachineID) {
 			continue
 		}
-		key, machine := p.ProviderKey, ""
-		if bound {
-			machine, key = binding.MachineID, store.MachineFloorKey(binding.MachineID)
-		}
+		key := store.MachineFloorKey(binding.MachineID)
 		g := groups[key]
 		if g == nil {
-			g = &machineRewardGroup{candidate: candidate{c: rewardpolicy.Candidate{ProviderKey: key, AccountID: account, MemGB: mem}, machineID: machine}, model: p.HardwareModel}
+			g = &machineRewardGroup{candidate: candidate{c: rewardpolicy.Candidate{ProviderKey: key, AccountID: account, MemGB: mem}, machineID: binding.MachineID}, model: p.HardwareModel}
 			groups[key] = g
 		}
 		// Concurrent credentials cannot manufacture two floors or select the
@@ -83,9 +75,7 @@ func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end tim
 		g.c.MemGB = min(g.c.MemGB, mem)
 		g.live = append(g.live, p)
 		g.previousKeys = append(g.previousKeys, p.ProviderKey)
-		if bound {
-			g.machineAliases = append(g.machineAliases, binding.MachineAliases...)
-		}
+		g.machineAliases = append(g.machineAliases, binding.MachineAliases...)
 	}
 	// Fold overlapping/reconnected sessions onto their verified machine before
 	// the existing interval union. Never add another account's uptime or earnings.
@@ -114,15 +104,11 @@ func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end tim
 		}
 		g.previousKeys = compactRewardKeys(g.previousKeys)
 		g.machineAliases = compactRewardKeys(g.machineAliases)
-		if g.machineID == "" {
-			g.c.Earned, err = e.store.SumProviderEarningsByKey(ctx, g.c.ProviderKey, start, end)
-		} else {
-			st, ok := store.As[store.MachineRewardStore](e.store)
-			if !ok {
-				return nil, errors.New("base rewards: verified machine accounting store unavailable")
-			}
-			g.c.Earned, err = st.SumProviderEarningsByKeysForAccount(ctx, g.c.AccountID, g.previousKeys, start, end)
+		st, ok := store.As[store.MachineRewardStore](e.store)
+		if !ok {
+			return nil, errors.New("base rewards: verified machine accounting store unavailable")
 		}
+		g.c.Earned, err = st.SumProviderEarningsByKeysForAccount(ctx, g.c.AccountID, g.previousKeys, start, end)
 		if err != nil {
 			return nil, err
 		}
@@ -184,7 +170,8 @@ func normalizeRewardBindings(bindings map[string]store.MachineRewardBinding) {
 }
 
 func rewardSnapshotEligible(p registry.ProviderSnapshot) bool {
-	return p.ServingAuthorized && (p.AppAttestAuthorized || p.Attested) && p.Online && p.ModelLoaded && p.ProviderKey != "" &&
+	// Grandfathered MDM can authorize serving, but never a new base reward.
+	return p.ServingAuthorized && p.AppAttestAuthorized && rewardpolicy.OSVersionEligible(p.AppAttestOSVersion) && p.Online && p.ModelLoaded && p.ProviderKey != "" &&
 		p.MemoryPressure < 0.8 && p.ThermalState != "critical"
 }
 

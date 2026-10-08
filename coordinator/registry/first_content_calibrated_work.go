@@ -3,6 +3,7 @@ package registry
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/capacityvalue"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/deadline"
 )
 
@@ -10,9 +11,9 @@ import (
 // service-lease correlation. Receipt time never proves a pending request was
 // included. Missing pre-submit, local, or retirement ownership stays unknown.
 // Caller holds p.mu; profile resolution needs no additional registry lock.
-func fillCalibratedWorkSnapshot(s *routingSnapshot, p *Provider, now time.Time) {
-	builder, known := deadline.BoundSlots(p.deadlineProfiles, deadline.Identity{Version: p.Version, Hardware: p.Hardware,
-		Models: p.Models, Capacity: p.BackendCapacity, Metrics: p.SystemMetrics}, s.model)
+func fillCalibratedWorkSnapshot(s *routingSnapshot, p *Provider, now time.Time, report capacityvalue.ServiceReport) {
+	builder, known := deadline.BoundSlotsWithReport(p.deadlineProfiles, deadline.Identity{Version: p.Version, Hardware: p.Hardware,
+		Models: p.Models, Capacity: p.BackendCapacity, Metrics: p.SystemMetrics}, s.model, report)
 	if !known {
 		return
 	}

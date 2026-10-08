@@ -75,7 +75,7 @@ func TestFirstContentOtherSlotUncertaintyStillBlocksQualification(t *testing.T) 
 			e := f.evidence(now, pending...)
 			p.Mu().Unlock()
 			pr := forecast.Request{PromptTokens: 1000, UpperBoundTokens: 1000, Incoming: performance.IncomingWork{RequestedMaxTokens: 128}, Deadline: now.Add(10 * time.Second)}
-			estimate := forecast.Evaluate(e, pr, now).Estimate
+			estimate := forecast.Evaluate(&e, pr, now).Estimate
 			if estimate.Status != forecast.Unknown || estimate.Reason != "competing_work_unknown" {
 				t.Fatalf("uncertain work became qualified: %+v", estimate)
 			}
@@ -103,7 +103,7 @@ func TestFirstContentDormantTargetStillNeedsLoadEvidence(t *testing.T) {
 	e := f.evidence(now)
 	f.p.Mu().Unlock()
 	pr := forecast.Request{PromptTokens: 1000, UpperBoundTokens: 1000, Incoming: performance.IncomingWork{RequestedMaxTokens: 128}, Deadline: now.Add(time.Minute)}
-	estimate := forecast.Evaluate(e, pr, now).Estimate
+	estimate := forecast.Evaluate(&e, pr, now).Estimate
 	if estimate.Status != forecast.Unknown || estimate.Reason != "load_work_unknown" {
 		t.Fatalf("dormant target skipped its load uncertainty: %+v", estimate)
 	}

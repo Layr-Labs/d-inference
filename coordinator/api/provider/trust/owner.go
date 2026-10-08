@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
@@ -21,6 +22,7 @@ import (
 	codeidentity "github.com/eigeninference/d-inference/coordinator/internal/provider/identity"
 	coderesume "github.com/eigeninference/d-inference/coordinator/internal/provider/identity/resume"
 	trustjournal "github.com/eigeninference/d-inference/coordinator/internal/provider/journal"
+	"github.com/eigeninference/d-inference/coordinator/internal/provider/legacymdm"
 	trustreuse "github.com/eigeninference/d-inference/coordinator/internal/provider/reuse"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -58,6 +60,7 @@ type Config struct {
 }
 
 type Owner struct {
+	LegacyMDM *legacymdm.Policy
 	*trustauthority.Service
 	*codeattest.Controller
 	*deviceverification.Verifier
@@ -85,7 +88,7 @@ type Owner struct {
 }
 
 func New(d Dependencies, cfg Config) *Owner {
-	s := &Owner{registry: d.Registry, store: d.Store, access: d.Access, releases: d.Releases,
+	s := &Owner{LegacyMDM: legacymdm.New(d.Store), registry: d.Registry, store: d.Store, access: d.Access, releases: d.Releases,
 		observation: d.Observation, readCache: d.ReadCache, logger: d.Logger, hooks: d.Hooks,
 		appAttestShadow: cfg.AppAttest, mdmSchedulerConfig: cfg.MDMScheduler,
 		challengeSettings:  challenge.Configuration{MinProviderVersion: strings.TrimSpace(cfg.MinProviderVersion)},
@@ -112,8 +115,9 @@ func New(d Dependencies, cfg Config) *Owner {
 	}
 	s.Service = trustauthority.New(trustauthority.Dependencies{
 		Registry: d.Registry, Store: d.Store, Cache: cache, Journal: journal,
-		Coverage: trustcoverage.New(d.Registry, d.Logger, cache),
-		Logger:   d.Logger, Observation: d.Observation,
+		LegacyMDMAllowed: s.LegacyMDM.ProviderAllowed,
+		Coverage:         trustcoverage.New(d.Registry, d.Logger, cache),
+		Logger:           d.Logger, Observation: d.Observation,
 		MDMConfigured: func() bool {
 			return s.verificationBackend.Client != nil
 		},
@@ -126,7 +130,8 @@ func New(d Dependencies, cfg Config) *Owner {
 	})
 	s.Verifier = deviceverification.New(deviceverification.Dependencies{
 		Registry: d.Registry, Store: d.Store, Observation: d.Observation, Logger: d.Logger,
-		Backend: s.verificationBackend, Authority: s.Service, SendTrustStatus: s.sendTrustStatus,
+		LegacyMDMAllowed: s.LegacyMDM.ProviderAllowed,
+		Backend:          s.verificationBackend, Authority: s.Service, SendTrustStatus: s.sendTrustStatus,
 	})
 	s.Engine = challenge.NewEngine(challenge.Dependencies{
 		Registry: d.Registry, Releases: d.Releases, Observation: d.Observation, Logger: d.Logger,
@@ -150,4 +155,11 @@ func (s *Owner) BelowMinProviderVersion(version string) bool {
 }
 func (s *Owner) AppAttestServing() bool {
 	return s.appAttestShadow.ServingEnabled && s.appAttestShadow.Environment == "production"
+}
+
+// InitializeLegacyMDMPolicy runs after durable revocation replay and before serving.
+func (s *Owner) InitializeLegacyMDMPolicy(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return s.LegacyMDM.Initialize(ctx, s.appAttestShadow)
 }

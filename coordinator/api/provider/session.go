@@ -15,6 +15,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
 
@@ -23,6 +24,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 	var terminalWork session.CompletionBarrier
 	var drainAcks session.DrainAcker
 	var appAttestShadow *attestservice.Session
+	var autopilotRewards *autopilotRewardCapture
 	tracker := trust.NewChallengeTracker()
 	var schedulerSEKey string
 	var schedulerGeneration uint64
@@ -37,6 +39,15 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		// Protocol-error exits can bypass closeSessionOffline. Never leave a
+		// closed connection routable while its completion workers drain.
+		if provider != nil {
+			provider.Mu().Lock()
+			if provider.Status != registry.StatusUntrusted {
+				provider.Status = registry.StatusOffline
+			}
+			provider.Mu().Unlock()
+		}
 		s.trust.UnbindConnection(providerID, schedulerSEKey, schedulerGeneration)
 		// End connection-continuity coverage with the EXACT coordinator-
 		// observed disconnect time (before registry.Disconnect tears the
@@ -44,6 +55,18 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 		// than at the last periodic coverage pass.
 		s.trust.StopTrustCoverageForProvider(providerID)
 		s.trust.StopCodeAttestCoverageForProvider(providerID)
+		// Retry received declarations after marking the connection offline;
+		// never synthesize opt-out or delay the observed disconnect timestamp.
+		autopilotRewards.flush(context.WithoutCancel(ctx), nil)
+		// The reader can exit while an off-loop completion is still pricing
+		// or settling a parked request. Include those workers in the handler
+		// join before final shutdown accounting flushes. No new terminal can
+		// enter this per-connection barrier once the reader has stopped. The
+		// read-error path already marked this provider offline; let completions
+		// claim their pending requests before disconnect removes the remainder.
+		for _, done := range terminalWork.Snapshot() {
+			<-done
+		}
 		s.registry.DisconnectWithReason(providerID, registry.ClassifyPeerClose(peerCloseStatus, false))
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -129,6 +152,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			return
 		}
 
+		serverReceivedAt := time.Now().UTC()
 		var msg protocol.ProviderMessage
 		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
 		// validation pass; per-token chunk frames take a hand-written decoder.
@@ -175,22 +199,32 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
-			// Resolve the token once before choosing the identity rollout path.
+			// Resolve the token once before choosing legacy membership or identity rollout.
 			// Keep linkage after attestation restoration, as with legacy clients;
-			// only this validated account may select the App Attest cohort.
+			// only this validated account may select either cohort.
 			authenticatedAccountID, authenticatedTokenLabel := "", ""
 			accountResolved := false
-			resolveAccount := func() {
-				accountResolved = true
+			resolveAccount := func() bool {
 				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil || pt == nil {
-					s.logger.Warn("provider auth token invalid", "provider_id", providerID, "error", err)
+				if err != nil && !errors.Is(err, store.ErrProviderTokenInvalid) {
+					// Retry on a new connection, before an unavailable account can
+					// permanently select the wrong authorization cohort.
+					s.logger.Warn("provider token lookup unavailable", "provider_id", providerID)
+					_ = conn.Close(websocket.StatusTryAgainLater, "provider state temporarily unavailable")
+					return false
+				}
+				accountResolved = true
+				if err != nil || pt == nil || !pt.Active {
+					s.logger.Warn("provider auth token invalid", "provider_id", providerID)
 				} else {
 					authenticatedAccountID, authenticatedTokenLabel = pt.AccountID, pt.Label
 				}
+				return true
 			}
-			if regMsg.AuthToken != "" && s.trust.AppAttestFeature().NeedsIdentityAccount(regMsg) {
-				resolveAccount()
+			if regMsg.AuthToken != "" && (s.trust.LegacyMDM.Initialized() || s.trust.AppAttestFeature().NeedsIdentityAccount(regMsg)) {
+				if !resolveAccount() {
+					return
+				}
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			if s.providerSocketsClosing() {
@@ -213,6 +247,9 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 			if s.trust.AppAttestIdentityCandidate(regMsg, authenticatedAccountID) {
 				provider.RequireVerifiedMachineIdentity()
+			}
+			if s.trust.LegacyMDM.Initialized() && !s.trust.LegacyMDM.RegistrationAllowed(regMsg, authenticatedAccountID) {
+				provider.RequireAppAttestServingAuthorization()
 			}
 			s.attachProviderLocation(providerID, provider, r)
 			if err := s.trust.VerifyProviderAttestation(loopCtx, providerID, provider, regMsg, authenticatedAccountID); err != nil {
@@ -242,13 +279,15 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})
 
-			// Legacy-only providers keep their original post-restoration lookup.
-			// A structurally eligible App Attest registration already resolved
-			// this token; never reroll its cohort through a second store read.
+			// Outside the frozen policy, legacy-only providers retain their
+			// post-restoration lookup. Never reroll either cohort through a
+			// second store read; frozen-policy sessions also clear stale linkage.
 			if regMsg.AuthToken != "" && !accountResolved {
-				resolveAccount()
+				if !resolveAccount() {
+					return
+				}
 			}
-			if authenticatedAccountID != "" {
+			if s.trust.LegacyMDM.Initialized() || authenticatedAccountID != "" {
 				provider.Mu().Lock()
 				provider.AccountID = authenticatedAccountID
 				provider.Mu().Unlock()
@@ -389,6 +428,11 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 
 			appAttestShadow = s.trust.StartAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+			autopilotRewards = s.newAutopilotRewardCapture(providerID, authenticatedAccountID)
+			if !autopilotRewards.observe(loopCtx, provider, serverReceivedAt) {
+				_ = conn.Close(websocket.StatusTryAgainLater, "autopilot consent tracking unavailable")
+				return
+			}
 
 		case protocol.TypeAppAttestShadow:
 			if appAttestShadow != nil {
@@ -474,6 +518,10 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 			if s.heartbeat.Apply(providerID, provider, hbMsg) {
 				s.inventory.Heartbeat(loopCtx, provider)
+				if !autopilotRewards.observe(loopCtx, provider, serverReceivedAt) {
+					_ = conn.Close(websocket.StatusTryAgainLater, "autopilot consent tracking unavailable")
+					return
+				}
 			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
@@ -597,6 +645,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.trust.HandleAttestationResponse(providerID, provider, respMsg, tracker)
+			autopilotRewards.flush(loopCtx, nil)
 
 		case protocol.TypeCodeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.CodeAttestationResponseMessage)
@@ -604,6 +653,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			// connection even if the push round-trip outlived the pushing
 			// goroutine or the original connection (reconnect).
 			s.trust.HandleCodeAttestationResponse(providerID, provider, respMsg)
+			autopilotRewards.flush(loopCtx, nil)
 
 		case protocol.TypeModelAutopilotStatus:
 			statusMsg := msg.Payload.(*protocol.ModelAutopilotStatusMessage)

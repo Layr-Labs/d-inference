@@ -12,7 +12,9 @@ func (s *MemoryStore) CreateUser(user *store.User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.usersByPrivyID[user.PrivyUserID]; exists {
+	// A soft-deleted user does not hold its Privy ID, as with the partial
+	// unique index in Postgres.
+	if existing, exists := s.usersByPrivyID[user.PrivyUserID]; exists && existing.DeletedAt == nil {
 		return fmt.Errorf("user with Privy ID %q already exists", user.PrivyUserID)
 	}
 	if _, exists := s.usersByAccountID[user.AccountID]; exists {
@@ -32,7 +34,7 @@ func (s *MemoryStore) GetUserByPrivyID(privyUserID string) (*store.User, error) 
 	defer s.mu.RUnlock()
 
 	u, ok := s.usersByPrivyID[privyUserID]
-	if !ok {
+	if !ok || u.DeletedAt != nil {
 		return nil, fmt.Errorf("user with Privy ID %q %w", privyUserID, store.ErrNotFound)
 	}
 	copy := *u
@@ -45,7 +47,7 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*store.User, error) 
 	defer s.mu.RUnlock()
 
 	u, ok := s.usersByAccountID[accountID]
-	if !ok {
+	if !ok || u.DeletedAt != nil {
 		return nil, fmt.Errorf("user with account ID %q %w", accountID, store.ErrNotFound)
 	}
 	copy := *u
@@ -64,6 +66,9 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 		return fmt.Errorf("user with account ID %q not found", accountID)
 	}
 
+	if s.retainDeletedExternalObjectLocked(accountID, store.ErasureTargetStripeAccount, stripeAccountID) {
+		return store.ErrErasureConflict
+	}
 	// Maintain the by-stripe-account index. A user may switch accounts (e.g.
 	// after a manual reset) so we drop the old mapping if it was different.
 	if u.StripeAccountID != "" && u.StripeAccountID != stripeAccountID {
@@ -88,6 +93,9 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 	if stripeAccountID != "" {
 		s.usersByStripeAccountID[stripeAccountID] = u
 	}
+	if u.DeletedAt != nil {
+		return store.ErrErasureConflict
+	}
 	return nil
 }
 
@@ -97,7 +105,7 @@ func (s *MemoryStore) GetUserByStripeAccount(stripeAccountID string) (*store.Use
 	defer s.mu.RUnlock()
 
 	u, ok := s.usersByStripeAccountID[stripeAccountID]
-	if !ok {
+	if !ok || u.DeletedAt != nil {
 		return nil, fmt.Errorf("user with Stripe account %q not found", stripeAccountID)
 	}
 	copy := *u
@@ -110,7 +118,7 @@ func (s *MemoryStore) GetUserByEmail(email string) (*store.User, error) {
 	defer s.mu.RUnlock()
 	lower := strings.ToLower(email)
 	for _, u := range s.usersByAccountID {
-		if strings.ToLower(u.Email) == lower {
+		if strings.ToLower(u.Email) == lower && u.DeletedAt == nil {
 			copy := *u
 			return &copy, nil
 		}

@@ -24,7 +24,7 @@ func (s *Controller) Refund(pr *registry.PendingRequest, reference string) bool 
 	start := time.Now()
 	finalized, err := pr.FinalizeReservation(func() error {
 		if pr.ServiceReservation {
-			s.ReleaseService(pr, "refund")
+			s.ReleaseService(pr.ConsumerKey, pr.Model, pr.ReservedMicroUSD, "refund")
 			return nil
 		}
 		return s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, reference)

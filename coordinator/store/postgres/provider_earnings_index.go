@@ -10,8 +10,8 @@ import (
 // RecordProviderEarning and CreditProviderAccount.
 //
 // DAR-349: this MUST stay cheap and non-blocking on the serving startup path.
-//   - Fast path: if a valid index already exists, return immediately (every boot
-//     after the first does no work here).
+//   - Fast path: if a valid index already exists, return immediately (a
+//     database that already has the index does no work here).
 //   - It NEVER deletes rows. If existing data would violate uniqueness it fails
 //     loudly with an actionable message rather than running a destructive,
 //     table-locking cleanup at boot (the original outage).
@@ -22,24 +22,13 @@ import (
 func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) error {
 	const idxName = "idx_provider_earnings_job"
 
-	// Already present AND valid? No-op fast path for every boot after the first.
-	var valid bool
-	if err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE((
-			SELECT i.indisvalid
-			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
-			WHERE c.relname = $1
-		), false)`, idxName).Scan(&valid); err != nil {
-		return fmt.Errorf("store: check %s: %w", idxName, err)
+	// Already present AND valid? No-op fast path.
+	exists, valid, err := concurrentIndexState(ctx, s.pool, idxName)
+	if err != nil || valid {
+		return err
 	}
-	if valid {
-		return nil
-	}
-
-	// A leftover *invalid* index from a previously interrupted CONCURRENTLY build
-	// would make CREATE ... IF NOT EXISTS a silent no-op, so drop it first.
-	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS `+idxName); err != nil {
-		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
+	if exists {
+		return invalidConcurrentIndexError(idxName)
 	}
 
 	// Verify the data can support a UNIQUE index. We do NOT dedupe at boot.
@@ -57,16 +46,6 @@ func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) erro
 			"— boot does NOT auto-dedupe (DAR-349)", dupGroups, idxName)
 	}
 
-	// Build CONCURRENTLY on a dedicated connection via the simple query protocol.
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("store: acquire conn for %s: %w", idxName, err)
-	}
-	defer conn.Release()
-	mrr := conn.Conn().PgConn().Exec(ctx,
+	return s.ensureConcurrentIndex(ctx, idxName,
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_provider_earnings_job ON provider_earnings(job_id) WHERE job_id <> ''`)
-	if _, err := mrr.ReadAll(); err != nil {
-		return fmt.Errorf("store: create %s concurrently: %w", idxName, err)
-	}
-	return nil
 }

@@ -58,7 +58,9 @@ func newExplorationPair(t *testing.T, model string, connectionAge time.Duration,
 		}
 	}
 	f.idle.Mu().Lock()
-	f.idle.PrefillTPS = 20_000
+	// Faster than the qualified peer by more than the fast band on these
+	// prompts, while remaining within measured provider rates.
+	f.idle.PrefillTPS = 2_000
 	if gap != nil {
 		gap(f.idle, f.history, f.now)
 	}

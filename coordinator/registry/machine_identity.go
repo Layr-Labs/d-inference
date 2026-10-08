@@ -20,6 +20,7 @@ func (r *Registry) BindVerifiedMachineIdentity(p *Provider, accountID, machineID
 	}
 	if p.verifiedMachineID != machineID || p.verifiedMachineAccount != accountID {
 		p.clearAppAttestServingAuthorizationLocked()
+		p.autopilotState.RevokeControl()
 	}
 	p.verifiedMachineID, p.verifiedMachineAccount = machineID, accountID
 	r.bindStableFaultKey(p, stableProviderIdentityLocked(p))

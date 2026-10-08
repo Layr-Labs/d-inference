@@ -47,9 +47,9 @@ func TestTransportMeasurementFreshnessAndForecast(t *testing.T) {
 	}
 	c := transportForecastEvidence(now)
 	pr := forecast.Request{PromptTokens: 100, UpperBoundTokens: 100, Deadline: now.Add(3 * time.Second)}
-	before := forecast.Evaluate(c, pr, now).Estimate
+	before := forecast.Evaluate(&c, pr, now).Estimate
 	c.Transport.ExpectedMS, c.Transport.ConservativeMS = expected, conservative
-	after := forecast.Evaluate(c, pr, now).Estimate
+	after := forecast.Evaluate(&c, pr, now).Estimate
 	if after.ExpectedMs-before.ExpectedMs != expected || after.ConservativeMs-before.ConservativeMs != conservative {
 		t.Fatal("measured network term replaced delivery allowance or failed to reach forecast")
 	}
@@ -93,8 +93,8 @@ func TestMeasuredTransportChangesFirstContentSelection(t *testing.T) {
 	nearEvidence, farEvidence := transportForecastEvidence(now), transportForecastEvidence(now)
 	nearEvidence.Transport.ExpectedMS = 20
 	farEvidence.Transport.ExpectedMS = 250
-	near := &selection.Candidate{ExpectedMs: forecast.Evaluate(nearEvidence, pr, now).Estimate.ExpectedMs}
-	far := &selection.Candidate{ExpectedMs: forecast.Evaluate(farEvidence, pr, now).Estimate.ExpectedMs}
+	near := &selection.Candidate{ExpectedMs: forecast.Evaluate(&nearEvidence, pr, now).Estimate.ExpectedMs}
+	far := &selection.Candidate{ExpectedMs: forecast.Evaluate(&farEvidence, pr, now).Estimate.ExpectedMs}
 	pool := []*selection.Candidate{far, near}
 	project := func(c *selection.Candidate) selection.Candidate { return *c }
 	got := pool[selection.Select(pool, project, rand.Intn, "").Winner]
@@ -104,7 +104,7 @@ func TestMeasuredTransportChangesFirstContentSelection(t *testing.T) {
 	benefit := forecast.CacheBenefit{Tokens: 1000, Weight: 1, ExpiresAt: now.Add(time.Minute)}
 	benefit.Apply(&pr, now)
 	far.CachedTokens, far.CacheEvidenceWeight = pr.CachedTokens, benefit.Weight
-	far.ExpectedMs = forecast.Evaluate(farEvidence, pr, now).Estimate.ExpectedMs
+	far.ExpectedMs = forecast.Evaluate(&farEvidence, pr, now).Estimate.ExpectedMs
 	got = pool[selection.Select(pool, project, rand.Intn, "").Winner]
 	if got != far {
 		t.Fatal("network preference erased useful cache locality")

@@ -45,11 +45,15 @@ extension EngineV2Bridge {
             allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
         let effectiveDeadlineProfile = currentDeadlineProfile(
             allowQualifiedPosture: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
-        if tracksNativeShutdown,
-            activeRequestCount() >= effectiveServingConcurrency(
-                allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
-        {
-            return false
+        // A suspended submission already owns its allowance. Count its ID once
+        // even while terminal handling also retains it in the active map.
+        if usesMemoryLimitedConcurrency {
+            let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
+            let occupiedConcurrency = max(activeRequestCount(), active.count + pendingOnlyCount)
+            if occupiedConcurrency >= effectiveServingConcurrency(
+                allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion) {
+                return false
+            }
         }
         if performanceProfile != nil && effectiveProfile == nil,
             active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {

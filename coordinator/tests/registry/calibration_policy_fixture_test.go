@@ -150,7 +150,7 @@ func (f *calibrationPolicyFixture) evaluate(pr *production.PendingRequest, now t
 			benefit.Apply(&request, now)
 		}
 	}
-	return forecast.Evaluate(e, request, now)
+	return forecast.Evaluate(&e, request, now)
 }
 
 func assertCalibratedRootBinding(t *testing.T) {

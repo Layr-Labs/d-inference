@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-05
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -131,6 +131,66 @@ lists every name).
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
 | `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/internal/api/middleware/middleware.go`) |
 
+### Optional cache-planning decisions
+
+`coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`) records one decision each
+time a request's cache plan is computed, across the four inference endpoints.
+`planPromptRoute` (`coordinator/api/inference/prompt_work.go`) calls it once per
+concrete model and provider-bound body through the request's plan memo, so
+queueing, retries and hedges retain that decision rather than adding another
+sample per attempt. For a request that takes the public capacity preflight, the
+plan is first computed while admission builds its first-content forecast
+(`Admission.Run`, `coordinator/api/inference/inference_admission.go`): a request
+that preflight then rejects is already counted, and an alias fallback probe
+records a further decision for the previous build it probes. Self-route and
+owner-preferred requests skip that forecast and are counted at the plan lookup
+after admission. A request rejected before any plan is computed is not counted.
+
+Missing dependencies, unready artifacts and media requests are recorded
+immediately. Otherwise the planner, including its preload check, runs inside the
+prompt-accounting bound, and no decision is recorded when `promptwork.Account`
+(`coordinator/api/promptwork/accounting.go`) declines first: its 16-slot gate is
+full, the body exceeds `promptcontract.DefaultMaxRequestBytes`, or the request
+context has already ended. A gate miss is not memoized, so the request's next
+plan lookup tries again. A generic-endpoint body that cannot be lowered is
+counted as `lowering_unsupported` after admission, directly by
+`handleGenericInference` (`CachePlanner.EmitDecision`,
+`coordinator/api/inference/consumer.go`); `CachePlanningInput.LoweringFailed`
+yields the same reason through the planner, but production does not set it.
+
+| Admin metric | Datadog name, before the configured prefix | Labels | Meaning |
+|---|---|---|---|
+| `exact_cache_planning_decision_total` | `exact_cache.planning_decision` | `reason` | One optional-planning decision for one concrete model and provider-bound body of a request, not an HTTP-arrival, provider-attempt, Rust-execution or cache-hit count |
+| `exact_cache_planning_decision_latency_ms` | `exact_cache.planning_decision_latency_ms` | `reason` | Nonnegative helper elapsed milliseconds, including early refusals; not consumer TTFT or only sidecar execution time |
+
+The closed reasons, in prerequisite order, are `lowering_unsupported`,
+`dependencies_unavailable`, `artifact_missing`, `artifact_failed` or
+`artifact_pending`, `artifact_invalid`, and `preload_not_ready`. Once those gates
+pass, the Registry supplies `off`, `ineligible`, `sampled_out`, `throttled`,
+`cold_only`, `sidecar_error`, `no_boundaries`, `invalid_plan` or `planned`;
+unrecognized future results map to `unknown_outcome` only in this new metric.
+`lowering_unsupported` describes the generic native-forward fallback, not every
+normalization rejection before preflight. Error text, artifact paths, accounts,
+scopes, hashes, aliases and request IDs never become reason labels
+(`coordinator/internal/inference/routeplan/cache_planning_telemetry.go`).
+
+The existing metrics keep their definitions: `exact_cache_plan_total` (Datadog
+`exact_cache.plan`) records every Registry-planner result, while
+`exact_cache_plan_latency_ms` records only results with `SidecarCalled=true`.
+One population is larger than before the planning-decision metric existed: a
+media request (image, video or audio input) whose model's artifacts are verified
+and whose contract is preload-acknowledged is counted as `ineligible` in
+`exact_cache_plan_total` / `exact_cache.plan`, once per planning decision. The
+planner is consulted to record its decision, and the Registry declines media
+before sampling, the QPS gate and the sidecar (`planPromptRoute`,
+`coordinator/api/inference/prompt_work.go`; `PlanCacheRouteWithResult`,
+`coordinator/registry/cache_route_keys.go`), so there is no routing or billing
+effect. Off/ineligible/sampled-out/throttled decisions can increment
+`exact_cache_plan_total` without a sidecar latency sample. `SidecarCalled`
+means the Go client was invoked; an expired or refused client call can submit
+no Unix-socket request. Do not treat the broader new denominator as a historical
+hit-rate improvement or regression. Public cache-status JSON is unchanged.
+
 ### Cache results by model (internal)
 
 `coordinator/api/observation/cache_model_telemetry.go` emits the following Datadog counters
@@ -143,8 +203,21 @@ collapse to `unknown`. No account, provider, request, cache scope, nonce, weight
 hash or prompt-derived identity is attached. Existing `exact_cache.*` metrics
 and the public cache status retain their aggregate-only contract.
 
+The retained cache-attempt ledger adds three aggregate gauges, each mirroring a
+`lifecycle` field of `/v1/cache/status` (`coordinator/api/inference/exact_cache_metrics.go`):
+`exact_cache_attempt_bytes` / Datadog `exact_cache.attempt_bytes` (logical bytes held
+against the 64 MiB budget), `exact_cache_attempt_budget_refused` /
+`exact_cache.attempt_budget_refused` (dispatches sent without a cache scope because
+the byte budget had no room for their record even counting up to 64 finished
+requests' records, or the record alone exceeds it) and
+`exact_cache_attempt_grace_reclaimed` / `exact_cache.attempt_grace_reclaimed`
+(finished requests' records reclaimed inside their terminal grace). They carry no
+labels; see [attempt-record memory accounting](../architecture/cache-aware-routing.md#attempt-record-memory-accounting).
+
 | Suffix | Labels besides `model` | Population / interpretation |
 |---|---|---|
+| `planning_decision` | `reason` | Same population and closed reasons as the aggregate planning-decision metric. The existing catalog-bounded model label is captured once at helper entry, not taken from the caller alias. |
+| `planning_decision_latency_us`, `planning_decision_latency_samples` | `reason` | Helper latency sum in rounded microseconds and sample count for the same decisions, including early refusals; not total request TTFT. |
 | `usage` | `outcome`, `tier` | Completion terminals with retained pending/parked ownership, at the same seam as aggregate cache usage. Outcome is `hit`, `miss_absent`, `miss_corrupt`, `skipped_capacity`, `skipped_cost`, `skipped_policy`, `invalid` or `unreported`. `invalid`/`unreported` use tier `none`; they are coverage gaps, not misses. Duplicate and unknown terminals do not count. |
 | `cached_tokens`, `prefill_tokens_saved` | `tier` | Validated provider-reported token totals. Cached tokens may exceed saved prefill tokens when replay is required. Neither count requires an accepted routing proof. |
 | `provider_stage_us`, `provider_stage_samples` | `outcome`, `tier` | Sum of provider-reported staging microseconds (rounded per sample) and sample count for valid usage. Divide to obtain mean stage time. This is overhead, not time saved. |
@@ -162,6 +235,12 @@ and the public cache status retain their aggregate-only contract.
 Timing sums/sample counters work with both HTTPS and DogStatsD. The admin
 registry additionally exposes `cache_model_provider_stage_ms` and
 `cache_model_ttft_ms` and `cache_model_estimated_ttft_saved_ms` histograms with the corresponding labels.
+`coordinator/internal/inference/routeplan/cache_planning_telemetry.go` uses the same counter/timing helpers;
+its admin histogram is `cache_model_planning_decision_latency_ms{model,reason}`.
+Its Datadog model names are `routing.cache_model.planning_decision`,
+`routing.cache_model.planning_decision_latency_us` and
+`routing.cache_model.planning_decision_latency_samples`; no per-model Datadog
+latency histogram is added by these helpers.
 Admin `cache_model_usage_prefill_saved_percent` and
 `cache_model_selection_prefill_saved_percent` histograms report per-request
 percentages; use same-label summed counters for token-weighted coverage.
@@ -183,6 +262,7 @@ have different populations and must not be summed together.
 | `profiler.fleet_snapshot` | count | `status:written`, `write_failed` | each fleet sample |
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
 | `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/observation/fleet_gauge_loop.go`), which also pushes the `exact_cache.*` gauges (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
+| `exact_cache.artifact_allowlist.stale_models` | gauge | — | every gauge-loop tick; catalog models the cache-routing allowlist names only under a superseded artifact, `0` unless routing is `on`. Aggregate only: the tuple to append is named in the coordinator log, never in a metric (`EmitExactCacheDDGauges`, `coordinator/api/inference/exact_cache_metrics.go`; `missingAllowlistEntries`, `coordinator/api/inference/exact_cache_allowlist_staleness.go`) |
 | `request_queue.depth_by_model`, `request_queue.oldest_age_ms` | gauge | `model` | every gauge-loop tick for served or queued models; a disappearing model gets one final zero for both series and is then forgotten (`coordinator/internal/observation/fleet/fleet_gauges.go`, `emitPerModelQueueGauges`) |
 
 ### In-process registry (not Datadog)
@@ -220,6 +300,21 @@ Datadog's; nothing is stored locally.
 | `inference failed after N attempt(s)` | error · `inference_error` | `reason:dispatch_exhausted`, `attempt`, `status_code`, `last_error` (the sanitized closed message) | `dispatch.go` |
 | `warm_pool_tick` | info · `custom` | Per-model latest-state sample: `model`, `target_warm`, `warm`, `eligible_cold`, `cold_ineligible`, `warm_saturated`, `warm_foreign_blocked`, `occupancy_ramp`, `headroom_providers`, `running`, `waiting`, `queue_depth`, `oldest_queue_age_ms`, `spill_arrival_rate`, `service_time_ms`, `quality_concurrency`, `demand_concurrency`, `capacity_rejects`, `ttft_misses`, `speculative_started`, `speculative_won`, `cold_dispatches`, `load_duration_ewma_ms`, `actions`, `observe_only`, plus scalar `cold_disq_<reason>` counts. Polled every 15 s and deduplicated by controller snapshot timestamp; intermediate controller ticks can be skipped. No provider or request identity; no Postgres record. | `coordinator/api/observation/warm_pool_telemetry.go` (`StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields`) |
 | `panic in handler <method> <path>: <value>` | fatal · `panic` | `handler`, `endpoint`, plus `stack` | `coordinator/internal/api/middleware/middleware.go` recovery middleware |
+
+## Account erasure log
+
+One record per erased account, written by the erasure outbox worker
+(`writeErasureLog`, `coordinator/api/accounts/erasure/outbox.go`) through
+`datadog.Client.SendLog` (`coordinator/datadog/logs_send.go`): one
+unbatched Logs API post whose failure is retried (up to 8 attempts, then the
+outbox row is `manual_action`), not dropped. `ddsource` `coordinator`, service
+`d-inference-coordinator`, the three attributes under `attributes`. Message
+`account erased`, kind `erasure_log`, severity `info`, ddtags
+`kind:erasure_log,severity:info,erasure_log:true`, attributes `request_id`,
+`account_id`, `erased_at` only; no personal data. Without `DD_API_KEY` the
+record is the `slog` line `erasure_log`. It is the list of completed erasures
+to replay after a database restore, so it must reach a Datadog log archive
+that outlives the database backups ([runbook](../operations/account-erasure.md#after-a-database-restore)).
 
 ## Coordinator per-request records (Postgres)
 

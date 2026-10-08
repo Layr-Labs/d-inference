@@ -20,7 +20,9 @@ type QuoteContext struct {
 	NewestReservationAt time.Time
 }
 
-func ApplyQuote(result Result, evidence Evidence, request Request, quote Quote, current QuoteContext, now time.Time) Estimate {
+// ApplyQuote borrows non-nil immutable evidence for quote revalidation. It
+// returns an estimate value without mutating or retaining the evidence.
+func ApplyQuote(result Result, evidence *Evidence, request Request, quote Quote, current QuoteContext, now time.Time) Estimate {
 	e := result.Estimate
 	if !quote.Confirmed || quote.Demoted || quote.Confidence != protocol.CapacityConfidenceHigh ||
 		quote.ObservedAt.IsZero() || now.Before(quote.ObservedAt) || now.Sub(quote.ObservedAt) > CapacityFreshness ||

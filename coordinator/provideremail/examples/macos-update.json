@@ -1,0 +1,15 @@
+{
+  "id": "macos-update-example",
+  "audience": "macos_update",
+  "minimum_version": "26.0",
+  "active_within_days": 30,
+  "os_max_age_days": 7,
+  "message": {
+    "from": "Darkbloom <providers@darkbloom.ai>",
+    "reply_to": "support@example.com",
+    "subject": "Please review macOS updates on your provider",
+    "severity": "recommended",
+    "body": "This is an example campaign, not a new macOS requirement. Before sending, choose a Darkbloom-supported target version and explain why the update matters.\n\nAllow time for a restart. After updating macOS, start your Darkbloom provider again and check its status in the console.",
+    "instructions_url": "https://console.darkbloom.dev/providers"
+  }
+}

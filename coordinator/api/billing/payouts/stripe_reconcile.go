@@ -30,6 +30,7 @@ func (s *Owner) StartStripePayoutReconciler(ctx context.Context) {
 			return
 		case <-timer.C:
 			s.sweepStuckStripeWithdrawals()
+			s.ProcessStripeWithdrawalQueue(ctx)
 		}
 		ticker := time.NewTicker(payoutrecovery.StripeReconcileInterval)
 		defer ticker.Stop()
@@ -43,6 +44,7 @@ func (s *Owner) StartStripePayoutReconciler(ctx context.Context) {
 				s.sweepStuckStripeWithdrawals()
 			case <-refundTicker.C:
 				s.recoverStripeRefunds()
+				s.ProcessStripeWithdrawalQueue(ctx)
 			}
 		}
 	})

@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-08
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -84,18 +84,34 @@ curl https://api.darkbloom.dev/v1/payments/usage   -H "Authorization: Bearer sk-
 `balance_micro_usd` is what requests can spend, in
 [micro-USD](../reference/pricing-model.md#units).
 `withdrawable_micro_usd` is the part you earned (serving inference, referral
-rewards) and can pay out through Stripe Connect; deposits and invite credits
-never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
+rewards) and can withdraw using the configured payout rail; deposits and invite credits
+never count toward it. A consumer can earn a withdrawable balance by referring
+other consumers. `GET /v1/payments/usage` lists settled
 requests with `job_id`, `model`, `prompt_tokens`, `cached_tokens` (the part of
 the prompt a provider served from its prefix cache; omitted when zero),
 `completion_tokens`, `cost_micro_usd`, `timestamp`
-(`coordinator/api/inference/consumer.go` `HandleBalance`, `HandleUsage`). Console users get the same figures from `GET /v1/me/summary`
+(`coordinator/api/billing/account.go` `HandleBalance`, `HandleUsage`). Console users get the same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old
 5,000-row truncation. Concurrent tabs share one aggregate per account and may
 lag by the per-account cache interval
 (`coordinator/api/accounts/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
+
+If you also operate a provider, distinguish completed-inference earnings from
+[base rewards](../reference/pricing-model.md#base-rewards): base rewards require
+macOS 27 or later and current qualified App Attest authorization for every
+provider, old or new, not legacy MDM alone. This does not
+remove previously earned balances or change payment for completed inference.
+
+For an opted-in Autopilot machine, check earnings history separately for daily
+[Autopilot floor top-ups](../reference/pricing-model.md#autopilot-rewards).
+Paid top-ups increase both spendable and withdrawable balance and appear once as
+`base_reward` earnings, not as additional inference requests. They do not change
+consumer prices or ordinary base rewards. If a top-up is missing, ask the operator
+to check the machine's saved-consent history, baseline and funded pool using the
+[reward runbook](../operations/autopilot-rewards.md); enrollment alone does not
+mean payments are enabled or funded. Do not toggle enrollment to reset a baseline.
 
 ### 4. Understand what a request costs you
 
@@ -144,27 +160,23 @@ to their reservations (`coordinator/api/inference/key_policy.go` `checkKeySpendC
 
 ### 6. Referral codes
 
-Register a code of your own (3–20 letters, digits, or hyphens, stored
-uppercased — the rule is in [`reference/pricing-model.md` → Constants](../reference/pricing-model.md#constants);
-**Privy**):
+Visit **Open Sales Program** in the console to register a code, copy your share link,
+apply a referrer's code, and check rewards. Follow
+[Share a referral code and withdraw rewards](referrals.md) for the full flow.
+Referral rewards are earned balance and use the withdrawal steps below.
+Execution on your own machines, explicit self-routing, and routing to selected
+machines are not eligible, even when the request is paid; owner-preferred routing
+remains ineligible when it falls back
+to the paid fleet. These exclusions also apply to the paid portion of promotion
+requests. Billing, provider payouts, and grant use do not change. The reward
+basis and eligibility rules are defined in
+[pricing formulas](../reference/pricing-model.md#formulas).
 
-```bash
-curl -X POST https://api.darkbloom.dev/v1/referral/register \
-  -H "Authorization: Bearer <privy-access-token>" \
-  -H "Content-Type: application/json" -d '{"code": "MYCODE"}'
-```
-
-A referred user attaches your code once, either by
-`POST /v1/referral/apply {"code": "MYCODE"}` (**Privy**) or by passing
-`referral_code` on their first Checkout session (step 1); an account can have
-one referrer and cannot refer itself. From then on you earn a fixed share of
-the platform fee taken on that user's requests, credited as withdrawable
-`referral_reward` entries. The share and the fee it applies to are in
-[`reference/pricing-model.md` → Formulas](../reference/pricing-model.md#formulas)
-and [`architecture/billing.md` → Consumer referral](../architecture/billing.md#consumer-referral);
-read those before promising anyone an income. `GET /v1/referral/stats`
-returns `code`, `total_referred`, `total_rewards_micro_usd`;
-`GET /v1/referral/info` returns `code`, `share_percent`, `referred_by`.
+A `referral_code` on a Checkout session (step 1) still applies after a successful
+deposit using the saved local attribution. If the referrer is erased while
+Checkout is being created, the deposit remains usable and the obsolete referral
+code is omitted. For attribution before the first request, apply the code in Open Sales Program
+before using the API.
 
 ### 7. Redeem an invite code
 
@@ -194,9 +206,11 @@ Choose your country of residence in bank setup and use a bank account in that co
 
 For international bank withdrawals, enter a USD amount and select **Review withdrawal**. Review the estimated local deposit, destination, withdrawal fee and expected timing, then select **Confirm withdrawal**. Reviewing does not deduct earnings. An expired estimate must be refreshed. If a response is interrupted, **Check withdrawal** resolves the existing withdrawal before allowing another. The same browser remembers that confirmation when you reload or reopen the page, including when your remaining balance is zero.
 
-If history shows **Needs review**, contact support with the withdrawal ID. Its funds remain reserved until the outcome is established; do not submit another payment for that withdrawal.
+If history shows **Queued**, payout funding is temporarily low. Your requested earnings are reserved and the withdrawal retries automatically when funding returns. Do not submit another withdrawal for the same amount. If Stripe temporarily cannot verify the saved destination, the coordinator retries after a short backoff. Bank arrival timing starts after the queued payment is sent; a queued international exchange estimate is refreshed then.
 
-In history, **Sent to bank** means the transfer left Stripe; it can take additional time for your bank to credit it. **Returned to balance** means the transfer was returned and your withdrawable earnings were restored. Your bank can charge additional fees. Existing Connect withdrawals keep their current payout schedule. See the [pricing reference](../reference/pricing-model.md#global-payouts-withdrawals).
+If history shows **Needs review**, contact support with the withdrawal ID. This includes a queue that could not be saved reliably. Its funds remain reserved until the outcome is established; do not submit another payment for that withdrawal.
+
+In history, **Sent to bank** means the transfer left Stripe; it can take additional time for your bank to credit it. **Returned to balance** means the transfer was returned and your withdrawable earnings were restored. Darkbloom continues checking for bank returns after sending, even when the withdrawal spent a long time queued. Your bank can charge additional fees. Existing Connect withdrawals keep their current payout schedule. See the [pricing reference](../reference/pricing-model.md#global-payouts-withdrawals).
 
 The form shows the bank's published deposit minimum and maximum in local currency. If an amount is outside those limits, adjust the USD withdrawal and review again; Stripe confirms the exchange rate. When new withdrawals are paused, an unsubmitted confirmation is released. Already-submitted withdrawals can still be checked.
 
@@ -223,20 +237,32 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `400` `invalid_request_error` on `create-session` about `amount_usd` | Deposit below the [minimum](../reference/pricing-model.md#constants) | Send `amount_usd` at or above the minimum, as a string (step 1) |
 | `400` "invalid referral code" on `create-session` | `referral_code` is not a registered code | Drop the field or fix the code |
 | `400` `referral_error` "account already has a referrer" / "cannot refer yourself" | One referrer per account; self-referral rejected | — |
+| `404` `referral_error` on `GET /v1/referral/stats` | You have not registered your own referral code | Visit Open Sales Program and register a code |
 | `400` "invite code … is inactive / has expired / has reached max uses" or "account has already redeemed code" | Code exhausted or reused | Ask for a new code |
-| `404` `referral_error` "not a registered referrer" on `GET /v1/referral/info` | You have not registered a code | Step 6 |
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
+| `502` `provider_error` "provider response exceeds non-streaming response limit" | A non-streaming response grew past the coordinator's [provider-output limits](../reference/api-contracts.md#limits-and-validation) | Stream the request or lower `max_tokens`; the reservation is refunded in full and the request is not charged |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 
 Mechanism for each error, including the exact functions, is in
 [`architecture/billing.md` → Failure modes](../architecture/billing.md#failure-modes).
 
+## Checkout interrupted by account deletion
+
+If account deletion starts while Stripe creates a Checkout session, the
+coordinator responds with 409 `account_deleted` and does not return the
+Checkout URL. The created Stripe object remains queued for cleanup after
+irreversible erasure. If an administrator cancels deletion during the grace
+period, start a new Checkout request. Contract:
+[Checkout](../reference/api-contracts.md); implementation:
+`coordinator/api/billing/checkout.go` (`HandleStripeCreateSession`).
+
 ## Related
 
 - [`architecture/billing.md`](../architecture/billing.md) — reservation, settlement, ledger, Stripe, referral, base rewards
 - [`reference/pricing-model.md`](../reference/pricing-model.md) — constants, formulas, routes, environment variables
+- [`referrals.md`](referrals.md) — sharing codes, attribution, earnings, and reward withdrawals
 - [`authentication.md`](authentication.md) — creating, rotating, and scoping API keys
 - [`models.md`](models.md) — `GET /v1/models` and its `pricing` block
 - [`../provider/self-route.md`](../provider/self-route.md) — routing to your own machine, which settles free
@@ -264,8 +290,8 @@ Your Darkbloom login, provider setup, earned balance and withdrawal history stay
 with your account. Already configured bank-payout users need no migration step.
 The migrated flow offers standard bank payouts; the former Connect instant-card
 option is not part of it. **Reset bank setup** clears the current destination,
-not your history, and requires you to link a bank again. A funding-unavailable
-message before confirmation leaves earnings untouched. An uncertain submitted
+not your history, and requires you to link a bank again. A **Queued** confirmation reserves the requested earnings until payout funding
+returns and retries automatically. An uncertain submitted
 withdrawal must be checked using its existing confirmation, not submitted again
 as a new withdrawal.
 

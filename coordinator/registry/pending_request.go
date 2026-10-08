@@ -22,6 +22,9 @@ type ProviderChunk struct {
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
 	RequestID string
+	// NonStreamingResponseBudget is installed before dispatch and accounts decrypted
+	// chunks before any queue or response accumulator retains them. Nil means streaming.
+	NonStreamingResponseBudget *ResponseBudget
 	// Attempt is the zero-based dispatch attempt number that produced this
 	// pending request. It lets outcome telemetry correlate the final result
 	// with the routing decision record for the same attempt.
@@ -132,6 +135,10 @@ type PendingRequest struct {
 	// never a timer and unused by ordinary deadline-exempt selection.
 	FirstContentPlanningHorizon time.Duration
 	Hedge                       bool
+	// Set at reservation commit before dispatch; outcome paths read the
+	// attempt's selection evidence even after provider measurements change.
+	firstContentExplored                   bool
+	firstContentExplorationOutcomeRecorded atomic.Bool
 	// Reservation metadata is owned by the provider pending set and read only
 	// under provider.mu. Removing the pending owner retires prompt reservations;
 	// a dispatched service charge survives in the provider retirement shadow

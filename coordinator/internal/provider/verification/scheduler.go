@@ -55,12 +55,13 @@ type AttemptResult struct {
 }
 
 type Dependencies struct {
-	Now             func() time.Time
-	NewTimer        func(time.Duration) Timer
-	Jitter          func(time.Duration, time.Duration) time.Duration
-	Execute         func(context.Context, Binding, store.VerificationTaskKind, string) AttemptResult
-	ReuseMDA        func(Binding) bool
-	PersistProvider func(*registry.Provider)
+	Now              func() time.Time
+	NewTimer         func(time.Duration) Timer
+	Jitter           func(time.Duration, time.Duration) time.Duration
+	Execute          func(context.Context, Binding, store.VerificationTaskKind, string) AttemptResult
+	ReuseMDA         func(Binding) bool
+	PersistProvider  func(*registry.Provider)
+	LegacyMDMAllowed func(*registry.Provider) bool
 }
 
 type verificationDuePageStore interface {

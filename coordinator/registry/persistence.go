@@ -146,7 +146,6 @@ func (r *Registry) RestoreProviderStateContext(ctx context.Context, p *Provider,
 		"stored_id", rec.ID,
 		"trust_level", rec.TrustLevel,
 		"attested", rec.Attested,
-		"serial", rec.SerialNumber,
 	)
 	return nil
 }

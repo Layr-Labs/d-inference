@@ -39,8 +39,7 @@ func billingTestServer(t *testing.T, dependencies ...registry.Dependencies) (*se
 
 	// Enable billing with mock mode (no on-chain verification).
 	billingSvc := billing.NewService(st, ledger, logger, billing.Config{
-		MockMode:             true,
-		ReferralSharePercent: 20,
+		MockMode: true,
 	})
 	srv.bindBilling(billingSvc)
 

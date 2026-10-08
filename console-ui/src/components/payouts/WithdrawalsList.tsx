@@ -29,6 +29,7 @@ export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal
                   <Clock size={12} className="text-gold" />
                 )}
                 <span className="font-mono text-text-secondary">
+                  {w.status === "queued" && w.payout_rail === "global" ? "Est. " : ""}
                   {w.payout_rail === "global" && w.payout_currency && w.destination_amount
                     ? formatBankAmount(w.destination_amount, w.payout_currency, w.currency_exponent ?? 2)
                     : formatUsd(microToUsd(w.net_micro_usd))}

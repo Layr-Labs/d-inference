@@ -43,6 +43,9 @@ func (s *Service,
 	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
 		return false
 	}
+	if s.legacyMDMAllowed != nil && !s.legacyMDMAllowed(provider) {
+		return false
+	}
 	if blocked, _ := s.TrustSafetyStatus(); blocked {
 		return reject(trustreuse.TrustReuseReasonRevocationSafety)
 	}
@@ -78,6 +81,7 @@ func (s *Service,
 	if len(facts) > 0 {
 		fact = facts[0]
 	}
+	publication := s.trustReuseCache.PublicationGeneration()
 	result := s.trustReuseCache.Decide(trustreuse.Input{
 		SEPubKey:          seKey,
 		Serial:            serial,
@@ -151,7 +155,9 @@ func (s *Service,
 		rec.EvidenceGeneration = writeResult.EvidenceGeneration
 		rec.RevocationGeneration = writeResult.RevocationGeneration
 	}
-	s.trustReuseCache.RecordTrust(rec)
+	if !s.trustReuseCache.RecordTrust(publication, rec) {
+		return reject(trustreuse.TrustReuseReasonRevoked)
+	}
 	if !provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(registry.DeviceEvidence{
 		SEPublicKey:          seKey,
 		Serial:               serial,
@@ -169,7 +175,6 @@ func (s *Service,
 	s.logger.Info("trust-reuse granted hardware without live MDM or APNs",
 		"provider_id", providerID,
 		"decision", result.Decision,
-		"mda_udid", result.Record.MdaUDID,
 	)
 	return true
 }

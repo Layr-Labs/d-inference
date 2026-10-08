@@ -7,6 +7,7 @@ import (
 	"time"
 
 	rewardpolicy "github.com/eigeninference/d-inference/coordinator/internal/payments/rewardpolicy"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -65,10 +66,14 @@ func (s *machineEngineStore) SettleMachineFloorDraw(ctx context.Context, machine
 	return s.inner.SettleMachineFloorDraw(ctx, machine, draw)
 }
 
-func addMachineRewardProvider(t *testing.T, st *machineEngineStore, reg *registry.Registry, id, endpoint, account, credential string) (*registry.Provider, string) {
+func addMachineRewardProvider(t *testing.T, st *machineEngineStore, reg *registry.Registry, id, endpoint, account, credential string, hardware ...protocol.Hardware) (*registry.Provider, string) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now()
+	hw := protocol.Hardware{MachineModel: "Mac15,8", MemoryGB: 64}
+	if len(hardware) > 0 {
+		hw = hardware[0]
+	}
 	machine, err := st.inner.ObserveMachine(ctx, store.MachineObservation{SessionID: id, AccountID: account, VerifiedAppAttestKey: credential, At: now})
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +84,7 @@ func addMachineRewardProvider(t *testing.T, st *machineEngineStore, reg *registr
 	if err := st.inner.TouchProviderSession(ctx, id, "", account, endpoint, now); err != nil {
 		t.Fatal(err)
 	}
-	p := addProvider(reg, id, endpoint, "", "Mac15,8", 64)
+	p := addProvider(reg, id, endpoint, "", hw.MachineModel, hw.MemoryGB)
 	p.AccountID = account
 	p.Attested = false
 	p.TrustLevel = registry.TrustNone
@@ -92,7 +97,7 @@ func addMachineRewardProvider(t *testing.T, st *machineEngineStore, reg *registr
 	}
 	if !reg.GrantAppAttestServingAuthorization(p, registry.AppAttestServingAuthorization{
 		AccountID: account, MachineID: machine.ID, CredentialID: credential, ConnectionID: id, ProofSessionID: "proof-" + id,
-		Endpoint: endpoint, PolicyGeneration: 1, IssuedAt: now.Add(-time.Second), ValidUntil: now.Add(time.Minute), MachineModel: "Mac15,8", MemoryGB: 64,
+		Endpoint: endpoint, PolicyGeneration: 1, IssuedAt: now.Add(-time.Second), ValidUntil: now.Add(time.Minute), MachineModel: hw.MachineModel, MemoryGB: hw.MemoryGB, OSVersion: "27.0",
 	}) {
 		t.Fatal("cannot grant App Attest fixture")
 	}
@@ -161,29 +166,21 @@ func TestAppAttestMachineRewardsPreserveEarlierLegacyFloor(t *testing.T) {
 	}
 }
 
-func TestMachineRewardCanonicalFirstFencesCandidateBuiltBeforeBinding(t *testing.T) {
+func TestMachineRewardCanonicalFirstFencesCandidateBuiltBeforeSettlement(t *testing.T) {
 	epoch, start, end, clock := closedEpoch()
 	ctx := context.Background()
 	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
-	p := addProvider(reg, "legacy", "old-key", "serial", "Mac15,8", 64)
-	setSerial(p, "serial", "Mac15,8")
-	p.AccountID = "account"
+	p, machine := addMachineRewardProvider(t, st, reg, "current", "old-key", "account", "apple")
 	st.sessions = []store.ProviderSession{fullUptimeSession(p.ID, p.PublicKey, "serial", "account", start, end)}
-	if err := st.inner.OpenProviderSession(ctx, p.ID, "serial", "account"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.inner.TouchProviderSession(ctx, p.ID, "serial", "account", p.PublicKey, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	// The candidate was built with the raw key; a concurrent settlement gained
-	// the epoch lock first, learned canonical identity, and paid that key.
+	// A concurrent settlement gains the epoch lock after candidate construction
+	// and pays the same canonical machine through a rotated endpoint.
 	st.onEpochLock = func() {
-		machine, err := st.inner.ObserveMachine(ctx, store.MachineObservation{SessionID: p.ID, AccountID: "account", VerifiedAppAttestKey: "apple", At: time.Now()})
-		if err != nil {
-			t.Fatal(err)
+		_, rotated := addMachineRewardProvider(t, st, reg, "rotated", "new-key", "account", "apple")
+		if rotated != machine {
+			t.Fatal("rotated endpoint changed canonical identity")
 		}
-		paid, err := st.inner.SettleMachineFloorDraw(ctx, machine.ID, &store.ProviderFloorDraw{AccountID: "account", EpochID: epoch, AmountMicroUSD: 123})
+		paid, err := st.inner.SettleMachineFloorDraw(ctx, rotated, &store.ProviderFloorDraw{AccountID: "account", EpochID: epoch, AmountMicroUSD: 123})
 		if err != nil || !paid {
 			t.Fatalf("canonical first settlement: %v %v", paid, err)
 		}
@@ -191,7 +188,7 @@ func TestMachineRewardCanonicalFirstFencesCandidateBuiltBeforeBinding(t *testing
 	e := newTestEngine(st, reg, clock)
 	result, err := e.SettleEpoch(ctx, epoch)
 	if err != nil || result.Settled != 0 || result.AlreadySettled != 1 {
-		t.Fatalf("stale raw candidate paid again: %+v %v", result, err)
+		t.Fatalf("stale canonical candidate paid again: %+v %v", result, err)
 	}
 	if balance, _ := st.balance("account"); balance != 123 {
 		t.Fatal("canonical-first race changed balance")

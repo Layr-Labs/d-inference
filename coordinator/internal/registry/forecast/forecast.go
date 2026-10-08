@@ -77,8 +77,10 @@ type Result struct {
 	Calibrated, EvidenceQualified bool
 }
 
-func Evaluate(evidence Evidence, request Request, now time.Time) Result {
-	history, work, transport := evidence.Calibration, evidence.Workload, evidence.Transport
+// Evaluate borrows non-nil detached evidence for this call. It neither mutates
+// nor retains the evidence or its nested inputs; callers must keep them immutable.
+func Evaluate(evidence *Evidence, request Request, now time.Time) Result {
+	history, work, transport := &evidence.Calibration, &evidence.Workload, &evidence.Transport
 	e := Estimate{Status: Unknown, CapacityAgeMs: history.CapacityAgeMS, PerformanceAgeMs: history.PerformanceAgeMS,
 		ServiceMs: work.ServiceMS, TransportMs: transport.ExpectedMS, TransportAgeMs: transport.AgeMS,
 		PromptTokens: request.PromptTokens, CachedTokens: request.CachedTokens, RestoreMs: request.RestoreMS}
@@ -143,8 +145,9 @@ func Evaluate(evidence Evidence, request Request, now time.Time) Result {
 
 // UnknownReason is also consumed by actual quote revalidation. Fresh quotes do
 // not create recency or workload identity for historical measurements.
-func UnknownReason(evidence Evidence, request Request, calibrated, ignoreRefusalCutoff bool) string {
-	history, work := evidence.Calibration, evidence.Workload
+// It borrows non-nil evidence without mutating or retaining it.
+func UnknownReason(evidence *Evidence, request Request, calibrated, ignoreRefusalCutoff bool) string {
+	history, work := &evidence.Calibration, &evidence.Workload
 	switch {
 	case !history.HasCapacity:
 		return "capacity_missing"

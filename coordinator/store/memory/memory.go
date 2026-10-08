@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/internal/store/consumersettlement"
 	inventory "github.com/eigeninference/d-inference/coordinator/internal/store/inventory"
 
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	memoryhistory "github.com/eigeninference/d-inference/coordinator/internal/store/memoryhistory"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/earningsfloor"
 
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
@@ -19,13 +21,19 @@ var _ store.Store = (*MemoryStore)(nil)
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
-	now                       func() time.Time
-	history                   *memoryhistory.State
-	autopilotRecords          map[string]store.AutopilotRecord
-	modelTokenProviderCarries map[string]int64
-	modelTokenPromotions      map[string]store.ModelTokenPromotion
-	modelTokenGrants          map[string]map[string]store.ModelTokenGrant
-	modelTokenReservations    map[string]store.ModelTokenReservation
+	now                        func() time.Time
+	history                    *memoryhistory.State
+	smallModelsInterest        map[string]store.SmallModelsInterest
+	autopilotRecords           map[string]store.AutopilotRecord
+	autopilotRewardEnrollments map[string]earningsfloor.Enrollment
+	autopilotRewardConsents    map[string]autopilotRewardConsentHistory
+	autopilotRewardReceipts    map[autopilotRewardDay]earningsfloor.Settlement
+	autopilotRewardPool        earningsfloor.Pool
+	modelTokenProviderCarries  map[string]int64
+	modelTokenPromotions       map[string]store.ModelTokenPromotion
+	modelTokenGrants           map[string]map[string]store.ModelTokenGrant
+	modelTokenReservations     map[string]store.ModelTokenReservation
+	consumerSettlements        map[string]consumersettlement.Record
 
 	mu           sync.RWMutex
 	epochLocks   epochlocks.Owner
@@ -116,7 +124,9 @@ type MemoryStore struct {
 	// codeAttestations: lost on restart in the memory store (same as the in-memory
 	// cache it backs), but the methods exist so the store seam is uniform and
 	// Postgres persists for real as the production backend.
-	providerTrustReuse map[string]store.ProviderTrustReuse
+	providerTrustReuse    map[string]store.ProviderTrustReuse
+	legacyMDMCohortCutoff time.Time
+	legacyMDMCohort       []store.LegacyMDMMachine
 
 	// Durable scheduler parity for tests/development. Key is SE key + task kind.
 	verificationJobs map[string]store.VerificationJob
@@ -144,6 +154,16 @@ type MemoryStore struct {
 	floorDrawSeq  int64
 	floorDrawKeys map[string]struct{} // "providerKey|epochID" → settled marker
 
+	// Account erasure requests and their outbox rows.
+	erasureSEOwners    map[string]map[string]bool
+	erasureRequests    map[string]*memoryErasureRequest
+	erasureOutbox      []store.ErasureOutboxItem
+	erasureOutboxLease map[string]time.Time // outbox row ID → lease end
+	// Erased accounts refuse credits; refused ones are kept for review.
+	erasedAccounts           map[string]bool
+	erasureRefusedCredits    []store.ErasureRefusedCredit
+	erasureRefusedSeq        int64
+	erasureRefusedIdentities map[refusedCreditIdentity]bool
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -154,9 +174,19 @@ func NewMemory(scfg store.Config) *MemoryStore {
 		now = time.Now
 	}
 	s := &MemoryStore{
+		consumerSettlements:           make(map[string]consumersettlement.Record),
 		now:                           now,
 		history:                       memoryhistory.New(),
+		smallModelsInterest:           make(map[string]store.SmallModelsInterest),
+		autopilotRewardEnrollments:    make(map[string]earningsfloor.Enrollment),
+		autopilotRewardConsents:       make(map[string]autopilotRewardConsentHistory),
+		autopilotRewardReceipts:       make(map[autopilotRewardDay]earningsfloor.Settlement),
+		autopilotRewardPool:           earningsfloor.Pool{TrackingStartedAt: now().UTC().Truncate(time.Microsecond)},
 		modelDemandStartedAt:          time.Now().UTC(),
+		erasureSEOwners:               make(map[string]map[string]bool),
+		erasureRequests:               make(map[string]*memoryErasureRequest),
+		erasureOutboxLease:            make(map[string]time.Time),
+		erasedAccounts:                make(map[string]bool),
 		keyRecords:                    make(map[string]*store.APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),

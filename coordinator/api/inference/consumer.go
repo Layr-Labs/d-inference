@@ -1382,10 +1382,10 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 	if admission.Handled {
 		return
 	}
-	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by
 	// whether its request shape could be lowered for cache participation.
 	consumerEndpoint, requestedStopSequences := inreq.GenericResponseMetadata(endpoint, parsed)
+	var cachePlan registry.CachePlan
 	if loweringErr == nil {
 		cachePlan = cachePlans.ForBody(model, inferenceBody)
 	} else {
@@ -1393,6 +1393,8 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 		// inference rejection. Preserve the existing generic endpoint behavior
 		// for unsupported shapes while declining cache participation.
 		inferenceBody = endpointBody
+		cachePlanner := s.NewCachePlanner()
+		cachePlanner.EmitDecision(cachePlanner.ModelLabel(model), routeplan.CachePlanningLoweringUnsupported, 0)
 	}
 
 	genericDeadline = max(fallbackDeadline, deadlineForWork(model, promptwork.FromContext(r.Context(), model, inferenceBody)))

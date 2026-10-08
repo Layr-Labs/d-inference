@@ -19,6 +19,9 @@ func TestAutopilotRetriesDoNotBlockLeaseRenewalOrLoseOwnership(t *testing.T) {
 	r, c, now := newAutopilotControllerTestConfig(t, cfg, func(deps *production.Dependencies) {
 		deps.Connections = connections
 	})
+	for i := range 9 {
+		r.selectLiveMachines(t, i)
+	}
 	var peers []*production.Provider
 	var writers []*writerFixture
 	for i := 0; i < 9; i++ {

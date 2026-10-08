@@ -13,6 +13,7 @@ import (
 	inresp "github.com/eigeninference/d-inference/coordinator/api/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/api/observation"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	failure "github.com/eigeninference/d-inference/coordinator/internal/inference/failure"
 	routeoutcome "github.com/eigeninference/d-inference/coordinator/internal/inference/outcome"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -28,8 +29,23 @@ func (s *Controller) NonStream(
 	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
 	defer cancel()
 
+	// Defense in depth for every caller, including already-held first chunks.
+	// Production ingress has a separate budget spanning the channel and held
+	// preamble too, and rejects before a completion can settle the attempt.
+	budget := s.ResponseLimits.NewBudget(false)
+	rejectLimit := func() {
+		s.Refund(pr, "provider_response_limit:"+pr.RequestID)
+		s.Error(pr.ProviderID, pr, http.StatusBadGateway, failure.NonStreamingResponseLimitError, "", "", protocol.CoordinatorCauseResponseLimit)
+		errMsg := failure.NormalizeInternalError(protocol.InferenceErrorMessage{CoordinatorCause: protocol.CoordinatorCauseResponseLimit})
+		s.Outcome(pr, routeoutcome.PreResponseProviderErrorOutcome(pr, errMsg))
+		s.ProviderError(w, errMsg)
+	}
 	var chunks []string
 	for _, firstChunk := range firstChunks {
+		if !budget.Accept(len(firstChunk)) {
+			rejectLimit()
+			return
+		}
 		if firstChunk != "" {
 			chunks = append(chunks, firstChunk)
 		}
@@ -172,6 +188,10 @@ func (s *Controller) NonStream(
 				return
 			}
 			chunk := providerChunk.Data
+			if !budget.Accept(len(chunk)) {
+				rejectLimit()
+				return
+			}
 			chunks = append(chunks, chunk)
 
 		case errMsg, ok := <-pr.ErrorCh:

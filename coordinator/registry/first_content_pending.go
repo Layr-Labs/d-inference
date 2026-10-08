@@ -13,19 +13,6 @@ func recordReservedPrefill(pr *PendingRequest, c *routingCandidate) {
 	pr.reservedPrefillRestoreMs = reserved.RestoreMS
 }
 
-func fillFirstContentPending(snap *routingSnapshot, p *Provider, model string) {
-	for _, pr := range p.pendingReqs {
-		if pr.reservedAt.After(snap.newestReservationAt) {
-			snap.newestReservationAt = pr.reservedAt
-		}
-		snap.pendingPrefillRestoreMs += snap.pendingPrefill.Add(forecast.PendingPrefill{
-			Reservation:           forecast.PrefillReservation{Known: pr.reservedPrefillKnown, Tokens: pr.reservedPrefillTokens, RestoreMS: pr.reservedPrefillRestoreMs},
-			EstimatedPromptTokens: pr.EstimatedPromptTokens, CacheParticipates: pr.CacheRoutingParticipates(),
-			ContentCommitted: pr.ContentCommittedSafe(), ModelMatches: pr.Model == model, ReservedAt: pr.reservedAt,
-		}, p.CapacityAcceptedAt)
-	}
-}
-
 func firstContentPrefillAhead(snap *routingSnapshot, prompt int) float64 {
 	if !snap.firstContentPendingKnown {
 		return queuedPrefillTokensAhead(snap, prompt)

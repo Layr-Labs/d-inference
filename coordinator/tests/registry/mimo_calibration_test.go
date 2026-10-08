@@ -53,7 +53,8 @@ func TestMimoCalibrationHeartbeatRestoresFreshFeasibleRouting(t *testing.T) {
 	pr := &production.PendingRequest{RequestID: "after-calibration", Model: model, EstimatedPromptTokens: 512,
 		RequestedMaxTokens: 128, FirstContentDeadline: now.Add(9 * time.Second), RequireFreshFeasible: true}
 	request := forecast.Request{PromptTokens: 512, UpperBoundTokens: 512, Incoming: performance.IncomingWork{RequestedMaxTokens: 128}, Deadline: pr.FirstContentDeadline, RequireFreshFeasible: true}
-	before := forecast.Evaluate(f.evidence(now), request, now).Estimate
+	beforeEvidence := f.evidence(now)
+	before := forecast.Evaluate(&beforeEvidence, request, now).Estimate
 	if before.Status == forecast.Feasible {
 		t.Fatal("expired prefill evidence should not satisfy fresh feasibility")
 	}
@@ -63,7 +64,8 @@ func TestMimoCalibrationHeartbeatRestoresFreshFeasibleRouting(t *testing.T) {
 	slot.PerformanceMeasurements.IsolatedPrefill = &protocol.PerformanceRateObservation{TokensPerSecond: 900, SampleCount: 3}
 	slot.PerformanceMeasurements.Decode = &protocol.PerformanceRateObservation{TokensPerSecond: 60, SampleCount: 3}
 	history.Reconcile(p.BackendCapacity, p.CapacityAcceptedAt, now, time.Second)
-	after := forecast.Evaluate(f.evidence(now), request, now).Estimate
+	afterEvidence := f.evidence(now)
+	after := forecast.Evaluate(&afterEvidence, request, now).Estimate
 	p.Mu().Unlock()
 	if after.Status != forecast.Feasible {
 		t.Fatalf("completed calibration did not restore feasibility: %+v", after)
@@ -106,7 +108,7 @@ func TestMimoCalibrationUsesOnlyFreshMatchingColdPrefillCells(t *testing.T) {
 	pr := forecast.Request{PromptTokens: 4096, UpperBoundTokens: 4096, Incoming: performance.IncomingWork{RequestedMaxTokens: 32}, Deadline: now.Add(9 * time.Second)}
 	c := measuredFirstContentEvidence(now)
 	c.WorkloadRates = measurements.SnapshotWorkloadRates(m, now, time.Second)
-	estimate := forecast.Evaluate(c, pr, now).Estimate
+	estimate := forecast.Evaluate(&c, pr, now).Estimate
 	if estimate.Status != forecast.PredictedLate {
 		t.Fatalf("fresh 4k measurement failed to constrain admission: %+v", estimate)
 	}

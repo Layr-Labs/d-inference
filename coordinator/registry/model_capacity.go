@@ -77,7 +77,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	var snaps []providerCapSnap
 
 	r.mu.RLock()
+	providers := make([]*Provider, 0, len(r.providers))
 	for _, p := range r.providers {
+		providers = append(providers, p)
+	}
+	estimates := r.coldKVEstimatesLocked(providers, "", now)
+	for _, p := range providers {
 		p.mu.Lock()
 
 		// Apply the same gates as snapshotProviderIntoLockedEx. Private-only machines
@@ -103,7 +108,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// normalization stays internal.
 		var poolSnap routingSnapshot
 		if p.BackendCapacity != nil {
-			fillSnapshotPendingAndPool(&poolSnap, p, "")
+			fillSnapshotPendingAndPool(&poolSnap, p, "", estimates)
 		}
 
 		// Enumerate every model this provider serves.
@@ -128,17 +133,19 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 			// Per-model pooled remaining: byte-aware when the box is byte-
 			// reconstructable, else token accounting — exactly pooledBudgetAdmits'
-			// branch. Cold/absent slots have no rate (map miss ⇒ 0); on a byte-
-			// reconstructable pool they are priced at the greater of the
-			// conservative coordinator default and the box's max resident rate
-			// (the same cold-rate resolver the gate uses), so this feed stays
-			// equivalent to the gate on the cold path too. Inert for legacy boxes.
+			// branch. A cold slot uses the same current native forecast or the
+			// conservative default/largest-resident fallback as admission.
+			// Inert for legacy boxes; the forecast never creates a slot grant.
+			rate := poolSnap.pooledTokenBudget.RateFor(m.ID)
+			if rate == 0 {
+				rate = estimates.Rate(p, m.ID)
+			}
 			pooledRemaining := kvbudget.RemainingTokens(
 				poolSnap.pooledTokenBudget,
 				poolSnap.pendingMaxTokensAllModels,
 				poolSnap.pendingMaxBytesAllModels,
 				poolSnap.pendingBytesKnown,
-				poolSnap.pooledTokenBudget.RateFor(m.ID),
+				rate,
 			)
 
 			snap := providerCapSnap{

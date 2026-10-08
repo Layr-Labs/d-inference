@@ -21,8 +21,14 @@ type WorkBuilder struct {
 
 // BoundSlots cannot infer a missing local workload from heartbeat receipt time.
 func BoundSlots(catalog *Catalog, identity Identity, model string) (WorkBuilder, bool) {
+	return BoundSlotsWithReport(catalog, identity, model, capacityvalue.NewServiceReport(identity.Capacity))
+}
+
+// BoundSlotsWithReport shares a validation result with admission. The report and
+// identity are borrowed under the same provider critical section.
+func BoundSlotsWithReport(catalog *Catalog, identity Identity, model string, report capacityvalue.ServiceReport) (WorkBuilder, bool) {
 	capacity := identity.Capacity
-	if capacity == nil || capacity.WholeMacServiceUsed == nil || !capacityvalue.ValidWholeMacServiceReservations(capacity) ||
+	if !report.ValidFor(capacity) ||
 		(capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive) {
 		return WorkBuilder{}, false
 	}
@@ -30,9 +36,10 @@ func BoundSlots(catalog *Catalog, identity Identity, model string) (WorkBuilder,
 	if !FiniteServiceFraction(reported) {
 		return WorkBuilder{}, false
 	}
-	b := WorkBuilder{model: model, identity: identity, catalog: catalog, competitors: make(map[string]bool)}
+	b := WorkBuilder{model: model, identity: identity, catalog: catalog}
 	service, targetFound, evaluating := 0.0, false, false
-	for _, slot := range capacity.Slots {
+	for i := range capacity.Slots {
+		slot := &capacity.Slots[i]
 		w := slot.DeadlineWork
 		busy := slot.NumRunning > 0 || slot.NumWaiting > 0 || slot.EvalInFlightMs > 0 || slot.IdleClearInFlightMs > 0 || slot.WedgeSuspected ||
 			(w != nil && (w.RequestCount > 0 || w.ServiceFraction > 0))
@@ -55,7 +62,7 @@ func BoundSlots(catalog *Catalog, identity Identity, model string) (WorkBuilder,
 			}
 		}
 		evaluating = evaluating || slot.EvalInFlightMs > 0
-		profile := catalog.Qualified(identity, slot.Model)
+		profile := catalog.qualified(&b.identity, slot.Model)
 		if profile == nil || w.ContextTokensMax > profile.MeasuredContextTokensMax() {
 			return WorkBuilder{}, false
 		}
@@ -69,7 +76,7 @@ func BoundSlots(catalog *Catalog, identity Identity, model string) (WorkBuilder,
 		} else {
 			b.work.OtherModelRequests += w.RequestCount
 			b.work.OtherModelServiceFraction += w.ServiceFraction
-			b.competitors[profile.ID] = true
+			b.noteCompetitor(profile.ID)
 		}
 	}
 	if !targetFound || math.Abs(service-reported) > 1e-9 || (evaluating && b.work.ActiveRequests == 0) {
@@ -94,7 +101,7 @@ func (b *WorkBuilder) Pending(pending PendingWork, reportedCharge float64) bool 
 	if reportedCharge > 0 {
 		return reportedCharge+1e-12 >= pending.ServiceCharge
 	}
-	profile := b.catalog.Qualified(b.identity, pending.Model)
+	profile := b.catalog.qualified(&b.identity, pending.Model)
 	if profile == nil || profile.DeadlineCalibration == nil ||
 		!pending.PromptWork.IsQualifiedFor(profile.ArtifactSHA256, profile.DeadlineCalibration.PromptContractID) ||
 		pending.RequestedMaxTokens <= 0 || pending.RequestedMaxTokens > profile.MeasuredContextTokensMax() ||
@@ -110,9 +117,18 @@ func (b *WorkBuilder) Pending(pending PendingWork, reportedCharge float64) bool 
 	} else {
 		b.work.OtherModelRequests++
 		b.work.OtherModelServiceFraction += pending.ServiceCharge
-		b.competitors[profile.ID] = true
+		b.noteCompetitor(profile.ID)
 	}
 	return true
+}
+
+// A target-only or rejected envelope has no competing profile IDs to retain.
+// Allocate ownership only once a qualified competitor contributes real work.
+func (b *WorkBuilder) noteCompetitor(id string) {
+	if b.competitors == nil {
+		b.competitors = make(map[string]bool)
+	}
+	b.competitors[id] = true
 }
 
 func (b *WorkBuilder) Finish() firstcontent.Work {

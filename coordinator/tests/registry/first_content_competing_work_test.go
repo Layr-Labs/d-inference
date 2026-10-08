@@ -37,7 +37,7 @@ func TestCalibratedFirstContentRequiresExactCompetingProfile(t *testing.T) {
 	// Cooled admission and the exact competing-work envelope are separate policies.
 	boundedPrediction := func(e forecast.Evidence) bool {
 		e.Calibration.Calibration = profile.DeadlineCalibration
-		_, _, ok := performance.PredictCalibrated(e.Calibration, performance.IncomingWork{
+		_, _, ok := performance.PredictCalibrated(&e.Calibration, performance.IncomingWork{
 			PromptWork: pr.PromptWork, PromptTokens: pr.PromptWork.UpperBoundTokens, RequestedMaxTokens: pr.RequestedMaxTokens,
 		}, forecast.CapacityFreshness, forecast.PerformanceFreshness, forecast.DecodeAllowance)
 		return ok

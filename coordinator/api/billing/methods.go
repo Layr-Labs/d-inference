@@ -17,6 +17,7 @@ func (s *Owner) HandleBillingMethods(w http.ResponseWriter, r *http.Request) {
 		resp["referral"] = map[string]any{
 			"enabled":       true,
 			"share_percent": s.billing.Referral().SharePercent(),
+			"reward_basis":  "consumer_spend",
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)

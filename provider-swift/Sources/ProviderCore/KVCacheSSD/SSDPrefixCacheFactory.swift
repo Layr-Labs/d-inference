@@ -29,6 +29,7 @@ enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case epochUnavailable = "epoch_unavailable"
     case promptContractUnavailable = "prompt_contract_unavailable"
     case layoutUnavailable = "layout_unavailable"
+    case writeBudgetUnavailable = "write_budget_unavailable"
 }
 
 enum SSDPrefixCacheFactory {
@@ -280,11 +281,20 @@ enum SSDPrefixCacheFactory {
             maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),
             windowSidecar: windowSidecar,
             nowSeconds: { Int64(Date().timeIntervalSince1970) })
+        let maxWriteBytesPerDay = SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment)
+        let writeBudget: SSDWriteBudget?
+        do {
+            writeBudget = maxWriteBytesPerDay > 0 ? try SSDWriteBudget(root: wholeRoot) : nil
+        } catch {
+            onConstructionFailure?(.writeBudgetUnavailable)
+            return nil
+        }
         let cache = SSDPrefixCache(
             config: config,
             kekKey: kekKey,
             kvBudget: kvBudget,
-            maxWriteBytesPerDay: SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment),
+            maxWriteBytesPerDay: maxWriteBytesPerDay,
+            writeBudget: writeBudget,
             strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
             diskBudgetBytes: { [dir] in
                 PrefixCachePolicy.ssdDiskBudgetBytes(

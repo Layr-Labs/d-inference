@@ -84,12 +84,12 @@ func startExactCacheSidecar(t *testing.T, suite *testbed.Suite, fixture exactCac
 		promptcontract.PreloadControllerConfig{PollInterval: 50 * time.Millisecond},
 	)
 	require.NoError(t, err)
-	preloader.Start(suite.Ctx)
 	t.Cleanup(preloader.Close)
-
 	suite.Coordinator.Server.SetPromptArtifactProvisioner(provisioner)
 	suite.Coordinator.Server.SetPromptContractClient(supervisor.Client())
+	// Match production: install the Registry projection before controller Start.
 	suite.Coordinator.Server.SetPromptPreloadController(preloader)
+	preloader.Start(suite.Ctx)
 	waitForPreloadedContract(t, preloader, contractID, 30*time.Second)
 	return supervisorConfig, provisioner, supervisor, preloader
 }

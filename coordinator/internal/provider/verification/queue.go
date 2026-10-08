@@ -15,6 +15,10 @@ func (s *Scheduler) submit(ctx context.Context, providerID string, provider *reg
 	if s == nil || provider == nil {
 		return 0
 	}
+	if s.deps.LegacyMDMAllowed != nil && !s.deps.LegacyMDMAllowed(provider) {
+		provider.SetMDMFailureReason("app-attest-required")
+		return 0
+	}
 	result := provider.GetAttestationResult()
 	if result == nil || !result.Valid || result.PublicKey == "" || result.SerialNumber == "" {
 		return 0
@@ -22,6 +26,9 @@ func (s *Scheduler) submit(ctx context.Context, providerID string, provider *reg
 	if start != nil {
 		start()
 	}
+	s.mu.Lock()
+	erasureGeneration := s.erasureGeneration
+	s.mu.Unlock()
 	now := s.deps.Now().UTC()
 	record, err := s.store.UpsertVerificationJob(ctx, store.VerificationJob{
 		SEPubKey: result.PublicKey, Serial: result.SerialNumber,
@@ -39,6 +46,12 @@ func (s *Scheduler) submit(ctx context.Context, providerID string, provider *reg
 	seKey := result.PublicKey
 	key := Key(seKey, record.Kind)
 	s.mu.Lock()
+	// The store write may have committed before Forget while its response was
+	// delayed. Never republish that captured binding after erasure cleanup.
+	if s.erasureGeneration != erasureGeneration {
+		s.mu.Unlock()
+		return 0
+	}
 	generation := s.generation.Add(1)
 	binding := &Binding{
 		ProviderID: providerID, Provider: provider, Attestation: *result,
@@ -294,6 +307,40 @@ func (s *Scheduler) Unbind(seKey string, generation uint64) {
 	s.Wake()
 }
 
+// Forget drops the in-memory jobs, bindings and UDID routes of erased SE
+// keys and cancels their running attempts. A canceled attempt only releases
+// its claim, which is an UPDATE of a row the scrub already deleted.
+func (s *Scheduler) Forget(seKeys []string) {
+	if s == nil || len(seKeys) == 0 {
+		return
+	}
+	erased := make(map[string]bool, len(seKeys))
+	for _, key := range seKeys {
+		erased[key] = true
+	}
+	s.mu.Lock()
+	s.erasureGeneration++
+	for key, job := range s.jobs {
+		if !erased[job.Record.SEPubKey] {
+			continue
+		}
+		if job.AttemptCancel != nil {
+			job.AttemptCancel()
+		}
+		if job.Record.UDID != "" && s.byUDID[job.Record.UDID] == key {
+			delete(s.byUDID, job.Record.UDID)
+		}
+		if !job.Running {
+			delete(s.jobs, key)
+		}
+	}
+	for key := range erased {
+		delete(s.bindings, key)
+	}
+	s.mu.Unlock()
+	s.Wake()
+}
+
 func (s *Scheduler) LoadDueRows() {
 	now := s.deps.Now().UTC()
 	limit := s.config.QueueCapacity
@@ -428,6 +475,9 @@ func (s *Scheduler) refreshReleasedJob(work mdmSchedulerWork) {
 }
 
 func (s *Scheduler) EnqueueMDA(binding Binding, udid string) {
+	if s.deps.LegacyMDMAllowed != nil && !s.deps.LegacyMDMAllowed(binding.Provider) {
+		return
+	}
 	if udid == "" {
 		s.metricCounter("mda_verification_total", "outcome", "invalid")
 		s.mu.Lock()

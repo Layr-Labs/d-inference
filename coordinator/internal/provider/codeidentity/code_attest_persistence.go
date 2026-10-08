@@ -18,18 +18,20 @@ func (s *Controller,
 	// Wire the write-through path so future successful round-trips are persisted.
 	s.codeAttestThrottle.Store = s.store
 
+	generation := s.codeAttestThrottle.PublicationGeneration()
 	rows, err := s.store.ListCodeAttestations(ctx)
 	if err != nil {
 		s.logger.Warn("code-attest: failed to seed reuse cache from store", "error", err)
-	} else if n := s.codeAttestThrottle.Seed(rows); n > 0 {
+	} else if n := s.codeAttestThrottle.Seed(generation, rows); n > 0 {
 		s.logger.Info("code-attest: seeded reuse cache from persisted records (survives deploys)", "records", n)
 	}
 	if st, ok := store.As[codeidentity.PushBudgetStore](s.store); ok {
+		generation = s.codeAttestThrottle.PublicationGeneration()
 		budgets, err := st.ListCodeAttestPushBudgets(ctx)
 		if err != nil {
 			s.logger.Warn("code-attest: failed to seed durable push budgets", "error", err)
 		} else {
-			s.codeAttestThrottle.SeedPushBudgets(budgets)
+			s.codeAttestThrottle.SeedPushBudgets(generation, budgets)
 		}
 	}
 }
@@ -39,7 +41,7 @@ func (s *Controller,
 // challengeValidity window; live-connection resume proofs do not.
 func (s *Controller,
 
-) persistCodeAttestation(seKey, version, token, nodeKey, binaryHash string) {
+) persistCodeAttestation(accountID, seKey, version, token, nodeKey, binaryHash string) {
 	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
 		return
 	}
@@ -51,6 +53,7 @@ func (s *Controller,
 	if !ok {
 		return
 	}
+	proof.AccountID = accountID
 	proof.ContinuousCoverageUntil = nil // only a verified observation can advance coverage
 	saferun.Go(s.logger, "persistCodeAttest", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

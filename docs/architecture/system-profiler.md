@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -235,7 +235,7 @@ JSON-encoded on the sink worker.
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
 | `near_tie_pool_size`, `selection_path` | retained cost candidates: within `nearTieCostWindowMs` of the minimum in every pool; a restore-penalty candidate is retained only at the exact minimum. For cache-adjusted pools `near_tie_pool_size` therefore steps from 1 to the band size. Current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`, `cache_credit` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. `cache_credit` prefers useful validated reuse only after first-content band and whole-Mac service-work ordering; equivalents spread uniformly. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat`; the winner's `snapshot_age_ms` uses the fresh pre-debit commit snapshot, while candidate `hb_age_ms` retains the scan snapshot. Elapsed time or an intervening heartbeat can make them differ; observability only | `routingDecisionForCandidate` (`coordinator/registry/scheduler.go`), `candidateSummaryOf` (`coordinator/registry/gate_reason.go`) |
-| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
+| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `candidateSnapshot.projectedDecodeTPS` | `scheduler.go`, `candidate_snapshot.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
 | `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `scheduler.go` |
 | `shadow_would_shed`, `shadow_idle_alternative` | `NULL` unless the TTFT shadow evaluator ran | `profiler_record.go` |
@@ -245,7 +245,7 @@ JSON-encoded on the sink worker.
 
 ### Tables
 
-`request_profiles` (DDL `requestProfilesTableDDL`, `coordinator/store/postgres/`;
+`request_profiles` (DDL in `coordinator/store/postgres/schema/migrations/00001_baseline.sql`;
 column order pinned by `requestProfileColumns`, `coordinator/store/profile_records.go`):
 
 | Group | Columns |
@@ -266,7 +266,7 @@ nullable, everything else `NOT NULL DEFAULT` zero. `id BIGSERIAL PRIMARY KEY`,
 `idx_request_profiles_provider (provider_id, created_at DESC)`. Both tables use
 `autovacuum_vacuum_scale_factor = 0.02`, `autovacuum_analyze_scale_factor = 0.01`.
 
-`fleet_snapshots` (`fleetSnapshotsTableDDL`; `fleetSnapshotColumns`):
+`fleet_snapshots` (DDL in the same baseline; `fleetSnapshotColumns`):
 
 | Group | Columns |
 |---|---|
@@ -280,11 +280,23 @@ nullable, everything else `NOT NULL DEFAULT` zero. `id BIGSERIAL PRIMARY KEY`,
 Indexes `idx_fleet_snapshots_sampled (sampled_at DESC)`,
 `idx_fleet_snapshots_provider (provider_id, sampled_at DESC)`. INT columns are
 saturated to int32 by `ClampFleetRowInts`. The sampler's lock discipline: one
-short `r.mu.RLock` copies the provider list; phase A reads each provider under
-`p.mu` only; phase B takes a brief `r.mu.RLock` per provider for breaker,
+short `r.mu.RLock` copies the provider list. `fleetSampleColdKVEstimates`
+(`coordinator/registry/fleet_sample_kv.go`) captures one operation-local
+[cold KV forecast](routing.md#cold-model-kv-forecasts) for actual slot probes and
+pending cold work, not unused on-disk advertisements. It gathers requirements
+under each provider's `p.mu`, copies each needed model index under a short
+registry read lease, and validates donors one provider per lease. No registry
+lease spans the participant or donor walk, and the table is reused for the
+sample rather than rebuilt for every provider.
+
+Phase A reads each provider under `p.mu` only; phase B takes a brief
+`r.mu.RLock` per provider for breaker,
 ejection, cooldown, clamp and eligibility through the real routing gates
 (`snapshotProviderIntoLockedEx`, `buildCandidateInto`); a provider
-replaced between phases is dropped. `registry/routingsim`
+replaced between phases is dropped. Destination state and catalog folding are
+rechecked in phase B. This remains an approximate sample: a newly pending model
+not present during forecast capture uses the conservative fallback, and the
+next sample captures fresh evidence. `registry/routingsim`
 (`coordinator/registry/routingsim/fleet_ndjson.go`, `LoadFleetNDJSON`) rebuilds
 a fleet from these rows, capability columns included.
 
@@ -415,7 +427,7 @@ to the replication set, and accepts the hourly retention DELETE volume.
 | Provider profile malformed | `valid = false` with the reason above; `size`/`decode`/`schema` store `NULL`, `range`/`order` store the clamped copy | `profiler.provider_profile{valid:false, reason}` |
 | Non-monotonic coordinator stamps | `timing_anomaly = true`, row always recorded | column |
 | Prune window blocked | `lock_timeout = '2s'` aborts that window; sweep stops at the first error and retries next hour | slog |
-| Sampler holds `r.mu` too long | not possible by design: phase A is `p.mu`-only, phase B is per-provider brief read locks | — |
+| Sampler holds `r.mu` too long | Forecast collection releases the registry lease between donors; phase A is `p.mu`-only and phase B uses per-provider read leases. No lease spans a fleet walk, though any provider lock can still wait | Sampler/index-visit and lock regressions |
 | `request_waterfall` view stale after a new column | `TestRequestWaterfallViewListsEveryProfileColumn` fails until the SQL is updated and re-applied | CI |
 
 ## Not built

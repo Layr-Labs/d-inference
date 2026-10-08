@@ -55,7 +55,7 @@ struct SSDCheckpointRemovalRaceTests {
         #expect(await f.budget.outstandingReservedBytes() == 0)
     }
 
-    @Test("eviction between a reader's manifest read and its full read is an absent miss and leaks nothing")
+    @Test("owned eviction waits for the reader lease and retires afterward without leaks")
     func evictionDuringRead() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
@@ -74,8 +74,15 @@ struct SSDCheckpointRemovalRaceTests {
             probe.record(store.evictOldestEntry())
             return try f.plan(manifest)
         }
-        #expect(probe.bytesFreed > 0)
-        #expect(result.disposition == .missAbsent)
+        // The exact-file lease protects the authenticated read. Retirement is
+        // nonblocking and retries after that lease has drained.
+        #expect(probe.bytesFreed == 0)
+        #expect(result.staged && result.stagedTokens == 256)
+        #expect(store.stats().evictions == 0)
+        #expect(store.index.count == 1)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        await store.abandonStaging(requestID: .init(811))
+        #expect(store.evictOldestEntry() > 0)
         #expect(store.stats().evictions == 1)
         #expect(store.stats().corruptDropped == 0)
         #expect(store.index.count == 0)

@@ -31,12 +31,8 @@ const (
 	cacheMatchMaxTrackedProviders  = 256
 )
 
-type cacheProviderMatchGroups struct {
-	indices []int
-}
-
 type cacheMatchGroups[P comparable] struct {
-	byProvider map[string]cacheProviderMatchGroups
+	byProvider map[string][]int
 	exhausted  bool
 }
 
@@ -47,24 +43,23 @@ func (groups *cacheMatchGroups[P]) retain(match Match[P], out []Match[P]) bool {
 	if groups.exhausted {
 		return true
 	}
-	group, known := groups.byProvider[match.Holder.ProviderID]
+	indices, known := groups.byProvider[match.Holder.ProviderID]
 	if !known && len(groups.byProvider) >= cacheMatchMaxTrackedProviders {
 		groups.exhausted = true
 		return true
 	}
-	for _, index := range group.indices {
+	for _, index := range indices {
 		if cacheMatchCompatibilityEqual(out[index], match) {
 			return false
 		}
 	}
 	if groups.byProvider == nil {
-		groups.byProvider = make(map[string]cacheProviderMatchGroups)
+		groups.byProvider = make(map[string][]int)
 	}
-	if len(group.indices) == cacheMatchMaxGroupsPerProvider {
+	if len(indices) == cacheMatchMaxGroupsPerProvider {
 		groups.exhausted = true
 		return true
 	}
-	group.indices = append(group.indices, len(out))
-	groups.byProvider[match.Holder.ProviderID] = group
+	groups.byProvider[match.Holder.ProviderID] = append(indices, len(out))
 	return true
 }

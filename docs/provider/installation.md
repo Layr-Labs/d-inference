@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-05
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -13,6 +13,11 @@ is updated afterwards, and how to remove everything. For operators; at the end
   `.macOS(.v14)`); the installer checks only `uname` = `Darwin` and `uname -m` =
   `arm64` and prints the macOS version without gating on it. Sizing (RAM, disk,
   which models fit) is in [hardware requirements](./hardware-requirements.md).
+- New network providers require macOS 27 or later and current qualified App
+  Attest authorization, not just a successful install or OS upgrade. Only the
+  [frozen legacy identities](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort)
+  may temporarily use legacy verification; an existing local MDM profile does
+  not establish eligibility.
 - Outbound HTTPS to the coordinator (`https://api.darkbloom.dev`).
 - No `sudo`. The script writes to `~/.darkbloom`, appends one `PATH` line to
   `~/.zshrc` (or `~/.bashrc`), and tries — best effort, no prompt — to link
@@ -93,12 +98,24 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `alias eigeninf`, `alias dginf`, `# EigenInference` and `# Darkbloom` are
    deleted and `# Darkbloom` + `export PATH="$HOME/.darkbloom/bin:$PATH"` is
    appended; the rc is then sourced.
-5. **Config location.** The script does not create, copy or migrate
-   `provider.toml` (retired `~/.dginf` / `~/.eigeninference` installs are no
-   longer migrated); the CLI reads only `~/.config/darkbloom/provider.toml` or
-   an explicit `--config` path
+5. **Config location and coordinator.** The CLI reads only
+   `~/.config/darkbloom/provider.toml` or an explicit `--config` path
    (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
-   `defaultConfigPath`).
+   `defaultConfigPath`); retired `~/.dginf` / `~/.eigeninference` installs are
+   not migrated. `bind_provider_coordinator` binds the provider to the
+   coordinator that served the installer and keeps every other line of the
+   file:
+   - when `$COORD_URL` is `https://api.darkbloom.dev`, it removes any `url`
+     line under `[coordinator]`, so the provider uses its built-in production
+     default. It does not create the file when it is missing;
+   - for any other coordinator, it writes `url = "wss://<host>/ws/provider"`
+     under `[coordinator]` and creates the file when it is missing (`ws://`
+     only for `http://localhost` or `http://127.0.0.1`; any other scheme, a
+     path, or a character outside `A-Za-z0-9.-` and `:port` stops the
+     install).
+
+   A provider that is already running keeps its old coordinator until
+   `darkbloom start`.
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`
    (`provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift`), which
    creates the P-256 key if missing. Failure prints a warning; the install
@@ -106,14 +123,17 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
 7. **Step 4/5 — verification setup.** `configure_device_verification` uses the
    local `sw_vers` major version. On macOS 27 or later it skips profile checks,
    download and System Settings, and directs the user to login/start/status for
-   App Attest approval. Older macOS retains legacy enrollment and prints the
-   upgrade option and upcoming MDM deactivation notice. If `profiles status
-   -type enrollment` reports no management, the script posts `{}` to
-   `$COORD_URL/v1/enroll`, saves the profile under
-   `${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX/`, and opens System Settings for
-   approval. Existing management is preserved without claiming it is Darkbloom
-   verification. Unknown OS versions download no profile and direct users to
-   `darkbloom enroll`. Setup choice grants no serving authorization; see the
+   App Attest approval. Older macOS only reads `profiles status -type enrollment`,
+   preserves existing management without claiming Darkbloom verification, and
+   prints the upgrade and temporary legacy notices. The installer never posts
+   an anonymous enrollment request, downloads a profile or opens profile setup.
+   After installation, run `darkbloom login` with the existing linked account,
+   then `darkbloom enroll`; only eligible grandfathered identities may re-enroll.
+   Unknown OS versions receive the same login/enroll guidance to select their
+   verification path without downloading a profile. On older macOS,
+   the CLI checks frozen account/key eligibility even when a Darkbloom profile
+   is already installed, and does not reinstall that profile on success.
+   Setup choice grants no serving authorization; see the
    [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
    interactive runs print up to 20 entries. Nothing is downloaded.

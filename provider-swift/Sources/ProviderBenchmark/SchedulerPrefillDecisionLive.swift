@@ -230,7 +230,8 @@ enum SchedulerPrefillDecisionLiveHarness {
             evaluation: evaluation)
     }
 
-    private static func makeResult(
+    /// Internal, not private, so unit tests pin it without a model.
+    static func makeResult(
         workload: SchedulerPrefillDecisionReport.Workload,
         iteration: Int,
         cap: Int,

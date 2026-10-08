@@ -7,6 +7,9 @@ import (
 // The owner supplies verification effects; the scheduler owns only dispatch,
 // durable claims and registration-bound callback fencing.
 func (s *Verifier) NewVerificationScheduler(cfg verification.Config, deps verification.Dependencies) *verification.Service {
+	if deps.LegacyMDMAllowed == nil {
+		deps.LegacyMDMAllowed = s.legacyMDMAllowed
+	}
 	if deps.Execute == nil {
 		deps.Execute = s.ExecuteScheduledVerification
 	}

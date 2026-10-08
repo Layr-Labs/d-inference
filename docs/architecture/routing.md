@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-08
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -25,7 +25,7 @@ unpromoted or explicitly retired hash is not accepted. Catalog size uses the
 largest retained revision as a conservative admission bound during convergence.
 [Model revisions](model-revisions.md) defines this transition policy.
 
-Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. See [model Autopilot](model-autopilot.md).
+Autopilot protocol 3 keeps cached planning inventory separate from ordinary serving permission. `providerOrdinaryModelAllowedLocked` excludes observation-only IDs from catalog, owner, capacity and legacy acquisition gates until acknowledged live control; shadow planning reuses the remaining safety gates without changing permission. Only the explicit verified-machine cohort can acquire live leases. Nonmembers retain ordinary routing behavior, and their hypothetical permissions or placements cannot protect live donor capacity. See [model Autopilot](model-autopilot.md#machine-selected-live-control).
 
 ## Provider lifecycle drain boundary
 
@@ -135,6 +135,17 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 ## Mechanism
 
 ### Entry points
+
+Whether a request carries a prefix-cache plan is decided before the provider
+scan. `CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`,
+bound to the inference owner by `Owner.NewCachePlanner` in
+`coordinator/api/inference/cache_planner.go`) returns the Registry's planning
+result, or an empty result when one of its own prerequisites declines first, and
+records one reason from a closed vocabulary on every call, `planned` included
+(`CachePlanningDecisionReason`,
+`coordinator/internal/inference/routeplan/cache_planning_telemetry.go`). A
+request without a plan is routed exactly like any other request; see
+[cache-aware routing](cache-aware-routing.md).
 
 `ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
 dispatch-time entry point. It scans the fleet
@@ -301,6 +312,21 @@ Two request policies relax the gate for the caller's **own** machines only:
 Every other gate — runtime verification, private-text attestation, challenge
 freshness, slot state, memory — still applies to owned machines.
 
+Under the upcoming [frozen legacy MDM policy](security/enrollment.md#frozen-legacy-authorization-cohort),
+noncohort connections set `Provider.RequireAppAttestServingAuthorization` before
+attestation attachment. They require current qualified App Attest authorization
+even for owner `SelfRouteOnly` or `PreferOwner` routing. A relaxed `TrustNone`
+floor cannot substitute for that authorization; shared routing checks and the
+final writer enforce it (`coordinator/registry/provider.go`,
+`coordinator/registry/owner_authorization.go`,
+`coordinator/registry/inference_authorization.go`). Frozen cohort membership
+itself is not a serving grant and does not waive existing legacy evidence gates.
+
+Serving and base-reward eligibility are separate: a grandfathered MDM-only
+machine may serve but cannot qualify for base rewards without current qualified
+App Attest authorization. Inference/work earnings are unchanged and historical
+rewards are not clawed back; [billing](billing.md) owns the economics guards.
+
 ### Challenge freshness
 
 `challengeFreshnessMaxAge = 16 * time.Minute`
@@ -346,7 +372,7 @@ and stores every term in `costBreakdown` with `Total = cost`
 | `firstContentFastBandMs` | `100.0` | Expected-first-content band in `selectFirstContentCandidate` (`coordinator/registry/first_content_selection.go`). |
 | `defaultRequestedMaxTokens` | `256` | Used for `max_tokens` when the request does not set one. |
 | `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`effectiveDecodeTPS`). |
-| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. |
+| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when neither a slot report nor matching fresh cold-model evidence is available. |
 | `modelMemoryHeadroomFactor` | `2.0` | `modelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. |
 | `maxPrefillTPS` | `20_000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `resolvePrefillTPS`, `coordinator/registry/scheduler.go`). |
 | `defaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. |
@@ -368,9 +394,9 @@ The remaining terms are request-shaped:
 exact matching reviewed profile's conservative point at or above the batch
 width after admission (`coordinator/registry/performance_profile.go`, `batchAt`).
 A workload-specific live EWMA does not replace that point. Without a fitting
-profile point, `resolveEffectiveTPS` prefers the slot's
-`ObservedDecodeTPS` EWMA, then the fleet median for the model, then the
-static registration rate derated by load:
+profile point, exploration can substitute a fleet median as described below.
+The ordinary decode fallback prefers the slot's usable `ObservedDecodeTPS`
+EWMA, then the fleet median for the model, then the static registration rate derated by load:
 `effectiveDecodeTPS = staticTPS / (1 + effectiveTPSLoadFactor × backendRunning)`,
 floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
@@ -384,6 +410,73 @@ for the age, prompt and failure-backoff bounds.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 (`coordinator/app/routing.go`).
+
+| Step | Decode (`resolveEffectiveTPS`) | Prefill (`resolvePrefillTPS`) |
+|---|---|---|
+| 1 | Reviewed profile point | Reviewed profile point |
+| 2 | Fleet decode median, if the provider is exploration-admitted and its own decode evidence is missing or old | Fleet isolated-prefill median, if the provider is exploration-admitted and its own isolated-prefill evidence is missing or old |
+| 3 | `ObservedDecodeTPS`, unless independently dated and expired on an idle loaded provider | `ObservedPrefillTPS` |
+| 4 | Fleet decode median | Registration `PrefillTPS`, or decode × `prefillToDecodeRatio` |
+| 5 | Registration decode, derated by load | — |
+
+`performance.Rates.EffectiveDecode` expires an independently dated decode
+measurement strictly older than 30 minutes only while the model is loaded,
+the whole Mac is idle and no local requests are pending
+(`coordinator/internal/registry/performance/rates.go`). Unknown ages and the
+exact boundary retain the observation. A fresh prefill or an unchanged heartbeat
+cannot renew decode age; a new explicit producer sample count can renew an
+unchanged rate. This fallback neither qualifies deadline evidence nor changes
+the projected decode-quality admission rate.
+
+A snapshot is exploration-admitted when [evidence
+exploration](first-content-routing.md#prediction-and-freshness) can admit the
+provider: accepted capacity is fresh, the model is loaded, the Mac is idle, and
+the evidence gap is at least `forecast.EvidenceExplorationAfter` (5 minutes),
+and neither [exploration feedback guard](first-content-routing.md#exploration-feedback)
+suppresses the provider.
+The check runs once per snapshot (`fillExplorationRates` and
+`firstContentExplorationAdmitted`,
+`coordinator/registry/first_content_exploration_pricing.go`). It stores each
+replaced rate on the snapshot, and the snapshot passes it to
+`performance.Rates` as `ExploredDecode` or `ExploredPrefill`
+(`coordinator/internal/registry/performance/rates.go`). Step 2 checks each rate
+on its own (`forecast.ExplorationReplacesRate`). A rate is old when its
+measurement is dated and at least 5 minutes old. A legacy rate that has a value
+but no date can be the first value after the provider connected; it counts as
+the provider's own evidence. When the slot declares `performance_measurements`,
+each own rate instead requires independently validated history. An explicitly
+missing or invalid observation is missing for exploration pricing even when
+the slot retains an older positive EWMA. So one served request brings back the
+provider's own value for each rate that the request renewed. Step 2 applies only
+when the median exists. Both medians are per model and chip family. The
+heartbeat records every reported decode EWMA and every usable isolated prefill
+rate into 50-sample rings (`TPSRegistry`, `coordinator/registry/tps_registry.go`
+and `coordinator/registry/tps_prefill.go`). The TTFT calibrator does not record
+a prediction whose cost used an exploration median (`NoteTTFTPrediction` in
+`ReservationSelection.commit`). A matching reviewed profile takes precedence
+and is not classified as median-priced.
+
+The check runs on the snapshot, so it does not see request-level forecast reasons.
+For a request whose reason is `no_deadline` or `capacity_before_refusal`, an
+admitted provider is priced at the medians although
+`firstContentEvidenceExplorable` is false for that request. This is a behavior
+change for requests without a deadline. Every candidate for such a request is
+already `unknown`, so admission does not change. But before this change an idle
+provider with no rates or old rates lost on cost. Now it competes at the median
+and can win. Reservation tags both evidence-exception and actually median-priced
+attempts for feedback, including no-deadline and vision requests; a
+request-level forecast reason cannot bypass exploration backoff.
+
+Known limits:
+
+- The prefill median is of the isolated prefill rate. Peers with fresh evidence
+  are priced on `ObservedPrefillTPS`, which also includes contended and cold
+  prefills. An admitted provider can therefore look faster at prefill than a
+  peer that has the same hardware.
+- Both medians are heartbeat-weighted, including repeated usable idle EWMAs,
+  rather than equally weighted per provider or per distinct measurement.
+- A missing prefill median retains the registration fallback, so a new model
+  or chip family can still leave an unmeasured provider outside the selection band.
 
 **Historical prefill cost weighting for long prompts.** `longPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a
@@ -444,7 +537,11 @@ request's avoidable prefill work with the confirmed endpoint's restore cost.
 Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[`cache-aware-routing.md`](cache-aware-routing.md). Cache planning first requires
+an acknowledged tokenizer and current exact Registry eligibility. If verified
+contracts exceed sidecar capacity, bounded authenticated demand selects the
+preloaded subset without waiting for tokenizer preload or raising that capacity;
+see [tokenizer selection](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
 
 ### Native model capacity and registry identity
 
@@ -487,7 +584,8 @@ ties. The runner-up records the next first-content alternative.
 
 A reservation evaluates every provider advertising the model while it holds
 `Registry.mu` for reading, so work done per candidate is multiplied by fleet
-size. Three rules keep that work small; none changes a routing outcome.
+size. The scan keeps admission policy and observed results intact while reducing
+retained storage, copied evidence and repeated aggregation.
 
 - **No clock read without a matching grant.** The Autopilot fence
   (`RoutingBlocked` in `coordinator/internal/registry/autopilotstate/routing.go`,
@@ -500,13 +598,45 @@ size. Three rules keep that work small; none changes a routing outcome.
   instead of copying each candidate on every pass, and `Project`
   (`coordinator/registry/selection/project.go`) takes the forecast and cost
   breakdown by pointer.
-- **Arena chunks fill one allocation size class.** `const ChunkSize = 22`
+- **Arena chunks fill one allocation size class.** `const ChunkSize = 55`
   (`coordinator/internal/registry/candidatearena/arena.go`) is the largest
   number of `Candidate` values (`coordinator/registry/scheduler.go`) that fits
   the Go allocator's 32 KiB small-object class.
   `TestCandidateArenaChunkFillsLargestSmallSizeClass`
   (`coordinator/tests/registry/candidate_arena_test.go`) fails when the struct
   changes size enough to need retuning.
+
+The full `routingSnapshot` is transient evaluation storage, reused on the scan's
+stack. `candidateSnapshot` (`coordinator/registry/candidate_snapshot.go`) retains
+only the detached values needed for ranking, quotes, diagnostics and commit
+comparison. The canonical provider/model binding stays in `Candidate`; no
+candidate retains a pointer into the transient snapshot. Forecast and calibration
+operations borrow immutable evidence for the duration of the call, while
+`PredictCalibrated` still copies its work before adding the incoming request.
+
+Ordinary private reservations lazily borrow exclusive `candidatearena.Storage`
+through `reservationCandidateStorage` (`coordinator/registry/reservation_storage.go`).
+The model index is copied once before choosing storage. A scan above
+`MaxReusableCandidates` uses ordinary request-owned chunks immediately. Pooled
+objects retain at most `MaxStorageChunks` chunks (2 MiB); extra chunks needed by a
+fail-open pass remain request owned. Retries reset storage after the previous
+commit result is consumed, and returning a borrower clears every historical
+chunk, including rejected slots. This is a per-object bound; `sync.Pool` may drop
+idle objects and does not impose a global memory cap. Public scans and decorated
+preparations always own their candidate chunks. Dispatch decisions and alternate
+plans contain detached values before private storage is returned.
+
+`fillPendingSnapshot` (`coordinator/registry/pending_snapshot.go`) freezes pending
+content state once under the provider lock and shares the resulting scalar work
+across forecast slot passes. Memory commitments still include prompt and maximum
+output until the pending owner retires. `capacityvalue.ServiceReport` shares one
+validation result between deadline work and headroom within the same provider
+critical section; it cannot cross capacity owners or survive a mutation.
+
+Alternate planning projects immutable selection values once through
+`selection.RetainRanked` (`coordinator/registry/selection/retain_ranked.go`). After
+each removal it recomputes the current fast-band, service-work and cache-credit
+classes, preserving pool order, random draw counts and affinity semantics.
 
 `BenchmarkReserveProviderEx_350x2`
 (`coordinator/tests/registry/reserve_bench_test.go`),
@@ -598,7 +728,7 @@ resident it is `ColdTokenBudgetWithOffload`:
 ```text
 weightsGiB   = measured resident GiB (model in servabilityMeasuredResidentGiB) else catalogGB × coldLoadCatalogGBToMemGiB
 postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # mirrors the provider cap fraction
-tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # kvCacheBytesPerToken when unreported
+tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # reported rate, cold forecast, then fallback
 ```
 
 `coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30))` (≈ 1.1176,
@@ -625,6 +755,47 @@ The consumer path turns an unservable verdict into an immediate `429` instead
 of queueing; the coordinator binary enables this by default and
 `EIGENINFERENCE_SERVABILITY_GATE=false` disables it
 (`coordinator/app/routing.go`, `SetServabilityGate`).
+
+### Cold-model KV forecasts
+
+A cold candidate has no authoritative per-slot KV report. The coordinator can
+instead estimate its per-token cost from the maximum fresh native rate reported
+by publicly eligible providers with the same model artifact and verified
+runtime identity. It does not infer memory from model names or weight quantization,
+or average away a higher observed native rate. Missing or incompatible evidence
+retains `kvCacheBytesPerToken`.
+
+`coldKVEstimatesLocked` in `coordinator/registry/cold_kv_estimate.go` captures
+operation-local evidence through the existing model index. Model ID, weight hash,
+provider version and verified MLX metallib hash must match. Donors need a valid
+native prompt-work identity for that artifact, a healthy loaded slot and accepted
+capacity no older than `DefaultProviderHeartbeatTimeout`; `CapacityAcceptedAt`,
+not a merely received heartbeat, supplies freshness. The registry retains no
+cross-operation rate history: disconnects, model changes, trust loss and cleared
+capacity are re-evaluated on the next capture.
+
+The fleet profiler reuses one forecast table per sample and bounds donor lock
+leases separately from row projection. Its [sampling contract](system-profiler.md#tables)
+does not introduce a persistent rate cache or extra request admission work.
+
+The estimate is separate from `KVBytesPerToken` in a live slot report. It prices
+cold structural and memory checks and cold-model coordinator-pending work, but
+does not synthesize a slot maximum, override an authoritative zero budget, change
+the provider pool's reported capacity or usage, or enable byte accounting for a
+legacy pool. A reservation rechecks current evidence under the registry's locking
+contract rather than retaining a disconnected provider's rate indefinitely.
+`memorypolicy.Input.EstimatedKVBytesPerToken`
+(`coordinator/internal/registry/memorypolicy/input.go`) carries the forecast;
+`kvbudget.Budget.AddColdRate` (`coordinator/internal/registry/kvbudget/rates.go`)
+prices absent-model pending work without changing the reported pool totals.
+
+This is an empirical forecast, not a guaranteed upper bound or proof that two
+providers allocate identical caches. Backend fallback, native precision, assistant
+availability, fixed workspace and concurrent load can still make a provider
+decline a request. Full model-load quotations, activation and minimum-KV reserves,
+live shared-memory admission and actual engine byte-fit checks remain unchanged;
+the existing refusal/retry path handles forecast misses. Loaded slot reports
+replace the cold forecast rather than being widened by it.
 
 ### Gray-box capacity signals
 
@@ -723,7 +894,7 @@ the request path takes it for writing.
 
 | Lock | Guards | Request-path holders |
 |---|---|---|
-| `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases and routing configuration. | The scan and the commit, for READING (`scanProviderReservation`, `commitLock`). Writers are `Register`, `Disconnect`, `evictStale`, the swap planner and the config setters. |
+| `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases and routing configuration. | The scan and the commit, for READING (`prepareProviderReservationIntoStorage`, `commitLock`). Writers are `Register`, `Disconnect`, `evictStale`, the swap planner and the config setters. |
 | `Provider.mu` | One provider's heartbeat state, pending set, attestation and retained directory session (`Provider.gateSession`). | The scan per provider (`snapshotProviderIntoLockedEx`); the commit's whole decide-and-debit section; the identity bind (`bindStableFaultKey`). |
 | `Registry.sessionsMu` (`sync.RWMutex`) | Session → live `Provider` projection (`coordinator/registry/gate_index.go`, `sessionProvider`). | Attach/detach brackets directory publication; budget projection reads finish before directory fault mutations. The directory itself never acquires a provider lock. |
 | `identitygate.Directory.gatesMu` (`sync.RWMutex`) | Private fault-key → `State` and session → `identitygate.Session` indexes (`coordinator/internal/registry/identitygate/directory.go`). | Recorders resolve under the index read lock; insertion, identity bind, sweep and retry fallback stabilize the index before state acquisition (`gate_index.go`, `gate_lock.go` under `coordinator/internal/registry/identitygate/`). |
@@ -738,7 +909,7 @@ lock is held, and the scan takes no walk-wide gates lock
 `coordinator/registry/gate_index.go`, `attachSessionGate`, `detachSessionGate`).
 
 **Two-phase reservation** (`coordinator/registry/scheduler.go`).
-`scanProviderReservation` walks the fleet under `r.mu.RLock`; concurrent
+`prepareProviderReservationIntoStorage` walks the fleet under `r.mu.RLock`; concurrent
 requests scan together and no capacity is consumed. `commitProviderReservation`
 holds `r.mu` for reading — the provider identity, catalog and cache-routing
 configuration must be stable, not the fleet frozen — and does everything that
@@ -899,6 +1070,21 @@ traffic before deploy. It has no binary; it is driven from tests.
 - `report.go` — `Summarize` buckets results by prompt length and
   `EstimatedCliff` finds the prompt size where acceptance collapses.
 
+The closed-loop tests in `coordinator/tests/registry/routingsim/`
+(`closed_loop_sim_test.go`, `closed_loop_starvation_test.go`) feed each
+routing result back into fleet state. The provider that `ReserveProviderEx`
+selects serves the request, releases it with `RemovePending` and
+`SetProviderIdle`, and reports a changed measurement through
+`Registry.Heartbeat`. Idle providers send unchanged heartbeats every 5 s. Each
+scenario runs on the legacy EWMA path and on the explicit
+`performance_measurements` path. The tests run under `testing/synctest`, so
+two simulated hours of arrivals take about one second. They check that every
+idle, loaded provider is selected within
+`forecast.EvidenceExplorationAfter` (5 minutes, #1254) plus one request time
+while requests arrive, and they report the share of the busiest provider.
+That bound is a proposed policy that the maintainers own (#1238), and the
+routing code does not meet it yet: some of these tests fail.
+
 Run it with the package tests, for example
 `go test ./coordinator/tests/registry/routingsim/...` (`TestRoutingSimCalibration`
 and friends in `routingsim_test.go`). Tests that change process-wide tunables
@@ -978,7 +1164,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
 | Dispatch-load cooldown and disconnect | `coordinator/internal/registry/identitygate/dispatch_load.go` (`dispatchLoadCooldownTTL`); `coordinator/registry/connection_disconnect.go` (`ConnectionLifecycle.Disconnect`) |
-| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `scanProviderReservation`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
+| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `prepareProviderReservationIntoStorage`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
 | Per-identity fault-state gates | `coordinator/internal/registry/identitygate/directory.go` (`Directory`, `Session`, `Bind`, `Sweep`); `coordinator/internal/registry/identitygate/gate_state.go` (`State`, `publishLocked`, `breakerOpenAt`, `ejectedAt`); `coordinator/internal/registry/identitygate/gate_migrate.go` (`migrateGateLocked`, `mergeLocked`); `coordinator/internal/registry/identitygate/gate_lock.go` (`lockGate`, `Reference`, `SetGateWaitObserver`); `coordinator/internal/registry/identitygate/gate_sweep.go` (`sweepGatesLocked`, `gateIdleGrace`); registry adapters in `coordinator/registry/gate_index.go`, `coordinator/registry/gate_preparation.go`; `coordinator/registry/gate_commit_mode.go` (`commitLock`) |
 | Identity retention and rejection classification | `coordinator/internal/registry/identitygate/directory.go` (`DefaultRetention`, `MaintainWithRetention`, `MaintenanceReport`); `coordinator/internal/registry/identitygate/inference_history.go` (`InferenceHistory.Prune`); `coordinator/internal/registry/identitygate/rejection.go` (`View.ClassifyRejection`); `coordinator/registry/routing_rejection_classification.go` (`classifyRejectedProvider`) |
 | Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` (`DispatchPlan`, `PlanEntry`); `coordinator/internal/registry/shortlist/order.go` (`MaxAlternates`, `Order.Claim`, `Order.Rank`); `coordinator/registry/first_content_plan.go` (`reserveFirstContentFromPlan`, `claimEntry`) |
@@ -1051,3 +1237,13 @@ for update activation. Requests are coalesced by revision so an inventory change
 while a close is underway cannot be lost. Deadlines leave work alive; lifecycle
 stop takes precedence. Unexpected network loss still cancels work on the dead
 connection and does not replay partially emitted output.
+
+## Account deletion disconnects
+
+After the account-erasure transaction revokes credentials,
+`DisconnectAccount` (`coordinator/registry/provider_lifecycle.go`) snapshots
+linked provider IDs under the registry read lock, then calls the existing
+`Disconnect` lifecycle outside that lock. Each disconnect cleans reservations,
+queued work and provider state through the ordinary lifecycle. Persistence
+also checks the deleted account, so a heartbeat already in flight cannot add a
+fresh provider row. See [account erasure](account-erasure.md).

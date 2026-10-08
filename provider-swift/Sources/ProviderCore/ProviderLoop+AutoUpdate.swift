@@ -76,8 +76,18 @@ extension ProviderLoop {
     /// drain → commit → restart. All side effects below are actor-isolated so
     /// the phase transitions, staged-bundle handoff, and drain bookkeeping
     /// stay race-free.
-    private func performAutoUpdateCheck(coordinatorURL: String) async {
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+    ///
+    /// The three trailing parameters are test seams. Production passes none
+    /// of them: the updater then targets the running install, the launch
+    /// baseline comes from launchd, and the restart is the real launchd one.
+    @discardableResult
+    internal func performAutoUpdateCheck(
+        coordinatorURL: String,
+        updater injectedUpdater: SelfUpdater? = nil,
+        launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { LaunchAgent.launchSnapshot() },
+        restart: @escaping @Sendable () throws -> Void = { try ProcessLifecycle.restartAfterUpdate() }
+    ) async -> AutoUpdateController.Outcome {
+        let updater = injectedUpdater ?? SelfUpdater(coordinatorBaseURL: coordinatorURL)
         let me = self
         let logger = self.logger
         let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds
@@ -112,9 +122,10 @@ extension ProviderLoop {
             waitForDrain: { timeout in await me.waitForSafeDisconnect(timeout: timeout, reason: "auto-update") },
             commitInstall: { await me.commitStagedUpdateBundle(updater: updater) },
             prepareInstalledRestart: {
-                await me.prepareInstalledCandidateRestart(updater: updater)
+                await me.prepareInstalledCandidateRestart(
+                    updater: updater, baseline: launchSnapshot)
             },
-            restart: { try ProcessLifecycle.restartAfterUpdate() },
+            restart: restart,
             restartDidFail: {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "background-restart-failure")
@@ -146,6 +157,7 @@ extension ProviderLoop {
         case .restartFailed(let reason):
             logger.warning("Auto-update: restart failed: \(reason)")
         }
+        return outcome
     }
 
     // MARK: - Auto-Update Phase Transitions
@@ -282,7 +294,8 @@ extension ProviderLoop {
     /// Arms an installed-but-not-running candidate (no-op without one) and
     /// releases the lease before any launchd restart, update or App Attest stall.
     internal func prepareInstalledCandidateRestart(
-        updater: SelfUpdater
+        updater: SelfUpdater,
+        baseline: @Sendable () -> ProviderLaunchSnapshot? = { LaunchAgent.launchSnapshot() }
     ) -> AutoUpdateController.StepOutcome {
         guard let session = updateSession else {
             return .failed("cross-process update lease was lost before candidate restart")
@@ -290,7 +303,7 @@ extension ProviderLoop {
         do {
             try updater.prepareCandidateLaunch(
                 session: session,
-                baseline: LaunchAgent.launchSnapshot()
+                baseline: baseline()
             )
             session.release()
             updateSession = nil

@@ -197,7 +197,9 @@ writable APFS with ownership enabled. External volumes additionally require APFS
 encryption. The CLI pins the filesystem UUID in the provider config.
 `CacheVolume.inspect` checks suitability at selection and cache construction;
 `CacheStorage.validateOpenedDirectory` checks the opened directory's volume UUID,
-filesystem flags and ownership during descriptor-based cache access. A missing
+filesystem flags, ownership and extended ACLs during descriptor-based cache access.
+Each access walk also queries current encryption state for the opened volume's
+device, so decrypting a selected external volume disables further cache I/O. A missing
 mount, replacement filesystem or symlink refuses cache I/O and leaves inference
 to recompute. It never creates the missing mount or redirects payloads to another
 disk. The persistent write ledger stays on the Mac, including when payloads move.

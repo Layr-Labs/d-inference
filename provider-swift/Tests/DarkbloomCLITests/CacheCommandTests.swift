@@ -85,6 +85,21 @@ struct CacheCommandTests {
         #expect(status.problem?.contains("UUID") == true)
     }
 
+    @Test func unsetWriteLimitIsNotReportedAsTheDaemonEffectiveLimit() throws {
+        let status = inspectCacheSettings(CacheSettings())
+        #expect(status.dailyWriteBytes == nil)
+        #expect(status.unlimited == nil)
+        #expect(status.dailyWriteSource == "startup_environment_or_default")
+        #expect(describeCacheWriteLimit(CacheSettings()).contains("not set"))
+        let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(status)) as? [String: Any])
+        #expect(json["dailyWriteBytes"] == nil)
+        #expect(json["unlimited"] == nil)
+        let saved = inspectCacheSettings(CacheSettings(dailyWriteGB: 12))
+        #expect(saved.dailyWriteBytes == 12_000_000_000)
+        #expect(saved.dailyWriteSource == "saved_settings")
+        #expect(saved.unlimited == false)
+    }
+
     @Test(arguments: [[], ["--daily-write-gb", "-1"], ["--daily-write-gb", "nan"],
                       ["--daily-write-gb", "1e30"], ["--directory", "/tmp", "--reset-directory"]])
     func invalidCommandRefuses(arguments: [String]) {

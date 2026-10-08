@@ -77,6 +77,26 @@ struct CacheVolumeTests {
         try CacheStorage.validateCreation(at: root.appendingPathComponent("darkbloom"), configuration: settings)
     }
 
+    @Test func activeIORechecksEncryptionWithAnUnchangedVolumeIdentity() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let selected = try CacheVolume.inspect(directory: root.path)
+        let fd = try SSDNoFollowIO.openDirectoryChain(root)
+        defer { close(fd) }
+        let settings = CacheSettings(directory: selected.directory, volumeUUID: selected.uuid)
+        try CacheStorage.validateOpenedDirectory(fd, at: root, configuration: settings,
+            protectionReader: { observedFD, uuid in
+                #expect(observedFD == fd && uuid == selected.uuid)
+                return CacheVolumeProtection(internalVolume: false, encryptedVolume: true)
+            })
+        #expect(throws: (any Error).self) {
+            try CacheStorage.validateOpenedDirectory(fd, at: root, configuration: settings,
+                protectionReader: { _, _ in
+                    CacheVolumeProtection(internalVolume: false, encryptedVolume: false)
+                })
+        }
+    }
+
     @Test func externalPayloadKeepsTheExistingInternalWriteLedger() throws {
         let internalRoot = try fixture()
         defer { try? FileManager.default.removeItem(at: internalRoot) }

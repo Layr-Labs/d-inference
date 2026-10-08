@@ -2209,7 +2209,8 @@ threats:
       - description: >
           Operator-selected cache storage is constrained by CacheVolume.inspect
           and CacheStorage.validateOpenedDirectory: local writable APFS, ownership
-          enabled, private operator-owned directories, encrypted external volumes,
+          enabled, private operator-owned directories without write-granting ACLs,
+          encrypted external volumes rechecked during active I/O,
           and a pinned filesystem UUID checked against opened descriptors. Missing
           mounts and changed UUIDs refuse I/O without recreating mount paths or
           falling back to internal payload storage. Encryption keys and the

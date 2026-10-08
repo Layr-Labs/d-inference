@@ -24,20 +24,14 @@ public struct CacheVolume: Sendable, Encodable {
         }
         defer { close(fd) }
         let uuid = try validateDescriptor(fd)
-        var info = stat()
-        guard fstat(fd, &info) == 0, info.st_uid == getuid(), info.st_mode & 0o022 == 0,
-              access(url.path, W_OK | X_OK) == 0 else {
+        try CacheDirectoryPermissions.validate(fd)
+        guard access(url.path, W_OK | X_OK) == 0 else {
             throw CacheStorageError("Choose a writable directory owned by you, without group or other write permission (for example, mkdir -m 700 on the mounted disk).")
         }
-        let values = try url.resourceValues(forKeys: [.volumeIsInternalKey, .volumeIsEncryptedKey])
-        // Disk images and some external devices omit isInternal. Only an
-        // affirmative internal result gets the built-in-disk exemption; an
-        // unknown classification must prove encryption just like an external.
-        let isInternal = values.volumeIsInternal == true
-        let isEncrypted = (values.allValues[.volumeIsEncryptedKey] as? Bool) == true
-        try validateEncryption(internalVolume: isInternal, encryptedVolume: isEncrypted)
+        let protection = try CacheVolumeProtection.inspect(fd, expectedUUID: uuid)
         return CacheVolume(directory: url.path, uuid: uuid,
-                           internalVolume: isInternal, encryptedVolume: isEncrypted)
+                           internalVolume: protection.internalVolume,
+                           encryptedVolume: protection.encryptedVolume)
     }
 
     /// Read the identity from the opened directory, not a racy pathname query.

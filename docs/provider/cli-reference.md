@@ -26,7 +26,7 @@ format or mount a disk (`provider-swift/Sources/darkbloom/Cache/CacheCommand.swi
 | Command / flag | Behavior |
 |---|---|
 | `cache status` | Read saved settings and inspect the selected volume without loading keys or creating cache directories |
-| `cache status --json` | Emit directory, daily byte limit, unlimited flag, selected volume details, storage problem and `saved_settings` scope |
+| `cache status --json` | Emit directory, saved daily byte limit and unlimited flag (omitted when unset), limit source, selected volume details, storage problem and `saved_settings` scope |
 | `cache set --daily-write-gb <number>` | Save the rolling-day write ceiling in decimal GB; `0` explicitly selects unlimited writes |
 | `cache set --directory <absolute-path>` | Select an existing private directory and pin its volume UUID. Payloads live in its `darkbloom/kv3` subtree |
 | `cache set --reset-directory` | Return to the built-in directory; preserve the daily write choice and existing cache files |

@@ -19,7 +19,8 @@ a separate disk. These commands affect cache payloads; use
   disks or change their encryption, permissions or mount settings.
 - Keep `provider.toml` (including any custom `--config` file) on trusted local storage, separate from the removable cache payloads.
 - Use an existing directory owned by your user without group/other write
-  permission. On an external volume, ensure **Ignore ownership on this volume**
+  permission or write-granting ACL entries (including inherited grants). Read-only
+  and deny ACL entries are allowed. On an external volume, ensure **Ignore ownership on this volume**
   is off in Finder's Get Info panel.
 
 ## Steps
@@ -69,6 +70,9 @@ darkbloom cache status --json
 
 Check the directory, saved daily allowance and storage result. Status is read-only
 and does not establish that an already-running provider reloaded its settings.
+If no allowance is saved, status reports it as unset: the running provider may
+have a startup environment different from the current shell. Set an explicit
+`--daily-write-gb` value when you want the same limit across launches.
 Use [runtime cache observations](../reference/ssd-kv-cache.md#verification) to
 check caching activity. A valid disk does not imply every model supports caching.
 
@@ -78,7 +82,7 @@ check caching activity. A valid disk does not imply every model supports caching
 |---|---|
 | Missing directory / volume | Mount and unlock the original volume, then restart the provider; recreate the private directory only on that volume |
 | Volume UUID differs | Reconnect the original disk. To deliberately select a replacement, run `cache set --directory` again |
-| Ownership, filesystem or encryption check fails | Inspect the volume and directory properties; do not disable macOS security controls to bypass the check |
+| Ownership, ACL, filesystem or encryption check fails | Inspect the volume and directory properties; active I/O also rechecks permissions and encryption. Do not disable macOS security controls to bypass the check |
 | Return to the internal cache | Run `darkbloom cache set --reset-directory`, then restart. This keeps the daily write choice and does not delete the external files |
 | Daily cap exhausted | Wait for old reservations to age out or explicitly change the allowance. Restarting or selecting another disk preserves the ledger on the Mac |
 

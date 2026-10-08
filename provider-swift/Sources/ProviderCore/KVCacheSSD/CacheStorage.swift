@@ -51,19 +51,26 @@ public enum CacheStorage {
     /// Called after each descriptor open, and BEFORE mkdirat on a configured
     /// volume. Unplug/replacement cannot create fallback directories on the host.
     static func validateOpenedDirectory(
-        _ fd: Int32, at directory: URL, configuration: CacheSettings? = nil
+        _ fd: Int32, at directory: URL, configuration: CacheSettings? = nil,
+        protectionReader: (Int32, String) throws -> CacheVolumeProtection = CacheVolumeProtection.inspect
     ) throws {
         let value = configuration ?? settings
         guard let rawBase = value.directory else { return }
         let base = normalizedPath(rawBase)
         let path = normalizedPath(directory.path)
         guard path == base || path.hasPrefix(base + "/") else { return }
-        guard try CacheVolume.validateDescriptor(fd) == value.volumeUUID?.lowercased() else {
+        let uuid = try CacheVolume.validateDescriptor(fd)
+        guard uuid == value.volumeUUID?.lowercased() else {
             throw CacheStorageError("Cache volume identity changed; refusing disk I/O.")
         }
-        var info = stat()
-        guard fstat(fd, &info) == 0, info.st_uid == getuid(), info.st_mode & 0o022 == 0 else {
-            throw CacheStorageError("Cache directory ownership or permissions changed; refusing disk I/O.")
+        try CacheDirectoryPermissions.validate(fd)
+        // Every active directory walk passes the selected base once. Recheck
+        // encryption there, before any payload operation or child creation,
+        // without a Disk Arbitration query for each model/fanout component.
+        if path == base {
+            let protection = try protectionReader(fd, uuid)
+            try CacheVolume.validateEncryption(internalVolume: protection.internalVolume,
+                                               encryptedVolume: protection.encryptedVolume)
         }
     }
 

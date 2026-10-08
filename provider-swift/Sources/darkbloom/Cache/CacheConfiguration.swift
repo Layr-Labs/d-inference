@@ -4,8 +4,9 @@ import ProviderCore
 
 struct CacheSettingsStatus: Encodable {
     let directory: String
-    let dailyWriteBytes: Int
-    let unlimited: Bool
+    let dailyWriteBytes: Int?
+    let unlimited: Bool?
+    let dailyWriteSource: String
     let volume: CacheVolume?
     let problem: String?
     let scope = "saved_settings"
@@ -15,8 +16,10 @@ struct CacheSettingsStatus: Encodable {
 }
 
 func describeCacheWriteLimit(_ settings: CacheSettings) -> String {
-    let bytes = CacheStorage.dailyWriteBytes(settings: settings,
-        environment: ProcessInfo.processInfo.environment)
+    guard settings.dailyWriteGB != nil else {
+        return "not set; provider startup environment or default applies"
+    }
+    let bytes = CacheStorage.dailyWriteBytes(settings: settings, environment: [:])
     return bytes == 0 ? "unlimited" : "\(Double(bytes) / 1_000_000_000) GB per rolling day"
 }
 
@@ -33,10 +36,13 @@ func inspectCacheSettings(_ settings: CacheSettings) -> CacheSettingsStatus {
             volume = observed
         } catch { problem = error.localizedDescription }
     }
-    let bytes = CacheStorage.dailyWriteBytes(settings: settings,
-        environment: ProcessInfo.processInfo.environment)
+    let bytes = settings.dailyWriteGB.map { _ in
+        CacheStorage.dailyWriteBytes(settings: settings, environment: [:])
+    }
     return CacheSettingsStatus(directory: CacheStorage.root(for: settings).path,
-        dailyWriteBytes: bytes, unlimited: bytes == 0, volume: volume, problem: problem)
+        dailyWriteBytes: bytes, unlimited: bytes.map { $0 == 0 },
+        dailyWriteSource: bytes == nil ? "startup_environment_or_default" : "saved_settings",
+        volume: volume, problem: problem)
 }
 
 /// Re-read under the shared config lock, preserving unrelated concurrent edits.

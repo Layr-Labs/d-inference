@@ -73,6 +73,8 @@ async fn incremental_swap_defers_capacity_until_removed_active_plan_retires() {
             .unwrap()
             .ready
     );
+    bounded(planner.plan(Fixture::request(&a))).await.unwrap();
+    let retained = std::sync::Arc::downgrade(&planner.cache.resident(&a).unwrap());
     let mut pause = Hooks::pause_blocking(&planner.test_hooks.plan_load, &a);
     let worker = planner.clone();
     let request = Fixture::request(&a);
@@ -88,6 +90,10 @@ async fn incremental_swap_defers_capacity_until_removed_active_plan_retires() {
     assert!(!planner.readiness.allows(&c));
     assert_eq!(planner.status().loaded_contracts, 2);
     assert_eq!(planner.status().loading_contracts, 0);
+    assert!(
+        retained.upgrade().is_some(),
+        "the active contract owner retired early"
+    );
     bounded(planner.plan(Fixture::request(&b))).await.unwrap();
     pause.release();
     plan.join().await.unwrap().unwrap();
@@ -101,6 +107,10 @@ async fn incremental_swap_defers_capacity_until_removed_active_plan_retires() {
     );
     assert_eq!(planner.status().loaded_contracts, 2);
     assert!(planner.cache.resident(&a).is_none());
+    assert!(
+        retained.upgrade().is_none(),
+        "the removed contract owner leaked after drain"
+    );
     bounded(planner.plan(Fixture::request(&c))).await.unwrap();
 }
 

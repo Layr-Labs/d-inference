@@ -194,7 +194,10 @@ Direct accounts do not have the upstream first-content SLA. Allow enough time fo
 
 Prompt length includes the model's rendered template, tools and conversation
 history. The service can count this work before dispatch and reconcile it at the
-provider without changing your completion limit or billing usage. A retry uses
-the original remaining first-content budget. Capacity refusals retain the
+provider without changing your completion limit or billing usage. A verified
+exact count matching the serving model's renderer can correct the input-length
+term of the first-content budget before dispatch; time already spent and any
+earlier caller deadline still count. Other renderers keep the fallback budget. A retry
+uses the remaining budget from the original arrival time. Capacity refusals retain the
 existing `429` and `Retry-After` behavior; see the
 [API contract](../reference/api-contracts.md).

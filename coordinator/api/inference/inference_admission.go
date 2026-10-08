@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
+	"github.com/eigeninference/d-inference/coordinator/internal/inference/failure"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/providerwire"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -164,12 +166,22 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 	// 503 which counts as downtime. Fast 429s also preserve our TTFT
 	// metrics. Self-route skips this fleet-wide gate — it queues on the
 	// owner's machine instead (handled below).
+	forecastDeadlines := make(map[string]time.Duration, 2)
+	forecastUnreachable := make(map[string]bool, 2)
 	forecastRequest := func(candidateModel string) *registry.PendingRequest {
 		// Exact cache planning may call the prompt-contract sidecar. It must
 		// not occupy a CPU scan permit, including on a lazy alias fallback.
 		permit.release()
 		query := p.firstContentRequest(candidateModel, modelTraits(candidateModel))
 		query.MinDecodeTPS = s.minDecodeTPS
+		if !p.ReceivedAt.IsZero() {
+			candidateDeadline := time.Duration(0)
+			if !query.FirstContentDeadline.IsZero() {
+				candidateDeadline = query.FirstContentDeadline.Sub(p.ReceivedAt)
+			}
+			forecastDeadlines[candidateModel] = candidateDeadline
+			permit.params.Deadline = candidateDeadline
+		}
 		if !permit.acquire(candidateModel) {
 			return nil
 		}
@@ -179,13 +191,15 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 	if forecast == nil {
 		return AdmissionResult{Model: model, Handled: true}
 	}
-	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(model, forecast)
+	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT, deadlineUnreachable := s.registry.QuickFirstContentCapacityForRequestWithDeadlines(model, forecast)
+	forecastUnreachable[model] = deadlineUnreachable
 	if candidateCount == 0 && capacityRejections > 0 {
-		fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.EstimatedPromptTokens, p.RequestedMaxTokens, 0, fallbackTraits(model), p.RequiresVision, p.AllowedProviderSerials, forecastRequest)
+		fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched, fallbackUnreachable := s.maybeFallbackAliasWithDeadline(parsed, aliasFallbackCapacity, publicModel, model, p.EstimatedPromptTokens, p.RequestedMaxTokens, 0, fallbackTraits(model), p.RequiresVision, p.AllowedProviderSerials, forecastRequest)
 		if !permit.held {
 			return AdmissionResult{Model: model, Handled: true}
 		}
 		if switched {
+			forecastUnreachable[fallbackModel] = fallbackUnreachable
 			model = fallbackModel
 			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
@@ -210,7 +224,7 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 	) {
 		return AdmissionResult{Model: model, Handled: true}
 	}
-	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {
+	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 && !forecastUnreachable[model] {
 		// Providers serve this model but none can ever fit it — non-retryable.
 		// Surface a clear 503 instead of a 429 the client would retry forever.
 		refundReservation()
@@ -322,7 +336,7 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			return AdmissionResult{Model: model, Handled: true}
 		}
 	}
-	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
+	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 && !forecastUnreachable[model] {
 		// No provider is even structurally eligible right now: the model's
 		// whole pool is offline/untrusted, trait-gated (e.g. render-broken),
 		// or — the case the shape-keyed breaker introduces —
@@ -423,9 +437,17 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			return AdmissionResult{Model: model, Handled: true}
 		}
 	}
+	if candidateDeadline, ok := forecastDeadlines[model]; ok {
+		p.Deadline = candidateDeadline
+	}
 	ttftThreshold := p.remainingFirstContentBudget()
-	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-		if !s.hardTTFTGateApplies(p.RequiresVision) {
+	ttftLate := ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold)
+	if p.DeadlineForWork != nil {
+		ttftLate = forecastUnreachable[model]
+	}
+	if ttftLate {
+		expiredCutoffs := candidateCount == 0 && forecastUnreachable[model]
+		if !s.hardTTFTGateApplies(p.RequiresVision) && !expiredCutoffs {
 			// Soft TTFT path: either global hard rejection is disabled (the
 			// default), or this is media whose decode+tower costs are absent
 			// from the token-prefill estimate. pr.MaxTTFTMs stays 0, so dispatch
@@ -456,11 +478,17 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
 			s.triggerWarmPool()
 			retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
+			reasonCode := "ttft_too_slow"
+			bestTTFTMs := float64(retryTTFT.Milliseconds())
+			if expiredCutoffs {
+				reasonCode = failure.ErrorReasonDeadlineUnreachable
+				bestTTFTMs = ttftMsForRejection(bestTTFT, hasTTFT)
+			}
 			refundReservation()
 			s.recordRejection(rejectionInfo{
 				r:                       r,
 				stage:                   "routing_ttft",
-				reasonCode:              "ttft_too_slow",
+				reasonCode:              reasonCode,
 				httpStatus:              http.StatusTooManyRequests,
 				keyID:                   access.KeyIDFromContext(r.Context()),
 				consumerKeyHash:         store.HashKey(access.ConsumerKeyFromContext(r.Context())),
@@ -476,9 +504,13 @@ func (a *Admission) Run(w http.ResponseWriter, r *http.Request, parsed map[strin
 				candidateCount:          candidateCount,
 				capacityRejections:      capacityRejections,
 				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+				bestTTFTMs:              bestTTFTMs,
 			})
-			s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
+			if expiredCutoffs {
+				s.writeFirstContentDeadlineExpired(w, model, publicModel)
+			} else {
+				s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
+			}
 			return AdmissionResult{Model: model, Handled: true}
 		}
 	}

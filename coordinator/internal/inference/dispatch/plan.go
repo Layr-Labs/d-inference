@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/firstcontent"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -21,6 +22,8 @@ type Input struct {
 	ReservedMicroUSD       int64
 	EstimatedPromptTokens  int
 	Deadline               time.Duration
+	FallbackDeadline       time.Duration
+	DeadlineForWork        func(string, *protocol.PromptWork) time.Duration
 	RequestedMaxTokens     int
 	TokenAdmission         registry.TokenAdmission
 	RequiresVision         bool
@@ -88,6 +91,7 @@ func (p *Plan) Dispatch(in Input, reserve Reserver, fullScan bool) (out Result) 
 		in.IsResponsesAPI, in.Scope, in.Timing, in.ServiceReservation, in.CachePlan,
 		in.Exclusions, in.Attempt, in.Profile, in.BackupOf, in.RecordRoute, in.OnDispatched, fullScan,
 		func(pr *registry.PendingRequest, ids []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
+			in.ConfigureDeadlines(pr)
 			pr.NonStreamingResponseBudget = p.dispatcher.responseLimits.NewBudget(in.Stream)
 			in.Forecast.Configure(pr, in.Model, in.EstimatedPromptTokens, in.Deadline, in.BackupOf != "")
 			return reserve(pr, ids)
@@ -140,4 +144,12 @@ func (p *Plan) Next(in Input) (Result, PlanSelection) {
 		return Result{Decision: out.Decision}, PlanRefreshEmpty
 	}
 	return out, PlanRefreshed
+}
+
+// ConfigureDeadlines revalidates exact evidence before each direct, retained,
+// retry, queue or hedge reservation without replacing the original ingress.
+func (in Input) ConfigureDeadlines(pr *registry.PendingRequest) {
+	if in.DeadlineForWork != nil {
+		firstcontent.SetPromptWorkDeadlines(pr, firstcontent.TimingReceivedAt(in.Timing), in.FallbackDeadline, in.DeadlineForWork(in.Model, pr.PromptWork))
+	}
 }

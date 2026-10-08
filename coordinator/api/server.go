@@ -50,6 +50,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/scangate"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/payments/autopilotrewards"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -69,22 +70,23 @@ import (
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.17"
+var LatestProviderVersion = "0.9.19"
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
-	registry    *registry.Registry
-	store       store.Store
-	ledger      *payments.Ledger
-	billing     *billing.Service
-	baseRewards *baserewards.Engine
-	logger      *slog.Logger
-	mux         *http.ServeMux
-	baseURL     string
-	corsOrigin  string
-	geoResolver geo.Resolver
-	readCache   *readcache.Cache
+	registry         *registry.Registry
+	store            store.Store
+	ledger           *payments.Ledger
+	billing          *billing.Service
+	baseRewards      *baserewards.Engine
+	autopilotRewards *autopilotrewards.Engine
+	logger           *slog.Logger
+	mux              *http.ServeMux
+	baseURL          string
+	corsOrigin       string
+	geoResolver      geo.Resolver
+	readCache        *readcache.Cache
 
 	access      *access.Owner
 	keys        *keys.Handler
@@ -194,7 +196,9 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 	})
 	s.access.SetRateObservation(s.observation.Incr, observation.StampRateLimit)
 	s.reporting = reporting.New(reporting.Dependencies{
-		Store: st, Registry: reg, Cache: s.readCache, Logger: logger,
+		AnalyticsSnapshotPath:      cfg.AnalyticsSnapshotPath,
+		AnalyticsSnapshotStatePath: cfg.AnalyticsSnapshotStatePath,
+		Store:                      st, Registry: reg, Cache: s.readCache, Logger: logger,
 		Incr: s.observation.Incr, RequireAdminKey: s.access.RequireAdminKey,
 	})
 	s.catalog = catalog.New(reg, st, s.access, s.readCache, logger, catalog.Hooks{ReconcilePromptArtifacts: s.inference.ReconcilePromptArtifacts, IsDraining: s.IsDraining})
@@ -211,13 +215,15 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 
 	s.accounts = accounts.New(accounts.Dependencies{
 		Store: st, Registry: reg, Access: s.access, Logger: logger, ReadCache: s.readCache,
-		LatestReleasedVersion: s.releases.LatestReleasedVersion,
-		MinProviderVersion:    strings.TrimSpace(cfg.MinProviderVersion),
-		SelfRouteModelEntries: s.catalog.SelfRouteModelEntries,
+		LatestReleasedVersion:      s.releases.LatestReleasedVersion,
+		MinProviderVersion:         strings.TrimSpace(cfg.MinProviderVersion),
+		SelfRouteModelEntries:      s.catalog.SelfRouteModelEntries,
+		SoftDeleteMutationsEnabled: cfg.SoftDeleteMutationsEnabled,
 	})
 	s.erasure = erasureapi.New(erasureapi.Dependencies{
 		Store: st, Access: s.access, Logger: logger, MaxBodyBytes: maxControlPlaneBodyBytes,
-		Datadog: s.observation.Datadog,
+		Datadog:                    s.observation.Datadog,
+		SoftDeleteMutationsEnabled: cfg.SoftDeleteMutationsEnabled,
 		Hooks: erasureapi.Hooks{
 			DisconnectAccount:  reg.DisconnectAccount,
 			ForgetSEKeys:       s.trust.ForgetErasedKeys,

@@ -126,6 +126,8 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        mtpAcceptanceConfig: String? = nil,
+        mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
@@ -148,6 +150,8 @@ enum EngineV2SlotFactory {
             kvBudget: kvBudget,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
+            mtpAcceptanceConfig: mtpAcceptanceConfig,
+            mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
             modelArtifactSHA256: modelArtifactSHA256,
             weightHash: weightHash,
@@ -180,6 +184,8 @@ enum EngineV2SlotFactory {
         activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        mtpAcceptanceConfig: String? = nil,
+        mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
@@ -253,12 +259,25 @@ enum EngineV2SlotFactory {
                 assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
             modelID: modelId,
             hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
+        let mtpAcceptance = MTPAcceptancePolicy.resolve(
+            global: mtpAcceptanceConfig, byModel: mtpAcceptanceConfigByModel, modelID: modelId)
+        if let unrecognized = mtpAcceptance.unrecognized {
+            logWarning(
+                "engine_v2: unrecognized mtp_acceptance value "
+                    + "\"\(unrecognized)\" for \(modelId) — using \"exact\"")
+        }
+        if assistantHandle != nil, case .typical(let delta) = mtpAcceptance.acceptance {
+            logInfo(
+                "engine_v2: \(modelId) MTP acceptance typical delta=\(delta) "
+                    + "(sampled output is not distribution-exact; greedy rows unchanged)")
+        }
         var mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
             maxDraftTokens: draftDepth.maximum,
             fixedDraftTokens: draftDepth.fixed,
             verificationMode: mtpVerification.mode,
-            maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens)
+            maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
+            acceptance: mtpAcceptance.acceptance)
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
@@ -525,6 +544,15 @@ enum EngineV2SlotFactory {
             prefixCacheStatus: prefixCacheStatus,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
+
+        do {
+            try await bridge.requireServiceableOrdinaryGrant()
+        } catch {
+            await bridge.shutdown()
+            EngineV2Factory.emitRefusalTelemetry(
+                modelId: modelId, reason: .noKVHeadroom, error: error, emitTelemetry: emitTelemetry)
+            throw error
+        }
 
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }

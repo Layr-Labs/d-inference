@@ -11,12 +11,6 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-// A CONCURRENTLY build blocks no reads or writes, but it waits for every
-// older snapshot in the database. The 3 s session lock_timeout of the SQL
-// migrations would cancel it behind any longer query, so index migrations
-// wait up to a minute.
-const concurrentIndexLockTimeout = time.Minute
-
 // indexMigrations build one index each, CONCURRENTLY, as Go migrations: an
 // SQL file cannot check that the index it built is valid.
 func (s *PostgresStore) indexMigrations() []*goose.Migration {
@@ -45,65 +39,68 @@ func (s *PostgresStore) indexMigrations() []*goose.Migration {
 		// (PrivyUserPendingErasure); idx_users_privy_live does not cover
 		// deleted rows.
 		index(24, "idx_users_privy_deleted", `CREATE INDEX CONCURRENTLY idx_users_privy_deleted ON users (privy_user_id) WHERE deleted_at IS NOT NULL`),
+		// Include funding queues without dropping the existing reconciliation index.
+		index(28, "global_payout_funding_reconcile", `CREATE INDEX CONCURRENTLY global_payout_funding_reconcile ON global_payout_withdrawals (checked_at) WHERE status IN ('queued','pending','processing','posted')`),
 	}
 }
 
-// buildConcurrentIndex builds the index name with ddl on a connection of its
-// own. It returns at once when a valid index exists. It drops an invalid
-// index left by an interrupted attempt and builds again; the goose advisory
-// lock keeps another migration run from building the same index meanwhile.
-// It fails unless the index ends up valid, so goose never records the
-// version with a broken index.
+// buildConcurrentIndex records the startup timing for a single-index migration.
 func (s *PostgresStore) buildConcurrentIndex(ctx context.Context, name, ddl string) error {
 	started := time.Now()
-	err := s.buildConcurrentIndexOnce(ctx, name, ddl)
+	err := s.ensureConcurrentIndex(ctx, name, ddl)
 	logStartupMigration(name, started, err)
 	return err
 }
 
-func (s *PostgresStore) buildConcurrentIndexOnce(ctx context.Context, name, ddl string) error {
+// ensureConcurrentIndex builds a missing index on a dedicated connection and
+// requires it to be valid and ready. An invalid index requires operator
+// inspection: a builder outside goose may still be working on it.
+func (s *PostgresStore) ensureConcurrentIndex(ctx context.Context, name, ddl string) error {
 	cfg := s.pool.Config().ConnConfig
-	cfg.RuntimeParams["lock_timeout"] = strconv.FormatInt(concurrentIndexLockTimeout.Milliseconds(), 10)
+	// Concurrent builds wait for older snapshots, independently of the short
+	// ordinary DDL lock timeout. Do not change timeouts on the serving pool.
+	cfg.RuntimeParams["lock_timeout"] = strconv.FormatInt(s.concurrentIndexLockTimeout.Milliseconds(), 10)
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("store: connect to build index %s: %w", name, err)
 	}
-	defer conn.Close(context.WithoutCancel(ctx))
+	defer conn.Close(ctx)
 
 	exists, valid, err := concurrentIndexState(ctx, conn, name)
 	if err != nil || valid {
 		return err
 	}
-	// CONCURRENTLY runs outside a transaction, so each statement goes through
-	// the simple protocol on its own.
-	run := func(sql string) error {
-		_, err := conn.PgConn().Exec(ctx, sql).ReadAll()
-		return err
-	}
 	if exists {
-		if err := run(`DROP INDEX CONCURRENTLY IF EXISTS ` + pgx.Identifier{name}.Sanitize()); err != nil {
-			return fmt.Errorf("store: drop invalid index %s: %w", name, err)
-		}
+		return invalidConcurrentIndexError(name)
 	}
-	if err := run(ddl); err != nil {
+	// CONCURRENTLY runs outside a transaction, through the simple protocol.
+	if _, err := conn.PgConn().Exec(ctx, ddl).ReadAll(); err != nil {
 		return fmt.Errorf("store: create index %s: %w", name, err)
 	}
 	if _, valid, err = concurrentIndexState(ctx, conn, name); err != nil {
 		return err
 	}
 	if !valid {
-		return fmt.Errorf("store: index %s did not become valid", name)
+		return invalidConcurrentIndexError(name)
 	}
 	return nil
 }
 
 // concurrentIndexState reports whether the index name exists in the current
 // schema and whether it is valid and ready.
-func concurrentIndexState(ctx context.Context, conn *pgx.Conn, name string) (exists, valid bool, err error) {
+func concurrentIndexState(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, name string) (exists, valid bool, err error) {
 	err = conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))),
 		COALESCE((SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))), false)`, name).Scan(&exists, &valid)
 	if err != nil {
 		err = fmt.Errorf("store: inspect index %s: %w", name, err)
 	}
 	return exists, valid, err
+}
+
+func invalidConcurrentIndexError(name string) error {
+	return fmt.Errorf("store: index %s is invalid or not ready in the current schema; preserved without changes; "+
+		"inspect pg_stat_progress_create_index and pg_stat_activity for an active build and wait for it to finish; "+
+		"only after confirming no build is active, have an operator repair or drop the invalid index and retry migrations", name)
 }

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -36,10 +36,14 @@ This setting does not grant sandbox permissions or change snapshot binding check
 |---|---|---|
 | `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` | `production`; only `production` or `development`, unknown values fail startup | `coordinator/config/deployment.go` (`CheckDeploymentEnvironment`, `RequiresProductionAppAttest`); `coordinator/internal/startup/legacy_mdm.go` (`InitializeLegacyMDMPolicy`) |
 
-Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
-and freezes the legacy cohort. Explicit `development`, or actual memory-store
+Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites).
+`AppConfig.Check` calls the pure `Config.CheckProductionServing`
+(`coordinator/appattest/service/config.go`) before opening the database or
+running migrations; `Policy.Initialize` checks again before the legacy cohort
+freeze. The database-only `--migrate-only` command does not require serving
+configuration. Explicit `development`, or actual memory-store
 fallback (`EIGENINFERENCE_ALLOW_MEMORY_STORE=true` with no database URL), skips
-that startup freeze. Allowing memory fallback does not exempt a configured
+the serving preflight and startup freeze. Allowing memory fallback does not exempt a configured
 Postgres store. `DD_ENV`, the App Attest proof environment, base URL and client
 claims do not classify deployment security. A later production startup freezes
 then-current eligible membership; dev startup does not establish a cutoff.
@@ -141,6 +145,9 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 |---|---|---|---|---|
 | `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/app/store.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
 | `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
+| `EIGENINFERENCE_MIGRATION_TIMEOUT` | positive Go duration | `15m` | `coordinator/store/config.go` (`ReadConfig`, `Check`); `coordinator/internal/command/coordinator/maintenance.go` (`Maintenance`) | Total deadline for `--migrate-only`, not ordinary serving startup. Explicit empty, malformed or nonpositive values fail validation before database access; programmatic zero uses the default. |
+| `EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` | positive Go duration, `1ms` to `2147483647ms` | `1m` | `coordinator/store/config.go` (`ReadConfig`, `Check`); `coordinator/store/postgres/migration_indexes.go` | Lock wait on dedicated connections for all concurrent index builders, including legacy versions 3, 4, 5 and 9. Overrides URL `lock_timeout` only there; SQL DDL keeps its separate 3-second default and existing URL overrides. Explicit empty, malformed or out-of-range values fail before database access; programmatic zero uses the default. |
+| `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/accounts/delete_provider.go`; `coordinator/api/accounts/erasure/handlers.go` | Enables new erasure confirmations (including `force`) and owned-provider removal. Disabled calls return 503 `soft_delete_mutations_disabled` after authorization/ownership checks. Plan/status/cancel and existing scrub/outbox work continue; read filters and credit fences remain. This is not a rollback switch. |
 | `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`); `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
 | `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
 | `EIGENINFERENCE_ERASURE_GRACE` | Go duration ≥ 0 | `720h` (`defaultGrace`, 30 days) | `coordinator/api/accounts/erasure/loop.go` (`graceFromEnv`) | Time between an account erasure's soft delete and its scrub; an invalid or negative value logs a warning and uses the default. Related erasure constants: [personal-data rules](personal-data-rules.md#configuration-and-constants); procedure: [`../operations/account-erasure.md`](../operations/account-erasure.md). |
@@ -379,7 +386,7 @@ immediately. A normal start with saved consent preserves the configuration and
 running provider when any selected model cannot be verified. This introduces no
 new configuration setting (`ModelDownloader.verifySelectedModel`).
 
-All coordinator variables below are startup-only and read by
+All controller variables in the following table are startup-only and read by
 `coordinator/registry/autopilot_config.go` (`autopilotConfigFromEnv`); defaults and
 validation live in `coordinator/registry/autopilot/config.go` (`DefaultConfig`, `Config.Check`).
 Provider consent is separate persistent TOML, documented in
@@ -387,17 +394,30 @@ Provider consent is separate persistent TOML, documented in
 See [architecture](../architecture/model-autopilot.md) and
 [rollout](../operations/model-autopilot.md).
 
+Reward payment enablement is separate:
+[`EIGENINFERENCE_AUTOPILOT_REWARDS`](#billing-stripe-and-base-rewards) neither
+enables this controller nor selects live machines. Saved-consent history is
+tracked independently of both flags.
+
 | Variable | Values / type | Default | Effect / source |
 |---|---|---|---|
 | `EIGENINFERENCE_AUTOPILOT_ENABLED` | bool | `true` | Enable demand collection and controller ticks (`autopilotConfigFromEnv`) |
-| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Default shadow rollout: compute/log hypothetical plans and send shadow status leases without residency ownership, reservations, fences or commands. Explicit `false` switches to live control after restart (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`; `autopilot_activation.go`, `refreshControlLeases`) |
+| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Global shadow override. Explicit `false` permits live control only for verified machines with persisted live intent; nonmembers still receive shadow leases and hypothetical planning. Changing this global flag requires restart, but machine edits do not (`autopilotConfigFromEnv`; `autopilot_activation.go`, `refreshControlLeases`, `liveMachineLocked`) |
 | `EIGENINFERENCE_AUTOPILOT_INTERVAL` | Go duration, `1s...1m` | `10s` | Tick cadence (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_DEMAND_WINDOW` | Go duration, `1m...30m` | `5m` | Arrival-window workload aggregation (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_MIN_DWELL`, `EIGENINFERENCE_AUTOPILOT_IDLE_UNLOAD_AFTER` | Go durations, dwell `1m...24h`; idle ≥ dwell and ≤ `24h` | `30m`, `1h` | Replacement residence/idle protection and optional standalone quiet window; provider's longer dwell also binds (`autopilotConfigFromEnv`, `Check`) |
 | `EIGENINFERENCE_AUTOPILOT_LOAD_TIME_PRIOR` | Go duration, `1s...5m` | `30s` | Conservative unmeasured load cost; recent exact-build/weight-hash measurements retained after unloading may replace it (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
-| `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Per-tick proposals/commands and managed-operation start budget, accounting for currently observed legacy pending loads; legacy controllers retain separate limits (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`) |
+| `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Each detached shadow pass and live pass has the per-tick action bound and the available actual-operation budget, including legacy pending loads. Only the live pass reserves operations, with concurrency rechecked at reservation; combined proposals can exceed the per-pass bound (`autopilotConfigFromEnv`; `coordinator/internal/registry/autopilotcontrol/controller.go`, `Controller.Tick`) |
 | `EIGENINFERENCE_AUTOPILOT_TARGET_UTILIZATION` | float, `0.1...0.9` | `0.7` | Quality-capacity utilization factor (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
-| `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `true` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle gates (`autopilotConfigFromEnv`; `coordinator/registry/autopilot/planner.go`, `Plan`) |
+| `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `true` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle gates. `false` does not prohibit a load that replaces named victims (`autopilotConfigFromEnv`; `coordinator/registry/autopilot/planner.go`, `Plan`) |
+
+Machine selection is not an environment variable. Persist `desired_mode` through
+the [admin machine API](api-contracts.md#autopilot-machine-settings); its default
+and revision semantics are defined in [storage](../architecture/storage.md#autopilot-machine-settings).
+The registry reads persisted live settings before lease renewal on each tick,
+and applies successful local API edits before returning
+(`coordinator/registry/autopilot_machine_policy.go`,
+`refreshMachineAutopilotPolicy`, `SetMachineAutopilotDesiredMode`).
 
 These implementation defaults have **no environment-variable override** in this
 change; programmatic configuration fields are validated by `autopilot.Config.Check`.
@@ -431,8 +451,13 @@ rebuilds capacity and sends an event heartbeat, independently of the normal
 provider heartbeat timer.
 
 Live control uses a connection/revision lease lasting `3 * Interval + 10s`.
+Select the coordinator-issued `Machine ID` shown by `darkbloom status`, not a
+WebSocket provider ID, account, serial or endpoint key. Legacy inventory rows
+without a verified runtime machine binding remain shadow. If the canonical UUID
+changes, the survivor retains its own desired mode; aliases do not transfer a
+live setting from another identity.
 `POST /v1/admin/autopilot` changes only the runtime pause flag; resume does not
-promote shadow to live or alter startup configuration. Restart resets the
+promote shadow to live, change membership or alter startup configuration. Restart resets the
 operator pause. See `coordinator/registry/autopilot_activation.go`
 (`SetAutopilotPaused`, `refreshControlLeases`).
 
@@ -458,11 +483,18 @@ Prices, the platform fee and the fixed consumer referral reward live in [`../arc
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted Global Payouts key; must be explicit during global-only cutover (no fallback in that mode). |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`HandleGlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reserve balance up front for service-account requests. |
-| `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the hourly base-rewards settlement loop. |
+| `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the ordinary [base-rewards settlement loop](pricing-model.md#base-rewards). |
+| `EIGENINFERENCE_AUTOPILOT_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`, `AutopilotRewardsEnabled`) | Wires the separate daily reward worker in `coordinator/app/services.go` and starts `Engine.Run` in `coordinator/app/lifecycle.go`. Does not stop consent tracking, fund the stored pool, alter base rewards or activate live Autopilot control; [policy and cadence](pricing-model.md#autopilot-rewards). |
 | `EIGENINFERENCE_BASE_REWARDS_K` | float | `0` (additive base income; `1` = legacy max backstop) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reduction factor applied to earnings before the floor is paid. |
 | `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO` | integer µUSD | `9000000000` ($9,000 per month) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Monthly cap on the base-rewards pool. |
 | `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME` | float 0–1 | `0.90` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Uptime fraction required to share in the pool. |
 | `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | float 0–1 (`0` = per machine, no cap) | `0` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Cap on one account's share of the pool. |
+
+Autopilot's independent pool cap is durable state, not an environment-derived
+percentage or monthly base-reward budget. Set it through the
+[reward admin API](api-contracts.md#autopilot-reward-administration); enabling the
+worker alone cannot fund payments. Follow [reward operations](../operations/autopilot-rewards.md)
+for separately approved deployment, funding and historical baseline repair.
 
 ### Model registry, releases and R2/CDN
 
@@ -484,13 +516,13 @@ Prompt sidecar (`coordinator/promptcontract/config.go`, `ReadSupervisorConfig`; 
 | `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT` | absolute directory | `/mnt/disks/userdata/prompt-contracts` (`DefaultArtifactRoot`) | `coordinator/promptcontract/config.go` | Cache of downloaded contract artifacts. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_BASE_URL` | `https://` URL without query or credentials | `https://models.darkbloom.ai` | `coordinator/promptcontract/config.go` | Origin artifacts are downloaded from. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_TIMEOUT_MS` | ms | `120000` | `coordinator/promptcontract/config.go` | Per-artifact download timeout. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_WORKERS`, `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_MAX_MODELS` | integers, workers ≤ models | `2`, `128` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/provisioner.go` | Provisioning concurrency and the maximum number of models provisioned. |
+| `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_WORKERS`, `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_MAX_MODELS` | integers, workers ≤ models | `2`, `128` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/provisioner.go` | Provisioning concurrency and the maximum number of models provisioned. The actual model bound also bounds full verified preload selection; the independent cache-routing projection limit remains 128 and native contract capacity is unchanged. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_HEADER_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_PRELOAD_TIMEOUT_MS` | ms | `1000`, `1000`, `250`, `120000` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/client.go` | Client deadlines for reading a response header, a render call, a health probe and a preload. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_STARTUP_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_FAILURE_THRESHOLD`, `EIGENINFERENCE_PROMPT_SIDECAR_SHUTDOWN_TIMEOUT_MS` | ms, ms, integer ≥ 2, ms | `120000`, `1000`, `5`, `2000` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/supervisor_defaults.go` (`applySupervisorDefaults`) | Supervisor readiness wait, probe cadence, consecutive failures before a restart, graceful-stop budget. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MIN_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_WINDOW_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_IN_WINDOW`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_COOLDOWN_MS` | ms, ms, ms, integer, ms | `100`, `5000`, `60000`, `3`, `30000` | `coordinator/promptcontract/config.go` | Crash-loop backoff and circuit breaker. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_STDERR_MAX_BYTES` | bytes 1024–1048576 | `16384` | `coordinator/promptcontract/config.go` | Sidecar stderr retained per incarnation. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_TOKENS` | bytes, tokens | `4194304` (`DefaultMaxRequestBytes`), `1048576` (`DefaultMaxTokens`) | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/client.go` | Request-body and rendered-token ceilings handed to the sidecar. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONNECTIONS`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | integers | `4`, `64`, `8` | `coordinator/promptcontract/config.go` | Sidecar-side concurrency, connection and loaded-contract limits. |
+| `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONNECTIONS`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | integers; normalized total connections must be at least `5` when enabled | `4`, `64`, `8` | `coordinator/promptcontract/config.go` (`SupervisorConfig.Check`), `coordinator/internal/promptcontract/sidecar/client.go` (`NewClient`) | Worker concurrency, total sidecar connections and loaded-contract limits. Planning uses the minimum of worker capacity, the pending-call bound and total connections minus the four reserved connections (`2` health and `2` control). Client waiting remains within the existing plan timeout and fixed pending count/byte bounds; see [sidecar admission](../architecture/prompt-contract-sidecar.md#process-and-lifecycle). |
 | `EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB` | MiB ≥ 256 | `1024` | `coordinator/promptcontract/config.go` | Memory ceiling applied to the sidecar process. |
 
 Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unparseable value is recorded and fails startup in `Check`, so a mistyped kill switch cannot silently keep fetching):
@@ -668,6 +700,13 @@ provider or model command is running. Code:
 
 ### Engine and scheduler
 
+Serving acceptance is config-backed, not an environment override. Its default
+and rollback are defined in the [provider configuration reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+
+| Config key | Default | Read in | Effect |
+|---|---|---|---|
+| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
+
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the `provider.toml` setting. The [owned Flash-Next candidate](qwen4-next-support.md#identity-and-serving-policy) joins the exact automatic policy; a default is not runtime qualification. |
@@ -684,6 +723,7 @@ provider or model command is running. Code:
 | `DARKBLOOM_NEMOTRON35_MTP_KV_ONLY_HISTORY` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Trusted-history replay may compute only the embedded assistant's K/V. Prefix save/restore uses the separate typed history codec. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS` | integer `1`…`7` | `7` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Upper proposal limit for adaptive depth; invalid selected limits fall back to seven. This is not a fixed proposal count. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_MTP_VERIFICATION_MODE` | `rectangular`, `serial`, `serial_target`, `automatic` | `automatic` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` | MTP verification strategy (benchmark session). |
+| `DARKBLOOM_MTP_ACCEPTANCE` | `exact`, `typical`, `typical:<delta>` (finite positive delta) | `exact` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift`; `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`benchmarkOverride`) | MTP draft acceptance rule (benchmark session only). An unrecognized value uses `exact`. Serving reads no environment variable for this rule; it reads `[backend] mtp_acceptance` and `mtp_acceptance_by_model` in [`provider.toml`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
 | `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
@@ -854,7 +894,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 1800 | `1800` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `750` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Write-endurance budget. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `750` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persistent root-wide rolling-day write budget; includes serialized cache-file framing. Forwarded to newly installed launchd jobs. See [accounting and limits](ssd-kv-cache.md#size-and-eviction-rules). |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints use the byte value as a payload-read cap; native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. |
@@ -964,3 +1004,10 @@ These library controls apply to foreground processes and benchmark runs; they ar
 | `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL` | `1` enables, other explicit values disable | enabled only on physical `applegpu_g16s` | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/quantized.cpp` (`gather_qmv`): width-2880 MXFP4 gathered matrix-vector path with a masked 320-element tail. Exact shape/dtype gates retain the general fallback. |
 | `MLX_GPTOSS_MXFP4_PREFILL_TILE` | `m32n32k32`; other values use legacy | legacy | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/gptoss_mxfp4_policy.h` (`gptoss_mxfp4_prefill_tile`): optional 32-row tile for matching sorted expert prefill shapes. Small workstation gains do not establish a universal default. |
 | `DARKBLOOM_GPTOSS_COMPILED_EXPERTS` | `1` enables | disabled | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS+CompiledExperts.swift` (`GPTOSSCompiledExpertsPolicy`): compile single-token B=1/2/4 expert graphs for exact 20B shapes. The global `MLX_COMPILED_DECODE=0` rollback still disables this path. Batch-dependent timing is mixed; weights remain live through weak updatable state. |
+
+## Archived public analytics
+
+| Variable | Type | Default | Owner | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH` | absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`) | Enables validated snapshot reads for leaderboard, network totals and network series; missing/stale snapshots return 503 and never trigger database fallback. See [snapshot operations](../operations/analytics-snapshots.md). |
+| `EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH` | distinct absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`); `coordinator/analyticssnapshot` (`LoadPersistent`) | Required when snapshot mode is enabled. Points to the operator-initialized, private accepted-generation record on a persistent writable mount; missing or corrupt state fails closed across restarts. See [snapshot operations](../operations/analytics-snapshots.md). |

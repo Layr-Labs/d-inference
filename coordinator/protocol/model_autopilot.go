@@ -40,6 +40,9 @@ type ModelAutopilotState struct {
 	ActiveCommandID      string                     `json:"active_command_id,omitempty"`
 	LastCommandID        string                     `json:"last_command_id,omitempty"`
 	LastCommandStatus    string                     `json:"last_command_status,omitempty"`
+	// Saved consent is independent of temporary inventory/control readiness.
+	// Omission identifies older providers that cannot declare reward consent.
+	ConsentEnabled *bool `json:"consent_enabled,omitempty"`
 }
 
 // A command grants permission to unload ONLY the named victims. The provider

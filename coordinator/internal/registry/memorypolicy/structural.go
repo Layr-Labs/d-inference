@@ -128,7 +128,8 @@ func ActivationFloor(modelID string) float64 {
 //
 // paddedWeightsGB uses the same catalog→padded-GiB conversion the cold-load gate
 // uses (coldLoadCatalogGBToMemGiB). kvBytesPerToken prefers the provider-reported
-// per-model value, falling back to the kvCacheBytesPerToken default.
+// per-model value, then a current native cold-model forecast, falling back to
+// the kvCacheBytesPerToken default when neither is available.
 // modelID selects the activation reserve the provider holds for THAT model —
 // the measured per-model floor, else the flat 5.5 GiB
 // (servabilityActivationFloor) — and the measured post-load residency when
@@ -139,30 +140,15 @@ func ActivationFloor(modelID string) float64 {
 //
 // # Mirroring, not modelling
 //
-// This function's only job is to reproduce the PROVIDER's own reserve arithmetic
-// for a slot that has no heartbeat yet. It is not an independent opinion about
-// how much memory prefill needs. UnifiedMemoryCap.kvBudgetBytes computes
-// cap − Σweights − reserve with reserve the serving set's floor, and a resident slot
-// reports exactly that back as active_token_budget_max (EngineV2Bridge+Capacity:
-// kvBytesCapacity / kvBytesPerToken) — which snapshotStructuralBudget prefers
-// whenever it exists. So the cold estimate has to converge to the warm report as
-// the slot loads, and it does, because both are the same subtraction.
+// Mirror the provider's weight and activation floors, not a second per-shape
+// memory model. Fixed workspace, admission watermarks and live grant slicing can
+// make actual capacity smaller than this forecast. Reported slot budgets take
+// precedence in admission; this estimate is not a replacement grant.
 //
-// That is why there is no attention-posture term here. A composed-attention
-// model (gemma-4: head_dim 256 sliding / 512 full) really does materialise a
-// bigger prefill score tensor than a fused one (gpt-oss: head_dim 64, inside
-// MLX's fused-SDPA set), but the provider does not charge a posture term —
-// its reserve is the measured per-model floor (or the flat default), never a
-// shape estimate. Charging a term the provider does not hold made this gate
-// strictly TIGHTER than the gate it mirrors and 429'd prompts every provider
-// in the fleet could have served. Whether a floor is the right number is the
-// provider's question, answered in one place; a second opinion here can only
-// desync. Retune this ONLY when the provider's floors move — as they did for
-// v0.8.0 (3 → 5.5, the measured B=8 activation peak) and again when the
-// measured per-model table shipped (v0.8.16). Convergence is per-provider:
-// while any provider below a floor move is still routable (above
-// EIGENINFERENCE_MIN_PROVIDER_VERSION), the mirror must charge each binary
-// the reserve it actually holds, version-gated.
+// Do not add an attention-posture surcharge: the provider uses measured per-model
+// activation floors (or the flat default), not a shape estimate. A separate
+// surcharge previously rejected prompts the provider could serve. The floors and
+// measured weights here must change in lockstep with UnifiedMemoryCap.
 //
 // Being optimistic is the safe direction because the coordinator is not the
 // backstop. The provider is, and its checks are measurement-based, not
@@ -219,7 +205,7 @@ func StructuralBudget(snap *Input) (budget int64, known bool) {
 		return 0, false
 	}
 	return ColdTokenBudgetWithOffload(
-		snap.TotalMemoryGB, snap.ModelSizeGB, snap.EstimatedOffloadedMemoryGB, snap.KVBytesPerToken,
+		snap.TotalMemoryGB, snap.ModelSizeGB, snap.EstimatedOffloadedMemoryGB, snap.requestKVBytesPerToken(),
 		snap.Model), true
 }
 

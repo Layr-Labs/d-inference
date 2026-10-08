@@ -140,6 +140,23 @@ SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$bootstrap" \
     REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
 grep -Fxq "$(grep "^$seed_key=" "$DEFAULTS")" "$bootstrap"
 
+# New soft-delete mutations bootstrap disabled; an approved opt-in survives refresh.
+soft_delete_key=EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED
+grep -Fxq "$soft_delete_key" "$REQUIRED"
+grep -Fxq "$soft_delete_key=false" "$DEFAULTS"
+for value in absent false true; do
+    soft_delete_env="$ENV_DIR/soft-delete-$value.env"
+    awk -F= -v key="$soft_delete_key" '$1 != key' "$ENV_FILE" > "$soft_delete_env"
+    expected=false
+    if [ "$value" != absent ]; then
+        printf '%s=%s\n' "$soft_delete_key" "$value" >> "$soft_delete_env"
+        expected=$value
+    fi
+    SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$soft_delete_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+    grep -Fxq "$soft_delete_key=$expected" "$soft_delete_env"
+done
+
 # ...but a BLANKED value is a misconfiguration, not a bootstrap: the merge only
 # adds absent keys, so the post-merge check must still reject it.
 blanked="$ENV_DIR/blanked.env"

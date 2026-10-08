@@ -1,6 +1,11 @@
 # Reports — dated records
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-07
+
+- [Cache planning admission](2026-09-24-cache-planner-admission.md) — reproduced admission loss, bounded client repair and exactness/lifecycle qualification.
+
+- [SSD eviction and cache discovery](2026-09-24-cache-eviction-publication.md) — reproduced discovery loss, active-store retirement repair and native qualification.
+- [Connected cache qualification](2026-09-27-cache-connected-qualification.md) — real API reuse, concurrent requests, Gemma reconstruction, expiry boundaries and preserved release limitations.
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +16,8 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Autopilot shadow evidence and calibration](2026-10-07-autopilot-shadow-evidence.md) - read-only week/day demand, output-limit calibration, retained controller decisions and synthetic placement valuation, with replay and causal limits.
+- [Typical MTP acceptance benchmarks](2026-10-07-typical-mtp-acceptance-benchmarks.md) - controlled three-model M5 Max before/exact/typical decode measurements, weighted acceptance and paired spread, with quality and default-change limits.
 - [Registry scan optimization](2026-10-04-registry-scan-optimization.md) — combined reservation storage, compact evidence and pending-work measurements on an isolated Mac mini, with correctness and production-latency limits.
 
 - [Hybrid provider trust review](2026-09-27-hybrid-provider-trust-review.md) — September 27 snapshot of legacy MDM/APNs and App Attest authorization boundaries, threats, evidence and deployment limits.

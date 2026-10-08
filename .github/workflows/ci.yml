@@ -23,6 +23,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Check source, fallback, and installer parity
         run: |
+          python3 scripts/check-go-toolchain.py
+          python3 scripts/test-go-toolchain.py
           ./scripts/check-release-version.sh
           python3 scripts/test-provider-release-resolution.py
           python3 scripts/test-provider-release-resume.py
@@ -50,6 +52,7 @@ jobs:
           python3 .github/scripts/test-threat-full-scan.py
           python3 .github/scripts/test-threat-ensemble.py
           python3 .github/scripts/test-threat-budget.py
+          python3 .github/scripts/test-threat-bedrock.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
       - name: Test bounded MiMo provider fixture provisioning offline

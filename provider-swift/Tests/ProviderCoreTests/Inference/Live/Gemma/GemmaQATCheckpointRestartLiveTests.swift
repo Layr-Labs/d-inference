@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -53,6 +54,10 @@ struct GemmaQATCheckpointRestartLiveTests {
                 #expect(result.text.lowercased().contains("alder") && result.text.contains("427"),
                         "cold and restored output must both preserve the requested marker")
             }
+            #expect(restored.text == cold.text, "restored output must exactly match cache-OFF output")
+            for (name, result) in [("donor", donor), ("restored", restored), ("wrong-tenant", wrongTenant), ("cache-off", cold)] {
+                print("[gemma-checkpoint-timing] case=\(name) first_content_ms=\(result.firstContentMillis) total_ms=\(result.totalMillis) hit_tokens=\(result.hitTokens)")
+            }
             print("[gemma-checkpoint-restart] prompt=\(fixture.tokens.count) hit=\(restored.hitTokens) "
                 + "bytesRead=\(restoredStore.stats().bytesRead) "
                 + "sameText=\(restored.text == cold.text) restored=\(restored.text.debugDescription) "
@@ -64,7 +69,12 @@ struct GemmaQATCheckpointRestartLiveTests {
         }
     }
 
-    private struct Output { let text: String; let hitTokens: Int }
+    private struct Output {
+        let text: String
+        let hitTokens: Int
+        let firstContentMillis: Double
+        let totalMillis: Double
+    }
 
     private func run(_ fixture: GemmaQATCheckpointRestartFixture, bridge: EngineV2Bridge,
                      scope: String, id: String) async throws -> Output {
@@ -72,13 +82,19 @@ struct GemmaQATCheckpointRestartLiveTests {
         let request = ChatCompletionRequest(model: GemmaQATCheckpointRestartFixture.modelID,
             messages: [ChatMessage(role: "user", content: "pre-tokenized fixture")],
             temperature: 0, max_tokens: 64)
+        let started = DispatchTime.now().uptimeNanoseconds
+        var firstContentMillis: Double?
         let stream = await bridge.submitTokenized(promptTokens: fixture.tokens, request: request,
             requestId: id, cacheScope: scope, usageSignal: signal)
         var text = ""
         var failure: String?
         for await event in stream {
             switch event {
-            case .chunk(let chunk): text += chunk
+            case .chunk(let chunk):
+                if !chunk.isEmpty && firstContentMillis == nil {
+                    firstContentMillis = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+                }
+                text += chunk
             case .info: break
             case .error(let message): failure = message
             case .terminal(_, let message, _, _):
@@ -87,7 +103,9 @@ struct GemmaQATCheckpointRestartLiveTests {
         }
         try #require(failure == nil, "request failed: \(failure ?? "")")
         try #require(!text.isEmpty)
-        return Output(text: text, hitTokens: signal.prefixCacheHitTokens ?? 0)
+        return Output(text: text, hitTokens: signal.prefixCacheHitTokens ?? 0,
+            firstContentMillis: try #require(firstContentMillis),
+            totalMillis: Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
     }
 
     private func waitForDonation(_ store: SSDHybridCheckpointStore) async throws {

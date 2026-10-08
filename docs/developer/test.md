@@ -1,6 +1,125 @@
 # Test
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
+
+## Autopilot rewards
+
+Run from the repository root with the pinned Go toolchain and an isolated local
+`DATABASE_URL` whose role can create disposable test databases:
+
+```bash
+go test -race ./coordinator/tests/payments/autopilotrewards -count=1
+go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|Migration|Migrate' -count=1
+go test -race ./coordinator/tests/api/provider ./coordinator/tests/api/operations/contracts ./coordinator/tests/api ./coordinator/tests/registry -run 'AutopilotReward|AutopilotConsent' -count=1
+go test ./coordinator/tests/protocol -run Autopilot -count=1
+```
+
+Without `DATABASE_URL`, the PostgreSQL cases skip; a memory-only pass is not
+persistence validation. Never use a production DSN. The existing `testdb` fixtures
+isolate databases and coordinate the local server's connection budget.
+
+| Boundary | Regression owner |
+|---|---|
+| Once-rounded floor, UTC day guards and independent-day worker catch-up | `coordinator/tests/payments/autopilotrewards/engine_test.go` |
+| Exact first-ever window, sponsored inference, whole first partial day, immutable baseline, history gaps, canonical aliases, per-day consent, pool retry and single-count earnings | `coordinator/tests/store/contracts/` (`autopilot_rewards_test.go`, `autopilot_rewards_history_test.go`, `autopilot_rewards_identity_test.go`) |
+| Delayed cross-session consent and frozen-history conflicts without rewriting finalized receipts | `coordinator/tests/store/contracts/autopilot_rewards_history_test.go` (`TestAutopilotRewardsDelayedSessionConsentPreservesFirstOptIn`, `TestAutopilotRewardsLateEarlierConsentFlagsFrozenHistory`) |
+| Migration/schema equivalence, restart persistence, concurrent cap/deduplication and rollback of all financial writes | `coordinator/tests/store/postgres/` (`autopilot_rewards_migration_test.go`, `autopilot_rewards_test.go`, `autopilot_rewards_atomicity_test.go`) |
+| Authenticated original receive time, pre-binding journal, accepted heartbeat state, daily checkpoints and bounded failed-write queue | `coordinator/tests/api/provider/autopilot_rewards_test.go`, `autopilot_rewards_queue_test.go` in the same directory; `coordinator/tests/registry/autopilot_reward_snapshot_test.go` |
+| Admin auth, exact money JSON, immutable backfill and independently default-off config | `coordinator/tests/api/operations/contracts/autopilot_rewards_test.go`; `coordinator/tests/api/autopilot_rewards_config_test.go` |
+
+Run `make provider-test` for the Swift mirror with source-matched dependencies
+and Metal library. `AutopilotSnapshotCodingTests`, `AutopilotInventoryTests`,
+`ModelAutopilotTests` and `ModelAutopilotShadowTests` under
+`provider-swift/Tests/ProviderCoreTests/Autopilot/` check optional saved-consent
+encoding/decoding and independence from runtime readiness. Keep provider test
+state isolated through the standard runner; do not overwrite a running daemon's
+status files for a focused test. These tests do not prove production rollout or
+the truth of an operator's imported historical evidence. See
+[reward operations](../operations/autopilot-rewards.md).
+
+## SSD reconciliation and tracked-native retry regressions
+
+`SSDCheckpointMaintenanceEpochTests` covers an externally missing oldest entry
+whose accounting alone satisfies the limit, and a leased same-tag rewrite whose
+fresh publication remains indexed and readable. Both use actual encrypted files.
+`SSDTrackedNativeRetryTests` uses the real `EngineV2.planCompleteCheckpointImport`
+binding, reservation pressure and a delayed native retirement fence to prove that
+host refund cannot rearm a shorter AR allocation. Its tiny native graph is not a
+trained MiMo model or numerical qualification. Run these rebuilt suites under the
+exclusive native lane with the normal resource safeguards; keep the broader
+shorter-checkpoint, native-block, epoch-recovery and write-budget regressions.
+
+## SSD epoch status lookup and retirement snapshots
+
+Run the rebuilt provider's `SSDCacheEpochStoreRecoveryTests` with
+`scripts/run-nested-suite.sh` and Swift Testing enabled. The non-root permission
+regression exercises both failed parent-directory opens and failed status
+lookups, verifies refused retirement/rotation/sequence operations, and then
+requires the same store to recover without changing its persisted epoch.
+Existing missing, substituted and malformed record cases retain their refusal
+and ownership-revocation checks.
+
+Run `go test ./e2e -run '^TestConnectedRetirementObservationRejectsIdentityReplacement$'`
+for the retirement snapshot oracle. This test rejects delayed evictions after
+provider, model or epoch replacement. The connected live fixture also compares
+the original capability when eviction is first observed and after refreshing
+the report; it still requires its ordinary model, host and disk admission gates.
+## Autopilot machine cohorts
+
+Run the focused coordinator and isolated harness suites with the pinned Go
+toolchain:
+
+```bash
+go test -race ./coordinator/tests/registry/... -run 'Test(Autopilot|ModelAutopilot)' -count=1
+go test ./coordinator/tests/api/operations/contracts -run Autopilot -count=1
+go test ./coordinator/tests/store/... -run 'MachineAutopilot|Migration|Migrate' -count=1
+go test ./e2e/testbed -count=1
+go test ./e2e -run '^$'
+```
+
+`coordinator/tests/registry/autopilot_machine_cohort_test.go`,
+`autopilot_machine_lease_test.go` and `autopilot_machine_donors_test.go` in the
+same directory cover exact machine selection, mixed-mode isolation, reconnects,
+identity changes and actual donor protection. Existing consent, inventory,
+memory, writer, uncertain-command and terminal-reconciliation tests remain part
+of the focused selector.
+
+`coordinator/tests/registry/autopilot_machine_policy_time_test.go` uses virtual
+time and real memory-store callbacks to cross the freshness boundary during a
+successful policy read or between durable deliveries. It keeps fresh and exact
+boundary positive controls, rejects old buffered tick timestamps, and preserves
+future evaluation epochs without changing production thresholds.
+
+Machine-setting contracts exercise real memory/Postgres stores, canonical merges,
+idempotent revisions and the cached-store wrapper. PostgreSQL tests require a
+disposable local `DATABASE_URL`; `testdb.Main` isolates each process's database.
+Without that variable, PostgreSQL coverage skips. Migration checks cover fresh
+and legacy schemas, preserved settings on replay, constraints and reopening a
+store without truncating its data. HTTP tests use the composed authenticated
+router for desired-mode edits, paging, errors and effective-session projection.
+
+`e2e/testbed/autopilot_cohort_test.go` uses real registry operations to check
+that fixture identities bind only to running suite-owned authenticated accounts.
+It creates real inventory/settings rows while seeding trusted account/launch
+outcomes rather than proving Apple attestation.
+The real-provider `TestIntegration_AutopilotCachedBootstrapAndPause` additionally
+requires a cached model and isolated Postgres; it checks live acknowledgement,
+cached loading, inference, persisted endpoint demotion/re-enable, a fresh
+acknowledgement after re-enable, and pause without rewriting desired mode.
+Compiling it is not running it. Neither the
+unit fixture nor that bootstrap case establishes live replacement quality,
+hardware identity proof or production improvement.
+
+## SSD write endurance
+
+Run `bash scripts/test-ssd-write-budget.sh` on macOS with Xcode to exercise the
+unchanged production accounting sources without building MLX. It covers an
+accelerated full day, hourly cache reconstruction, concurrent accounting,
+separate-process persistence, clock rollback and damaged/unsafe ledger files.
+Only small temporary accounting files are written; no model, provider process,
+production cache or credentials are used. This focused check does not replace
+the full `ProviderCoreTests` integration suites, including `SSDBlockStreamingTests`
+and `LaunchAgentPathsAndErrorsTests`.
 
 ## Pull-request restacking
 
@@ -149,6 +268,185 @@ lint — and which CI workflow runs what. `make test` runs every unit suite plus
 the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the Gemma benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
+
+The registry's `TestCacheAttemptBudget*` tests cover logical byte charging,
+checked arithmetic, exact-edge admission, immutable replacement/refunds and
+detached tracker storage. `TestCacheAttemptBudgetReclaimsFinishedRecordsBeforeRefusing`
+and `TestCacheAttemptBudgetRefusesWhenInFlightRecordsFillIt` check that a full
+budget gives a new request the earliest-expiring finished record's bytes but
+never an in-flight record's, and the status counters. The
+`TestCacheAttemptPressure*` controls and `TestIndependentTerminalGracePressure`
+exercise terminal-only reclamation, live-budget refusal, the 64-record work
+bound, terminal idempotence, late-READY rejection, immutable charges and both
+expiry orders. `TestCacheAttemptTrackedHashBytesStayWithinLogicalBudget`
+uses 137 attempts with 3,906 valid boundaries each to distinguish byte-bounded
+admission from the old count-only tracker; it allocates no model or million-token
+prompt. Run these with `go test -race ./coordinator/tests/registry -run
+'^(TestCacheAttempt(Budget|TrackedHash|Nonce|Pressure)|TestIndependentTerminalGracePressure)' -count=1`,
+together with the existing cache preparation, ownership,
+capability-generation and accepted-write cutoff regressions. Byte refusal must
+remain nil-error cold inference, with no cache metadata or calibration exclusion.
+These are logical state/ownership tests, not physical-memory measurements,
+native SSD hit-rate benchmarks or hosted certification.
+
+`TestPlanningClientTracksConfiguredWorkers`, `TestPlanAdmission*`,
+`TestPlannerBurstWaitsForWorkersWithoutBlockingHealth` and
+`TestQueuedPlanCancellationNeverReachesSidecar` check configured capacity,
+bounded pending bytes/counts, exact 40-request bursts, health/control isolation,
+cancellation, deadlines and recovery. Run `go test -race ./tests/promptcontract ./tests/registry`
+from `coordinator`. `TestDiagnosticFortyQPSPlanningCeiling` retains the unchanged
+registry rate ceiling as a diagnostic, not an SSD hit-rate benchmark.
+
+Run `TestPlanningConnectionBudget`,
+`TestControlReconnectsDuringPlanningSaturation` and
+`TestControlTrafficAtConfiguredWorkerCapacity` to cover lifetime connection
+headroom, nondefault worker/connection limits, fresh and reconnected health/control
+traffic under saturation, invalid-budget refusal and admission refunds. These
+use the actual Go HTTP transports and a synthetic Unix listener mirroring the
+Rust connection semaphore; they do not replace the real-sidecar opt-in below.
+
+`TestPlannerRealSidecarAdmission` is an additional CPU-only opt-in: set
+`DARKBLOOM_TEST_PROMPT_SIDECAR` to a source-bound local release binary and
+`DARKBLOOM_TEST_PROMPT_CONTRACTS` to verified Bonsai/Qwen4 contract directories,
+then run `go test ./tests/promptcontract -run TestPlannerRealSidecarAdmission -count=1 -v`.
+It checks 720 plans against warm exact references through 64K tokens with the
+unchanged one-second timeout. It does not load model weights or measure SSD hits.
+See [the diagnostic report](../reports/2026-09-24-cache-planner-admission.md) for evidence and limits.
+`TestDiagnosticCacheEpochFanout` exercises coordinator-wide holder withdrawal
+for one model epoch (`go test ./tests/registry -run TestDiagnosticCacheEpochFanout`
+from `coordinator`; repeat with `-race`).
+`SSDCheckpointPublicationCPUTests` binds tiny CPU tensors and checks
+native encrypted-store publication preservation plus successful survivor restoration.
+After the normal Swift test build and MLX resource setup, run
+`swift test --skip-build --disable-xctest --enable-swift-testing --filter SSDCheckpointPublicationCPUTests`
+from `provider-swift`. `SSDOwnedEntryRetirementTests` covers survivor bytes,
+durable epoch/sequence, foreign paths, missing/symlinked files and invalid epoch
+records. The wider SSD suites retain corruption, read coordination, cancellation,
+write recovery and destructive invalidation controls.
+
+`SSDCheckpointCommitRetirementTests` pauses actual encrypted writers after
+rename or duplicate authentication, runs active-owner whole-root eviction with
+newer inactive-root bytes, reconciles, then requires a readable committed file
+and READY publication. It also covers attention write-behind, unrelated
+survivors, post-commit self-eviction without READY and queued-writer cancellation.
+`SSDCheckpointFileCoordinatorTests` checks nonblocking maintenance, FIFO/read
+ownership and cleanup; `SSDOwnedEntryRetirementTests` checks busy-entry skipping
+alongside no-follow and epoch fences. Build the exact source and matched MLX
+resources before selecting these suites. Do not reuse a predecessor binary.
+`SSDCheckpointCPUAcceptanceTests` replays the existing complete lifecycle,
+duplicate/corruption, shared-ownership and telemetry oracles under an explicitly
+checked CPU device. It preserves their assertions, including paged and contiguous
+geometry, actual backing ownership and refusal-before-read controls. Run the
+CPU storage selection from `provider-swift` after building and staging resources:
+
+```bash
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'SSDCheckpointCPUAcceptanceTests|SSDCheckpointCommitRetirementTests|SSDOwnedEntryRetirementTests|SSDCheckpointFileCoordinatorTests|SSDCheckpointFileCoordinatorPathTests|SSDCacheEpochStoreTests|SSDCheckpointPublicationCPUTests|SSDNoFollowIOSpecialFileTests|SSDTestDirectoryTests'
+```
+
+Native complete-checkpoint fixtures materialize their synthetic model/scalar parameters before either comparison arm and join donation writers before asserting reservation cleanup. Their bitwise state and continuation checks remain exact.
+
+Owned eviction defers while an authenticated reader holds its exact-file lease and retires after the lease drains. External unlink remains an absent miss; epoch-invalidation fixtures explicitly rotate the durable epoch because ordinary per-file maintenance preserves it.
+
+The complete-checkpoint, epoch, owned-retirement and FIFO fixtures accept
+`DARKBLOOM_SSD_TEST_TMPDIR` as an explicit test-only parent directory. It must
+already exist, be absolute, writable and canonical, without symlink components.
+Invalid or empty values fail rather than falling back; when absent, Foundation's
+normal temporary parent is retained. Each fixture creates and removes only its
+own UUID child. This does not change the production cache root or disk reserve.
+Foundation's Darwin temporary directory may ignore `TMPDIR`, so verify the actual
+selected filesystem and sufficient free space for encrypted donation tests.
+The tiny `/tmp` and `/var/tmp` path-alias cases deliberately retain their real
+system locations. `SSDTestDirectoryTests` covers selector behavior;
+`SSDNoFollowIOSpecialFileTests` uses bounded reaped subprocesses to check FIFO
+rejection, normal-file behavior and descriptor cleanup.
+
+For bounded shorter complete-checkpoint restoration, keep the original
+`SSDShorterCheckpointRestoreTests` oracles: authenticated plan, real shared-paged
+admission and provider destination refusal; one-retry cap; non-capacity and
+corruption controls; retirement, epoch, close, cancellation, waiting-file and
+same-ID replacement fences; exact adopted page/recurrent bits. Add
+`SSDCheckpointReadBudgetTests` for actual encrypted framing/EOF, hard remaining
+byte bounds and cooperative clock checks, `SSDShorterRestoreClockTests` for
+deterministic original-deadline/retirement/file-wait behavior, and `SSDShorterNativeBlockRestoreTests`
+for independent native-block reservation refusal, exact adopted state and suffix
+output. The latter suites explicitly select CPU; their tiny native decoder is
+not a deployed-model performance measurement. They use the same explicit test
+root and unchanged disk floor. After a source-matched build/resource setup:
+
+```bash
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'SSDShorterCheckpointRestoreTests|SSDCheckpointReadBudgetTests|SSDShorterRestoreClockTests|SSDShorterNativeBlockRestoreTests'
+```
+
+The held-file clock test explicitly releases its fixture access after advancing
+time; it does not prove a deadline interrupts an awaited file/refund/native
+operation. The new native-block `allocation` negative injects an error before
+native allocation; actual native post-materialization failure remains unproven
+by that test. Then run the wider CPU storage selection above and the existing
+`NativeDiffusionCheckpointStoreTests` controls, particularly
+`scopeCapacityCancellationAndTamperNeverPublishAStage` and
+`missingProcessAuthorityAndIncompatibleRequestCannotConsumeOrDeleteGoodData`,
+for scope, initial capacity, cancellation, tamper, wrong-consumer and ownership
+checks. Those controls are not substitutes for a native post-materialization
+fault injection. Report each original
+baseline cell and new boundary cell separately; a changed compiler/resource
+failure is not the intended old-behavior failure. Native source tests do not
+qualify actual-model latency, authenticated HTTP reuse or persistent-key restart.
+
+For the existing idle-expiry contract, run the nine deterministic boundary cells:
+
+```bash
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'SSDPrefixCacheLifecycleTests/ttlStageBeforeSweepCharacterization|SSDHybridCheckpointRecencyTests/ttlReadBoundaryWithoutSweep'
+```
+
+The complete-checkpoint read boundary uses the current default TTL at ages
+1799, 1800 and 1801 seconds; explicit 900-second attention fixtures retain their
+configured-policy characterization. Attention eligibility is
+sweep-enforced; complete-checkpoint reads reject expiry without awaiting a sweep.
+The tests do not extend retention or assert immediate physical erasure. They
+require real donation, exact restored values, unchanged retained ciphertext and
+drained reservations, not just an index lookup.
+
+For real Gemma checkpoint reconstruction, select the exact QAT artifact and an
+existing canonical writable test directory with the normal free-space reserve:
+
+```bash
+DARKBLOOM_LIVE_MLX_TESTS=1 \
+DARKBLOOM_LIVE_MLX_GEMMA_CHECKPOINT_RESTART=1 \
+DARKBLOOM_LIVE_GEMMA_QAT_MODEL_DIRECTORY=/absolute/path/to/exact-gemma-qat-snapshot \
+DARKBLOOM_SSD_TEST_TMPDIR=/absolute/path/to/owned-test-parent \
+swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
+  --filter 'GemmaQATCheckpointRestartLiveTests/sameKeyNewEngineRestores'
+```
+
+The directory override is test-only and never changes saved model-cache settings.
+The fixture checks its original full aggregate before and after load, uses the
+owned test parent, verifies adopted checkpoint state and tenant refusal, and
+requires restored output to equal cache-OFF output. It prints first-content and
+terminal timings for all four requests. Its same-key engine reconstruction uses
+an ephemeral fixture key; it is **not** signed Keychain recovery across processes.
+See the [connected cache qualification report](../reports/2026-09-27-cache-connected-qualification.md)
+for measured scope and remaining release-runner requirements.
+
+Carry the same build-system and scratch-path options used for that build.
+Require nonzero execution and report skips/failures separately. Current results
+and remaining scope are in the dated report below; test sources or compilation
+alone do not establish native, model or signed-Keychain qualification.
+
+`TestIntegrationConnectedCacheRetirement` uses the normal explicit connected
+fixture input with the immutable Bonsai model, SSD on and native MTP off. It
+sets a 0.75 GiB budget only for newly owned test provider roots, then requires
+real eviction, unchanged epochs, accepted READY/hit receipts, identical output
+and reuse of a previously advertised 2,048/4,096-token survivor, followed by a
+4,096-token stable repeat. Both providers compete normally after the donor.
+Run the ordinary ten-case
+`TestIntegrationConnectedCacheHTTP` separately with SSD off and on to cover
+tenant separation, routing, tools/media, cancellation and sidecar fallback.
+These are local mock-coordinator gates, not hosted routing certification or
+release-signed persistent-key evidence.
+See [the diagnostic report](../reports/2026-09-24-cache-eviction-publication.md) for evidence and limits.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
@@ -558,6 +856,15 @@ the fixture preparation script.
 Use `prepare-mimo-audio-fixtures.py --cache <cache> --output <new-directory>`;
 its public codec download is about 1.87 GB and is checked against fixed hashes.
 
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback,
+Sonnet 5.5 fallback identity, production smoke schema validation (including the
+boolean `needs_deeper_review`), and conditional merge clearance without cloud calls.
+The smoke script calls `budget_scan.py` (`Scanner.call`, `Scanner.integrate`) with
+caching disabled, one source pass and one integration pass per model. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
+
 ## Provider lifecycle regression checks
 
 Serving measurements and profile admission have focused suites
@@ -931,6 +1238,24 @@ source/dependency/binary/metallib/artifact tuple:
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
 
+## Cache attempt ownership during model replacement
+
+Run the real Registry publication/accounting regression after changing model
+inventory or attempt retention:
+
+```bash
+go test -race ./coordinator/tests/registry \
+  -run '^TestCacheModelSwitchPreservesOrRevokesPublishedOwnership$' -count=1
+```
+
+It first proves a durable holder and charged completed attempts, then exercises a
+settled model-list replacement. Validation-only must not mutate either state.
+An unchanged model/hash retains legitimate delayed publication. Removal or weight
+replacement refunds retained attempt ownership and removes holders. Re-adding
+the original model/capability must still reject the old nonce specifically as an
+unavailable attempt, not merely because a capability is absent. The gate has three
+scenario leaves and does not load a model or substitute for provider/API tests.
+
 The provider email command and Resend adapter tests run with
 `go test -race ./coordinator/tests/provideremail/... ./coordinator/tests/cmd/provider-emails/...`.
 With a disposable `DATABASE_URL`, `TestReadSnapshotPostgres` uses an isolated
@@ -941,6 +1266,12 @@ API contract tests use a local HTTP server; they pin broadcast `reply_to` arrays
 and pagination through `GET /segments/{id}/contacts`. No tests send live email. The
 [provider email runbook](../operations/provider-emails.md) separates live
 self-addressed delivery verification from these checks.
+
+
+Withdrawal funding regressions run in `coordinator/tests/api/billing/contracts/stripe_withdrawal_queue_test.go`, `coordinator/tests/api/billing/contracts/stripe_withdrawal_queue_fairness_test.go`, `coordinator/tests/api/billing/payouts/global_payouts_queue_test.go` and `coordinator/tests/store/contracts/withdrawal_funding_queue_test.go`. Run the billing API and store contract packages; set `DATABASE_URL` to a disposable PostgreSQL database for both-backend coverage. Tests verify single reservation, concurrent claims, funding recovery, refreshed FX quotes, unknown-outcome retention and queued-money erasure guards. `coordinator/tests/store/contracts/global_payouts_window_test.go` covers posted readback and erasure protection after long funding waits, the exact return-window boundary, minute eligibility and active leases, plus legacy missing and zero JSON dispatch timestamps. UI copy tests cover the queued success and history states. `coordinator/tests/store/postgres/withdrawal_funding_migration_test.go` verifies adoption of an existing schema preserves queued records and records the migration once; the migration timeout suite includes the queued reconciliation index. Run the full PostgreSQL store package with the disposable database to cover replay fixtures as well as fresh/legacy upgrades. `coordinator/tests/store/contracts/stripe_withdrawal_state_age_test.go` verifies stuck filtering and sweep ordering before batch caps, and `coordinator/tests/api/billing/contracts/global_payouts_funding_expiry_test.go` verifies renewal when Stripe returns an FX object without a lock expiry. The funding queue contracts also cover progress beyond a full 200-row unavailable cohort, no-send retry bookkeeping, stale claim fences and recovery after rejected proof writes.
+
+
+`e2e/testbed/profile/profile_test.go` (`TestProfilerDiff`) supplies explicit segment-duration events through `EventBuffer` and `Profiler` for deterministic mean/P95 comparisons. This verifies exact deltas without assuming that a longer timer sleep always measures longer on a busy CI runner; the profiler lifecycle tests retain real instrumentation coverage.
 
 ## Prerequisites
 
@@ -1203,6 +1534,110 @@ the configured database. CI provides a
 a substitute for the complete coordinator runner and explicit race/database
 validation; run the full set before merging.
 
+#### Idle-provider routing recovery
+
+The routing regression suites use real registry reservations, injected
+measurement histories and virtual-clock heartbeat feedback. Run the focused
+selection and two-hour starvation simulations before the complete coordinator
+suite:
+
+```bash
+go test ./coordinator/tests/registry ./coordinator/tests/registry/routingsim \
+  -run 'TestIdleDecode|TestExploredIdleProvider|TestClosedLoop' -count=1
+```
+
+The simulation's idle-wait bound applies to its fixed fleet and arrival schedule;
+it is not a promise that every production provider receives traffic. Keep the
+exploration-backoff and inference-outcome tests in the full suite as well:
+recovering an idle provider must not repeatedly select a genuinely slow one.
+All tests stay under `coordinator/tests/`; no live coordinator or provider model
+is needed for these routing checks.
+
+#### Offline OpenRouter caller conformance
+
+Scenarios, fixtures and observers live in `coordinator/tests/internal/conformance/`.
+The thin `coordinator/tests/api/inference/contracts/openrouter_conformance_test.go`
+adapter (`conformanceSuite`) retains the existing 22 test entry points. It binds
+the real composed runtime together with the ledger and reservation controller it
+constructs, without adding production exports; the outstanding service hold is
+measured at that controller's admission boundary, not read from private state, by
+`coordinator/tests/internal/conformance/service_hold.go` (`OutstandingServiceHold`).
+Run the inference contract tests below: the support package is not itself a
+test entry point and is not imported by production.
+Streaming providers emit the concrete build ID; the HTTP assertions require
+the caller's alias, so bypassing the coordinator's model rewrite fails.
+Current-wire fixtures send typed `invalid_request` errors and use explicit
+template readiness for the unsupported-tool fence; they do not reintroduce
+upstream's retired version-based tool heuristic. The test-support package
+also exposes shared fixture helpers for the separate composed cache tests.
+
+`TestOpenRouterConformance` exercises `Server.Handler` with synthetic catalog
+records, account-owned API keys, memory storage and encrypted loopback provider
+WebSockets. It needs Go and no provider binary, model, database or external account.
+Use the repository-pinned Go toolchain. Prepare module dependencies separately
+in dedicated `GOMODCACHE`, `GOCACHE` and `GOTMPDIR` directories before the offline
+run; leave `HOME` unchanged. Clear inherited service, database, authentication,
+telemetry and proxy variables from the test process environment.
+
+From the repository root, with those isolated caches prepared:
+
+```bash
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -json -count=1 -timeout=3m \
+  -run '^TestOpenRouterConformance' > conformance.jsonl
+GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOENV=off GOMAXPROCS=2 \
+  go test -p 1 ./coordinator/tests/api/inference/contracts -race -json -count=1 -timeout=5m \
+  -run '^TestOpenRouterConformance' > conformance-race.jsonl
+```
+
+Require nonzero execution of Auth, Feed, Chat, AccountSLA, Drain, Retry,
+PostContentFailure, ClientError, Cancellation, CompletionFirst, Tools, Observer
+and Transport under that prefix. The incident and readiness additions also require
+IncidentProvenance, IncidentEnvelope, IncidentRefusal, Scenario,
+ScenarioFragmentation, ScenarioBounds, ScenarioChoiceShape, ReadinessFeed and
+ReadinessCapabilities. Retain every failure and unexpected skip across all
+22 groups. The combined family has 197 leaf cases, 64 of them in the thirteen
+groups named first. `OR_REPORT` log lines contain bounded synthetic status, attempts,
+terminal, timing, usage and balance evidence.
+Repeat with `-count=2` to compare semantic fields, excluding timing values;
+assert generated identities within each request before normalizing reports.
+
+The observer measures headers at `Client.Do` return, then first complete event,
+semantic payload and terminal while consuming the body. Role, usage and DONE
+are not semantic output; unavailable timing is null. It rejects malformed or
+truncated events, in-band errors, missing or duplicate DONE, changed identity,
+trailing payload and read errors. A provider drain acknowledgement joins prior
+completion workers before duplicate-terminal and no-stray-cancel assertions.
+The transport permits only its fixture address and rejects redirects and proxies.
+
+The OpenRouter cancellation fixture observes the existing completed-write profile
+stamp before canceling a dispatched request. Receiving provider bytes alone does
+not prove that the writer has finished; cancellation during an in-flight write
+may correctly abort that connection. Registry writer tests cover that separate
+outcome, while this fixture continues to require a matching cancel frame and
+exact settlement cleanup.
+
+The incident-envelope and scenario cases preserve the two curated Boston weather
+requests with reasoning disabled and tool choice omitted or auto. Added model
+identity is an explicit synthetic fixture wrapper. They check the complete
+forwarded schema/control fields and distinguish transport validity from the
+expected function, arguments, call IDs, indexes, cardinality and finish reason.
+A well-formed refusal ending in `stop` fails the weather scenario even when
+transport succeeds; a correct authored call may retain permitted pre-call text.
+These scripts do not prove actual Nemotron tool selection or native prompt parity.
+
+Readiness cases use authenticated metadata registration and normal `models_update`
+WebSocket messages to check staged/ready/staged feed visibility and capability
+enable/revoke, legacy omission, hash rejection and wrong-model fencing. A feed
+flag or advertised capability does not establish actual model loading or serving.
+`OR_INCIDENT`, `OR_SCENARIO` and `OR_READINESS` log records state these limits.
+
+These tests qualify the authored HTTP/transport and memory-accounting fixtures.
+Test-only trust and capacity state are explicit; tool declarations are synthetic.
+Real-model qualification and hosted OpenRouter qualification are not run by this
+command. Synthetic timings do not measure production latency, and no live request,
+model download or provider operation follows from an offline pass.
+
 #### Coordinator startup and reconnect recovery
 
 `TestSupervisorRestartsChildAndBecomesReady` allows a five-second helper startup
@@ -1259,6 +1694,241 @@ for registration teardown before duplicate eviction;
 `coordinator/tests/registry/provider_restore_routing_test.go`); they do not reconnect production providers.
 
 ### 3. Prompt-contract sidecar (Rust)
+
+#### Per-contract readiness and real Go/Rust pairing
+
+The merged preload lifecycle fixtures use the controller's current client
+contract and keep a closed controller closed even if Start is called later.
+An empty verified set remains unavailable; metrics timing is tested with an
+acknowledged nonempty set, and in-flight generation changes discard publication.
+Active-set fixtures hand off coherent verified model identities and assert
+bounded selection/failure reasons rather than exposing transport errors.
+
+The Go `TestPreload*` unit tests cover healthy members beside unrelated pending
+or failed artifacts, strict partial reports, fresh runtime readiness, retry
+backoff, exact verified-set changes, catalog/child generation fences and public
+controller close. Run them under the race detector from the repository root:
+
+```bash
+go test -race ./coordinator/tests/promptcontract -run '^TestPreload' -count=1
+```
+
+`TestPreloadRealSidecarRuntimeAndMixedVersions` and
+`TestPreloadRealSidecarGenerationAndCanceledResponseDrain` are opt-in real Unix
+HTTP tests in `coordinator/tests/promptcontract/preload_real_sidecar_test.go`. Without
+explicit actual binary bindings they skip; unit-test success is not their
+execution evidence. They provision tiny hash-verified local tokenizer fixtures,
+run real supervised Rust children, and use actual preload/health/ready/metrics/
+plan responses. Only artifact downloads are fixture-local. A held control call
+or response does not fabricate readiness.
+
+Before running the real pairing, bind each candidate and legacy **service**
+executable to its compiler-artifact and source receipt. The artifact must be the
+`promptsidecar` bin target, not a libtest executable; a role environment label
+or different executable hashes alone does not prove version provenance. Provide:
+
+| Variable | Binding |
+| --- | --- |
+| `DARKBLOOM_TEST_PROMPT_SIDECAR` / `DARKBLOOM_TEST_PROMPT_SIDECAR_SHA256` | Canonical absolute candidate service path and exact SHA-256 |
+| `DARKBLOOM_TEST_PROMPT_SIDECAR_LEGACY` / `DARKBLOOM_TEST_PROMPT_SIDECAR_LEGACY_SHA256` | Independently source-bound legacy service path and exact SHA-256 |
+| `DARKBLOOM_TEST_PROMPT_GO_VERSION` | `candidate` or `legacy`, matching the actual compiled Go source/overlay receipt |
+| `DARKBLOOM_PLANNING_TEST_UDS_PARENT` | Existing allocated canonical short private directory; the fixture owns a child leaf |
+
+Run both Go versions with the same compatible test file and preserve exact
+source/overlay provenance, binary hashes, starts/terminals and fixture inventory.
+Use a sanitized environment and an outer deadline/owned-process-group cleanup;
+Darwin does not supply the Linux parent-death guarantee. The fixture itself
+checks binary hashes before/after use, closes its real children and checks
+socket disappearance. No production credentials, signing, downloads, provider
+service or model weights are required.
+
+```bash
+go test -race ./coordinator/tests/promptcontract -run '^TestPreloadRealSidecar' -count=1 -timeout=3m
+```
+
+The pairing distinguishes strict degraded reports from usable runtime subsets,
+checks old/new role behavior, catalog replacement and actual child restart.
+Its held-response cancellation case proves that Go cannot publish a canceled
+real response after Rust loaded it; it does **not** prove cancellation of a
+blocking Rust loader. That ownership gate belongs to the Rust tests below.
+
+`TestCachePlanningRealSidecarHealthyMemberHTTP`
+(`coordinator/tests/api/inference/cache_planning_partial_real_test.go`) extends the existing API
+fixture with a real Rust service and an encrypted synthetic provider. Its two
+subtests, `failed_tokenizer` and `pending_artifact`, each exercise healthy A and
+unready B through four endpoints in streaming and non-streaming modes: 32 HTTP
+cells, not 32 separate Go test cases. The default synthetic-sidecar fixture is
+unchanged when this opt-in is not selected.
+
+Bind the candidate service and actual Go source as above, setting
+`DARKBLOOM_TEST_PROMPT_SIDECAR`, `DARKBLOOM_TEST_PROMPT_SIDECAR_SHA256`,
+`DARKBLOOM_TEST_PROMPT_GO_VERSION=candidate` and
+`DARKBLOOM_PLANNING_TEST_UDS_PARENT`. This gate needs no legacy service binding.
+An absent candidate binary skips it; preserve explicit no-skip execution evidence.
+From the repository root, with the same sanitized environment and outer owned
+process cleanup described above:
+
+```bash
+go test ./coordinator/tests/api/inference -run '^TestCachePlanningRealSidecarHealthyMemberHTTP$' -count=1 -timeout=3m
+go test -race ./coordinator/tests/api/inference -run '^TestCachePlanningRealSidecarHealthyMemberHTTP$' -count=1 -timeout=3m
+```
+
+The test compares actual Rust plan counters before and after each request,
+requires one encrypted correlated dispatch, unique V2 attempt nonces for A and
+cold dispatch metadata for B, and checks consumer content/terminals and owner
+drain. Each condition has a 40-second request context; the real fixture has a
+45-second lifecycle/download bound and retains the existing two-second planning
+timeout. The outer three-minute test watchdog is not a serving-budget increase.
+Synthetic provider output and usage do not establish model quality, native KV
+adoption, cache hits, billing accuracy or end-to-end performance.
+
+Rust's library `planner::readiness::tests` and `planner::readiness_tests` cover
+operation-drop/panic, generation and poison fences, exclusive replacement,
+post-permit membership, and cancellation while waiting or running blocking
+loads. `tests/per_contract_readiness.rs` covers partial/all-failed replacement,
+removed-but-cached members, invalid requests, capacity and explicit managed
+startup. Keep the existing
+`preload_failure_gates_plans_until_active_set_recovers` planner fixture. Use
+the normal all-target gate below; filtered runs must prove their exact named
+tests executed, not merely compile or return zero selected tests.
+
+Negotiated preload continuity has its own controls. Go preload controls cover
+legacy fallback and fail-closed negotiated downgrade
+(`TestPreloadContinuityNegotiationNeverSilentlyDowngrades` and
+`TestPreloadStaleProtocolFailureWithdrawsSameChildAuthority`,
+`coordinator/tests/promptcontract/preload_negotiation_test.go`) and a held retry
+that keeps the acknowledged healthy member admitted
+(`TestPreloadContinuityKeepsHealthyContractReadyDuringRetry`,
+`coordinator/tests/promptcontract/preload_continuity_test.go`). The `^TestPreload`
+filter above runs all three once; repeat them alone with:
+
+```bash
+go test -race ./coordinator/tests/promptcontract -count=3 -run \
+  '^(TestPreloadContinuityKeepsHealthyContractReadyDuringRetry|TestPreloadContinuityNegotiationNeverSilentlyDowngrades|TestPreloadStaleProtocolFailureWithdrawsSameChildAuthority)$'
+```
+
+Rust planner controls hold actual blocking loaders and plan references through
+cancellation and capacity pressure (`planner::readiness_tests::continuity`,
+`coordinator/promptsidecar/src/planner/continuity_tests.rs`). These component
+tests do not establish native MLX cache adoption, production throughput or
+real-model hit rates.
+
+These are tokenizer/readiness and ownership gates, not native KV adoption,
+hosted routing, performance or release certification. Original request
+deadlines, source/authentication checks and configured capacities remain in
+force. Direct client and Rust over-capacity submissions still reject; the
+controller selects a bounded set under the
+[overflow policy](../architecture/prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
+
+#### Bounded preload selection and real HTTP overflow
+
+`TestPreloadContinuityUnknownCompletionPreservesIncumbents` uses real control
+transport EOF and a deterministic ten-contract/eight-slot rotation to check
+repeated uncertain completion without losing acknowledged incumbents or
+acknowledging newcomers. `TestCachePreloadIdentityProjectsLargeVerifiedCatalog`
+and `TestCachePreloadConfiguredCatalogControllerFlow` cover 129 verified models
+sharing eight contracts with one allowlisted model; selection retains the full
+verified catalog without raising native capacity.
+
+`coordinator/tests/promptcontract/preload_transport_uncertainty_test.go` uses the
+actual Unix-socket client and controller to cover truncated/timed-out HTTP 200
+bodies, readiness-probe failures after validated partial reports, and the next
+capacity rotation. Completed malformed reports still withdraw authority; failed
+members and unconfirmed newcomers never inherit an incumbent acknowledgement.
+Run these with `go test -race ./coordinator/tests/promptcontract -count=3 -run
+'TestPreloadContinuity(ResponseBodyFailure|ReadinessTimeout|ReadyFailure)'`.
+
+`TestPreloadLongModelIDAuthenticatedRegistration`, `TestPreloadProvisionedLongModelID`
+and `TestCachePreloadLongModelIDDoesNotPoisonCatalog` cover accepted 513-byte model
+IDs through registration, actual artifact verification, Registry projection and
+bounded selection. The short-model-only allowlist control proves an unrelated
+accepted model cannot invalidate that model's preload selection. Oversized-ID
+and existing explicit-allowlist rejection controls retain their bounds.
+
+
+The pure `coordinator/tests/promptcontract/preload_active_set*_test.go` cases cover
+full verified-set preservation, deduplication, eligible demand, expiry, residence,
+fair waiting, failure backoff, same-generation verified-set growth and irreversible
+in-flight ABA fencing. Controller tests additionally cover completed native
+acknowledgement versus current participation, forced polls during partial-backoff
+admissibility drift, capture-through-apply ordering, background-only advisory
+refresh, HTTP 409 retirement and standalone tokenizer readiness without
+authorization. API tests retain the original planning reason and sampling/QPS
+assertions and check policy drift between classification and commitment. Use the
+ordinary and race gates for `coordinator/tests/promptcontract`,
+`coordinator/tests/registry` and `coordinator/tests/api/inference`; no pure
+helper result substitutes for actual sidecar/HTTP qualification.
+
+`TestPromptArtifactCapacityRealSidecarAndAuthenticatedNinth` uses the candidate
+service path/hash and private UDS parent bindings above. Its two fixture files,
+`coordinator/tests/api/inference/prompt_artifacts_capacity_fixture_test.go` and
+`coordinator/tests/api/inference/prompt_artifacts_capacity_test.go`, use public lifecycle APIs
+available on the old controller as well, so the same oracle can establish the
+original whole-catalog refusal before qualifying a candidate. Preserve the exact
+old/candidate Go trees and test overlay in the runner receipt; an intended red is
+not a pass or a fixture failure.
+
+The fixture verifies nine tiny local artifacts through Store, catalog and
+Provisioner; first loads/plans all nine in legal direct Rust batches; and retains
+both the Go and independent Rust nine-ID rejection controls at configured capacity
+eight. Authenticated encrypted fake-provider HTTP requests supply demand. The
+candidate must preload at most eight, return the cold ninth request without
+waiting for residence, then eventually plan the demanded ninth without pruning
+verification, raising capacity or restarting the child. A nine-model/eight-shared-
+contract control must preserve full within-capacity behavior. The bounded residence
+wait is intentional; allow the fixture's full cleanup deadline:
+
+```bash
+go test ./coordinator/tests/api/inference -run '^TestPromptArtifactCapacityRealSidecarAndAuthenticatedNinth$' -count=1 -timeout=4m
+```
+
+Keep `TestCachePlanningRealSidecarHealthyMemberHTTP` alongside that oracle. It
+exercises the real healthy-subset path across four endpoints, streaming and
+non-streaming, and pending/failed peers. These local tokenizer/planning tests do
+not load a model, prove SSD adoption, measure a production hit rate or explain a
+historical fleet percentage. Preserve passes, intended baseline failures, skips,
+binary/source receipts and owned-child cleanup separately.
+
+#### Simultaneous connected-cache restoration
+
+After the source-matched B1 smoke, `TestIntegrationConnectedCacheBatching`
+requires a serial reference followed by two simultaneous successful requests.
+It checks actual native multirow processing, distinct encrypted dispatches and
+terminals, output/finish/non-cache usage equality, and real SSD adoption rather
+than inferring batching or reuse from configuration.
+
+Prepare two immutable connected-input JSON files using the existing
+`e2e/connected_cache_input_test.go` schema. Keep model, prompt, contract, binary
+and resource hashes equal; set `max_concurrent: 2`, `backend: "paged"`,
+`mtp_mode: "off"`, and change only `cache_mode` between `"off"` and `"ssd"`.
+The fixture validates these settings and protects the existing host config.
+Use a fresh nonexistent output path for each arm:
+
+```bash
+DARKBLOOM_CONNECTED_BATCH_INPUT=/absolute/path/to/b2-ssd.json \
+DARKBLOOM_CONNECTED_BATCH_OUTPUT=/absolute/path/to/new-owned-output \
+go test ./e2e -run '^TestIntegrationConnectedCacheBatching$' -count=1 -timeout=15m -v
+```
+
+Require both workers to finish, the native slot to drain, no dropped relay
+events, and two actual lookup/hit receipts in the SSD arm. Compare reports across
+arms too, excluding only opaque request/tool IDs, chunk boundaries and the
+intended cached-token discount; preserve reasoning and every other usage detail.
+The equal-prompt B2 fixture is not arbitrary mixed-cohort or cross-host coverage.
+Its test trust/billing and ephemeral cache keys are not production attestation or
+persistent-Keychain restart.
+
+The observer refusal controls run without a model:
+
+```bash
+go test -race ./e2e -run '^TestConnectedBatch' -count=1
+```
+
+They reject missing/duplicate/unencrypted dispatches, missing terminal adoption,
+serial-only execution, malformed counts and changed non-cache usage details.
+Source selectors and compilation alone are not an executed native B2 pass.
+
+#### Rust component checks
 
 ```bash
 make prompt-sidecar-format   # cargo fmt --all -- --check
@@ -1891,6 +2561,44 @@ both targets compile the same test without depending on target-local helpers.
 Passing these operator cases does not replace full-model trajectory, cache,
 batching or performance validation.
 
+#### Sampled MTP acceptance controls
+
+Build the [candidate radix executable](build.md#prefix-cache-benchmark-executable)
+with `RADIX_CANDIDATE_BUILD=1`. Both `scripts/benchmarks/run_radix_engine.py`
+and `radix-engine` accept `--mtp-acceptance exact|typical`. The wrapper forwards
+the option only when explicitly supplied, preserving old baseline command lines;
+omission leaves the candidate on `exact`. Historical baseline builds reject the
+explicit flag. Values are the exact lowercase strings, not `typical:<delta>`.
+This flag selects acceptance, not MTP activation: pass `--mtp on` separately.
+
+For an eligible target-prefix model, compare `exact` and `typical` using the same
+candidate binary, target/assistant hashes, backend, grant, prompt, seed, sampling
+knobs and output budget. Use sampled inputs and
+`--generation-comparison-policy record`, retaining full outputs and structural,
+capacity, cancellation and retirement checks. Typical output is not
+distribution-exact; token differences are not a greedy parity failure, and a
+higher acceptance ratio alone proves neither quality nor throughput. Keep strict
+greedy controls separate. Native MiMo does not apply this preference and remains
+exact; do not report it as a typical-acceptance arm.
+
+The candidate SSD route passes `mtpAcceptanceConfig: String = "exact"` through
+`EngineV2Factory.makeBenchmarkSession` (`@_spi(Benchmarking)`) to the ordinary
+slot factory. The resident route sets the same engine rule directly. Actual MTP
+metrics report `acceptance`, the installed rule, rather than merely the requested
+flag (`scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift`,
+`mtpRecord`). Production serving still uses TOML; the separate benchmark-session
+environment override is documented in the
+[configuration reference](../reference/configuration.md#engine-and-scheduler).
+
+Run `python3 -m unittest discover -s scripts/benchmarks -p test_run_radix_engine.py`
+for wrapper omission/forwarding and invalid-value coverage. With the same source
+root and candidate define used for the build, run the radix package's
+`BenchmarkMTPAcceptanceTests` for default/configuration, invalid/duplicate flags,
+and installed configuration/metric serialization. Also run provider
+`MTPAcceptanceConfigTests` for optional TOML round trips, per-model precedence,
+unknown-value fallback and the separate benchmark override. These tests are not
+real-model quality or performance measurements.
+
 <a id="resident-prefix-benchmark-validation"></a>
 
 #### Explicit Gemma verifier and projection controls
@@ -2480,6 +3188,8 @@ makes no network request, writes no login token and updates no host.
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
 ./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
+python3 scripts/check-go-toolchain.py # exact local/container pins satisfy go.mod
+python3 scripts/test-go-toolchain.py  # old production mismatch, patch minimum, drift and digest regressions
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
@@ -2490,7 +3200,24 @@ python3 scripts/test-provider-release-resolution.py # signed-validation and publ
 Version checks, release routing, installer parity and production environment refresh
 run in CI job "Release Integrity". The production env refresh test checks automatic
 payout activation, preservation of an explicit off switch, and rejection of missing
-payout prerequisites before the live env is changed.
+payout prerequisites before the live env is changed. It also verifies that the
+required soft-delete mutation flag bootstraps to `false` while preserving explicit
+`false` and `true` choices. These tests use temporary env files, not production.
+
+The Go toolchain guard runs without Docker or a Go download. Its regression suite
+rejects the former Go 1.25 builder with the Go 1.26 module, mismatched local pins,
+an insufficient patch version and an absent digest; it also executes the guard
+against the checkout. This is not a substitute for the full production Docker
+build in [the build guide](build.md#9-coordinator-container-image).
+
+For a provider version-only preparation, run source/fallback parity and the
+release-script tests without cold-building Swift/MLX. Inspect existing caches
+first; reuse Go's content-addressed caches and only compatible Swift/Metal
+caches. Do not point a separate worktree at another active Swift scratch path or
+present an old binary as the new candidate. A changed checkout path, SDK,
+compiler or dependency pin can invalidate Swift build reuse. Exact signed-bundle
+runtime, numerical and upgrade checks remain required by the
+[0.9.18 rollout gates](../operations/provider-release.md#0918-candidate-rollout).
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle
@@ -2834,6 +3561,11 @@ The script, in order:
    (`PROMPT_LOAD_PROOF_DURATION`, `PROMPT_LOAD_PROOF_QPS`,
    `PROMPT_LOAD_PROOF_MAX_RSS_MIB` tune the run), failing on any plan mismatch,
    timeout, overload, restart, child replacement or RSS escape.
+   The cold-start phase rotates explicit one-contract preload sets through an
+   undersized LRU, then runs concurrent plans only after acknowledgement. It
+   checks every cold load and eviction, exact plans, bounded RSS and a stable
+   child. It does not bypass production membership to force lazy planning;
+   concurrent cold singleflight remains a separate Rust planner test above.
    Preserve the reported cold-load, preload and warm-plan timing totals and
    counts alongside memory measurements. Compute means from totals and counts;
    histogram buckets are cumulative bounds, not exact latency quantiles. When
@@ -3019,13 +3751,28 @@ DARKBLOOM_RELEASE_DEFAULT_OUTPUT=/absolute/new-defaults-output \
 
 The two B1 requests check actual paged activation, automatic MTP selection,
 complete cold/repeat output and token accounting, and model-scoped cache
-capability. Qwen and exact `gpt-oss-20b` require a ready SSD capability and an
-accepted repeat hit; GPT-OSS still requires MTP inactivity under automatic
+capability. Qwen, exact `gpt-oss-20b` and `ternary-bonsai-2-27b` require a ready
+SSD capability and an accepted repeat hit; GPT-OSS and Bonsai still require MTP inactivity under automatic
 selection. The older Gemma QAT helper retains its cache-inactive expectation and
 does not qualify the current Gemma default. The report retains the actual
 generated provider configuration. This smoke does not establish raw token-ID
 parity, concurrent widths, cancellation, restart, or selection between providers;
 run the corresponding native and connected gates separately. CPU helper checks:
+
+Install each controller with `SetPromptPreloadController` before calling
+`PreloadController.Start`, including fresh controllers after a sidecar restart.
+The shared `startExactCacheSidecar` fixture follows this production ordering.
+An already-started controller is deliberately rejected: successful native
+preload alone does not establish API readiness or current Registry participation.
+With the same immutable input and verified Rust sidecar, the CPU-only
+`TestExactCacheSidecarPublishesAPIReadiness` regression checks all three, and
+rejects a demand identity missing its catalog generation. It never loads a
+provider or model:
+
+```bash
+DARKBLOOM_RELEASE_DEFAULT_INPUT=/absolute/defaults.json \
+  go test -short ./e2e -run '^TestExactCacheSidecarPublishesAPIReadiness$' -count=1
+```
 
 ```bash
 go test -short ./e2e ./e2e/testbed \
@@ -3389,6 +4136,12 @@ production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
 
+The threat-review preflight checks the configured OpenRouter budget mode and
+remaining normal-attempt capacity as well as writer access and funding. Offline
+budget regressions cover migration without resetting charges, daily caps,
+unknown reservations and exhausted-pilot detection; see
+[review configuration](threat-model-review.md#openrouter-budget-behavior-and-recovery).
+
 Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
 OpenRouter response validation, credential isolation, pagination, stale-head and
 comment lifecycle tests. The suite opens a temporary loopback HTTP server and
@@ -3442,6 +4195,33 @@ Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
 
+## Telemetry archive validation
+
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. Accounting tests cover signed micro-USD values, sums beyond INT64, backdated timestamps, sparse IDs, late commits, destination separation, and exact restoration of all four accounting tables. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+Analytics preview tests reject mixed datasets, injected catalog identifiers,
+missing coverage, unbounded series and excessive scan budgets. Optional
+SELECT-only BigQuery semantics tests use synthetic CTE fixtures, creating no
+cloud datasets or tables: set `TEST_ARCHIVE_BIGQUERY_PROJECT` explicitly and
+run `uv run pytest -q tests/test_analytics_bigquery.py`. They exercise provider
+versus reward-only cohorts, anonymous network earnings, signed corrections,
+base-reward exclusion from tokens/jobs, ties/limits, empty windows, exact time
+boundaries and sums beyond INT64. CI skips these credentialed tests; their live
+results must be recorded separately from the local suite.
+
+Backfill regressions cover explicit recapture generations, legacy plan identity,
+large sharded completion catalogs and deadline enforcement during saved-checkpoint
+replay. Publication tests verify reused catalog schema and content, not only row
+counts. Async-query tests use real BigQuery SDK value objects with local transport
+fixtures to check dry-run rejection, pinned sources, idempotent named submission,
+bounded polling/pagination, exact decimal results and owned cancellation; they do
+not establish live BigQuery or IAM correctness. Run the complete locked suite
+with `uv run --locked pytest -q` after `uv sync --locked`.
+
+Archived snapshot validation and no-scan HTTP tests live in `coordinator/tests/analyticssnapshot` and `coordinator/tests/api/reporting/analytics_snapshot_test.go`; run `go test -race ./coordinator/tests/analyticssnapshot ./coordinator/tests/api/reporting ./coordinator/tests/api`. The snapshot tests exercise the exported decoder and cache APIs; HTTP tests exercise the reporting owner and retain the separate database-backed core stats refresh. Python `test_snapshot_sync.py` tests generation/hash/scope validation and atomic file replacement. See [snapshot operations](../operations/analytics-snapshots.md).
+
+Leaderboard cache tests cover concurrent callers with different limits and aliases sharing one top-200 query, and failed queries retaining only their cooldown. Store tests cover closed pools and scan overflow after a valid first row returning an error with no partial ranking; the latter uses the isolated PostgreSQL test database.
+
 ## Account erasure regressions
 
 `coordinator/tests/internal/erasurefixture/account.go` seeds an account's
@@ -3470,3 +4250,7 @@ boundary statements; duplicates still split into ordered chunks. Outcome
 updates retain their single pipelined batch. The memory marker fixture also
 freezes real MDM eligibility and stores hardware-interest markers before
 scrubbing, so every memory-backed personal-data rule has observed coverage.
+
+The scanner regressions also verify numbered source reconstruction, annotation
+capacity, original citation coordinates, and that final-reviewer uncertainty cannot
+grant conditional merge clearance.

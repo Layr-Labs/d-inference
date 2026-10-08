@@ -53,6 +53,7 @@ func (planner *ReservationPlanner) scanCandidatesLockedStorage(storage *reservat
 	var scan candidateScan
 	scan.planOrderFactory = r.planOrderFactory
 	now := time.Now()
+	estimates := r.coldKVEstimatesLocked(providers, model, now)
 	var snapshot routingSnapshot
 	for _, p := range providers {
 		scan.Scanned++
@@ -74,7 +75,7 @@ func (planner *ReservationPlanner) scanCandidatesLockedStorage(storage *reservat
 		// Relax trust only for the caller's own machine, never the public pool.
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 		c := arena.Next()
-		ok, gateReason := r.snapshotProviderIntoLockedEx(&snapshot, p, model, pr.Traits, relaxTrust, ignoreProviderBreaker, now)
+		ok, gateReason := r.snapshotProviderIntoLockedEx(&snapshot, p, model, pr.Traits, relaxTrust, ignoreProviderBreaker, now, estimates)
 		if !ok {
 			arena.Release(c)
 			scan.tallyGate(gateReason)

@@ -65,6 +65,18 @@ func (s *State) AcceptControl(state *protocol.ModelAutopilotState, control proto
 	s.control().Accept(state, control)
 }
 
+// AcknowledgeControl follows an accepted sequenced heartbeat. A new grant or
+// identity binding cannot reuse the previously stored provider report.
+func (s *State) AcknowledgeControl(state *protocol.ModelAutopilotState, session string, now time.Time) {
+	s.control().acknowledge(state, session, now)
+}
+
+// RevokeControl drops only the grant. Rebinding needs a new grant and a later
+// accepted heartbeat, without losing any accepted operation's owner.
+func (s *State) RevokeControl() {
+	*s.control() = Lease{}
+}
+
 // Placement is the command-owned portion of the planner's current node evidence.
 // Future residents are creditable only while the operation remains bounded and
 // certain; this never changes the provider's actual serving slots.

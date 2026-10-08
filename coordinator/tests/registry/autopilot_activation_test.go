@@ -14,24 +14,31 @@ import (
 )
 
 func TestAutopilotConsentAloneDoesNotChangeServing(t *testing.T) {
-	r, _, now := newAutopilotControllerTest(t, false)
-	p := autopilotControllerProvider(t, r, "provider", now)
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	state := r.states[p.ID]
-	p.ModelAutopilot.Active = false
-	if state.RoutingBlocked(p.ModelAutopilot, p.ID, autopilotTestTarget, p.BackendCapacity, time.Now) || state.LegacyChangesBlocked(p.ModelAutopilot, p.ID, time.Now) {
-		t.Fatal("consent without activation changed serving")
-	}
-	p.ModelAutopilot.Active = true
-	state.AcceptControl(p.ModelAutopilot, protocol.ModelAutopilotControl{Revision: "test", ExpiresAtMS: now.Add(-time.Second).UnixMilli()})
-	if state.Managed(p.ModelAutopilot, p.ID, time.Now()) {
-		t.Fatal("expired lease retained managed ownership")
-	}
-	state.AcceptControl(p.ModelAutopilot, protocol.ModelAutopilotControl{Revision: "test", ExpiresAtMS: now.Add(time.Minute).UnixMilli()})
-	p.ModelAutopilot.Revision = "changed"
-	if state.Managed(p.ModelAutopilot, p.ID, time.Now()) {
-		t.Fatal("old session activated a changed selection")
+	for _, mode := range []string{"waiting", "expired", "changed selection"} {
+		t.Run(mode, func(t *testing.T) {
+			r, _, now := newAutopilotControllerTest(t, false)
+			p := autopilotControllerProvider(t, r, "provider", now)
+			p.Mu().Lock()
+			defer p.Mu().Unlock()
+			state := r.states[p.ID]
+			if !state.Managed(p.ModelAutopilot, p.ID, time.Now()) {
+				t.Fatal("fixture lacks acknowledged live control")
+			}
+			switch mode {
+			case "waiting":
+				p.ModelAutopilot.Active = false
+			case "expired":
+				state.AcceptControl(p.ModelAutopilot, protocol.ModelAutopilotControl{Enabled: true, Revision: "test", ExpiresAtMS: now.Add(-time.Second).UnixMilli()})
+			case "changed selection":
+				p.ModelAutopilot.Revision = "changed"
+			}
+			if state.Managed(p.ModelAutopilot, p.ID, time.Now()) {
+				t.Fatal("inactive control retained managed ownership")
+			}
+			if state.RoutingBlocked(p.ModelAutopilot, p.ID, autopilotTestTarget, p.BackendCapacity, time.Now) || state.LegacyChangesBlocked(p.ModelAutopilot, p.ID, time.Now) {
+				t.Fatal("consent without activation changed serving")
+			}
+		})
 	}
 }
 

@@ -1,6 +1,6 @@
 # Migrate bank payouts and Checkout to the Darkbloom Stripe account
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-07
 
 Use this runbook to activate Global Payouts for every supported bank destination,
 retain legacy Connect settlement, and move new Checkout purchases independently.
@@ -148,8 +148,8 @@ the application's current menu. See [country policy](../../coordinator/billing/g
   `migration_required` only while an old Connect user needs bank setup. Merely
   loading status must not create recipients.
 - Check one debit per confirmed quote, the actual financial account charged,
-  bank receipt and actual fees. Reject unavailable funding before the debit, and
-  verify an external rejection/return credits only once.
+  bank receipt and actual fees. Verify low funding reserves the amount as `queued`, and funding restoration
+  sends it once. Other definitive rejections and bank returns credit only once.
 - Check both old and new signed Checkout deliveries; replaying either must not
   add another deposit. Unknown local sessions require investigation.
 - Maintain counters for setup completion, new Connect activity (must remain zero),

@@ -1,6 +1,6 @@
 # Soft delete
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 Reference for the coordinator store's soft-delete columns: which tables have
 `deleted_at`, every read that hides a soft-deleted row in `PostgresStore` and
@@ -50,6 +50,7 @@ using real erasure transitions and isolated user/provider tombstones.
 | `ClaimModelTokenPromotion` | `coordinator/store/postgres/model_token_promotions.go` | `coordinator/store/memory/model_token_promotions.go` | `ErrPromotionIneligible` |
 | `ListSmallModelsInterest` | `coordinator/store/postgres/small_models_interest.go` | `coordinator/store/memory/small_models_interest.go` | omitted before pagination; the admin contact export excludes the email |
 | `FreezeLegacyMDMCohort` (initial qualification) | `coordinator/store/postgres/legacy_mdm_cohort.go` | `coordinator/store/memory/legacy_mdm_cohort.go` | cannot qualify for the initial frozen cohort |
+| `ObserveAutopilotConsent`, `RestoreAutopilotBaseline`, `SettleAutopilotRewardDay`; `AutopilotRewardEnrollments` admission | `coordinator/store/postgres/autopilot_rewards_identity.go` (`beginAutopilotRewardWrite`, `lockAccountAdmission`), `autopilot_rewards_list.go` | `coordinator/store/memory/autopilot_rewards_identity.go` (`autopilotRewardMachineLocked`, `accountAdmissionLocked`), `autopilot_rewards_consent.go` | Refuse new consent/baseline/payment mutations and omit the account from enrollment pages; retain financial history, never spend the pool against a suppressed credit |
 | `CreateUser` (Privy ID check) | `idx_users_privy_live` | `coordinator/store/memory/users.go` | The Privy ID is free; a new live user may take it |
 
 ### `api_keys`
@@ -97,6 +98,18 @@ cohort. Later calls read the persisted snapshot without recomputing membership;
 see [frozen legacy authorization](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort).
 
 ## Writers of `deleted_at`
+
+The HTTP writers require `ServerConfig.SoftDeleteMutationsEnabled`
+(`EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED`, default `false`).
+`HandleDeleteMyProvider` checks authentication, record existence and ownership
+before returning 503 `soft_delete_mutations_disabled`; erasure `HandleRequest`
+checks admin authorization before the gate, including for `force: true`.
+Both gates precede mutation (`coordinator/api/accounts/delete_provider.go`,
+`coordinator/api/accounts/erasure/handlers.go`). Plan, status and cancel stay
+available. This is not a store-level fence or a worker pause: already-pending
+erasures and outbox delivery continue, and all live-read and credit protections
+remain active. Prior tombstones or erasures still require a compatible fallback
+even after disabling the flag ([rollback rules](../operations/schema-migration.md#rollback)).
 
 | Store method | Effect | PostgresStore | MemoryStore |
 |---|---|---|---|
@@ -172,9 +185,13 @@ history-table files and tests outside this gate.
 | Writer | Deleted-account behavior | Code |
 |---|---|---|
 | `CreateAPIKey`, `CreateProviderToken`, `UpsertProvider`, `UpsertProviderWithReputation`, `ObserveMachine`, `CreateReferrer`, hardware-interest writes, payout admission | Refused after acquiring the same user fence as erasure; cancellation permits new writes again. Provider upserts also leave an existing soft-deleted provider row unchanged | `coordinator/store/postgres/erasure_fences.go` (`lockAccountAdmission`), `coordinator/store/postgres/providers.go` (`upsertProviderRecord`), `coordinator/store/memory/erasure_ownership.go` (`accountAdmissionLocked`), `coordinator/store/memory/providers.go` (`upsertProviderRecordLocked`) |
+| Autopilot reward consent, baseline restoration and daily settlement | Account admission/privacy checks precede inventory/pool locks and any credit; raw session evidence also checks ownership. Retained records do not grant permission to credit an erased account. The payment feature flag does not disable erasure fences | `coordinator/store/postgres/autopilot_rewards_identity.go` (`beginAutopilotRewardWrite`), `coordinator/store/postgres/autopilot_rewards_consent.go` (`journalAutopilotConsent`); `coordinator/store/memory/autopilot_rewards_identity.go`, `autopilot_rewards_consent.go` |
 | `SetUserStripeAccount`, `SaveGlobalRecipient`, and Checkout creation results | Preserve cleanup IDs in the erasure outbox and refuse restoring personal fields | `coordinator/store/postgres/erasure_external.go` (`fenceErasureExternalObject`), `coordinator/store/memory/erasure_external.go` (`retainDeletedExternalObjectLocked`) |
 | Usage and route persistence | Preserve accounting while clearing erased owners' location and region fields | `coordinator/store/postgres/erasure_observations.go` (`erasedObservationOwners`), `coordinator/store/memory/usage.go` (`RecordUsage`), `coordinator/store/memory/route_telemetry.go` (`recordInferenceRouteLocked`) |
 | Trust-reuse upsert/recovery and verification jobs | Hold the shared privacy fence through SE-owner validation and persistence; erased-only keys are rejected, while a live co-owner or a subsequent authenticated owner remains usable | `coordinator/store/postgres/erasure_personal_writes.go` (`checkPersonalSEOwner`), `coordinator/store/memory/erasure_ownership.go` (`erasedSEOwnerLocked`) |
+
+
+Queued Connect and Global Payouts withdrawals count as open withdrawals in both backends. Planning reports them; erasure request and scrub refuse while their funds are reserved. The queue retains the saved destination for eventual dispatch. Posted Global Payouts remain protected during the [post-dispatch return window](pricing-model.md#global-payouts-withdrawals), excluding time spent queued. Code: `coordinator/store/memory/erasure.go` (`openWithdrawalsLocked`), `coordinator/store/postgres/queries/erasure.sql` (`CountOpenStripeWithdrawals`, `CountOpenGlobalPayouts`).
 
 ## Related
 

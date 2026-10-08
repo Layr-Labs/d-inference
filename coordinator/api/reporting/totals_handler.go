@@ -20,6 +20,10 @@ func (s *Owner) HandleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	window := windows.NetworkTotalsWindow(windowParam)
+	if s.analyticsSnapshotPath != "" {
+		s.archivedNetworkTotals(w, window)
+		return
+	}
 	if cached, ok := s.readCache.Get(totalsview.NetworkTotalsCacheKey(window)); ok {
 		httpx.WriteCachedJSON(w, cached)
 		return

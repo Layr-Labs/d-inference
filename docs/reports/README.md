@@ -4,6 +4,9 @@
 
 - [Cache planning admission](2026-09-24-cache-planner-admission.md) — reproduced admission loss, bounded client repair and exactness/lifecycle qualification.
 
+- [SSD eviction and cache discovery](2026-09-24-cache-eviction-publication.md) — reproduced discovery loss, active-store retirement repair and native qualification.
+- [Connected cache qualification](2026-09-27-cache-connected-qualification.md) — real API reuse, concurrent requests, Gemma reconstruction, expiry boundaries and preserved release limitations.
+
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
 is edited after it lands, and none describes the current system. For how things

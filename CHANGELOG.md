@@ -1,8 +1,13 @@
 # Changelog
 
-## Unreleased - Autopilot target preflight
+## Unreleased — Member-only automatic security clearance
 
-- Refuse an Autopilot load whose target failed its startup self-test or has no weight hash before any resident model is unloaded. Such a command used to unload its victims first and then fail, leaving the Mac with fewer models.
+- Limit scan-only merge clearance to verified active Layr-Labs organization members. Non-members, bots and unavailable membership require independent formal human review. Use a separate read-only membership token and retain ordinary CI and current-revision checks.
+- Surface fixed validation-failure reasons in incomplete review reports without exposing raw provider output.
+## Unreleased - Autopilot consent journal contention
+
+- Let independent provider sessions record Autopilot consent concurrently instead of serializing the fleet behind the inventory write lock. Preserve per-session ownership, account-erasure fences, and exclusive protection for identity merges and reward settlement.
+- Keep canonical-machine ownership lookups scoped to materialized ancestor IDs so PostgreSQL does not scan the complete provider-session history on each consent observation.
 
 ## Unreleased — demanded prefix reuse
 
@@ -41,6 +46,10 @@
 - Distinguish desired machine mode from current session activity, and report live-cohort, acknowledged-live and shadow populations separately. Mode revisions revoke stale grants, failed policy reads remove live authority, and demotion preserves accepted-operation recovery. This change does not deploy or activate a production cohort by itself.
 - Keep capacity freshness checks current across policy reads and durable command delivery, so slow database operations cannot extend a provider snapshot's lifetime.
 - Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
+
+## Unreleased - Autopilot target preflight
+
+- Refuse an Autopilot load whose target failed its startup self-test or has no weight hash before any resident model is unloaded. Such a command used to unload its victims first and then fail, leaving the Mac with fewer models.
 
 ## Unreleased - KV admission estimates
 

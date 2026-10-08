@@ -34,11 +34,18 @@ let package = Package(
         // creation or distributed backend is staged. Qwen loading/resident
         // runtime, Transport and Generation remain unstaged.
         .target(name: "DarkbloomClusterRuntime", dependencies: [
+            "DarkbloomClusterSecurity",
             .product(name: "MLX", package: "mlx-swift"),
             .product(name: "MLXNN", package: "mlx-swift"),
             .product(name: "MLXLLM", package: "mlx-swift-lm"),
             .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            .product(name: "Cmlx", package: "mlx-swift"),
         ]),
         .testTarget(name: "DarkbloomClusterRuntimeTests", dependencies: ["DarkbloomClusterRuntime"]),
+        // Transport discovery + contract check (single process). Run manually:
+        //   swift run cluster-loopback-check
+        .executableTarget(name: "cluster-loopback-check", dependencies: [
+            "DarkbloomClusterRuntime", "DarkbloomClusterSecurity",
+        ], path: "Sources/LoopbackCheck"),
     ]
 )

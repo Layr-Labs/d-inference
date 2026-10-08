@@ -1,8 +1,8 @@
 import Foundation
 
-struct ProbeError: Error, CustomStringConvertible {
-    let description: String
-    init(_ description: String) { self.description = description }
+public struct ProbeError: Error, CustomStringConvertible {
+    public let description: String
+    public init(_ description: String) { self.description = description }
 }
 
 func log(_ message: String) {

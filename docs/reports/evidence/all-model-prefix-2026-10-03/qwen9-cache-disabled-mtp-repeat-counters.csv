@@ -1,0 +1,4 @@
+model,repeatIndex,promptTokens,completedOutputTokens,outputMatchesFirst,prefillChunks,checkpointArchiveIOAndRestoreDeltasZero,checkpointWritesDrained,acceptedTokens,activeAfter,activeBefore,draftedTokens,emittedTokens,qualified,rectangularVerificationRounds,requested,rounds,seedSteps,serialVerificationRounds,verificationMode
+qwen/qwen3.5-9b,0,16513,128,True,5,True,True,64,True,True,128,125,True,61,True,61,2,0,rectangular
+qwen/qwen3.5-9b,1,16513,128,True,5,True,True,67,True,True,123,125,True,58,True,58,2,0,rectangular
+qwen/qwen3.5-9b,2,16513,128,True,5,True,True,67,True,True,117,125,True,58,True,58,2,0,rectangular

@@ -373,8 +373,8 @@ func (s *Dispatcher) Dispatch(
 	// Bound the provider write by the request-absolute first-token clock (see
 	// firstTokenWriteContext): a congested write lane must not silently eat
 	// the budget while the aggregator's cancel clock keeps running.
-	writeCtx, cancelWrite := firstcontent.FirstTokenWriteContext(
-		r.Context(), receivedAt, requestDeadline)
+	writeCtx, cancelWrite := firstcontent.FirstTokenWriteContextForPending(
+		r.Context(), receivedAt, requestDeadline, pr)
 	ap.Mark(registry.StampWriteSubmitted)
 	_, writeErr := providerwire.WriteDeferred(
 		writeCtx,

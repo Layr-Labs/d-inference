@@ -1,0 +1,1502 @@
+{
+  "cold_cohorts": {
+    "aggregate_input_rate": "actual input tokens divided by cohort elapsed; prefill service proxy, not kernel TPS",
+    "artifact_declares_and_loads_mtp_head": true,
+    "cells": [
+      {
+        "aggregate_all_tokens_per_second": 607.5385695132225,
+        "aggregate_input_tokens_per_second": 591.4416021957304,
+        "aggregate_output_tokens_per_second": 16.096967317492044,
+        "bytes_written": 0,
+        "cohort_seconds": 8.200302417,
+        "demanded": false,
+        "donor_actually_packed": false,
+        "files_written": 0,
+        "geometry": [
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "skip",
+            "packed": false,
+            "row": 0,
+            "step": 1,
+            "upper": 1
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 1,
+            "upper": 512
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 2,
+            "upper": 1024
+          },
+          {
+            "cap": 512,
+            "lower": 1,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 2,
+            "upper": 2
+          },
+          {
+            "cap": 512,
+            "lower": 2,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 3,
+            "upper": 3
+          },
+          {
+            "cap": 512,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 3,
+            "upper": 1536
+          },
+          {
+            "cap": 4096,
+            "lower": 1536,
+            "outcome": "skip",
+            "packed": false,
+            "row": 1,
+            "step": 4,
+            "upper": 2049
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 4,
+            "upper": 512
+          },
+          {
+            "cap": 4096,
+            "lower": 512,
+            "outcome": "skip",
+            "packed": false,
+            "row": 2,
+            "step": 6,
+            "upper": 2800
+          }
+        ],
+        "input_tokens": 4850,
+        "introduced_same_step_same_size_nonfinal_opportunity": false,
+        "output_tokens": 132,
+        "packed_executed": false,
+        "pair": 0,
+        "rows": [
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 3,
+            "decode_tail_tokens_per_second": 1.6663368708276487,
+            "elapsed_seconds": 1.808620875,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 0.608270292,
+            "hit_tokens": 0,
+            "prompt_tokens": 1,
+            "row": 0,
+            "ttft_seconds": 0.608268625
+          },
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 1,
+            "decode_tail_tokens_per_second": null,
+            "elapsed_seconds": 5.612471083,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 3.0147875,
+            "hit_tokens": 0,
+            "prompt_tokens": 2049,
+            "row": 1,
+            "ttft_seconds": 3.014785958
+          },
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 128,
+            "decode_tail_tokens_per_second": 50.6891529603064,
+            "elapsed_seconds": 8.200302417,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 5.691751917,
+            "hit_tokens": 0,
+            "prompt_tokens": 2800,
+            "row": 2,
+            "ttft_seconds": 5.691748792
+          }
+        ],
+        "setup_seconds": 0.63773425,
+        "write_drain_seconds": 1.792e-06
+      },
+      {
+        "aggregate_all_tokens_per_second": 584.2521871507013,
+        "aggregate_input_tokens_per_second": 568.7722014614413,
+        "aggregate_output_tokens_per_second": 15.479985689259848,
+        "bytes_written": 415840833,
+        "cohort_seconds": 8.527139666,
+        "demanded": true,
+        "donor_actually_packed": false,
+        "files_written": 4,
+        "geometry": [
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 1,
+            "upper": 512
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "skip",
+            "packed": false,
+            "row": 0,
+            "step": 1,
+            "upper": 1
+          },
+          {
+            "cap": 512,
+            "lower": 1,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 2,
+            "upper": 2
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 2,
+            "upper": 1024
+          },
+          {
+            "cap": 512,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 3,
+            "upper": 1536
+          },
+          {
+            "cap": 512,
+            "lower": 2,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 3,
+            "upper": 3
+          },
+          {
+            "cap": 4096,
+            "lower": 1536,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 4,
+            "upper": 2048
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 4,
+            "upper": 512
+          },
+          {
+            "cap": 4096,
+            "lower": 2048,
+            "outcome": "skip",
+            "packed": false,
+            "row": 1,
+            "step": 5,
+            "upper": 2049
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 5,
+            "upper": 1024
+          },
+          {
+            "cap": 4096,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 6,
+            "upper": 2304
+          },
+          {
+            "cap": 4096,
+            "lower": 2304,
+            "outcome": "skip",
+            "packed": false,
+            "row": 2,
+            "step": 8,
+            "upper": 2800
+          }
+        ],
+        "input_tokens": 4850,
+        "introduced_same_step_same_size_nonfinal_opportunity": true,
+        "output_tokens": 132,
+        "packed_executed": false,
+        "pair": 0,
+        "rows": [
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 3,
+            "decode_tail_tokens_per_second": 1.6097437246780875,
+            "elapsed_seconds": 1.8589205,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 0.616368666,
+            "hit_tokens": 0,
+            "prompt_tokens": 1,
+            "row": 0,
+            "ttft_seconds": 0.616367083
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2048
+            ],
+            "completion_tokens": 1,
+            "decode_tail_tokens_per_second": null,
+            "elapsed_seconds": 6.019668583,
+            "file_tensor_bytes": [
+              85065728,
+              118620160
+            ],
+            "first_visible_seconds": 3.724751708,
+            "hit_tokens": 0,
+            "prompt_tokens": 2049,
+            "row": 1,
+            "ttft_seconds": 3.7247503330000002
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2304
+            ],
+            "completion_tokens": 128,
+            "decode_tail_tokens_per_second": 50.969620945254086,
+            "elapsed_seconds": 8.527139666,
+            "file_tensor_bytes": [
+              85065728,
+              127008768
+            ],
+            "first_visible_seconds": 5.955692041,
+            "hit_tokens": 0,
+            "prompt_tokens": 2800,
+            "row": 2,
+            "ttft_seconds": 5.955690583
+          }
+        ],
+        "setup_seconds": 0.626149208,
+        "write_drain_seconds": 1.125e-06
+      },
+      {
+        "aggregate_all_tokens_per_second": 558.8946137008381,
+        "aggregate_input_tokens_per_second": 544.0864866417232,
+        "aggregate_output_tokens_per_second": 14.808127059114941,
+        "bytes_written": 415840833,
+        "cohort_seconds": 8.914024,
+        "demanded": true,
+        "donor_actually_packed": false,
+        "files_written": 4,
+        "geometry": [
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "skip",
+            "packed": false,
+            "row": 0,
+            "step": 1,
+            "upper": 1
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 1,
+            "upper": 512
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 2,
+            "upper": 1024
+          },
+          {
+            "cap": 512,
+            "lower": 1,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 2,
+            "upper": 2
+          },
+          {
+            "cap": 512,
+            "lower": 2,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 3,
+            "upper": 3
+          },
+          {
+            "cap": 512,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 3,
+            "upper": 1536
+          },
+          {
+            "cap": 4096,
+            "lower": 1536,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 4,
+            "upper": 2048
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 4,
+            "upper": 512
+          },
+          {
+            "cap": 4096,
+            "lower": 2048,
+            "outcome": "skip",
+            "packed": false,
+            "row": 1,
+            "step": 5,
+            "upper": 2049
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 5,
+            "upper": 1024
+          },
+          {
+            "cap": 4096,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 6,
+            "upper": 2304
+          },
+          {
+            "cap": 4096,
+            "lower": 2304,
+            "outcome": "skip",
+            "packed": false,
+            "row": 2,
+            "step": 8,
+            "upper": 2800
+          }
+        ],
+        "input_tokens": 4850,
+        "introduced_same_step_same_size_nonfinal_opportunity": true,
+        "output_tokens": 132,
+        "packed_executed": false,
+        "pair": 1,
+        "rows": [
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 3,
+            "decode_tail_tokens_per_second": 1.5770759917883166,
+            "elapsed_seconds": 1.898770334,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 0.630479875,
+            "hit_tokens": 0,
+            "prompt_tokens": 1,
+            "row": 0,
+            "ttft_seconds": 0.630478167
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2048
+            ],
+            "completion_tokens": 1,
+            "decode_tail_tokens_per_second": null,
+            "elapsed_seconds": 6.279090292,
+            "file_tensor_bytes": [
+              85065728,
+              118620160
+            ],
+            "first_visible_seconds": 3.841281209,
+            "hit_tokens": 0,
+            "prompt_tokens": 2049,
+            "row": 1,
+            "ttft_seconds": 3.8412796670000002
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2304
+            ],
+            "completion_tokens": 128,
+            "decode_tail_tokens_per_second": 50.813723933163786,
+            "elapsed_seconds": 8.914024,
+            "file_tensor_bytes": [
+              85065728,
+              127008768
+            ],
+            "first_visible_seconds": 6.150117959,
+            "hit_tokens": 0,
+            "prompt_tokens": 2800,
+            "row": 2,
+            "ttft_seconds": 6.15011575
+          }
+        ],
+        "setup_seconds": 0.679326208,
+        "write_drain_seconds": 1.25e-06
+      },
+      {
+        "aggregate_all_tokens_per_second": 587.7531710742935,
+        "aggregate_input_tokens_per_second": 572.1804254737702,
+        "aggregate_output_tokens_per_second": 15.57274560052323,
+        "bytes_written": 0,
+        "cohort_seconds": 8.476347292,
+        "demanded": false,
+        "donor_actually_packed": false,
+        "files_written": 0,
+        "geometry": [
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 1,
+            "upper": 512
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "skip",
+            "packed": false,
+            "row": 0,
+            "step": 1,
+            "upper": 1
+          },
+          {
+            "cap": 512,
+            "lower": 1,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 2,
+            "upper": 2
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 2,
+            "upper": 1024
+          },
+          {
+            "cap": 512,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 3,
+            "upper": 1536
+          },
+          {
+            "cap": 512,
+            "lower": 2,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 3,
+            "upper": 3
+          },
+          {
+            "cap": 4096,
+            "lower": 1536,
+            "outcome": "skip",
+            "packed": false,
+            "row": 1,
+            "step": 4,
+            "upper": 2049
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 4,
+            "upper": 512
+          },
+          {
+            "cap": 4096,
+            "lower": 512,
+            "outcome": "skip",
+            "packed": false,
+            "row": 2,
+            "step": 6,
+            "upper": 2800
+          }
+        ],
+        "input_tokens": 4850,
+        "introduced_same_step_same_size_nonfinal_opportunity": false,
+        "output_tokens": 132,
+        "packed_executed": false,
+        "pair": 1,
+        "rows": [
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 3,
+            "decode_tail_tokens_per_second": 1.5915296132942964,
+            "elapsed_seconds": 1.876576042,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 0.619796709,
+            "hit_tokens": 0,
+            "prompt_tokens": 1,
+            "row": 0,
+            "ttft_seconds": 0.619795
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2048
+            ],
+            "completion_tokens": 1,
+            "decode_tail_tokens_per_second": null,
+            "elapsed_seconds": 5.9178992919999995,
+            "file_tensor_bytes": [
+              85065728,
+              118620160
+            ],
+            "first_visible_seconds": 3.1574815,
+            "hit_tokens": 0,
+            "prompt_tokens": 2049,
+            "row": 1,
+            "ttft_seconds": 3.15748
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2304
+            ],
+            "completion_tokens": 128,
+            "decode_tail_tokens_per_second": 51.33595075512502,
+            "elapsed_seconds": 8.476347292,
+            "file_tensor_bytes": [
+              85065728,
+              127008768
+            ],
+            "first_visible_seconds": 5.999361,
+            "hit_tokens": 0,
+            "prompt_tokens": 2800,
+            "row": 2,
+            "ttft_seconds": 5.999358917
+          }
+        ],
+        "setup_seconds": 0.720089625,
+        "write_drain_seconds": 1.709e-06
+      },
+      {
+        "aggregate_all_tokens_per_second": 589.3908813233304,
+        "aggregate_input_tokens_per_second": 573.7747439618934,
+        "aggregate_output_tokens_per_second": 15.616137361437097,
+        "bytes_written": 0,
+        "cohort_seconds": 8.4527945,
+        "demanded": false,
+        "donor_actually_packed": false,
+        "files_written": 0,
+        "geometry": [
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "skip",
+            "packed": false,
+            "row": 0,
+            "step": 1,
+            "upper": 1
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 1,
+            "upper": 512
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 2,
+            "upper": 1024
+          },
+          {
+            "cap": 512,
+            "lower": 1,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 2,
+            "upper": 2
+          },
+          {
+            "cap": 512,
+            "lower": 2,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 3,
+            "upper": 3
+          },
+          {
+            "cap": 512,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 3,
+            "upper": 1536
+          },
+          {
+            "cap": 4096,
+            "lower": 1536,
+            "outcome": "skip",
+            "packed": false,
+            "row": 1,
+            "step": 4,
+            "upper": 2049
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 4,
+            "upper": 512
+          },
+          {
+            "cap": 4096,
+            "lower": 512,
+            "outcome": "skip",
+            "packed": false,
+            "row": 2,
+            "step": 6,
+            "upper": 2800
+          }
+        ],
+        "input_tokens": 4850,
+        "introduced_same_step_same_size_nonfinal_opportunity": false,
+        "output_tokens": 132,
+        "packed_executed": false,
+        "pair": 2,
+        "rows": [
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 3,
+            "decode_tail_tokens_per_second": 1.5985269574087477,
+            "elapsed_seconds": 1.869629625,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 0.618359084,
+            "hit_tokens": 0,
+            "prompt_tokens": 1,
+            "row": 0,
+            "ttft_seconds": 0.618357584
+          },
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 1,
+            "decode_tail_tokens_per_second": null,
+            "elapsed_seconds": 5.863472584,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 3.1409695,
+            "hit_tokens": 0,
+            "prompt_tokens": 2049,
+            "row": 1,
+            "ttft_seconds": 3.140968
+          },
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 128,
+            "decode_tail_tokens_per_second": 50.6794479457567,
+            "elapsed_seconds": 8.4527945,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 5.943790667,
+            "hit_tokens": 0,
+            "prompt_tokens": 2800,
+            "row": 2,
+            "ttft_seconds": 5.943788875
+          }
+        ],
+        "setup_seconds": 0.673414542,
+        "write_drain_seconds": 1.708e-06
+      },
+      {
+        "aggregate_all_tokens_per_second": 572.7638680501849,
+        "aggregate_input_tokens_per_second": 557.5882697798869,
+        "aggregate_output_tokens_per_second": 15.175598270297954,
+        "bytes_written": 415840833,
+        "cohort_seconds": 8.698174375,
+        "demanded": true,
+        "donor_actually_packed": false,
+        "files_written": 4,
+        "geometry": [
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 1,
+            "upper": 512
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "skip",
+            "packed": false,
+            "row": 0,
+            "step": 1,
+            "upper": 1
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 2,
+            "upper": 1024
+          },
+          {
+            "cap": 512,
+            "lower": 1,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 2,
+            "upper": 2
+          },
+          {
+            "cap": 512,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 3,
+            "upper": 1536
+          },
+          {
+            "cap": 512,
+            "lower": 2,
+            "outcome": "disarm",
+            "packed": false,
+            "row": 0,
+            "step": 3,
+            "upper": 3
+          },
+          {
+            "cap": 4096,
+            "lower": 1536,
+            "outcome": "capture",
+            "packed": false,
+            "row": 1,
+            "step": 4,
+            "upper": 2048
+          },
+          {
+            "cap": 512,
+            "lower": 0,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 4,
+            "upper": 512
+          },
+          {
+            "cap": 4096,
+            "lower": 2048,
+            "outcome": "skip",
+            "packed": false,
+            "row": 1,
+            "step": 5,
+            "upper": 2049
+          },
+          {
+            "cap": 512,
+            "lower": 512,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 5,
+            "upper": 1024
+          },
+          {
+            "cap": 4096,
+            "lower": 1024,
+            "outcome": "capture",
+            "packed": false,
+            "row": 2,
+            "step": 6,
+            "upper": 2304
+          },
+          {
+            "cap": 4096,
+            "lower": 2304,
+            "outcome": "skip",
+            "packed": false,
+            "row": 2,
+            "step": 8,
+            "upper": 2800
+          }
+        ],
+        "input_tokens": 4850,
+        "introduced_same_step_same_size_nonfinal_opportunity": true,
+        "output_tokens": 132,
+        "packed_executed": false,
+        "pair": 2,
+        "rows": [
+          {
+            "authenticated_file_positions": [],
+            "completion_tokens": 3,
+            "decode_tail_tokens_per_second": 1.6119081325198032,
+            "elapsed_seconds": 1.928098125,
+            "file_tensor_bytes": [],
+            "first_visible_seconds": 0.687183834,
+            "hit_tokens": 0,
+            "prompt_tokens": 1,
+            "row": 0,
+            "ttft_seconds": 0.687182209
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2048
+            ],
+            "completion_tokens": 1,
+            "decode_tail_tokens_per_second": null,
+            "elapsed_seconds": 6.362021375,
+            "file_tensor_bytes": [
+              85065728,
+              118620160
+            ],
+            "first_visible_seconds": 3.806368167,
+            "hit_tokens": 0,
+            "prompt_tokens": 2049,
+            "row": 1,
+            "ttft_seconds": 3.80636625
+          },
+          {
+            "authenticated_file_positions": [
+              1024,
+              2304
+            ],
+            "completion_tokens": 128,
+            "decode_tail_tokens_per_second": 50.87740402774743,
+            "elapsed_seconds": 8.698174375,
+            "file_tensor_bytes": [
+              85065728,
+              127008768
+            ],
+            "first_visible_seconds": 5.995691584,
+            "hit_tokens": 0,
+            "prompt_tokens": 2800,
+            "row": 2,
+            "ttft_seconds": 5.9956895
+          }
+        ],
+        "setup_seconds": 0.636174,
+        "write_drain_seconds": 1.25e-06
+      }
+    ],
+    "control": "repeat demand zero; same factory, actual model, scope and prompts; zero imported tokens",
+    "explicit_fixture_configuration": {
+      "construction_purpose": "benchmark",
+      "kv_budget_bytes": 17179869184,
+      "max_concurrent_requests": 3,
+      "runtime_mtp_enabled": false,
+      "solo_prefill_stripe_tokens": 4096
+    },
+    "measurement_scope": "Mixed-cohort capture creation cost; packing overhead is not isolated unless the measured control actually packs the same donor range.",
+    "model": "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp",
+    "model_hash": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+    "output_shape": "forced length3/1/128, no early stop tokens; not a natural-answer quality benchmark",
+    "paired_generated_token_ids_equal": [
+      {
+        "equal": true,
+        "pair": 0
+      },
+      {
+        "equal": true,
+        "pair": 1
+      },
+      {
+        "equal": true,
+        "pair": 2
+      }
+    ],
+    "pairs": 3,
+    "profile": "production factory benchmark width3; serialized partials1; plain512/base2048/solo4096; SSD floor1024 unchanged",
+    "prompt_shape": "pre-tokenized synthetic fixture, clipped to exact 1/2049/2800 token lengths",
+    "runtime_mtp": false,
+    "sdk_pin": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+    "shape_priming_cells_excluded": 2,
+    "timing": "Submit to first raw token/visible delta and finish; setup and post-request write completion are separate. strictFsync=false; write completion does not establish fsync durability."
+  },
+  "cold_summary": {
+    "candidate_same_step_same_size_nonfinal_opportunities": 3,
+    "control_donor_packed_cohorts": 0,
+    "fixture_storage": {
+      "encrypted_streaming_segments_authenticated": true,
+      "key": "ephemeral local test key",
+      "physical_disk_vs_os_file_cache": "Not separately measured.",
+      "strict_fsync": false
+    },
+    "limits": [
+      "Three local pre-tokenized synthetic cohorts, exact1/2049/2800-token input and forced3/1/128-token output; no production or natural answer quality claim.",
+      "Runtime MTP disabled explicitly; the artifact declares and loads its actual assistant head. Earlier solo MTP-on timing aggregates remain separate.",
+      "Input tokens divided by cohort elapsed is a service proxy, not GPU kernel throughput. Aggregate output TPS includes prefill and measures tokens132/cohort elapsed.",
+      "No peak RSS, burst endurance or other dense-artifact performance qualification.",
+      "Counterbalanced candidate-first controls may see previously persisted scoped files in the file census; every control imported0 tokens and wrote0 files. Census positions are not new writes."
+    ],
+    "measurement": "Mixed-cohort total capture-creation feature cost; all cells cold/no imported tokens. Same factory/profile/hint-zero versus demanded hint. Does not isolate packed-kernel overhead.",
+    "median_method": "Median of each paired percentage; percentage ratios are calculated before aggregation.",
+    "medians": {
+      "aggregate_all_tokens_per_second_change_percent": -3.832906013058379,
+      "aggregate_input_tokens_per_second_change_percent": -3.8329060130584014,
+      "aggregate_output_tokens_per_second_change_percent": -3.8329060130583903,
+      "candidate_aggregate_all_tokens_per_second": 572.7638680501849,
+      "candidate_aggregate_input_tokens_per_second": 557.5882697798869,
+      "candidate_aggregate_output_tokens_per_second": 15.175598270297954,
+      "candidate_bytes_written": 415840833,
+      "candidate_cohort_seconds": 8.698174375,
+      "candidate_files_written": 4,
+      "candidate_setup_seconds": 0.636174,
+      "candidate_write_drain_seconds": 1.25e-06,
+      "cohort_seconds_change_percent": 3.9856731176454607,
+      "control_aggregate_all_tokens_per_second": 589.3908813233304,
+      "control_aggregate_input_tokens_per_second": 573.7747439618934,
+      "control_aggregate_output_tokens_per_second": 15.616137361437097,
+      "control_bytes_written": 0,
+      "control_cohort_seconds": 8.4527945,
+      "control_files_written": 0,
+      "control_setup_seconds": 0.673414542,
+      "control_write_drain_seconds": 1.709e-06,
+      "row0_candidate_decode_tail_tokens_per_second": 1.6097437246780875,
+      "row0_candidate_elapsed_seconds": 1.898770334,
+      "row0_candidate_first_visible_seconds": 0.630479875,
+      "row0_candidate_ttft_seconds": 0.630478167,
+      "row0_control_decode_tail_tokens_per_second": 1.5985269574087477,
+      "row0_control_elapsed_seconds": 1.869629625,
+      "row0_control_first_visible_seconds": 0.618359084,
+      "row0_control_ttft_seconds": 0.618357584,
+      "row0_decode_tail_tokens_per_second_change_percent": -0.9081591310175163,
+      "row0_elapsed_seconds_change_percent": 2.7811038618029915,
+      "row0_first_visible_seconds_change_percent": 1.7236564578144709,
+      "row0_ttft_seconds_change_percent": 1.7236613719052274,
+      "row1_candidate_elapsed_seconds": 6.279090292,
+      "row1_candidate_first_visible_seconds": 3.806368167,
+      "row1_candidate_ttft_seconds": 3.80636625,
+      "row1_control_elapsed_seconds": 5.863472584,
+      "row1_control_first_visible_seconds": 3.1409695,
+      "row1_control_ttft_seconds": 3.140968,
+      "row1_elapsed_seconds_change_percent": 7.255226690314509,
+      "row1_first_visible_seconds_change_percent": 21.656491384035025,
+      "row1_ttft_seconds_change_percent": 21.656500342044936,
+      "row2_candidate_decode_tail_tokens_per_second": 50.87740402774743,
+      "row2_candidate_elapsed_seconds": 8.698174375,
+      "row2_candidate_first_visible_seconds": 5.995691584,
+      "row2_candidate_ttft_seconds": 5.9956895,
+      "row2_control_decode_tail_tokens_per_second": 50.6891529603064,
+      "row2_control_elapsed_seconds": 8.4527945,
+      "row2_control_first_visible_seconds": 5.943790667,
+      "row2_control_ttft_seconds": 5.943788875,
+      "row2_decode_tail_tokens_per_second_change_percent": 0.39060425875714344,
+      "row2_elapsed_seconds_change_percent": 3.9856731176454607,
+      "row2_first_visible_seconds_change_percent": 2.5128836054373105,
+      "row2_ttft_seconds_change_percent": 2.512882377695558,
+      "setup_seconds_change_percent": -5.530106595173578,
+      "write_drain_seconds_change_percent": -26.857811585722647
+    },
+    "model": "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp",
+    "model_hash": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+    "n_paired_cohorts": 3,
+    "paired_generated_token_ids_equal": true,
+    "pairs": [
+      {
+        "aggregate_all_tokens_per_second_change_percent": -3.832906013058379,
+        "aggregate_input_tokens_per_second_change_percent": -3.8329060130584014,
+        "aggregate_output_tokens_per_second_change_percent": -3.8329060130583903,
+        "candidate_aggregate_all_tokens_per_second": 584.2521871507013,
+        "candidate_aggregate_input_tokens_per_second": 568.7722014614413,
+        "candidate_aggregate_output_tokens_per_second": 15.479985689259848,
+        "candidate_bytes_written": 415840833,
+        "candidate_cohort_seconds": 8.527139666,
+        "candidate_files_written": 4,
+        "candidate_same_step_opportunity": true,
+        "candidate_setup_seconds": 0.626149208,
+        "candidate_write_drain_seconds": 1.125e-06,
+        "cohort_seconds_change_percent": 3.9856731176454607,
+        "control_aggregate_all_tokens_per_second": 607.5385695132225,
+        "control_aggregate_input_tokens_per_second": 591.4416021957304,
+        "control_aggregate_output_tokens_per_second": 16.096967317492044,
+        "control_bytes_written": 0,
+        "control_cohort_seconds": 8.200302417,
+        "control_donor_actually_packed": false,
+        "control_files_written": 0,
+        "control_setup_seconds": 0.63773425,
+        "control_write_drain_seconds": 1.792e-06,
+        "pair": 0,
+        "row0_candidate_decode_tail_tokens_per_second": 1.6097437246780875,
+        "row0_candidate_elapsed_seconds": 1.8589205,
+        "row0_candidate_first_visible_seconds": 0.616368666,
+        "row0_candidate_ttft_seconds": 0.616367083,
+        "row0_control_decode_tail_tokens_per_second": 1.6663368708276487,
+        "row0_control_elapsed_seconds": 1.808620875,
+        "row0_control_first_visible_seconds": 0.608270292,
+        "row0_control_ttft_seconds": 0.608268625,
+        "row0_decode_tail_tokens_per_second_change_percent": -3.3962608125841953,
+        "row0_elapsed_seconds_change_percent": 2.7811038618029915,
+        "row0_first_visible_seconds_change_percent": 1.3313775317502996,
+        "row0_ttft_seconds_change_percent": 1.331394990165724,
+        "row1_candidate_decode_tail_tokens_per_second": null,
+        "row1_candidate_elapsed_seconds": 6.019668583,
+        "row1_candidate_first_visible_seconds": 3.724751708,
+        "row1_candidate_ttft_seconds": 3.7247503330000002,
+        "row1_control_decode_tail_tokens_per_second": null,
+        "row1_control_elapsed_seconds": 5.612471083,
+        "row1_control_first_visible_seconds": 3.0147875,
+        "row1_control_ttft_seconds": 3.014785958,
+        "row1_elapsed_seconds_change_percent": 7.255226690314509,
+        "row1_first_visible_seconds_change_percent": 23.549394708582263,
+        "row1_ttft_seconds_change_percent": 23.549412292970494,
+        "row2_candidate_decode_tail_tokens_per_second": 50.969620945254086,
+        "row2_candidate_elapsed_seconds": 8.527139666,
+        "row2_candidate_first_visible_seconds": 5.955692041,
+        "row2_candidate_ttft_seconds": 5.955690583,
+        "row2_control_decode_tail_tokens_per_second": 50.6891529603064,
+        "row2_control_elapsed_seconds": 8.200302417,
+        "row2_control_first_visible_seconds": 5.691751917,
+        "row2_control_ttft_seconds": 5.691748792,
+        "row2_decode_tail_tokens_per_second_change_percent": 0.5533096699550599,
+        "row2_elapsed_seconds_change_percent": 3.9856731176454607,
+        "row2_first_visible_seconds_change_percent": 4.6372387245422475,
+        "row2_ttft_seconds_change_percent": 4.637270558584405,
+        "setup_seconds_change_percent": -1.8165939809568044,
+        "write_drain_seconds_change_percent": -37.22098214285714
+      },
+      {
+        "aggregate_all_tokens_per_second_change_percent": -4.9099790173327,
+        "aggregate_input_tokens_per_second_change_percent": -4.909979017332688,
+        "aggregate_output_tokens_per_second_change_percent": -4.909979017332688,
+        "candidate_aggregate_all_tokens_per_second": 558.8946137008381,
+        "candidate_aggregate_input_tokens_per_second": 544.0864866417232,
+        "candidate_aggregate_output_tokens_per_second": 14.808127059114941,
+        "candidate_bytes_written": 415840833,
+        "candidate_cohort_seconds": 8.914024,
+        "candidate_files_written": 4,
+        "candidate_same_step_opportunity": true,
+        "candidate_setup_seconds": 0.679326208,
+        "candidate_write_drain_seconds": 1.25e-06,
+        "cohort_seconds_change_percent": 5.1635060825443,
+        "control_aggregate_all_tokens_per_second": 587.7531710742935,
+        "control_aggregate_input_tokens_per_second": 572.1804254737702,
+        "control_aggregate_output_tokens_per_second": 15.57274560052323,
+        "control_bytes_written": 0,
+        "control_cohort_seconds": 8.476347292,
+        "control_donor_actually_packed": false,
+        "control_files_written": 0,
+        "control_setup_seconds": 0.720089625,
+        "control_write_drain_seconds": 1.709e-06,
+        "pair": 1,
+        "row0_candidate_decode_tail_tokens_per_second": 1.5770759917883166,
+        "row0_candidate_elapsed_seconds": 1.898770334,
+        "row0_candidate_first_visible_seconds": 0.630479875,
+        "row0_candidate_ttft_seconds": 0.630478167,
+        "row0_control_decode_tail_tokens_per_second": 1.5915296132942964,
+        "row0_control_elapsed_seconds": 1.876576042,
+        "row0_control_first_visible_seconds": 0.619796709,
+        "row0_control_ttft_seconds": 0.619795,
+        "row0_decode_tail_tokens_per_second_change_percent": -0.9081591310175163,
+        "row0_elapsed_seconds_change_percent": 1.182701446851353,
+        "row0_first_visible_seconds_change_percent": 1.7236564578144709,
+        "row0_ttft_seconds_change_percent": 1.7236613719052274,
+        "row1_candidate_decode_tail_tokens_per_second": null,
+        "row1_candidate_elapsed_seconds": 6.279090292,
+        "row1_candidate_first_visible_seconds": 3.841281209,
+        "row1_candidate_ttft_seconds": 3.8412796670000002,
+        "row1_control_decode_tail_tokens_per_second": null,
+        "row1_control_elapsed_seconds": 5.9178992919999995,
+        "row1_control_first_visible_seconds": 3.1574815,
+        "row1_control_ttft_seconds": 3.15748,
+        "row1_elapsed_seconds_change_percent": 6.103365099305935,
+        "row1_first_visible_seconds_change_percent": 21.656491384035025,
+        "row1_ttft_seconds_change_percent": 21.656500342044936,
+        "row2_candidate_decode_tail_tokens_per_second": 50.813723933163786,
+        "row2_candidate_elapsed_seconds": 8.914024,
+        "row2_candidate_first_visible_seconds": 6.150117959,
+        "row2_candidate_ttft_seconds": 6.15011575,
+        "row2_control_decode_tail_tokens_per_second": 51.33595075512502,
+        "row2_control_elapsed_seconds": 8.476347292,
+        "row2_control_first_visible_seconds": 5.999361,
+        "row2_control_ttft_seconds": 5.999358917,
+        "row2_decode_tail_tokens_per_second_change_percent": -1.017273108376393,
+        "row2_elapsed_seconds_change_percent": 5.1635060825443,
+        "row2_first_visible_seconds_change_percent": 2.5128836054373105,
+        "row2_ttft_seconds_change_percent": 2.512882377695558,
+        "setup_seconds_change_percent": -5.66088103269089,
+        "write_drain_seconds_change_percent": -26.857811585722647
+      },
+      {
+        "aggregate_all_tokens_per_second_change_percent": -2.821050308042383,
+        "aggregate_input_tokens_per_second_change_percent": -2.8210503080423943,
+        "aggregate_output_tokens_per_second_change_percent": -2.821050308042383,
+        "candidate_aggregate_all_tokens_per_second": 572.7638680501849,
+        "candidate_aggregate_input_tokens_per_second": 557.5882697798869,
+        "candidate_aggregate_output_tokens_per_second": 15.175598270297954,
+        "candidate_bytes_written": 415840833,
+        "candidate_cohort_seconds": 8.698174375,
+        "candidate_files_written": 4,
+        "candidate_same_step_opportunity": true,
+        "candidate_setup_seconds": 0.636174,
+        "candidate_write_drain_seconds": 1.25e-06,
+        "cohort_seconds_change_percent": 2.902943813433545,
+        "control_aggregate_all_tokens_per_second": 589.3908813233304,
+        "control_aggregate_input_tokens_per_second": 573.7747439618934,
+        "control_aggregate_output_tokens_per_second": 15.616137361437097,
+        "control_bytes_written": 0,
+        "control_cohort_seconds": 8.4527945,
+        "control_donor_actually_packed": false,
+        "control_files_written": 0,
+        "control_setup_seconds": 0.673414542,
+        "control_write_drain_seconds": 1.708e-06,
+        "pair": 2,
+        "row0_candidate_decode_tail_tokens_per_second": 1.6119081325198032,
+        "row0_candidate_elapsed_seconds": 1.928098125,
+        "row0_candidate_first_visible_seconds": 0.687183834,
+        "row0_candidate_ttft_seconds": 0.687182209,
+        "row0_control_decode_tail_tokens_per_second": 1.5985269574087477,
+        "row0_control_elapsed_seconds": 1.869629625,
+        "row0_control_first_visible_seconds": 0.618359084,
+        "row0_control_ttft_seconds": 0.618357584,
+        "row0_decode_tail_tokens_per_second_change_percent": 0.8370941164950185,
+        "row0_elapsed_seconds_change_percent": 3.127277147205021,
+        "row0_first_visible_seconds_change_percent": 11.130223810215757,
+        "row0_ttft_seconds_change_percent": 11.130230594859182,
+        "row1_candidate_decode_tail_tokens_per_second": null,
+        "row1_candidate_elapsed_seconds": 6.362021375,
+        "row1_candidate_first_visible_seconds": 3.806368167,
+        "row1_candidate_ttft_seconds": 3.80636625,
+        "row1_control_decode_tail_tokens_per_second": null,
+        "row1_control_elapsed_seconds": 5.863472584,
+        "row1_control_first_visible_seconds": 3.1409695,
+        "row1_control_ttft_seconds": 3.140968,
+        "row1_elapsed_seconds_change_percent": 8.502619972342318,
+        "row1_first_visible_seconds_change_percent": 21.184499467441498,
+        "row1_ttft_seconds_change_percent": 21.184496308144496,
+        "row2_candidate_decode_tail_tokens_per_second": 50.87740402774743,
+        "row2_candidate_elapsed_seconds": 8.698174375,
+        "row2_candidate_first_visible_seconds": 5.995691584,
+        "row2_candidate_ttft_seconds": 5.9956895,
+        "row2_control_decode_tail_tokens_per_second": 50.6794479457567,
+        "row2_control_elapsed_seconds": 8.4527945,
+        "row2_control_first_visible_seconds": 5.943790667,
+        "row2_control_ttft_seconds": 5.943788875,
+        "row2_decode_tail_tokens_per_second_change_percent": 0.39060425875714344,
+        "row2_elapsed_seconds_change_percent": 2.902943813433545,
+        "row2_first_visible_seconds_change_percent": 0.8731955734604613,
+        "row2_ttft_seconds_change_percent": 0.8731909240299096,
+        "setup_seconds_change_percent": -5.530106595173578,
+        "write_drain_seconds_change_percent": -26.814988290398123
+      }
+    ],
+    "runtime_mtp": false,
+    "sdk_pin": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61"
+  },
+  "curation": "Numeric values unchanged. Legacy durable_drain_seconds keys renamed write_drain_seconds to describe waitForWritesForTesting accurately. All native fixtures use strictFsync=false; physical disk versus OS file cache is not separated.",
+  "separate_warm_pair": {
+    "cells": [
+      {
+        "bytes_read": 0,
+        "completion_tokens": 128,
+        "decode_tail_tokens_per_second": 51.14236060668294,
+        "elapsed_seconds": 5.074908709,
+        "first_visible_seconds": 2.589158084,
+        "hit_tokens": 0,
+        "prompt_tokens": 2300,
+        "stage_seconds": 0,
+        "ttft_seconds": 2.5891554169999997,
+        "warm": false
+      },
+      {
+        "bytes_read": 118662460,
+        "completion_tokens": 128,
+        "decode_tail_tokens_per_second": 51.171240534065404,
+        "elapsed_seconds": 2.8662575,
+        "first_visible_seconds": 0.381848833,
+        "hit_tokens": 2048,
+        "prompt_tokens": 2300,
+        "stage_seconds": 0.042896625,
+        "ttft_seconds": 0.38184725,
+        "warm": true
+      }
+    ],
+    "end_to_end_output_tokens_per_second": {
+      "cold": 25.222128581938993,
+      "warm": 44.65753687517608
+    },
+    "fixture_storage": {
+      "encrypted_streaming_segments_authenticated": true,
+      "key": "ephemeral local test key",
+      "physical_disk_vs_os_file_cache": "Not separately measured.",
+      "strict_fsync": false
+    },
+    "limits": [
+      "One cold-then-warm functional pair; not a repeat timing aggregate or fleet result.",
+      "Same MTP-off configuration as mixed cohort, separately seeded; no blocker hooks on fork/import.",
+      "Raw model token IDs matched; no bit-exact floating-point logits claim.",
+      "StageIO/decryption/native import are included in warm TTFT; model/factory setup excluded from both request times."
+    ],
+    "measurement": "Separate single cold/warm MTP-off fork; stage is included in TTFT. Same factory width3, one active fork, 2300 input/128 forced output. No blocker hooks or restore overrides. Not pooled with earlier timing aggregates.",
+    "model": "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp",
+    "model_hash": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+    "paired_generated_token_ids_equal": true,
+    "paired_percentage_changes": {
+      "decode_tail_tokens_per_second": 0.05646968000669883,
+      "elapsed_seconds": -43.521003739103904,
+      "ttft_seconds": -85.25205372018809
+    },
+    "pairs": 1,
+    "runtime_mtp": false,
+    "sdk_pin": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+    "seed_cohort": {
+      "aggregate_all_tokens_per_second": 607.4499987175086,
+      "aggregate_input_tokens_per_second": 591.3553781172053,
+      "aggregate_output_tokens_per_second": 16.09462060030332,
+      "bytes_written": 415840837,
+      "cohort_seconds": 8.201498083,
+      "demanded": true,
+      "donor_actually_packed": false,
+      "files_written": 4,
+      "geometry": [
+        {
+          "cap": 512,
+          "lower": 0,
+          "outcome": "capture",
+          "packed": false,
+          "row": 1,
+          "step": 1,
+          "upper": 512
+        },
+        {
+          "cap": 512,
+          "lower": 0,
+          "outcome": "skip",
+          "packed": false,
+          "row": 0,
+          "step": 1,
+          "upper": 1
+        },
+        {
+          "cap": 512,
+          "lower": 1,
+          "outcome": "disarm",
+          "packed": false,
+          "row": 0,
+          "step": 2,
+          "upper": 2
+        },
+        {
+          "cap": 512,
+          "lower": 512,
+          "outcome": "capture",
+          "packed": false,
+          "row": 1,
+          "step": 2,
+          "upper": 1024
+        },
+        {
+          "cap": 512,
+          "lower": 1024,
+          "outcome": "capture",
+          "packed": false,
+          "row": 1,
+          "step": 3,
+          "upper": 1536
+        },
+        {
+          "cap": 512,
+          "lower": 2,
+          "outcome": "disarm",
+          "packed": false,
+          "row": 0,
+          "step": 3,
+          "upper": 3
+        },
+        {
+          "cap": 512,
+          "lower": 0,
+          "outcome": "capture",
+          "packed": false,
+          "row": 2,
+          "step": 4,
+          "upper": 512
+        },
+        {
+          "cap": 4096,
+          "lower": 1536,
+          "outcome": "capture",
+          "packed": false,
+          "row": 1,
+          "step": 4,
+          "upper": 2048
+        },
+        {
+          "cap": 512,
+          "lower": 512,
+          "outcome": "capture",
+          "packed": false,
+          "row": 2,
+          "step": 5,
+          "upper": 1024
+        },
+        {
+          "cap": 4096,
+          "lower": 2048,
+          "outcome": "skip",
+          "packed": false,
+          "row": 1,
+          "step": 5,
+          "upper": 2049
+        },
+        {
+          "cap": 4096,
+          "lower": 1024,
+          "outcome": "capture",
+          "packed": false,
+          "row": 2,
+          "step": 6,
+          "upper": 2304
+        },
+        {
+          "cap": 4096,
+          "lower": 2304,
+          "outcome": "skip",
+          "packed": false,
+          "row": 2,
+          "step": 8,
+          "upper": 2800
+        }
+      ],
+      "input_tokens": 4850,
+      "introduced_same_step_same_size_nonfinal_opportunity": true,
+      "output_tokens": 132,
+      "packed_executed": false,
+      "pair": -2,
+      "rows": [
+        {
+          "authenticated_file_positions": [],
+          "completion_tokens": 3,
+          "decode_tail_tokens_per_second": 1.667420073752791,
+          "elapsed_seconds": 1.815718291,
+          "file_tensor_bytes": [],
+          "first_visible_seconds": 0.616051625,
+          "hit_tokens": 0,
+          "prompt_tokens": 1,
+          "row": 0,
+          "ttft_seconds": 0.616050041
+        },
+        {
+          "authenticated_file_positions": [
+            1024,
+            2048
+          ],
+          "completion_tokens": 1,
+          "decode_tail_tokens_per_second": null,
+          "elapsed_seconds": 5.738745541,
+          "file_tensor_bytes": [
+            85065728,
+            118620160
+          ],
+          "first_visible_seconds": 3.581418583,
+          "hit_tokens": 0,
+          "prompt_tokens": 2049,
+          "row": 1,
+          "ttft_seconds": 3.5814175
+        },
+        {
+          "authenticated_file_positions": [
+            1024,
+            2304
+          ],
+          "completion_tokens": 128,
+          "decode_tail_tokens_per_second": 51.08259999746059,
+          "elapsed_seconds": 8.201498083,
+          "file_tensor_bytes": [
+            85065728,
+            127008768
+          ],
+          "first_visible_seconds": 5.631738208,
+          "hit_tokens": 0,
+          "prompt_tokens": 2800,
+          "row": 2,
+          "ttft_seconds": 5.631736166
+        }
+      ],
+      "setup_seconds": 0.813962208,
+      "write_drain_seconds": 2.3125e-05
+    }
+  }
+}

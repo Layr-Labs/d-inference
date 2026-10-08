@@ -1,0 +1,324 @@
+{
+  "compatibleSDKBase": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+  "status": "Uncommitted candidate source; complete current compatible SDK and coordinator checks pass. Final signed cuts, remaining provider/component gates and CI are separate.",
+  "checks": [
+    {
+      "name": "native retention baseline",
+      "log": "darkbloom-native-historical-retention-before.log",
+      "framework": "XCTest",
+      "test_cases": 4,
+      "failing_cases": 3,
+      "assertion_failures": 5,
+      "unexpected_failures": 0,
+      "seconds": 1.044,
+      "scope": "unchanged compatible A4 native-commit API; no-demand control passed"
+    },
+    {
+      "name": "native retention and shared partition host regressions",
+      "log": "darkbloom-all-model-sdk-host.log",
+      "framework": "XCTest",
+      "test_cases": 9,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 0.046,
+      "subsets": {
+        "native_retention": 6,
+        "long_partition": 3
+      },
+      "scope": "host policy/actual scheduler+projection; no model numerical qualification"
+    },
+    {
+      "name": "strict tiny native contiguous demanded middle",
+      "log": "darkbloom-native-contiguous-demanded-fork.log",
+      "framework": "XCTest",
+      "test_cases": 1,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 1.458,
+      "mtp_variants": [
+        false,
+        true
+      ],
+      "donor_tokens": 897,
+      "hint_tokens": 512,
+      "query_tokens": 128,
+      "published_positions": [
+        896,
+        512,
+        128
+      ],
+      "fork_tokens": 513,
+      "generated_tokens_per_fork": 24,
+      "saved_tokens": 512,
+      "replay_tokens": 0,
+      "parity": "every generated greedy token ID versus independent cache-disabled cold",
+      "transport": "complete encoded fixture chunks reopened after donor retirement",
+      "qualification": "native construction/resources/settlement/retirement; contiguous only",
+      "mtp_claim": "real driver bound+bounded admission+assistant payload; draft counters not asserted",
+      "exclusions": [
+        "full artifact/model TPS",
+        "provider encrypted SSD proof",
+        "production 1024-token cache floor",
+        "native-paged geometry",
+        "total physical peak/RSS",
+        "whole tensor state bit parity"
+      ]
+    },
+    {
+      "name": "valid raw benchmark donation and terminal/cleanup host wiring",
+      "log": "darkbloom-all-model-provider-host-final.log",
+      "framework": "Swift Testing",
+      "test_cases": 9,
+      "failures": 0,
+      "seconds": 0.069,
+      "subsets": {
+        "donation": 4,
+        "candidate_gate": 1,
+        "native_cleanup": 2,
+        "terminal_order": 2
+      },
+      "fixture": "real identical Engine and Bridge accepted asymmetric historical store; suspended before model graph",
+      "baseline": "valid controlled registration before/restored checks are recorded separately below; invalid earlier fixtures remain excluded"
+    },
+    {
+      "name": "strict tiny native contiguous strengthened actual MTP rerun",
+      "log": "darkbloom-native-contiguous-demanded-fork-mtp-rounds.log",
+      "framework": "XCTest",
+      "test_cases": 1,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 1.002,
+      "compilation_seconds": 19.31,
+      "relationship": "same owning native test with extra actual activity assertions; separate invocation, not a second unique test",
+      "mtp_variants": [
+        false,
+        true
+      ],
+      "saved_tokens": 512,
+      "replay_tokens": 0,
+      "parity": "all24 greedy IDs warm versus independent cold in each mode",
+      "mtp_activity": "snapshot active matches mode; each fresh donor/warm/cold on engine executed serialTarget rounds>0 and draftedTokens>0; off snapshot nil",
+      "exclusions": [
+        "full artifact/model TPS",
+        "provider encrypted SSD proof",
+        "native-paged geometry",
+        "whole tensor state bit parity",
+        "total physical peak/RSS"
+      ]
+    },
+    {
+      "name": "provider donation/terminal/cleanup and explicit diagnostic host wiring",
+      "log": "darkbloom-all-model-provider-diagnostic-host.log",
+      "framework": "Swift Testing",
+      "test_cases": 12,
+      "suites": 5,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 0.07,
+      "relationship": "separate invocation after three diagnostic host tests were added; prior nine-test run retained",
+      "subsets": {
+        "existing_donation_gate_cleanup_terminal": 9,
+        "diagnostic_configuration_and_observation": 3
+      },
+      "scope": "actual factory stripe propagation and missing/misaligned observation rejection; no model performance qualification"
+    },
+    {
+      "name": "controlled benchmark donation registration baseline",
+      "log": "darkbloom-registration-before18-host.log",
+      "framework": "Swift Testing",
+      "test_cases": 4,
+      "passing_cases": 3,
+      "failing_cases": 1,
+      "assertion_failures": 4,
+      "skips": 0,
+      "seconds": 0.064,
+      "exit_code": 1,
+      "failure_scope": "accepted benchmark submission only; scoped donation metadata is absent at its fresh receipt, and repeat/novel eligibility differs from the expected policy",
+      "expected_demand_tokens": 2048,
+      "observed_demand_tokens": 0,
+      "sourceChange": "only the actual benchmark submit call to registerDonationDemand is removed",
+      "candidateSourceSHA256": "0be1b83c2638b427769832dd9a84d8d89c5ad97eadb42e7e1f3a429bdfa80138",
+      "removedCallSourceSHA256": "f1c9594fbb92dafd7b86f3f4a98b3e55b770a3b8f432ff7a965fc34a606a41d6",
+      "beforeBinarySHA256": "ec04f07830ef46e5e9e405dc07525017137ca522da8f3fe90c28b7e066d98b97",
+      "startedUTC": "2026-10-03T22:27:43.064036+00:00",
+      "completedUTC": "2026-10-03T22:27:58.718384+00:00",
+      "sourceRestoredExactly": true,
+      "binaryProvenance": "Reuses the last completed SYSTEM6.3.3 removed-registration build; its original20GiB guard stopped before staging/tests. No intervening provider build.",
+      "temporaryLocalDiskPreparationFloorGiB": 18,
+      "scope": "valid identical Engine/Bridge historical store; benchmark helper regression, not a production Slot/Bridge registration defect",
+      "exclusions": [
+        "earlier invalid host fixtures",
+        "original20GiB staging/test resource stop",
+        "full model numerical/performance qualification",
+        "native compatible-A4 before comparison"
+      ]
+    },
+    {
+      "name": "restored benchmark donation registration host after",
+      "log": "darkbloom-registration-restored-host.log",
+      "framework": "Swift Testing",
+      "test_cases": 4,
+      "suites": 1,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 0.061,
+      "build_seconds": 26.87,
+      "scope": "same valid four-case registration fixture after restoring the single benchmark submit registration call; existing production Slot/Bridge ordering is unchanged"
+    },
+    {
+      "name": "actual MTP and batched event timing harness host qualification",
+      "log": "darkbloom-all-model-mtp-harness-host.log",
+      "framework": "Swift Testing",
+      "test_cases": 19,
+      "suites": 7,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 0.066,
+      "build_seconds": 33.43,
+      "compiler": "AppleSwift6.3.3(system Xcode)",
+      "binarySHA256": "ce7b343b36316e00ebcfd3b02cd02633f7b49c70430e1e51134aae8f4f3aab34",
+      "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+      "benchmarkSubmitSourceSHA256": "0be1b83c2638b427769832dd9a84d8d89c5ad97eadb42e7e1f3a429bdfa80138",
+      "harnessSourceSHA256": {
+        "provider-swift/Tests/ProviderCoreTests/Benchmark/ModelPrefixBenchmarkDiagnosticsTests.swift": "c5fdcc6f65b886e3506d1d33d135229dc1033996d9c86f13386431aca4d2d890",
+        "provider-swift/Tests/ProviderCoreTests/Benchmark/ModelPrefixBenchmarkMTPObservationTests.swift": "bc4b7a5882cd5879c9f566e79c6c802050e7d46ff3207357ebd6c24fc1e65fe3",
+        "provider-swift/Tests/ProviderCoreTests/Benchmark/ModelPrefixBenchmarkOutputTimingTests.swift": "8b567132f9096b1ad84d24e51aaafd065cb50a9a630584778a3ccc796c873c9e",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkDiagnostics.swift": "313ae393aa5abdb8d9b3acba6303abfb19bf696068087f737039edbc8ee44eb6",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkFixture+Native.swift": "60a1aa2516294f3e4a3b946a5e86d6ff93bcaecb0ed655fd3ef29bf19e47a92e",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkFixture.swift": "057f59388803187a1520b067f507c70afafcd66a832fdf13d4aeb95dcb7c27b7",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkLiveTests.swift": "bcdf85cd6971289b2013ab2ef7c5bc31a575429c339d1a0f2c1df7bd38e3fc58",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkMTPObservation.swift": "10747b430484bf0367e43360981adcfca15c30150da5e5efd447e2435b26a61c",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkOutputTiming.swift": "bcf5657244a0c8b4c1a557c557206abdb02113c52c0f848e4885e7b3fc69dd47",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkRequest.swift": "f2033357a1486669c0b328ed53ed624422ad409b592cb32110dfcf194f82c2cc",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelPrefixBenchmarkSpecification.swift": "52cd8f33b59ccf56179cb7a5ae897c1b6e000ef907649071ff0e3ec05899cc74",
+        "provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/NativeHistoricalPrefixArchitecture.swift": "f79084dfb16b640c737f6a41b19f6404a4f5ca9ad36a661875b88f74931daa8a"
+      },
+      "temporaryLocalDiskPreparationFloorGiB": 18,
+      "physicalMemoryActivationKVLimitsChanged": false,
+      "scope": "host proof of offset validation, explicit MTP request propagation/actual snapshot counter qualification and batched event TPS accounting; full model MTP trials are separate and not qualified by these tests"
+    },
+    {
+      "name": "explicit checkpoint quiescence and existing MTP/timing host qualification",
+      "log": "darkbloom-all-model-quiescence-host.log",
+      "framework": "Swift Testing",
+      "test_cases": 22,
+      "suites": 8,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 0.077,
+      "build_seconds": 51.23714987497078,
+      "metal_staging_seconds": 10.338568125036545,
+      "host_command_elapsed_seconds": 5.836452832969371,
+      "startedUTC": "2026-10-03T22:53:14.819821+00:00",
+      "completedUTC": "2026-10-03T22:54:22.431473+00:00",
+      "compiler": "AppleSwift6.3.3(system Xcode)",
+      "binarySHA256": "05d48136843f321901a6475c5c60283c545f5d22618c15f18430a7b3bdc2ef52",
+      "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+      "fiveSourceFilesUnchanged": true,
+      "scope": "three added host cases validate explicit idle then owned checkpoint writer/activity joins, failure propagation and separate quiescence timing; existing terminal/receipt metrics unchanged",
+      "publicationSemantics": "Current COMPLETE terminal delivery already waits for checkpoint publication; explicit post-receipt quiescence certifies subsequent barriers and tail. Neither boundary is fsync durability or saturation throughput.",
+      "exclusions": [
+        "full-model paired policy performance pending",
+        "native compatible-A4 before comparison pending",
+        "final complete component gates and signed source cut pending"
+      ]
+    },
+    {
+      "name": "controlled bounded-hash and exact Nem gate before",
+      "framework": "Swift Testing",
+      "test_cases": 11,
+      "suites": 2,
+      "passing_cases": 8,
+      "failing_cases": 3,
+      "assertion_failures": 17,
+      "assertion_subsets": {
+        "qualified_nem_gate": 4,
+        "bounded_hash_chain_counts": 13
+      },
+      "seconds": 0.135,
+      "exit_code": 1,
+      "scope": "Only the bounded hash helper and exact Nemotron serving branch are removed; all other candidate source remains present. Endpoints/tags are still checked against the legacy hash. No full native model execution."
+    },
+    {
+      "name": "restored bounded-hash and exact Nem gate plus harness host",
+      "framework": "Swift Testing",
+      "test_cases": 33,
+      "suites": 10,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 0.175,
+      "exit_code": 0,
+      "scope": "All prior22 harness checks plus6 bounded hash and5 exact Nem policy cases. This is a separate invocation, not a sum of all historical test populations."
+    },
+    {
+      "name": "real encrypted SSD lifecycle and identity after bounded hashing",
+      "framework": "Swift Testing",
+      "test_cases": 32,
+      "suites": 7,
+      "failures": 0,
+      "skips": 0,
+      "seconds": 2.091,
+      "exit_code": 0,
+      "scope": "Actual SSD lifecycle, duplicate authentication, lookup, demand/write priority, fleet-repeat cap, native diffusion store and exact-position keys. Does not establish model TTFT, fsync durability or a fleet hit rate."
+    },
+    {
+      "startedUTC": "2026-10-03T23:20:47.376368+00:00",
+      "endedUTC": "2026-10-03T23:25:11.821385+00:00",
+      "originalSDKRevision": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+      "originalLibrariesUnchanged": true,
+      "sourceAndTestBeforeAfterIdentical": true,
+      "binaryBeforeAfterIdentical": true,
+      "framework": "XCTest",
+      "test_cases": 1,
+      "assertion_failures": 2,
+      "unexpected_failures": 0,
+      "skips": 0,
+      "seconds": 1.309,
+      "nativeGPUExecuted": true,
+      "expectedFailureObserved": true,
+      "testProcessExitCode": 1,
+      "actualPublishedPositions": [
+        896,
+        128
+      ],
+      "expectedPublishedPositions": [
+        896,
+        512,
+        128
+      ],
+      "missingDemandedPosition": 512,
+      "executedModes": [
+        "MTP off; missing target throws before MTP-on iteration"
+      ],
+      "originalWarmImportExecuted": false,
+      "comparison": "Same owning final native test and fixture; original A4 donor-retention observation compared to separately recorded current1.002s passing MTP-off/on invocation. No original warm-output or MTP-on comparison was executed.",
+      "limitations": [
+        "No original MTP-on or original warm-import run: target512 is absent.",
+        "Tiny native-contiguous component, not full MiMo speed or encrypted SSD.",
+        "Root lane reservation plus read-only process refusal is not a universal GPU lock."
+      ],
+      "name": "actual original compatible-A4 native donor retention before"
+    },
+    {
+      "name": "current compatible SDK required selectors and complete component",
+      "evidence": "sdk-current-component-checks.json",
+      "startedUTC": "2026-10-03T23:26:45.229286+00:00",
+      "endedUTC": "2026-10-03T23:42:03.996864+00:00",
+      "sourceAndBinaryBeforeAfterIdentical": true,
+      "scopedXCTestPasses": 10,
+      "scopedSkips": 0,
+      "fullXCTestPasses": 1270,
+      "fullXCTestSkips": 335,
+      "fullSwiftTestingPasses": 1388,
+      "fullFailures": 0,
+      "scope": "Scoped6+3+1 are separate invocations of owning tests; not added to complete suite as unique tests. Native fixture executes both MTP modes.",
+      "fullSwiftTestingSkips": 34,
+      "fullSwiftTestingEnumerated": 1422,
+      "fullExecutedPassCount": 2658,
+      "fullSkipCount": 369
+    }
+  ],
+  "newNativeRequiredSuites": "COMPLETED earlier frozen source:6retention+3partition+1actual native XCTest methods,0fail0skip; separate complete SDK1270XCTest+1388SwiftTesting executed passes,335XTest+34Swift skips. Latest signed A5/source cut is recorded separately.",
+  "controlledValidBeforeRegistration": "COMPLETED:4valid host cases,3pass/1accepted-submitfail,4expected assertions before; all4pass0.061s after exact single-call restoration. Production Slot/Bridge ordering is unchanged.",
+  "actualNativeA4Before": "COMPLETED expected native retention failure: original58d538c8 unmodified Libraries and same final two test sources; MTP-off donor retains896/128 and omits512,1XCTest2expected assertions0unexpected0skip1.309s. Original MTP-on and warm paths do not execute; prior disk-floor build stop remains distinct."
+}

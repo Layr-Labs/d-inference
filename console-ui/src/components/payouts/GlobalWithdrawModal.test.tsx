@@ -12,7 +12,7 @@ function props() { return { status, balanceMicroUsd: 20_000_000, amount: "10", l
 
 describe("international bank withdrawal", () => {
   it("labels a queued bank deposit as an estimate in withdrawal history", () => {
-    render(<WithdrawalsList withdrawals={[{ id: "queue-1", status: "queued", amount_micro_usd: 10_000_000, fee_micro_usd: 0, net_micro_usd: 10_000_000, method: "standard", created_at: "2026-10-07T00:00:00Z", updated_at: "2026-10-07T00:00:00Z", payout_rail: "global", payout_currency: "inr", destination_amount: 80000, currency_exponent: 2 }]} />);
+    render(<WithdrawalsList withdrawals={[{ id: "queue-1", account_id: "fixture-account", stripe_account_id: "fixture-stripe-account", status: "queued", amount_micro_usd: 10_000_000, fee_micro_usd: 0, net_micro_usd: 10_000_000, method: "standard", created_at: "2026-10-07T00:00:00Z", updated_at: "2026-10-07T00:00:00Z", payout_rail: "global", payout_currency: "inr", destination_amount: 80000, currency_exponent: 2 }]} />);
     expect(screen.getByText(/Est\. .*800\.00/)).toBeInTheDocument();
     expect(screen.getByText("Queued")).toBeInTheDocument();
   });

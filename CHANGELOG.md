@@ -13,6 +13,12 @@
 - Keep capacity freshness checks current across policy reads and durable command delivery, so slow database operations cannot extend a provider snapshot's lifetime.
 - Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
 
+## Unreleased - KV admission estimates
+
+- Reduce ordinary engine concurrency when fixed recurrent or MTP workspace would otherwise consume its KV grant before any request can run. Heartbeats and local admission use the same memory-limited width; load and reserve-raise preflights preserve a serviceable workspace-aware grant, without lowering activation or minimum-KV safeguards.
+- Estimate cold-model KV cost from fresh native reports for the same artifact and verified runtime instead of always using the generic bytes-per-token fallback. Live slot budgets remain authoritative; missing evidence retains the fallback, and provider memory checks still decide whether a load or request actually fits.
+- Share cold-rate evidence once per fleet sample instead of scanning peers for every provider. Unused on-disk advertisements do not trigger forecast work, and registry read leases do not span donor walks.
+
 ## Unreleased - withdrawal funding queue
 
 - Queue confirmed withdrawals when Stripe payout funding is insufficient. Earnings stay reserved, the coordinator retries automatically, and Billing shows a Queued status. International exchange estimates refresh when queued payments are sent; uncertain Stripe outcomes keep their existing payment identity and funds reserved. Funding waits do not shorten the return-check and account-erasure protection windows after Global Payouts dispatch.

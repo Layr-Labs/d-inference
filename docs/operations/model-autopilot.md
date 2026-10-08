@@ -127,6 +127,11 @@ runbook neither funds rewards nor repairs historical first-opt-in evidence.
    a clean causal A/B experiment. Too few feasible operations is inconclusive,
    not a reason to relax safety thresholds.
 
+When investigating a candidate's memory-fit prediction, distinguish its
+[cold KV forecast](../architecture/routing.md#cold-model-kv-forecasts) from a live
+slot budget. Fresh matching native evidence can improve the forecast, but only
+the provider's completed load and current capacity report establish readiness.
+
 The live planner chooses cached models for utilization; it does not guarantee
 more inference work. The separate [reward policy](../reference/pricing-model.md#autopilot-rewards)
 depends on tracked saved consent, a known baseline, payment enablement and funded

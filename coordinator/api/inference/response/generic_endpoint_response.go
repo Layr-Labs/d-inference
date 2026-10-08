@@ -113,8 +113,11 @@ func messagesToolUseBlock(toolCall map[string]any) map[string]any {
 	name, _ := function["name"].(string)
 	arguments, _ := function["arguments"].(string)
 	input := map[string]any{}
-	if arguments != "" {
-		_ = json.Unmarshal([]byte(arguments), &input)
+	if json.Valid([]byte(arguments)) {
+		// Preserve tool numbers exactly, while rejecting trailing JSON or garbage.
+		decoder := json.NewDecoder(strings.NewReader(arguments))
+		decoder.UseNumber()
+		_ = decoder.Decode(&input)
 	}
 	return map[string]any{
 		"type":  "tool_use",

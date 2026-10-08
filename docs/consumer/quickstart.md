@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -111,6 +111,11 @@ print(msg.content[0].text)
 ```
 
 Requests land on `POST /v1/messages` (`HandleAnthropicMessages`, `coordinator/api/inference/consumer.go`) and are translated to the same pipeline as chat completions.
+
+For tool responses, read arguments from each `tool_use` block's `input` object.
+Use a client JSON decoder that preserves the numeric precision your tools need;
+the coordinator preserves those values when converting the response. See the
+[Messages response contract](../reference/api-contracts.md#completions-and-messages).
 
 ## Handling overload
 

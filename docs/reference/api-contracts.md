@@ -949,6 +949,15 @@ root response marked `incomplete` because generation reached its output limit.
 
 `/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/internal/promptcontract/endpoint/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/inference/response/generic_endpoint_response.go` and streams by `coordinator/internal/inference/relay/generic_endpoint_stream.go`, which terminates with `data: [DONE]`. Usage reports a validated cache hit in each endpoint's own schema (`completionsUsage`, `messagesUsage`): `/v1/completions` adds `usage.prompt_tokens_details.cached_tokens` (a subset of `prompt_tokens`); `/v1/messages` reports `cache_read_input_tokens` and excludes those tokens from `input_tokens`, as Anthropic does. Streams carry the same object on their terminal event: the final `text_completion` chunk's `usage` for completions, and the `message_delta` `usage` for messages (its `message_start` still reports `input_tokens: 0`, because usage is known only at the end).
 
+Non-streaming Messages `tool_use.input` preserves JSON numbers from the provider's
+tool argument object without converting them to floating-point values, including
+nested objects and arrays (`messagesToolUseBlock`,
+`coordinator/api/inference/response/generic_endpoint_response.go`). Streaming
+Messages keeps the argument text in `input_json_delta.partial_json`
+(`messagesStreamEmitter.Finish`, `coordinator/api/inference/response/generic_endpoint_stream.go`).
+Empty or malformed argument text still produces an empty input object; a valid
+JSON `null` retains the existing null input behavior.
+
 ## SSE framing
 
 Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/inference/relay/consumer_stream.go`), `coordinator/api/inference/response/sse_response.go`, and `coordinator/api/inference/response/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/inference/dispatch.go`.

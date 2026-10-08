@@ -1,0 +1,27 @@
+{
+  "cli_exposed": false,
+  "existing_file_change": {
+    "change": "qwenLongPrefillRankAgreement access private -> internal; body unchanged",
+    "path": "experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankCheck.swift"
+  },
+  "files": [
+    {
+      "bytes": 2611,
+      "path": "QwenLongPrefillResidentRankAdmission.swift",
+      "sha256": "3245059f0545f59a242751d18f18bfef35da5a438e7fa987e6a2037e3c0e6426"
+    },
+    {
+      "bytes": 6401,
+      "path": "QwenLongPrefillResidentRankOwner.swift",
+      "sha256": "f130486beeb54e0ba75cf0a7faf38418c9df4e4157e2d951af5861b6a7cd8ef8"
+    },
+    {
+      "bytes": 1276,
+      "path": "QwenLongPrefillResidentRankReport.swift",
+      "sha256": "21c920a3c58029768780003d34efd9a4ff08f71a1cd134c650bca38321c6573f"
+    }
+  ],
+  "kind": "resident_rank_owner_source_review_input",
+  "native_executed": false,
+  "review_correction": "ErrorBox check after stream synchronization before weak-model guard"
+}

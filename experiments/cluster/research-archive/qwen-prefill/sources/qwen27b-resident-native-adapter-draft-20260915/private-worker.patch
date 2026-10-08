@@ -1,0 +1,95 @@
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerConfiguration.swift
+@@ -1,5 +1,5 @@
+ import DarkbloomClusterProtocol
+-import DarkbloomClusterRuntime
++@_spi(Benchmark) import DarkbloomClusterRuntime
+ import Foundation
+ 
+ enum WorkerFailure: Error { case invalid(String) }
+@@ -8,7 +8,8 @@
+     let load: QwenResidentLoadConfiguration
+     let bootstrap: WorkerBootstrapConfiguration?
+ 
+-    init(arguments: [String], now: UInt64) throws {
++    init(arguments: [String], now: UInt64,
++         nativeValidation: QwenResidentNativeValidationModel? = nil) throws {
+         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
+             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
+             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
+@@ -38,14 +39,18 @@
+             return value
+         }
+         let rank = try integer("--rank"), cut = try integer("--stage-cut")
+-        guard (0...1).contains(rank), [4, 8, 12, 16].contains(cut), fields["--model-dir"]!.hasPrefix("/"),
+-              fields["--model-id"] == "registered_qwen35_9b",
++        let cuts = try nativeValidation?.supportedCuts ?? [4, 8, 12, 16]
++        let modelID = nativeValidation?.runtimeModelID ?? "registered_qwen35_9b"
++        guard (0...1).contains(rank), cuts.contains(cut), fields["--model-dir"]!.hasPrefix("/"),
++              fields["--model-id"] == modelID,
+               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
+               epoch.uuidString.lowercased() == fields["--membership-epoch"],
+               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
+               String(deadline) == fields["--deadline-uptime-nanoseconds"],
+               deadline > now, deadline - now <= 300_000_000_000 else {
+-            throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut4|8|12|16 and a <=300-second local lifetime")
++            throw WorkerFailure.invalid(nativeValidation == nil
++                ? "Worker requires registered9B, rank0|1, cut4|8|12|16 and a <=300-second local lifetime"
++                : "Native validation worker requires the selected registered model, candidate cut and <=300-second local lifetime")
+         }
+         guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
+             throw WorkerFailure.invalid("Unknown worker prefill schedule")
+@@ -59,10 +64,17 @@
+             return .init(id: label, buildSHA256: try hash("--peer\(index)-build-sha256"))
+         }
+         guard peers[0].id != peers[1].id else { throw WorkerFailure.invalid("Worker peers must be distinct") }
+-        load = .init(identity: .init(membershipEpoch: epoch, modelID: fields["--model-id"]!,
+-            artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers),
+-            modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
+-            deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
+-            prefillSchedule: prefillSchedule)
++        let identity = ClusterWorkerIdentity(membershipEpoch: epoch, modelID: fields["--model-id"]!,
++            artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers)
++        let directory = URL(fileURLWithPath: fields["--model-dir"]!)
++        if let nativeValidation {
++            guard prefillSchedule == .serial else { throw WorkerFailure.invalid("Native validation is serial only") }
++            load = try nativeValidation.configuration(identity: identity, modelDirectory: directory, rank: rank,
++                stageCut: cut, deadlineUptimeNanoseconds: deadline, now: now)
++        } else {
++            load = .init(identity: identity, modelDirectory: directory, rank: rank, stageCut: cut,
++                deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
++                prefillSchedule: prefillSchedule)
++        }
+     }
+ }
+--- a/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
++++ b/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift
+@@ -1,16 +1,24 @@
+ import Darwin
+ import Foundation
++@_spi(Benchmark) import DarkbloomClusterRuntime
+ 
+ @main enum WorkerMain {
+     static func main() {
+         do {
+-            let arguments = Array(CommandLine.arguments.dropFirst())
+-            if arguments.first == "--describe-runtime" {
+-                try WorkerCapabilityCommand.run(arguments: arguments)
++            var arguments = Array(CommandLine.arguments.dropFirst())
++            if arguments == ["clock"] {
++                print(DispatchTime.now().uptimeNanoseconds)
+                 Darwin.exit(0)
+             }
++            let argumentsOnly = arguments.first == "check-arguments"
++            if argumentsOnly { arguments.removeFirst() }
+             let now = DispatchTime.now().uptimeNanoseconds
+-            let configuration = try WorkerConfiguration(arguments: arguments, now: now)
++            let configuration = try WorkerConfiguration(arguments: arguments, now: now,
++                nativeValidation: .qwen38TwentySevenB)
++            guard configuration.bootstrap != nil else {
++                throw WorkerFailure.invalid("Native validation worker requires authenticated owner bootstrap")
++            }
++            if argumentsOnly { Darwin.exit(0) }
+             let deadline = configuration.load.deadlineUptimeNanoseconds
+             // Fixed before any native initialization. The signal handler neither
+             // allocates nor claims cleanup: the parent must observe process exit.

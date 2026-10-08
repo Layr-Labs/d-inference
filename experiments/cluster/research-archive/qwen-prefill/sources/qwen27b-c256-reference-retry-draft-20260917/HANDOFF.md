@@ -1,0 +1,20 @@
+This source-only successor prepares one fresh C256 ordinary reference after the failed first attempt. It does not change the native, source bundle, model, prompt, request UUID, Plan, arithmetic, resource floors or deadlines. No preparation, compiler, model or remote operation has been run from this package.
+
+The first run and all its files stay untouched. Its failed terminal reports native[-9], one admitted record, incomplete output and a 40,924,827-byte actual-free budget deficit after all1847 tensors loaded. It is not an accepted reference. Root's separate quiescent maintenance subsequently observed free memory increase from31,774,818,304 to34,328,412,160 bytes, with unchanged guards; that does not establish future completion.
+
+The prospective job changes exactly two fields:
+
+- prompt_file points to `supervisor-phase-memory-c256-retry2-20260917/prompt.ids.json`.
+- run_dir points to `runs/phase-memory-c256-2`.
+
+Both are under the existing `/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915` remote parent. The local preparation is create-only at this package's `prepared/`. Its inputs preserve request72a2b195-bb12-4da5-ae3a-986352fc2dc4, prompt ee6caf0b, P8192/C256/O128, empty stops, MTP off, cut16/48, native d717 and native300/parent315 seconds. Only case-plan.referenceJobSHA256 changes with the two-path job. Existing native/model trees are neither copied nor changed.
+
+`prepare.py` copies the original64 small launcher members, substitutes only example-job.json, and derives its manifest/job pins. The original run/collect script changes one launcher path, one collection path, two launcher manifest pins and one job pin. The installer changes only its exact create-only root. Owned process helper, all21 Python launcher/test sources, resource/parser/native-contract files and controls remain byte-exact. The existing copy action rehashes65 files; preflight/run/collect and cleanup behavior remain inherited.
+
+Root's sequence is in commands.json: source check, preparation, copy, run, collection, independent replay, independent root review, then candidate binding only after a complete reference and actual CPU/native/argument receipts. These are separate invocations; this package does not chain or automatically execute them. Copy/run/collect keep the original45/420/45-second outer bounds, native300/parent315, actual-free6GiB, zero-swap/AC/native pressure guards. A failed run cannot be rebound as a reference.
+
+`review_reference.py` reuses the already root-read dc4131 helper, changing only its INPUTS and REFERENCE globals after verifying this frozen source and the prepared closure. All success-only native/receipt/output/resource checks remain. Its findings omit `passed` and require independent root review. It cannot supply the review accepted by the candidate binder by itself.
+
+`bind_cases.py` imports the original qualified Experiment/bind_cases.py from the original31eb source and replaces only its expected_packet function with this package's exact two-path job expectation. It supplies fixed retry inputs/returned paths. Every original root-review hash, output contract, source manifest, actual native build/package/argument, CPU host-budget, request-resource and owner/controller check still runs. The original BASE/DRAFT/BUILD stay unchanged, so no Build or proposed-source clone/rebuild occurs. On success, the original binder creates its previously absent Experiment/serial, Experiment/lookahead and bound-runs.json; existing paths still refuse overwrite. Their reference binding records the actual retry job/stdout/terminal/root-review pins. Original source files stay untouched.
+
+No future native binary, successful reference, token IDs, physical PID or approval hash is invented. The original eligible native/CPU attempt numbers and the root's eventual successful reference-review path/SHA must be supplied to the final binder. Source checks here are AST/preimage/pin checks only; no additional fixture campaign is required or claimed.

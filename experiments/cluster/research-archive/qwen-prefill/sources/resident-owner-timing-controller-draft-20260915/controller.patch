@@ -1,0 +1,441 @@
+--- a/Sources/Controller.swift
++++ b/Sources/Controller.swift
+@@ -4,149 +4,107 @@
+ import DarkbloomClusterProcess
+ import DarkbloomClusterRemote
+ 
+-struct PeerSettings: Decodable {
+-    let host: String, user: String, knownHostsFile: String, identityFile: String, installedOwner: String
+-    let port: Int
+-}
+-struct ControllerSettings: Decodable {
+-    let schema: String
+-    let cpuQualification: Bool
+-    let clusterID: String
+-    let readyTemplateBase64: String
+-    let peers: [PeerSettings]
+-    let membershipEpoch: String
+-    let requestID: String
+-    let promptTokenIDs: [Int]
+-    let stopTokenIDs: [Int]
+-    let outputCount: Int
+-    let chunkSize: Int
+-    let expectedTokenIDs: [Int]?
+-    let lifetimeSeconds: Int
+-    let startupSeconds: Int
+-    let requestSeconds: Int
+-}
+-final class CapturedTokens: @unchecked Sendable {
+-    private let lock = NSLock()
+-    private var ids: [Int] = []
+-    private var finish: String?
+-    private var failure: String?
+-    func accept(_ event: ClusterWorkerRequestEvent) -> Bool {
+-        lock.withLock {
+-            switch event {
+-            case .token(let id): ids.append(id)
+-            case .finished(let reason): finish = reason.rawValue
+-            case .failed(let message): failure = message
+-            }
+-        }
+-        return true
+-    }
+-    var snapshot: ([Int], String?, String?) { lock.withLock { (ids, finish, failure) } }
+-}
+ @main struct Controller {
+     static func main() async {
+         guard CommandLine.arguments.count == 2 else { Darwin.exit(64) }
+         var endpoints: [ClusterRemoteWorkerEndpoint] = []
+         var pair: ClusterWorkerPair?
+-        var request: ClusterWorkerRequest?
+-        var success = false
+-        var failure: String?
+-        var configSHA = "", cpu = true
+-        let captured = CapturedTokens()
++        let cohort = TimingCohort()
++        var config: TimingSettings?
++        var success = false, failure: String?, configSHA = ""
+         var timer: DispatchSourceTimer?
+         let began = DispatchTime.now().uptimeNanoseconds
++        var stamps: [String: UInt64] = ["controllerBegan": began]
+         var ownerDrainLimit = began + 302_000_000_000
+         signal(SIGALRM) { _ in Darwin._exit(124) }
+-        alarm(305) // Also bounds publication after a configuration refusal.
++        alarm(305) // Includes final publication; never constitutes remote cleanup proof.
+         do {
+             let (raw, sha) = try readQualificationJSON(CommandLine.arguments[1], maximum: 500_000); configSHA = sha
+-            guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any], Set(object.keys) ==
+-                Set(["schema", "cpuQualification", "clusterID", "readyTemplateBase64", "peers", "membershipEpoch", "requestID",
+-                     "promptTokenIDs", "stopTokenIDs", "outputCount", "chunkSize", "expectedTokenIDs", "lifetimeSeconds", "startupSeconds", "requestSeconds"]),
+-                  let peers = object["peers"] as? [[String: Any]], peers.allSatisfy({ Set($0.keys) ==
+-                    Set(["host", "user", "knownHostsFile", "identityFile", "installedOwner", "port"]) }) else { throw QualificationFailure.invalid("Controller fields differ") }
+-            let config = try JSONDecoder().decode(ControllerSettings.self, from: raw); cpu = config.cpuQualification
+-            guard config.schema == "darkbloom_owner_qualification_v1", config.peers.count == 2,
+-                  (1...300).contains(config.lifetimeSeconds), (1...config.lifetimeSeconds).contains(config.startupSeconds),
+-                  (1...config.lifetimeSeconds).contains(config.requestSeconds),
+-                  let epoch = UUID(uuidString: config.membershipEpoch), epoch.uuidString.lowercased() == config.membershipEpoch,
+-                  let id = UUID(uuidString: config.requestID), id.uuidString.lowercased() == config.requestID,
+-                  !config.cpuQualification || (config.outputCount == 2 && config.expectedTokenIDs == [9, 10] && config.stopTokenIDs.isEmpty) else {
+-                throw QualificationFailure.invalid("Controller geometry/identity outside bounds")
+-            }
+-            let template = try qualificationTemplate(config.readyTemplateBase64)
+-            let identity = ClusterWorkerIdentity(membershipEpoch: epoch, modelID: template.identity.modelID,
+-                artifactSHA256: template.identity.artifactSHA256, configurationSHA256: template.identity.configurationSHA256, peers: template.identity.peers)
+-            let deadline = began + UInt64(config.lifetimeSeconds) * 1_000_000_000
+-            ownerDrainLimit = deadline + 2_000_000_000
+-            alarm(UInt32(config.lifetimeSeconds + 5)) // Last-resort controller bound, never remote cleanup proof.
++            let value = try TimingSettings.parse(raw); config = value
++            let template = try qualificationTemplate(value.readyTemplateBase64)
++            let identity = ClusterWorkerIdentity(membershipEpoch: UUID(uuidString: value.membershipEpoch)!, modelID: template.identity.modelID,
++                artifactSHA256: template.identity.artifactSHA256, configurationSHA256: template.identity.configurationSHA256,
++                peers: template.identity.peers)
++            let deadline = began + UInt64(value.lifetimeSeconds) * 1_000_000_000
++            ownerDrainLimit = deadline + 2_000_000_000; alarm(UInt32(value.lifetimeSeconds + 5))
+             let bootstrap = try ClusterOwnerBootstrapRelay(identity: identity, executionPlanSHA256: template.executionPlanSHA256,
+-                deadlineUptimeNanoseconds: min(deadline, began + UInt64(min(config.startupSeconds, 30)) * 1_000_000_000))
+-            try qualificationEmit(["schema": "owner_qualification_started_v1", "configurationSHA256": configSHA,
+-                "cpuQualification": cpu, "membershipEpoch": config.membershipEpoch, "requestID": config.requestID,
+-                "promptCount": config.promptTokenIDs.count, "outputCount": config.outputCount,
+-                "performanceQualification": false, "numericalQualification": false])
++                deadlineUptimeNanoseconds: min(deadline, began + UInt64(min(value.startupSeconds, 30)) * 1_000_000_000))
++            try qualificationEmit(["schema": "owner_timing_cohort_started_v1", "configurationSHA256": configSHA,
++                "cpuQualification": value.cpuQualification, "membershipEpoch": value.membershipEpoch,
++                "cohortLabel": value.cohortLabel, "policyLabel": value.policyLabel, "policyLabelIsCallerSupplied": true,
++                "warmupCount": value.warmupCount, "measuredCount": value.measuredCount,
++                "promptTokenIDsSHA256": timingTokenHash(value.promptTokenIDs), "expectedTokenIDsSHA256": timingTokenHash(value.expectedTokenIDs),
++                "performanceQualification": false, "fullNumericalComparisonPerformed": false, "externalTTFTMeasured": false])
+             for rank in 0..<2 {
+-                let p = config.peers[rank]
+-                let ssh = try ClusterSSHConfiguration(host: p.host, user: p.user, port: p.port,
+-                    knownHostsFile: URL(fileURLWithPath: p.knownHostsFile), identityFile: URL(fileURLWithPath: p.identityFile), installedDarkbloom: p.installedOwner)
+-                endpoints.append(try ClusterRemoteWorkerEndpoint(configuration: ssh, clusterID: config.clusterID, expectedIdentity: identity,
++                let peer = value.peers[rank]
++                let ssh = try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
++                    knownHostsFile: URL(fileURLWithPath: peer.knownHostsFile), identityFile: URL(fileURLWithPath: peer.identityFile),
++                    installedDarkbloom: peer.installedOwner)
++                endpoints.append(try ClusterRemoteWorkerEndpoint(configuration: ssh, clusterID: value.clusterID, expectedIdentity: identity,
+                     profile: template.profile, rank: rank, executionPlanSHA256: template.executionPlanSHA256,
+                     lifetimeDeadlineUptimeNanoseconds: deadline, bootstrapRelay: bootstrap))
+             }
++            stamps["endpointsCreated"] = DispatchTime.now().uptimeNanoseconds
+             let owned = endpoints
+             let watchdog = DispatchSource.makeTimerSource(queue: .global())
+             watchdog.schedule(deadline: .init(uptimeNanoseconds: deadline))
+             watchdog.setEventHandler { for endpoint in owned { endpoint.requestNativeCleanup() } }
+             watchdog.resume(); timer = watchdog
+-            let opened = try ClusterWorkerPair(workers: endpoints, startupDeadline: min(deadline, began + UInt64(config.startupSeconds) * 1_000_000_000)); pair = opened
+-            guard let ready = opened.readiness else { throw QualificationFailure.invalid("Pair did not become ready") }
+-            let generationDeadline = min(deadline, DispatchTime.now().uptimeNanoseconds + UInt64(config.requestSeconds) * 1_000_000_000)
+-            let active = try opened.reserve(requestID: id, reservation: .init(profileID: template.profile.id,
+-                promptTokenIDs: config.promptTokenIDs, stopTokenIDs: config.stopTokenIDs, outputCount: config.outputCount,
+-                chunkSize: config.chunkSize, deadlineUptimeNanoseconds: generationDeadline, capacityLimitBytes: ready.requestCapacityBytes))
+-            request = active
+-            try active.start { captured.accept($0) }
+-            await active.waitUntilRetired()
+-            active.releaseResources()
+-            let (tokens, reason, error) = captured.snapshot
+-            guard active.bytesInUse == 0, error == nil, reason != nil, !tokens.isEmpty,
+-                  tokens.count <= config.outputCount, config.expectedTokenIDs == nil || tokens == config.expectedTokenIDs else {
+-                throw QualificationFailure.invalid("Token result or retirement differs")
++            let opened = try ClusterWorkerPair(workers: endpoints, startupDeadline: min(deadline, began + UInt64(value.startupSeconds) * 1_000_000_000))
++            pair = opened; stamps["pairReady"] = DispatchTime.now().uptimeNanoseconds
++            try await cohort.run(pair: opened, configuration: value, lifetimeDeadline: deadline) { record in
++                try qualificationEmit(["schema": "owner_timing_request_v1", "configurationSHA256": configSHA,
++                    "observation": try record.object, "externalTTFTMeasured": false, "performanceQualification": false])
+             }
+-            await opened.shutdown()
+-            guard endpoints.allSatisfy(\.nativeCleanupObserved) else { throw QualificationFailure.invalid("Missing actual native cleanup") }
+             success = true
+-        } catch { failure = String(describing: error) }
++        } catch { failure = String(String(describing: error).prefix(2048)) }
++        stamps["cleanupBegan"] = DispatchTime.now().uptimeNanoseconds
+         if !success {
+-            request?.cancel(reason: .runtimeError)
++            cohort.active?.cancel(reason: .runtimeError)
+             for endpoint in endpoints { endpoint.requestNativeCleanup() }
+-            // The hard alarm bounds this process if the authenticated terminal is
+-            // unavailable. No timeout manufactures native cleanup or releases bytes.
+-            if let pair { await pair.shutdown() }
+-            else { for endpoint in endpoints { await endpoint.waitUntilNativeCleanup() } }
+         }
+-        // Drain the authenticated lease ACK on failure too. Native retirement and
+-        // transport exit alone do not prove the device journal was resolved.
++        // Actual retirement/terminal evidence, not SSH EOF or a sent signal.
++        if let pair { await pair.shutdown() }
++        else { for endpoint in endpoints { await endpoint.waitUntilNativeCleanup() } }
++        stamps["nativeCleanupWaitReturned"] = DispatchTime.now().uptimeNanoseconds
++        if endpoints.count != 2 || !endpoints.allSatisfy(\.nativeCleanupObserved) {
++            success = false; failure = failure ?? "Missing actual native cleanup"
++        }
+         let drainDeadline = min(ownerDrainLimit, DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
+         while !endpoints.allSatisfy(\.ownerDeviceLeaseReleasedObserved), DispatchTime.now().uptimeNanoseconds < drainDeadline {
+             try? await Task.sleep(nanoseconds: 10_000_000)
+         }
+         if !endpoints.allSatisfy(\.ownerDeviceLeaseReleasedObserved) {
+-            success = false
+-            failure = failure ?? "Missing authenticated device lease release acknowledgment"
++            success = false; failure = failure ?? "Missing authenticated device lease release acknowledgment"
+         }
++        stamps["leaseDrainEnded"] = DispatchTime.now().uptimeNanoseconds
+         timer?.cancel()
+-        let (tokens, reason, error) = captured.snapshot
+-        var result: [String: Any] = ["schema": "owner_qualification_result_v1", "configurationSHA256": configSHA,
+-            "cpuQualification": cpu, "completed": success, "tokenIDs": tokens,
+-            "performanceQualification": false, "numericalQualification": false,
++        var result: [String: Any] = ["schema": "owner_timing_cohort_result_v1", "configurationSHA256": configSHA,
++            "completed": success, "clock": "DispatchTime.uptimeNanoseconds.same_controller_process",
++            "measurement": "internal owner-control start-to-first committed-token callback; excludes load and reserve; includes transport/control",
++            "timestamps": stamps, "elapsedControllerNanoseconds": DispatchTime.now().uptimeNanoseconds - began,
+             "nativeCleanupObserved": endpoints.map(\.nativeCleanupObserved),
+             "ownerDeviceLeaseReleasedObserved": endpoints.map(\.ownerDeviceLeaseReleasedObserved),
+             "endpointDiagnosticsBase64": endpoints.map { $0.diagnosticTail.base64EncodedString() },
+             "journalRelease": "Authenticated owner acknowledgment; separate remote journal/process observation remains useful",
+-            "elapsedControllerNanoseconds": DispatchTime.now().uptimeNanoseconds - began]
+-        if let reason { result["finishReason"] = reason }
+-        if let error { result["workerFailure"] = error }
++            "performanceQualification": false, "fullNumericalComparisonPerformed": false, "externalTTFTMeasured": false,
++            "policyEngagementIndependentlyVerified": false, "providerCapacityUpdated": false]
++        if let config {
++            result["cpuQualification"] = config.cpuQualification
++            result["cohortLabel"] = config.cohortLabel; result["policyLabel"] = config.policyLabel
++            result["policyLabelIsCallerSupplied"] = true
++            result["promptTokenIDsSHA256"] = timingTokenHash(config.promptTokenIDs)
++            result["expectedTokenIDsSHA256"] = timingTokenHash(config.expectedTokenIDs)
++            var summary = timingSummary(cohort.records, warmups: config.warmupCount, measured: config.measuredCount)
++            if !success {
++                summary["complete"] = false
++                summary.removeValue(forKey: "measuredInternalOwnerControlFirstTokenNanoseconds")
++                summary.removeValue(forKey: "medianInternalOwnerControlFirstTokenNanoseconds")
++            }
++            result["summary"] = summary
++        }
++        do { result["requests"] = try cohort.records.map { try $0.object } } catch { success = false; failure = failure ?? "Cannot encode request observations" }
++        result["completed"] = success
+         if let failure { result["failure"] = failure }
+         do { try qualificationEmit(result) } catch { Darwin.exit(74) }
+         alarm(0)
+--- /dev/null
++++ b/Sources/TimingSettings.swift
+@@ -0,0 +1,68 @@
++import Foundation
++import CoreFoundation
++import CryptoKit
++import DarkbloomClusterProtocol
++
++struct PeerSettings: Decodable {
++    let host: String, user: String, knownHostsFile: String, identityFile: String, installedOwner: String
++    let port: Int
++}
++struct TimingSettings: Decodable {
++    let schema: String, cohortLabel: String, policyLabel: String
++    let cpuQualification: Bool
++    let clusterID: String, readyTemplateBase64: String, membershipEpoch: String
++    let peers: [PeerSettings]
++    let promptTokenIDs: [Int], stopTokenIDs: [Int], expectedTokenIDs: [Int]
++    let outputCount: Int, chunkSize: Int, warmupCount: Int, measuredCount: Int
++    let lifetimeSeconds: Int, startupSeconds: Int, requestSeconds: Int
++
++    static func parse(_ raw: Data) throws -> Self {
++        guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any], Set(object.keys) ==
++            Set(["schema", "cohortLabel", "policyLabel", "cpuQualification", "clusterID", "readyTemplateBase64", "peers",
++                 "membershipEpoch", "promptTokenIDs", "stopTokenIDs", "expectedTokenIDs", "outputCount", "chunkSize",
++                 "warmupCount", "measuredCount", "lifetimeSeconds", "startupSeconds", "requestSeconds"]),
++              let peers = object["peers"] as? [[String: Any]], peers.count == 2,
++              peers.allSatisfy({ Set($0.keys) == Set(["host", "user", "knownHostsFile", "identityFile", "installedOwner", "port"]) }) else {
++            throw QualificationFailure.invalid("Timing controller fields differ")
++        }
++        for key in ["outputCount", "chunkSize", "warmupCount", "measuredCount", "lifetimeSeconds", "startupSeconds", "requestSeconds"] {
++            try requireInteger(object[key])
++        }
++        for peer in peers { try requireInteger(peer["port"]) }
++        for key in ["promptTokenIDs", "stopTokenIDs", "expectedTokenIDs"] {
++            guard let values = object[key] as? [Any] else { throw QualificationFailure.invalid("Token array required") }
++            for value in values { try requireInteger(value) }
++        }
++        let value = try JSONDecoder().decode(Self.self, from: raw)
++        try value.validate(); return value
++    }
++    static func requireInteger(_ value: Any?) throws {
++        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
++              !["f", "d"].contains(String(cString: number.objCType)) else {
++            throw QualificationFailure.invalid("Native integer field required")
++        }
++    }
++    func validate() throws {
++        guard schema == "darkbloom_owner_timing_cohort_v1", peers.count == 2,
++              !cohortLabel.isEmpty, cohortLabel.utf8.count <= 64,
++              cohortLabel.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }),
++              ["serial_v1", "one_chunk_lookahead_v1"].contains(policyLabel),
++              (0...1).contains(warmupCount), (1...3).contains(measuredCount), warmupCount + measuredCount <= 4,
++              (1...300).contains(lifetimeSeconds), (1...lifetimeSeconds).contains(startupSeconds),
++              (1...min(120, lifetimeSeconds)).contains(requestSeconds),
++              let epoch = UUID(uuidString: membershipEpoch), epoch.uuidString.lowercased() == membershipEpoch,
++              promptTokenIDs.count == 8192, outputCount == 128, chunkSize == 512,
++              stopTokenIDs.isEmpty, expectedTokenIDs.count == 128 else {
++            throw QualificationFailure.invalid("Timing cohort geometry/identity outside bounds")
++        }
++        let template = try qualificationTemplate(readyTemplateBase64)
++        guard template.profile.maximumPromptTokens >= 8192, template.profile.maximumOutputTokens >= 128,
++              template.profile.maximumChunkTokens >= 512, template.profile.maximumContextTokens >= 8320,
++              (promptTokenIDs + expectedTokenIDs).allSatisfy({ $0 >= 0 && $0 < template.profile.vocabularySize }) else {
++            throw QualificationFailure.invalid("Template cannot admit the fixed timing geometry")
++        }
++    }
++}
++func timingTokenHash(_ values: [Int]) -> String {
++    SHA256.hash(data: Data(values.map(String.init).joined(separator: ",").utf8)).map { String(format: "%02x", $0) }.joined()
++}
+--- /dev/null
++++ b/Sources/TimingObservation.swift
+@@ -0,0 +1,81 @@
++import Foundation
++import DarkbloomClusterProcess
++
++struct TimingObservation: Encodable, Sendable {
++    let requestID: String, phase: String, iteration: Int
++    var reserveBegan: UInt64
++    var reserveCompleted: UInt64?
++    var startCalled: UInt64?
++    var firstToken: UInt64?
++    var finalToken: UInt64?
++    var finishedCallback: UInt64?
++    var retirementObserved: UInt64?
++    var resourcesReleased: UInt64?
++    var tokenIDs: [Int] = []
++    var firstTokenCount: Int?
++    var finalTokenCount: Int?
++    var finishReason: String?
++    var failure: String?
++    var completed = false
++    var sequenceGuardMatched = false
++    var bytesInUseAfterRelease: Int?
++    var internalOwnerControlFirstTokenNanoseconds: UInt64?
++
++    mutating func validateCompleted(expected: [Int]) throws {
++        guard let reserveCompleted, let startCalled, let firstToken, let finalToken, let finishedCallback,
++              let retirementObserved, let resourcesReleased,
++              reserveBegan <= reserveCompleted, reserveCompleted <= startCalled, startCalled <= firstToken,
++              firstToken <= finalToken, finalToken <= finishedCallback, finishedCallback <= retirementObserved,
++              retirementObserved <= resourcesReleased, tokenIDs.count == 128, tokenIDs == expected,
++              firstTokenCount == 1, finalTokenCount == 128, finishReason == "length", failure == nil,
++              bytesInUseAfterRelease == 0 else { throw QualificationFailure.invalid("Incomplete timing/token/retirement observation") }
++        internalOwnerControlFirstTokenNanoseconds = firstToken - startCalled
++        sequenceGuardMatched = true; completed = true
++    }
++    var object: [String: Any] {
++        get throws { try JSONSerialization.jsonObject(with: JSONEncoder().encode(self)) as! [String: Any] }
++    }
++}
++
++final class TimingCapture: @unchecked Sendable {
++    private let lock = NSLock()
++    private let expected: [Int]
++    private var observation: TimingObservation
++    init(_ observation: TimingObservation, expected: [Int]) { self.observation = observation; self.expected = expected }
++    func markStart(_ value: UInt64) { lock.withLock { observation.startCalled = value } }
++    func accept(_ event: ClusterWorkerRequestEvent, at now: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
++        lock.withLock {
++            switch event {
++            case .token(let id):
++                let ordinal = observation.tokenIDs.count
++                guard ordinal < 128 else { observation.failure = "Too many committed tokens"; return false }
++                if ordinal == 0 { observation.firstToken = now; observation.firstTokenCount = ordinal + 1 }
++                observation.tokenIDs.append(id)
++                if ordinal == 127 { observation.finalToken = now; observation.finalTokenCount = ordinal + 1 }
++                if id != expected[ordinal] { observation.failure = "Committed token differs from declared sequence guard" }
++            case .finished(let reason): observation.finishedCallback = now; observation.finishReason = reason.rawValue
++            case .failed(let message): observation.failure = observation.failure ?? String(message.prefix(2048))
++            }
++            return observation.failure == nil
++        }
++    }
++    var snapshot: TimingObservation { lock.withLock { observation } }
++}
++
++func timingSummary(_ records: [TimingObservation], warmups: Int, measured: Int) -> [String: Any] {
++    let selected = records.filter { $0.phase == "measured" && $0.completed && $0.sequenceGuardMatched }
++    let complete = records.count == warmups + measured && records.allSatisfy(\.completed) && selected.count == measured
++    var result: [String: Any] = ["complete": complete, "declaredWarmupCount": warmups, "declaredMeasuredCount": measured,
++        "completeMeasuredCount": selected.count, "warmupsExcluded": true, "partialRecordsRetained": true,
++        "policyEngagementIndependentlyVerified": false, "fullNumericalComparisonPerformed": false,
++        "performanceQualification": false, "externalTTFTMeasured": false, "providerCapacityUpdated": false]
++    if complete {
++        let values = selected.compactMap(\.internalOwnerControlFirstTokenNanoseconds).sorted()
++        if values.count == measured {
++            result["measuredInternalOwnerControlFirstTokenNanoseconds"] = values
++            result["medianInternalOwnerControlFirstTokenNanoseconds"] = values.count % 2 == 1
++                ? Double(values[values.count / 2]) : Double(values[values.count / 2 - 1]) / 2 + Double(values[values.count / 2]) / 2
++        }
++    }
++    return result
++}
+--- /dev/null
++++ b/Sources/TimingCohort.swift
+@@ -0,0 +1,67 @@
++import Foundation
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++
++/// Private research loop. The Pair remains the request/state ownership authority.
++@MainActor final class TimingCohort {
++    private(set) var records: [TimingObservation] = []
++    private(set) var active: ClusterWorkerRequest?
++
++    func run(pair: ClusterWorkerPair, configuration: TimingSettings, lifetimeDeadline: UInt64,
++             publish: (TimingObservation) throws -> Void) async throws {
++        try configuration.validate()
++        var seen = Set<UUID>()
++        for index in 0..<(configuration.warmupCount + configuration.measuredCount) {
++            let warmup = index < configuration.warmupCount
++            let id = UUID()
++            guard seen.insert(id).inserted else { throw QualificationFailure.invalid("Duplicate generated request UUID") }
++            var record = TimingObservation(requestID: id.uuidString.lowercased(), phase: warmup ? "warmup" : "measured",
++                iteration: warmup ? index : index - configuration.warmupCount, reserveBegan: DispatchTime.now().uptimeNanoseconds)
++            var capture: TimingCapture?
++            do {
++                let deadline = min(lifetimeDeadline, pair.localLifetimeDeadlineUptimeNanoseconds)
++                guard record.reserveBegan < deadline, let ready = pair.readiness else {
++                    throw QualificationFailure.invalid("Owner lifetime exhausted or Pair unavailable before next request")
++                }
++                let remaining = deadline - record.reserveBegan
++                let requestDeadline = record.reserveBegan + min(remaining, UInt64(configuration.requestSeconds) * 1_000_000_000)
++                let value = try pair.reserve(requestID: id, reservation: .init(profileID: ready.profile.id,
++                    promptTokenIDs: configuration.promptTokenIDs, stopTokenIDs: [], outputCount: 128, chunkSize: 512,
++                    deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: ready.requestCapacityBytes))
++                active = value; record.reserveCompleted = DispatchTime.now().uptimeNanoseconds
++                let sink = TimingCapture(record, expected: configuration.expectedTokenIDs); capture = sink
++                // Both stamps use this controller's uptime. This excludes load
++                // and reserve, but includes owner transport/control and token delivery.
++                sink.markStart(DispatchTime.now().uptimeNanoseconds)
++                try value.start { sink.accept($0) }
++                await value.waitUntilRetired()
++                record = sink.snapshot; record.retirementObserved = DispatchTime.now().uptimeNanoseconds
++                guard value.isRetired else { throw QualificationFailure.invalid("Request retirement was not observed") }
++                value.releaseResources(); record.resourcesReleased = DispatchTime.now().uptimeNanoseconds
++                record.bytesInUseAfterRelease = value.bytesInUse; active = nil
++                try record.validateCompleted(expected: configuration.expectedTokenIDs)
++            } catch {
++                let original = error
++                if let value = active {
++                    value.cancel(reason: .runtimeError); await value.waitUntilRetired()
++                    if let capture { record = capture.snapshot }
++                    record.retirementObserved = DispatchTime.now().uptimeNanoseconds
++                    if value.isRetired {
++                        value.releaseResources(); record.resourcesReleased = DispatchTime.now().uptimeNanoseconds
++                        record.bytesInUseAfterRelease = value.bytesInUse
++                    }
++                    active = nil
++                }
++                record.completed = false; record.sequenceGuardMatched = false
++                record.internalOwnerControlFirstTokenNanoseconds = nil
++                record.failure = record.failure ?? String(String(describing: original).prefix(2048))
++                records.append(record)
++                // Preserve the original failure if writing the partial record fails.
++                try? publish(record)
++                throw original
++            }
++            records.append(record)
++            try publish(record) // A sink failure aborts the cohort; no retry/reload.
++        }
++    }
++}

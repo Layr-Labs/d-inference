@@ -1,0 +1,36 @@
+--- frozen-v2/prepare_peer.py
++++ no-mux/prepare_peer_no_mux.py
+@@ -9,9 +9,11 @@
+ import sys
+ import time
+ 
+-BASE = Path(__file__).resolve().parent.parent
++BASE = Path(__file__).resolve().parent.parent / 'qwen27b-owner-native-diagnostic-rerun-v2-20260915'
+ sys.path.insert(0, str(BASE))
++sys.path.insert(0, str(BASE / 'preparation'))
+ from parent_settings import SSH
++SSH_NO_MUX = SSH + ['-S', 'none']
+ from install_diagnostic_owner import OLD_SHA, OLD_BYTES, NEW_SHA, NEW_BYTES
+ 
+ 
+@@ -31,16 +33,16 @@
+     before_owner.update(bytes=OLD_BYTES, sha256=OLD_SHA)
+     raw = Path(owner['source']).read_bytes()
+     assert len(raw) == NEW_BYTES and hashlib.sha256(raw).hexdigest() == NEW_SHA
+-    preflight = Path(__file__).with_name('remote_preflight.py').read_text()
+-    installer = Path(__file__).with_name('install_diagnostic_owner.py').read_text()
+-    output = BASE / 'install-1' / ('rank' + str(args.rank))
++    preflight = (BASE / 'preparation/remote_preflight.py').read_text()
++    installer = (BASE / 'preparation/install_diagnostic_owner.py').read_text()
++    output = BASE / 'install-no-mux-1' / ('rank' + str(args.rank))
+     output.parent.mkdir(mode=0o700, exist_ok=True)
+     output.mkdir(mode=0o700, exist_ok=False)
+     records = []
+ 
+     def invoke(label, script, value, timeout):
+         began = time.monotonic()
+-        command = SSH + [after['host'], shlex.join(['/usr/bin/python3', '-B', '-c', script])]
++        command = SSH_NO_MUX + [after['host'], shlex.join(['/usr/bin/python3', '-B', '-c', script])]
+         try:
+             result = subprocess.run(command, input=json.dumps(value, separators=(',', ':')).encode(),
+                                     capture_output=True, timeout=timeout)

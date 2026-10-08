@@ -1,0 +1,1 @@
+Private C256 reference derivative. Same d717 native and 21 Python runtime/test sources. New request, chunk and run paths only. Root-owned execution; no result exists at preparation. Copied historical receipts are not new validation.

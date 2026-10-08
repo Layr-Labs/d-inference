@@ -1,0 +1,83 @@
+--- a/install_new_tree.py
++++ b/install_new_tree.py
+@@ -2,29 +2,31 @@
+ import hashlib
+ import json
+ import os
++import signal
+ from pathlib import Path
+ import stat
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma4-short-correctness-20260916')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/qwen9b-protected-reference-20260917')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+ 
+ 
+ def main():
++    signal.alarm(30)
+     raw = sys.stdin.buffer.readline(1_048_577)
+     require(len(raw) <= 1_048_576 and raw.endswith(b'\n'), 'Deployment manifest exceeded bound')
+     manifest = json.loads(raw)
+-    require(manifest['schema'] == 'gemma_short_copy_only_tree_v1', 'Wrong deployment schema')
++    require(manifest['schema'] == 'qwen9b_reference_copy_only_tree_v1', 'Wrong deployment schema')
+     files = manifest['files']
+-    require(type(files) is dict and 10 <= len(files) <= 100, 'Wrong deployment member count')
+-    require(sum(x['bytes'] for x in files.values()) < 400_000_000, 'Deployment exceeded bound')
++    require(type(files) is dict and len(files) == 24, 'Wrong deployment member count')
++    require(sum(x['bytes'] for x in files.values()) < 2_097_152, 'Deployment exceeded bound')
+     for name, entry in files.items():
+         bits = name.split('/')
+         require(len(bits) >= 2 and bits[0] in ROOTS and all(x and x not in ('.', '..') for x in bits), 'Unsafe deployment member')
+-        require(type(entry['bytes']) is int and 0 <= entry['bytes'] <= 200_000_000, 'Invalid member size')
++        require(type(entry['bytes']) is int and 0 <= entry['bytes'] <= 1_048_576, 'Invalid member size')
+         require(entry['mode'] in (0o600, 0o700), 'Invalid private mode')
+     # Observation only: do not create, truncate, lock, resolve or replace the live device gate.
+     lease = Path('/Users/developer/.darkbloom/cluster-device/native-device.lease')
+@@ -36,8 +38,18 @@
+                 and (before.st_dev, before.st_ino) == (named.st_dev, named.st_ino), 'Canonical device journal is unresolved or unsafe')
+         journal = dict(path=str(lease), device=before.st_dev, inode=before.st_ino, bytes=before.st_size)
+     finally: os.close(fd)
++    # Availability only; post-copy preflight verifies exact existing bytes.
++    native = Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/native-aligned-payload')
++    model = Path('/Users/developer/DarkbloomDev/models/Qwen3.5-9B')
++    for directory in (native, model):
++        require(directory.is_dir() and directory.resolve() == directory, 'Canonical existing input directory missing')
++    for path in (native/'bundle.json', native/'cluster-inference', native/'mlx.metallib',
++                 native/'mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal', model/'config.json', model/'manifest.json'):
++        value = path.lstat()
++        require(stat.S_ISREG(value.st_mode) and value.st_uid == os.geteuid() and value.st_mode & 0o022 == 0,
++                'Existing native/model input missing or unsafe')
+     for path in ROOTS.values():
+-        require(not os.path.lexists(path), 'Refuse an existing destination')
++        require(path.parent.resolve() == path.parent and not os.path.lexists(path), 'Refuse an existing or linked destination')
+     for path in ROOTS.values(): path.mkdir(mode=0o700)
+     seen = set()
+     with tarfile.open(fileobj=sys.stdin.buffer, mode='r|') as archive:
+@@ -75,8 +87,8 @@
+             require(info.st_size == files[name]['bytes'] and checksum.hexdigest() == files[name]['sha256'], 'Installed full rehash differs')
+             verified[name] = dict(bytes=info.st_size, sha256=checksum.hexdigest())
+     require(set(verified) == set(files), 'Installed closure differs')
+-    (ROOTS['check'] / 'evidence').mkdir(mode=0o700)
+-    print(json.dumps(dict(schema='gemma_short_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
++    (ROOTS['check'] / 'runs').mkdir(mode=0o700)
++    print(json.dumps(dict(schema='qwen9b_reference_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
+         verified=verified, canonicalJournalObserved=journal, modelOrOwnerLaunched=False, existingInputsModified=False)), flush=True)
+ 
+ if __name__ == '__main__': main()
+--- a/prepare_copy.py
++++ b/prepare_copy.py
+@@ -3,7 +3,9 @@
+ from pathlib import Path
+ import sys
+ import tarfile
+-BASE=Path(__file__).resolve().parent;sys.path.insert(0,str(BASE/'package'))
++BASE=Path(__file__).resolve().parent
++REFERENCE=BASE.parent/'qwen9b-protected-ordinary-reference-draft-20260917'
++sys.path.insert(0,str(REFERENCE/'package'))
+ from binding_common import parse, require, same
+ from binding_inputs import snapshot
+ 

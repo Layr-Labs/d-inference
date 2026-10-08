@@ -1,0 +1,254 @@
+--- a/experiments/cluster/runtime/stage_checks/cli.py
++++ b/experiments/cluster/runtime/stage_checks/cli.py
+@@ -41,14 +41,14 @@
+             command.add_argument('--minimum-reclaimable-gib',type=int,default=8)
+             command.add_argument('--baseline-jsonl',type=Path,required=name=='prefill-ranks')
+             command.add_argument('--baseline-sha256',required=name=='prefill-ranks')
+-    long_cli.add_parsers(commands)
++    long_cli.add_parsers(commands, StageCutArgument)
+     return root
+ 
+ 
+ def main(argv=None):
+     args=parser().parse_args(argv)
++    if args.command in long_cli.COMMANDS:return long_cli.run(args)
+     stage_ranges.option(args.command,getattr(args,'stage_cut',None))
+-    if args.command in long_cli.COMMANDS:return long_cli.run(args)
+     sha(args.expected_binary_sha256)
+     integer(args.timeout_seconds,1,60 if args.command=='p2p' else 180)
+     runtime=args.runtime.resolve(strict=True);repository=runtime.parents[2];output=args.output.resolve()
+--- a/experiments/cluster/runtime/stage_checks/long_cli.py
++++ b/experiments/cluster/runtime/stage_checks/long_cli.py
+@@ -2,7 +2,7 @@
+ from pathlib import Path
+ import signal
+ import uuid
+-from . import archive, long_artifacts, long_configuration, long_inputs, long_supervision, long_phase
++from . import archive, long_artifacts, long_configuration, long_inputs, long_supervision, long_phase, long_stage_cut
+ from .common import integer, require, sha
+ from .long_profile import ARTIFACT, COMMANDS, MAX_PARENT_TIMEOUT, NATIVE_TIMEOUT, POLICIES
+ from .long_resources import MemoryGate
+@@ -11,7 +11,7 @@
+ from .resources import resource_preflight
+ 
+ 
+-def add_parsers(commands):
++def add_parsers(commands, stage_cut_action):
+     for name in COMMANDS:
+         command = commands.add_parser(name)
+         for key in ('release','runtime','output','model-dir','tokens-file','prompt-origin-file'):
+@@ -23,12 +23,14 @@
+         command.add_argument('--prefill-phase-trace', action='store_true',
+                              help='Request owned local phase sidecars; verification remains separate')
+         if name == 'long-prefill-ranks':
++            command.add_argument('--stage-cut', type=int, action=stage_cut_action)
+             command.add_argument('--stage-prefill-policy', choices=POLICIES, required=True)
+             command.add_argument('--stage-logits-dtype', choices=['bfloat16'], required=True)
+         else: command.set_defaults(stage_prefill_policy=None, stage_logits_dtype=None)
+ 
+ 
+ def run(args):
++    long_stage_cut.requested(args)
+     integer(args.parent_timeout_seconds, 1, MAX_PARENT_TIMEOUT)
+     integer(args.minimum_reclaimable_gib, 8, 1024)
+     phase_requested = long_phase.requested(args)
+@@ -59,6 +61,8 @@
+         require(archive.digest(output / 'bundle/cluster-inference') == args.expected_binary_sha256, 'Explicit native binary pin differs')
+         archive.verify_archive(modules, output, sources, bundle_hash, launcher)
+         context = long_inputs.prepare(args, output, epoch, modules['artifacts'])
++        if long_stage_cut.for_context(context) is not None:
++            receipt['selected_layer_plan'] = long_stage_cut.receipt(context)
+         archive.write_json(output / 'context.json', context)
+         warning = source_stderr_contract(output, paired)
+         preflight = resource_preflight(output, args.minimum_reclaimable_gib); receipt['preflight'] = preflight
+--- a/experiments/cluster/runtime/stage_checks/long_configuration.py
++++ b/experiments/cluster/runtime/stage_checks/long_configuration.py
+@@ -1,7 +1,7 @@
+ """Exact native configuration; raw prompt files are never worker-reencoded."""
+ import json
+ import re
+-from . import archive, long_phase
++from . import archive, long_phase, long_stage_cut
+ from .common import integer, require, sha
+ from .long_profile import ARTIFACT, COMMANDS, NATIVE_TIMEOUT, POLICIES, REQUIRED_ENVIRONMENT
+ from .long_inputs import bounded_bytes
+@@ -19,6 +19,7 @@
+ 
+ 
+ def build(rank, context, bundle, bundle_hash, hosts):
++    cut = long_stage_cut.for_context(context)
+     paired = context['mode'] == 'long-prefill-ranks'
+     require(context['mode'] in COMMANDS, 'Unknown long command')
+     integer(rank, 0, 1 if paired else 0); sha(bundle_hash)
+@@ -42,6 +43,7 @@
+     else:
+         require(hosts is None and context['stage_prefill_policy'] is None and context['stage_logits_dtype'] is None,
+                 'Solo must not acquire stage or transport configuration')
++    if cut is not None: arguments += ['--stage-cut', str(cut)]
+     arguments += long_phase.arguments(context)
+     return dict(rank=rank, bundle=str(bundle), bundle_sha256=bundle_hash, persistent=False,
+         model_directory=context['model'], artifact_aggregate_sha256=ARTIFACT,
+@@ -50,6 +52,7 @@
+ 
+ 
+ def stage(output, context, bundle_hash, hosts):
++    long_stage_cut.for_context(context)
+     ranks, records = [], []
+     prompt = bounded_bytes(output / 'inputs/prompt.json', 65536)
+     require(archive.digest(output / 'inputs/prompt.json') == context['prompt_file_sha256'], 'Retained prompt changed')
+--- a/experiments/cluster/runtime/stage_checks/long_inputs.py
++++ b/experiments/cluster/runtime/stage_checks/long_inputs.py
+@@ -4,7 +4,7 @@
+ import stat
+ from .common import digest, integer, parse, require, sha
+ from .inputs import retain
+-from . import long_phase
++from . import long_phase, long_stage_cut
+ from .long_profile import ARTIFACT, CONFIGURATION, COMMANDS, VOCABULARY
+ 
+ 
+@@ -29,6 +29,7 @@
+ 
+ 
+ def prepare(args, output, epoch, artifacts):
++    cut = long_stage_cut.requested(args)
+     require(args.command in COMMANDS and args.artifact_aggregate_sha256 == ARTIFACT,
+             'Only the explicitly pinned registered9B long profile is admitted')
+     model = args.model_dir.expanduser().resolve(strict=True)
+@@ -59,10 +60,12 @@
+         stage_prefill_policy=getattr(args, 'stage_prefill_policy', None),
+         stage_logits_dtype=getattr(args, 'stage_logits_dtype', None))
+     if long_phase.requested(args): context['prefill_phase_trace'] = True
++    if cut is not None: context['stage_cut'] = cut
+     return context
+ 
+ 
+ def verify(context, output, artifacts):
++    long_stage_cut.for_context(context)
+     model = Path(context['model']); artifacts.verify_model(model, context['artifact'])
+     require(digest(bounded_bytes(model / 'config.json', 1024**2)) == context['configuration_sha256'], 'Model configuration changed')
+     require(digest(bounded_bytes(model / 'manifest.json', 4 * 1024**2)) == context['manifest_sha256'], 'Model manifest changed')
+--- a/experiments/cluster/runtime/stage_checks/long_rank_contract.py
++++ b/experiments/cluster/runtime/stage_checks/long_rank_contract.py
+@@ -1,5 +1,6 @@
+ """Closed v4 outer launch identities; inner numerical/action audit is separate."""
+ from .long_profile import ARTIFACT, CONFIGURATION, is_sha256
++from . import long_stage_cut
+ from .common import require
+ from .long_identity import FLOW, canonical, sha, known_agreement, validate_request, environment_receipt
+ 
+@@ -18,6 +19,10 @@
+ def agreement(record, epoch, scheduling, inputs):
+     value = record.get('agreement')
+     known = known_agreement(epoch, scheduling, inputs)
++    selected = long_stage_cut.agreement_fields(inputs)
++    if selected:
++        require(scheduling == inputs['stage_prefill_policy'], 'Selected scheduling context differs')
++        known.update(selected)
+     require(type(value) is dict and set(value) == set(known) | HASH_FIELDS, 'Unexpected v4 agreement fields')
+     for key, expected in known.items():
+         require(type(value[key]) is type(expected) and value[key] == expected, 'Agreement differs: ' + key)
+@@ -56,6 +61,7 @@
+         stagePlanSHA256=record['agreement']['producerStageFingerprint' if rank == 0 else 'consumerStageFingerprint'],
+         constructionConfigurationSHA256=record['agreement']['producerConstructionConfigurationSHA256' if rank == 0
+                                                                else 'consumerConstructionConfigurationSHA256'])
++    bound_source.update(long_stage_cut.source_fields(inputs))
+     for key, expected in bound_source.items():
+         require(type(source.get(key)) is type(expected) and source[key] == expected, 'Loaded stage identity differs: ' + key)
+     require(canonical(record['arithmeticEnvironment']) == canonical(environment_receipt())
+--- a/experiments/cluster/runtime/stage_checks/long_solo_contract.py
++++ b/experiments/cluster/runtime/stage_checks/long_solo_contract.py
+@@ -8,6 +8,7 @@
+ 
+ 
+ def validate(record, index, context, first=None):
++    require(context.get('stage_cut') is None, 'Solo does not admit an explicit stage cut')
+     common = {'kind','schemaVersion','correctnessOnly','throughputMeasurementValid','profile',
+               'profileFingerprint','promptFileSHA256','arithmeticEnvironmentSHA256'}
+     fields = common | ({'verifiedModelLoaded','freshRequestStateCreated','recordedRequestFingerprint'} if index == 0 else
+--- /dev/null
++++ b/experiments/cluster/runtime/stage_checks/long_stage_cut.py
+@@ -0,0 +1,67 @@
++"""Registered long-stage selections; native Plan owns the fingerprints below."""
++from . import stage_ranges
++from .common import integer, require
++from .long_profile import ARTIFACT, CONFIGURATION
++
++# Eligibility is separate from geometry: add a descriptor/policy only after
++# its native and independent CPU qualification. No Python Plan serializer.
++_SELECTIONS = {
++    12: dict(
++        policies=('serial_v1',), ranges=((0, 12), (12, 32)),
++        plan='8c3fef079cc82295d70851ef9d9193954afc0d008ad09ce239baaa1a51391fed',
++        stages=('5d038414a2230a28246d4bb6d5b62e5d4859f2cc7a415dcd60349db851dfbd7d',
++                'd33e748ed1326bc1b6198c027a889e4fd9efa931d83cb81f5a67a36234e233e3'),
++        configurations=('d7412870394ac3d7959daf43687901b4ed261761b688f3f1440ad791bef6b2c7',
++                        '9dfb3c7494d46287334139e15b21cf10046bdd1535eebe1a2f076a98dcd0ef00')),
++}
++_TEXT_GEOMETRY = dict(num_hidden_layers=32, full_attention_interval=4)
++_SOURCE_LAYOUT = '112ea4bf7ef38bd40a088dd9c654f77607a01c2bb0f37750ea901c2adfddcf94'
++
++
++def option(command, cut, policy):
++    if cut is None: return None
++    require(command == 'long-prefill-ranks', 'Explicit long stage cuts require long-prefill-ranks')
++    integer(cut, 1, 127)
++    require(cut in _SELECTIONS, 'Long stage cut has no admitted registered descriptor')
++    selected = _SELECTIONS[cut]
++    require(stage_ranges.ranges(_TEXT_GEOMETRY, cut) == selected['ranges'], 'Registered stage geometry differs')
++    require(type(policy) is str and policy in selected['policies'], 'Scheduling policy is not admitted for this long stage cut')
++    return cut
++
++
++def requested(args):
++    return option(args.command, getattr(args, 'stage_cut', None), getattr(args, 'stage_prefill_policy', None))
++
++
++def for_context(context):
++    cut = option(context.get('mode'), context.get('stage_cut'), context.get('stage_prefill_policy'))
++    if cut is not None:
++        require(context.get('artifact') == ARTIFACT and context.get('configuration_sha256') == CONFIGURATION,
++                'Selected long stage requires the registered source/configuration')
++    return cut
++
++
++def agreement_fields(context):
++    cut = for_context(context)
++    if cut is None: return {}
++    selected = _SELECTIONS[cut]
++    return dict(planFingerprint=selected['plan'], producerStageFingerprint=selected['stages'][0],
++        consumerStageFingerprint=selected['stages'][1],
++        producerConstructionConfigurationSHA256=selected['configurations'][0],
++        consumerConstructionConfigurationSHA256=selected['configurations'][1])
++
++
++def source_fields(context):
++    if for_context(context) is None: return {}
++    # Existing contract loops also bind each local stage/config to its agreement.
++    return dict(sourceParameterLayoutSHA256=_SOURCE_LAYOUT, sourceModelTensorBytes=5038041600)
++
++
++def receipt(context):
++    cut = for_context(context)
++    require(cut is not None, 'No explicit long stage selection')
++    selected = _SELECTIONS[cut]
++    return dict(stage_cut=cut, source_layer_ranges=[list(row) for row in selected['ranges']],
++        plan_sha256=selected['plan'], stage_plan_sha256=list(selected['stages']),
++        stage_configuration_sha256=list(selected['configurations']),
++        source_identity_validation_only=True, independent_numerical_action_timing_audit_performed=False)
+--- a/experiments/cluster/runtime/stage_checks/long_supervision.py
++++ b/experiments/cluster/runtime/stage_checks/long_supervision.py
+@@ -2,11 +2,13 @@
+ import time
+ from .common import integer, require
+ from .long_profile import MAX_PARENT_TIMEOUT
++from . import long_stage_cut
+ from .long_rank_contract import peers
+ from .long_stream import Records
+ 
+ 
+ def run(ranks, context, timeout, start, stop, memory, clock=time.monotonic, sleep=time.sleep):
++    long_stage_cut.for_context(context)
+     integer(timeout, 1, MAX_PARENT_TIMEOUT)
+     expected = [0, 1] if context['mode'] == 'long-prefill-ranks' else [0]
+     require([rank['rank'] for rank in ranks] == expected and all(rank['host'] is None for rank in ranks),

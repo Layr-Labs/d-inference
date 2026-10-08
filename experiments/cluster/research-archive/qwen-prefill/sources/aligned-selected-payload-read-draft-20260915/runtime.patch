@@ -1,0 +1,554 @@
+--- /dev/null
++++ b/Sources/ClusterInference/CheckpointAlignedReadAccounting.swift
+@@ -0,0 +1,93 @@
++import Foundation
++
++/// Operational IO accounting, separate from tensor/model storage identity.
++struct CheckpointAlignedReadAccounting: Codable, Equatable {
++    let schema: String
++    let alignmentBytes: Int
++    let maximumScratchAllocationBytes: Int
++    let cacheBypassRequested: Bool
++    let readAheadDisabledRequested: Bool
++    let fileCacheAbsenceEstablished: Bool
++    private(set) var selectedBytes: Int
++    private(set) var requestedReadBytes: Int
++    private(set) var returnedReadBytes: Int
++    private(set) var paddingReadBytes: Int
++    private(set) var preadCalls: Int
++    private(set) var interruptedCalls: Int
++    private(set) var shortEOFReads: Int
++    private(set) var largestScratchRequestBytes: Int
++    private(set) var largestScratchAllocationBytes: Int
++
++    init() {
++        schema = "checkpoint_aligned_selected_read_v1"
++        alignmentBytes = CheckpointAlignedReadPlan.alignmentBytes
++        maximumScratchAllocationBytes = CheckpointAlignedReadPlan.maximumScratchAllocationBytes
++        cacheBypassRequested = true; readAheadDisabledRequested = true
++        fileCacheAbsenceEstablished = false
++        selectedBytes = 0; requestedReadBytes = 0; returnedReadBytes = 0; paddingReadBytes = 0
++        preadCalls = 0; interruptedCalls = 0; shortEOFReads = 0
++        largestScratchRequestBytes = 0; largestScratchAllocationBytes = 0
++    }
++
++    mutating func recordCall(requested: Int, returned: Int, interrupted: Bool, shortEOF: Bool) throws {
++        requestedReadBytes = try Self.add(requestedReadBytes, requested)
++        returnedReadBytes = try Self.add(returnedReadBytes, returned)
++        preadCalls = try Self.add(preadCalls, 1)
++        interruptedCalls = try Self.add(interruptedCalls, interrupted ? 1 : 0)
++        shortEOFReads = try Self.add(shortEOFReads, shortEOF ? 1 : 0)
++    }
++    mutating func finish(selected: Int, scratchRequested: Int, scratchAllocated: Int) throws {
++        guard selected >= 0, returnedReadBytes >= selected,
++              scratchRequested <= scratchAllocated, scratchAllocated <= maximumScratchAllocationBytes else {
++            throw ProbeError("Aligned checkpoint read accounting differs")
++        }
++        selectedBytes = selected; paddingReadBytes = returnedReadBytes - selected
++        largestScratchRequestBytes = scratchRequested; largestScratchAllocationBytes = scratchAllocated
++    }
++    mutating func merge(_ other: Self) throws {
++        guard schema == other.schema, alignmentBytes == other.alignmentBytes,
++              maximumScratchAllocationBytes == other.maximumScratchAllocationBytes,
++              other.cacheBypassRequested, other.readAheadDisabledRequested, !other.fileCacheAbsenceEstablished else {
++            throw ProbeError("Aligned checkpoint read policy differs")
++        }
++        selectedBytes = try Self.add(selectedBytes, other.selectedBytes)
++        requestedReadBytes = try Self.add(requestedReadBytes, other.requestedReadBytes)
++        returnedReadBytes = try Self.add(returnedReadBytes, other.returnedReadBytes)
++        paddingReadBytes = try Self.add(paddingReadBytes, other.paddingReadBytes)
++        preadCalls = try Self.add(preadCalls, other.preadCalls)
++        interruptedCalls = try Self.add(interruptedCalls, other.interruptedCalls)
++        shortEOFReads = try Self.add(shortEOFReads, other.shortEOFReads)
++        largestScratchRequestBytes = max(largestScratchRequestBytes, other.largestScratchRequestBytes)
++        largestScratchAllocationBytes = max(largestScratchAllocationBytes, other.largestScratchAllocationBytes)
++    }
++    private static func add(_ a: Int, _ b: Int) throws -> Int {
++        let value = a.addingReportingOverflow(b)
++        guard a >= 0, b >= 0, !value.overflow else { throw ProbeError("Aligned read counter overflow") }
++        return value.partialValue
++    }
++}
++
++/// Rounded IO windows only. Selected bytes are still copied exactly once into
++/// the existing Data destination; this is not tensor or MLX allocation metadata.
++struct CheckpointAlignedReadPlan {
++    static let alignmentBytes = 16_384
++    static let maximumScratchRequestBytes = 8 * 1024 * 1024
++    // Conservative operational host allowance: one bounded anonymous scratch
++    // extent plus one alignment page. Mapped bytes are reported separately.
++    static let maximumScratchAllocationBytes = maximumScratchRequestBytes + alignmentBytes
++    let selectedStart: Int, selectedEnd: Int, alignedStart: Int, alignedEnd: Int, scratchBytes: Int
++
++    init(fileSize: Int, offset: Int, count: Int) throws {
++        guard fileSize >= 0, offset >= 0, offset <= fileSize, count > 0, count <= fileSize - offset else {
++            throw ProbeError("Aligned checkpoint selected range is out of range")
++        }
++        selectedStart = offset; selectedEnd = offset + count
++        let a = Self.alignmentBytes
++        alignedStart = offset - offset % a
++        let remainder = selectedEnd % a, padding = remainder == 0 ? 0 : a - remainder
++        let end = selectedEnd.addingReportingOverflow(padding)
++        guard !end.overflow else { throw ProbeError("Aligned checkpoint rounded range overflow") }
++        alignedEnd = end.partialValue
++        scratchBytes = min(Self.maximumScratchRequestBytes, alignedEnd - alignedStart)
++    }
++}
+--- /dev/null
++++ b/Sources/ClusterInference/CheckpointAlignedReadCheck.swift
+@@ -0,0 +1,151 @@
++import CryptoKit
++import Darwin
++import Foundation
++
++struct CheckpointAlignedReadCheckResult: Encodable {
++    let kind = "checkpoint_aligned_selected_read_check"
++    let accepted: [String], rejected: [String]
++    let cpuOnly = true, modelPayloadRead = false, physicalCacheSavingsMeasured = false
++}
++
++func checkAlignedCheckpointPayloadRead() throws -> CheckpointAlignedReadCheckResult {
++    var accepted = [String](), rejected = [String]()
++    func require(_ value: Bool, _ message: String) throws {
++        guard value else { throw ProbeError("Aligned read fixture: " + message) }
++    }
++    func accept(_ name: String, _ body: () throws -> Void) throws { try body(); accepted.append(name) }
++    func reject(_ name: String, _ body: () throws -> Void) throws {
++        do { try body() } catch { rejected.append(name); return }
++        throw ProbeError("Aligned read fixture unexpectedly accepted " + name)
++    }
++    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("aligned-read-" + UUID().uuidString)
++    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
++        attributes: [.posixPermissions: 0o700])
++    defer { try? FileManager.default.removeItem(at: directory) }
++    let a = CheckpointAlignedReadPlan.alignmentBytes, b = CheckpointAlignedReadPlan.maximumScratchRequestBytes
++    let bytes = Data((0..<(b + 3 * a + 37)).map { UInt8($0 % 251) })
++    let url = directory.appendingPathComponent("fixture.safetensors")
++    try bytes.write(to: url)
++    let file = try VerifiedCheckpoint.File(url: url, path: "fixture.safetensors", expectedSize: bytes.count)
++    try require(try file.digest() == SHA256.hash(data: bytes), "fixture hash differs")
++    try accept("ordinary reads retain exact bytes and no aligned accounting") {
++        var output = Data(count: 79)
++        let stats = try output.withUnsafeMutableBytes { try file.read(into: $0, offset: 11) }
++        try require(stats == nil && output == bytes.subdata(in: 11..<90), "cached path changed")
++    }
++    try file.bypassPayloadCache()
++    func read(_ offset: Int, _ count: Int) throws -> (Data, CheckpointAlignedReadAccounting) {
++        var result = Data(count: count)
++        let accounting = try result.withUnsafeMutableBytes { try file.read(into: $0, offset: offset) }
++        guard let accounting else { throw ProbeError("Fixture aligned accounting missing") }
++        return (result, accounting)
++    }
++    try accept("unaligned destination and selected offset preserve guard bytes") {
++        let count = a + 19
++        var storage = Data(repeating: 0xa5, count: count + 10)
++        let stats = try storage.withUnsafeMutableBytes { buffer in
++            try file.read(into: .init(start: buffer.baseAddress!.advanced(by: 5), count: count), offset: 17)
++        }
++        try require(storage.prefix(5) == Data(repeating: 0xa5, count: 5)
++            && storage.suffix(5) == Data(repeating: 0xa5, count: 5)
++            && storage.subdata(in: 5..<(count + 5)) == bytes.subdata(in: 17..<(17 + count)), "copy crossed selection")
++        try require(stats?.selectedBytes == count && stats?.returnedReadBytes == 2 * a, "padding not separated")
++    }
++    try accept("multiple aligned windows copy one selected tensor") {
++        let (actual, stats) = try read(7, b + 31)
++        try require(actual == bytes.subdata(in: 7..<(b + 38)) && stats.preadCalls == 2
++            && stats.selectedBytes == b + 31 && stats.largestScratchRequestBytes == b
++            && stats.largestScratchAllocationBytes >= b && stats.largestScratchAllocationBytes <= b + a,
++            "window or scratch bound differs")
++    }
++    try accept("EOF short return counts actual padding instead of requested tail") {
++        let (actual, stats) = try read(bytes.count - 31, 31)
++        try require(actual == bytes.suffix(31) && stats.requestedReadBytes == a
++            && stats.returnedReadBytes == 37 && stats.paddingReadBytes == 6
++            && stats.shortEOFReads == 1, "EOF rounding was counted as copied data")
++    }
++    try accept("whole file including partial final page is exact") {
++        let (actual, stats) = try read(0, bytes.count)
++        try require(actual == bytes && stats.selectedBytes == bytes.count && stats.paddingReadBytes == 0
++            && stats.shortEOFReads == 1, "whole-file exact copy differs")
++    }
++    try accept("disjoint selected spans aggregate copied and padded bytes separately") {
++        var selected = Data(), total = CheckpointAlignedReadAccounting()
++        for span in [19..<117, (a + 3)..<(a + 91), (2 * a + 8)..<(2 * a + 31)] {
++            let (actual, stats) = try read(span.lowerBound, span.count)
++            try require(actual == bytes.subdata(in: span), "selected span differs")
++            selected.append(actual); try total.merge(stats)
++        }
++        try require(total.selectedBytes == selected.count && total.preadCalls == 3
++            && total.returnedReadBytes == total.selectedBytes + total.paddingReadBytes,
++            "span merge changed selected count")
++    }
++    try accept("zero length at EOF preserves the old empty path") {
++        try require(try file.data(offset: bytes.count, count: 0).isEmpty, "empty read refused")
++    }
++    try accept("EINTR retries the same aligned window and records requested bytes") {
++        var output = Data(count: 97), calls = 0, first: (UInt, Int, off_t)?
++        let stats = try output.withUnsafeMutableBytes { destination in
++            try CheckpointAlignedReader.read(descriptor: file.descriptor, fileSize: file.size,
++                into: destination, offset: 23, checkUnchanged: file.checkUnchanged, readCall: { fd, pointer, count, offset in
++                    let identity = (UInt(bitPattern: pointer), count, offset)
++                    calls += 1
++                    if calls == 1 { first = identity; errno = EINTR; return -1 }
++                    guard let first, first.0 == identity.0, first.1 == count, first.2 == offset,
++                        identity.0 % UInt(a) == 0, count % a == 0, offset % off_t(a) == 0 else { return 0 }
++                    return Darwin.pread(fd, pointer, count, offset)
++                })
++        }
++        try require(output == bytes.subdata(in: 23..<120) && stats.interruptedCalls == 1
++            && stats.preadCalls == 2 && stats.requestedReadBytes == 2 * a
++            && stats.returnedReadBytes == a, "interrupted accounting or retry alignment differs")
++    }
++    try accept("rehash preserves original digest and later aligned policy") {
++        try require(try file.digest() == SHA256.hash(data: bytes), "rehash differs")
++        let (_, stats) = try read(37, 89)
++        try require(stats.selectedBytes == 89 && stats.preadCalls == 1, "rehash polluted per-read counters")
++    }
++    try reject("selected interval beyond EOF") { _ = try read(bytes.count - 1, 2) }
++    try reject("negative selected offset") { _ = try read(-1, 2) }
++    try reject("negative plan length") { _ = try CheckpointAlignedReadPlan(fileSize: 10, offset: 0, count: -1) }
++    try reject("zero plan length is not an IO window") { _ = try CheckpointAlignedReadPlan(fileSize: 10, offset: 0, count: 0) }
++    try reject("rounded end overflow before allocation") {
++        _ = try CheckpointAlignedReadPlan(fileSize: Int.max, offset: Int.max - 1, count: 1)
++    }
++    for (name, result, errorNumber) in [("unexpected positive short", 128, 0), ("zero return before EOF", 0, 0),
++                                        ("non-EINTR syscall failure", -1, EIO)] {
++        try reject(name) {
++            var output = Data(count: 37)
++            _ = try output.withUnsafeMutableBytes { destination in
++                try CheckpointAlignedReader.read(descriptor: file.descriptor, fileSize: file.size,
++                    into: destination, offset: 0, checkUnchanged: file.checkUnchanged, readCall: { _, _, _, _ in
++                        errno = errorNumber; return result
++                    })
++            }
++        }
++    }
++    try reject("counter overflow refuses an otherwise valid merge") {
++        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(CheckpointAlignedReadAccounting())) as! [String: Any]
++        object["selectedBytes"] = Int.max
++        var total = try JSONDecoder().decode(CheckpointAlignedReadAccounting.self,
++            from: JSONSerialization.data(withJSONObject: object))
++        let (_, stats) = try read(0, 1)
++        try total.merge(stats)
++    }
++    try reject("in-place mutation during pread") {
++        var output = Data(count: 97)
++        _ = try output.withUnsafeMutableBytes { destination in
++            try CheckpointAlignedReader.read(descriptor: file.descriptor, fileSize: file.size,
++                into: destination, offset: 0, checkUnchanged: file.checkUnchanged, readCall: { fd, pointer, count, offset in
++                    let result = Darwin.pread(fd, pointer, count, offset)
++                    let writer = open(url.path, O_WRONLY)
++                    if writer >= 0 {
++                        var value: UInt8 = 255
++                        _ = Darwin.pwrite(writer, &value, 1, 0); close(writer)
++                    }
++                    return result
++                })
++        }
++    }
++    return .init(accepted: accepted, rejected: rejected)
++}
+--- /dev/null
++++ b/Sources/ClusterInference/CheckpointAlignedReader.swift
+@@ -0,0 +1,67 @@
++import Darwin
++import Foundation
++
++enum CheckpointAlignedReader {
++    typealias Read = (Int32, UnsafeMutableRawPointer, Int, off_t) -> Int
++
++    /// Uses the already verified descriptor. The caller opted this descriptor
++    /// into F_NOCACHE/F_RDAHEAD; no payload file is opened, mapped, or retained.
++    /// Scratch is released before SafeTensorReader constructs the MLX copy.
++    static func read(descriptor: Int32, fileSize: Int, into destination: UnsafeMutableRawBufferPointer,
++        offset: Int, checkUnchanged: () throws -> Void,
++        readCall: Read = { Darwin.pread($0, $1, $2, $3) }
++    ) throws -> CheckpointAlignedReadAccounting {
++        let plan = try CheckpointAlignedReadPlan(fileSize: fileSize, offset: offset, count: destination.count)
++        let a = CheckpointAlignedReadPlan.alignmentBytes, page = Int(getpagesize())
++        guard descriptor >= 0, page == a, destination.baseAddress != nil else {
++            throw ProbeError("Aligned checkpoint descriptor, page size or destination is invalid")
++        }
++        try checkUnchanged()
++        // Anonymous private pages only (fd=-1), never a mapping of the verified
++        // file. The exact page-multiple extent avoids malloc bucket assumptions.
++        let allocation = mmap(nil, plan.scratchBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
++        guard allocation != MAP_FAILED, let scratch = allocation else {
++            throw ProbeError("Cannot allocate aligned checkpoint scratch")
++        }
++        var mapped = true
++        defer { if mapped { _ = munmap(scratch, plan.scratchBytes) } }
++        let allocated = plan.scratchBytes
++        guard UInt(bitPattern: scratch) % UInt(a) == 0,
++              allocated >= plan.scratchBytes,
++              allocated <= plan.scratchBytes + a,
++              allocated <= CheckpointAlignedReadPlan.maximumScratchAllocationBytes else {
++            throw ProbeError("Aligned checkpoint scratch exceeded its host allocation allowance: requested=\(plan.scratchBytes) allocated=\(allocated) alignmentRemainder=\(UInt(bitPattern: scratch) % UInt(a))")
++        }
++        var statistics = CheckpointAlignedReadAccounting(), current = plan.alignedStart, written = 0
++        while current < plan.alignedEnd {
++            let requested = min(plan.scratchBytes, plan.alignedEnd - current)
++            let expected = min(requested, fileSize - current)
++            try checkUnchanged()
++            let count = readCall(descriptor, scratch, requested, off_t(current))
++            if count < 0 && errno == EINTR {
++                try statistics.recordCall(requested: requested, returned: 0, interrupted: true, shortEOF: false)
++                continue // retry the SAME aligned pointer, offset and length
++            }
++            guard count > 0, count == expected else {
++                throw ProbeError("Short or failed aligned checkpoint read")
++            }
++            try statistics.recordCall(requested: requested, returned: count,
++                interrupted: false, shortEOF: count < requested)
++            try checkUnchanged()
++            let lower = max(current, plan.selectedStart), upper = min(current + count, plan.selectedEnd)
++            guard lower < upper, lower == plan.selectedStart + written else {
++                throw ProbeError("Aligned checkpoint selected copy lost its contiguous frontier")
++            }
++            let selected = upper - lower
++            destination.baseAddress!.advanced(by: written).copyMemory(
++                from: scratch.advanced(by: lower - current), byteCount: selected)
++            written += selected; current += requested
++        }
++        try checkUnchanged()
++        guard written == destination.count else { throw ProbeError("Aligned checkpoint selected byte count differs") }
++        try statistics.finish(selected: written, scratchRequested: plan.scratchBytes, scratchAllocated: allocated)
++        guard munmap(scratch, plan.scratchBytes) == 0 else { throw ProbeError("Cannot release aligned checkpoint scratch") }
++        mapped = false
++        return statistics
++    }
++}
+--- a/Sources/ClusterInference/Main.swift
++++ b/Sources/ClusterInference/Main.swift
+@@ -88,6 +88,7 @@
+             try checkGemmaPartitionPlan()
+             try checkPartitionStorage()
+             try checkCheckpointReadPolicy()
++            try emitJSON(try checkAlignedCheckpointPayloadRead())
+             return
+         }
+         if options.mode == .qwenLongPrefillCohortReadinessCheck {
+--- a/Sources/ClusterInference/QwenCheckpointTensor.swift
++++ b/Sources/ClusterInference/QwenCheckpointTensor.swift
+@@ -33,11 +33,12 @@
+     }
+ 
+     func read(_ selection: TensorSelection) throws
+-        -> (array: MLXArray, copiedBytes: Int, largestHostTensorBytes: Int) {
++        -> (array: MLXArray, copiedBytes: Int, largestHostTensorBytes: Int,
++            readAccounting: CheckpointAlignedReadAccounting?) {
+         let expected = try selection.resultShape(shape)
+         if parts.count == 1 {
+             let read = try parts[0].tensor.read(selection)
+-            return (read.array, read.copiedBytes, read.copiedBytes)
++            return (read.array, read.copiedBytes, read.copiedBytes, read.readAccounting)
+         }
+         let ranges: [Range<Int>]
+         switch selection {
+@@ -47,6 +48,7 @@
+             ranges = selected
+         }
+         var pieces: [MLXArray] = [], copied = 0, largest = 0, offset = 0
++        var accounting: CheckpointAlignedReadAccounting?
+         for part in parts {
+             let end = offset + part.tensor.shape[1]
+             let local = ranges.compactMap { range -> Range<Int>? in
+@@ -57,6 +59,10 @@
+                 let read = try part.tensor.read(.axis(1, local))
+                 pieces.append(read.array); copied += read.copiedBytes
+                 largest = max(largest, read.copiedBytes)
++                if let part = read.readAccounting {
++                    if accounting == nil { accounting = .init() }
++                    try accounting!.merge(part)
++                }
+             }
+             offset = end
+         }
+@@ -67,7 +73,7 @@
+         guard array.shape == expected, array.dtype == dtype, array.nbytes == copied else {
+             throw ProbeError("Selected expert fusion has inconsistent shape or byte count")
+         }
+-        return (array, copied, largest)
++        return (array, copied, largest, accounting)
+     }
+ }
+ 
+--- a/Sources/ClusterInference/QwenDenseShortPairResourcePolicy.swift
++++ b/Sources/ClusterInference/QwenDenseShortPairResourcePolicy.swift
+@@ -21,8 +21,9 @@
+         }
+         let r = try budget.remainingAllocationBytes(progress), h = try budget.hostAllowanceBytes(progress)
+         let q = budget.forwardReserveBytes, sum = QwenLongPrefillCheckedBytes.sum
++        let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
+         let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+-            try sum([r, h, h, q, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
++            try sum([r, h, h, scratch, q, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+         let allocator = try sum([native.activeBytes, native.cacheBytes, r, h, q,
+             QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+         guard os.actualFreeBytes >= free, os.physicalMemoryBytes >= free,
+--- a/Sources/ClusterInference/QwenDenseStageLoadPolicy.swift
++++ b/Sources/ClusterInference/QwenDenseStageLoadPolicy.swift
+@@ -50,7 +50,8 @@
+         let remaining = try budget.remainingAllocationBytes(after: ordinal)
+         let host = ordinal == budget.active.count ? 0 : budget.largestHostTensorBytes
+         let sum = QwenLongPrefillCheckedBytes.sum
+-        let freeRequired = max(minimumActualFreeBytes, try sum([remaining, host, host, loadingHeadroomBytes]))
++        let scratch = ordinal == budget.active.count ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
++        let freeRequired = max(minimumActualFreeBytes, try sum([remaining, host, host, scratch, loadingHeadroomBytes]))
+         let allocatorRequired = try sum([native.activeBytes, native.cacheBytes,
+             remaining, host, allocatorHeadroomBytes])
+         guard os.actualFreeBytes >= freeRequired, os.physicalMemoryBytes >= freeRequired,
+--- a/Sources/ClusterInference/QwenLayerStageInventoryTypes.swift
++++ b/Sources/ClusterInference/QwenLayerStageInventoryTypes.swift
+@@ -91,4 +91,6 @@
+     let inertTensorBytes: Int
+     let storageCommitment: QwenLayerStageStorageCommitment
+     let storageCommitmentSHA256: String
++    /// Optional operational IO detail, excluded from semantic storage identity.
++    let selectedPayloadReadAccounting: CheckpointAlignedReadAccounting?
+ }
+--- a/Sources/ClusterInference/SafeTensorReader.swift
++++ b/Sources/ClusterInference/SafeTensorReader.swift
+@@ -8,13 +8,21 @@
+     let offset: Int
+     let byteCount: Int
+ 
+-    func read(_ selection: TensorSelection) throws -> (array: MLXArray, copiedBytes: Int) {
++    func read(_ selection: TensorSelection) throws
++        -> (array: MLXArray, copiedBytes: Int, readAccounting: CheckpointAlignedReadAccounting?) {
+         let resultShape = try selection.resultShape(shape)
+         let selectedBytes = resultShape.reduce(1, *) * dtype.size
+         var data = Data(count: selectedBytes)
++        var accounting: CheckpointAlignedReadAccounting?
++        func copy(_ destination: UnsafeMutableRawBufferPointer, _ offset: Int) throws {
++            if let part = try file.read(into: destination, offset: offset) {
++                if accounting == nil { accounting = .init() }
++                try accounting!.merge(part)
++            }
++        }
+         try data.withUnsafeMutableBytes { destination in
+             switch selection {
+-            case .all: try file.read(into: destination, offset: offset)
++            case .all: try copy(destination, offset)
+             case .axis(let axis, let ranges):
+                 let innerBytes = shape.dropFirst(axis + 1).reduce(dtype.size, *)
+                 let outerCount = shape.prefix(axis).reduce(1, *)
+@@ -25,8 +33,7 @@
+                         let count = range.count * innerBytes
+                         let target = UnsafeMutableRawBufferPointer(
+                             start: destination.baseAddress!.advanced(by: written), count: count)
+-                        try file.read(into: target,
+-                                      offset: offset + outer * sourceStride + range.lowerBound * innerBytes)
++                        try copy(target, offset + outer * sourceStride + range.lowerBound * innerBytes)
+                         written += count
+                     }
+                 }
+@@ -34,7 +41,7 @@
+             }
+         }
+         // This initializer copies bytes into MLX-owned storage; neither source file nor Data is retained.
+-        return (MLXArray(data, resultShape, dtype: dtype), selectedBytes)
++        return (MLXArray(data, resultShape, dtype: dtype), selectedBytes, accounting)
+     }
+ }
+ 
+--- a/Sources/ClusterInference/VerifiedCheckpoint.swift
++++ b/Sources/ClusterInference/VerifiedCheckpoint.swift
+@@ -36,11 +36,14 @@
+         deinit { close(descriptor) }
+ 
+         /// The selected loader owns this descriptor until its source is released.
+-        /// Keep payload reads uncached so resident MLX storage is not duplicated
+-        /// in newly populated file-cache pages. Existing cached pages are not evicted.
++        /// Request descriptor-local cache bypass and disable read-ahead. Aligned
++        /// payload reads reduce cache duplication; absence of caching is not proven.
+         func bypassPayloadCache() throws {
+             guard fcntl(descriptor, F_NOCACHE, 1) == 0 else {
+                 throw ProbeError("Cannot disable checkpoint payload caching: \(path)")
++            }
++            guard fcntl(descriptor, F_RDAHEAD, 0) == 0 else {
++                throw ProbeError("Cannot disable checkpoint payload read-ahead: \(path)")
+             }
+             bypassesPayloadCache = true
+         }
+@@ -57,7 +60,21 @@
+             else { throw ProbeError("Checkpoint changed during verification/loading: \(path)") }
+         }
+ 
+-        func read(into destination: UnsafeMutableRawBufferPointer, offset: Int) throws {
++        @discardableResult
++        func read(into destination: UnsafeMutableRawBufferPointer, offset: Int) throws -> CheckpointAlignedReadAccounting? {
++            guard offset >= 0, offset <= size, destination.count <= size - offset else {
++                throw ProbeError("Checkpoint read out of range: \(path)")
++            }
++            if bypassesPayloadCache && !destination.isEmpty {
++                return try CheckpointAlignedReader.read(descriptor: descriptor, fileSize: size,
++                    into: destination, offset: offset, checkUnchanged: checkUnchanged)
++            }
++            try readOrdinary(into: destination, offset: offset)
++            return nil
++        }
++
++        // The original cached/reference/checksum copy path remains unchanged.
++        private func readOrdinary(into destination: UnsafeMutableRawBufferPointer, offset: Int) throws {
+             guard offset >= 0, offset <= size, destination.count <= size - offset else {
+                 throw ProbeError("Checkpoint read out of range: \(path)")
+             }
+@@ -73,7 +90,7 @@
+ 
+         func data(offset: Int, count: Int) throws -> Data {
+             var result = Data(count: count)
+-            try result.withUnsafeMutableBytes { try read(into: $0, offset: offset) }
++            try result.withUnsafeMutableBytes { _ = try read(into: $0, offset: offset) }
+             return result
+         }
+ 
+@@ -92,7 +109,7 @@
+                     let count = min(blockSize, size - offset)
+                     try buffer.withUnsafeMutableBytes { bytes in
+                         let block = UnsafeMutableRawBufferPointer(rebasing: bytes[..<count])
+-                        try read(into: block, offset: offset)
++                        try readOrdinary(into: block, offset: offset)
+                         hash.update(bufferPointer: UnsafeRawBufferPointer(block))
+                     }
+                     offset += count
+--- a/Sources/ClusterInference/VerifiedQwenLayerStageLoading.swift
++++ b/Sources/ClusterInference/VerifiedQwenLayerStageLoading.swift
+@@ -64,6 +64,7 @@
+     try source.prepared.checkpoint.checkUnchanged()
+     try source.prepared.checkpoint.bypassTensorPayloadCache()
+     var loadedBytes = 0, largestHostBytes = 0
++    var readAccounting = CheckpointAlignedReadAccounting()
+     for entry in inventory.active {
+         try autoreleasepool {
+             guard let tensor = source.prepared.canonical[entry.sourceName] else {
+@@ -98,6 +99,10 @@
+             try check()
+             loadedBytes += read.copiedBytes
+             largestHostBytes = max(largestHostBytes, read.largestHostTensorBytes)
++            guard let accounting = read.readAccounting, accounting.selectedBytes == read.copiedBytes else {
++                throw ProbeError("Selected-stage aligned read accounting is incomplete")
++            }
++            try readAccounting.merge(accounting)
+         }
+     }
+     model.freeze()
+@@ -112,7 +117,7 @@
+         }
+         return "\(entry.localName):\(value.dtype):\(value.shape)"
+     }
+-    guard loadedBytes == inventory.summary.loadedTensorBytes,
++    guard loadedBytes == inventory.summary.loadedTensorBytes, readAccounting.selectedBytes == loadedBytes,
+           largestHostBytes == (inventory.active.map(\.byteCount).max() ?? 0),
+           modelParameterLayout(model) == inventory.summary.parameterLayoutSHA256,
+           qwenStageLayout(activeLayout) == inventory.summary.activeParameterLayoutSHA256,
+@@ -137,7 +142,8 @@
+         sourceModelTensorBytes: source.sourceBytes, loadedTensorBytes: loadedBytes,
+         largestHostTensorBytes: largestHostBytes, activeTensors: inventory.active,
+         inertModules: inventory.inert, inertTensorBytes: summary.inertTensorBytes,
+-        storageCommitment: commitment, storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)))
++        storageCommitment: commitment, storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)),
++        selectedPayloadReadAccounting: readAccounting)
+     return LoadedQwenLayerStage(model: model, plan: plan, stageIndex: stageIndex,
+         receipt: receipt, activationDType: source.activationDType, vocabularySize: source.vocabularySize)
+     // Verified descriptors close after this scope. Resident arrays do not

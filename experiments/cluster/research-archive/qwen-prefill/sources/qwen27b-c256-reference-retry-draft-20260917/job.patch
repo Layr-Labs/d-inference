@@ -1,0 +1,16 @@
+--- prior/reference-job.json
++++ retry/reference-job.json
+@@ -9,11 +9,11 @@
+   "output_count": 128,
+   "parent_seconds": 315,
+   "prompt_count": 8192,
+-  "prompt_file": "/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-20260917/prompt.ids.json",
++  "prompt_file": "/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-retry2-20260917/prompt.ids.json",
+   "prompt_sha256": "ee6caf0be6391e00ec41df930f0fd6351613969622cbb247b1b4bdaf69afe997",
+   "registered_model": "registered_qwen38_27b",
+   "request_id": "72a2b195-bb12-4da5-ae3a-986352fc2dc4",
+-  "run_dir": "/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/phase-memory-c256-1",
++  "run_dir": "/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/phase-memory-c256-2",
+   "schema": "private_registered_full_generation_reference_job_v1",
+   "source_manifest_sha256": "c80556866c63de8ff800cef947ea6467366bd561f6abcbdf5b73c919df30e183",
+   "stage_cut": 16,

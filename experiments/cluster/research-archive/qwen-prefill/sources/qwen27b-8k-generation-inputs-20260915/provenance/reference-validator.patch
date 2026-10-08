@@ -1,0 +1,11 @@
+--- /Users/developer/DarkbloomDev/cluster-research/qwen27b-cut16-owner-qualification-20260915/verify_reference.py
++++ verify_reference.py
+@@ -3,7 +3,7 @@
+ import json
+ from pathlib import Path
+ import sys
+-from assemble import BASE, pin
++from prepare_inputs import BASE, pin
+ 
+ AUDIT = BASE.parent / 'qwen27b-cut16-numerical-audit-20260915'
+ sys.path.insert(0, str(AUDIT))

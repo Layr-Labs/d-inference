@@ -1,0 +1,36 @@
+--- a/experiments/cluster/inference/README.md
++++ b/experiments/cluster/inference/README.md
+@@ -185,6 +185,11 @@
+ binds that ledger to exact observed source tensors and a private live resource
+ gate. It returns CPU evidence after full-model release and grants no forward
+ permission. The public admission fixture passes 22 accepted/101 rejected checks.
++
++The [short pair loading support](QWEN_DENSE_SHORT_PAIR_LOADING.md) retains both
++compact models through ordered loading, then returns CPU evidence after release.
++Its pure fixture passes 24 accepted/82 rejected checks; lazy inert allowances
++remain reserved. Pair materialization and forward parity remain unqualified.
+ 
+ | Stage | Active weights | Inactive components that the loader must handle |
+ |---|---|---|
+--- a/docs/developer/test.md
++++ b/docs/developer/test.md
+@@ -87,6 +87,19 @@
+ reuses the shared retained metadata. Synthetic allocator/resource observations
+ exercise the pure predicates, without running the private loading gate or a
+ forward pass.
++
++Run the [short pair loading fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_PAIR_LOADING.md)
++without MLX or model payloads:
++
++```sh
++bash experiments/cluster/inference/Tests/ShortPairLoading/run.sh
++```
++
++The standalone fixture passed 24 accepted/82 rejected checks with empty stderr;
++public runner execution remains pending. The 39-source runner reuses the shared
++retained metadata. Synthetic resource and allocator observations test ownership,
++ordered progress and retained inert allowances without executing the private pair
++owner, model loading or forward arithmetic.
+ 
+ Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+ under Swift 6 without MLX:

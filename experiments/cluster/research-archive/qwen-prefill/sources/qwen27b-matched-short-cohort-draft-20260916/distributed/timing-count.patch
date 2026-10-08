@@ -1,0 +1,49 @@
+--- a/timing_results.py
++++ b/timing_results.py
+@@ -15,16 +15,16 @@
+ 
+ 
+ def validate_cohort(config, config_sha, lines, execution):
+-    require(type(lines) is list and len(lines) == 6, 'Complete 1+3 controller stream required')
++    require(type(lines) is list and len(lines) == 4, 'Complete 1+1 controller stream required')
+     require([x.get('schema') for x in lines] == ['owner_timing_cohort_started_v1'] +
+-            ['owner_timing_request_v1'] * 4 + ['owner_timing_cohort_result_v1'], 'Controller record order differs')
++            ['owner_timing_request_v1'] * 2 + ['owner_timing_cohort_result_v1'], 'Controller record order differs')
+     started, final = lines[0], lines[-1]
+     observations = [x['observation'] for x in lines[1:-1]]
+     require(final['requests'] == observations, 'Final request records differ')
+     require(all(x['configurationSHA256'] == config_sha for x in lines), 'Controller configuration pin differs')
+     require(started['membershipEpoch'] == config['membershipEpoch'], 'Epoch differs')
+     require((config['warmupCount'], config['measuredCount'], len(config['promptTokenIDs']),
+-             config['chunkSize'], config['outputCount'], config['stopTokenIDs']) == (1, 3, 8192, 512, 128, []),
++             config['chunkSize'], config['outputCount'], config['stopTokenIDs']) == (1, 1, 8192, 512, 128, []),
+             'Matched input geometry differs')
+     for item in (started, final):
+         require(item['cohortLabel'] == config['cohortLabel'] and item['policyLabel'] == config['policyLabel'], 'Cohort differs')
+@@ -47,9 +47,9 @@
+     require(len(monitors) == 2 and all(x.get('exitCode') == 0 and x.get('errors') == [] for x in monitors),
+             'Resource monitors did not finish cleanly')
+     identifiers = [x['requestID'] for x in observations]
+-    require(len(set(identifiers)) == 4 and all(str(uuid.UUID(x)) == x for x in identifiers), 'Fresh canonical UUIDs required')
+-    require([x['phase'] for x in observations] == ['warmup', 'measured', 'measured', 'measured'] and
+-            [x['iteration'] for x in observations] == [0, 0, 1, 2], 'Warmup/iteration order differs')
++    require(len(set(identifiers)) == 2 and all(str(uuid.UUID(x)) == x for x in identifiers), 'Fresh canonical UUIDs required')
++    require([x['phase'] for x in observations] == ['warmup', 'measured'] and
++            [x['iteration'] for x in observations] == [0, 0], 'Warmup/iteration order differs')
+     rows = []
+     for observation in observations:
+         require(observation.get('completed') is True and observation.get('sequenceGuardMatched') is True and
+@@ -71,10 +71,10 @@
+     measured = rows[1:]
+     values = sorted(x['internalFirstTokenNanoseconds'] for x in measured)
+     summary = final['summary']
+-    require(summary['complete'] is True and summary['completeMeasuredCount'] == 3 and
++    require(summary['complete'] is True and summary['completeMeasuredCount'] == 1 and
+             summary['warmupsExcluded'] is True and summary['measuredInternalOwnerControlFirstTokenNanoseconds'] == values and
+-            summary['medianInternalOwnerControlFirstTokenNanoseconds'] == values[1], 'Controller summary differs from raw clocks')
+-    result = dict(requests=rows, warmupCount=1, measuredCount=3, warmupExcluded=True,
++            summary['medianInternalOwnerControlFirstTokenNanoseconds'] == values[0], 'Controller summary differs from raw clocks')
++    result = dict(requests=rows, warmupCount=1, measuredCount=1, warmupExcluded=True,
+         medianInternalFirstTokenSeconds=statistics.median(x['internalFirstTokenNanoseconds'] for x in measured) / 1e9,
+         medianPrefillTokensPerSecond=statistics.median(x['prefillTokensPerSecond'] for x in measured),
+         medianContinuationTokensPerSecond=statistics.median(x['continuationTokensPerSecond'] for x in measured),

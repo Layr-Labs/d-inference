@@ -1,0 +1,69 @@
+# Physical resident 9B cohort
+
+This private launcher coordinates exactly two registered Qwen3.5 9B ranks: **cut 12/20, serial_v1, 8192 tokens, chunk 512, one output, one warmup plus three measured requests**. It uses the resident JACCL native increment, unchanged V3 pipe ownership, and copied pure rank wire/final validators. It does not configure networking or change any interface. Root owns the temporary alias lease, deployment and actual execution.
+
+Copy the complete frozen directory to the same `launcher_path` on both Macs. Deploy the root-built native package independently at `resident-cache-off-runtime-20260915` (bundle/source/provenance plus its root manifest). Fill `example-plan.json` with the actual SSH aliases, coordinator address and root-produced native/package/bundle hashes and member count. The placeholder pins deliberately fail parsing. Both hosts must already be trusted by SSH; the launcher never accepts new host keys or reads a credential file.
+
+```sh
+/usr/bin/python3 -B /Users/developer/DarkbloomDev/cluster-research/resident-physical-integration-v4-20260915/run_physical.py \
+  --config /Users/developer/DarkbloomDev/cluster-research/physical-cut12-plan.json \
+  --output /Users/developer/DarkbloomDev/cluster-research/physical-cut12-client-20260915
+```
+
+Use new local and remote output directories whose parents exist. Run paths must be separate from the launcher, deployed bundle and model. No native package or model payload is copied by this launcher. Before starting ranks, each remote preparation verifies the supplied package and all source/bundle members, exact 9B config/manifest metadata and raw prompt. Native loading retains its complete artifact verification and actual resource admission.
+
+Each remote supervisor receives the exact same four declared epochs. `open` precedes native startup/model load. `ready` is forwarded only after the native worker emitted it. The local V3 coordinator waits for both ready events and both results at every barrier; there is no eager four-request execution. After four results it requires both releases, then sends shutdown 5 and requires stopped/EOF/zero exit.
+
+The remote supervisor owns the native `Popen`, separate process group, raw pipes and V3 hard timer. It checks an exclusively owned cancel file while awaiting control, native output or forwarding output. Native timeout is 300 seconds, remote and client timers 315 seconds. Each remote supervisor writes a terminal record only after attempting local native cleanup. Accepted SIGKILL/group absence and leader reaping are distinguished from independent descendant-reaping proof. A failed remote preflight records `nativeNotStarted`; it does not claim a reap.
+
+**An exited SSH client is not remote cleanup proof.** On failure the parent separately addresses both prepared remote cancel paths, then retrieves terminal records. Missing terminal/fence/reap evidence fails the run and remains unknown; it is never upgraded because the SSH process died. The remote native alarm and supervisor deadline remain independent bounds. Root's network lease must cover preparation and the entire run; this launcher does not renew it. Control/retrieval operations have their own bounded timeouts after the active cohort timer.
+
+Each Mac polls the same actual-free >=6 GiB, zero-swap, pressure <=2 and AC screen used by the accepted solo launcher. Native checks additionally cover low-power/thermal state before and after requests. The client does not substitute its own memory for either remote GPU's resources. All raw samples are retrieved and replayed; this is sampled evidence, not a peak-memory guarantee.
+
+Ready validation binds actual remote child PID, bundle path, native/package identity, exact loaded source receipts, native `cbv2-contiguous` execution path, the common ordered cohort, and effective JACCL matrix/coordinator. The exact source controls come from the previously qualified public cut12 serial run; their origin hashes and CPU result are retained. Paths/ranks may differ while the raw matrix bytes and coordinator agree. No hardware attestation is inferred from these fields.
+
+Per-request validation reuses unchanged pure v4 envelope/token/action and final-state helpers. Both 16-frame streams, native action sequences, 72 final state entries, final BF16 logit metadata/digest and selected token must match the qualified same-input reference. The candidate exports hashes, not tensor values: 64 state components and boundary payloads remain opaque, while eight offset components and the reference BF16 row are independently reconstructable. Copied helpers are local imports only. The new code does not synthesize old outer ready/report records or execute archived launchers.
+
+`receipt.json` contains validated measurements, source identities, remote terminal evidence and explicit limitations. `pipes/` and `events/` preserve original forwarded native bytes. `remote-rank-*` retains remote raw pipes, preparation/resource logs and ownership/terminal/config records. Success requires local forwarded stdin/stdout and remote native stream hashes to agree. SSH stderr remains strictly empty. The remote-only V2 specialization accepts at most four exact ordered JACCL TCP retry lines (attempts 0–3, waits 1000/2000/4000/8000 ms, 180 bytes total), rank 1 only, before ready. It retains every byte, rejects unknown, incomplete, repeated and post-ready text, and seals after draining already-written stderr at ready. Retrieved native stderr is separately replayed against this policy and its remote terminal summary. Partial failures are retained without retry.
+
+The timing is the existing **rank-zero-only internal interval**, including boundary validation/copies and final token return, excluding loading/readiness and post-stop capture/retirement. No timestamps from different hosts are subtracted. This is not external TTFT, representative study completion, MTP support, a hardware-attested link claim or speedup qualification. Those claims remain false in native and parent records. Root must run the actual model; the author's tests use Python processes and fabricated DTOs only.
+
+CPU checks: `python3 -B -m unittest -v test_physical test_retry_stderr test_selected_read_accounting test_allocator_policy` (20 tests passed, including fabricated Python subprocesses). `native-contract/` contains source copies, not executable code, for checking CLI/DTO compatibility against the root build. `cpu-checks.json` and `manifest.json` bind the final package.
+
+## Aligned selected-payload revision
+
+V3 requires `sourceLoad.selectedPayloadReadAccounting` with the closed
+`checkpoint_aligned_selected_read_v1` policy and checked whole-tensor read,
+padding, interruption, EOF and actual scratch bounds. All prior source-load
+fields must still exactly match the frozen selected tensor controls. The full
+validated receipt is retained for the final source-load receipt hash. Tensor
+values, storage commitments, request agreement, numerical reference and
+resource floors are unchanged. The counters do not claim absence of file cache;
+that remains a separately measured property.
+
+The prior V2 manifest is retained as `previous-launcher-manifest.json`; V2
+itself is unchanged. `cpu-checks-v3.json` is this revision's current CPU result.
+The initial two mock-subprocess failures and their fixture-only correction
+are retained in `cpu-checks-initial-v3-failure.json`. Those failures did not
+execute native inference.
+
+## Rank allocator-cache revision
+
+V4 additionally requires the outer Ready `allocatorPolicy` record with the
+closed `qwen_resident_rank_allocator_cache_disabled_v1` policy. Rank workers
+set the MLX reusable-buffer cache limit to zero after initial admission and
+before model work. They synchronize GPU and CPU streams, capture allocator
+counters, clear dead cached buffers, and verify unchanged active bytes and
+zero cached bytes before Ready. The active allocation limit and actual-free
+resource floor are unchanged; this cannot release live weights or state.
+Native errors are checked before Ready under the helper's own MLX error box.
+Solo workers omit the optional field and retain their existing policy.
+
+The metadata validator checks the exact constants, nonnegative counters,
+unchanged active/peak counters across clearing, and active bytes no smaller
+than the verified selected tensors. These are source-bound observations,
+not proof that active allocations fit a complete request. Actual memory
+benefit and inference acceptance require the root-owned physical run.
+`cpu-checks-v4.json` records the 20 focused CPU tests; the independent review
+is retained in `allocator-policy-review.json`. The previous frozen V3 manifest
+is `previous-v3-launcher-manifest.json`; its sources and results remain intact.

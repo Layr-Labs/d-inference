@@ -1,0 +1,25 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageMetadata.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageMetadata.swift
+@@ -26,12 +26,22 @@
+             "num_experts", "num_experts_per_tok", "decoder_sparse_step", "shared_expert_intermediate_size",
+             "moe_intermediate_size", "norm_topk_prob", "mtp_num_hidden_layers", "mtp_use_dedicated_embeddings",
+             "layer_types", "mlp_only_layers", "hidden_act", "attn_output_gate", "attention_dropout",
++            "output_gate_type",
+             "mamba_ssm_dtype", "dtype", "torch_dtype", "initializer_range", "use_cache", "eos_token_id",
+             "bos_token_id", "pad_token_id", "quantization", "quantization_config", "architectures",
+             "transformers_version", "cluster_fixture_profile", "cluster_fixture_dtype", "mtplx_mtp", "mtplx_mtp_quantization"]
+         guard Set(text.keys).isSubset(of: knownKeys),
+             root["mtplx_mtp"] == nil || root["mtplx_mtp"] is [String: Any] else {
+             throw ProbeError("Unqualified Qwen text metadata or malformed optional MTP declaration")
++        }
++        // The current Qwen35 decoder ignores this optional key; its GDN
++        // RMSNorm gate already applies SiLU. Admit only compatible declarations.
++        // Validate without normalizing/removing the original source spelling.
++        // This selects no new operator and grants no execution capability.
++        if let outputGate = text["output_gate_type"] {
++            guard let value = outputGate as? String, ["swish", "silu"].contains(value) else {
++                throw ProbeError("Unsupported GDN output gate; layer stages require swish or silu")
++            }
+         }
+         func boolean(_ value: Any?, expected: Bool) -> Bool {
+             guard let number = value as? NSNumber, String(cString: number.objCType) == "c" else { return false }

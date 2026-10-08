@@ -1,0 +1,41 @@
+--- prior/run_physical.py
++++ retry/run_physical.py
+@@ -21,9 +21,9 @@
+ from pathlib import Path
+ import fcntl,hashlib,json,os,stat,subprocess,sys
+ root=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915')
+-launcher=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-20260917')
++launcher=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-retry2-20260917')
+ assert launcher.resolve()==launcher
+-assert hashlib.sha256((launcher/'manifest.json').read_bytes()).hexdigest()=='3df5be15b766fddf36c1e0a57b80aab858a5f1636ce8a4acce1ab25fe30635f4'
++assert hashlib.sha256((launcher/'manifest.json').read_bytes()).hexdigest()=='1b36a21d235493605bb7cc696d5dfd0efd7db5912f8609e54f325fff656edf0f'
+ sys.path.insert(0,str(launcher));sys.dont_write_bytecode=True
+ from reference_resources import sample_local,validate_local
+ ps=subprocess.check_output(['/bin/ps','-axo','pid=,comm='],text=True,timeout=3)
+@@ -40,13 +40,13 @@
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_cut16_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+ os.chdir(launcher)
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(launcher/'run_reference.py'),'--job',str(launcher/'example-job.json'),'--job-sha256','e9a1ac3b48779d58f3df4c7b1b06cabd008f776d4565ec529df31a419d01a786','--launcher-sha256','3df5be15b766fddf36c1e0a57b80aab858a5f1636ce8a4acce1ab25fe30635f4'])
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(launcher/'run_reference.py'),'--job',str(launcher/'example-job.json'),'--job-sha256','a3b98c6f6f245eb90a8fae48566aec185a9ece50a0432546bb5eceb64b9c2237','--launcher-sha256','1b36a21d235493605bb7cc696d5dfd0efd7db5912f8609e54f325fff656edf0f'])
+ '''
+ 
+ REMOTE_COLLECT = r'''
+ from pathlib import Path
+ import base64,hashlib,json,os,stat,subprocess
+-p=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/phase-memory-c256-1')
++p=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/phase-memory-c256-2')
+ assert p.resolve()==p and p.is_dir()
+ allowed={'job.json','prompt.json','owner.json','resources.jsonl','terminal.json','native/worker-0.stdin','native/worker-0.stdout','native/worker-0.stderr'}
+ def identity(s):return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+--- prior/install_new_tree.py
++++ retry/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-20260917')}
++ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/supervisor-phase-memory-c256-retry2-20260917')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)

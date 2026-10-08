@@ -1,0 +1,16 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentModelDefinition.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentModelDefinition.swift
+@@ -22,7 +22,12 @@
+             supportsLookahead = true
+         case .qwen38TwentySevenB:
+             profileID = "registered_qwen38_27b_greedy_generation_v1"
+-            supportedCuts = Self.nineBCuts + [specification.layers / 2]
++            // Explicit native validation follows the registered geometry's
++            // whole-interval partitions. This is not a public capability or a
++            // memory/performance qualification for any of those partitions.
++            let geometry = try specification.expectedGeometry()
++            supportedCuts = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
++                fullAttentionInterval: geometry.fullAttentionInterval)
+             supportsLookahead = false
+         }
+         let geometry = try specification.expectedGeometry()

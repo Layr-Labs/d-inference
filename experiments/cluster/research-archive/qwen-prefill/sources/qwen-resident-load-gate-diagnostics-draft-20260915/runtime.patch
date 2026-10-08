@@ -1,0 +1,54 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentLoading.swift
+@@ -28,9 +28,9 @@
+               inertBounds.allSatisfy({ $0 > 0 && $0 <= maximum }) else {
+             throw ProbeError("Resident selected buffers exceed actual device bounds")
+         }
+-        try observe()
++        try observe(phase: "initial")
+     }
+-    func observe() throws {
++    func observe(phase: String = "materializer-check") throws {
+         do {
+             guard !failed else { throw ProbeError("Resident load gate was poisoned") }
+             let remaining = try QwenLongPrefillCheckedBytes.sum(Array(bounds.dropFirst(next)) + [inert])
+@@ -38,11 +38,22 @@
+             let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
+             let required = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+                 try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+-            let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
++            let activeBytes = Memory.activeMemory
++            let cacheBytes = Memory.cacheMemory
++            let allocator = try QwenLongPrefillCheckedBytes.sum([activeBytes, cacheBytes,
+                 remaining, h, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+             let os = try QwenDenseStageLoadResources.requireInitial()
+-            guard os.actualFreeBytes >= required, Memory.memoryLimit >= allocator else {
+-                throw ProbeError("Resident load exceeds current actual-free or allocator policy")
++            let freeAdmitted = os.actualFreeBytes >= required
++            // Preserve the original short-circuit: no allocator-limit read after a free-memory refusal.
++            let allocatorLimit: Int? = freeAdmitted ? Memory.memoryLimit : nil
++            guard freeAdmitted, let allocatorLimit, allocatorLimit >= allocator else {
++                throw ProbeError("Resident load exceeds current actual-free or allocator policy"
++                    + "; phase=\(phase); readAdmitted=\(next)/\(active.count)"
++                    + "; actualFreeBytes=\(os.actualFreeBytes); requiredFreeBytes=\(required)"
++                    + "; remainingBoundBytes=\(remaining); hostTensorBytes=\(h); scratchBytes=\(scratch)"
++                    + "; activeBytes=\(activeBytes); cacheBytes=\(cacheBytes)"
++                    + "; allocatorRequiredBytes=\(allocator)"
++                    + "; allocatorLimitBytes=\(allocatorLimit.map(String.init) ?? "not-read")")
+             }
+         } catch { failed = true; throw error }
+     }
+@@ -53,11 +64,11 @@
+               active[next].byteCount == entry.byteCount else {
+             failed = true; throw ProbeError("Resident load changed its admitted ordered tensor inventory")
+         }
+-        try observe(); next += 1
++        try observe(phase: "before-read"); next += 1
+     }
+     func finish() throws {
+         guard next == active.count else { failed = true; throw ProbeError("Resident load incomplete") }
+-        try observe()
++        try observe(phase: "finish")
+     }
+ }
+ 

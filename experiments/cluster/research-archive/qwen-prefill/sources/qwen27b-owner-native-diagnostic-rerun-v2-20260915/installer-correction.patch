@@ -1,0 +1,95 @@
+--- v1/install_diagnostic_owner.py
++++ v2/install_diagnostic_owner.py
+@@ -76,6 +76,8 @@
+     root_fd = os.open(root, flags | os.O_DIRECTORY)
+     gate = None
+     old_fd = None
++    backup_fd = None
++    temporary_fd = None
+     try:
+         assert (os.fstat(root_fd).st_dev, os.fstat(root_fd).st_ino) == (root_stat.st_dev, root_stat.st_ino)
+         gate = os.open(journal, flags)
+@@ -112,21 +114,28 @@
+                     stream.flush()
+                 os.fchmod(fd, 0o755)
+                 os.fsync(fd)
+-                saved, _ = bounded_read(fd, len(content), 0o755)
++                saved, saved_stat = bounded_read(fd, len(content), 0o755)
+                 assert hashlib.sha256(saved).hexdigest() == expected
+-            finally:
++                os.fsync(root_fd)
++                return fd, saved_stat
++            except BaseException:
+                 os.close(fd)
+-            os.fsync(root_fd)
++                raise
+ 
+         # Exclusive backup is fully written, synced, and verified before replacement.
+-        write_new(BACKUP, before, OLD_SHA)
+-        write_new(TEMPORARY, raw, NEW_SHA)
++        backup_fd, backup_stat = write_new(BACKUP, before, OLD_SHA)
++        temporary_fd, temporary_stat = write_new(TEMPORARY, raw, NEW_SHA)
+         observe()
+         check_gate()
+         assert identity(os.stat('owner.json', dir_fd=root_fd, follow_symlinks=False)) == identity(config_stat)
+         again, again_stat = bounded_read(old_fd, OLD_BYTES, 0o755)
+         assert again == before and identity(again_stat) == identity(before_stat)
+         assert identity(os.stat(NAME, dir_fd=root_fd, follow_symlinks=False)) == identity(before_stat)
++        for name, fd, saved_stat, content in [(BACKUP, backup_fd, backup_stat, before),
++                                            (TEMPORARY, temporary_fd, temporary_stat, raw)]:
++            retained, retained_stat = bounded_read(fd, len(content), 0o755)
++            assert retained == content and identity(retained_stat) == identity(saved_stat)
++            assert identity(os.stat(name, dir_fd=root_fd, follow_symlinks=False)) == identity(saved_stat)
+         os.replace(TEMPORARY, NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+         os.fsync(root_fd)
+         new_fd = os.open(NAME, flags, dir_fd=root_fd)
+@@ -143,6 +152,10 @@
+                 'ownerConfigurationSHA256': OWNER_CONFIGS[packet['rank']],
+                 'configurationChanged': False, 'nativeOrControllerChanged': False, 'modelExecuted': False}
+     finally:
++        if temporary_fd is not None:
++            os.close(temporary_fd)
++        if backup_fd is not None:
++            os.close(backup_fd)
+         if old_fd is not None:
+             os.close(old_fd)
+         if gate is not None:
+--- v1/test_install_diagnostic_owner.py
++++ v2/test_install_diagnostic_owner.py
+@@ -100,6 +100,36 @@
+         self.packet['rank'] = 1; self.refused()
+         self.packet['rank'] = 0; self.packet['path'] = '/arbitrary'; self.refused()
+ 
++    def test_mutated_temporary_refuses_and_preserves_old(self):
++        calls = []
++        def change():
++            calls.append(True)
++            if len(calls) == 2:
++                (self.root / subject.TEMPORARY).write_bytes(b'changed')
++        self.refused(change)
++        self.assertEqual(self.target.read_bytes(), self.old)
++
++    def test_swapped_temporary_refuses_and_preserves_old(self):
++        calls = []
++        def change():
++            calls.append(True)
++            if len(calls) == 2:
++                temporary = self.root / subject.TEMPORARY
++                temporary.rename(self.root / 'retained-original-temporary')
++                temporary.write_bytes(self.new)
++                temporary.chmod(0o755)
++        self.refused(change)
++        self.assertEqual(self.target.read_bytes(), self.old)
++
++    def test_changed_backup_refuses_and_preserves_old(self):
++        calls = []
++        def change():
++            calls.append(True)
++            if len(calls) == 2:
++                (self.root / subject.BACKUP).write_bytes(b'changed')
++        self.refused(change)
++        self.assertEqual(self.target.read_bytes(), self.old)
++
+ 
+ if __name__ == '__main__':
+     unittest.main()

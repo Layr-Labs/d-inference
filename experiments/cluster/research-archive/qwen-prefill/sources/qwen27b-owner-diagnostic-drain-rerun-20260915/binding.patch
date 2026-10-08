@@ -1,0 +1,61 @@
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -19,7 +19,7 @@
+ REMOTE = '/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915'
+ OUTPUT = BASE / 'physical-1'
+ 
+-CONTROLLER = ROOT / 'owner-retirement-controls-build-20260915/bundle-qwen27b/owner-controller'
++CONTROLLER = ROOT / 'cluster-owner-diagnostic-drain-draft-20260915/local-bundle/owner-controller'
+ 
+ 
+ class Monitor:
+--- a/configuration/controller.json
++++ b/configuration/controller.json
+@@ -1 +1 @@
+-{"chunkSize":16,"clusterID":"qwen27b-native-validation-1c7b2bc6-744b-41c1-b621-ddef0e9eb31e","cpuQualification":false,"expectedTokenIDs":null,"lifetimeSeconds":300,"membershipEpoch":"47f2807c-2238-4bd0-86f2-5980211b3b99","outputCount":128,"peers":[{"host":"192.0.2.250","identityFile":"/Users/developer/.ssh/id_ed25519_darkbloom_dev","installedOwner":"/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915/darkbloom-owner-qualification","knownHostsFile":"/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts","port":22,"user":"gaj"},{"host":"192.0.2.223","identityFile":"/Users/developer/.ssh/id_ed25519_darkbloom_dev","installedOwner":"/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915/darkbloom-owner-qualification","knownHostsFile":"/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts","port":22,"user":"gaj"}],"promptTokenIDs":[814,20139,1204,1330,17943,628,45238,310,1817,264,1248,3992,1558,9640,13,63074,48030,1558,13224,11,48142,25903,11,321,279,10222,6829,421,628,3798,4906,13],"readyTemplateBase64":"eyJraW5kIjoicmVhZHkiLCJtZW1iZXJzaGlwRXBvY2giOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDAiLCJyZWFkeSI6eyJleGVjdXRpb25QbGFuU0hBMjU2IjoiOTgwYjBmNmVjZTBhMDc4YzI4NDE0M2Q4YWYwNWMxNTMyYzJmZGQ3ZjBhNmIxYTA2NjgyYjdiY2M5NGIzNzdkMyIsImlkZW50aXR5Ijp7ImFydGlmYWN0U0hBMjU2IjoiYmJkMGUwYWRjZmU3NGUwOTUwNzNmZWZkMGI5ZTExNmU0MzExZDYwNmFkOTk4OWNmODFmODE3NWU4YWMxODQ2MyIsImNvbmZpZ3VyYXRpb25TSEEyNTYiOiI0NjkxZGE5NGExYjRlZjQxNWFhZDExMmVjNDZhYmViZDMzZjhhNDFhZDA3MzgwZTQ4NmMwNTI2ZWI5NDVjMWZmIiwibWVtYmVyc2hpcEVwb2NoIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwibW9kZWxJRCI6InJlZ2lzdGVyZWRfcXdlbjM4XzI3YiIsInBlZXJzIjpbeyJidWlsZFNIQTI1NiI6ImE3YzM1YjM3YzJhZTJmODBjMzIwMjIxYWM5OTMxYmRkM2Y4N2Q3ZTdjZDY3YjJkNWNmYmM5M2E4ZWIwNDNhZDYiLCJpZCI6ImRhcmtibG9vbS0yNCJ9LHsiYnVpbGRTSEEyNTYiOiJhN2MzNWIzN2MyYWUyZjgwYzMyMDIyMWFjOTkzMWJkZDNmODdkN2U3Y2Q2N2IyZDVjZmJjOTNhOGViMDQzYWQ2IiwiaWQiOiJkYXJrYmxvb20tNDgifV19LCJwcm9maWxlIjp7ImlkIjoicmVnaXN0ZXJlZF9xd2VuMzhfMjdiX2dyZWVkeV9nZW5lcmF0aW9uX3YxIiwibWF4aW11bUNodW5rVG9rZW5zIjo1MTIsIm1heGltdW1Db250ZXh0VG9rZW5zIjo4MzIwLCJtYXhpbXVtT3V0cHV0VG9rZW5zIjoxMjgsIm1heGltdW1Qcm9tcHRUb2tlbnMiOjgxOTIsInZvY2FidWxhcnlTaXplIjoyNDgzMjB9LCJyYW5rIjowLCJyZXF1ZXN0Q2FwYWNpdHlCeXRlcyI6MX0sInNlcXVlbmNlIjowLCJ2ZXJzaW9uIjoxfQo=","requestID":"20801ced-ca29-4faf-b71a-9ebbe1886a14","requestSeconds":120,"schema":"darkbloom_owner_qualification_v1","startupSeconds":90,"stopTokenIDs":[]}
++{"chunkSize":16,"clusterID":"qwen27b-native-validation-1c7b2bc6-744b-41c1-b621-ddef0e9eb31e","cpuQualification":false,"expectedTokenIDs":null,"lifetimeSeconds":300,"membershipEpoch":"f45537d3-314d-4cf2-9157-570cde16a58d","outputCount":128,"peers":[{"host":"192.0.2.250","identityFile":"/Users/developer/.ssh/id_ed25519_darkbloom_dev","installedOwner":"/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915/darkbloom-owner-qualification","knownHostsFile":"/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts","port":22,"user":"gaj"},{"host":"192.0.2.223","identityFile":"/Users/developer/.ssh/id_ed25519_darkbloom_dev","installedOwner":"/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915/darkbloom-owner-qualification","knownHostsFile":"/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts","port":22,"user":"gaj"}],"promptTokenIDs":[814,20139,1204,1330,17943,628,45238,310,1817,264,1248,3992,1558,9640,13,63074,48030,1558,13224,11,48142,25903,11,321,279,10222,6829,421,628,3798,4906,13],"readyTemplateBase64":"eyJraW5kIjoicmVhZHkiLCJtZW1iZXJzaGlwRXBvY2giOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDAiLCJyZWFkeSI6eyJleGVjdXRpb25QbGFuU0hBMjU2IjoiOTgwYjBmNmVjZTBhMDc4YzI4NDE0M2Q4YWYwNWMxNTMyYzJmZGQ3ZjBhNmIxYTA2NjgyYjdiY2M5NGIzNzdkMyIsImlkZW50aXR5Ijp7ImFydGlmYWN0U0hBMjU2IjoiYmJkMGUwYWRjZmU3NGUwOTUwNzNmZWZkMGI5ZTExNmU0MzExZDYwNmFkOTk4OWNmODFmODE3NWU4YWMxODQ2MyIsImNvbmZpZ3VyYXRpb25TSEEyNTYiOiI0NjkxZGE5NGExYjRlZjQxNWFhZDExMmVjNDZhYmViZDMzZjhhNDFhZDA3MzgwZTQ4NmMwNTI2ZWI5NDVjMWZmIiwibWVtYmVyc2hpcEVwb2NoIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwibW9kZWxJRCI6InJlZ2lzdGVyZWRfcXdlbjM4XzI3YiIsInBlZXJzIjpbeyJidWlsZFNIQTI1NiI6ImE3YzM1YjM3YzJhZTJmODBjMzIwMjIxYWM5OTMxYmRkM2Y4N2Q3ZTdjZDY3YjJkNWNmYmM5M2E4ZWIwNDNhZDYiLCJpZCI6ImRhcmtibG9vbS0yNCJ9LHsiYnVpbGRTSEEyNTYiOiJhN2MzNWIzN2MyYWUyZjgwYzMyMDIyMWFjOTkzMWJkZDNmODdkN2U3Y2Q2N2IyZDVjZmJjOTNhOGViMDQzYWQ2IiwiaWQiOiJkYXJrYmxvb20tNDgifV19LCJwcm9maWxlIjp7ImlkIjoicmVnaXN0ZXJlZF9xd2VuMzhfMjdiX2dyZWVkeV9nZW5lcmF0aW9uX3YxIiwibWF4aW11bUNodW5rVG9rZW5zIjo1MTIsIm1heGltdW1Db250ZXh0VG9rZW5zIjo4MzIwLCJtYXhpbXVtT3V0cHV0VG9rZW5zIjoxMjgsIm1heGltdW1Qcm9tcHRUb2tlbnMiOjgxOTIsInZvY2FidWxhcnlTaXplIjoyNDgzMjB9LCJyYW5rIjowLCJyZXF1ZXN0Q2FwYWNpdHlCeXRlcyI6MX0sInNlcXVlbmNlIjowLCJ2ZXJzaW9uIjoxfQo=","requestID":"20801ced-ca29-4faf-b71a-9ebbe1886a14","requestSeconds":120,"schema":"darkbloom_owner_qualification_v1","startupSeconds":90,"stopTokenIDs":[]}
+--- a/configuration/input-provenance.json
++++ b/configuration/input-provenance.json
+@@ -2,9 +2,9 @@
+   "chunkSize": 16,
+   "expectedFinalCommittedInputs": 159,
+   "expectedIDsFileSHA256": null,
+-  "knownHostsSHA256": "e391f06908f452e59dee97b1a7a631d80c57d2844ddf7f4d8d0e78d2eb3d617a",
++  "knownHostsSHA256": "89a73d7ca9fe16a0c1aeb0fa6cfa640ff37a02d4a2d21114e7ad5fca089443ed",
+   "maximumTokens": 160,
+-  "membershipEpoch": "93604d14-37da-4e80-ad11-9ddf9ff48d1e",
++  "membershipEpoch": "f45537d3-314d-4cf2-9157-570cde16a58d",
+   "metadataSHA256": "d1828272d22d62bd4573cf0da04aa7797e2b18aa59286bd34916cf77c7b8b9d4",
+   "mode": "recording",
+   "nativeBinarySHA256": "a7c35b37c2ae2f80c320221ac9931bdd3f87d7e7cd67b2d5cfbc93a8eb043ad6",
+--- a/deployment.json
++++ b/deployment.json
+@@ -1,14 +1,14 @@
+ {
+   "schema": "qwen27b_fixed_owner_deployment_v1",
+   "localController": {
+-    "path": "/Users/developer/DarkbloomDev/cluster-research/owner-retirement-controls-build-20260915/bundle-qwen27b/owner-controller",
+-    "bytes": 253840,
+-    "sha256": "13311eeac86a019a7c187249fbe7393471e9e158821f5eaa8d5637f392851a74"
++    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/local-bundle/owner-controller",
++    "bytes": 272384,
++    "sha256": "862f7a391afd8f490233db793034c1ec8648c52fd908ba39abbefbf46e899d78"
+   },
+   "localControlBundle": {
+-    "path": "/Users/developer/DarkbloomDev/cluster-research/owner-retirement-controls-build-20260915/bundle-qwen27b/bundle.json",
+-    "bytes": 1308,
+-    "sha256": "5c3128ca29367e3b5a8ae4552fb2f45b15d230c2557bba572d9634bd0f0c1aac"
++    "path": "/Users/developer/DarkbloomDev/cluster-research/cluster-owner-diagnostic-drain-draft-20260915/local-bundle/bundle.json",
++    "bytes": 973,
++    "sha256": "e650ebc820b42e7b57cf105b81b60c01320d22f40cfe1e1de70c52a13440fdaa"
+   },
+   "ranks": [
+     {
+@@ -299,5 +299,6 @@
+   "diagnosticOwnerBundle": {
+     "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-owner-native-diagnostics-20260915/bundle/bundle.json",
+     "sha256": "d42867dc290ef3aaf316b3e3b4abf91ef9a6d559a6331235551f808cd71e1dc3"
+-  }
++  },
++  "remoteArtifactsChanged": false
+ }

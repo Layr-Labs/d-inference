@@ -13,10 +13,10 @@ import DarkbloomClusterSecurity
 // is false); these tests pin the components' contracts without activating any
 // member behavior. No coordinator, no TLS, no model, no native launch.
 
-private func memberDigest(_ label: String) -> Data { Data(SHA256.hash(data: Data(label.utf8))) }
-private func memberHex(_ bytes: Data) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
+func memberDigest(_ label: String) -> Data { Data(SHA256.hash(data: Data(label.utf8))) }
+func memberHex(_ bytes: Data) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
 
-private struct MemberContractFixture {
+struct MemberContractFixture {
     let root: URL
     let policy: Data
     let starts: [ClusterNativeAuthorizationStart]
@@ -94,11 +94,11 @@ private struct MemberContractFixture {
     }
 }
 
-private func deadConnection() -> NWConnection {
+func deadConnection() -> NWConnection {
     NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
 }
 
-private struct ContractSigner: AttestationSigner {
+struct ContractSigner: AttestationSigner {
     let key = P256.Signing.PrivateKey()
     var publicKeyBase64: String { Data(key.publicKey.x963Representation.dropFirst()).base64EncodedString() }
     func sign(_ data: Data) throws -> Data { try key.signature(for: data).derRepresentation }

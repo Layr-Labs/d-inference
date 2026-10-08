@@ -1582,6 +1582,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case desiredModels(DesiredModels)
     case trustStatus(TrustStatus)
     case capacityProbe(CapacityProbe)
+    /// Coordinator acknowledgment of a control-only member registration;
+    /// proves protocol support and connection binding only, never attestation,
+    /// runtime approval, native-owner authorization or serving readiness.
+    case clusterMemberAccepted(ClusterMemberAccepted)
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
@@ -1801,6 +1805,7 @@ extension CoordinatorMessage: Codable {
         case desiredModels = "desired_models"
         case trustStatus = "trust_status"
         case capacityProbe = "capacity_probe"
+        case clusterMemberAccepted = "cluster_member_accepted"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1833,6 +1838,10 @@ extension CoordinatorMessage: Codable {
         case requiresVision = "requires_vision"
         case visionImageCount = "vision_image_count"
         case deadlineRemainingMs = "deadline_remaining_ms"
+        // ClusterMemberAccepted
+        case executionRole = "execution_role"
+        case memberRegistrationNonce = "member_registration_nonce"
+        case providerID = "provider_id"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1937,6 +1946,12 @@ extension CoordinatorMessage: Codable {
                 try container.encode(p.visionImageCount, forKey: .visionImageCount)
             }
             try container.encode(p.deadlineRemainingMs, forKey: .deadlineRemainingMs)
+
+        case .clusterMemberAccepted(let ack):
+            try container.encode(TypeValue.clusterMemberAccepted, forKey: .type)
+            try container.encode(ack.executionRole, forKey: .executionRole)
+            try container.encode(ack.memberRegistrationNonce, forKey: .memberRegistrationNonce)
+            try container.encode(ack.providerID, forKey: .providerID)
         }
     }
 
@@ -2046,6 +2061,13 @@ extension CoordinatorMessage: Codable {
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "",
                 authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization)
+            ))
+
+        case .clusterMemberAccepted:
+            self = .clusterMemberAccepted(ClusterMemberAccepted(
+                executionRole: try container.decode(ProviderExecutionRole.self, forKey: .executionRole),
+                memberRegistrationNonce: try container.decode(String.self, forKey: .memberRegistrationNonce),
+                providerID: try container.decode(String.self, forKey: .providerID)
             ))
         }
     }

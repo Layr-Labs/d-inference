@@ -178,6 +178,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// `[backend] idle_timeout_mins` — 0 keeps models resident, N unloads
     /// after N idle minutes. nil omits the field (test/legacy clients).
     public let idleUnloadMins: UInt64?
+    /// Restrictive registration role. Default solo; the control-only cluster
+    /// member role requires the caller to also drive the member control owner.
+    public let executionRole: ProviderExecutionRole
 
     public init(
         url: String,
@@ -197,7 +200,8 @@ public struct CoordinatorClientConfig: Sendable {
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
         idleUnloadMins: UInt64? = nil,
-        autopilotInventory: [ModelInfo] = []
+        autopilotInventory: [ModelInfo] = [],
+        executionRole: ProviderExecutionRole = .solo
     ) {
         self.url = url
         self.hardware = hardware
@@ -217,6 +221,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
         self.idleUnloadMins = idleUnloadMins
+        self.executionRole = executionRole
     }
 }
 

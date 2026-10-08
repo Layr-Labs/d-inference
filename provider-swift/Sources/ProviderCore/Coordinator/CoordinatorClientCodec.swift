@@ -18,7 +18,8 @@ public enum CoordinatorClientCodec {
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
-        autopilotInventory: [ModelInfo]? = nil
+        autopilotInventory: [ModelInfo]? = nil,
+        memberRegistrationNonce: String? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -58,9 +59,14 @@ public enum CoordinatorClientCodec {
         let candidateIDs = Set(config.autopilotInventory.map(\.id)).subtracting(ordinaryServingModelIDs ?? Set(config.models.map(\.id)))
         let servingModels = effectiveModels.filter { !candidateIDs.contains($0.id) }
         let constrainedModels = toolConstraintModelIDs(servingModels + inventory)
+        // A control-only cluster member publishes an EMPTY ordinary inventory
+        // (old coordinators cannot cold-route it) and carries its cluster
+        // inventory separately; the coordinator closes the connection on any
+        // role-field mismatch (coordinator/protocol/execution_role.go).
+        let memberMode = config.executionRole == .clusterMember
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
-            models: servingModels,
+            models: memberMode ? [] : servingModels,
             backend: config.backendName,
             version: version,
             publicKey: config.publicKey,
@@ -82,7 +88,10 @@ public enum CoordinatorClientCodec {
             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
             appAttestProtocol: 3,
             modelAutopilot: modelAutopilot,
-            autopilotInventory: inventory.isEmpty ? nil : inventory
+            autopilotInventory: inventory.isEmpty ? nil : inventory,
+            executionRole: config.executionRole,
+            memberRegistrationNonce: memberMode ? memberRegistrationNonce : nil,
+            clusterModels: memberMode ? servingModels : nil
         ))
     }
 
@@ -100,7 +109,8 @@ public enum CoordinatorClientCodec {
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
-        autopilotInventory: [ModelInfo]? = nil
+        autopilotInventory: [ModelInfo]? = nil,
+        memberRegistrationNonce: String? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -117,7 +127,8 @@ public enum CoordinatorClientCodec {
                 prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
                 modelAutopilot: modelAutopilot,
                 ordinaryServingModelIDs: ordinaryServingModelIDs,
-                autopilotInventory: autopilotInventory
+                autopilotInventory: autopilotInventory,
+                memberRegistrationNonce: memberRegistrationNonce
             )
         )
     }

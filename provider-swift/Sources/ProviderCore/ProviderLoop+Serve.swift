@@ -19,6 +19,14 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
+        nativePairConfigurationClosed = true
+        if isClusterMember { try prepareClusterMemberControl() }
+        defer {
+            if isClusterMember {
+                memberConnectionID = nil
+                finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            }
+        }
         startLifecycleMonitor()
         defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
@@ -30,7 +38,7 @@ extension ProviderLoop {
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
-        let usesHostServices = serveUsesHostServices
+        let usesHostServices = serveUsesHostServices && !isClusterMember
 
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
@@ -103,8 +111,9 @@ extension ProviderLoop {
 
         // Arm the loaded-models persistence now that this loop is actually
         // serving (test instances never flip this, so their unload paths
-        // cannot clobber the real ~/.darkbloom/loaded-models.json).
-        loadedModelsPersistenceEnabled = true
+        // cannot clobber the real ~/.darkbloom/loaded-models.json). A
+        // control-only member never persists solo residency.
+        loadedModelsPersistenceEnabled = !isClusterMember
 
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the
@@ -122,7 +131,8 @@ extension ProviderLoop {
         // it is cancelled once the gate returns and the capacity loop takes over.
         writeDaemonState()
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
-        await runStartupPreloadGate()
+        // A control-only member loads no solo models at startup or ever.
+        if !isClusterMember { await runStartupPreloadGate() }
         preloadLivenessRefresh.cancel()
         if Task.isCancelled || servingDrain.refusing {
             guard await shutdownBeforeRegistration() else {
@@ -267,7 +277,12 @@ extension ProviderLoop {
         // live connection without threading a handle through the prefetch
         // callbacks. (coordinatorClient was already retained above, at creation.)
         self.outboundSend = send
-        self.prefetchCoordinator = makePrefetchCoordinator()
+        // A control-only member never downloads or swaps models autonomously.
+        if !isClusterMember { self.prefetchCoordinator = makePrefetchCoordinator() }
+        // The staged member control binds to the actual client only after TLS
+        // readiness and nonce-bound acceptance (inside the client); an ordinary
+        // WebSocket ACK never activates it.
+        if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
 
         // Start the idle-timeout monitor before processing events so that
         // a rogue model-load (e.g. during `attestation_challenge` priming)
@@ -275,7 +290,8 @@ extension ProviderLoop {
         // timer.
         startIdleMonitor()
         startCapacityRefreshMonitor()
-        startAutoUpdateMonitor()
+        // An unattended binary relaunch is never a member-mode action.
+        if !isClusterMember { startAutoUpdateMonitor() }
 
         logger.info(.coordinatorClientStarted)
 
@@ -285,6 +301,10 @@ extension ProviderLoop {
         coordinatorEventLoopStarted = true
         let eventTask = Task {
             for await event in events {
+                // Member-mode events are consumed first: ordinary dispatch
+                // paths never see them, and direct work handlers refuse
+                // member mode independently.
+                if consumeClusterMemberEvent(event, send: send) { continue }
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
@@ -390,6 +410,15 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        if isClusterMember {
+            // No grant or key is retained across a control connection boundary.
+            memberConnectionID = nil
+            state.refusingNewWork = true
+            finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            await coordinator.shutdown()
+            if await coordinator.memberRoleFailure { throw ClusterMemberControlError.negotiationFailed }
+            return
+        }
         closeNativeMiMoLifecycle() // close native generation before teardown awaits
         await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes

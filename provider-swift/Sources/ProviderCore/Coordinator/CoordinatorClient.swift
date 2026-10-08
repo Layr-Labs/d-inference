@@ -96,6 +96,20 @@ public actor CoordinatorClient {
     /// gate.
     internal var sessionRegistered = false
 
+    /// One connection's control-only member negotiation; created at connect
+    /// when `config.executionRole == .clusterMember` and discarded on every
+    /// reconnect. The nonce binds the acceptance to this exact connection.
+    var memberNegotiation: ClusterMemberNegotiation?
+    /// Set when member acceptance never arrives, arrives late, or is refused.
+    /// The reconnect loop exits instead of cycling an unacknowledged member.
+    internal var memberRoleFailure = false
+
+    /// The staged native-pair member control and its exact-connection
+    /// attachment; nil unless `installNativePairMember` succeeded on THIS
+    /// accepted connection. Dropped at every connection boundary.
+    internal var nativePairMember: NativePairMemberControl?
+    internal var nativePairConnection: NativePairMemberConnection?
+
     private let shutdownFlag = ShutdownFlag()
 
     /// Fast, thread-safe shutdown visibility for connection tasks.

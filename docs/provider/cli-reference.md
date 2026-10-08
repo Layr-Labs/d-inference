@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -755,6 +755,11 @@ Output includes:
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- `Not serving:` when the daemon is alive but a graceful drain has closed
+  admission — draining, a drain that did not finish, or a drain whose relaunch
+  never happened — with the commands that finish or interrupt it
+  (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`,
+  `Status.lifecycleDrainLine`).
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
   separated into `Startup preload pending`, `Not loaded (loads on request)`,

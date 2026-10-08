@@ -1,14 +1,15 @@
 # Changelog
 
-## Unreleased — provider restart after native MiMo serving
-
-- Let `darkbloom restart` and `darkbloom stop` finish their graceful drain on a provider that has served native MiMo requests. The drain tried to retire the native owner once; after any served request that attempt only starts joining the finished request's consumer, so the drain reported `timedOut` with 0 unfinished requests within milliseconds, the command failed, and the service was left draining with automatic restart disabled. The drain now retries the retirement within its own deadline and reports `drained` once the owner retires.
-
 ## Unreleased - typical MTP acceptance
 
 - Default eligible sampled target-prefix MTP requests to typical acceptance (delta `0.2`) when `[backend] mtp_acceptance` and the model override are absent. Sampled output is approximate, not distribution-exact; explicit `exact` restores exact acceptance and invalid values remain safely exact. Greedy behavior, native MiMo exact acceptance, disabled MTP and model eligibility are unchanged. Benchmark acceptance still defaults to `exact`; the recorded single-host B=1 runs do not qualify sampled quality or fleet-wide speed.
 - Add per-model typical MTP draft acceptance for sampled requests (`[backend] mtp_acceptance`, `mtp_acceptance_by_model`), ported from mlx-serve PR #427. Greedy requests are unchanged; slot posture telemetry reports `mtp_acceptance`.
 - Pin the merged SDK implementation from `mlx-swift-lm` main; its file tree matches the engine revision used in the recorded acceptance benchmarks.
+
+## Unreleased — provider restart and drain status
+
+- Let `darkbloom restart` and `darkbloom stop` finish their graceful drain on a provider that has served native MiMo requests. The drain tried to retire the native owner once; after any served request that attempt only starts joining the finished request's consumer, so the drain reported `timedOut` with 0 unfinished requests within milliseconds, the command failed, and the service was left draining with automatic restart disabled. The drain now retries the retirement within its own deadline and reports `drained` once the owner retires.
+- Report a provider that has stopped serving on `darkbloom status`. After a `stop`, `restart`, `start` or `update` drain that timed out, was interrupted or never relaunched, the old process stays alive and refuses new work, so the console shows it offline while `status` printed only `Daemon: running`. A `Not serving:` line now names the drain state and the commands that finish or interrupt it.
 
 ## 0.9.18 - prepared candidate (not published)
 

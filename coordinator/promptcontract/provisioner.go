@@ -18,6 +18,7 @@ type ProvisionerConfig struct{ MaxConcurrent, MaxModels int }
 type ProvisionStatus = catalog.Status
 type ProvisionCounts = catalog.Counts
 type ProvisionSnapshot = catalog.Snapshot
+type VerifiedPreloadArtifact = catalog.VerifiedPreloadArtifact
 
 type Provisioner struct {
 	cache         *ArtifactCache
@@ -90,11 +91,30 @@ func (p *Provisioner) Counts() ProvisionCounts {
 	}
 	return p.catalog.Counts()
 }
+
+// Snapshot returns the current catalog generation and the sorted, deduplicated
+// set of contracts whose artifacts are fully verified. Unrelated pending or
+// failed models are not members. Runtime participation additionally requires
+// current-generation, per-contract preload acknowledgement.
 func (p *Provisioner) Snapshot() ProvisionSnapshot {
 	if p == nil {
 		return ProvisionSnapshot{}
 	}
 	return p.catalog.Snapshot()
+}
+
+// VerifiedPreloadArtifacts is the catalog's coherent verified handoff. A
+// closed provisioner retains no selection authority.
+func (p *Provisioner) VerifiedPreloadArtifacts() (ProvisionSnapshot, []VerifiedPreloadArtifact) {
+	if p == nil {
+		return ProvisionSnapshot{}, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return ProvisionSnapshot{}, nil
+	}
+	return p.catalog.VerifiedPreloadArtifacts()
 }
 
 func (p *Provisioner) Close() {

@@ -19,6 +19,16 @@ func Summarize(f Fleet, cfg Config, now time.Time) Summary {
 	}
 	slices.Sort(models)
 	for _, n := range f.Nodes {
+		if n.Consented {
+			if n.ObserveOnly {
+				s.Shadow++
+			} else {
+				s.LiveCohort++
+				if n.ControlActive {
+					s.LiveActive++
+				}
+			}
+		}
 		if n.Managed {
 			s.OptedIn++
 		}
@@ -32,7 +42,11 @@ func Summarize(f Fleet, cfg Config, now time.Time) Summary {
 	for _, m := range models {
 		eligible := 0
 		for _, n := range f.Nodes {
-			if n.Managed && n.Idle && !n.Pending && n.Fits[m].MeetsDeadline {
+			fit := n.Fits[m]
+			if n.ObserveOnly {
+				fit = n.HypotheticalFits[m]
+			}
+			if n.Managed && n.Idle && !n.Pending && fit.MeetsDeadline {
 				eligible++
 			}
 		}

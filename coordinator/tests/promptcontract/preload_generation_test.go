@@ -38,7 +38,8 @@ func TestPreloadControllerDiscardsChangedGenerationsDuringPreload(t *testing.T) 
 			client := sidecar.NewClient(sidecar.ClientConfig{SocketPath: socket})
 			defer client.Close()
 			state := catalog.New()
-			active := []catalog.Status{{ModelID: "model", PromptContractID: contract, ArtifactReady: true}}
+			active := []catalog.Status{{ModelID: "model", PromptContractID: contract, ArtifactReady: true,
+				ModelAggregateSHA256: strings.Repeat("e", 64)}}
 			state.Replace(active)
 			child := &preloadChildFixture{status: preload.ChildStatus{Running: true, Ready: true, ChildGeneration: 1}}
 			controller, err := preload.New(state, child, client, preload.PreloadControllerConfig{})

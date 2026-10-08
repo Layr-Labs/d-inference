@@ -42,6 +42,8 @@ type CacheDependencies struct {
 	Nonces            func() (string, error)
 	// Attempts constructs the actual receipt directory for each new generation.
 	Attempts func() *cacheindex.Records[string, cachetracker.Attempt[*Provider]]
+	// AttemptBudgets constructs the actual attempt byte ledger for each new generation.
+	AttemptBudgets func() *cachetracker.AttemptBudget
 	// Fences constructs the actual quarantine directory for each new generation.
 	Fences func() *cacheindex.Records[cachetracker.FenceKey, cachetracker.FenceRecord]
 	Proofs func(*cacheplan.Generation, *cacheindex.Records[cachetracker.FenceKey, cachetracker.FenceRecord]) *cachetracker.Proofs

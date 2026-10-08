@@ -47,6 +47,7 @@ def check_funding(key, transport=request_json):
 def check(state, key, transport=request_json):
     failures = []
     for name, verify in (("Storage", lambda: check_storage(state)),
+                         ("Capacity", state.check_capacity),
                          ("Funding", lambda: check_funding(key, transport))):
         try:
             verify()

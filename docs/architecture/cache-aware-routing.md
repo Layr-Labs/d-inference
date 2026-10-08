@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-07
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -11,6 +11,12 @@ procedure for turning it on is
 [`../operations/cache-routing-rollout.md`](../operations/cache-routing-rollout.md).
 
 ## Context
+
+SSD donations also pass the persistent root-wide write budget before publication
+(`SSDWriteRateLimiter`, `SSDWriteBudget`). Reloading a model or restarting the
+provider does not create a new allowance. Budget refusal leaves existing durable
+receipts and cache reads intact; it does not advertise a newly refused write.
+See the [SSD accounting contract](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 A provider that already holds a request's exact token prefix in its local
 prefix cache ([`prefix-cache.md`](prefix-cache.md)) can skip that prefill,
@@ -73,14 +79,69 @@ The coordinator calls the local prompt-contract sidecar
 resolution, tool normalization, endpoint lowering, output-bound injection, and
 construction of the final provider-bound body (`planPromptRoute`,
 `coordinator/api/inference/prompt_work.go`, called through the request's
-`routeplan.Memo` in `coordinator/api/inference/consumer.go`). The sidecar returns the prompt contract
+`routeplan.Memo` in `coordinator/api/inference/consumer.go`; planning itself is
+`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`). The sidecar returns the prompt contract
 identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
 
 Sidecar timeout, crash, malformed output, unavailable artifacts, and dynamic-time
-templates return a non-participating plan. The request still dispatches.
+templates return a non-participating plan. Ordinary inference continues subject
+to its existing admission and remaining request budget.
 Requests carrying media (`HasMedia`) never produce a participating plan.
+
+Planning uses a child context capped at the original request receipt time plus
+the already-selected first-content budget. The request handlers derive it with
+`promptwork.PlanningContext` (`coordinator/api/promptwork/planning.go`) each
+time the request's `routeplan.Memo` computes a plan (`HandleChatCompletions` and
+`handleGenericInference`, `coordinator/api/inference/consumer.go`). It does not
+restart that clock after alias fallback, replace the inference context, or carry
+the child's deferred cancellation into dispatch. Zero/exempt
+budgets and a missing receipt timestamp add no artificial deadline.
+`CachePlanner.PlanResult` (`coordinator/internal/inference/routeplan/cache_planning.go`)
+can apply the same bound itself through `FirstTokenWriteContext`
+(`coordinator/internal/inference/firstcontent/first_content_policy.go`) when
+`CachePlanningInput.ReceivedAt` and `FirstContentBudget` are set;
+`planPromptRoute` does not set them, so in production that step passes its
+caller's context through. An earlier parent deadline, the
+`promptcontract.DefaultRequestTimeout` prompt-accounting bound (`promptwork.Account`,
+`coordinator/api/promptwork/accounting.go`) or the client's own timeout still
+wins. An exhausted request
+uses the existing dispatch deadline outcome; optional cache work grants no
+extra service time.
+
+Each planning decision is counted once, when the request's plan for a concrete
+model and provider-bound body is first computed; for a request that takes the
+public capacity preflight that is while admission builds its forecast. The count
+includes dependency/artifact/preload refusals, and a generic-endpoint body that
+cannot be lowered is counted as `lowering_unsupported` after admission
+(`CachePlanner.EmitDecision`, called from `handleGenericInference`,
+`coordinator/api/inference/consumer.go`). This broader metric
+does not change legacy Registry outcomes, sampling/QPS precedence or public
+status fields. It adds one legacy sample: a media request whose model is
+verified and whose contract is preload-acknowledged now reaches the Registry's
+existing `ineligible` decision, because the planner is consulted to record its
+decision, and is counted once in `exact_cache_plan_total`; routing and billing
+are unaffected. Artifact and preload checks are scoped to the resolved
+model and its exact contract: unrelated pending or failed artifacts do not close
+an acknowledged healthy member. Current catalog/child/verified-set identity
+and actual runtime readiness still gate participation; see
+[per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
+Negotiated preload transport uncertainty preserves only current incumbent
+acknowledgements. After a validated partial report, a failed readiness probe
+cannot admit newcomers or retain explicit failures; see
+[continuity during retry](prompt-contract-sidecar.md#negotiated-continuity-during-preload-retry).
+See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
+
+Current tokenizer acknowledgement and current routing participation are distinct.
+The API uses the Registry's read-only canonical pre-activation classification
+without consuming sampling, QPS or counters. It preserves existing `off` and
+`ineligible` outcomes only after confirming native acknowledgement; stopped,
+stale or never-acknowledged contracts remain `preload_not_ready`. A fresh check
+before commitment handles policy drift conservatively, and the actual Registry
+plan revalidates authority before consuming activation once
+(`CachePlanRejection`, `coordinator/registry/cache_plan_preflight.go`;
+`CachePlanner.commitCachePlanning`, `coordinator/internal/inference/routeplan/cache_preload_selection.go`).
 
 An optional exact-artifact list runs before the cohort, QPS gate and sidecar
 plan. `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` matches the resolved model
@@ -96,6 +157,13 @@ and the coordinator log names each live tuple once, so the missing entry is
 reported instead of appearing only as a model whose hits stopped
 (`ArtifactAllowlist.StaleFor`; `coordinator/api/inference/exact_cache_allowlist_staleness.go`,
 `missingAllowlistEntries`).
+
+An authenticated eligible request can record bounded demand for its exact resolved
+artifact tuple before tokenizer readiness, without waiting for tokenizer preload
+or changing its original deadline. Overflow selection retains the full verified
+catalog and never raises the sidecar's configured capacity. See the canonical
+[tokenizer preload policy](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
+Advisory public provider availability is neither cache ownership nor authorization.
 
 Without authenticated scope, `RemotePrefixCacheContext.cacheEnabled` is false
 and the provider forwards `prefixCacheEnabled=false` to the engine. This gates
@@ -115,6 +183,16 @@ participation; they never reject, delay, or otherwise change ordinary
 inference.
 
 ### Identity and isolation
+
+After those unchanged rollout gates, planning admission waits within its
+existing deadline instead of oversubscribing the sidecar's worker pool.
+Count/byte bounds and explicit server-connection headroom for independent
+health/control pools are enforced by `NewClient`,
+`PlanAdmission` and `Client.Plan` (`coordinator/internal/promptcontract/sidecar/plan_admission.go`,
+`coordinator/internal/promptcontract/sidecar/client.go`); see
+[the sidecar mechanism](prompt-contract-sidecar.md#process-and-lifecycle).
+Successful planning is an opportunity for reuse, not proof that a provider
+actually adopted an SSD checkpoint.
 
 One cache plan contains:
 
@@ -316,6 +394,16 @@ block size, layout epoch or key fingerprint drift), so `epoch_change` means a
 whole-root rebuild, not capacity pressure. Providers older than this change
 still rotate on eviction.
 
+Before retiring an owned SSD entry, `SSDCacheEpochStore` rereads the durable
+epoch record. Failed parent-directory opens and file-status probes refuse the
+operation without disowning the store; the next pass retries the same record.
+Successfully observed missing, non-regular, malformed, oversized or replaced
+records still revoke ownership. `SSDNoFollowIO.checkedRegularFileStatus` keeps
+lookup failures separate from observed invalid entries, while ordinary active
+file lookups remain conservative. The connected retirement fixture checks the
+original provider/model capability in both the eviction-observing snapshot and
+the refreshed snapshot before reporting epoch preservation.
+
 Because a provider that removes one file keeps its epoch, the coordinator
 learns of the removal from the next lookup: a miss at the attempted boundaries
 (`miss_invalidation`), or a valid hit below a boundary recorded for that
@@ -330,6 +418,25 @@ or hit re-teaches them. Neither path fences the provider or moves its sequence
 watermark. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
+
+The file and its in-memory index commit are coordinated through
+`SSDCheckpointFileCoordinator` in
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift`.
+Complete-checkpoint `performWrite` and attention `SSDWriteBehind.consume` hold
+cancellable per-file access through durable rename (or duplicate authentication)
+and index insertion. They release it before whole-root/disk-budget maintenance,
+so a committed new file can still be evicted under pressure. Startup scans use
+the same file-access boundary for index insertion. Under its epoch barrier,
+`SSDOwnedEntryRetirement.remove` uses nonblocking `tryAcquire` and skips busy
+files rather than waiting for a writer that may need the epoch lock. Unrelated
+victims remain eligible. Complete-checkpoint donation and `publishReady` also
+require a regular no-follow file before announcing a new anchor
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`).
+This prevents owned retirement from deleting a renamed-but-not-yet-indexed
+checkpoint without reintroducing generation-wide invalidation for routine LRU.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Routing uses in-memory attempt and holder maps;
@@ -364,6 +471,87 @@ minutes is accepted and logged as a warning at startup, because providers keep
 their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### SSD reconciliation and native retry authority
+
+Missing-file reconciliation rechecks the pathname while holding the index
+publication barrier and exact-file lease. Busy writers defer reconciliation; a
+same-tag replacement remains indexed and reusable. Budget enforcement rechecks
+usage after stale accounting disappears before choosing another physical victim.
+Accounting-only cleanup does not increment physical eviction counters.
+
+AR allocation-time capacity refusal stays cold because the pinned SDK can queue
+native retirement without exposing a completion receipt. Host refund does not
+authorize another import. Native-block refusals and pre-allocation provider
+budget refusals retain their existing bounded shorter-checkpoint behavior.
+
+See [bounded shorter complete-checkpoint fallback](../reference/ssd-kv-cache.md#bounded-shorter-complete-checkpoint-fallback) for retry authority and remaining-budget rules.
+
+### Attempt-record memory accounting
+
+The tracker admits at most `cacheRoutingMaxAttemptBytes` (67,108,864) logical
+bytes of attempt records in addition to its unchanged 50,000-record count cap.
+`CacheAttemptCharge` in `coordinator/internal/registry/cachetracker/attempt_budget.go` charges
+`2048 + 96*N + sum(boundary hash byte lengths) + 128 + scalar byte lengths`;
+the `AttemptBudget` ledger in that file holds the admitted total and its limit.
+`N` counts input boundaries. The boundary slice and the frozen boundary claims
+share one detached immutable hash string per boundary. Scalars include nonce,
+request/provider/model identities, every plan string, expected-prompt hash and
+all string fields of both tier capabilities. The 128-byte allowance prepays both
+future READY hashes.
+
+`StoreAttemptLocked` (`coordinator/internal/registry/cachetracker/cache_receipts_kernel.go`)
+validates the charge, clones retained strings and the boundary slice and derives
+its own boundary claims before reclaiming any terminal record. Checked
+replacement accounting subtracts the incumbent's stored charge; reclaiming never
+selects the nonce being replaced, and a refusal preserves the incumbent.
+On byte pressure, a separate terminal-only expiry order (`TerminalOrder`, built
+for each generation in `coordinator/registry/cache_tracker_controller.go`)
+offers at most 64 of its earliest-expiring records
+(`terminalBudgetVictimsLocked` in
+`coordinator/internal/registry/cachetracker/attempt_pressure.go`, walking
+`Order.Earliest` in `coordinator/internal/registry/cacheindex/order.go` without
+mutating it). Only completed attempts' optional late-receipt grace is eligible;
+live attempt authority is not reclaimed by this byte-pressure policy. Records
+are removed only when their complete refund admits the candidate; otherwise no
+grace evidence is discarded and the attempt is refused. A record larger than
+the whole budget is refused without reclaiming anything. The existing count-cap
+policy still evicts the record that expires first, which can be a live record;
+this change does not claim otherwise. Every removal refunds the stored charge
+exactly once and removes the record from both expiry orders.
+
+`PreparePrefixCacheV2Attempt` publishes an owner only after successful insertion
+and uses the admitted detached scope. Refusal returns ordinary cold inference,
+without receipt metadata, cache participation or discarded TTFT calibration.
+A reclaimed nonce cannot later recreate a holder through READY. The existing
+count/expiry race can remove a successfully inserted record before owner
+publication; publication is not a promise of continuing map retention.
+
+The in-flight lifetime remains two hours. The first terminal marking
+(`MarkAttemptTerminal`, `coordinator/internal/registry/cachetracker/lifecycle.go`)
+starts a maximum two-minute late-receipt grace; repeated terminal callbacks do
+not extend it, and byte pressure may shorten it. Terminal records retain their
+full charge until removal. Generation retirement revokes the tracker before
+clearing both expiry orders and the counter. Validated READY updates clone only
+their prepaid retained hash (`ApplyReadyV2`,
+`coordinator/internal/registry/cachetracker/receipt_ready.go`).
+
+The aggregate status and metric gauges expose `attempt_bytes`,
+`attempt_budget_refused`, and `attempt_grace_reclaimed` (Prometheus prefix
+`exact_cache_`; Datadog prefix `exact_cache.`), read through
+`Tracker.AttemptLifecycle` into `CacheRoutingLifecycleStatus`
+(`coordinator/registry/cache_routing.go`). The latter two are monotonic within
+the current tracker generation and reset on reconfiguration. They contain no
+account, prompt, nonce or provider labels. Refusal is an admission outcome, not
+a cache hit-rate denominator.
+
+This is a logical bound on tracked records, not a process RSS or OOM guarantee.
+Request plans, published owners/snapshots, provider and holder state, map capacity,
+temporary candidate/replacement allocations and garbage-collection timing have
+separate lifetimes. All-live occupancy can still exhaust the global budget;
+terminal reclamation is not per-tenant fairness or a production sizing result.
+The budget neither changes encrypted SSD retention nor grants cache credit
+without the existing authenticated receipt and owner checks.
 
 ### Persistence across restarts
 
@@ -630,7 +818,8 @@ tags only.
 `GET /v1/cache/status` (`HandleExactCacheStatus`,
 `coordinator/api/inference/exact_cache_status.go`) exposes only aggregate rollout state:
 activation and lifecycle counters (including `fences_applied`,
-`fences_expired` and `fenced_capabilities`); sidecar enabled/running/ready, child
+`fences_expired`, `fenced_capabilities`, `attempt_bytes`,
+`attempt_budget_refused` and `attempt_grace_reclaimed`); sidecar enabled/running/ready, child
 generation, categorical restart reason, failure streak, timeouts/overloads/RSS,
 cold/warm contract loads, and planner outcomes; preload generation/counts;
 prompt artifact ready/pending/failed counts; protocol 0/1/2 provider counts;
@@ -879,20 +1068,30 @@ back are operator procedures, kept in the runbook
 
 ## Invariants
 
-1. **Routing `off` runs none of the machinery, and applying `off` clears all
-   in-memory evidence** — `ConfigureCacheRouting` installs a fresh, empty
+1. **Routing `off` prevents cache planning, new cache participation and
+   cache-based selection; API planning-decision telemetry and count-only prompt
+   accounting remain active.** With routing `off` the Registry declines without
+   calling the sidecar: `off`, or `ineligible` for a request its eligibility
+   guard rejects first, such as media. A text request whose model's artifacts
+   are verified and whose contract is preload-acknowledged is still tokenized
+   through a count-only `POST /v1/plan` call, inside the prompt-accounting
+   bound; its boundaries are discarded and it creates no cache participation
+   (`promptwork.Plan`, `coordinator/api/promptwork/planner.go`).
+   Applying `off` clears in-memory routing evidence: `ConfigureCacheRouting` installs a fresh, empty
    holder/attempt tracker on every application
    (`coordinator/registry/cache_routing.go`). With routing and persistence
    enabled, restarts can restore SSD holders and demand under the
    [persistence rules](#persistence-across-restarts); attempts and resident-tier
    holders are never restored (`StartCacheRoutingPersistence`,
    `coordinator/registry/cache_persistence_registry.go`).
-2. **Cache routing never rejects, delays or otherwise changes ordinary
-   inference.** The activation cohort and the plan-QPS bucket only decline
+2. **Cache planning is optional and cannot extend the original service budget.**
+   Planning can consume bounded pre-dispatch time. The activation cohort and the plan-QPS bucket only decline
    participation (`cacheactivation.Gate`,
    `coordinator/internal/registry/cacheactivation/gate.go`); a sidecar failure or a media
-   request yields a non-participating plan and the request still dispatches
-   (`planPromptRoute`, `coordinator/api/inference/prompt_work.go`).
+   request yields a non-participating plan; ordinary admission and the remaining
+   original deadline still decide whether dispatch is possible
+   (`CachePlanner.PlanResult`, `coordinator/internal/inference/routeplan/cache_planning.go`;
+   the budget bound is `promptwork.PlanningContext`, `coordinator/api/promptwork/planning.go`).
 3. **Only exact text-token prefix proofs from protocol-v2 providers affect
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
@@ -986,7 +1185,7 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 | Status vocabularies and sanitization | `coordinator/internal/registry/cachepolicy/eligibility.go` (`SanitizeStatuses`, `ReconcileStatuses`, `SanitizeDonationOutcomes`); adapters in `coordinator/registry/cache_eligibility.go`; `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | Capability publication and deferred binding | `coordinator/registry/cache_snapshot.go` (`UpdatePrefixCacheSnapshot`, `CacheSnapshotUpdater.Apply`); `coordinator/registry/cache_snapshot_result.go` (`CacheSnapshotResult`, `SettleDrop`, `BindRemaining`); heartbeat caller in `coordinator/api/provider/session.go` |
 | Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` (`applyCacheRoutingCost`); `coordinator/registry/cache_service_cost.go` (`PriceForProviderLocked`); `coordinator/internal/registry/cachepolicy/service_cost.go` (`ApplyServiceCost`); `coordinator/registry/candidate_selection.go` (`selectRoutingCandidate`); `coordinator/registry/first_content_selection.go` (`selectFirstContentCandidate`); `coordinator/registry/gate_reason.go` (`SelectionCacheCredit`) |
-| Plan construction and sealed body | `coordinator/api/inference/prompt_work.go` (`planPromptRoute`); `coordinator/internal/inference/routeplan/cache_plan_memo.go` (`Memo.ForBody`, `Memo.ForModel`); `coordinator/internal/inference/providerwire/body.go` (`BodyForCacheAttempt`) |
+| Plan construction and sealed body | `coordinator/internal/inference/routeplan/cache_planning.go` (`CachePlanner.PlanResult`), bound by `coordinator/api/inference/cache_planner.go` (`NewCachePlanner`) and called from `coordinator/api/inference/prompt_work.go` (`planPromptRoute`); `coordinator/internal/inference/routeplan/cache_plan_memo.go` (`Memo.ForBody`, `Memo.ForModel`); `coordinator/internal/inference/providerwire/body.go` (`BodyForCacheAttempt`) |
 | Status endpoint and gauges | `coordinator/api/inference/exact_cache_status.go`, `coordinator/api/inference/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/internal/observation/cachemetrics/cache_terminal_policy.go` (`TerminalTags`), emitted by `coordinator/api/observation/cache_terminal.go` (`EmitCacheSelectionTerminal`); `coordinator/internal/inference/metrics/calibration.go` (`Reporter.ObserveTTFTCalibration`); `coordinator/internal/inference/profile/reputation_latency.go` (`ShouldRecordReputationLatency`) |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |

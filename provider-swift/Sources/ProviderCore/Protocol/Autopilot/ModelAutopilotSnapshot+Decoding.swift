@@ -20,6 +20,7 @@ extension ModelAutopilotSnapshot {
         lastReleaseMs = try c.optional(Int64.self, .lastReleaseMs)
         lastLoadMs = try c.optional(Int64.self, .lastLoadMs)
         enabled = try c.required(Bool.self, .enabled)
+        consentEnabled = try c.optional(Bool.self, .consentEnabled)
         cachedOnly = try c.required(Bool.self, .cachedOnly)
         minDwellSeconds = try c.required(Int.self, .minDwellSeconds)
         pinnedModels = try c.required([String].self, .pinnedModels)

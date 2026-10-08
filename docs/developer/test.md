@@ -21,6 +21,7 @@ isolate databases and coordinate the local server's connection budget.
 | Boundary | Regression owner |
 |---|---|
 | Once-rounded floor, UTC day guards and independent-day worker catch-up | `coordinator/tests/payments/autopilotrewards/engine_test.go` |
+| Shared final day for early/late joiners, post-cutoff rejection and earlier pending-payment retries; fixture clocks remain inside the fixed campaign | `coordinator/tests/payments/autopilotrewards/engine_test.go`; `coordinator/tests/store/contracts/autopilot_rewards_cutoff_test.go` |
 | Exact first-ever window, sponsored inference, whole first partial day, immutable baseline, history gaps, canonical aliases, per-day consent, pool retry and single-count earnings | `coordinator/tests/store/contracts/` (`autopilot_rewards_test.go`, `autopilot_rewards_history_test.go`, `autopilot_rewards_identity_test.go`) |
 | Delayed cross-session consent and frozen-history conflicts without rewriting finalized receipts | `coordinator/tests/store/contracts/autopilot_rewards_history_test.go` (`TestAutopilotRewardsDelayedSessionConsentPreservesFirstOptIn`, `TestAutopilotRewardsLateEarlierConsentFlagsFrozenHistory`) |
 | Migration/schema equivalence, restart persistence, concurrent cap/deduplication and rollback of all financial writes | `coordinator/tests/store/postgres/` (`autopilot_rewards_migration_test.go`, `autopilot_rewards_test.go`, `autopilot_rewards_atomicity_test.go`) |

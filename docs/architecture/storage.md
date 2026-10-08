@@ -587,23 +587,35 @@ capability discovered through `store.As`; both backends implement it. Its
 `earningsfloor` records do not write cached user or model-registry fields.
 Migration 31 creates four additive tables and initializes the pool once; it
 does not alter `provider_floor_draws` or historical base-reward accounting.
+Migration 32 adds captured daily qualification and extends the baseline-source
+and settlement-status checks without resetting existing baselines or receipts.
 
 | Table | Identity and retained state |
 |---|---|
 | `autopilot_reward_pool` | Boolean singleton; cumulative cap/spending and immutable `tracking_started_at`, preserved on restart and migration replay. Constraints keep `0 <= spent_micro_usd <= cap_micro_usd`. |
 | `autopilot_reward_enrollments` | Original enrollment machine ID; authenticated account, first positive observation, nullable first-ever opt-in, baseline/source/evidence, fixed daily floor and sequential `next_day`. The schema checks the integer floor against the baseline sum. |
-| `autopilot_reward_consents` | `(session_id, at)`; authenticated account, supported/opted-in declarations and nullable machine binding. Per-session changed states and new-UTC-day checkpoints preserve original `at`; same-value reports in that day advance only `last_observed_at`. Watermarks cannot cross UTC dates. |
+| `autopilot_reward_consents` | `(session_id, at)`; authenticated account, supported/opted-in declarations, server-captured `qualified`, bounded original `chip`/`memory_gb` hardware and nullable machine binding. Per-session changes to consent, qualification or hardware and new-UTC-day checkpoints preserve original `at`; same-value reports in that day advance only `last_observed_at`. Watermarks cannot cross UTC dates. Existing rows receive `qualified=false`, not fabricated historical qualification. |
 | `autopilot_reward_settlements` | Original enrollment machine ID and UTC date; account, floor, observed inference sum, due/paid amounts, status and creation time. Only pending receipts may be updated; finalized receipts deduplicate across canonical ancestors. |
 
 Source: `coordinator/store/postgres/schema/migrations/00031_autopilot_rewards.sql`;
+`coordinator/store/postgres/schema/migrations/00032_autopilot_reward_eligibility.sql`;
 `coordinator/store/earningsfloor/types.go`. The
 [pricing reference](../reference/pricing-model.md#autopilot-rewards) owns the
 closed statuses, monetary rules and history eligibility.
 
+The memory backend retains per-session missing-uptime windows when bounded
+history drops a provider session. Insufficient retained coverage overlapping a
+missing window stays `history_required`; a retained union already meeting the
+floor still qualifies. Account scrub removes these operational markers. See
+`coordinator/internal/store/memoryhistory/prune.go` and
+`coordinator/store/memory/autopilot_rewards_uptime.go`.
+
 Migration 31 defines `baseline_source TEXT NOT NULL DEFAULT ''`, independent of
 evidence text. `autopilot_reward_enrollments_source_check` requires an empty source
-for unknown baselines and one of the two nonempty [source values](../reference/api-contracts.md#autopilot-reward-administration)
-for known baselines.
+for unknown baselines. Migration 32 adds the cohort source to the closed
+[source values](../reference/api-contracts.md#autopilot-reward-administration)
+for known baselines and adds the final unpaid `ineligible` status. It preserves
+the frozen baseline amount and its existing source.
 
 `ObserveAutopilotConsent` commits the raw declaration before trying to freeze
 enrollment. It can return `ErrIdentity` while preserving a valid authenticated
@@ -614,6 +626,28 @@ do not establish enrollment. Neither provisional identity nor an unsupported
 declaration proves first-ever opt-in history
 (`coordinator/store/postgres/autopilot_rewards_consent.go`,
 `journalAutopilotConsent`; `coordinator/store/postgres/autopilot_rewards_list.go`).
+
+Cohort metadata is read at the frozen opt-in anchor, not from future hardware
+reports. PostgreSQL uses the latest machine observation at or before that instant
+for each bound session; conflicting or unknown observations leave the cohort
+unresolved. Memory retains only the latest inventory observation and fails
+closed when it postdates an earlier anchor. The cohort evidence retains its
+key, peer count, hashed peer fingerprint, window and statistic, without peer IDs
+(`coordinator/store/postgres/autopilot_rewards_cohort.go`,
+`autopilotRewardCohortKey`; `coordinator/store/memory/autopilot_rewards_cohort.go`,
+`autopilotRewardCohortKeyLocked`; `coordinator/internal/payments/floorpolicy/cohort.go`,
+`CohortBaselineValue`).
+
+Daily qualification is internal declaration evidence rather than a new HTTP or
+provider wire field. The registry derives it from current authenticated trust
+and accepted inventory; the store preserves changes independently of saved
+opt-in. Daily uptime reads same-account `provider_sessions` joined through the
+canonical machine's retained session aliases, under the receipt transaction.
+The shared interval union prevents overlapping connections from multiplying
+coverage (`coordinator/registry/autopilot_reward_snapshot.go`,
+`AutopilotRewardSnapshot`; `coordinator/store/postgres/autopilot_rewards_uptime.go`,
+`autopilotRewardUptime`; `coordinator/store/memory/autopilot_rewards_uptime.go`,
+`autopilotRewardUptimeLocked`).
 
 PostgreSQL obtains account-admission and privacy fences before the inventory
 merge advisory transaction lock `9952701`, then locks the pool row. It re-resolves

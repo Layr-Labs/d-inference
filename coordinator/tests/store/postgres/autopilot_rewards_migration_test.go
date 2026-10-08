@@ -83,7 +83,7 @@ func TestAutopilotRewardsMigrationConstrainsBaselineSource(t *testing.T) {
 	if _, err := f.ObserveMachine(ctx, store.MachineObservation{SessionID: "old", AccountID: "owner", SEKey: "old", At: f.firstSeen.Add(-48 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	unknown, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "old", AccountID: "owner", Supported: true, OptedIn: true, At: first})
+	unknown, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "old", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: first})
 	if err != nil || unknown.BaselineKnown || unknown.BaselineSource != "" {
 		t.Fatalf("unknown baseline default source: %+v %v", unknown, err)
 	}

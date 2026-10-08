@@ -24,7 +24,7 @@ func (s *MemoryStore) BeginAppAttestEvidence(ctx context.Context, e store.AppAtt
 		return store.ErrErasureConflict
 	}
 	if e.AccountID != "" {
-		if err := s.history.OpenProviderSession(ctx, e.SessionID, "", e.AccountID); err != nil {
+		if err := s.history.OpenProviderSession(ctx, e.SessionID, "", e.AccountID, s.now()); err != nil {
 			return err
 		}
 		for i := range s.history.ProviderSessions {

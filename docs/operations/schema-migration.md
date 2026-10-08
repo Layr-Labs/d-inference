@@ -1,6 +1,6 @@
 # Apply schema migrations in production
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Runbook for applying the goose migrations of a coordinator candidate to the
 production database (Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet`, read
@@ -368,6 +368,17 @@ Do not rely on the process-local pause surviving restart, remove settings to
 simulate rollback, or assume accepted operations were reversed. Verify actual
 capacity and recovery records with the [Autopilot runbook](model-autopilot.md#rollback).
 Keep the additive columns and their recorded goose versions intact.
+
+### Rollback with Autopilot reward qualification
+
+Versions 31 and 32 retain financial baselines, captured daily qualification and
+receipts independently of the live controller. Before code rollback, follow
+[reward rollback](autopilot-rewards.md#rollback) with approval to disable its
+payment worker. Preserve all four reward tables, qualification fields, cohort
+sources, finalized `ineligible` receipts and goose versions. An older writer
+that omits qualification creates a history gap; a later upgrade cannot infer
+earlier eligibility from current OS or downloaded models. Do not downgrade the
+schema, clear baselines or reset settlement cursors to accommodate older code.
 
 ## Related
 

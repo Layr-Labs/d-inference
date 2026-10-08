@@ -13,7 +13,7 @@ func (s *MemoryStore) OpenProviderSession(ctx context.Context, sessionID, serial
 	if s.erasedAccounts[accountID] || s.erasedProviderLocked(sessionID) {
 		return store.ErrErasureConflict
 	}
-	return s.history.OpenProviderSession(ctx, sessionID, serial, accountID)
+	return s.history.OpenProviderSession(ctx, sessionID, serial, accountID, s.now())
 }
 func (s *MemoryStore) TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error {
 	s.mu.Lock()

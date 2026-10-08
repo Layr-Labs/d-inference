@@ -145,7 +145,8 @@ the provider's completed load and current capacity report establish readiness.
 The live planner chooses cached models for utilization; it does not guarantee
 more inference work. The separate [reward policy](../reference/pricing-model.md#autopilot-rewards)
 depends on tracked saved consent, a known baseline, payment enablement and funded
-allowance, not live activation. Newly downloaded catalog builds do not expand
+allowance, plus captured daily qualification and measured machine uptime under
+that policy. Live activation is independent. Newly downloaded catalog builds do not expand
 consent until an explicit inventory refresh.
 
 The action and operation bounds are in

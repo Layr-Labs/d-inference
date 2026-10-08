@@ -1,0 +1,147 @@
+{
+  "status": "pass",
+  "independentArithmeticReconciled": true,
+  "curatedUTC": "2026-10-04T04:58:35.828581+00:00",
+  "scope": "Same experimental solo-prefill stripe1024, MTP-off: sole ordinary-historical publication predicate and owner-retirement counterfactual on A5. Not an entire old SDK/deployed build.",
+  "nativeWindowUTC": {
+    "start": "2026-10-04T04:36:13.058823+00:00",
+    "end": "2026-10-04T04:49:31.827871+00:00"
+  },
+  "strictSealWindowUTC": {
+    "start": "2026-10-04T04:50:00.465223+00:00",
+    "end": "2026-10-04T04:50:13.100763+00:00"
+  },
+  "economicsWindowUTC": {
+    "start": "2026-10-04T04:50:50.065448+00:00",
+    "end": "2026-10-04T04:51:15.447054+00:00"
+  },
+  "proofFilesSHA256": {
+    "matrix": "3da1b347434d89cd405f4896adb681bd362df6a394bd93bbf401c3e33bb6ef93",
+    "strictSeal": "4bc2ba82d3dc719269038a6cdf4d33e7ea85a50cee21bcc405af718c4d3ddcf4",
+    "economics": "4aaf01177e2ca03898d9e11bd8e989e8083812a37d84bf0c7ec382bd5d32fddb"
+  },
+  "population": {
+    "models": 2,
+    "counterbalancedPolicyPairsPerModel": 3,
+    "freshProcessArms": 12,
+    "measuredRequests": 72,
+    "withinArmOutputComparisons": 36,
+    "crossPolicyMatchingRoleComparisons": 36,
+    "owningTestInvocations": 12,
+    "skips": 0,
+    "failures": 0,
+    "economicOutputIDsPerDonorPlusMiddlePair": 256
+  },
+  "experimentalProfilePairedEconomicsQualified": true,
+  "servingPolicyQualified": false,
+  "default2048BenefitClaimed": false,
+  "deployedFleetGainClaimed": false,
+  "decoderThroughputGainClaimed": false,
+  "strictFsync": false,
+  "fsyncDurabilityClaimed": false,
+  "saturationClaimed": false,
+  "actualSoloPrefillStripeTokens": 1024,
+  "MTPActive": false,
+  "allSixRolesPhysicalAndExact": true,
+  "noAdjacentTimingInEconomics": true,
+  "allNonDonorWritesZero": true,
+  "allRestoredForkReplayTokensZero": true,
+  "allCheckpointWritesDrained": true,
+  "allSourceImageResourceHelperSpecBindingsUnchanged": true,
+  "allObservedOwnedProcessesReapedQuiescent": true,
+  "timingScope": "Serialized requests through quiescence; event/terminal/receipt rates remain separate. No saturation claim.",
+  "aggregation": "Compute each paired percent first; report median of three paired percentages. Independent old/current absolute metric medians are displayed separately and are not inputs to that percent.",
+  "breakEvenDefinition": "Signed donor quiescence overhead / positive per-fork quiescence saving; total warm-fork ratio for the measured synthetic pair, no fleet repeat forecast.",
+  "images": {
+    "old_adjacent": {
+      "binarySHA256": "409ed7b6001a846dfcd7de9f6a3c5915973c4b49aebee988e34219baf4e5b11d"
+    },
+    "current": {
+      "binarySHA256": "ae86dc4fc9df8186ac2b7063a383dd62b61ae62e92373213b2dc25073bce8c00"
+    }
+  },
+  "models": [
+    {
+      "model": "google/gemma-4-26b-a4b-it",
+      "pairedBlocks": 3,
+      "middleRestoredTokens": {
+        "old": 1024,
+        "current": 4096
+      },
+      "latestRestoredTokensBothPolicies": 5120,
+      "medianPairedEconomics": {
+        "warmTTFTReductionPercent": 57.2869274838988,
+        "warmTerminalTPSChangePercent": 35.744769240592156,
+        "warmQuiescenceTPSChangePercent": 35.74455931526648,
+        "donorTTFTChangePercent": 0.03334965950172464,
+        "donorQuiescenceOverheadSeconds": 0.1015217909999997,
+        "warmQuiescenceSavingSeconds": 2.044782543,
+        "oldSerializedDonorWarmSeconds": 16.553033249000002,
+        "currentSerializedDonorWarmSeconds": 15.177243209,
+        "serializedDonorWarmCompletedOutputTokens": 256,
+        "oldSerializedDonorWarmTPS": 15.46544347184619,
+        "currentSerializedDonorWarmTPS": 16.86735835189053,
+        "serializedDonorWarmTPSChangePercent": 13.53637753955148,
+        "serializedDonorWarmLatencyReductionPercent": 11.922502578379301,
+        "totalWarmForkBreakEvenRatio": 0.04964918707250509,
+        "oldDonorReceiptToQuiescenceSeconds": 5.7499999996935e-06,
+        "oldWarmReceiptToQuiescenceSeconds": 6.083000000600691e-06,
+        "currentDonorReceiptToQuiescenceSeconds": 6.2500000002074785e-06,
+        "currentWarmReceiptToQuiescenceSeconds": 6.083999999795253e-06,
+        "donorReceiptToQuiescenceChangeSeconds": -2.920000010675494e-07,
+        "warmReceiptToQuiescenceChangeSeconds": 9.999991945619513e-10,
+        "netSerializedDurationChangeSeconds": -1.9432607520000005
+      },
+      "allThreeNetSerializedDurationsImproved": true,
+      "extraDonorBytesPerBlock": [
+        293633392
+      ],
+      "independentArmMedianWarmTTFTSeconds": {
+        "old_adjacent": 3.622234125,
+        "current": 1.605957875
+      },
+      "independentArmMedianWarmTTFTPopulationPerPolicy": 3
+    },
+    {
+      "model": "openai/gpt-oss-20b",
+      "pairedBlocks": 3,
+      "middleRestoredTokens": {
+        "old": 1024,
+        "current": 2048
+      },
+      "latestRestoredTokensBothPolicies": 3072,
+      "medianPairedEconomics": {
+        "warmTTFTReductionPercent": 51.49309550783319,
+        "warmTerminalTPSChangePercent": 19.397523361364488,
+        "warmQuiescenceTPSChangePercent": 19.050131519430092,
+        "donorTTFTChangePercent": 0.414577074457001,
+        "donorQuiescenceOverheadSeconds": 0.06408395800000033,
+        "warmQuiescenceSavingSeconds": 0.7221348750000001,
+        "oldSerializedDonorWarmSeconds": 10.168288917,
+        "currentSerializedDonorWarmSeconds": 9.525967291,
+        "serializedDonorWarmCompletedOutputTokens": 256,
+        "oldSerializedDonorWarmTPS": 25.1763105955814,
+        "currentSerializedDonorWarmTPS": 26.873911297371887,
+        "serializedDonorWarmTPSChangePercent": 6.900102329124702,
+        "serializedDonorWarmLatencyReductionPercent": 6.454720041221873,
+        "totalWarmForkBreakEvenRatio": 0.08864596286310251,
+        "oldDonorReceiptToQuiescenceSeconds": 5.499999999436511e-06,
+        "oldWarmReceiptToQuiescenceSeconds": 5.750000000581679e-06,
+        "currentDonorReceiptToQuiescenceSeconds": 5.750000000581679e-06,
+        "currentWarmReceiptToQuiescenceSeconds": 0.010691249999999819,
+        "donorReceiptToQuiescenceChangeSeconds": 2.500000011451675e-07,
+        "warmReceiptToQuiescenceChangeSeconds": 0.010685707999999572,
+        "netSerializedDurationChangeSeconds": -0.6548948330000002
+      },
+      "allThreeNetSerializedDurationsImproved": true,
+      "extraDonorBytesPerBlock": [
+        106712681
+      ],
+      "independentArmMedianWarmTTFTSeconds": {
+        "old_adjacent": 1.387681,
+        "current": 0.671524917
+      },
+      "independentArmMedianWarmTTFTPopulationPerPolicy": 3
+    }
+  ]
+}

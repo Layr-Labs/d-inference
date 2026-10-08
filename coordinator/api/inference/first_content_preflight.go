@@ -24,7 +24,8 @@ func (p AdmissionRequest) preflightRequest() firstcontent.Preflight {
 		EstimatedPromptTokens: p.EstimatedPromptTokens, RequestedMaxTokens: p.RequestedMaxTokens,
 		RequiresVision: p.RequiresVision, AllowedProviderSerials: p.AllowedProviderSerials,
 		SelfRouteOnly: p.Policy.Enabled, PreferOwner: p.Policy.Prefer, OwnerAccountID: p.Policy.OwnerAccountID,
-		Deadline: p.Deadline, ReceivedAt: p.ReceivedAt, CachePlanForModel: p.CachePlanForModel,
+		Deadline: p.Deadline, ReceivedAt: p.ReceivedAt,
+		FallbackDeadline: p.FallbackDeadline, DeadlineForWork: p.DeadlineForWork, CachePlanForModel: p.CachePlanForModel,
 		PromptWorkForModel: p.PromptWorkForModel, Calibration: contextCalibration,
 	}
 }

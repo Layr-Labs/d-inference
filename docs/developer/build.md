@@ -446,11 +446,12 @@ The provider consumes the local packages through immutable Git submodule pins:
 |---|---|---|
 | `libs/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | `gather_mm` / `gather_qmm` row-tile backport |
 | `libs/mlx-swift/Source/Cmlx/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | Same merged MLX source used by Cmlx and the provider metallib |
-| `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources |
-| `libs/mlx-swift-lm` | `3fd4944c3b3ee5cb45c5cbfac8805876332d3a29` | [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165): opt-in typical MTP acceptance; exact remains the default |
+| `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources; retains [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) exact constant reuse for eligible Bonsai packed projections |
+| `libs/mlx-swift-lm` | `3fd4944c3b3ee5cb45c5cbfac8805876332d3a29` | Includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
 
 Keep both local packages in the provider build. The SDK's standalone package
-manifest can still reference a pre-merge Swift review revision; the nested-test
+manifest pins Swift `0f4fe403bef6899e8a72882bc6d4036a7a62ae31`, not the provider's
+current Swift gitlink; the nested-test
 procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
 Swift gitlink. Keep `libs/mlx` and `libs/mlx-swift/Source/Cmlx/mlx` on the same
 merged MLX commit for the `gather_mm` / `gather_qmm` row-tile backport. The Swift
@@ -462,6 +463,13 @@ Build `mlx.metallib` from the nested source with
 change provider bytes.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
+The SDK's acceptance default remains exact; the provider's eligible sampled
+target-prefix MTP requests default to typical acceptance, while greedy requests
+remain exact. See [the serving policy](../architecture/inference.md#multi-token-prediction).
+Neither that policy nor the newer native retirement and MLX kernels are
+qualified by the original demanded-prefix full-model results. The
+[dependency validation procedure](test.md#merged-sdk-pin-validation) separates
+required tiny-fixture regressions from fresh full-model performance qualification.
 The earlier SDK [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170)
 pin `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` had production libraries and a
 package manifest matching review head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`.
@@ -1118,6 +1126,26 @@ one `<Package>PackageTests.xctest`. CI uses the native build system through
 Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Use `scripts/run-provider-tests.sh` after staging rather than replacing it with
+one unfiltered test process. Its mandatory CPU checkpoint gates own fresh MLX
+compile-cache history; the [test guide](test.md) describes their exact byte/state
+checks and process-isolation controls.
+Live complete-checkpoint tests must also call `bindRuntimeMetallibForMLX`
+before their first MLX diagnostic or model load. Colocation alone does not
+establish the runtime digest required by the cache identity. The model-prefix
+fixture performs this binding explicitly; see
+[model prefix qualification](test.md#model-prefix-latency-and-throughput-qualification-live).
+Required demanded-checkpoint continuation CI uses the same staged SDK test
+image and `scripts/run-nested-suite.sh` as the existing native-retention and
+short-partition gates. Its seven scheduler/tiny-fixture methods must execute without optional
+model/GPU gates and with the wrapper's nonempty/no-skip checks. The provider's
+four adjacent-fork host methods are built with the ordinary ProviderCoreTests
+suite; eight independent pure collator controls remain distinct qualification
+evidence. A filtered suite's exit code alone does not certify execution. New
+same-donor adjacent native runs require a newly frozen source/binary/spec cut;
+prior four-role benchmark reports cannot qualify the added frontier. See
+[the model-prefix test contract](test.md#model-prefix-latency-and-throughput-qualification-live).
+
 Staging prefers `cp -c` on Darwin to retain APFS cloning, falling back to ordinary
 `cp` if cloning fails or is unsupported. Other hosts, including Linux fixture
 runners, use ordinary `cp` directly. Copy or byte-verification failures leave

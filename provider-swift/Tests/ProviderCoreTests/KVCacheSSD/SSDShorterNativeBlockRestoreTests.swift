@@ -17,7 +17,10 @@ private final class NativeShorterPressure: @unchecked Sendable {
 
 @Suite("Native-block shorter authenticated restore on CPU", .serialized)
 struct SSDShorterNativeBlockRestoreTests {
-    private func withStore(_ body: (NativeDiffusionCheckpointFixture, SSDHybridCheckpointStore) async throws -> Void) async throws {
+    private func withStore(
+        observeDonor: ((DiffusionGemmaRequestCache) throws -> Void)? = nil,
+        _ body: (NativeDiffusionCheckpointFixture, SSDHybridCheckpointStore) async throws -> Void
+    ) async throws {
         try await Device.withDefaultDevice(.cpu) {
             #expect(Device.defaultDevice().deviceType == .cpu)
             let fixture = try NativeDiffusionCheckpointFixture(rootParent: SSDTestDirectory.parent())
@@ -26,7 +29,7 @@ struct SSDShorterNativeBlockRestoreTests {
             do { store = try fixture.makeStore() }
             catch { await fixture.engine.shutdown(); throw error }
             do {
-                try #require(try await fixture.donate(store, position: 256) == [256])
+                try #require(try await fixture.donate(store, position: 256, observeDonor: observeDonor) == [256])
                 try #require(try await fixture.donate(store, position: 512) == [512])
                 #expect(fixture.engine.capacity().kvBytesReserved == 0)
                 try await body(fixture, store)
@@ -45,7 +48,12 @@ struct SSDShorterNativeBlockRestoreTests {
 
     @Test("native-block plan and real native-reservation capacity failures restore the shorter state", arguments: ["plan", "admission"])
     func typedCapacityRestoresNativeState(_ refusal: String) async throws {
-        try await withStore { fixture, store in
+        var donorBits: [Data]?
+        try await withStore(observeDonor: { donorBits = NativeCheckpointOracle.bits($0) }) { fixture, store in
+            let donor = try #require(donorBits)
+            let stored = try NativeCheckpointOracle.authenticatedBits(fixture, store: store, position: 256)
+            #expect(NativeCheckpointOracle.differences(donor, stored).isEmpty,
+                "authenticated ciphertext must contain the exact actual donor bits")
             let request = fixture.request(appended: true)
             let probe = SSDShorterRestoreProbe()
             let pressure = NativeShorterPressure()
@@ -81,14 +89,14 @@ struct SSDShorterNativeBlockRestoreTests {
             #expect(store.stats().stageReadBytes <= store.config.maxReadBytes)
             #expect(store.stats().entries == 2 && store.stats().corruptDropped == 0)
             #expect(result.resolved(actualCachedTokens: 0).outcome != .hit)
-            if result.staged { try adoptAndCompare(fixture, store: store, request: request) }
+            if result.staged { try adoptAndCompare(fixture, store: store, request: request, donorBits: donor) }
         }
     }
 
     // Scope all adopted native aliases to this synchronous helper so its
     // caller can await owner refunds only after the borrowing state retires.
     private func adoptAndCompare(_ fixture: NativeDiffusionCheckpointFixture,
-                                 store: SSDHybridCheckpointStore, request: CBv2Request) throws {
+                                 store: SSDHybridCheckpointStore, request: CBv2Request, donorBits: [Data]) throws {
         #expect(Device.defaultDevice().deviceType == .cpu)
         let staged = try #require(store.takeNativeStaged(requestID: .init(950), tokens: request.promptTokens,
             cacheSalt: request.cacheSalt, maximumSequenceLength: request.promptTokens.count + request.maxTokens))
@@ -98,6 +106,9 @@ struct SSDShorterNativeBlockRestoreTests {
         let checkpoint = try fixture.codec.adopt(staged, prefixIdentity: fixture.prefixIdentity())
         let restored = try fixture.model.restorePrefix(checkpoint, identity: fixture.prefixIdentity(),
             promptTokenIds: MLXArray(request.promptTokens).asType(.int32).reshaped(1, request.promptTokens.count))
+        let restoredBits = NativeCheckpointOracle.bits(restored)
+        #expect(NativeCheckpointOracle.differences(donorBits, restoredBits).isEmpty,
+            "native adoption must preserve the exact actual donor bits")
         let cold = try fixture.coldCache(prefixCount: 256)
         #expect(restored.snapshots().count == cold.snapshots().count)
         for (actual, expected) in zip(restored.snapshots(), cold.snapshots()) {

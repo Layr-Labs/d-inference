@@ -421,6 +421,11 @@ receipt statuses have one home in the
 [Autopilot rewards reference](../reference/pricing-model.md#autopilot-rewards).
 `coordinator/payments/autopilotrewards/engine.go` (`Engine.SettleClosedDays`,
 `Run`) consumes durable enrollment cursors, not the currently connected fleet.
+The worker clamps its eligible-day range at the shared program end; both stores
+also reject later days through `floorpolicy.ValidateDay`. This ends new accrual,
+not payment of already-earned pending days. Opt-in dates and one-time baselines
+do not extend the program (`coordinator/internal/payments/floorpolicy/math.go`,
+`EndsAt`; see the [final-day contract](../reference/pricing-model.md#autopilot-rewards)).
 
 ```mermaid
 flowchart TD
@@ -434,7 +439,7 @@ flowchart TD
   F --> G
   G --> M{"SettleClosedDays: history conflict?"}
   M -->|"yes"| N["Hold machine; preserve frozen baseline"]
-  M -->|"no"| H["Next closed UTC day"]
+  M -->|"no"| H["Next closed UTC day before shared end"]
   H --> I["SettleAutopilotRewardDay: consent at close and actual income snapshot"]
   I --> J{"Full shortfall funded?"}
   J -->|"no"| K["Pending pool_exhausted; retry and recompute"]

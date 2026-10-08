@@ -56,6 +56,9 @@ func (e *Engine) SettleClosedDays(ctx context.Context) (Result, error) {
 		return result, errors.New("Autopilot reward store unavailable")
 	}
 	closedBefore := floorpolicy.Day(e.now())
+	if end := floorpolicy.EndsAt(); closedBefore.After(end) {
+		closedBefore = end
+	}
 	var firstErr error
 	for after := ""; ; {
 		if err := ctx.Err(); err != nil {

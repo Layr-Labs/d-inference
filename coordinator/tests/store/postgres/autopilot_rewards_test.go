@@ -21,13 +21,18 @@ type autopilotRewardsFixture struct {
 
 func newAutopilotRewardsFixture(t *testing.T) *autopilotRewardsFixture {
 	t.Helper()
-	f := &autopilotRewardsFixture{now: time.Now().UTC().Add(40 * 24 * time.Hour)}
+	trackingStart := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	f := &autopilotRewardsFixture{now: trackingStart.Add(40 * 24 * time.Hour)}
 	var err error
 	f.postgresFixture, err = openPostgresFixture(t.Context(), store.Config{DatabaseURL: newThrowawayTestDatabase(t), Now: func() time.Time { return f.now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(f.Close)
+	// Pin the campaign clock rather than aging these tests past its cutoff.
+	if _, err := f.pool.Exec(t.Context(), `UPDATE autopilot_reward_pool SET tracking_started_at=$1`, trackingStart); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := f.AutopilotRewardPool(t.Context())
 	if err != nil {
 		t.Fatal(err)

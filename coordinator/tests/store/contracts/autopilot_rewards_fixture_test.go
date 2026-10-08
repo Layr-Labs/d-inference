@@ -11,6 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store/earningsfloor"
 	"github.com/eigeninference/d-inference/coordinator/store/memory"
 	"github.com/eigeninference/d-inference/coordinator/store/postgres"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type autopilotRewardsFixture struct {
@@ -35,7 +36,8 @@ func autopilotRewardsBackends(t *testing.T, run func(*testing.T, *autopilotRewar
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			f := &autopilotRewardsFixture{}
-			f.clock.Store(time.Now().UnixMicro())
+			trackingStart := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+			f.clock.Store(trackingStart.UnixMicro())
 			config := store.Config{Now: func() time.Time {
 				if f.nowHook != nil {
 					f.nowHook()
@@ -52,6 +54,15 @@ func autopilotRewardsBackends(t *testing.T, run func(*testing.T, *autopilotRewar
 				}
 				t.Cleanup(pg.Close)
 				f.backend = pg
+				// Keep campaign fixtures deterministic after the real end date.
+				fixturePool, err := pgxpool.New(t.Context(), config.DatabaseURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer fixturePool.Close()
+				if _, err := fixturePool.Exec(t.Context(), `UPDATE autopilot_reward_pool SET tracking_started_at=$1`, trackingStart); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var ok bool
 			f.rewards, ok = store.As[store.AutopilotRewardsStore](store.NewCached(f.backend, store.DefaultCacheConfig()))

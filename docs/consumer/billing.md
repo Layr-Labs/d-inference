@@ -112,6 +112,9 @@ consumer prices or ordinary base rewards. If a top-up is missing, ask the operat
 to check the machine's saved-consent history, baseline and funded pool using the
 [reward runbook](../operations/autopilot-rewards.md); enrollment alone does not
 mean payments are enabled or funded. Do not toggle enrollment to reset a baseline.
+November 7, 2026 is the final eligible UTC day for everyone, including late
+joiners; its reward settles at midnight November 8. Earlier unpaid rewards remain
+payable under the [same funding rules](../reference/pricing-model.md#autopilot-rewards).
 
 ### 4. Understand what a request costs you
 

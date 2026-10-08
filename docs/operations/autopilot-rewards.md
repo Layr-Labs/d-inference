@@ -148,6 +148,10 @@ The worker catches up on startup and follows the bounded
 [UTC schedule](../reference/pricing-model.md#autopilot-rewards). No manual
 settlement endpoint is provided. Consent tracking continues while payments are
 disabled, so enabling can process previously closed tracked days.
+The [shared final eligible day](../reference/pricing-model.md#autopilot-rewards)
+does not move with enrollment or a restart. Keep the worker and any approved
+funding available to settle earlier pending days afterward; the cutoff already
+prevents new accrual and does not disable Autopilot or ordinary base rewards.
 
 ## Verification
 

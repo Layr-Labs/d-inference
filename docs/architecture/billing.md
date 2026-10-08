@@ -540,6 +540,14 @@ budget. Existing explicit `ObserveAutopilotConsent` store callers still request
 immediate materialization (`coordinator/store/earnings_floor.go`,
 `coordinator/store/postgres/autopilot_rewards_cohort_peers.go`).
 
+PostgreSQL serializes each raw journal session separately and takes the inventory
+barrier in shared mode, so unrelated providers do not serialize their heartbeats
+behind one exclusive lock. Raw capture binds only its own session's rows;
+ancestry-wide binding and reward materialization retain the exclusive barrier.
+Account admission and erasure checks still precede these locks
+(`coordinator/store/postgres/autopilot_rewards_consent.go`,
+`beginAutopilotConsentWrite`; [storage locking](storage.md#autopilot-reward-persistence)).
+
 Only committed raw declarations survive socket or coordinator-process loss.
 `autopilotRewardCapture` uses a bounded in-memory retry queue, not a durable spool.
 A journal outage that outlasts the connection and its final bounded retry can

@@ -649,9 +649,15 @@ coverage (`coordinator/registry/autopilot_reward_snapshot.go`,
 `autopilotRewardUptime`; `coordinator/store/memory/autopilot_rewards_uptime.go`,
 `autopilotRewardUptimeLocked`).
 
-PostgreSQL obtains account-admission and privacy fences before the inventory
-merge advisory transaction lock `9952701`, then locks the pool row. It re-resolves
-canonical identity and account ownership under that barrier. The memory backend
+PostgreSQL raw consent capture obtains account-admission and privacy fences,
+then a session-scoped advisory lock and the shared inventory barrier `9952701`.
+It rechecks ownership and binds only that session's rows, allowing unrelated
+sessions to journal concurrently. Inventory merges, reward materialization and
+settlement retain the exclusive inventory barrier; materialization and
+settlement then lock the pool row. Canonical identity and account ownership are
+re-resolved under the appropriate barrier (`beginAutopilotConsentWrite`,
+`beginAutopilotRewardWrite` in `coordinator/store/postgres/autopilot_rewards_consent.go`
+and `coordinator/store/postgres/autopilot_rewards_identity.go`). The memory backend
 holds its existing store mutex for the same operations. Financial records retain
 original machine IDs after merges; the earliest frozen enrollment is selected,
 not the sum of aliases' baselines. The derived `history_conflict` projection checks
@@ -665,6 +671,11 @@ final receipts fail closed (`coordinator/store/postgres/autopilot_rewards_identi
 `ensureAutopilotRewardEnrollment`, `readAutopilotRewardEnrollment`;
 `coordinator/store/postgres/autopilot_rewards_settlement.go`,
 `finalizedAutopilotRewardDay`).
+
+`resolveAutopilotRewardMachine` materializes the canonical ancestor IDs before
+reading their owners. The separate indexed owner query includes both stored
+consent machine bindings and consent-session mappings, preserving conflicting
+owners without letting recursive cardinality estimates cause a full history scan.
 
 Inference attribution uses the earning's authenticated account and durable
 provider-session machine mapping. A legacy provider-key fallback must be

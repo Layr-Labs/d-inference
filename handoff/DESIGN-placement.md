@@ -503,14 +503,20 @@ Typed on purpose, and listed so that nobody mistakes them for detection:
 
 ## Wiring, in order
 
-**(a) The guided flow.** `darkbloom cluster` gains a step after the link is
-ready: detect this Mac, ask the peer's worker for its profile and both for
-the runtime record, build the layout, plan, and write the setup the planner
-chose. It prints what it detected and what it chose in the planner's own
-words. The operator approves it as they approve a setup today. Rank order
-follows the plan; the leader stays rank 0, so when the plan gives rank 0 to
-the other Mac the flow says that the session is started from that Mac. Making
-the leader independent of the rank is the topology change X1 of the
+**(a) The guided flow.** Built as `darkbloom cluster plan`, a step of the
+same command family, reached after the link is ready. The operator states
+the pair once (`ClusterPairDescription`: the two members and their
+installations, with no leader, no rank and no plan). The step detects this
+Mac and reads the model's layout through the plan tool installed beside the
+worker, takes the other Mac's profile as that Mac printed it, plans, prints
+what it detected and chose in the planner's own words, and writes one setup
+per Mac. Rank order follows the plan and the leader is the rank-0 member, so
+either Mac can lead whichever one the step is run on, and the ranks meet on
+the leader's link address; the output says from which Mac the session is
+started. Each Mac approves its own setup with `cluster configure`, as before.
+Not done: fetching the peer's profile over the pinned SSH route instead of a
+file, and a row for the step in the console (`TUI-wiring.md`). Making the
+leader independent of the rank is the topology change X1 of the
 prefill-export design and is not part of this.
 
 **(b) Cuts.** The legal cuts become the family's structural rule. The typed
@@ -606,7 +612,7 @@ is wired into the status view yet.
 ## Status
 
 Built and checked without hardware (`libs/darkbloom-cluster/Tests/PlacementChecks`, 190 checks;
-`provider-swift/Tests/ClusterPlacementChecks`, 19; `libs/darkbloom-cluster-worker/Tests/QualificationChecks`, 42 tests):
+`provider-swift/Tests/ClusterPlacementChecks`, 19 and 7; `libs/darkbloom-cluster-worker/Tests/QualificationChecks`, 42 tests):
 
 - The placement target: profile, layout and builder, estimator, planner,
   budgets, explanation.
@@ -623,8 +629,11 @@ Built as a product and run on both Macs: `darkbloom-cluster-plan` (`device`
 on each Mac; `layout` and `plan` on real artifacts with both Macs' detected
 profiles).
 
-Written and not compiled: `ClusterPlacementFlow.run` and the
-`darkbloom cluster plan` command (they need the provider build).
+Compiled with the installed path's own sources and run end to end with a
+stand-in for the plan tool: `ClusterPlacementFlow.run`
+(`Tests/ClusterPlacementChecks/run-flow.sh`, 7 checks). Written and not
+compiled: the ArgumentParser shell of `darkbloom cluster plan`, which needs
+the provider build.
 
 Not built: the speed probe for the dense Qwen models (recorded solo runs
 stand in as measurements); the model-free device index has code and has not

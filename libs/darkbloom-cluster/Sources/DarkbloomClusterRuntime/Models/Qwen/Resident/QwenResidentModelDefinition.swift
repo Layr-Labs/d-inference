@@ -14,6 +14,9 @@ struct QwenResidentModelDefinition {
     /// Stage 0 layer counts a pair may be loaded at, ascending.
     let supportedCuts: [Int]
     let supportedPrefillSchedules: [ClusterPrefillSchedule]
+    /// How a request on this model may be divided between the ranks, the
+    /// pipeline first. A mode outside this row is refused at load.
+    let supportedGenerationModes: [ClusterGenerationMode]
 
     init(model: QwenRegisteredDenseModel) throws {
         guard let specification = QwenDenseRegisteredSpecification.all.first(where: { $0.model == model }) else {
@@ -34,6 +37,18 @@ struct QwenResidentModelDefinition {
             supportedCuts = structural
         }
         supportedPrefillSchedules = QwenResidentAdapterDefinition.supportedPrefillSchedules
+        // Compact decode framing and the phase split depend on the model only
+        // through its registered geometry (state shapes and sizes follow from
+        // the layer kinds and head counts), so both rows carry every mode. A
+        // model that must not run one drops it from its own row here.
+        switch model {
+        case .qwen35NineB, .qwen38TwentySevenB:
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
+        }
+        guard supportedGenerationModes.first == .pipeline,
+              supportedGenerationModes == ClusterGenerationMode.allCases.filter(supportedGenerationModes.contains) else {
+            throw QwenDenseProfileError("Resident generation modes must list the pipeline first, each once, in order")
+        }
         guard !supportedCuts.isEmpty, supportedCuts == Array(Set(supportedCuts)).sorted(),
               supportedCuts.allSatisfy(structural.contains) else {
             throw QwenDenseProfileError("Resident cuts differ from the registered layer geometry")

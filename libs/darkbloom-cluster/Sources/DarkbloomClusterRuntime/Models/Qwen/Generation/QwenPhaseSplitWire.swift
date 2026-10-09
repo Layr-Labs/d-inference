@@ -95,6 +95,19 @@ struct QwenPhaseSplitHandoffHeader {
         return data
     }
 
+    /// An upper bound on the encoded header for these components, whatever the
+    /// digests and identities turn out to be: every digest and fingerprint has
+    /// a fixed length, and the other fields are bounded by `fixedFieldBytes`.
+    static let fixedFieldBytes = 1024
+    static func encodedBytesBound(shapes: [QwenPhaseSplitStateShape]) throws -> Int {
+        let placeholder = String(repeating: "0", count: 64)
+        let entries = shapes.map {
+            Entry(globalLayerIndex: $0.globalLayerIndex, component: $0.component, shape: $0.shape,
+                  dtype: $0.dtype, byteCount: $0.byteCount, sha256: placeholder)
+        }
+        return try QwenLongPrefillCheckedBytes.sum([fixedFieldBytes, try canonicalJSONData(entries).count])
+    }
+
     /// Only the digests are read from the wire. The header is then rebuilt
     /// from local values and must equal the received bytes field for field.
     static func decode(_ data: Data, agreement: QwenLayerStageGenerationAgreement,

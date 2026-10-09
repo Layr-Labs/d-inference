@@ -44,7 +44,8 @@ public enum QwenResidentCapabilityMetadata {
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
             maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
             maxRequests: QwenResidentAdapterDefinition.maximumRequests,
-            supportedPrefillSchedules: definition.supportedPrefillSchedules)
+            supportedPrefillSchedules: definition.supportedPrefillSchedules,
+            supportedGenerationModes: definition.supportedGenerationModes)
     }
 
     /// What a launcher or qualification tool may ask for before any load: the
@@ -55,11 +56,13 @@ public enum QwenResidentCapabilityMetadata {
         public let layerCount: Int
         public let supportedCuts: [Int]
         public let supportedPrefillSchedules: [ClusterPrefillSchedule]
+        public let supportedGenerationModes: [ClusterGenerationMode]
 
         init(_ definition: QwenResidentModelDefinition) {
             runtimeModelID = definition.specification.model.rawValue; profileID = definition.profileID
             layerCount = definition.specification.layers; supportedCuts = definition.supportedCuts
             supportedPrefillSchedules = definition.supportedPrefillSchedules
+            supportedGenerationModes = definition.supportedGenerationModes
         }
     }
 

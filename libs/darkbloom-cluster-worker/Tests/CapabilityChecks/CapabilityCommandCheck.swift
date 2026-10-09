@@ -18,12 +18,27 @@ import Foundation
             try checks.yes("actual-native-metadata-matches-golden-profile-and-four-plans") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: binary)
                 try capabilityCheck(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead], "Adapter schedules differ")
+                try capabilityCheck(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit],
+                    "Adapter generation modes differ")
                 var current = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(value)) as! [String: Any]
                 current.removeValue(forKey: "supportedPrefillSchedules")
+                current.removeValue(forKey: "supportedGenerationModes")
                 var legacy = try JSONSerialization.data(withJSONObject: current, options: [.sortedKeys, .withoutEscapingSlashes])
                 legacy.append(10)
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(legacy) == golden,
-                    "Native metadata changed beyond advertised prefill schedules")
+                    "Native metadata changed beyond advertised prefill schedules and generation modes")
+            }
+            // The 27B's row carries the same modes; nothing else in its record depends on them.
+            try checks.yes("registered-27b-advertises-its-own-rows-modes") {
+                let large = try QwenResidentCapabilityMetadata.describe(
+                    configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen38-27b.configuration.json")),
+                    manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen38-27b.manifest.json")),
+                    runtimeBinarySHA256: binary)
+                try capabilityCheck(large.runtimeModelID == "registered_qwen38_27b"
+                    && large.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit]
+                    && large.partitions.count == 15, "The 27B capability differs from its resident row")
+                try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(large)) == large,
+                    "The 27B capability does not round-trip within the byte bound")
             }
             try checks.yes("binary-binding-remains-separate-from-model-identities") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))

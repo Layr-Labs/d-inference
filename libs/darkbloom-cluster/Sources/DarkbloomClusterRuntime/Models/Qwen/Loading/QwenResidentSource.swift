@@ -17,9 +17,10 @@ struct QwenResidentSource {
 func prepareQwenResidentSource(_ admission: QwenResidentAdmission,
                               check: () throws -> Void) throws -> QwenResidentSource {
     guard !_qwen35MTPEnabled else { throw ProbeError("Resident generation requires MTP disabled") }
+    let ceilings = try QwenResidentResourceCeilings(specification: admission.specification)
     let checkpoint = try VerifiedCheckpoint(directory: admission.configuration.modelDirectory,
         configurationData: admission.configBytes, expectedAggregateSHA256: admission.specification.artifactSHA256,
-        maximumPayloadBytes: LocalCorrectnessStorage.maximumManifestPayloadBytes,
+        maximumPayloadBytes: ceilings.maximumManifestPayloadBytes,
         expectedManifestSHA256: admission.specification.manifestSHA256)
     try checkpoint.requireConfiguration(admission.configBytes)
     let base = try JSONDecoder().decode(BaseConfiguration.self, from: admission.configBytes)

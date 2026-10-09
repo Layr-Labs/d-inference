@@ -73,8 +73,9 @@ struct QwenResidentAdmission {
         // never relabel the separate exact 8192/512/output1 admission receipt.
         let maximum = try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(),
             maximumTokens: profile.maximumContextTokens, chunkSize: profile.maximumChunkTokens)
-        guard maximum.conservativeStateAndBoundaryBytes <= QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling else {
-            throw ProbeError("Resident generation exceeds the unchanged named-state ceiling")
+        let ceilings = try QwenResidentResourceCeilings(specification: spec)
+        guard maximum.conservativeStateAndBoundaryBytes <= ceilings.namedStateByteCeiling else {
+            throw ProbeError("Resident generation exceeds the model's named-state ceiling")
         }
     }
 

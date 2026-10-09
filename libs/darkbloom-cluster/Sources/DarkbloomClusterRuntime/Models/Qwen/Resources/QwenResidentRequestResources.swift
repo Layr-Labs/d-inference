@@ -17,11 +17,13 @@ struct QwenResidentRequestAllowance {
         guard plan.stages.count == 2, (0...1).contains(rank), profile.model == .qwen35NineB else {
             throw ProbeError("Resident request allowance requires the admitted 9B stage")
         }
+        // The ceiling is the admitted model's own; no model borrows another's.
+        let ceilings = try QwenResidentResourceCeilings(model: profile.model)
         let g = profile.geometry
         let b = try QwenLongPrefillTensorBudget.estimate(geometry: g,
             maximumTokens: maximumTokens, chunkSize: chunkSize)
-        guard b.conservativeStateAndBoundaryBytes <= QwenRegistered9BLongPrefillAdmission.namedTensorByteCeiling else {
-            throw ProbeError("Resident request exceeds the unchanged named-state byte ceiling")
+        guard b.conservativeStateAndBoundaryBytes <= ceilings.namedStateByteCeiling else {
+            throw ProbeError("Resident request exceeds the model's named-state byte ceiling")
         }
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
         func allowance(_ bytes: Int, _ count: Int) throws -> Int {

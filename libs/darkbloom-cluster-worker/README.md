@@ -322,6 +322,14 @@ both.
   has passed admission, per-rank stage loads and the single-Mac reference on
   both chips; it has not yet completed a two-Mac run (see
   [handoff/QWEN27B-PAIR.md](../../handoff/QWEN27B-PAIR.md)).
+- Ternary Bonsai 2 27B (a Prism Hadamard pack; adapter
+  `qwen35-prism-hadamard-layer-stage`) is the third dense model. It has run
+  across two Macs at cut 24 in all three generation modes with every token
+  equal to the single-Mac reference, and a rank ended mid-decode left
+  nothing behind. Its stream and state are float32. Both Macs must hold the
+  artifact: it has no pinned content inventory, so a stage cannot be received
+  from the peer. The provider's installed path has no pair-serving row or
+  rank environment for it yet.
 - The host gate admits on free pages plus part of the file cache: three
   quarters of the file-backed memory that is both above the kernel's own
   file-cache minimum and short of the point where half of the cache is

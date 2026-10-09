@@ -15,15 +15,17 @@ private enum FanDaemonError: Error {
 actor FanDaemon {
     typealias Uptime = @Sendable () -> TimeInterval
     private static let maintenanceIntervalSeconds: TimeInterval = 5
+    private static let discoveryRetryIntervalSeconds: TimeInterval = 30
 
     private let logger = Logger(subsystem: "io.darkbloom.fan", category: "daemon")
     private let configuration: FanServiceConfiguration
     private let paths: FanServicePaths
     private let backend: any SMCBackend
-    private let inventory: FanInventory
+    private var inventory: FanInventory
     private let reader: FanHardwareReader
-    private let controller: TransactionalFanController
+    private var controller: TransactionalFanController
     private let uptime: Uptime
+    private let thermalState: @Sendable () -> ProcessInfo.ThermalState
     private let journalOwner: (uid: uid_t, gid: gid_t)?
     private let requireRootJournalOwnership: Bool
     private let recordOwnership: @Sendable (FanControlOwnership) throws -> Void
@@ -33,6 +35,11 @@ actor FanDaemon {
     private var providerLease: (sessionID: UUID, expiresAt: TimeInterval)?
     private var powerSuspended = false
     private var administrativelyDisabled = false
+    private var shuttingDown = false
+    private var lifecycleRevision: UInt64 = 0
+    private var discoveryInProgress = false
+    private var nextDiscoveryAt: TimeInterval = 0
+    private var pendingRestorations = 0
     private var mode: FanServiceMode
     private var gpuTemperatureC: Double?
     private var fanReadings: [FanReading] = []
@@ -47,6 +54,9 @@ actor FanDaemon {
         reader: FanHardwareReader,
         controller: TransactionalFanController,
         uptime: @escaping Uptime = { ProcessInfo.processInfo.systemUptime },
+        thermalState: @escaping @Sendable () -> ProcessInfo.ThermalState = {
+            ProcessInfo.processInfo.thermalState
+        },
         journalOwner: (uid: uid_t, gid: gid_t)? = (0, 0),
         requireRootJournalOwnership: Bool = true
     ) {
@@ -57,6 +67,7 @@ actor FanDaemon {
         self.reader = reader
         self.controller = controller
         self.uptime = uptime
+        self.thermalState = thermalState
         self.journalOwner = journalOwner
         self.requireRootJournalOwnership = requireRootJournalOwnership
         let journalURL = paths.sessionJournal
@@ -76,7 +87,7 @@ actor FanDaemon {
     }
 
     func start() {
-        guard pollTask == nil else { return }
+        guard pollTask == nil, !shuttingDown else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick()
@@ -133,6 +144,7 @@ actor FanDaemon {
 
     func emergencyRestore() async -> FanIPCReply {
         administrativelyDisabled = true
+        lifecycleRevision &+= 1
         providerLease = nil
         let restored = await restoreAutomatic(reason: "administrator requested Auto")
         return FanIPCReply(ok: restored, message: restored ? nil : lastError)
@@ -156,6 +168,8 @@ actor FanDaemon {
     }
 
     func shutdown() async {
+        shuttingDown = true
+        lifecycleRevision &+= 1
         pollTask?.cancel()
         pollTask = nil
         providerLease = nil
@@ -164,6 +178,7 @@ actor FanDaemon {
 
     func prepareForSleep() async {
         powerSuspended = true
+        lifecycleRevision &+= 1
         providerLease = nil
         _ = await restoreAutomatic(reason: "system will sleep")
     }
@@ -172,6 +187,7 @@ actor FanDaemon {
         // A fresh provider renewal is required after wake. This prevents a
         // stale pre-sleep lease from reasserting manual mode on resumed hardware.
         powerSuspended = false
+        lifecycleRevision &+= 1
         providerLease = nil
         mode = effectiveEnabled ? .waitingForProvider : .disabled
     }
@@ -182,19 +198,18 @@ actor FanDaemon {
     }
 
     private var effectiveEnabled: Bool {
-        configuration.enabled && !administrativelyDisabled
+        configuration.enabled && !administrativelyDisabled && !shuttingDown
     }
 
     func tick() async {
+        guard !shuttingDown, pendingRestorations == 0 else { return }
         guard effectiveEnabled else {
             mode = await restoreAutomatic(reason: "fan control disabled")
                 ? .disabled : .error
             return
         }
         guard !inventory.fans.isEmpty, !inventory.gpuTemperatureKeys.isEmpty else {
-            mode = await restoreAutomatic(
-                reason: "fan hardware or GPU sensors unavailable"
-            ) ? .unsupported : .error
+            await recoverStartupInventory()
             return
         }
         if (!providerLeaseActive || mode == .error), await hasPossibleOwnership {
@@ -209,9 +224,8 @@ actor FanDaemon {
             let temperatures = try reader.gpuTemperatures(in: inventory)
             gpuTemperatureC = temperatures.map(\.celsius).max()
 
-            if ProcessInfo.processInfo.thermalState == .serious
-                || ProcessInfo.processInfo.thermalState == .critical
-            {
+            let pressure = thermalState()
+            if pressure == .serious || pressure == .critical {
                 mode = await restoreAutomatic(
                     reason: "macOS reported serious thermal pressure"
                 ) ? .safetyOverride : .error
@@ -231,6 +245,60 @@ actor FanDaemon {
             _ = await restoreAutomatic(reason: "fan policy failure")
             mode = .error
         }
+    }
+
+    private func recoverStartupInventory() async {
+        guard effectiveEnabled, !powerSuspended, !discoveryInProgress else { return }
+        discoveryInProgress = true
+        defer { discoveryInProgress = false }
+        let revision = lifecycleRevision
+        mode = .unsupported
+        if lastError == nil {
+            lastError = "fan hardware or GPU sensors unavailable; discovery will retry"
+        }
+
+        let restored = await restoreAutomatic(reason: "fan hardware or GPU sensors unavailable")
+        guard recoveryAllowed(revision) else { return }
+        guard restored else {
+            mode = .error
+            return
+        }
+        mode = .unsupported
+        let now = uptime()
+        guard now >= nextDiscoveryAt else { return }
+        // The first eligible tick tries immediately. Sleep/wake preserves this
+        // deadline, and failures never exhaust a process-lifetime retry budget.
+        nextDiscoveryAt = now + Self.discoveryRetryIntervalSeconds
+        do {
+            let discovered = try reader.discover(brandString: inventory.chipFamily.rawValue)
+            guard !discovered.fans.isEmpty, !discovered.gpuTemperatureKeys.isEmpty else {
+                lastError = "fan hardware or GPU sensors unavailable; discovery will retry"
+                return
+            }
+            let ownsHardware = await hasPossibleOwnership
+            guard recoveryAllowed(revision) else { return }
+            // An older restoration must finish before replacement: it can still
+            // resume on this actor and remove the shared ownership journal.
+            guard !ownsHardware, pendingRestorations == 0 else { return }
+
+            // No suspension between the final checks and replacing both owners.
+            inventory = discovered
+            controller = TransactionalFanController(backend: backend, inventory: discovered)
+            providerLease = nil
+            _ = policy.reset()
+            gpuTemperatureC = nil
+            fanReadings = []
+            lastMaintenanceAt = 0
+            nextDiscoveryAt = 0
+            lastError = nil
+            mode = .waitingForProvider
+        } catch {
+            lastError = "fan hardware discovery failed: \(error)"
+        }
+    }
+
+    private func recoveryAllowed(_ revision: UInt64) -> Bool {
+        effectiveEnabled && !powerSuspended && lifecycleRevision == revision
     }
 
     private func apply(_ action: FanPolicyAction) async throws {
@@ -283,6 +351,8 @@ actor FanDaemon {
     }
 
     private func restoreAutomatic(reason: String) async -> Bool {
+        pendingRestorations += 1
+        defer { pendingRestorations -= 1 }
         guard await hasPossibleOwnership else {
             _ = policy.reset()
             if !providerLeaseActive {

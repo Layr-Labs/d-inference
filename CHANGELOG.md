@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — fan helper startup discovery
+
+- Retry an unusable startup fan or GPU sensor inventory every 30 seconds while the helper is enabled and awake. Restore previous ownership before accepting recovered hardware and require a fresh provider lease before engaging fans; transiently invalid startup sensor readings no longer leave the helper permanently unsupported.
+
 ## Unreleased — provider build environment
 
 - A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.

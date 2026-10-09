@@ -35,7 +35,11 @@ xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -parse-as-library -target
   "$R/Checkpoints/CheckpointAlignedReadAccounting.swift" \
   "$R/Models/Qwen/Loading/QwenLayerStageInventoryTypes.swift" \
   "$R/Models/Qwen/Metadata/QwenStageSourceTensorManifest.swift" \
-  "$R"/Models/Qwen/Transfer/*.swift \
+  "$R/Models/Qwen/Transfer/QwenStageTransferPlan.swift" \
+  "$R/Models/Qwen/Transfer/QwenStageTransferControl.swift" \
+  "$R/Models/Qwen/Transfer/QwenStageTransferSender.swift" \
+  "$R/Models/Qwen/Transfer/QwenStageTransferReceiver.swift" \
+  "$R/Models/Qwen/Transfer/QwenStageTransferTransport.swift" \
   "$task_root"/Tests/StageTransferChecks/*.swift -o "$task_build/check"
 "$task_build/check" "$task_root/Tests/StageMetadataChecks/Inputs/qwen-retained-inputs.json" \
   "$task_repo/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.configuration.json" \

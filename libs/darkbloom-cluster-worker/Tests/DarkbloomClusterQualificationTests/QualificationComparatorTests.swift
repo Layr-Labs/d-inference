@@ -270,7 +270,13 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(large.profileID, "registered_qwen38_27b_greedy_generation_v1")
         XCTAssertEqual(large.supportedCuts, Array(stride(from: 4, through: 60, by: 4)))
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
-        XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID), ["registered_qwen35_9b", "registered_qwen38_27b"])
+        XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
+                       ["registered_qwen35_9b", "registered_qwen38_27b", "registered_gpt_oss_20b"])
+        // GPT-OSS on its own adapter: its own profile and its own cuts.
+        let routed = try make("registered_gpt_oss_20b")
+        XCTAssertEqual(routed.profileID, "registered_gpt_oss_20b_greedy_generation_v1")
+        XCTAssertEqual(routed.supportedCuts, [6, 8, 10, 12])
+        XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try routed.encoded()), routed)
         for unknown in ["", "registered_qwen4", "EigenLabs/Qwen3.8-27B-4bit-mtp", "registered_qwen38_27b "] {
             XCTAssertThrowsError(try make(unknown), unknown)
         }

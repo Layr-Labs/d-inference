@@ -30,6 +30,7 @@ import Foundation
               [--mode pipeline|pipeline-compact|phase-split] [--repetitions 1...8 (with --evidence none)]
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
               [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
+              [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
               [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N] [--rank1-delay-seconds N]
               [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
@@ -151,7 +152,7 @@ import Foundation
             "--local-rdma-device", "--remote-rdma-device", "--coordinator", "--evidence", "--prefill-schedule",
             "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
-            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault"]
+            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault", "--stop-after-tokens"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -207,6 +208,10 @@ import Foundation
             let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, let rank = Int(parts[0]) else { throw Failure("--fault takes RANK:name=value") }
             configuration.faultRank = rank; configuration.faultValue = String(parts[1])
+            try configuration.validate()
+        }
+        if let stop = try integer(fields, "--stop-after-tokens") {
+            configuration.stopAfterTokens = stop
             try configuration.validate()
         }
         // A loopback socket needs both ranks on this Mac.

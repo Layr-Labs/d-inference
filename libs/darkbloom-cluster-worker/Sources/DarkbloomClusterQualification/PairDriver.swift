@@ -35,14 +35,16 @@ public struct PairDriver: Sendable {
         private var finish: String?, failure: String?
         private var concluded: UInt64?
         private let first: @Sendable () -> Void
-        init(first: @escaping @Sendable () -> Void) { self.first = first }
+        private let stopAfter: Int?
+        init(stopAfter: Int? = nil, first: @escaping @Sendable () -> Void) { self.stopAfter = stopAfter; self.first = first }
         func record(_ event: ClusterWorkerRequestEvent) -> Bool {
             lock.lock(); defer { lock.unlock() }
             switch event {
             case .token(let id):
                 tokens.append(id); stamps.append(DispatchTime.now().uptimeNanoseconds)
                 if tokens.count == 1 { first() }
-                return true
+                // false is the owner's clean stop: no further token is wanted.
+                return stopAfter.map { tokens.count < $0 } ?? true
             case .finished(let reason):
                 finish = reason.rawValue; concluded = DispatchTime.now().uptimeNanoseconds; done.signal(); return false
             case .failed(let message): failure = message; done.signal(); return false
@@ -294,7 +296,7 @@ public struct PairDriver: Sendable {
             let admission = Double(DispatchTime.now().uptimeNanoseconds - now) / 1e9
 
             let started = DispatchTime.now().uptimeNanoseconds
-            let collector = Collector {
+            let collector = Collector(stopAfter: c.stopAfterTokens) {
                 announce("pair-check: first committed token after \(String(format: "%.2f", Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9)) s")
             }
             do { try lease.start { collector.record($0) } }

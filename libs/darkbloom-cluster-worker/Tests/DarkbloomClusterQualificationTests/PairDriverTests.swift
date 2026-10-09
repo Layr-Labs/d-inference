@@ -490,6 +490,22 @@ final class PairDriverTests: XCTestCase {
         XCTAssertThrowsError(try invalid.validate())
     }
 
+    func testOwnerStopIsAServingPathInputWithinTheOutputLimit() throws {
+        // The fake rank 1 always reports a length finish, so the stop itself is
+        // exercised with real workers; here, only what the driver admits.
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 5, recording: false)
+        configuration.stopAfterTokens = 2
+        XCTAssertNoThrow(try configuration.validate())
+        var invalid = try sides.configuration(outputCount: 5)
+        invalid.stopAfterTokens = 2
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.stopAfterTokens = 5
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.stopAfterTokens = 0
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
     func testRepeatedRequestsRunInOneLoadedSession() throws {
         let sides = try Sides(modes: ["ok", "ok"])
         var configuration = try sides.configuration(outputCount: 4, recording: false)

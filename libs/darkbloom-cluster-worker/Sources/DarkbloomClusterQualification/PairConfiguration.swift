@@ -75,6 +75,10 @@ public struct PairConfiguration: Sendable {
     /// `handoff_stall_after_segment=N:MILLISECONDS` on rank 1). Qualification only.
     public var faultRank: Int?
     public var faultValue: String?
+    /// The request owner stops after this many committed tokens, as a client
+    /// that hangs up would. Serving path only: a recording run compares a
+    /// complete history.
+    public var stopAfterTokens: Int?
     public var membershipEpoch: UUID
     /// Strings that must never appear in a report (destination, addresses, names).
     public var sensitive: [String]
@@ -178,6 +182,8 @@ public struct PairConfiguration: Sendable {
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")
         try require((faultRank == nil) == (faultValue == nil), "a fault needs both its rank and its value")
+        try require(stopAfterTokens.map { !recording && (1..<request.outputCount).contains($0) } ?? true,
+            "a client stop is a serving-path input, after 1 or more tokens and before the output limit")
         if let faultRank, let faultValue {
             try require((0...1).contains(faultRank) && recording && generationMode == Self.phaseSplitMode
                 && (1...96).contains(faultValue.utf8.count)

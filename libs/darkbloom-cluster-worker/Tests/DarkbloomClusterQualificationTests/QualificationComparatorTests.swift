@@ -271,7 +271,8 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(large.supportedCuts, Array(stride(from: 4, through: 60, by: 4)))
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
-                       ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b"])
+                       ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
+                        "registered_qwen36_35b_a3b"])
         // A model with routed experts adds its route to the three common variables; the others add nothing.
         XCTAssertEqual(small.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
         XCTAssertEqual(large.arithmeticEnvironment.map(\.1), PairConfiguration.arithmeticEnvironment.map(\.1))

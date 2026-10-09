@@ -14,13 +14,13 @@ the provider refuses both by construction (see "Provider and coordinator").
 
 | Step | Qwen3.5 35B A3B | Qwen3.6 35B A3B (text only, MTP off) |
 |---|---|---|
-| Artifact verified against its catalog manifest | **Done** on both Macs (14 of 14) | **Done** on Mac A (13 of 13); Mac B not yet |
+| Artifact verified against its catalog manifest | **Done** on both Macs (14 of 14) | **Done** on both Macs (13 of 13) |
 | Registration: catalog row, pins, admission, ceilings, capability, worker arguments | **Done**, unit level, from the artifact's real `config.json` and manifest | **Done**, same |
-| A. Stage load and release at the cut that runs (12) | **Passed** on both Macs, both ranks | **Passed** on Mac B, both ranks; Mac A not run |
-| B. Staged reference on one Mac, twice, identical | **Passed** on Mac A (`exact`) | Not run |
-| C. Two workers on one Mac over the local test socket, equal to B | **Passed** on Mac A, pipeline (`exact`, ranks agree) | Not run |
-| D. Across the cable in every mode | **Ran**: all three modes completed, ranks agree, the modes agree with each other `exact`. **Against B: `divergedAtNearTie`** (an exact tie in the oracle at output index 10, broken the other way on the pair) | Not run |
-| D. One rank ended with SIGTERM mid-decode | **Passed**: the other rank exited by itself, nothing left on either Mac | Not run |
+| A. Stage load and release at the cut that runs (12) | **Passed** on both Macs, both ranks | **Passed** on both Macs, both ranks |
+| B. Staged reference on one Mac, twice, identical | **Passed** on Mac A (`exact`) | **Passed** on Mac A (`exact`) |
+| C. Two workers on one Mac over the local test socket, equal to B | **Passed** on Mac A, pipeline (`exact`, ranks agree) | **Passed** on Mac A, pipeline (`exact`, ranks agree) |
+| D. Across the cable in every mode | **Ran**: all three modes completed, ranks agree, the modes agree with each other `exact`. **Against B: `divergedAtNearTie`** (an exact tie in the oracle at output index 10, broken the other way on the pair); a pass under the owner's mixed-chip rule of 2026-10-09 | **Passed**: all three modes completed, ranks agree, modes agree `exact`; against B `tokensEqualLogitsDiffer` (64 of 64 tokens equal) |
+| D. One rank ended with SIGTERM mid-decode | **Passed**: the other rank exited by itself, nothing left on either Mac | **Passed**, the same way |
 | Other cuts, longer prompts, each Mac alone, Mac B's reference, product comparison | Not run | Not run |
 
 A local-socket pass is not a hardware pass; D is one. Everything above is one
@@ -190,6 +190,10 @@ claimed.
 Mac B was ended with SIGTERM 0.3 s after the first token (24 of 128 tokens
 committed). Rank 0 exited by itself with status 1; the driver sent no signal;
 no worker process was left on either Mac.
+
+**Qwen3.6 35B A3B** (same build, cut 12, 2026-10-09 23:10Z to 23:16Z, the first run of this model across the cable). Stage loads on Mac A: 5.557 GiB in 15.8 s and 12.612 GiB in 21.1 s. Mac A's reference twice: `exact` (18.17 GiB, peak 19.28 GiB). Local test socket, pipeline: `exact`. On the pair all three modes completed, ranks agree, the modes agree `exact`, and against Mac A's reference the verdict is `tokensEqualLogitsDiffer` (all 64 tokens equal; final-row difference at most 1.5, mean 0.135; reference margin 3.625). Indicative figures, compile lanes not held, mean of the last three of four requests: pipeline 0.905 s first token, 4,524 tok/s prefill, 69.7 tok/s decode; compact 0.905 s, 4,524, 71.3; phase split 0.930 s, 4,405, 85.8. Fault with the 8,192-token request: rank 1 on Mac B ended with SIGTERM 0.3 s after the first token (27 tokens committed); rank 0 exited by itself with status 1, nothing was left on either Mac, wired memory unchanged within 26 MB on both.
+
+The owner's rule for mixed-chip numerics (2026-10-09): a run passes when its tokens equal the reference (`exact` or `tokensEqualLogitsDiffer`) or first differ at a near tie (`divergedAtNearTie`, 4-ulp rule); `diverged` and `incomparable` fail. By that rule both models pass D at cut 12.
 
 **Refusals and failures.** The first real load (an earlier build, cut 20,
 Mac B) was refused before any tensor was read, by the count comparison fixed

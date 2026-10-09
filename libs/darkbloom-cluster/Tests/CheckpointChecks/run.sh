@@ -18,6 +18,8 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
   "$R/Models/Qwen/Metadata/QwenLayerStageMetadata.swift" \
   "$R/Models/Qwen/Metadata/QwenRoutedExpertStageMetadata.swift" \
   "$R/Models/Qwen/Metadata/QwenLayerStagePlan.swift" \
+  "$R/Models/Nemotron/NemotronStageMetadata.swift" \
+  "$R/Models/Nemotron/NemotronLayerStagePlan.swift" \
   "$R/Models/Qwen/Metadata/QwenDenseProfileTypes.swift" \
   "$R/Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift" \
   "$R/Support/CanonicalJSON.swift" \

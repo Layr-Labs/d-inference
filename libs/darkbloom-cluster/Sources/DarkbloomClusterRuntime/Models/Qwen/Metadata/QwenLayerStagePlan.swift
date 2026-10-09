@@ -50,11 +50,22 @@ struct QwenLayerStagePlan {
     private let namespace: String
     private let quantizablePaths: Set<String>
     private let requiredParameterNames: Set<String>
+    /// Set for a Plan `NemotronLayerStagePlan` built: that family's names
+    /// place its tensors. Its layer kinds follow no interval, so `interval` is 0.
+    private let nemotron: NemotronLayerStagePlan.Names?
 
     init(configuration: Data, ranges: [Range<Int>], activeMTP: Bool = false) throws {
         guard !activeMTP, configuration.count <= 1_048_576,
             var root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any]
         else { throw ProbeError("Layer stages require bounded configuration and disabled active MTP") }
+        if NemotronStageMetadata.accepts(root) {
+            let built = try NemotronLayerStagePlan.make(configuration: configuration, root: root, ranges: ranges)
+            self.originalConfiguration = configuration; self.fingerprint = built.fingerprint
+            self.layers = built.layers; self.interval = 0; self.stages = built.stages; self.namespace = ""
+            self.quantizablePaths = built.names.quantizablePaths
+            self.requiredParameterNames = built.names.requiredParameterNames; self.nemotron = built.names
+            return
+        }
         let nested = root["text_config"] != nil
         let wrappers = QwenRoutedExpertStageMetadata.wrapperModelTypes
         guard let type = root["model_type"] as? String,
@@ -140,7 +151,7 @@ struct QwenLayerStagePlan {
         }
         self.originalConfiguration = configuration
         self.layers = layers; self.interval = interval; self.stages = stages
-        self.namespace = namespace
+        self.namespace = namespace; self.nemotron = nil
         self.quantizablePaths = Set(inventory.inputWidths.keys); self.requiredParameterNames = inventory.required
         self.fingerprint = sha256(try QwenStageMetadata.json([
             "adapter": routed ? QwenRoutedExpertStageMetadata.planAdapter : "qwen35-dense-two-layer-stages-v1",
@@ -152,6 +163,7 @@ struct QwenLayerStagePlan {
     /// conversion, name guessing, payload selection, fusion or dtype conversion.
     /// MTP/vision are explicit exclusions; every other unknown path is an error.
     func parameter(canonicalSourceName name: String) throws -> Parameter? {
+        if let nemotron { return try nemotron.parameter(name, stages: stages) }
         if QwenStageMetadata.excluded(name, namespace: namespace) { return nil }
         let pieces = name.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard let suffix = pieces.last, !pieces.contains(""),

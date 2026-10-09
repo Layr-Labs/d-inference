@@ -299,7 +299,7 @@ public struct PairConfiguration: Sendable {
     func launchScript(_ rank: Int, artifactSHA256: String, configurationSHA256: String, workerSHA256: String) -> String {
         let side = side(rank), run = runDirectory(rank)
         var environment = [("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"), ("LANG", "C"), ("LC_ALL", "C")]
-            + Self.arithmeticEnvironment
+            + request.arithmeticEnvironment
             + [("JACCL_RANK", String(rank)), ("JACCL_COORDINATOR", coordinator)]
         if let progressTimeoutMilliseconds {
             environment.append(("JACCL_PROGRESS_TIMEOUT_MS", String(progressTimeoutMilliseconds)))

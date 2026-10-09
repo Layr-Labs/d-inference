@@ -185,6 +185,35 @@ final class WorkerTests: XCTestCase {
         }
     }
 
+    /// The Prism Hadamard pack is its own closed ID with the 27B's cuts; its
+    /// catalog ID and near misses are refused like any unregistered model.
+    func testRegisteredBonsaiArgumentsAndUnregisteredNeighbours() throws {
+        let args = ["--model-dir", "/invented/model", "--rank", "0", "--stage-cut", "24",
+            "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_ternary_bonsai_2_27b",
+            "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+            "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+            "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+            "--deadline-uptime-nanoseconds", "300000000100"]
+        for cut in stride(from: 4, through: 60, by: 4) { for rank in [0, 1] {
+            var selected = args; selected[3] = String(rank); selected[5] = String(cut)
+            let value = try WorkerConfiguration(arguments: selected, now: 100)
+            XCTAssertEqual(value.load.rank, rank); XCTAssertEqual(value.load.stageCut, cut)
+            XCTAssertEqual(value.load.identity.modelID, "registered_ternary_bonsai_2_27b")
+            XCTAssertEqual(value.load.allocatorPolicy, .disableFreedBufferCache)
+        } }
+        XCTAssertEqual(try WorkerConfiguration(arguments: args + ["--prefill-schedule", "one_chunk_lookahead_v1"], now: 100)
+            .load.prefillSchedule, .oneChunkLookahead)
+        for cut in ["0", "2", "26", "30", "62", "64", "-4", "024", "24.0"] {
+            var selected = args; selected[5] = cut
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100), "Bonsai cut \(cut)")
+        }
+        for model in ["ternary-bonsai-2-27b", "registered_ternary_bonsai_2_27b ", "registered_ternary_bonsai_2",
+                      "registered_bonsai_2_27b", "Registered_Ternary_Bonsai_2_27B", "prism_hadamard_qwen35"] {
+            var selected = args; selected[9] = model
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100), "model \(model)")
+        }
+    }
+
     func testEvidenceDirectoryIsOptionalAndMustBeNormalized() throws {
         let args = ["--model-dir", "/invented/model", "--rank", "1", "--stage-cut", "4",
             "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",
@@ -217,7 +246,8 @@ final class WorkerTests: XCTestCase {
              "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
              "--deadline-uptime-nanoseconds", "300000000100"]
         }
-        for (model, cut) in [("registered_qwen35_9b", "8"), ("registered_qwen38_27b", "16")] {
+        for (model, cut) in [("registered_qwen35_9b", "8"), ("registered_qwen38_27b", "16"),
+                             ("registered_ternary_bonsai_2_27b", "24")] {
             let base = args(model, cut)
             let plain = try WorkerConfiguration(arguments: base, now: 100)
             XCTAssertEqual(plain.generationMode, .pipeline, "absent means the pipeline")
@@ -246,7 +276,7 @@ final class WorkerTests: XCTestCase {
             XCTAssertEqual(all.evidenceDirectory, "/private/run/evidence"); XCTAssertTrue(all.qualificationSwitchesPermitted)
         }
         // The catalog the worker checks against is the runtime's own row.
-        for model in ["registered_qwen35_9b", "registered_qwen38_27b"] {
+        for model in ["registered_qwen35_9b", "registered_qwen38_27b", "registered_ternary_bonsai_2_27b"] {
             XCTAssertEqual(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes,
                            [.pipeline, .pipelineCompactDecode, .phaseSplit], model)
         }

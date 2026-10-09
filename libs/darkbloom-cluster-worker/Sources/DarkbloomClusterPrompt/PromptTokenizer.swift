@@ -13,6 +13,7 @@ public struct PromptTokenizer: Sendable {
     public static let registeredManifests: [(sha256: String, modelID: String)] = [
         (registeredManifestSHA256, "registered_qwen35_9b"),
         ("d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc", "registered_qwen38_27b"),
+        ("e6871c8df1f9d30895ff5caf84a40fe902cf8771cda56a2b9f087991ca34c1e4", "registered_ternary_bonsai_2_27b"),
     ]
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.

@@ -77,17 +77,36 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         public let modelID: String
         public let profileID: String
         public let supportedCuts: [Int]
+        /// What the model's arithmetic contract requires of a rank's
+        /// environment beyond `PairConfiguration.arithmeticEnvironment`.
+        public let additionalArithmeticEnvironment: [String: String]
+
+        init(modelID: String, profileID: String, supportedCuts: [Int],
+             additionalArithmeticEnvironment: [String: String] = [:]) {
+            self.modelID = modelID; self.profileID = profileID; self.supportedCuts = supportedCuts
+            self.additionalArithmeticEnvironment = additionalArithmeticEnvironment
+        }
     }
     public static let registeredModels: [RegisteredModel] = [
         .init(modelID: modelID, profileID: profileID, supportedCuts: supportedCuts),
         .init(modelID: "registered_qwen38_27b", profileID: "registered_qwen38_27b_greedy_generation_v1",
               supportedCuts: Array(stride(from: 4, through: 60, by: 4))),
+        .init(modelID: "registered_ternary_bonsai_2_27b", profileID: "registered_ternary_bonsai_2_27b_greedy_generation_v1",
+              supportedCuts: Array(stride(from: 4, through: 60, by: 4)),
+              additionalArithmeticEnvironment: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1",
+                                                "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"]),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }
     }
     /// The cuts of the model this request names; empty for an unknown model.
     public var supportedCuts: [Int] { Self.registeredModel(modelID)?.supportedCuts ?? [] }
+    /// The complete arithmetic environment of a rank that runs this request's
+    /// model: the common variables, then the model's own in name order.
+    public var arithmeticEnvironment: [(String, String)] {
+        PairConfiguration.arithmeticEnvironment
+            + (Self.registeredModel(modelID)?.additionalArithmeticEnvironment ?? [:]).sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+    }
 
     public var schema: String
     public var requestID: String

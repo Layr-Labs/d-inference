@@ -11,6 +11,8 @@ import Foundation
 //
 // The arithmetic environment must already be set, exactly as for the worker:
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
+// and, for a Prism Hadamard pack, also DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1
+// DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1, with MLX_QUANTIZED_CONSTANT_CACHE unset.
 
 @main enum ReferenceCheck {
     static func main() async {
@@ -258,8 +260,9 @@ import Foundation
         usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]
                  [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]]
                --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...300]
-          CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B
-        """
+          CUT is one of the registered model's cuts:
+
+        """ + "    " + QwenResidentCapabilityMetadata.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
 
     /// One event per line on standard output, written at once.
     static func emit(_ event: [String: Any]) throws {

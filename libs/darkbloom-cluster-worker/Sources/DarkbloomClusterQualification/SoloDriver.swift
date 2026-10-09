@@ -79,7 +79,7 @@ public struct SoloConfiguration: Sendable {
     /// are ignored, so an interrupted driver does not take a loaded model down.
     var launchScript: String {
         let environment = ([("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"), ("LANG", "C"), ("LC_ALL", "C")]
-            + PairConfiguration.arithmeticEnvironment).map { "\($0.0)=\(PairConfiguration.quoted($0.1))" }.joined(separator: " ")
+            + request.arithmeticEnvironment).map { "\($0.0)=\(PairConfiguration.quoted($0.1))" }.joined(separator: " ")
         let arguments = ["--model-dir", modelDirectory, "--stage-cut", String(stageCut), "--serve", "yes",
                          "--deadline-seconds", String(lifetimeSeconds)].map(PairConfiguration.quoted).joined(separator: " ")
         return """

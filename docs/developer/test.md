@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -270,6 +270,9 @@ lint — and which CI workflow runs what. `make test` runs every unit suite plus
 the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the Gemma benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
+
+For the supervised target/assistant matrix and its separate correctness and
+performance evidence, follow [Gemma MTP validation](gemma-mtp-validation.md).
 
 The registry's `TestCacheAttemptBudget*` tests cover logical byte charging,
 checked arithmetic, exact-edge admission, immutable replacement/refunds and

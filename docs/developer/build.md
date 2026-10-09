@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -144,6 +144,9 @@ together. Build the paired coordinator/sidecar/provider candidate; the v6
 prompt contract cannot reuse a v5 cache identity. The follow-up retains the
 merged native SDK pin and does not require new model weights. See
 [prompt parity](test.md#9-prompt-contract-parity-fixtures-and-vectors) for the validation procedure.
+
+Use the matching test products for [Gemma MTP validation](gemma-mtp-validation.md);
+that procedure keeps production performance evidence distinct from correctness.
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
@@ -448,25 +451,26 @@ jobs queued behind a provider quota do not shorten the critical path. See
 
 The provider consumes the local packages through immutable Git submodule pins:
 
-| Package | Merged revision | Included update |
+| Package | Revision | Included update |
 |---|---|---|
-| `libs/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | `gather_mm` / `gather_qmm` row-tile backport |
-| `libs/mlx-swift/Source/Cmlx/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | Same merged MLX source used by Cmlx and the provider metallib |
-| `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources; retains [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `3fd4944c3b3ee5cb45c5cbfac8805876332d3a29` | Includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
+| `libs/mlx` | `ac97252e68d4cce305e9c19eefc67bc70d41cbaa` | [mlx PR #13](https://github.com/Layr-Labs/mlx/pull/13) head: Gemma 4 Metal kernel work, merged with MLX `main` `cb77239b` (the `gather_mm` / `gather_qmm` row-tile backport) |
+| `libs/mlx-swift/Source/Cmlx/mlx` | `ac97252e68d4cce305e9c19eefc67bc70d41cbaa` | Same MLX source used by Cmlx and the provider metallib |
+| `libs/mlx-swift` | `17bbcba7bf45303d235df6f2d71aae8c93053559` | [PR #19](https://github.com/Layr-Labs/mlx-swift/pull/19) head: Gemma 4 kernel pins and regenerated kernel sources, merged with [PR #26](https://github.com/Layr-Labs/mlx-swift/pull/26) (per-kernel Metal math modes) and Swift `main` `6923a80f` ([PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34)). It contains [PR #27](https://github.com/Layr-Labs/mlx-swift/pull/27) (Hadamard layers) and [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) (`0f4fe403`, exact constant reuse for eligible Bonsai packed projections) |
+| `libs/mlx-swift-lm` | `b62182975ac4b38e04bf880a766ca41ba6635226` | [PR #138](https://github.com/Layr-Labs/mlx-swift-lm/pull/138) head: Gemma 4 MLXFast kernels and cache fast paths, merged with SDK `main` `3fd4944c`. It includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
 
 Keep both local packages in the provider build. The SDK's standalone package
-manifest pins Swift `0f4fe403bef6899e8a72882bc6d4036a7a62ae31`, not the provider's
-current Swift gitlink; the nested-test
+manifest pins Swift `17bbcba7bf45303d235df6f2d71aae8c93053559`, the same revision
+as the `libs/mlx-swift` gitlink; the nested-test
 procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
 Swift gitlink. Keep `libs/mlx` and `libs/mlx-swift/Source/Cmlx/mlx` on the same
-merged MLX commit for the `gather_mm` / `gather_qmm` row-tile backport. The Swift
-pin includes kernel sources regenerated from that nested MLX revision, including
-the signed integer floor-division corrections from [MLX PR #32](https://github.com/Layr-Labs/mlx/pull/32)
-in the generated binary-operations and CPU preamble sources.
-Build `mlx.metallib` from the nested source with
+MLX commit. The Swift pin includes kernel sources regenerated from that nested
+MLX revision, including the signed integer floor-division corrections from
+[MLX PR #32](https://github.com/Layr-Labs/mlx/pull/32) in the generated
+binary-operations and CPU preamble sources. Build `mlx.metallib` from the nested source with
 `scripts/fetch-metallib.sh`; changing only the top-level MLX gitlink does not
-change provider bytes.
+change provider bytes. The `libs/mlx-swift` revision pins the C wrapper at
+`ad3799cb`, the `codex/gemma4-kernel-math-mode` head that adds explicit math
+modes for custom Metal kernels on top of `02cf6f4d`.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
 The SDK's acceptance default remains exact; the provider's eligible sampled
@@ -476,10 +480,7 @@ Neither that policy nor the newer native retirement and MLX kernels are
 qualified by the original demanded-prefix full-model results. The
 [dependency validation procedure](test.md#merged-sdk-pin-validation) separates
 required tiny-fixture regressions from fresh full-model performance qualification.
-The earlier SDK [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170)
-pin `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` had production libraries and a
-package manifest matching review head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`.
-That historical comparison is not validation of the current SDK pin above.
+All three pins are open pull-request heads, not merged `main` history.
 
 ### Native Flash-Next candidate
 

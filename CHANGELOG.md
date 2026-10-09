@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — Gemma 4 MLXFast opt-in ports
+
+- Integrate operation-scoped Gemma 4 decode/prefill, expert-routing and cache fast
+  paths with corrected arithmetic and regression coverage. Keep optimization
+  flags off by default and preserve current sampled MTP, model weights,
+  quantization, multimodal support, batching, paging and prefix-cache policy.
+- Separate production MTP correctness evidence from retained performance-learning
+  samples, and recognize bounded seed-only automatic-cap fallback without
+  weakening exact token/finish comparisons or changing the automatic work cap.
+- Keep the known longer fixed-L4/B8 MTP parity failure and separate reasoning/tool
+  compatibility gaps visible; these ports do not establish full release readiness.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

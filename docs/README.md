@@ -118,6 +118,7 @@
 - [`developer/personal-data.md`](developer/personal-data.md): add a personal column, table or writer so account erasure still removes it; marker and parity tests.
 - [`developer/threat-model-review.md`](developer/threat-model-review.md): configure PR text scans, provider fallback, and optional conditional merge clearance.
 - [`developer/serving-performance-qualification.md`](developer/serving-performance-qualification.md): measure and review exact serving profiles before promoting concurrency limits or prefill policy.
+- [`developer/gemma-mtp-validation.md`](developer/gemma-mtp-validation.md): supervised target/assistant correctness, stop-policy and performance gates.
 
 ## Operations runbooks (production; human approval per mutation)
 

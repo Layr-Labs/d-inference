@@ -16,7 +16,7 @@ enum LinkFixtures {
     static let mappedGID = "::ffff:192.0.2.10"
 
     /// Every placeholder that must never survive into a report or summary.
-    static let sensitive = [portIPv4, bridgeIPv4, wifiIPv4, "192.0.2.255", "127.0.0.1", mac, guid,
+    static let sensitive = [portIPv4, bridgeIPv4, wifiIPv4, "192.0.2.255", "192.0.2.1", "127.0.0.1", mac, guid,
         linkLocalIPv6, globalIPv6, mappedGID, "ffff", "0xffffff00"]
 
     static let deviceNames = (2...7).map { "rdma_en\($0)" }
@@ -135,10 +135,30 @@ enum LinkFixtures {
         + interfaceNames.map { port($0, active: $0 == "en7", ipv4: $0 == "en7" ? portIPv4 : nil) }.joined()
         + downInterface
 
-    /// `ifconfig -a` on Mac B: `en6` is active but only a `bridge0` member.
-    static let macBInterfaces = loopback + port("en0", active: true, ipv4: wifiIPv4)
-        + interfaceNames.map { port($0, active: $0 == "en6", ipv4: nil) }.joined()
-        + bridge(members: interfaceNames)
+    /// `ifconfig -a` on Mac B: `en6` is active but only a `bridge0` member,
+    /// unless `en6Address` gives it an address of its own.
+    static func macBInterfaceListing(en6Address: String? = nil, bridgeMembers: [String] = interfaceNames) -> String {
+        loopback + port("en0", active: true, ipv4: wifiIPv4)
+            + interfaceNames.map { port($0, active: $0 == "en6", ipv4: $0 == "en6" ? en6Address : nil) }.joined()
+            + bridge(members: bridgeMembers)
+    }
+
+    static let macBInterfaces = macBInterfaceListing()
+
+    /// `route -n get default`.
+    static func defaultRoute(interface: String) -> String {
+        """
+           route to: default
+        destination: default
+               mask: default
+            gateway: 192.0.2.1
+          interface: \(interface)
+              flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
+         recvpipe  sendpipe  ssthresh  rtt,msec    rttvar  hopcount      mtu     expire
+               0         0         0         0         0         0      1500         0 
+
+        """
+    }
 }
 
 /// Canned tool results standing in for the real children.
@@ -147,6 +167,7 @@ struct FakeLinkTools {
     var deviceList: ClusterLinkToolOutcome
     var interfaces: ClusterLinkToolOutcome
     var details: [String: ClusterLinkToolOutcome] = [:]
+    var defaultRoute = ClusterLinkToolOutcome.output(LinkFixtures.defaultRoute(interface: "en0"))
 
     static let macA = FakeLinkTools(deviceList: .output(LinkFixtures.deviceList(active: "rdma_en7")),
         interfaces: .output(LinkFixtures.macAInterfaces),
@@ -156,17 +177,30 @@ struct FakeLinkTools {
         interfaces: .output(LinkFixtures.macBInterfaces),
         details: ["rdma_en6": .output(LinkFixtures.detailWithoutMappedGID("rdma_en6"))])
 
+    /// Mac B once its active port carries an address of its own: still a
+    /// bridge member, now publishing an IPv4-mapped GID.
+    static func macBFixed(address: String = LinkFixtures.portIPv4) -> FakeLinkTools {
+        FakeLinkTools(deviceList: .output(LinkFixtures.deviceList(active: "rdma_en6")),
+            interfaces: .output(LinkFixtures.macBInterfaceListing(en6Address: address)),
+            details: ["rdma_en6": .output(LinkFixtures.detailWithMappedGID("rdma_en6"))])
+    }
+
+    func outcome(of command: ClusterLinkToolCommand) -> ClusterLinkToolOutcome {
+        switch command {
+        case .rdmaControlStatus: return controlStatus
+        case .rdmaDeviceList: return deviceList
+        case .interfaceList: return interfaces
+        case .rdmaDeviceDetail(let device): return details[device] ?? .unavailable
+        case .defaultRoute: return defaultRoute
+        }
+    }
+
     /// Runs the inspection and returns the report with the commands it issued.
     func inspect() -> (report: ClusterLinkReadinessReport, commands: [ClusterLinkToolCommand]) {
         var commands = [ClusterLinkToolCommand]()
         let report = ClusterLinkReadinessProbe.inspect { command in
             commands.append(command)
-            switch command {
-            case .rdmaControlStatus: return controlStatus
-            case .rdmaDeviceList: return deviceList
-            case .interfaceList: return interfaces
-            case .rdmaDeviceDetail(let device): return details[device] ?? .unavailable
-            }
+            return outcome(of: command)
         }
         return (report, commands)
     }

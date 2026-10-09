@@ -54,6 +54,27 @@ extension ClusterLinkCheck {
 
         expectEqual(run("/bin/sleep", ["30"], seconds: 0).outcome, .timedOut, "an expired deadline starts nothing")
 
+        // The approval step needs the exit status and what the tool said about a failure.
+        func execute(_ script: String, merging: Bool = true) -> ClusterLinkToolProcess.Execution {
+            ClusterLinkToolProcess.execute(executable: "/bin/sh", arguments: ["-c", script],
+                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, maximumOutputBytes: 4096, mergingStandardError: merging)
+        }
+        expectEqual(execute("echo out; echo problem >&2; exit 3"), .exited(status: 3, output: "out\nproblem\n"),
+            "exit status with merged standard error")
+        expectEqual(execute("echo out; echo problem >&2; exit 3", merging: false), .exited(status: 3, output: "out\n"),
+            "exit status without standard error")
+        expectEqual(execute("exit 0"), .exited(status: 0, output: ""), "clean exit")
+        expectEqual(execute("kill -TERM $$"), .abnormal, "signalled execution")
+        expectEqual(ClusterLinkToolProcess.execute(executable: "/nonexistent/darkbloom-link-tool", arguments: [],
+            deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, maximumOutputBytes: 4096, mergingStandardError: true),
+            .abnormal, "missing executable")
+        expectEqual(ClusterLinkToolProcess.execute(executable: "/bin/sleep", arguments: ["30"],
+            deadline: DispatchTime.now().uptimeNanoseconds + 300_000_000, maximumOutputBytes: 4096, mergingStandardError: true),
+            .timedOut, "timed-out execution")
+        expectEqual(ClusterLinkToolProcess.execute(executable: "/usr/bin/yes", arguments: [],
+            deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, maximumOutputBytes: 4096, mergingStandardError: true),
+            .outputTooLarge, "flooding execution")
+
         // Every pipe end is closed by the run that opened it, whether the child
         // exited, failed to start, timed out or overflowed.
         expectEqual(openDescriptors(), descriptorsBefore, "no run left a descriptor open")

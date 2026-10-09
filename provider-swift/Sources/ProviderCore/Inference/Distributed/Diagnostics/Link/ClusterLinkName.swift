@@ -17,11 +17,21 @@ enum ClusterLinkName {
     /// macOS names the RDMA device of interface `en7` `rdma_en7`. Nil for any
     /// other shape: no interface is guessed.
     static func interface(ofDevice device: String) -> String? {
-        let prefix = "rdma_"
-        guard device.hasPrefix(prefix) else { return nil }
-        let interface = String(device.dropFirst(prefix.count))
+        guard device.hasPrefix(devicePrefix) else { return nil }
+        let interface = String(device.dropFirst(devicePrefix.count))
         return isInterface(interface) ? interface : nil
     }
+
+    static func device(ofInterface interface: String) -> String {
+        devicePrefix + interface
+    }
+
+    /// How a port is named to the operator: `rdma_en7 (en7)`.
+    static func label(device: String, interface: String?) -> String {
+        device + (interface.map { " (\($0))" } ?? "")
+    }
+
+    private static let devicePrefix = "rdma_"
 
     private static func matches(_ text: String, maximumBytes: Int, allowingUnderscore: Bool) -> Bool {
         let bytes = Array(text.utf8)

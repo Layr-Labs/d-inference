@@ -13,8 +13,15 @@ public enum ClusterLinkReadinessProbe {
 
     /// Runs the fixed system tools. Blocking: at most `inspectionTimeoutNanoseconds`.
     public static func inspectLocalLink() -> ClusterLinkReadinessReport {
+        inspect(run: boundedToolRunner())
+    }
+
+    /// The live runner for one inspection: each child gets
+    /// `childTimeoutNanoseconds`, and all of them together
+    /// `inspectionTimeoutNanoseconds` counted from this call.
+    static func boundedToolRunner() -> ClusterLinkToolRunner {
         let inspectionDeadline = DispatchTime.now().uptimeNanoseconds + inspectionTimeoutNanoseconds
-        return inspect { command in
+        return { command in
             ClusterLinkToolProcess.run(executable: command.executable, arguments: command.arguments,
                 deadline: min(DispatchTime.now().uptimeNanoseconds + childTimeoutNanoseconds, inspectionDeadline),
                 maximumOutputBytes: maximumOutputBytes)
@@ -23,7 +30,7 @@ public enum ClusterLinkReadinessProbe {
 
     /// The inspection over any runner, so that checks supply canned tool
     /// results and never start the real tools.
-    static func inspect(run: (ClusterLinkToolCommand) -> ClusterLinkToolOutcome) -> ClusterLinkReadinessReport {
+    static func inspect(run: ClusterLinkToolRunner) -> ClusterLinkReadinessReport {
         do {
             let devices = try inspectDevices(run: run)
             return .init(state: overallState(of: devices), devices: devices)
@@ -35,9 +42,7 @@ public enum ClusterLinkReadinessProbe {
     /// A machine-level finding that ends the inspection before devices are judged.
     private struct Stopped: Error { let state: ClusterLinkReadinessState }
 
-    private static func inspectDevices(
-        run: (ClusterLinkToolCommand) -> ClusterLinkToolOutcome
-    ) throws(Stopped) -> [ClusterLinkReadinessReport.Device] {
+    private static func inspectDevices(run: ClusterLinkToolRunner) throws(Stopped) -> [ClusterLinkReadinessReport.Device] {
         switch ClusterRDMAToolOutput.controlState(try text(run(.rdmaControlStatus), whenUnavailable: .rdmaUnavailable)) {
         case .enabled: break
         case .disabled: throw Stopped(state: .rdmaDisabled)

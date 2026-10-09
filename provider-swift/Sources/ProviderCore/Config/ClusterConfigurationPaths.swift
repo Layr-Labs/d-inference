@@ -7,6 +7,8 @@ public struct ClusterUserPaths: Sendable, Equatable {
     public let configurationsDirectory: URL
     public let deviceDirectory: URL
     public var deviceLeaseFile: URL { deviceDirectory.appendingPathComponent("native-device.lease") }
+    /// Owner-only record of the link-local aliases `cluster link --fix` added.
+    var linkAliasRecordFile: URL { deviceDirectory.appendingPathComponent("link-alias.json") }
 
     public init() throws {
         try self.init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)

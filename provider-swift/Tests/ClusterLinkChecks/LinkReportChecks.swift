@@ -10,10 +10,13 @@ extension ClusterLinkCheck {
     }
 
     static func commandSet() {
-        let commands: [ClusterLinkToolCommand] = [.rdmaControlStatus, .rdmaDeviceList, .rdmaDeviceDetail(device: "rdma_en7"), .interfaceList]
-        expectEqual(commands.map(\.executable), ["/usr/bin/rdma_ctl", "/usr/bin/ibv_devinfo", "/usr/bin/ibv_devinfo", "/sbin/ifconfig"],
+        let commands: [ClusterLinkToolCommand] = [.rdmaControlStatus, .rdmaDeviceList, .rdmaDeviceDetail(device: "rdma_en7"),
+            .interfaceList, .defaultRoute]
+        expectEqual(commands.map(\.executable),
+            ["/usr/bin/rdma_ctl", "/usr/bin/ibv_devinfo", "/usr/bin/ibv_devinfo", "/sbin/ifconfig", "/sbin/route"],
             "fixed absolute tool paths")
-        expectEqual(commands.map(\.arguments), [["status"], [], ["-v", "-d", "rdma_en7"], ["-a"]], "read-only arguments")
+        expectEqual(commands.map(\.arguments), [["status"], [], ["-v", "-d", "rdma_en7"], ["-a"], ["-n", "get", "default"]],
+            "read-only arguments")
     }
 
     static func macAReport() {
@@ -185,17 +188,29 @@ extension ClusterLinkCheck {
             guard let guidance = state.guidance else { expect(false, "\(state) has no guidance"); continue }
             expect(guidance.hasSuffix(".") && !guidance.dropLast().contains(". ") && !guidance.contains("\n"),
                 "\(state) guidance is one sentence")
-            expect(guidance.contains("Darkbloom will not") || guidance.contains("Darkbloom cannot"),
-                "\(state) guidance says Darkbloom does not make the change")
             expect((40...320).contains(guidance.count), "\(state) guidance length")
+            // Either the fix can add the missing address after approval, or
+            // the sentence says plainly that Darkbloom does not do this.
+            if state.fixableByAddingAddress {
+                expect(guidance.contains("`darkbloom cluster link --fix`") && guidance.contains("approval in a macOS prompt")
+                    && guidance.contains("System Settings → Network"), "\(state) guidance offers the fix and the manual way")
+                expect(!guidance.contains("will not") && !guidance.contains("cannot"), "\(state) guidance does not deny the fix")
+            } else {
+                expect(guidance.contains("Darkbloom will not") || guidance.contains("Darkbloom cannot"),
+                    "\(state) guidance says Darkbloom does not make the change")
+            }
         }
+        expectEqual(ClusterLinkReadinessState.allCases.filter(\.fixableByAddingAddress),
+            [.portWithoutIPv4Address, .portBridgedWithoutAddress], "the two states the fix can act on")
         let disabled = ClusterLinkReadinessState.rdmaDisabled.guidance ?? ""
         expect(disabled.contains("macOS Recovery") && disabled.contains("rdma_ctl enable"), "disabled guidance names the Recovery command")
-        let bridged = ClusterLinkReadinessState.portBridgedWithoutAddress.guidance ?? ""
-        expect(bridged.contains("Thunderbolt Bridge") && bridged.contains("System Settings → Network") && bridged.contains("bridge"),
-            "bridged guidance names the bridge and where to change it")
+        expect((ClusterLinkReadinessState.portBridgedWithoutAddress.guidance ?? "").contains("Thunderbolt Bridge"),
+            "bridged guidance names the bridge")
         expect((ClusterLinkReadinessState.portWithoutIPv4Address.guidance ?? "").contains("IPv4 address"), "unaddressed guidance")
         expect((ClusterLinkReadinessState.noActivePort.guidance ?? "").contains("Thunderbolt 5 cable"), "no-port guidance")
+        let unpublished = ClusterLinkReadinessState.gidNotPublished.guidance ?? ""
+        expect(unpublished.contains("--fix") && unpublished.contains("only adds a missing address"),
+            "unpublished guidance says why the fix does not apply")
     }
 
     private static func json(_ report: ClusterLinkReadinessReport) -> String {

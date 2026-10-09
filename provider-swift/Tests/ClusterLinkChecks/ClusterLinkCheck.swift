@@ -33,6 +33,17 @@ import Darwin
             ("names-only output", namesOnlyOutput),
             ("operator summary", operatorSummary),
             ("bounded child process", boundedChildProcess),
+            ("link-local address", linkLocalAddress),
+            ("alias command", aliasCommand),
+            ("approval results", approvalResults),
+            ("topology text", topologyText),
+            ("fix gating", fixGating),
+            ("fix outcomes", fixOutcomes),
+            ("remove outcomes", removeOutcomes),
+            ("repair vocabulary", repairVocabulary),
+            ("alias record file", aliasRecordFile),
+            ("watch reducer", watchReducer),
+            ("setup flow", setupFlow),
         ]
         for (_, group) in groups { group() }
         guard failures.isEmpty else {

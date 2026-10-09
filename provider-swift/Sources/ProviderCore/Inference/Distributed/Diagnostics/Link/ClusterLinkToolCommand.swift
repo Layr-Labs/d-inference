@@ -1,19 +1,23 @@
 import Foundation
 
-/// Every tool invocation the link inspection may make. All are read-only and
-/// run by absolute path without a shell; none takes operator-supplied text.
+/// Every tool invocation the link inspection and its fix may make to read
+/// state. All are read-only and run by absolute path without a shell; none
+/// takes operator-supplied text. The one privileged change is a separate
+/// type, `ClusterLinkAliasCommand`.
 enum ClusterLinkToolCommand: Equatable, Sendable {
     case rdmaControlStatus
     case rdmaDeviceList
     /// `device` is a name already validated by `ClusterRDMAToolOutput.devices`.
     case rdmaDeviceDetail(device: String)
     case interfaceList
+    case defaultRoute
 
     var executable: String {
         switch self {
         case .rdmaControlStatus: return "/usr/bin/rdma_ctl"
         case .rdmaDeviceList, .rdmaDeviceDetail: return "/usr/bin/ibv_devinfo"
         case .interfaceList: return "/sbin/ifconfig"
+        case .defaultRoute: return "/sbin/route"
         }
     }
 
@@ -23,9 +27,13 @@ enum ClusterLinkToolCommand: Equatable, Sendable {
         case .rdmaDeviceList: return []
         case .rdmaDeviceDetail(let device): return ["-v", "-d", device]
         case .interfaceList: return ["-a"]
+        case .defaultRoute: return ["-n", "get", "default"]
         }
     }
 }
+
+/// Runs one tool. The live one starts a bounded child; checks supply canned results.
+typealias ClusterLinkToolRunner = (ClusterLinkToolCommand) -> ClusterLinkToolOutcome
 
 enum ClusterLinkToolOutcome: Equatable, Sendable {
     case output(String)

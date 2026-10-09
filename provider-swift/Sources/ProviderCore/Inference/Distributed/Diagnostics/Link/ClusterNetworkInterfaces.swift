@@ -43,6 +43,22 @@ struct ClusterNetworkInterfaces: Equatable, Sendable {
         return interfaces.isEmpty ? nil : ClusterNetworkInterfaces(interfaces: interfaces)
     }
 
+    /// Whether `interface` carries exactly this IPv4 address. Nil when the text
+    /// is not an interface listing. Only the answer leaves this function.
+    static func lists(_ address: ClusterLinkLocalAddress, on interface: String, inListing text: String) -> Bool? {
+        guard parse(text) != nil else { return nil }
+        var inInterface = false
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let first = line.first, first.isWhitespace else {
+                inInterface = line.hasPrefix(interface + ": flags=")
+                continue
+            }
+            let words = line.split(whereSeparator: \.isWhitespace)
+            if inInterface, words.count >= 2, words[0] == "inet", words[1] == address.dottedDecimal { return true }
+        }
+        return false
+    }
+
     func interface(named name: String) -> Interface? {
         interfaces.first { $0.name == name }
     }

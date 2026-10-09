@@ -17,8 +17,15 @@ public enum ClusterLinkReadinessState: String, Encodable, Sendable, CaseIterable
     /// A tool timed out, overflowed its output bound or printed unrecognized text.
     case probeFailed
 
-    /// One sentence saying what the operator must change. Darkbloom never
-    /// changes it for them, so every sentence says so.
+    /// Whether the port only lacks an IPv4 address of its own, which is the one
+    /// thing `darkbloom cluster link --fix` adds.
+    public var fixableByAddingAddress: Bool {
+        self == .portWithoutIPv4Address || self == .portBridgedWithoutAddress
+    }
+
+    /// One sentence saying what the operator can do. Darkbloom changes nothing
+    /// unasked: where `cluster link --fix` can make the change after approval
+    /// the sentence offers it, and everywhere else it says Darkbloom will not.
     public var guidance: String? {
         switch self {
         case .ready:
@@ -28,13 +35,13 @@ public enum ClusterLinkReadinessState: String, Encodable, Sendable, CaseIterable
         case .rdmaUnavailable:
             return "The macOS RDMA tools are missing or list no RDMA device, so this Mac cannot use RDMA over Thunderbolt as it is; use a Mac with Thunderbolt 5 on macOS 26.2 or later, because Darkbloom cannot add RDMA support for you."
         case .noActivePort:
-            return "No Thunderbolt RDMA port is active; connect this Mac directly to the other Mac with a Thunderbolt 5 cable and wait for the port to come up, because Darkbloom will not change cabling or network settings for you."
+            return "No Thunderbolt RDMA port is active; connect this Mac directly to the other Mac with a Thunderbolt 5 cable and wait for the port to come up, because Darkbloom cannot do that for you."
         case .portWithoutIPv4Address:
-            return "The active Thunderbolt port has no IPv4 address of its own; give that port an IPv4 address in System Settings → Network, because Darkbloom will not change network settings for you."
+            return "The active Thunderbolt port has no IPv4 address of its own; run `darkbloom cluster link --fix` to give it one, which asks for your approval in a macOS prompt, or set an address for that port yourself in System Settings → Network."
         case .portBridgedWithoutAddress:
-            return "The active Thunderbolt port belongs to the Thunderbolt Bridge and has no IPv4 address of its own; give that port its own IPv4 address in System Settings → Network or remove it from the bridge, because Darkbloom will not change network settings for you."
+            return "The active Thunderbolt port belongs to the Thunderbolt Bridge and has no IPv4 address of its own; run `darkbloom cluster link --fix` to give it one, which asks for your approval in a macOS prompt, or set an address for that port yourself in System Settings → Network."
         case .gidNotPublished:
-            return "The active Thunderbolt port has not published the IPv4-mapped GID that cluster serving needs; check that port's IPv4 configuration in System Settings → Network and reconnect the cable, because Darkbloom will not change network settings for you."
+            return "The active Thunderbolt port has not published the IPv4-mapped GID that cluster serving needs; check that port's IPv4 configuration in System Settings → Network and reconnect the cable, because `darkbloom cluster link --fix` only adds a missing address and Darkbloom will not change anything else for you."
         case .probeFailed:
             return "Darkbloom could not read this Mac's RDMA or network interface state within its time and output limits; run `ibv_devinfo` and `ifconfig` in Terminal to see what they report, because Darkbloom will not retry with broader access or change anything for you."
         }

@@ -994,24 +994,58 @@ holds the staged cluster configuration value types: one canonical device
 namespace per user (`~/.config/darkbloom/clusters`,
 `~/.darkbloom/cluster-device`), strict path/symlink rules, and closed
 configuration validation. They carry saved expectations only — never a
-grant, runtime approval or serving capacity. No CLI command or environment
-variable constructs or selects one today; the member role is reachable only
-through an explicit code path that also constructs the member control
-owner, keeping the whole surface default-off.
+grant, runtime approval or serving capacity. `darkbloom cluster configure`
+(`provider-swift/Sources/darkbloom/ClusterCommand.swift`, `Cluster.Configure`)
+validates and saves one without enabling or starting it. Only
+`darkbloom start --local --distributed` and `darkbloom start --cluster-member`
+(`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `distributed`
+and `clusterMember`) use the saved setup; both are control-only and refuse solo
+serving options when parsed. No environment variable selects one, so ordinary
+solo serving is unchanged and the whole surface stays default-off.
+
+### Guided link setup
+
+`darkbloom cluster`, the same as `darkbloom cluster setup [--json] [--yes]`
+(`provider-swift/Sources/darkbloom/ClusterSetupCommand.swift`, `Cluster.Setup`),
+gets this Mac's link ready in one command. It prints one line per step as each
+is observed, and the only thing it asks of the person is approval in the macOS
+prompt. It runs the inspection, the change watch and the approval-gated fix
+described in the next sections; its decisions and wording are one state machine
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkSetupFlow.swift`,
+`ClusterLinkSetupFlow`).
+
+| Step | What must hold | When it does not |
+|---|---|---|
+| RDMA | RDMA is enabled and lists its devices | Prints the guidance for `rdmaDisabled`, `rdmaUnavailable` or `probeFailed` and stops |
+| Connection | An RDMA port is active | Waits for a Thunderbolt 5 connection, polling as `cluster link --watch` does, until a port comes up or the wait is interrupted |
+| Address | The active port publishes the IPv4-mapped GID | If the port only lacks an address: says what it is about to do, opens the macOS prompt, then applies and verifies exactly as `cluster link --fix` does. A cancelled prompt is reported with how to run the command again. More than one such port, or any other state, prints what to do and stops |
+| Done | — | Prints that this Mac's link is ready and that the other Mac needs the same command. Pairing and model steps are not part of this flow |
+
+The wait and the prompt happen on their own only when standard output is a
+terminal and `--json` is not given (`ClusterLinkSetupFlow.mayPrompt`). Otherwise
+the command prints what it found and the next step, and exits non-zero unless
+the link is ready; `--yes` allows the wait and the prompt there too. `--json`
+prints one object at the end: `schema` is `darkbloom_cluster_setup_v1`, with
+`ready`, `state` (the link state the flow last observed; `ready` after a
+verified fix) and `narration`, the lines in order. The exit status is 0 when
+the link is ready, the fix's own status (see [Link fix and
+removal](#link-fix-and-removal)) when the fix ended any other way, and 1 for
+every other stop, including an interrupted wait.
 
 ### Local link readiness
 
 `darkbloom cluster link [--json]`
 (`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`, `Cluster.Link`)
 reads this Mac's own RDMA and network-interface state and reports whether
-JACCL could initialise on it. It reads no provider configuration, changes no
-setting, contacts no peer and runs no collective, and it exits non-zero unless
-the state is `ready`. `darkbloom cluster doctor` runs the same inspection and
-appends its findings as checks; `darkbloom cluster status` does not run it.
+JACCL could initialise on it. Without `--fix` or `--remove` it reads no
+provider configuration, changes no setting, contacts no peer and runs no
+collective, and it exits non-zero unless the state is `ready`.
+`darkbloom cluster doctor` runs the same inspection and appends its findings as
+checks; `darkbloom cluster status` does not run it.
 
 | Item | Value | Source |
 |---|---|---|
-| Tools run | `/usr/bin/rdma_ctl status`, `/usr/bin/ibv_devinfo`, `/sbin/ifconfig -a`, then `/usr/bin/ibv_devinfo -v -d <device>` for each device whose port is active. Absolute paths, no shell, null standard input, environment limited to `PATH`, `LANG` and `LC_ALL` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolCommand.swift` (`ClusterLinkToolCommand`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolProcess.swift` (`ClusterLinkToolProcess.run`) |
+| Tools run | `/usr/bin/rdma_ctl status`, `/usr/bin/ibv_devinfo`, `/sbin/ifconfig -a`, then `/usr/bin/ibv_devinfo -v -d <device>` for each device whose port is active; `--fix` also reads `/sbin/route -n get default`. Absolute paths, no shell, null standard input, environment limited to `PATH`, `LANG` and `LC_ALL` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolCommand.swift` (`ClusterLinkToolCommand`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolProcess.swift` (`ClusterLinkToolProcess.run`) |
 | Time bounds | `childTimeoutNanoseconds = 3_000_000_000` per tool, `inspectionTimeoutNanoseconds = 10_000_000_000` for all of them, `reapTimeoutNanoseconds = 1_000_000_000` to await a killed tool | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessProbe.swift` (`ClusterLinkReadinessProbe`); `ClusterLinkToolProcess` |
 | Size bounds | `maximumOutputBytes = 256 * 1024` per tool, `maximumDevices = 32` | `ClusterLinkReadinessProbe` |
 | Report | `schema` is `darkbloom_cluster_link_readiness_v1`; `state`, `guidance`, one `devices` entry per RDMA device, and the constant `physicalProbePerformed: false`. Device and interface names only: no IP address, MAC address, GID, host name or serial number. An unknown fact is omitted rather than written as `null` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessReport.swift` (`ClusterLinkReadinessReport`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkName.swift` (`ClusterLinkName`) |
@@ -1020,8 +1054,10 @@ appends its findings as checks; `darkbloom cluster status` does not run it.
 `state`, and each device's `verdict`, is one value of
 `ClusterLinkReadinessState`
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessState.swift`).
-Every state except `ready` carries one `guidance` sentence naming the change
-the operator must make; Darkbloom makes none of them.
+Every state except `ready` carries one `guidance` sentence. For the two states
+that only lack an address (`fixableByAddingAddress`) it offers
+`darkbloom cluster link --fix`; for the others it names the change the operator
+must make and says that Darkbloom will not make it.
 
 | State | Meaning |
 |---|---|
@@ -1029,10 +1065,71 @@ the operator must make; Darkbloom makes none of them.
 | `rdmaDisabled` | `rdma_ctl status` printed `disabled`. RDMA is enabled from macOS Recovery with `rdma_ctl enable` |
 | `rdmaUnavailable` | `rdma_ctl` or `ibv_devinfo` is missing or exited non-zero, as `ibv_devinfo` does when there is no RDMA device |
 | `noActivePort` | No RDMA device has an active port |
-| `portWithoutIPv4Address` | The active port's interface has no IPv4 address and is not a bridge member |
-| `portBridgedWithoutAddress` | The active port's interface is a bridge member, such as the Thunderbolt Bridge, and has no IPv4 address of its own |
+| `portWithoutIPv4Address` | The active port's interface has no IPv4 address and is not a bridge member. `--fix` applies |
+| `portBridgedWithoutAddress` | The active port's interface is a bridge member, such as the Thunderbolt Bridge, and has no IPv4 address of its own. `--fix` applies |
 | `gidNotPublished` | No IPv4-mapped GID is listed although the interface has an IPv4 address, or the interface could not be identified |
 | `probeFailed` | A tool timed out, exceeded its output bound or printed unrecognized text |
+
+### Link fix and removal
+
+`darkbloom cluster link --fix [--device <rdma device>] [--json]` gives the one
+active port that lacks an IPv4 address a link-local one, so that it publishes
+the IPv4-mapped GID. `darkbloom cluster link --remove [--device <rdma device>]
+[--json]` takes that address away again. Nothing is changed without a person
+approving the macOS authorization prompt: Darkbloom runs one fixed command
+through `/usr/bin/osascript` (`do shell script … with administrator
+privileges`) and never uses `sudo` or sees a password. The address is lost at a
+restart or when the cable is replugged; `--fix` is safe to run again and adds
+it back.
+
+| Item | Value | Source |
+|---|---|---|
+| When `--fix` acts | Exactly one active port has verdict `portWithoutIPv4Address` or `portBridgedWithoutAddress`, or `--device` names such a port. A Mac that is already `ready` is left alone, and any other state stops before the prompt | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepair.swift` (`ClusterLinkFixPlan.make`) |
+| Privileged command | `/sbin/ifconfig <interface> inet <address> netmask 255.255.0.0 alias`; removal is `/sbin/ifconfig <interface> inet <address> -alias`. Built only from a validated interface name and a generated address; `--device` is matched against the listed devices and never placed in the command | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAliasCommand.swift` (`ClusterLinkAliasCommand`) |
+| Address | `169.254.x.y` with both octets in 1–254, derived from a SHA-256 of this Mac's hardware UUID and the interface name, so the same port gets the same address each time and two Macs almost never choose the same one. It appears only in the command shown to macOS and in the record below; never in output, JSON or logs | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkLocalAddress.swift` (`derived`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkMachineIdentity.swift` (`hardwareUUID`) |
+| Verification | After the command runs, the port's device must be `ready` (up to `verificationAttempts = 10` probes one second apart), no bridge may have gained or lost a member, and the default route must leave through the same interface as before | `ClusterLinkRepair` (`unmetConditions`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkTopology.swift` (`ClusterLinkTopology`) |
+| Record | `~/.darkbloom/cluster-device/link-alias.json`, mode `0600`, schema `darkbloom_cluster_link_alias_v1`: the interface and address of each alias added and not yet removed. Written before the prompt, and again after an approved one, under the file lock and with the strict cluster file policy. After a cancelled prompt or a failed command the entry is dropped once the port is seen without the address; it is kept when no prompt could be shown, so that an address added with the printed command can still be removed. `--remove` acts only on what the record names, only while the port still carries that address, and clears entries whose address is gone | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAliasRecord.swift` (`ClusterLinkAliasStore`) |
+| Prompt wait | `promptTimeoutNanoseconds = 300_000_000_000` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkApproval.swift` (`ClusterLinkApproval`) |
+| Result | `schema` is `darkbloom_cluster_link_repair_v1`; `operation`, `outcome`, `message`, and where they apply `device`, `interface`, `state`, `unmet` and `candidates`. Never the address | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepairOutcome.swift` (`ClusterLinkRepairResult`) |
+
+`outcome` is one value of `ClusterLinkRepairOutcome`; the exit status is its
+`exitCode`.
+
+| Outcome | Exit status | Meaning |
+|---|---|---|
+| `alreadyReady` | 0 | `--fix`: the link, or the named device, is already ready. No prompt |
+| `fixed` | 0 | `--fix`: approved, applied, and all three verification conditions hold |
+| `removed` | 0 | `--remove`: approved, and the port no longer carries the address |
+| `alreadyAbsent` | 0 | `--remove`: the recorded address was already gone; the record was cleared. No prompt |
+| `nothingRecorded` | 0 | `--remove`: no recorded alias, or none for the named device. No prompt |
+| `nothingFixable` | 1 | The state, given as `state`, is not one that adding an address cures; `probeFailed` here also covers a bridge, route or interface listing that could not be read before acting. No prompt |
+| `ambiguousPorts` | 1 | More than one port qualifies; `candidates` lists them for `--device`. No prompt |
+| `deviceNotListed` | 1 | `--device` names no RDMA device on this Mac. No prompt |
+| `machineIdentityUnavailable` | 1 | The hardware UUID could not be read. No prompt |
+| `recordUnavailable` | 1 | The record could not be read or written. No prompt |
+| `approvalDeclined` | 2 | The prompt was cancelled: `osascript` reported error `-128` or `-60006` |
+| `approvalUnavailable` | 3 | No prompt could be shown or answered, for example in an SSH session without a desktop: `osascript` failed in any other way or did not finish in time. The equivalent `sudo /sbin/ifconfig …` command is printed on standard error, the only place the address is shown |
+| `commandFailed` | 4 | Approved, but `ifconfig` exited non-zero |
+| `appliedButNotReady` | 4 | `--fix`: applied, but the conditions in `unmet` do not hold: `deviceNotReady`, `bridgeMembersChanged`, `defaultRouteChanged` or `stateUnreadable`. The address stays until `--remove` |
+| `removalNotVerified` | 4 | `--remove`: approved, but the port still carries the address or could not be read afterwards |
+
+### Link watch
+
+`darkbloom cluster link --watch [--json]` repeats the read-only inspection
+every `pollIntervalSeconds = 2` seconds and prints one line per change until it
+receives SIGINT or SIGTERM, then exits 0
+(`provider-swift/Sources/darkbloom/ClusterLinkWatchLoop.swift`,
+`ClusterLinkWatchLoop.printChanges`). With `--json` each change is one object on one
+line, schema `darkbloom_cluster_link_watch_v1`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkWatch.swift`,
+`ClusterLinkWatch.events`). It never prompts and never changes anything.
+
+| Event | When | Fields besides `event`, `state` and `fixable` |
+|---|---|---|
+| `started` | The first poll | `guidance` when `--fix` applies to the state |
+| `portUp` | A device's port became active, or an active device appeared | `device`, `interface`, `verdict` |
+| `portDown` | A device's port stopped being active, or an active device left the listing | `device`, `interface`, and `verdict` while the device is still listed |
+| `stateChanged` | The link state differs from the previous poll; emitted after that poll's port events | `previousState`, and `guidance` when `--fix` applies to the new state |
 
 ### Provider configuration file mode
 

@@ -17,7 +17,7 @@ extension ClusterLinkReadinessReport.Device {
             case nil: facts.append("GID table not read")
             }
         }
-        return device + (interface.map { " (\($0))" } ?? "") + ": " + facts.joined(separator: " · ")
+        return ClusterLinkName.label(device: device, interface: interface) + ": " + facts.joined(separator: " · ")
     }
 }
 

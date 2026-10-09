@@ -251,26 +251,20 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// involved. Takes precedence over the `spec_dec` download when set. nil
     /// (default) = resolve via the catalog's `spec_dec` pointer.
     public var mtpDrafterPath: String?
-    /// MTP draft acceptance rule for sampled requests (`mtp_acceptance`
-    /// under `[backend]`): `"exact"` or `"typical"`. nil (default, key
-    /// absent) means "not set" and resolves to the built-in `typical`.
-    /// Optional on purpose: `TOMLEncoder` writes every non-optional key, and
-    /// a written default would shadow every lower-precedence source for the
-    /// life of the file. `typical` keeps a draft when the target's filtered
-    /// probability for it clears an entropy-scaled floor; sampled output is
-    /// then not distribution-exact. Greedy requests never change. See
-    /// `MTPAcceptancePolicy`.
-    public var mtpAcceptance: String?
-    /// Optional per-model override map (`mtp_acceptance_by_model` under
-    /// `[backend]`, TOML table of model id → "exact" | "typical"). Missing
-    /// ids use `mtpAcceptance`.
+    /// Per-model MTP draft acceptance rule for sampled requests
+    /// (`mtp_acceptance_by_model` under `[backend]`, TOML table of exact model
+    /// id → "exact" | "typical"). The only setting that selects a rule; a
+    /// missing id uses `exact`. `typical` keeps a draft when the target's
+    /// filtered probability for it clears an entropy-scaled floor; sampled
+    /// output is then not distribution-exact. Greedy requests never change.
+    /// See `MTPAcceptancePolicy`.
     public var mtpAcceptanceByModel: [String: String]
     /// RETIRED `[backend]` keys found in the decoded provider.toml
     /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
-    /// `legacy_compiled_decode`, `kv_quant`, `mtp`). The keys parse cleanly — an
-    /// old config must never brick a provider — but their values are
-    /// IGNORED; startup emits one WARN per entry so operators notice the
-    /// knob no longer exists. Not encoded back out.
+    /// `legacy_compiled_decode`, `kv_quant`, `mtp`, `mtp_acceptance`). The
+    /// keys parse cleanly — an old config must never brick a provider — but
+    /// their values are IGNORED; startup emits one WARN per entry so operators
+    /// notice the knob no longer exists. Not encoded back out.
     public internal(set) var retiredKeysPresent: [String] = []
 
     /// The box-wide concurrency cap, and the single source for BOTH the
@@ -306,7 +300,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         mtpMode: MTPMode = .auto,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpDrafterPath: String? = nil,
-        mtpAcceptance: String? = nil,
         mtpAcceptanceByModel: [String: String] = [:],
         modelAutopilot: ModelAutopilotSettings = .init()
     ) {
@@ -329,7 +322,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpMode = mtpMode
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
-        self.mtpAcceptance = mtpAcceptance
         self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.modelAutopilot = modelAutopilot
     }
@@ -354,7 +346,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case mtpMode = "mtp_mode"
         case prefillDeadlineMode = "prefill_deadline_mode"
         case mtpDrafterPath = "mtp_drafter_path"
-        case mtpAcceptance = "mtp_acceptance"
         case mtpAcceptanceByModel = "mtp_acceptance_by_model"
     }
 
@@ -362,7 +353,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// See `retiredKeysPresent`. v0.7.5 (one engine) retired the four
     /// selection knobs; v0.8.0 retired `kv_quant` along with the KV
     /// quantization feature itself; v0.9.10 retired the pre-tri-state boolean
-    /// `mtp` (superseded by `mtp_mode`, which v0.8.14+ already wrote).
+    /// `mtp` (superseded by `mtp_mode`, which v0.8.14+ already wrote). The
+    /// global `mtp_acceptance` is retired because MTP acceptance is selected
+    /// per model only (`mtp_acceptance_by_model`).
     private enum RetiredCodingKeys: String, CodingKey, CaseIterable {
         case continuousBatching = "continuous_batching"
         case adaptivePrefill = "adaptive_prefill"
@@ -370,6 +363,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case legacyCompiledDecode = "legacy_compiled_decode"
         case kvQuant = "kv_quant"
         case mtp
+        case mtpAcceptance = "mtp_acceptance"
     }
 
     public init(from decoder: Decoder) throws {
@@ -406,7 +400,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
                 PrefillDeadlineMode.self,
                 forKey: .prefillDeadlineMode)
         self.mtpDrafterPath = try container.decodeIfPresent(String.self, forKey: .mtpDrafterPath)
-        self.mtpAcceptance = try container.decodeIfPresent(String.self, forKey: .mtpAcceptance)
         self.mtpAcceptanceByModel =
             try container.decodeIfPresent(
                 [String: String].self, forKey: .mtpAcceptanceByModel) ?? [:]
@@ -441,7 +434,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(mtpMode, forKey: .mtpMode)
         try container.encodeIfPresent(prefillDeadlineMode, forKey: .prefillDeadlineMode)
         try container.encodeIfPresent(mtpDrafterPath, forKey: .mtpDrafterPath)
-        try container.encodeIfPresent(mtpAcceptance, forKey: .mtpAcceptance)
         try container.encode(mtpAcceptanceByModel, forKey: .mtpAcceptanceByModel)
     }
 }

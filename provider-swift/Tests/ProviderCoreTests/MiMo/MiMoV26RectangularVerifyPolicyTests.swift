@@ -1,6 +1,18 @@
+import MLX
 import MLXLMCommon
 import XCTest
 @testable import ProviderCore
+
+/// Drafter on the protocol default, like `MiMoV26MTPAssistant`: no
+/// target-prefix acceptance.
+private final class NativeMiMoShapedDrafter: CBv2MTPDrafter {
+    private final class Capture: CBv2MTPPreparedCapture {}
+    func prepare(rows: [CBv2MTPRowCapture]) -> any CBv2MTPPreparedCapture { Capture() }
+    func draftStep(tokens: MLXArray, hidden: MLXArray, prepared: any CBv2MTPPreparedCapture)
+        -> (tokens: MLXArray, hidden: MLXArray) {
+        preconditionFailure("policy fixture must not run draft math")
+    }
+}
 
 final class MiMoV26RectangularVerifyPolicyTests: XCTestCase {
     func testExactRectangularIsTheDefaultAndAffirmativeValuesKeepIt() {
@@ -39,5 +51,30 @@ final class MiMoV26RectangularVerifyPolicyTests: XCTestCase {
             }
         }
         XCTAssertTrue(CBv2MTPConfig().allowsAdaptiveSerialRounds, "SDK default is unchanged")
+    }
+    func testNativeMTPConfigInstallsExactWhenTypicalCannotApply() {
+        for wantsMTP in [true, false] {
+            for mode in [CBv2MTPVerificationMode.serialTarget, .rectangular] {
+                var config = EngineV2SlotFactory.nativeMiMoMTPConfig(
+                    wantsMTP: wantsMTP, verificationMode: mode)
+                var warnings: [String] = []
+                EngineV2SlotFactory.installMTPAcceptance(
+                    byModel: ["mimo-v2.6": "typical"], into: &config,
+                    drafter: wantsMTP ? NativeMiMoShapedDrafter() : nil,
+                    modelID: "mimo-v2.6", logInfo: { _ in }, logWarning: { warnings.append($0) })
+                XCTAssertEqual(config.acceptance, .exact)
+                XCTAssertEqual(warnings.count, 1)
+                XCTAssertTrue(warnings.first?.contains("mimo-v2.6") == true)
+                XCTAssertTrue(warnings.first?.contains(wantsMTP
+                    ? "does not support target-prefix acceptance" : "MTP is off") == true)
+            }
+        }
+        var exact = EngineV2SlotFactory.nativeMiMoMTPConfig(wantsMTP: true, verificationMode: .serialTarget)
+        var warnings: [String] = []
+        EngineV2SlotFactory.installMTPAcceptance(
+            byModel: [:], into: &exact, drafter: NativeMiMoShapedDrafter(), modelID: "mimo-v2.6",
+            logInfo: { _ in }, logWarning: { warnings.append($0) })
+        XCTAssertEqual(exact.acceptance, .exact)
+        XCTAssertTrue(warnings.isEmpty, "the exact default never warns")
     }
 }

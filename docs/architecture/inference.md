@@ -435,30 +435,41 @@ constraints retain their ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
-When neither a global nor a per-model acceptance value is configured, serving
-defaults to typical acceptance for eligible sampled target-prefix rows:
-a draft is kept when the sampler-filtered target row gives it probability above
+Draft acceptance is `exact` for every model by default. Typical acceptance is
+a per-model opt-in: only an exact model ID set to `"typical"` in
+`[backend] mtp_acceptance_by_model` selects it. Typical acceptance is not yet
+benchmarked; the
+[recorded benchmarks](../reports/2026-10-07-typical-mtp-acceptance-benchmarks.md)
+are single-host B=1 runs and do not qualify sampled-output quality or
+fleet-wide speed. The global `[backend] mtp_acceptance` key is retired: it
+selects no rule, and startup logs one warning that names the per-model table
+(`RetiredKnobWarnings`). An unknown per-model value warns and resolves to
+exact (`MTPAcceptancePolicy.resolve`).
+Under typical acceptance, eligible sampled target-prefix rows keep a draft when
+the sampler-filtered target row gives it probability above
 `min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
 position and the bonus position still commit the keyed target sample. Output
-is approximate, not distribution-exact for the target. Greedy rows keep the exact
-walk. Explicit `"exact"` opts out; invalid values warn and safely resolve to
-exact, including an invalid per-model override rather than falling back to the
-global value (`MTPAcceptancePolicy.resolve`;
-`CBv2MTPAcceptance` in
-`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`;
-`mtp_acceptance` in slot posture telemetry). Design record:
+is then not distribution-exact for the target. Greedy rows keep the exact walk
+(`CBv2MTPAcceptance` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`).
+Typical acceptance acts only on rows that reach target-prefix pre-sampling, so
+the slot checks its drafter when it builds the MTP configuration. If MTP is off
+for the slot, or the drafter's `supportsTargetPrefixAcceptance` is false (the
+protocol default, and native MiMo today), the slot installs `exact` and logs one
+warning that names the model and the reason (`MTPAcceptancePolicy.installation`;
+`EngineV2SlotFactory.installMTPAcceptance` in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+MTP.swift`).
+The autoregressive factory checks the loaded assistant; native MiMo checks the
+assistant of its CBv2 binding
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`).
+`mtp_acceptance` in slot posture telemetry reports the installed rule, not the
+configured one. Design record:
 [`../design/typical-mtp-acceptance.md`](../design/typical-mtp-acceptance.md).
-Configuration precedence and exact rollback are in the
+Configuration and rollback are in the
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
 The benchmark session and default `--mtp-acceptance exact` are unchanged
 (`provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift`). The
-[recorded benchmarks](../reports/2026-10-07-typical-mtp-acceptance-benchmarks.md)
-cover only single-host B=1 runs; they do not qualify sampled-output quality or
-fleet-wide speed.
-Native MiMo remains exact: its separately owned slot construction does not
-apply this preference, so `typical` is unsupported on that path
-(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`,
-`nativeMiMoMTPConfig`). The setting does not enable MTP or widen model eligibility.
+setting does not enable MTP or widen model eligibility.
 Nemotron's assistant uses one speculative request and adaptive depth up to
 seven proposed tokens. Captured target verification, batched M=1 projections
 and KV-only trusted-history priming default on, with separate rollback controls.

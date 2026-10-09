@@ -137,7 +137,7 @@ extension EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         activationReserveBytes: UInt64? = nil, kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
-        mtpAcceptanceConfig: String? = nil, mtpAcceptanceConfigByModel: [String: String] = [:],
+        mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         modelArtifactSHA256: String? = nil,
         weightHash: String? = nil, specDecPreparation: SpecDecPreparation,
@@ -177,10 +177,12 @@ extension EngineV2SlotFactory {
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
                 constructionPurpose: constructionPurpose, kvBudget: kvBudget,
                 backend: kvBackendConfigByModel[modelId] ?? kvBackendConfig,
+                mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
                 prefillDeadlineMode: prefillDeadlineMode, environment: environment,
                 modelDirectory: modelDirectory, modelArtifactSHA256: modelArtifactSHA256, weightHash: weightHash,
                 persistentTestNamespace: persistentTestNamespace,
-                startServingTelemetry: startServingTelemetry, emitTelemetry: emitTelemetry)
+                startServingTelemetry: startServingTelemetry, emitTelemetry: emitTelemetry,
+                logInfo: logInfo, logWarning: logWarning)
         case .autoregressive(let target):
             return try await makeProductionBundle(
                 modelId: modelId, modelType: modelType, isVLM: isVLM, modelDirectory: modelDirectory,
@@ -190,7 +192,6 @@ extension EngineV2SlotFactory {
                 constructionPurpose: constructionPurpose, kvBudget: kvBudget,
                 activationReserveBytes: activationReserveBytes, kvBackendConfig: kvBackendConfig,
                 kvBackendConfigByModel: kvBackendConfigByModel,
-                mtpAcceptanceConfig: mtpAcceptanceConfig,
                 mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
                 prefillDeadlineMode: prefillDeadlineMode,
                 modelArtifactSHA256: modelArtifactSHA256,
@@ -257,10 +258,12 @@ extension EngineV2SlotFactory {
         modelId: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
         prepared: MiMoV26ServingPreparation, kvBytesCapacity: Int, maxConcurrentRequests: Int,
         automaticallySelectConcurrency: Bool, constructionPurpose: EngineV2Factory.ConstructionPurpose,
-        kvBudget: GlobalKVCacheBudget?, backend: String, prefillDeadlineMode: PrefillDeadlineMode?,
+        kvBudget: GlobalKVCacheBudget?, backend: String, mtpAcceptanceConfigByModel: [String: String],
+        prefillDeadlineMode: PrefillDeadlineMode?,
         environment: [String: String], modelDirectory: URL?, modelArtifactSHA256: String?, weightHash: String?,
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, startServingTelemetry: Bool,
-        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?,
+        logInfo: @escaping @Sendable (String) -> Void, logWarning: @escaping @Sendable (String) -> Void
     ) async throws -> ProviderEngineBundle {
         // These controls are process-latched by the actual SDK dispatchers.
         // Reject contradictory injected values before routing/claiming any
@@ -272,10 +275,12 @@ extension EngineV2SlotFactory {
                 maxConcurrentRequests: maxConcurrentRequests,
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
                 constructionPurpose: constructionPurpose, kvBudget: kvBudget,
+                mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
                 prefillDeadlineMode: prefillDeadlineMode, environment: environment,
                 modelDirectory: modelDirectory, modelArtifactSHA256: modelArtifactSHA256, weightHash: weightHash,
                 persistentTestNamespace: persistentTestNamespace,
-                startServingTelemetry: startServingTelemetry, emitTelemetry: emitTelemetry)
+                startServingTelemetry: startServingTelemetry, emitTelemetry: emitTelemetry,
+                logInfo: logInfo, logWarning: logWarning)
         }
         let transaction = prepared.transaction
         // These refusals are outside owned construction cleanup: a rejected
@@ -344,6 +349,9 @@ extension EngineV2SlotFactory {
                         assistant.bind(sourceTarget: model, servingTarget: model)
                         try transaction.registerAssistant(assistant)
                     }
+                    var engineMTPConfig = mtpConfig
+                    installMTPAcceptance(byModel: mtpAcceptanceConfigByModel, into: &engineMTPConfig,
+                        drafter: binding.assistant, modelID: modelId, logInfo: logInfo, logWarning: logWarning)
                     let probe = try binding.adapter.probeNativeKVTypes(retaining: scope)
                     let config = model.nativeConfiguration
                     let geometry = try MiMoV26AdmissionGeometry(layerKinds: binding.adapter.layerKinds,
@@ -416,7 +424,7 @@ extension EngineV2SlotFactory {
                         loopConfig: CBv2EngineLoopConfig(useLegacyRequestTimeout: EngineV2Factory.legacyRequestTimeoutEnabled()),
                         admissionConfig: geometry.internalAdmissionConfig,
                         completePrefixCache: prefix.store,
-                        mtpDrafter: binding.assistant, mtpConfig: mtpConfig,
+                        mtpDrafter: binding.assistant, mtpConfig: engineMTPConfig,
                         processMemoryOwner: prefix.resources?.processOwner,
                         nativeCompletionTracking: true, nativeExecutionContract: resources.contract,
                         automaticMiMoPrefill: EngineV2Factory.nativeMiMoAutomaticPrefill(
@@ -514,10 +522,12 @@ extension EngineV2SlotFactory {
         modelId: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
         prepared: MiMoV26ServingPreparation, kvBytesCapacity: Int, maxConcurrentRequests: Int,
         automaticallySelectConcurrency: Bool, constructionPurpose: EngineV2Factory.ConstructionPurpose,
-        kvBudget: GlobalKVCacheBudget?, prefillDeadlineMode: PrefillDeadlineMode?,
+        kvBudget: GlobalKVCacheBudget?, mtpAcceptanceConfigByModel: [String: String],
+        prefillDeadlineMode: PrefillDeadlineMode?,
         environment: [String: String], modelDirectory: URL?, modelArtifactSHA256: String?, weightHash: String?,
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, startServingTelemetry: Bool,
-        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?,
+        logInfo: @escaping @Sendable (String) -> Void, logWarning: @escaping @Sendable (String) -> Void
     ) async throws -> ProviderEngineBundle {
         let transaction = prepared.transaction
         let intent = prepared.status.configured && prepared.status.reason == nil
@@ -593,6 +603,9 @@ extension EngineV2SlotFactory {
                         assistant.bind(sourceTarget: model, servingTarget: model)
                         try transaction.registerAssistant(assistant)
                     }
+                    var engineMTPConfig = mtpConfiguration
+                    installMTPAcceptance(byModel: mtpAcceptanceConfigByModel, into: &engineMTPConfig,
+                        drafter: binding.assistant, modelID: modelId, logInfo: logInfo, logWarning: logWarning)
                     let probe = try binding.adapter.probeNativeKVTypes(retaining: scope)
                     let config = model.nativeConfiguration
                     let geometry = try MiMoV26AdmissionGeometry(layerKinds: binding.adapter.layerKinds,
@@ -636,7 +649,7 @@ extension EngineV2SlotFactory {
                         admissionConfig: geometry.internalAdmissionConfig,
                         completePrefixCache: paging.store,
                         mtpDrafter: binding.assistant,
-                        mtpConfig: mtpConfiguration,
+                        mtpConfig: engineMTPConfig,
                         processMemoryOwner: paging.processOwner,
                         nativeCompletionTracking: true, nativeExecutionContract: resources.contract)
                     try transaction.registerEngine(engine, executionContract: resources.contract)

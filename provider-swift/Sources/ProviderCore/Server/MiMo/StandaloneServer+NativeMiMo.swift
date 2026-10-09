@@ -395,10 +395,13 @@ extension StandaloneServer {
                 && config.engineV2MaxConcurrentByModel[modelID] == nil,
             kvBudget: kvBudget, activationReserveBytes: resolvedActivationReserveBytes,
             kvBackendConfig: config.engineV2KVBackend, kvBackendConfigByModel: config.engineV2KVBackendByModel,
+            mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
             prefillDeadlineMode: config.prefillDeadlineMode,
             modelArtifactSHA256: modelArtifactSHA256, weightHash: cacheHash,
             specDecPreparation: preparation, preparedModel: prepared,
-            emitTelemetry: v2TestHooks?.emitTelemetry)
+            emitTelemetry: v2TestHooks?.emitTelemetry,
+            logInfo: { standaloneLogger.info("\($0)") },
+            logWarning: { standaloneLogger.warning("\($0)") })
         // The corrected factory/transaction already owns this actual bundle.
         // Keep the actor's candidate before any later awaited veto as well.
         nativeMiMoLoads[modelID]?.candidate = CachedSlot(bundle: bundle, modelContainer: container,

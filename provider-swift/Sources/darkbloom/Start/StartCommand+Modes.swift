@@ -101,7 +101,6 @@ extension Start {
                 prefillDeadlineMode: config.backend.prefillDeadlineMode,
                 mtpMode: config.backend.mtpMode,
                 mtpDrafterPath: config.backend.mtpDrafterPath,
-                mtpAcceptance: config.backend.mtpAcceptance,
                 mtpAcceptanceByModel: config.backend.mtpAcceptanceByModel,
                 coordinatorURL: config.coordinator.url
             ),

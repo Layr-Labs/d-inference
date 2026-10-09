@@ -244,3 +244,31 @@ extension EngineV2SlotFactory {
             mtpArtifact: nil)
     }
 }
+
+extension EngineV2SlotFactory {
+    /// Sets the acceptance rule the slot installs for `modelID`'s
+    /// `mtp_acceptance_by_model` entry, at the point where its MTP drafter is
+    /// known. An unrecognized value, or a `typical` rule that the slot cannot
+    /// honour, installs `exact` with one warning that names the model; slot
+    /// posture telemetry then reports the installed `exact`.
+    static func installMTPAcceptance(
+        byModel: [String: String], into config: inout CBv2MTPConfig,
+        drafter: (any CBv2MTPDrafter)?, modelID: String,
+        logInfo: (String) -> Void, logWarning: (String) -> Void
+    ) {
+        let configured = MTPAcceptancePolicy.resolve(byModel: byModel, modelID: modelID)
+        if let warning = configured.unrecognizedWarning(modelID: modelID) {
+            logWarning(warning)
+        }
+        let installation = MTPAcceptancePolicy.installation(
+            requested: configured.acceptance, mtpEnabled: config.effectiveEnabled, drafter: drafter)
+        config.acceptance = installation.acceptance
+        if let warning = installation.fallbackWarning(modelID: modelID) {
+            logWarning(warning)
+        } else if case .typical(let delta) = installation.acceptance {
+            logInfo(
+                "engine_v2: \(modelID) MTP acceptance typical delta=\(delta) "
+                    + "(sampled output is not distribution-exact; greedy rows unchanged)")
+        }
+    }
+}

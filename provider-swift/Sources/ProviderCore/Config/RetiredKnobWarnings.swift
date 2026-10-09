@@ -39,16 +39,25 @@ public enum RetiredKnobWarnings {
     /// The boolean `mtp` key gets its own wording because ignoring it changes
     /// behavior: a bare `mtp = false` used to mean off, and without an
     /// `mtp_mode` the box now resolves the `auto` default. The operator has to
-    /// be told which `mtp_mode` value restores the old intent.
+    /// be told which `mtp_mode` value restores the old intent. The global
+    /// `mtp_acceptance` key gets its own wording because its replacement is
+    /// the per-model table.
     static func retiredBackendKeyMessage(_ key: String) -> String {
-        guard key == "mtp" else {
+        switch key {
+        case "mtp":
+            return "provider.toml sets [backend] mtp, which is a RETIRED knob and is IGNORED — "
+                + "MTP follows [backend] mtp_mode (default \"auto\"), not this key. "
+                + "To keep MTP off, set mtp_mode = \"off\"; to force it on, set "
+                + "mtp_mode = \"on\"; then remove the mtp key"
+        case "mtp_acceptance":
+            return "provider.toml sets [backend] mtp_acceptance, which is a RETIRED knob and is "
+                + "IGNORED — every model uses \"exact\" MTP acceptance unless "
+                + "[backend.mtp_acceptance_by_model] names its exact model id; "
+                + "set \"<model id>\" = \"typical\" there to opt in, then remove the key"
+        default:
             return "provider.toml sets [backend] \(key), which is a RETIRED knob and is "
                 + "IGNORED — remove the key"
         }
-        return "provider.toml sets [backend] mtp, which is a RETIRED knob and is IGNORED — "
-            + "MTP follows [backend] mtp_mode (default \"auto\"), not this key. "
-            + "To keep MTP off, set mtp_mode = \"off\"; to force it on, set "
-            + "mtp_mode = \"on\"; then remove the mtp key"
     }
 
     /// Log the above at WARN and hand them back so a caller with an operator

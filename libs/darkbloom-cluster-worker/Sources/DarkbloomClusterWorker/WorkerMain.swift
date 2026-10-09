@@ -31,7 +31,9 @@ import Foundation
             let beforeAlarm = DispatchTime.now().uptimeNanoseconds
             guard deadline > beforeAlarm else { throw WorkerFailure.invalid("Worker startup exhausted its deadline") }
             let remaining = deadline - beforeAlarm
-            guard remaining <= 300_000_000_000 else { throw WorkerFailure.invalid("Worker startup lifetime exceeds its bound") }
+            guard remaining <= configuration.maximumLifetimeNanoseconds else {
+                throw WorkerFailure.invalid("Worker startup lifetime exceeds its bound")
+            }
             alarm(UInt32((remaining + 999_999_999) / 1_000_000_000))
             // The alarm did not end a rank spinning in the RDMA completion poll
             // on real hardware; this thread is the last resort that is relied on.
@@ -44,10 +46,13 @@ import Foundation
             }
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
             try pipes.check()
+            guard configuration.family == .qwenDense || configuration.evidenceDirectory == nil else {
+                throw WorkerFailure.invalid("Only the dense adapter has a recording runtime; run this model without --evidence-directory")
+            }
             let runtime: any WorkerRuntime = try configuration.evidenceDirectory.map {
                 try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0,
                     generationMode: configuration.generationMode, qualification: qualification)
-            } ?? NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
+            } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, bootstrap: configuration.bootstrap,
                     generationMode: configuration.generationMode, qualification: qualification)
             startup?.disarm()
             try WorkerCoordinator(runtime: runtime, pipes: pipes).run()

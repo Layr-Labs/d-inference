@@ -4,6 +4,13 @@ import DarkbloomClusterProcess
 
 /// Explicit installed-host configuration. Authentication is performed by OpenSSH
 /// with configured host-key/public-key files, never an ad-hoc crypto scheme.
+///
+/// The one configured identity file is the only key offered, and no agent is
+/// consulted. An operator's key is commonly protected by a passphrase kept in
+/// the macOS login keychain; `UseKeychain=yes` lets OpenSSH itself read that
+/// passphrase for this identity file, as it does for an interactive login.
+/// It offers no other key and prompts for nothing: without a stored passphrase
+/// the connection fails as before.
 public struct ClusterSSHConfiguration: Sendable {
     public let host: String
     public let user: String
@@ -38,7 +45,7 @@ public struct ClusterSSHConfiguration: Sendable {
                   s.st_mode & 0o022 == 0, s.st_nlink == 1 else { throw OwnerWire.invalid("Unsafe configured SSH trust file") }
         }
         let options = ["BatchMode=yes", "StrictHostKeyChecking=yes", "UserKnownHostsFile=\(knownHostsFile.path)",
-            "GlobalKnownHostsFile=/dev/null", "IdentitiesOnly=yes", "IdentityAgent=none", "PreferredAuthentications=publickey",
+            "GlobalKnownHostsFile=/dev/null", "IdentitiesOnly=yes", "IdentityAgent=none", "UseKeychain=yes", "PreferredAuthentications=publickey",
             "PasswordAuthentication=no", "KbdInteractiveAuthentication=no", "ForwardAgent=no", "ForwardX11=no",
             "ControlMaster=no", "ControlPath=none", "ControlPersist=no", "ProxyCommand=none", "ProxyJump=none",
             "PermitLocalCommand=no", "ClearAllForwardings=yes", "UpdateHostKeys=no", "ConnectionAttempts=1",

@@ -83,6 +83,12 @@ func directory() throws -> URL {
         let launch = try config.launch()
         try require(launch.executable.path == "/usr/bin/ssh" && launch.arguments.contains("StrictHostKeyChecking=yes")
             && launch.arguments.last == "exec /usr/local/bin/darkbloom cluster worker-owner --stdio", "SSH launch widened")
+        // One identity by path, no agent, no prompt. The keychain may supply
+        // that identity's passphrase and nothing else.
+        for option in ["IdentitiesOnly=yes", "IdentityAgent=none", "BatchMode=yes", "UseKeychain=yes", "GlobalKnownHostsFile=/dev/null"] {
+            try require(launch.arguments.contains(option), "SSH identity policy lost \(option)")
+        }
+        try require(Array(launch.arguments.prefix(2)) == ["-F", "/dev/null"] && launch.environment["SSH_AUTH_SOCK"] == nil, "SSH launch reads user configuration or an agent")
         try rejects { _ = try ClusterSSHConfiguration(host: "peer;touch-bad", user: "gaj", port: 22,
             knownHostsFile: known, identityFile: key, installedDarkbloom: "/bin/sh -c") }
     }

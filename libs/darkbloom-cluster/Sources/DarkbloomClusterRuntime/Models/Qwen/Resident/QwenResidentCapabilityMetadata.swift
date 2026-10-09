@@ -30,8 +30,8 @@ public enum QwenResidentCapabilityMetadata {
         }
         // Describe the required source contract. This is not a claim that the
         // current process environment or an installed native library was admitted.
-        let arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(QwenLongPrefillArithmeticEnvironment.requiredValues)
-        let adapter = ClusterRuntimeAdapter.qwen35Dense
+        let arithmetic = try definition.arithmetic.admit(definition.arithmetic.requiredValues)
+        let adapter = definition.adapter
         return try ClusterRuntimeCapability(runtimeBinarySHA256: runtimeBinarySHA256,
             adapterID: adapter.rawValue, adapterVersion: adapter.version, runtimeModelID: spec.model.rawValue,
             artifactSHA256: spec.artifactSHA256, configurationSHA256: spec.configurationSHA256,
@@ -40,7 +40,7 @@ public enum QwenResidentCapabilityMetadata {
                 maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
                 maximumChunkTokens: profile.maximumChunkTokens, maximumContextTokens: profile.maximumContextTokens),
             profileFingerprint: profile.fingerprint, partitions: partitions,
-            arithmeticPolicyID: QwenLongPrefillArithmeticEnvironment.contract,
+            arithmeticPolicyID: definition.arithmetic.contract,
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
             maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
             maxRequests: QwenResidentAdapterDefinition.maximumRequests,
@@ -57,13 +57,31 @@ public enum QwenResidentCapabilityMetadata {
         public let supportedCuts: [Int]
         public let supportedPrefillSchedules: [ClusterPrefillSchedule]
         public let supportedGenerationModes: [ClusterGenerationMode]
+        /// The artifact's pinned manifest, and the exact environment the
+        /// model's arithmetic contract requires of each rank.
+        public let manifestSHA256: String
+        public let requiredArithmeticEnvironment: [String: String]
 
         init(_ definition: QwenResidentModelDefinition) {
+            manifestSHA256 = definition.specification.manifestSHA256
+            requiredArithmeticEnvironment = definition.arithmetic.requiredValues
             runtimeModelID = definition.specification.model.rawValue; profileID = definition.profileID
             layerCount = definition.specification.layers; supportedCuts = definition.supportedCuts
             supportedPrefillSchedules = definition.supportedPrefillSchedules
             supportedGenerationModes = definition.supportedGenerationModes
         }
+    }
+
+    /// Every registered resident model, in the closed catalog's order.
+    public static var registeredModels: [RegisteredModel] {
+        QwenRegisteredDenseModel.allCases.compactMap { try? QwenResidentModelDefinition(model: $0) }.map(RegisteredModel.init)
+    }
+
+    /// One line per registered model and the cuts it may be loaded at, for a
+    /// tool's usage text: read from the catalog, so it cannot fall behind it.
+    public static var registeredCutsUsage: String {
+        registeredModels.map { "\($0.runtimeModelID): " + $0.supportedCuts.map(String.init).joined(separator: "|") }
+            .joined(separator: "\n")
     }
 
     /// Nil for every ID that is not a registered resident model.

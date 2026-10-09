@@ -17,6 +17,10 @@ struct QwenResidentModelDefinition {
     /// How a request on this model may be divided between the ranks, the
     /// pipeline first. A mode outside this row is refused at load.
     let supportedGenerationModes: [ClusterGenerationMode]
+    /// The protocol adapter that registers this model, and the arithmetic
+    /// contract its ranks are started under. Both follow from the row.
+    let adapter: ClusterRuntimeAdapter
+    let arithmetic: QwenResidentArithmeticPolicy
 
     init(model: QwenRegisteredDenseModel) throws {
         guard let specification = QwenDenseRegisteredSpecification.all.first(where: { $0.model == model }) else {
@@ -36,6 +40,16 @@ struct QwenResidentModelDefinition {
             profileID = "registered_qwen38_27b_greedy_generation_v1"
             supportedCuts = structural
         }
+        // Both rows run under the dense contract. A model whose arithmetic
+        // depends on more of the process environment names its own here.
+        let arithmetic: QwenResidentArithmeticPolicy = .dense
+        let registered = (runtimeModelID: model.rawValue, profileID: profileID)
+        guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.rawValue),
+              adapter.registeredProfiles.contains(where: { $0 == registered }),
+              adapter.arithmeticPolicyID == arithmetic.contract else {
+            throw QwenDenseProfileError("Registered model differs from its protocol adapter's row")
+        }
+        self.adapter = adapter; self.arithmetic = arithmetic
         supportedPrefillSchedules = QwenResidentAdapterDefinition.supportedPrefillSchedules
         // Compact decode framing and the phase split depend on the model only
         // through its registered geometry (state shapes and sizes follow from

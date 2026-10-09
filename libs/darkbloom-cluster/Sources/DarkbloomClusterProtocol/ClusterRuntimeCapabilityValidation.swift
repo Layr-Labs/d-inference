@@ -32,7 +32,7 @@ enum ClusterRuntimeCapabilityValidation {
         // promise. The producer obtains its exact values from the shared adapter.
         try workerRequire((1...300).contains(value.maxLifetimeSeconds) && (1...16).contains(value.maxRequests),
                           "Unsupported resident lifetime or request count")
-        try workerRequire(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
+        try workerRequire(value.arithmeticPolicyID == adapter.arithmeticPolicyID,
                           "Unknown runtime arithmetic policy")
         try workerRequire((1...16).contains(value.partitions.count)
             && Set(value.partitions.map(\.planSHA256)).count == value.partitions.count,

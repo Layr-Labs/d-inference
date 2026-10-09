@@ -83,6 +83,8 @@ extension EngineV2Factory {
         public let engine: any CBv2Engine
         /// Concrete engine residency, including MTP expansion.
         public let fixedRequestBytes: Int
+        /// The same immutable watermark supplied to the SDK admission config.
+        public let admissionWatermarkFraction: Double?
         public let kvBackendKind: EngineV2KVBackendKind
         /// Policy override or automatic degradation; explicit paged failures throw.
         public let kvBackendFallbackReason: String?
@@ -114,10 +116,12 @@ extension EngineV2Factory {
             usesProcessMemoryOwner: Bool = false,
             mtpAdmissionResolution: CBv2MTPAdmissionResolution? = nil,
             legacyMTPBytesPerToken: Int = 0,
-            effectiveMaxConcurrentRequests: Int = 0
+            effectiveMaxConcurrentRequests: Int = 0,
+            admissionWatermarkFraction: Double? = nil
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
+            self.admissionWatermarkFraction = admissionWatermarkFraction
             self.kvBackendKind = kvBackendKind
             self.kvBackendFallbackReason = kvBackendFallbackReason
             self.pagedPoolDType = pagedPoolDType
@@ -172,7 +176,8 @@ extension EngineV2Factory {
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             preparedBackend: preparedBackend,
-            kvBudget: kvBudget)
+            kvBudget: kvBudget,
+            constructionPurpose: constructionPurpose)
     }
 
     /// Consume the prepared resources exactly once. Preserve the scheduler config
@@ -186,7 +191,9 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)?,
         mtpConfig: CBv2MTPConfig,
         preparedBackend: ProductionBackendPreparation,
-        kvBudget: GlobalKVCacheBudget? = nil
+        kvBudget: GlobalKVCacheBudget? = nil,
+        constructionPurpose: ConstructionPurpose = .serving,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
     ) throws -> ProductionBuild {
         let (backend, caches) = try preparedBackend.consume(
             model: model,
@@ -202,6 +209,13 @@ extension EngineV2Factory {
             effectivePrefixCache != nil || preparedBackend.residentPrefixCacheEnabled
                 || preparedBackend.hybridPrefixCache != nil
                 || completePrefixCache != nil
+        schedulerConfig.demandedShortCheckpointMinimumTokens = demandedShortCheckpointMinimumTokens(
+            model: model, backend: preparedBackend.kind, store: completePrefixCache,
+            constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
+        schedulerConfig.demandedCheckpointPartitionIncludesLongPrompts =
+            benchmarkDemandedCheckpointPartitionIncludesLongPrompts(
+                model: model, backend: preparedBackend.kind, store: completePrefixCache,
+                constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
         let processOwner: EngineProcessMemoryOwner?
         if preparedBackend.kind == .paged, let kvBudget {
             // Binding after any slab/request allocation would lose the required
@@ -219,6 +233,7 @@ extension EngineV2Factory {
         } else {
             processOwner = nil
         }
+        let admissionConfig = AdmissionV2.Config()
         let engine = EngineV2(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: preparedBackend.layerKinds,
@@ -229,6 +244,7 @@ extension EngineV2Factory {
             schedulerConfig: schedulerConfig,
             loopConfig: CBv2EngineLoopConfig(
                 useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
+            admissionConfig: admissionConfig,
             prefixCache: effectivePrefixCache,
             hybridPrefixCache: preparedBackend.hybridPrefixCache,
             completePrefixCache: completePrefixCache,
@@ -250,6 +266,7 @@ extension EngineV2Factory {
             usesProcessMemoryOwner: processOwner != nil,
             mtpAdmissionResolution: engine.resolvedMTPAdmission,
             legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0,
-            effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests)
+            effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests,
+            admissionWatermarkFraction: admissionConfig.watermarkFraction)
     }
 }

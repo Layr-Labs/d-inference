@@ -6,6 +6,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/attempt"
 	providerdispatch "github.com/eigeninference/d-inference/coordinator/internal/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -39,6 +40,8 @@ type DispatchRequest struct {
 	Timing                 *registry.RequestTiming
 	Profile                *registry.RequestProfile
 	Deadline               time.Duration
+	FallbackDeadline       time.Duration
+	PromptDeadlineForWork  func(string, *protocol.PromptWork) time.Duration
 	SpeculativeAt          time.Duration
 	ModelMaxContext        int
 	RefundReservation      func()
@@ -60,6 +63,7 @@ func (s *Owner) NewDispatchSession(in DispatchRequest) *attempt.Session {
 		allowedProviderSerials: in.AllowedProviderSerials, cachePlan: in.CachePlan,
 		timing: in.Timing, profile: in.Profile, deadline: in.Deadline, speculativeAt: in.SpeculativeAt,
 		modelMaxContext: in.ModelMaxContext, refundReservation: in.RefundReservation,
+		fallbackDeadline: in.FallbackDeadline, promptDeadlineForWork: in.PromptDeadlineForWork,
 		excludeProviders: make(map[string]struct{}),
 	}
 	return d.newSession()

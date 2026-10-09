@@ -41,7 +41,7 @@ func (d *dispatchState) firstWaitDependencies() attempt.FirstWaitDependencies {
 		},
 		Speculate: d.runSpeculative,
 		Timeout: func() bool {
-			result := timeout.Run(d.r.Context(), attempt.FirstContentTimeout, d.deadline)
+			result := timeout.Run(d.r.Context(), attempt.FirstContentTimeout, d.firstContentClock().ForPending(pr).Duration(d.deadline))
 			if !result.Claimed {
 				return false
 			}

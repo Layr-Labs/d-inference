@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -114,7 +114,7 @@
 - [`developer/database-migrations.md`](developer/database-migrations.md): choose the migration kind, add a numbered goose migration, change a column while preserving rollback compatibility, regenerate the checked-in schema.
 - [`developer/sqlc.md`](developer/sqlc.md): add a store query with sqlc, convert a hand-written store domain, `make sqlc-generate` and `make sqlc-check`.
 - [`developer/personal-data.md`](developer/personal-data.md): add a personal column, table or writer so account erasure still removes it; marker and parity tests.
-- [`developer/threat-model-review.md`](developer/threat-model-review.md): configure full PR text scans against the threat model and non-blocking author feedback.
+- [`developer/threat-model-review.md`](developer/threat-model-review.md): configure PR text scans, provider fallback, and optional conditional merge clearance.
 - [`developer/serving-performance-qualification.md`](developer/serving-performance-qualification.md): measure and review exact serving profiles before promoting concurrency limits or prefill policy.
 - [`developer/gemma-mtp-validation.md`](developer/gemma-mtp-validation.md): supervised target/assistant correctness, stop-policy and performance gates.
 
@@ -123,6 +123,7 @@
 - [`operations/README.md`](operations/README.md): index and the two rules that apply to every runbook.
 - [`operations/coordinator-deploy.md`](operations/coordinator-deploy.md): swap the production coordinator to a reviewed build, verify, roll back.
 - [`operations/schema-migration.md`](operations/schema-migration.md): back up, check, apply and verify goose migrations in production; the first goose cut-over; rollback rules.
+- [`operations/autopilot-rewards.md`](operations/autopilot-rewards.md): inspect saved-consent reward enrollment, fund the separate pool and repair missing first-ever baseline evidence.
 - [`operations/dev-environment.md`](operations/dev-environment.md): the GCP dev environment.
 - [`operations/provider-release.md`](operations/provider-release.md): cut a provider release — version bump, signing, notarization, hashing, registration, `latest/` publish, rollback.
 - [`operations/cache-routing-rollout.md`](operations/cache-routing-rollout.md): turn cache-aware routing on in production — percent ramp, verification, kill switch back to `off`.

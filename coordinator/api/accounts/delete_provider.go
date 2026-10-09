@@ -41,6 +41,10 @@ func (s *Owner) HandleDeleteMyProvider(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusForbidden, httpx.ErrorResponse("forbidden", "you do not own this machine"))
 		return
 	}
+	if !s.softDeleteMutationsEnabled {
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("soft_delete_mutations_disabled", "provider removal is disabled during the rollback window"))
+		return
+	}
 
 	stableIdentity := rec.ID
 	if rec.SerialNumber != "" {

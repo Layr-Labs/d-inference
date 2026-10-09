@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 What the coordinator persists, through which interface and in which backend;
 then what a provider keeps on its own disk and in its Keychain. How the schema
@@ -207,6 +207,9 @@ the api_keys and account erasure queries from it. The versions,
 locks, timeouts, sqlc and failure modes are in
 [schema lifecycle](schema-lifecycle.md); adding a migration is
 [Add a database migration](../developer/database-migrations.md).
+The concurrent-index helpers preserve invalid indexes for operator inspection;
+they do not automatically drop them. Their dedicated connection timeout is
+separate from ordinary migration DDL, without changing schema versions.
 
 ```mermaid
 flowchart LR
@@ -214,10 +217,11 @@ flowchart LR
   classDef check fill:#fef3c7,stroke:#b45309,color:#1f1300
   classDef ok fill:#dcfce7,stroke:#15803d,color:#052e16
   classDef fail fill:#fee2e2,stroke:#b91c1c,color:#450a0a
-  A["ReadAppConfig"]:::step --> B{"EIGENINFERENCE_DATABASE_URL set?"}:::check
+  A["ReadAppConfig + Check<br/>(production-serving preflight)"]:::step --> B{"EIGENINFERENCE_DATABASE_URL set?"}:::check
+  A -- "invalid config; no database access" --> X["exit 1"]:::fail
   B -- "yes" --> C["NewPostgres: connect, Ping,<br/>apply pending goose versions"]:::step
   C -- "ok" --> G["SeedKey admin key, serve"]:::ok
-  C -- "error" --> X["exit 1"]:::fail
+  C -- "error" --> X
   B -- "no, ALLOW_MEMORY_STORE=true" --> H["NewMemory + 15 min pruner"]:::ok
   B -- "no" --> X
 ```
@@ -234,6 +238,9 @@ late external creation results retain cleanup IDs in the erasure outbox.
 Historical accounting and revocation paths remain available. The model is in
 [schema lifecycle](schema-lifecycle.md#soft-delete); the exact read and write
 behavior is in the [soft-delete reference](../reference/soft-delete.md).
+The default-off HTTP mutation gate prevents new account-erasure confirmations
+and provider removals, not existing scrub/outbox obligations. It does not change
+the stored schema, read filters or rollback requirements for prior tombstones.
 
 ### Provider earnings and history
 
@@ -309,6 +316,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 |---|---|---|
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
 | Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `consumer_charge_settlements`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. `model_prices.cache_read_price` is nullable: `NULL` means the row sets no cache-read rate and billing derives one from `input_price` (`payments.RatesFor`). Semantics in [`billing.md`](billing.md). |
+| Autopilot reward evidence and money | `autopilot_reward_pool`, `autopilot_reward_enrollments`, `autopilot_reward_consents`, `autopilot_reward_settlements` | Non-prunable financial records, separate from ordinary base rewards and the live-controller ledger; [persistence contract](#autopilot-reward-persistence). |
 | Public model demand | `model_demand_requests`, `model_demand_hourly`, `model_demand_collection` | One compact projection per scoped coordinator UUID, hourly counters updated atomically by the `model_demand_rollup` trigger, and a persistent collection epoch; `coordinator/store/postgres/model_demand.go`. |
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded by `checkRetiredBackfills` (migration version 2) and incremented by `RecordUsage`. `usage.cached_tokens` (`INTEGER NOT NULL DEFAULT 0`) is the subset of `prompt_tokens` billed at the cache-read rate; rows written before the column existed read 0, which is what they were billed. It and `model_prices.cache_read_price` are added by plain `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements, not exception-swallowing `DO` blocks. Settlement reads and writes both columns, so if either cannot be added (a lock timeout, a missing privilege), startup fails rather than boot a coordinator that bills at the default rates and drops usage rows. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
@@ -464,7 +472,7 @@ KV blocks under a per-model key, not tokens.
 | Concern | Location |
 |---|---|
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
-| Earnings rankings and startup time index | `coordinator/store/postgres/leaderboard.go` (`Leaderboard`), `coordinator/store/postgres/earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres/startup.go` (`ensureConcurrentIndex`) |
+| Earnings rankings and startup time index | `coordinator/store/postgres/leaderboard.go` (`Leaderboard`), `coordinator/store/postgres/earnings_window_index.go` (`ensureProviderEarningsWindowIndex`), `coordinator/store/postgres/migration_indexes.go` (`ensureConcurrentIndex`) |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/app/store.go` |
 | Postgres pool | `coordinator/store/postgres/postgres.go` |
 | Migrations | `coordinator/store/postgres/migrations.go`, `coordinator/store/postgres/schema/migrations/`, `coordinator/store/postgres/schema/schema.sql`; full map in [schema lifecycle](schema-lifecycle.md#code-map) |
@@ -487,6 +495,10 @@ are staged in `erasure_outbox`, including during grace; only erased requests
 may deliver them. The scrub also deletes the account's frozen legacy MDM
 cohort and saved hardware interest. Code and synchronization:
 [concurrent erasure writes](account-erasure.md#concurrent-writes-and-late-external-results).
+
+## Withdrawal funding queue records
+
+Connect keeps `queued` in `stripe_withdrawals.status` and stores `transfer_attempt`, `transfer_dispatch_attempts`, `transfer_started_at` and `transfer_lease_until` alongside the financial record. A claim records its idempotency generation and lease before sending; retrying never debits the ledger again (`coordinator/store/postgres/stripe_withdrawal_queue.go`, `ClaimStripeWithdrawal`). Global Payouts keeps its queued status, funding generation and dispatch start in the existing `global_payout_withdrawals.data` JSON document; the projected status and reconciliation index include queued records (`coordinator/store/postgres/global_payouts.go`, `ListGlobalPayoutsToReconcile`). No separate queue table or user-cache invalidation is required.
 
 ## Related
 
@@ -532,6 +544,171 @@ withdrawals retain their immutable destination and source data. Legacy Connect
 user IDs remain available for old payout events. The maintenance tool uses an
 existing pool through `StripeSettlementForMaintenance` without startup migrations.
 
+## Autopilot machine settings
+
+`MachineAutopilotStore` (`coordinator/store/machine_autopilot.go`) is an optional
+capability implemented by memory and PostgreSQL, discovered through `store.As`.
+It is independent of the observation-only `MachineInventoryStore` and the
+operation ledger. These writes change neither cached users nor model records,
+so `CachedStore` needs no additional invalidation or forwarding override.
+
+| Persisted field on `darkbloom_machines` | Contract |
+|---|---|
+| `autopilot_desired_mode` | Non-null text, default `shadow`, restricted to `shadow` or `live`. Applies to existing and new rows, including offline machines. It is desired policy, never restored live authority. |
+| `autopilot_revision` | Non-null bigint, default 0, constrained nonnegative. The same atomic update increments it only when the desired mode changes. Repeated same-mode edits preserve it. |
+
+`SetMachineAutopilotDesiredMode` updates only the exact existing row with
+`merged_into IS NULL`. PostgreSQL's row lock and predicate recheck serialize it
+with a concurrent merge; a missing or merged-away target returns `ErrNotFound`.
+No setter creates inventory or follows an alias. A survivor keeps its own
+setting, even when a retired identity was live. Observation and reconnect writes
+preserve these columns. Migrations 29 and 30 add and validate the fields without
+resetting existing values; see [schema lifecycle](schema-lifecycle.md#versions).
+
+The memory backend holds its existing transaction mutex and stores settings
+alongside inventory state, separately from the reconstructed `MachineIdentity`.
+It removes a loser's setting on merge without transferring it. An existing
+machine with no explicit setting reads `shadow`, revision 0. Memory settings last
+for that store instance; PostgreSQL settings survive coordinator/store restarts.
+
+`ListMachineAutopilotSettings` keyset-pages unmerged IDs in ascending order,
+defaulting to 100 rows and clamping to 200. `LiveMachineAutopilotSettings` returns
+all unmerged live rows for controller synchronization, without the admin page
+limit. Both backends implement these methods in their `machine_autopilot.go`.
+Actual verified sessions, grants and accepted-operation ownership remain in the
+registry, not these fields. The [machine API](../reference/api-contracts.md#autopilot-machine-settings)
+exposes desired and effective state separately; [Autopilot synchronization](model-autopilot.md#machine-selected-live-control)
+defines publication, revocation and failure behavior.
+
+## Autopilot reward persistence
+
+`AutopilotRewardsStore` (`coordinator/store/earnings_floor.go`) is an optional
+capability discovered through `store.As`; both backends implement it. Its
+`earningsfloor` records do not write cached user or model-registry fields.
+Migration 31 creates four additive tables and initializes the pool once; it
+does not alter `provider_floor_draws` or historical base-reward accounting.
+Migration 32 adds captured daily qualification and extends the baseline-source
+and settlement-status checks without resetting existing baselines or receipts.
+
+| Table | Identity and retained state |
+|---|---|
+| `autopilot_reward_pool` | Boolean singleton; cumulative cap/spending and immutable `tracking_started_at`, preserved on restart and migration replay. Constraints keep `0 <= spent_micro_usd <= cap_micro_usd`. |
+| `autopilot_reward_enrollments` | Original enrollment machine ID; authenticated account, first positive observation, nullable first-ever opt-in, baseline/source/evidence, fixed daily floor and sequential `next_day`. The schema checks the integer floor against the baseline sum. |
+| `autopilot_reward_consents` | `(session_id, at)`; authenticated account, supported/opted-in declarations, server-captured `qualified`, bounded original `chip`/`memory_gb` hardware and nullable machine binding. Per-session changes to consent, qualification or hardware and new-UTC-day checkpoints preserve original `at`; same-value reports in that day advance only `last_observed_at`. Watermarks cannot cross UTC dates. Existing rows receive `qualified=false`, not fabricated historical qualification. |
+| `autopilot_reward_settlements` | Original enrollment machine ID and UTC date; account, floor, observed inference sum, due/paid amounts, status and creation time. Only pending receipts may be updated; finalized receipts deduplicate across canonical ancestors. |
+
+Source: `coordinator/store/postgres/schema/migrations/00031_autopilot_rewards.sql`;
+`coordinator/store/postgres/schema/migrations/00032_autopilot_reward_eligibility.sql`;
+`coordinator/store/earningsfloor/types.go`. The
+[pricing reference](../reference/pricing-model.md#autopilot-rewards) owns the
+closed statuses, monetary rules and history eligibility.
+
+The memory backend retains per-session missing-uptime windows when bounded
+history drops a provider session. Insufficient retained coverage overlapping a
+missing window stays `history_required`; a retained union already meeting the
+floor still qualifies. Account scrub removes these operational markers. See
+`coordinator/internal/store/memoryhistory/prune.go` and
+`coordinator/store/memory/autopilot_rewards_uptime.go`.
+
+Migration 31 defines `baseline_source TEXT NOT NULL DEFAULT ''`, independent of
+evidence text. `autopilot_reward_enrollments_source_check` requires an empty source
+for unknown baselines. Migration 32 adds the cohort source to the closed
+[source values](../reference/api-contracts.md#autopilot-reward-administration)
+for known baselines and adds the final unpaid `ineligible` status. It preserves
+the frozen baseline amount and its existing source.
+
+`ObserveAutopilotConsent` commits the raw declaration before trying to freeze
+enrollment. It can return `ErrIdentity` while preserving a valid authenticated
+but unbound declaration. Later verified inventory binding and
+`AutopilotRewardEnrollments` lazily materialize that history without changing
+its original timestamp, including for offline sessions. Wrong-owner declarations
+do not establish enrollment. Neither provisional identity nor an unsupported
+declaration proves first-ever opt-in history
+(`coordinator/store/postgres/autopilot_rewards_consent.go`,
+`journalAutopilotConsent`; `coordinator/store/postgres/autopilot_rewards_list.go`).
+
+Cohort metadata is read at the frozen opt-in anchor, not from future hardware
+reports. PostgreSQL uses the latest machine observation at or before that instant
+for each bound session; conflicting or unknown observations leave the cohort
+unresolved. Memory retains only the latest inventory observation and fails
+closed when it postdates an earlier anchor. The cohort evidence retains its
+key, peer count, hashed peer fingerprint, window and statistic, without peer IDs
+(`coordinator/store/postgres/autopilot_rewards_cohort.go`,
+`autopilotRewardCohortKey`; `coordinator/store/memory/autopilot_rewards_cohort.go`,
+`autopilotRewardCohortKeyLocked`; `coordinator/internal/payments/floorpolicy/cohort.go`,
+`CohortBaselineValue`).
+
+Daily qualification is internal declaration evidence rather than a new HTTP or
+provider wire field. The registry derives it from current authenticated trust
+and accepted inventory; the store preserves changes independently of saved
+opt-in. Daily uptime reads same-account `provider_sessions` joined through the
+canonical machine's retained session aliases, under the receipt transaction.
+The shared interval union prevents overlapping connections from multiplying
+coverage (`coordinator/registry/autopilot_reward_snapshot.go`,
+`AutopilotRewardSnapshot`; `coordinator/store/postgres/autopilot_rewards_uptime.go`,
+`autopilotRewardUptime`; `coordinator/store/memory/autopilot_rewards_uptime.go`,
+`autopilotRewardUptimeLocked`).
+
+PostgreSQL raw consent capture obtains account-admission and privacy fences,
+then a session-scoped advisory lock and the shared inventory barrier `9952701`.
+It rechecks ownership and binds only that session's rows, allowing unrelated
+sessions to journal concurrently. Inventory merges, reward materialization and
+settlement retain the exclusive inventory barrier; materialization and
+settlement then lock the pool row. Canonical identity and account ownership are
+re-resolved under the appropriate barrier (`beginAutopilotConsentWrite`,
+`beginAutopilotRewardWrite` in `coordinator/store/postgres/autopilot_rewards_consent.go`
+and `coordinator/store/postgres/autopilot_rewards_identity.go`). The memory backend
+holds its existing store mutex for the same operations. Financial records retain
+original machine IDs after merges; the earliest frozen enrollment is selected,
+not the sum of aliases' baselines. The derived `history_conflict` projection checks
+contradictory earlier positives and, for automatically frozen baselines, whether
+merged or late-bound history invalidates the original creation-history proof;
+see the [source-specific rules](../reference/pricing-model.md#autopilot-rewards).
+It holds unfinalized days without rewriting the baseline. A finalized receipt on any ancestor prevents
+another payment for that logical machine/day. Multiple owners or conflicting
+final receipts fail closed (`coordinator/store/postgres/autopilot_rewards_identity.go`,
+`beginAutopilotRewardMachineWrite`; `coordinator/store/postgres/autopilot_rewards.go`,
+`ensureAutopilotRewardEnrollment`, `readAutopilotRewardEnrollment`;
+`coordinator/store/postgres/autopilot_rewards_settlement.go`,
+`finalizedAutopilotRewardDay`).
+
+`resolveAutopilotRewardMachine` materializes the canonical ancestor IDs before
+reading their owners. The separate indexed owner query includes both stored
+consent machine bindings and consent-session mappings, preserving conflicting
+owners without letting recursive cardinality estimates cause a full history scan.
+
+Inference attribution uses the earning's authenticated account and durable
+provider-session machine mapping. A legacy provider-key fallback must be
+unambiguous for that same account; joins never multiply an earning by the number
+of sessions. `SettleAutopilotRewardDay` atomically commits the wallet and
+withdrawable credit, `autopilot_floor_topup` ledger entry, one `base_reward`
+earning, account earnings summary, pool spending and receipt. Its earning job ID
+uses the original enrollment ID and UTC date. The synthetic earning contributes
+money but zero inference count/tokens and is excluded from future baseline/day
+inference sums (`creditAutopilotReward`,
+`coordinator/store/postgres/autopilot_rewards_settlement.go`).
+
+### Retention and archive boundary
+
+The four new tables are financial deduplication/consent evidence, not prunable
+operational history. They have no cascade-delete or retention job; PostgreSQL
+retains them on the coordinator database. Memory holds equivalent records outside
+its prunable history, but is not restart-durable. If memory pruning removes
+necessary inference or key-attribution evidence, calculations fail rather than
+invent a complete history (`coordinator/store/memory/autopilot_rewards_identity.go`;
+`coordinator/internal/store/memoryhistory/prune.go`).
+
+The copy-only accounting archive has a closed allowlist
+(`scripts/telemetry_archive/src/telemetry_archive/tables.py`, `ACCOUNTING_FIELDS`).
+Existing `ledger_entries` and `provider_earnings` captures retain the new ledger
+type and synthetic earning when their rows fall inside verified captured ranges.
+They do **not** automatically export the four new tables. Those captures are
+therefore not a complete restoration or audit source for pool, baseline, consent
+and daily-receipt state. Preserve these tables in coordinator database backups;
+do not prune them on the strength of existing archive coverage. See
+[accounting history](../operations/accounting-history.md) and
+[reward rollback](../operations/autopilot-rewards.md#rollback).
+
 ## Autopilot operation ledger
 
 The baseline (`coordinator/store/postgres/schema/migrations/00001_baseline.sql`)
@@ -567,3 +744,16 @@ An unchanged decision can age outside the admin endpoint's recent-events window
 while the current tick summary remains fresh. Proposals are not dispatched
 commands, residency changes or live capacity evidence; see the
 [API contract](../reference/api-contracts.md#experimental-model-autopilot).
+
+## Optional archived public analytics reader
+
+The [operational/history design](../design/operational-history-retention.md)
+targets a bounded recent-detail database with full durable historical storage.
+This is not an active source-retention policy: current pruning, balances,
+settlement identities and historical readers are unchanged. The separate
+[historical query CLI](../operations/history-queries.md) submits bounded async
+SELECT jobs over captured data, not live transactional state.
+
+`coordinator/analyticssnapshot` validates and atomically caches a private local generation. A separate private persistent file records accepted source cutoffs and generation checksums before the cache serves them, so a coordinator restart cannot accept a rolled-back pointer when the record survives. `coordinator/api/reporting/analytics_snapshot.go` polls the file; when configured, leaderboard, network totals and network series bypass PostgreSQL and its totals refresher. Financial amounts retain integer semantics and IDs remain pseudonymized by the API. The copy-only archive cannot qualify production snapshots; continuous capture and reconciliation remain rollout gates. See [operations and rollback](../operations/analytics-snapshots.md). Source-retention behavior is unchanged.
+
+In default database mode, `coordinator/internal/api/reporting/ranking/leaderboard_cache.go` coalesces concurrent requests and shares one top-200 ranking per metric/canonical window across limits and aliases, retaining the failure cooldown. `PostgresStore.Leaderboard` returns errors on query, scan or iteration failure; the handler never caches a partial ranking. Network totals refresh every 5 minutes with a 15-minute maximum success TTL. Network series caches successful results for 5 minutes. Core stats retain their independent 30-second cadence and 5-minute safety TTL.

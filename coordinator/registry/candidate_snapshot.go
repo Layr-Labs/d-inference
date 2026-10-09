@@ -44,6 +44,9 @@ type candidateSnapshot struct {
 	activeTokenBudgetUsed  int64
 	activeTokenBudgetMax   int64
 	queuedPrefillTokens    int64
+	// Renderer identity selects the ingress-anchored deadline after evaluation.
+	promptWorkArtifactHash string
+	promptWorkContractID   string
 }
 
 func retainCandidateSnapshot(s *routingSnapshot) candidateSnapshot {
@@ -62,7 +65,8 @@ func retainCandidateSnapshot(s *routingSnapshot) candidateSnapshot {
 		evidenceGapAgeMs: s.evidenceGapAgeMs, hbAgeMs: s.hbAgeMs,
 		decodePerformanceAgeMs: s.decodePerformanceAgeMs, exploration: s.exploration,
 		activeTokenBudgetUsed: s.activeTokenBudgetUsed, activeTokenBudgetMax: s.activeTokenBudgetMax,
-		queuedPrefillTokens: s.queuedPrefillTokens,
+		queuedPrefillTokens:    s.queuedPrefillTokens,
+		promptWorkArtifactHash: s.promptWorkArtifactHash, promptWorkContractID: s.promptWorkContractID,
 	}
 }
 

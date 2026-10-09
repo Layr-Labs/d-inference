@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -301,6 +301,11 @@ deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
+With no accepted work left, a graceful drain retries native MiMo owner
+retirement until the owners retire or its deadline passes: after served
+requests, the first attempt only starts joining their finished consumers
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
+`performLifecycleDrain`).
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
@@ -613,8 +618,11 @@ target-only serving without an Autopilot download. Files stay on disk.
 A valid shadow lease produces `shadow`, explicitly not activated, with
 `active=false` and `observe_only=true`. `waiting` means no valid lease is
 acknowledged. Consent and shadow control retain ordinary loading and idle behavior.
-Only a matching live lease after an operator switches the rollout can produce
-`active`; providers have no shadow/live mode command. `paused` retains ready
+Only a matching live lease after an operator permits live rollout and selects
+the verified machine can produce `active`; providers have no shadow/live mode
+command. The coordinator-issued `Machine ID` in `darkbloom status` is the cohort
+selector, not a provider connection ID or serial. An unselected machine stays
+shadow even when other machines are live. `paused` retains ready
 models; `recovering` means an accepted transition is still settling. Policy changes
 are consumed at the next capacity poll. `models` uses the existing safe restart.
 See [architecture](../architecture/model-autopilot.md) and
@@ -750,6 +758,11 @@ Output includes:
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- `Not serving:` when the daemon is alive but a graceful drain has closed
+  admission — draining, a drain that did not finish, or a drain whose relaunch
+  never happened — with the commands that finish or interrupt it
+  (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`,
+  `Status.lifecycleDrainLine`).
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
   separated into `Startup preload pending`, `Not loaded (loads on request)`,
@@ -1350,6 +1363,8 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
+| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
+| `[backend] mtp_acceptance_by_model` | `{}` | Exact model ID to acceptance string; overrides `mtp_acceptance` for that model. An unknown override resolves to `exact`, not the global value. Same eligibility and native MiMo exclusion as above (`MTPAcceptancePolicy.resolve`) |
 | `[backend.model_autopilot] enabled` | `false` | Experimental cached-inventory enrollment/consent, not activation; nonempty verified inventory is required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
 | `[backend.model_autopilot] pinned_models` | `[]` | Models autopilot must retain; configured `[backend] model` is additionally pinned (`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`, `autopilotPinnedModels`) |
@@ -1360,6 +1375,14 @@ override `provider.toml` for one process, are in
 | `[gemma_optimizations] prefill_layer18`, `weighted_r1` | `true` | See [beta features](./beta-features.md) |
 | `config_version` | retired | Ignored top-level key left by releases up to v0.9.9; no longer written |
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant`, `mtp` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`). The boolean `mtp` is superseded by `mtp_mode` |
+
+To restore exact acceptance, set `mtp_acceptance = "exact"` under `[backend]`
+in `provider.toml` and restart the provider. Per-model entries take precedence:
+remove any `"typical"` overrides from `[backend.mtp_acceptance_by_model]`, or
+set them to `"exact"` too. To opt out for only one model, set its exact model
+ID to `"exact"` in that table. Removing both settings restores the typical
+default, not exact acceptance. The benchmark default `--mtp-acceptance exact`
+is unchanged; see the [benchmark-only environment rule](../reference/configuration.md#engine-and-scheduler).
 
 For foreground/local mixed-prefill tuning, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`
 sets a process-wide token cap and `DARKBLOOM_CBV2_MIXED_PREFILL_CAP_BY_MODEL`
@@ -1421,7 +1444,7 @@ provider plist's `EnvironmentVariables`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
 `passthroughEnvKeys` + `inferencePassthroughEnvKeys`,
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
-media, SSD-prefix and memory-cap tunables — reaches the engine only under
+media, remaining SSD-prefix and memory-cap tunables — reaches the engine only under
 `darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
 defaults to enabled for the exact Qwen, Nemotron Lightning and Bonsai 2 artifacts,
 Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`), GPT-OSS 20B (`gpt-oss-20b`) and the
@@ -1437,7 +1460,11 @@ routing also requires the separate live capability described in
 once in [`reference/configuration.md`](../reference/configuration.md).
 
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides the compiled SSD
-write budget in foreground/local processes; see the [SSD cache limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
+write budget. It and `DARKBLOOM_PREFIX_CACHE_DISK_GB` are also forwarded when
+`darkbloom start` installs the launchd job. An ordinary `darkbloom restart` reuses
+the saved plist and does not import newly exported shell variables; stop and
+start with the intended environment to update them. See the
+[SSD cache limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` and `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`
 control the explicitly opted-in recurrent checkpoint bank in foreground/local processes; they are

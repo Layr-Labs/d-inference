@@ -62,6 +62,7 @@ func (c AppConfig) Check() error {
 		check func() error
 	}{
 		{"store", c.StoreConfig.Check},
+		{"analytics_snapshot", c.ServerConfig.CheckAnalyticsSnapshot},
 		{"billing", c.BillingConfig.Check},
 		{"auth", c.AuthConfig.Check},
 		{"rate_limit", c.RateLimitCfg.Check},
@@ -75,6 +76,11 @@ func (c AppConfig) Check() error {
 	for _, component := range checks {
 		if err := component.check(); err != nil {
 			return fmt.Errorf("%s: %w", component.name, err)
+		}
+	}
+	if c.RequiresProductionAppAttest() {
+		if err := c.ServerConfig.AppAttestShadow.CheckProductionServing(); err != nil {
+			return fmt.Errorf("app_attest: %w", err)
 		}
 	}
 	return nil

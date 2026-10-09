@@ -13,7 +13,7 @@ struct MiMoMemoryAdmissionTests {
         let configured = 4
         let previousBudget = max(0, capacity - configured * workspace) / 23_040
         #expect(previousBudget == 0)
-        let concurrency = EngineV2Bridge.nativeMemoryConcurrencyLimit(
+        let concurrency = EngineV2Bridge.fixedWorkspaceConcurrencyLimit(
             configured: configured, capacityBytes: capacity, requestOverheadBytes: workspace)
         #expect(concurrency == 1)
         let usable = capacity - concurrency * workspace
@@ -28,7 +28,7 @@ struct MiMoMemoryAdmissionTests {
             (17 * gib, 4), (9 * gib, 2), (5 * gib, 1),
             (5 * gib - 1, 0), (0, 0), (17 * gib, 4), (40 * gib, 4),
         ] {
-            let concurrency = EngineV2Bridge.nativeMemoryConcurrencyLimit(
+            let concurrency = EngineV2Bridge.fixedWorkspaceConcurrencyLimit(
                 configured: 4, capacityBytes: capacity, requestOverheadBytes: workspace)
             #expect(concurrency == expected)
             if concurrency > 0 {
@@ -39,14 +39,14 @@ struct MiMoMemoryAdmissionTests {
 
     @Test func unknownOrInvalidOverheadFailsClosed() {
         for overhead in [nil, -1, Int.max] as [Int?] {
-            #expect(EngineV2Bridge.nativeMemoryConcurrencyLimit(
+            #expect(EngineV2Bridge.fixedWorkspaceConcurrencyLimit(
                 configured: 4, capacityBytes: 24 * gib, requestOverheadBytes: overhead) == 0)
         }
-        #expect(EngineV2Bridge.nativeMemoryConcurrencyLimit(
+        #expect(EngineV2Bridge.fixedWorkspaceConcurrencyLimit(
             configured: 0, capacityBytes: 24 * gib, requestOverheadBytes: 0) == 0)
-        #expect(EngineV2Bridge.nativeMemoryConcurrencyLimit(
+        #expect(EngineV2Bridge.fixedWorkspaceConcurrencyLimit(
             configured: 4, capacityBytes: gib - 1, requestOverheadBytes: 0) == 0)
-        #expect(EngineV2Bridge.nativeMemoryConcurrencyLimit(
+        #expect(EngineV2Bridge.fixedWorkspaceConcurrencyLimit(
             configured: 4, capacityBytes: gib, requestOverheadBytes: 0) == 4)
     }
 

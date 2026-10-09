@@ -1,6 +1,7 @@
 package cacheplan
 
 import (
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachedemand"
@@ -29,6 +30,22 @@ func (p Plan) HasOrigin() bool                  { return p.origin.HasOrigin() }
 func (p Plan) Authenticates(g *Generation) bool { return p.origin.Authenticates(g) }
 func (p Plan) Provenance() Accepted             { return p.origin }
 func (p Plan) AffinityKey() string              { return p.affinityKey }
+
+// Detached copies every string and the boundary slice, so retaining the result
+// keeps none of the caller's storage alive. Provenance is unchanged.
+func (p Plan) Detached() Plan {
+	p.affinityKey = strings.Clone(p.affinityKey)
+	p.ModelAggregateHash = strings.Clone(p.ModelAggregateHash)
+	p.PromptContractID = strings.Clone(p.PromptContractID)
+	p.CacheScope = strings.Clone(p.CacheScope)
+	boundaries := make([]protocol.PrefixCacheAnchor, len(p.Boundaries))
+	for i, boundary := range p.Boundaries {
+		boundary.ChainHash = strings.Clone(boundary.ChainHash)
+		boundaries[i] = boundary
+	}
+	p.Boundaries = boundaries
+	return p
+}
 
 func PlanFromSidecar(g *Generation, identity Identity, sidecar promptcontract.Plan) (Plan, bool) {
 	origin, content, accepted := AcceptSidecar(g, identity, sidecar)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point for the non-blocking OpenRouter PR threat review."""
+"""Trusted PR review; the separate gate evaluates optional merge clearance."""
 import json
 import os
 import signal
@@ -20,7 +20,7 @@ if __name__ == "__main__":
         event = json.loads(Path(os.environ.get("THREAT_REVIEW_EVENT_PATH", os.environ["GITHUB_EVENT_PATH"])).read_text())
         result = run(event, Path.cwd(), os.environ)
     except Exception:
-        result = "Review unavailable (non-blocking): setup or GitHub API failed; no complete review was produced."
+        result = "Review unavailable: setup or GitHub API failed; no complete review was produced."
     finally:
         signal.alarm(0)
     summarize(result, os.environ)

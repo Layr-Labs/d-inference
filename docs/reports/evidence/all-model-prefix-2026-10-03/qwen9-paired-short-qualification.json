@@ -1,0 +1,258 @@
+{
+  "scope": "Fresh six-arm Qwen3.5-9B short cohort only; earlier stopped matrices and diagnostics remain immutable and excluded from these blocks.",
+  "model": "qwen/qwen3.5-9b",
+  "cell": "short",
+  "startedUTC": "2026-10-04T00:22:28.618049+00:00",
+  "endedUTC": "2026-10-04T00:26:18.996955+00:00",
+  "sourceSnapshotSHA256": "9f56066a82996159866a9aba146cb2cf21ee978d7cbbd9554a4022a1c3a57eea",
+  "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "sourceBundlePlanTemplateSpecHelperOrchestrationBeforeAfterIdentical": true,
+  "allSixSavedResultDigestsMatchClosedReports": true,
+  "allOwnedProcessTreesReapedAndQuiescent": true,
+  "maximumTrackedDescendants": 0,
+  "safetyStopReason": null,
+  "completeReports": 6,
+  "measuredRequests": 24,
+  "reportedOutputIDs": 3072,
+  "qualifiedBlocks": 3,
+  "qualifiedThreePairPolicyComparison": true,
+  "qualifiedThreePairEconomicComparison": true,
+  "arms": [
+    {
+      "block": 0,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 0,
+      "policy": "candidate",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 1,
+      "policy": "candidate",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 1,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "policy": "candidate",
+      "status": "pass",
+      "exitCode": 0,
+      "contractFailures": [],
+      "donorOutputMatches": true,
+      "forkOutputMatches": true
+    }
+  ],
+  "crossPolicyRoleEquality": [
+    {
+      "block": 0,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": true,
+      "crossPolicyWarmForkOutputMatches": true
+    },
+    {
+      "block": 1,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": true,
+      "crossPolicyWarmForkOutputMatches": true
+    },
+    {
+      "block": 2,
+      "crossPolicyColdForkOutputMatches": true,
+      "crossPolicyNovelDonorOutputMatches": true,
+      "crossPolicyDemandedDonorOutputMatches": true,
+      "crossPolicyWarmForkOutputMatches": true
+    }
+  ],
+  "actualMTP": {
+    "requestedAndActive": true,
+    "verificationMode": "rectangular",
+    "positiveDraftVerificationEmissionPerRow": true,
+    "acceptedTokensPerRowRange": [
+      76,
+      81
+    ],
+    "outputEventsPerRowRange": [
+      47,
+      52
+    ]
+  },
+  "controlsColdAndNovelNoCacheIOOrRestoration": true,
+  "allCheckpointDrainsQualified": true,
+  "observedPolicies": {
+    "production": {
+      "servingClass": "Qwen35Model",
+      "allArtifactClassBackendAssistantIdentitiesMatch": true,
+      "ordinarySchedulerConfigurations": {
+        "maxBatchedTokensPerStep": [
+          2048
+        ],
+        "maxConcurrentPartialPrefills": [
+          1
+        ],
+        "maxConcurrentRequests": [
+          1
+        ],
+        "prefillChunkSize": [
+          512
+        ],
+        "soloPrefillStripeTokens": [
+          4096
+        ]
+      },
+      "demandedShortCheckpointMinimumTokens": [
+        1024
+      ],
+      "demandedCheckpointPartitionIncludesLongPrompts": [
+        false
+      ],
+      "donorWrittenBytesPerBlock": [
+        93475616,
+        93475616,
+        93475616
+      ],
+      "donorWrittenFilesPerBlock": [
+        1,
+        1,
+        1
+      ],
+      "warmRestoredTokensPerBlock": [
+        1024,
+        1024,
+        1024
+      ],
+      "warmMatchedTokensPerBlock": [
+        1024,
+        1024,
+        1024
+      ],
+      "warmReplayTokensPerBlock": [
+        0,
+        0,
+        0
+      ],
+      "warmReadFilesPerBlock": [
+        2,
+        2,
+        2
+      ],
+      "warmReadBytesPerBlock": [
+        93491444,
+        93491444,
+        93491444
+      ],
+      "donorPrefillChunksPerBlock": [
+        2,
+        2,
+        2
+      ]
+    },
+    "candidate": {
+      "servingClass": "Qwen35Model",
+      "allArtifactClassBackendAssistantIdentitiesMatch": true,
+      "ordinarySchedulerConfigurations": {
+        "maxBatchedTokensPerStep": [
+          2048
+        ],
+        "maxConcurrentPartialPrefills": [
+          1
+        ],
+        "maxConcurrentRequests": [
+          1
+        ],
+        "prefillChunkSize": [
+          512
+        ],
+        "soloPrefillStripeTokens": [
+          4096
+        ]
+      },
+      "demandedShortCheckpointMinimumTokens": [
+        1024
+      ],
+      "demandedCheckpointPartitionIncludesLongPrompts": [
+        true
+      ],
+      "donorWrittenBytesPerBlock": [
+        93475616,
+        93475616,
+        93475616
+      ],
+      "donorWrittenFilesPerBlock": [
+        1,
+        1,
+        1
+      ],
+      "warmRestoredTokensPerBlock": [
+        1024,
+        1024,
+        1024
+      ],
+      "warmMatchedTokensPerBlock": [
+        1024,
+        1024,
+        1024
+      ],
+      "warmReplayTokensPerBlock": [
+        0,
+        0,
+        0
+      ],
+      "warmReadFilesPerBlock": [
+        2,
+        2,
+        2
+      ],
+      "warmReadBytesPerBlock": [
+        93491444,
+        93491444,
+        93491444
+      ],
+      "donorPrefillChunksPerBlock": [
+        2,
+        2,
+        2
+      ]
+    }
+  },
+  "limits": [
+    "Three blocks only, synthetic greedy output, ephemeral keys and strictFsync=false; no all-workload, durability, fleet or decoder-gain claim.",
+    "TTFT excludes artifact hash/load/assembly; net donor+warm TPS excludes controls/setup/gaps and counts256 IDs over summed explicit-quiescence time.",
+    "Original stopped matrices and diagnostic rows never fill a fresh comparison block.",
+    "Both policies restore1024 and write identical donor archives; no extra short-boundary coverage or causal incremental policy benefit is claimed."
+  ],
+  "privacy": "Public model/source/bundle identities, aggregate state/counters and equality booleans only; no raw IDs/output hashes/logprobs/prompts/private paths/process metadata/provider/account identifiers.",
+  "mechanismDecision": "Both policies already observe minimum1024; long flag is unused below the stripe. All saved-token/write-byte differences are zero. Paired timing fluctuations are a same-geometry control, not evidence of a new short-policy gain."
+}

@@ -19,7 +19,7 @@ func releaseDefaultSelection(in connectedCacheInput) (releaseDefaultExpectation,
 	switch in.Artifact.ModelID {
 	case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp":
 		expected = releaseDefaultExpectation{cache: "ssd", mtp: "on"}
-	case "gpt-oss-20b":
+	case "gpt-oss-20b", "ternary-bonsai-2-27b":
 		expected = releaseDefaultExpectation{cache: "ssd", mtp: "off"}
 	case "gemma-4-26b-qat-4bit":
 	default:
@@ -83,7 +83,7 @@ func validateReleaseDefaultSlots(slots []connectedSlot, in connectedCacheInput, 
 }
 
 func TestReleaseDefaultSelectionSeparatesRequestedAndObservedPolicy(t *testing.T) {
-	for _, model := range []string{"qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit"} {
+	for _, model := range []string{"qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "ternary-bonsai-2-27b", "gemma-4-26b-qat-4bit"} {
 		cache := "ssd"
 		if model == "gemma-4-26b-qat-4bit" {
 			cache = "off"

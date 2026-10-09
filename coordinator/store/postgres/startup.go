@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 )
@@ -28,38 +27,6 @@ func (s *PostgresStore) ensureProviderRestoreIndexes(ctx context.Context) error 
 		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// ensureConcurrentIndex builds a missing index without blocking live writes.
-// An interrupted invalid build fails readiness and requires operator repair.
-func (s *PostgresStore) ensureConcurrentIndex(ctx context.Context, name, ddl string) error {
-	// Use the current schema, so an index in another schema cannot satisfy the
-	// gate. An interrupted concurrent build must not silently bypass readiness.
-	var exists, valid bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))),
-		COALESCE((SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))), false)`, name).Scan(&exists, &valid); err != nil {
-		return fmt.Errorf("store: inspect index %s: %w", name, err)
-	}
-	if valid {
-		return nil
-	}
-	if exists {
-		return fmt.Errorf("store: index %s is invalid; repair the interrupted concurrent index build before retrying", name)
-	}
-	// One statement via simple protocol, outside a transaction. Only index
-	// creation is concurrent; this is not permission to run two serving replicas.
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	if _, err := conn.Conn().PgConn().Exec(ctx, ddl).ReadAll(); err != nil {
-		return fmt.Errorf("store: create index %s: %w", name, err)
-	}
-	if err := conn.QueryRow(ctx, `SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))`, name).Scan(&valid); err != nil || !valid {
-		return fmt.Errorf("store: index %s did not become valid (query error: %v)", name, err)
 	}
 	return nil
 }

@@ -88,5 +88,29 @@ struct StatusCommandRunTests {
         #expect(authorized.contains("\nMachine ID: machine-1\n"))
         #expect(!authorized.contains("\nTrust: "))
         #expect(!authorized.contains("KV-backend guard"))
+        #expect(!authorized.contains("\nNot serving: "))
+    }
+
+    /// An interrupted or timed-out `darkbloom restart` leaves the old process
+    /// alive but refusing work, so the coordinator shows it offline. Status
+    /// must say so on the line right after "Daemon: running".
+    @Test("status reports a live provider whose drain did not finish as not serving")
+    func unfinishedDrainIsNotServing() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            var state = try CLICommandSandbox.runningState(now: Date().timeIntervalSince1970)
+            state.lifecycle = ProviderDrainStatus(
+                requestID: "restart-1", outcome: .timedOut, remaining: 0, coordinatorAcknowledged: true)
+            sandbox.writeState(state)
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+        }
+        let lines = decodedText(result.standardOutputContent).components(separatedBy: "\n")
+
+        let daemon = try #require(lines.firstIndex { $0.hasPrefix("Daemon: running (pid ") })
+        #expect(lines.dropFirst(daemon + 1).first == Status.lifecycleDrainLine(
+            ProviderDrainStatus(outcome: .timedOut, remaining: 0)))
     }
 }

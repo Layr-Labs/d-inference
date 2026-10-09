@@ -82,6 +82,13 @@ For existing deployments only, `applyBuildQualification` can use configured exac
 5. **Legacy evidence cannot use the retired downgrade exceptions.** Every registration blob must meet `RegistrationAttestationMaxAge`, regardless of its claimed provider version. A challenge for an attested SE key requires a valid `status_signature`; missing SIP or Secure Boot status fails the challenge. These checks constrain signed claims and freshness, not independent physical measurement — `coordinator/api/provider/trust/attestation.go`, `coordinator/api/provider/trust/attestation.go`, `coordinator/internal/provider/challenge/challenge_verify.go` (`VerifyProviderAttestation`, `verifyChallengeResponse`).
 6. **Onboarding is not permission.** New macOS 27+ setup skips new MDM enrollment and waits for App Attest. Existing profiles remain; removal needs a separate current decision and local user action — `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` (`EnrollmentService.enroll`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`.
 
+Autopilot reward qualification checks the App Attest lease at the original
+server receive time, while retaining current binding, revocation and privacy
+checks. Processing a queued frame after a new grant cannot backdate its
+qualification. This historical financial check does not replace the current-time
+serving handoff gates above; see the [billing mechanism](../billing.md#autopilot-rewards)
+and `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardDeclarationAt`).
+
 ## Failure modes and limits
 
 | Failure or adversarial action | Consequence / residual risk | Threat-model entries |

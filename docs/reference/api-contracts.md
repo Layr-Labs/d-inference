@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -276,7 +276,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/summary` | `HandleMySummary` (`coordinator/api/accounts/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `HandleMyProviders` (`coordinator/api/accounts/providers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `HandleMySelfRouteModels` (`coordinator/api/accounts/self_route.go`) | `user` | — | Models the account's own machines can serve |
-| DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine |
+| DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine; requires the [soft-delete mutation gate](soft-delete.md#writers-of-deleted_at). After authentication, record existence and ownership checks, a disabled gate returns 503 `soft_delete_mutations_disabled` without mutation |
 | GET | `/v1/pricing` | `HandleGetPricing` (`coordinator/api/billing/pricing.go`) | `—` | — | Public price table, `types.PricingResponse` `{prices: [{model, input_price, output_price, cache_read_price, input_usd, output_usd, cache_read_usd}], fallback_input_price, fallback_output_price, fallback_cache_read_price, fallback_*_usd}`; `cache_read_price` is the effective rate (derived when the row sets none); see [`pricing-model.md`](pricing-model.md) |
 | PUT | `/v1/pricing` | `HandleSetPricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelprice.Input`, `coordinator/api/modelprice/price.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
 | DELETE | `/v1/pricing` | `HandleDeletePricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Revert to defaults |
@@ -292,7 +292,7 @@ All six `/v1/me/*` routes are wrapped in `RequirePrivyAuth`, so they are Privy-J
 | GET | `/v1/billing/stripe/session` | `HandleStripeSessionStatus` (`coordinator/api/billing/checkout.go`) | `key` | — | Poll a checkout session |
 | POST | `/v1/billing/stripe/onboard` | `HandleStripeOnboard` (`coordinator/api/billing/payouts/connect_onboarding.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
 | GET | `/v1/billing/stripe/status` | `HandleStripeStatus` (`coordinator/api/billing/payouts/connect_status.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `migration_required` (self-service bank setup needed), `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
-| POST | `/v1/billing/withdraw/stripe` | `HandleStripeWithdraw` (`coordinator/api/billing/payouts/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
+| POST | `/v1/billing/withdraw/stripe` | `HandleStripeWithdraw` (`coordinator/api/billing/payouts/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; low funding accepts a reserved `queued` withdrawal with HTTP 202 on either rail; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
 | GET | `/v1/billing/stripe/withdrawals` | `HandleStripeWithdrawals` (`coordinator/api/billing/payouts/history.go`) | `user` | — | Withdrawal history |
 | POST | `/v1/billing/stripe/dashboard` | `HandleStripeDashboardLink` (`coordinator/api/billing/payouts/connect_dashboard.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
 | DELETE | `/v1/billing/stripe/account` | `HandleStripeUnlink` (`coordinator/api/billing/payouts/connect_unlink.go`) | `user` (Privy-only wrapper) | — | Resets Global Payouts to a fresh empty generation while retaining its routing fence. During cutover, preserves the legacy Connect mapping; before cutover, an unmigrated Connect user can still unlink it. Does not close Stripe accounts or cancel withdrawals. |
@@ -361,12 +361,18 @@ referral service returns 503 `billing_error`
 |---|---|---|---|---|
 | GET | `/v1/stats` | `HandleStats` (`coordinator/api/reporting/stats_handler.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
 | GET | `/v1/leaderboard` | `HandleLeaderboard` (`coordinator/api/reporting/leaderboard.go`) | `—` | Successful top-200 rankings, including genuinely empty windows, cached 5 min per metric/canonical window; caller limits and aliases share one fill. Query, scan, or iteration failures return 503 `service_unavailable` with `Retry-After`; only a 10 s failure cooldown is retained, never empty/partial data |
-| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/totals_handler.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
+| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/totals_handler.go`) | `—` | Database-backed totals refreshed every 5 min with a 15 min stale-success ceiling; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
 | GET | `/v1/network/model-demand` | `HandleModelDemand` (`coordinator/api/`) | `—` | Recorded public model demand; `window=24h` (default), `7d`, `30d`; cached up to 5 min; 400 for other windows; 503 on unavailable aggregation |
-| GET | `/v1/network/series` | `HandleNetworkSeries` (`coordinator/api/reporting/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
+| GET | `/v1/network/series` | `HandleNetworkSeries` (`coordinator/api/reporting/network_series.go`) | `—` | Time series for `30m`, `24h`, `7d`, `30d`, successful database results cached 5 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `HandleHealth` (`coordinator/api/operations/health.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
 A successful empty analytics window returns 200 with empty arrays or zero totals.
+When configured, the [archived snapshot mode](../operations/analytics-snapshots.md)
+replaces leaderboard, network totals and all four network series reads with
+validated local data. `updated_at` reports the source `as_of` time. Missing,
+unqualified or expired data returns 503 without a SQL fallback or an ordinary
+cache hit. Only the totals background queries are disabled; core stats and
+geography retain their independent database-backed refreshes.
 Core stats query failures retain the unexpired success or return 503; request
 geography never blocks core stats. Geography refreshes on its own
 `statsRefreshInterval` loop, using `statsGeographyCacheKey`. Core snapshots
@@ -454,11 +460,11 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `HandleLatestRelease` (`coordinator/api/releases/read_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `HandleReadyz` (`coordinator/api/operations/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.16 candidate sets `LatestProviderVersion` in
+The 0.9.19 prepared candidate sets `LatestProviderVersion` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
-exists (`coordinator/api/releases/release_handlers.go`, `HandleLatestRelease`).
+exists (`coordinator/api/releases/read_handlers.go`, `HandleLatestRelease`).
 
 `POST /v1/releases` accepts additive `code_directory_hash`, `source_commit`, `ci_run_id`, and `require_app_attest_qualification`. The production workflow requires durable approval; enabled production App Attest serving also enforces the gate server-side. The scoped release key cannot create approval. Missing or conflicting approval returns 409 without advancing latest; unavailable qualification returns 503. Both the legacy version path and a bundle-hash-qualified `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-<PLATFORM>.tar.gz` path are accepted only on the configured R2 origin. Code: `coordinator/api/releases/app_attest_publication.go` (`persistReleaseForPublication`), `coordinator/api/releases/artifact_metadata.go` (`trustedReleaseArtifactURL`).
 
@@ -523,7 +529,7 @@ base 10. The proof binds the request to both token and key; possession of either
 alone is insufficient. The timestamp bound is proof freshness, **not** a cohort
 grace period or expiry; frozen membership remains a separate prerequisite.
 
-### Admin (47)
+### Admin (50)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
@@ -559,6 +565,11 @@ grace period or expiry; frozen membership remains a separate prerequisite.
 | GET | `/v1/admin/utilization` | `HandleAdminUtilization` (`coordinator/api/reporting/admin_utilization.go`) | `admin-key` | |
 | GET / POST | `/v1/admin/autopilot` | `handleAdminAutopilot` (`coordinator/api/autopilot_handlers.go`) | `admin` | Two registrations; [controller status and runtime pause](#experimental-model-autopilot), not shadow/live promotion |
 | GET | `/v1/admin/autopilot/inventory` | `handleAdminAutopilotInventory` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Connected saved-approval aggregates](#autopilot-inventory-report), independent of the ledger |
+| GET | `/v1/admin/autopilot/machines` | `handleAdminAutopilotMachines` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Persisted desired machine modes and current verified sessions](#autopilot-machine-settings) |
+| PATCH | `/v1/admin/autopilot/machines/{machine_id}` | `handleAdminAutopilotMachines` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Persist an exact machine's desired mode](#autopilot-machine-settings); no restart or implicit activation |
+| GET | `/v1/admin/autopilot/rewards` | `handleAdminAutopilotRewards` (`coordinator/api/autopilot_handlers.go`) | `admin` | [Durable reward pool and paged enrollments](#autopilot-reward-administration), including offline/history-required machines |
+| PATCH | `/v1/admin/autopilot/rewards/pool` | same | `admin`, financial | Set the separate cumulative absolute cap; never below spent funds |
+| POST | `/v1/admin/autopilot/rewards/machines/{machine_id}/baseline` | same | `admin`, financial | Restore a missing first-ever opt-in baseline with evidence; no consent or cohort mutation |
 | POST | `/v1/admin/drain` | `HandleAdminDrain` (`coordinator/api/operations/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `HandleAdminRoutes`, `HandleAdminRoutesExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `HandleAdminRejections`, `HandleAdminRejectionsExport` (`coordinator/api/observation/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
@@ -612,6 +623,9 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
+| `lifecycle.attempt_bytes` | Logical bytes of retained cache-attempt records, against the 64 MiB attempt budget | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`AttemptLifecycle`) |
+| `lifecycle.attempt_budget_refused` | Attempts dispatched without a cache scope because the byte budget refused their record: live records fill it, reclaiming at most 64 of the earliest-expiring completed attempts' grace records would not make room, or the record alone exceeds the budget. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/cache_receipts_kernel.go` (`StoreAttemptLocked`) |
+| `lifecycle.attempt_grace_reclaimed` | Completed attempts' records reclaimed inside their two-minute terminal grace to admit another; each forfeits only a late write-behind READY. Monotonic within the current tracker generation | `coordinator/internal/registry/cachetracker/attempt_pressure.go` (`reclaimTerminalGraceLocked`, `terminalBudgetVictimsLocked`) |
 
 The persistence field names are unchanged. Routing reads remain in memory;
 write-behind, restore and overflow guarantees are defined in
@@ -631,6 +645,10 @@ The fence fields have Prometheus gauges `exact_cache_fence{event}`
 (`event` ∈ `applied`, `expired`) and `exact_cache_fenced_capabilities`, and
 Datadog gauges `exact_cache.fence` tagged `event:applied|expired` and
 `exact_cache.fenced_capabilities` (same file).
+The attempt fields have Prometheus gauges `exact_cache_attempt_bytes`,
+`exact_cache_attempt_budget_refused` and `exact_cache_attempt_grace_reclaimed`,
+and Datadog gauges `exact_cache.attempt_bytes`, `exact_cache.attempt_budget_refused`
+and `exact_cache.attempt_grace_reclaimed` (same file).
 The existing `prefix_cache_statuses` state/reason aggregates retain their SSD
 meaning; resident routing uses the separate memory capability and bounded holder
 receipts described in [cache-aware routing](../architecture/cache-aware-routing.md).
@@ -671,15 +689,29 @@ accepts older responses containing the extra field.
 
 Inference planning may obtain exact input work from the verified model/template
 tokenizer before dispatch. The internal numeric provenance is not a client
-request field. Planning, retries and provider reconciliation spend the same
-original first-content clock; neither corrected counts nor a calibrated margin
-extend it. Unsupported shapes keep conservative fallback, and billing continues
-to settle actual provider usage (`planPromptRoute`, `coordinator/api/inference/prompt_work.go`).
+request field. Before preflight and dispatch, a verified exact count matching
+the candidate provider's advertised artifact and renderer may correct the SLA's
+input-token term upward or downward, measured from the original request
+arrival and bounded by any earlier caller deadline. Calibrated uncertainty and
+provider recount do not extend that duration. Planning, retries and hedges keep
+the original arrival time and never start a fresh clock. Each provider's
+feasibility and dispatched budget use its own qualified or fallback cutoff;
+another provider's matching renderer cannot supply that qualification. An
+unsent exact-bound attempt is rejected if its renderer changes before handoff.
+When every otherwise-fitting provider's own cutoff has expired, admission returns
+`429` with `Retry-After`, retains the `deadline_unreachable` rejection reason and
+does not spill to a cold provider. A physically fitting expired peer prevents a
+too-small peer from turning that request into a permanent model-size refusal.
+An eligible previous-build alias can still serve within its own cutoff.
+Unsupported shapes keep
+conservative fallback, and billing continues to settle actual provider usage
+(`planPromptRoute`, `coordinator/api/inference/prompt_work.go`; `Owner.PromptWorkDeadline`,
+`coordinator/api/inference/first_content_prompt_deadline.go`).
 
 Public inference uses [first-content routing](../architecture/first-content-routing.md)
 by default across chat completions, Responses, completions and Anthropic messages.
 Internal retries, cache planning, quotes, queue waits and hedges consume the same
-original request deadline. Predictive provider refusals do not count as node
+ingress-anchored budget. Predictive provider refusals do not count as node
 health failures; after two, another attempt needs fresh feasible evidence.
 A request can launch at most one speculative backup. Current error JSON and
 `Retry-After` contracts remain; unavailable deadline-bound capacity can produce
@@ -906,6 +938,13 @@ outputs; accepting a Responses image for inference does not establish exact
 coordinator cache-routing eligibility. Native model codec, media-size, context
 and tool-capability checks still apply.
 
+A Responses, Completions or Messages body that cannot be lowered for cache
+planning is still served on its own endpoint, without a cache plan. The
+coordinator counts that decision as `lowering_unsupported` in the cache-planning
+decision telemetry (`CachePlanner.EmitDecision`, called from
+`handleGenericInference` in `coordinator/api/inference/consumer.go`). The
+response shape, status and error codes do not change.
+
 Bodies are lowered into the chat pipeline (`coordinator/internal/promptcontract/endpoint/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesStreamEmitter`, `coordinator/api/inference/response/responses_stream.go`).
 
 `usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
@@ -1028,7 +1067,7 @@ See the [Device-code flow](#device-code-flow-3) table for the three bodies. `ver
 
 ### International withdrawal confirmation
 
-For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Global states are `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/billing/payouts/global_payouts_withdraw.go`, `maybeGlobalWithdraw`).
+For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Confirmed withdrawal states are `queued`, `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/billing/payouts/global_payouts_withdraw.go`, `maybeGlobalWithdraw`).
 
 `DELETE /v1/billing/stripe/account` removes a Global Payouts recipient mapping first, when present, and preserves any stored Connect destination; that older destination may become visible again. Otherwise it clears the Connect mapping. Responses are `{unlinked:true}` when a mapping was removed and `{unlinked:false}` when neither exists. Stripe accounts remain open and submitted withdrawals keep their recorded destination (`coordinator/api/billing/payouts/connect_unlink.go`, `HandleStripeUnlink`).
 
@@ -1142,6 +1181,13 @@ Authorization: Bearer admin-key
 `POST /v1/admin/accounts/{account_id}/erasure`. Soft deletes the account and starts the grace period. Handler
 `HandleRequest`; store `RequestAccountErasure`.
 
+Requires `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=true` (default `false`).
+After admin authorization, a disabled gate returns 503 with error `type` and
+`code` `soft_delete_mutations_disabled`, before body parsing or mutation,
+including when `force` is requested. Plan, status and cancel remain available;
+already-pending scrub and outbox delivery continue. Disabling the gate does not
+undo deletion or remove read/credit fences.
+
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `account_id` | string | yes | Must equal the path's account ID |
@@ -1166,7 +1212,7 @@ Response 200: `{"request": ErasureRequest}`, the request in `pending`, or in
 | 409 | `erasure_conflict` | The request is already `pending`, or the user is already soft deleted |
 | 409 or 500 | — (not the error envelope) | `force` only: the soft delete committed but the scrub failed. Body `{"request": ErasureRequest, "scrub_error": "<error text>"}`; 409 for an open withdrawal, 500 otherwise. The request stays `pending` and the loop retries |
 
-The checks run in this order: body, token present, account ID, then the
+The checks run in this order: admin authorization, mutation gate, body, token present, account ID, then the
 store checks (user, request state, token, email, wallets, withdrawals).
 
 Side effects, in one transaction: `deleted_at` on the user and its providers;
@@ -1392,19 +1438,46 @@ authenticated adapter `coordinator/api/autopilot_handlers.go` (`handleAdminAutop
 |---|---|---|
 | `GET /v1/admin/autopilot` | Admin key or authenticated admin | Controller summary and up to 200 durable events in the last 24 hours; ledger read failure returns 503 |
 | `GET /v1/admin/autopilot/inventory` | Admin key or authenticated admin | Read-only connected-session saved-approval aggregates; 200 even without a configured controller or available ledger; `Cache-Control: no-store` |
+| `GET /v1/admin/autopilot/machines` | Admin key or authenticated admin | Bounded canonical-machine list with desired modes and separate current-session status; [machine contract](#autopilot-machine-settings) |
+| `PATCH /v1/admin/autopilot/machines/{machine_id}` | Admin key or authenticated admin | Persist `desired_mode` as `shadow` or `live`; synchronize local authority before success, without changing global overrides or asserting active control |
 | `POST /v1/admin/autopilot` | Admin key or authenticated admin | Required JSON `{ "paused": true }` stops new reservations; `false` resumes in the configured mode, never promotes shadow to live. Existing operations continue reconciliation. Missing/invalid input or unknown fields (including `observe_only`) return 400; unavailable controller returns 409; successful mutation returns the summary independently of ledger availability |
 | `GET /v1/me/providers` | Provider owner | Optional `model_autopilot` live snapshot with consent, exact approved cached network inventory (`selected_models`), `active`, `observe_only`, paused state and last operation; a valid shadow lease reports `active=false`, `observe_only=true` |
 
-Each model summary separates completed logical observations (`logical_requests`)
+Each model summary separates terminal logical observations (`logical_requests`)
 from current qualified public queue occupancy (`queued_requests`) and in-flight
 reservations (`public_inflight_requests`). Live snapshots do not increment arrival
 history. Private/local or unattributed slot work creates no public placement demand.
+Per-model ready/pending capacity and warm coverage use actual serving evidence.
+`eligible_idle` remains a coarse count and uses hypothetical post-activation fits
+for shadow recipients; it does not establish an absent target, donor safety,
+load headroom or positive benefit. Shadow planning's permission projection is
+therefore not a second measurement of currently routable capacity.
 
-The controller summary's `observe_only` distinguishes the default shadow rollout
-from live control. Startup enrollment is consent, not activation; shadow proposals
-are hypothetical and `issued` remains zero. Mode changes use the startup
-[`EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY`](configuration.md#model-autopilot) setting
-and a coordinator restart, not this API.
+The controller summary's `observe_only` is the global shadow override, not the
+mode of every enrolled provider. `false` permits live control only for verified
+machines with persisted live intent. Without live settings, every provider stays
+shadow. Startup enrollment is consent, not activation. Global mode changes still
+require configuration and restart; machine-mode edits use the separate PATCH
+endpoint. The pause-only `POST` rejects a `live_machine_ids` field.
+
+Source: `coordinator/registry/autopilot/types.go` (`Summary`) and
+`coordinator/registry/autopilot/summary.go` (`Summarize`). The `live_cohort`,
+`live_active` and `shadow` fields count connected, consenting, nonprivate sessions,
+not distinct people or machines. `opted_in` retains its separate planner definition.
+
+| Summary field | Meaning |
+|---|---|
+| `live_cohort` | Sessions assigned live mode by the global switch and synchronized verified-machine settings; includes locally paused or stale sessions and is not an actionability count |
+| `live_active` | Subset with a matching, unexpired, acknowledged live grant; still not proof of fresh idle capacity or feasible placement |
+| `shadow` | Consenting public sessions assigned shadow mode, including paused/stale sessions and selected machines while global shadow is enabled |
+| `opted_in` | Existing planner-managed or hypothetical-shadow population; not an alias for live membership or approved ready capacity |
+| `live_proposed` | Actions selected by this tick's live pass, including actions later refused by reservation or delivery preparation |
+| `shadow_proposed` | Hypothetical actions selected by this tick's detached shadow pass; never residency commands or live capacity |
+| `proposed` | Sum of `live_proposed` and `shadow_proposed`; each pass has its own per-tick bound |
+| `issued` | Live actions advanced to command send, not confirmed delivery or terminal success; zero while global shadow is enabled or no selected machine is actionable |
+
+No machine UUIDs or account identifiers are added to this summary. The separate
+inventory endpoint remains a controller-independent saved-consent projection.
 
 The `events` array is a recent decision/operation ledger, not a per-tick time
 series. Unchanged shadow decisions retain their first timestamp and can age out
@@ -1414,6 +1487,129 @@ still reports the latest tick. See [ledger semantics](../architecture/storage.md
 The operator pause lasts for the current coordinator process. Live intent is persisted
 before dispatch. Ledger read/write errors are not success or rollback evidence.
 Snapshots and operation records contain model/control metadata, never prompts.
+
+### Autopilot machine settings
+
+Source: `coordinator/api/autopilot/machines.go` (`MachineHandler.ServeHTTP`),
+`coordinator/registry/autopilot_machine_policy.go`
+(`SetMachineAutopilotDesiredMode`), and
+`coordinator/registry/autopilot_machine_status.go` (`ListMachineAutopilot`).
+Both routes require authentication and admin authorization before parsing input:
+missing/invalid credentials return 401 and authenticated non-admins return 403.
+The authorized machine adapter sets `Cache-Control: no-store`.
+
+| Request | Contract |
+|---|---|
+| `GET /v1/admin/autopilot/machines` | Returns `{"machines":[...]}` in ascending canonical UUID order, including offline machines. `limit` defaults to 100 and accepts integers 1 through 200. Optional `after` is an exclusive canonical UUID cursor. A full page includes `next_after`; following it may return an empty last page. Duplicate or invalid `limit`/`after` values return 400. |
+| `PATCH /v1/admin/autopilot/machines/{machine_id}` | Exactly one JSON object with exactly one `desired_mode` key, value `"shadow"` or `"live"`; body limit 1024 bytes. Missing/null/invalid modes, duplicate keys, unknown fields, case-altered field names and trailing data return 400. Returns `{"machine":{...}}` on 200. |
+| Machine ID or cursor | Nonzero, hyphenated UUID; letter case normalizes to lowercase. Nil UUIDs, whitespace and alternate UUID encodings return 400. Unknown or merged-away mutation targets return 404, never create a machine or redirect to a survivor. |
+| Store failure | 503 with a sanitized error. An interrupted write may have committed; read back or repeat the same desired mode after recovery rather than infer rollback. A missing persistence capability is not an ephemeral fallback. |
+
+| Machine field | Meaning |
+|---|---|
+| `machine_id` | Exact existing, unmerged inventory UUID, not a connection ID or evidence of current live verification |
+| `desired_mode` | Persisted intent, `shadow` by default or explicitly `live`; does not override consent, identity, global shadow/pause or safety gates |
+| `revision` | Nonnegative persisted integer, default 0; increases only on a mode change. Repeating the current mode is idempotent. Not the provider consent revision or a wire grant epoch. |
+| `sessions` | Current sessions on this coordinator with a verified machine binding matching the authenticated account, sorted by `provider_id`; `[]` when no such connection exists. Historical, unverified and disconnected associations are not attached. |
+
+| Session field | Meaning |
+|---|---|
+| `provider_id` | Current provider connection identifier, usable for correlation but not as a machine-edit target |
+| `machine_model`, `chip_name`, `memory_gb` | Hardware labels and installed memory reported by this connection; not independent hardware verification or available load headroom |
+| `effective_mode` | `disabled` when the controller is absent/disabled; then, in precedence order, `paused`, `private`, `unconsented`, `shadow`, `awaiting_ack`, or `live` according to effective control. `awaiting_ack` includes expired or missing grants on selected sessions. |
+| `control_active` | Effective acknowledged, unexpired live authority after global and session gates; not proof of idle capacity, feasible placement or an issued operation |
+| `consented` | Current supported cached-only consent with a valid saved selection/revision |
+| `paused` | Provider pause or current coordinator pause; does not alter durable desired mode |
+| `private_only` | Session excludes public participation |
+| `capacity_fresh` | Accepted capacity exists within the applicable control/ordinary freshness window; independent of consent and control activation |
+| `last_heartbeat` | Coordinator connection-liveness timestamp, or `null` when unavailable; rejected capacity sequences can advance it without refreshing the reported model state |
+| `capacity_accepted_at` | Coordinator timestamp of the last applied non-null capacity frame, or `null`; an accepted empty frame without a usable sample can still have `capacity_fresh=false` |
+| `idle_unload_mins` | Last valid heartbeat-reported ordinary idle timeout in minutes: `0` disables timeout unloading, a positive value enables it, and `null` means unreported. Retained within this connection when later heartbeats omit the field. |
+| `always_ready_configured` | `true` exactly when reported `idle_unload_mins` is `0`, `false` for a positive timeout, and `null` when unknown. Describes the running daemon's startup-loaded baseline, not current residency, routability or a later on-disk edit. |
+| `pinned_models` | Sorted exact IDs from the bounded protocol-3 cached-only Autopilot report, including the provider's combined explicit pins and configured `backend.model`; `[]` means reported none and `null` means no usable report. Does not require active control or imply that protection is currently enforced. |
+| `resident_models` | Sorted IDs from that same report's `resident_models`, with the same `[]`/`null` distinction. Reported local residency, not selected/advertised models, a fresh disk scan, or catalog-filtered ready routing capacity. |
+
+Model lists are unavailable for missing, unsupported or sanitized malformed
+Autopilot reports. A stale report remains visible alongside its freshness
+metadata; it is not converted into an empty list. An accepted heartbeat omitting
+Autopilot state clears the previous lists. Registration can supply model lists
+before any accepted capacity frame or idle-policy report. Offline machines have
+`sessions: []`; neither pins nor idle policy are recovered from historical rows.
+The diagnostic fields also appear in the successful PATCH response, but PATCH
+still accepts only `desired_mode`. Reads send no commands and change no policy.
+
+Always ready is not an Autopilot activation requirement or a pin-all setting.
+Live Autopilot suspends the ordinary idle timer and may replace or unload
+unpinned models subject to its own safeguards. The combined `paused` field does
+not distinguish a global pause from an explicit provider pause; do not use it
+alone to infer provider-side pin protection. See
+[idle-policy ownership](../architecture/model-autopilot.md#enrollment-and-ownership).
+
+The database read and current-session projection are separate snapshots, not an
+atomic cross-process view. A successful local edit publishes authority and
+revokes changed grants before returning; other coordinators apply it on their
+next successful policy refresh. Provider reports can lag delivery or expiry.
+Demotion, revision changes and policy-store uncertainty preserve accepted
+operation ownership. Promotion requires a fresh grant and a later accepted
+matching acknowledgement. The APIs work while the controller is unconfigured,
+disabled, paused or globally shadow, without changing those safety settings.
+See [persistence](../architecture/storage.md#autopilot-machine-settings) and
+[operator procedure](../operations/model-autopilot.md).
+
+### Autopilot reward administration
+
+Provider WebSocket capture records consent without calculating a baseline.
+This admin listing may materialize a previously journaled enrollment using its
+original opt-in timestamp; the [billing mechanism](../architecture/billing.md#autopilot-rewards)
+describes that separation.
+
+`coordinator/api/autopilot/rewards.go` (`RewardsHandler`) owns the payloads;
+`rewards_decode.go` in that directory rejects ambiguous JSON. The adapter
+`coordinator/api/autopilot_handlers.go` (`handleAdminAutopilotRewards`) requires
+admin authorization after `RequireAuth`; admin bearer keys or authenticated
+admin Privy users qualify. Missing/invalid credentials return 401; authenticated
+non-admins return 403. Mutations use the financial limiter (429 on exhaustion).
+The adapter sets `Cache-Control: no-store`. These routes do not activate
+Autopilot, change provider consent/cohort, deploy code or publish a provider release.
+
+| Request | Contract |
+|---|---|
+| `GET /v1/admin/autopilot/rewards` | `{"enabled":bool,"pool":{...},"enrollments":[...]}`, ascending canonical machine UUIDs, including offline and unknown-baseline enrollments. `limit` defaults to 100, accepts 1 through 200; optional exclusive `after` is a canonical UUID. Full pages include `next_after`; following one may return an empty final page. Unknown/duplicate query keys or invalid values return 400. |
+| `PATCH /v1/admin/autopilot/rewards/pool` | Exactly `{"cap_micro_usd":<nonnegative int64>}`; body limit 1024 bytes. Sets an absolute cumulative cap, not an increment, monthly budget or balance deposit. Returns `{"pool":{...}}`. |
+| `POST /v1/admin/autopilot/rewards/machines/{machine_id}/baseline` | Exactly `{"first_opt_in_at":<RFC3339 string>,"seven_day_earnings_micro_usd":<nonnegative int64>,"evidence":<string>}`; body limit 8192 bytes. Evidence must be nonblank and at most 1024 UTF-8 bytes. Time must be no later than the first positive tracked observation. Returns `{"enrollment":{...}}`. |
+| Input identity and decoding | Nonzero hyphenated UUIDs, normalized to lowercase; whitespace/alternate encodings fail. Mutations require exactly one object with all named fields; missing/null values, duplicate/unknown/case-altered keys, invalid numbers/times or trailing JSON return 400. |
+| Domain conflicts | 409 `conflict` for a frozen baseline (including exact resubmission), cap below spending, unresolved history/ownership or account-erasure admission. No baseline rewrite or partial funding occurs. A known machine without reward enrollment returns 404 `not_found`; invalid/unverified ownership fails closed. |
+| Store failure | 503 `server_error` with sanitized message `Autopilot rewards unavailable`; no raw store errors/evidence in the error. Read back after an uncertain mutation; do not infer rollback or add funds by blindly incrementing the requested cap. |
+
+Response records are defined in `coordinator/store/earningsfloor/types.go`:
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Payment worker is wired; not proof of funding, known baselines or live Autopilot control |
+| `pool.cap_micro_usd`, `pool.spent_micro_usd` | Separate cumulative allowance and committed spending; [monetary policy](pricing-model.md#autopilot-rewards) |
+| `pool.tracking_started_at` | Persisted start of the new tracker, not a historical first opt-in |
+| `enrollments[].machine_id`, `account_id` | Current canonical machine UUID and authenticated payout account; financial records may retain an original pre-merge ID |
+| `first_opt_in_at`, `first_observed_at` | Frozen first-ever anchor (null while unknown), and the first positive used to initialize enrollment respectively. Both remain unchanged when later evidence sets `history_conflict`; backfill does not move accrual to an older date |
+| `seven_day_earnings_micro_usd`, `daily_floor_micro_usd`, `baseline_known`, `baseline_evidence` | Frozen baseline values and evidence. Zero values with `baseline_known=false` are unknown, not a measured zero floor |
+| `baseline_source` | Closed enum: `""` while unknown, `"tracked"` for an automatically frozen personal-history baseline, `"cohort"` for an automatically frozen comparable-machine baseline, `"verified_history"` for an evidenced admin import. Assigned by the store, not a baseline-request field; independent of the evidence string. All known sources stay frozen through off/on |
+| Cohort `baseline_evidence` | JSON string containing `chip_class`, `memory_gb`, `peer_count`, `peer_fingerprint_sha256`, `window_start`, `window_end` and `statistic="mean_seven_day_micro_usd_floor"`. The fingerprint hashes sorted canonical peer IDs; it does not expose the peer IDs. `coordinator/internal/payments/floorpolicy/cohort.go` (`CohortBaselineValue`) |
+| `history_conflict` | Linked history contradicts the frozen anchor or invalidates an automatic baseline's creation-history proof; [history rules](pricing-model.md#autopilot-rewards). May be true with `baseline_known=true`; frozen fields stay unchanged, but unfinalized days are held without payment or cursor advance. Ordinary baseline import still returns 409 for the frozen value |
+| `opted_in`, `observed_at` | Whether the latest durable declaration qualifies as saved opt-in, and that declaration's observation watermark; not a connection/readiness indicator or the consent snapshot for every prior day |
+| `next_day` | Next chronological UTC settlement day; pending funding/history does not advance it |
+| `next_after` | Optional exclusive cursor for the next page; absent on a short page |
+
+Listing can lazily bind already-journaled declarations and materialize enrollment
+after trusted inventory resolution. The GET can therefore write tracking records,
+but cannot pay a day or invent first-ever history. Unverified or
+ambiguous ownership and erased accounts are not admitted to the list. Pool and
+enrollment reads are separate snapshots, not an atomic financial export.
+There is no receipt-list or manual settlement endpoint here. Use the
+[operator runbook](../operations/autopilot-rewards.md) for restricted financial
+verification and backfill evidence requirements.
+Daily receipts distinguish final unpaid `ineligible` days from pending history
+or funding under the [status reference](pricing-model.md#autopilot-rewards).
+The enrollment's current `opted_in` field alone does not prove a day's OS/model
+qualification or uptime.
 
 ### Autopilot inventory report
 
@@ -1462,8 +1658,17 @@ All returned countries use `rail=global`; users enter their own bank details via
 an unsupported destination returns 400 `country_unavailable`, and paused bank
 setup returns 503 `payouts_paused`. No error falls through to Connect.
 
-Before first confirmation, unavailable funding (including estimated fees) returns
-503 `payout_funding_unavailable` without debit. Already-confirmed quote retries
+Confirmation reserves the gross amount once. Low funding (including estimated
+platform-paid fees) returns HTTP 202 with `status="queued"`, the same
+`withdrawal_id`, and the remaining balance. Withdrawal history includes `queued`
+with `failure_reason="awaiting_funding"`; the minute reconciliation loop retries
+automatically. Temporarily unavailable Connect destinations back off for five
+minutes without consuming a send or blocking newer eligible withdrawals. A bank-arrival `eta` is returned only after an external payout
+is processing or posted; an unsent `pending` response explains that earnings
+remain reserved while confirmation is in progress. If persisting the Connect queue fails, the response and history
+remain `pending` with `funding_queue_persistence_failed` and the UI shows **Needs
+review** while retaining the debit. A Global Payouts exchange estimate may be refreshed after a funding
+wait, while USD principal and bank destination stay fixed. Already-confirmed quote retries
 remain available while paused. Bank reset never re-enables Connect or mutates
 historical payouts (`coordinator/api/billing/payouts/global_payouts_withdraw.go`,
 `maybeGlobalWithdraw`; `coordinator/api/billing/payouts/global_payouts_status.go`, `maybeGlobalStatus`).

@@ -32,11 +32,14 @@ func NewSingleWait(deps SingleWaitDependencies, pending *registry.PendingRequest
 
 func (w *SingleWait) Run(ctx context.Context, held *[]string) FirstWaitResult {
 	pr := w.pending
-	timer := w.clock.Timer(w.clock.Wait(w.wait))
+	clock := w.clock.ForPending(pr)
+	timer := clock.Timer(clock.Wait(w.wait))
+	defer func() { timer.Stop() }()
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && firstcontent.HoldPreContentBoilerplate(pr, chunk, held) {
+				clock.RearmExpired(&timer)
 				continue
 			}
 			timer.Stop()
@@ -68,7 +71,7 @@ func (w *SingleWait) Run(ctx context.Context, held *[]string) FirstWaitResult {
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if len(*held) > 0 && w.clock.Wait(firstcontent.PreambleContentTimeout) > 0 {
+			if len(*held) > 0 && clock.Wait(firstcontent.PreambleContentTimeout) > 0 {
 				return FirstWaitResult{Outcome: Accepted, PreambleLiveness: true}
 			}
 			if !w.deps.Timeout() {

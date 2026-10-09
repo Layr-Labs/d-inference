@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -11,6 +11,12 @@ shapes under [`../reference/README.md`](../reference/README.md).
 
 | Runbook | Scope |
 |---|---|
+| [telemetry-history.md](telemetry-history.md) | Copy and verify retained telemetry into queryable history before coordinator changes |
+| [accounting-history.md](accounting-history.md) | Copy exact accounting history into isolated storage and query it with BigQuery |
+| [history-queries.md](history-queries.md) | Submit, poll, page and cancel bounded custom queries over pinned historical catalogs |
+| [analytics-snapshots.md](analytics-snapshots.md) | Serve qualified public analytics snapshots without history scans |
+| [telemetry-archive.md](telemetry-archive.md) | Capture and verify bounded Parquet snapshots |
+| [telemetry-backfill.md](telemetry-backfill.md) | Run resumable, finite copy-only backfills |
 | [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |
 | [app-attest-build-qualification.md](app-attest-build-qualification.md) | Approve exact signed builds, retry publication without rebuilding, and revoke durable qualifications |
 | [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
@@ -24,6 +30,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
 | [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |
 | [`model-autopilot.md`](model-autopilot.md) | Observe and activate a small consenting cohort; verify paired capacity, donor protection and rollback |
+| [`autopilot-rewards.md`](autopilot-rewards.md) | Fund the independent daily floor, verify first-ever baseline evidence and recover pending rewards without changing live control |
 | [`routing-v2-rollout.md`](routing-v2-rollout.md) | Kill switches and flag flips for the shipped routing-v2 behaviours (TTFT gate, queue-before-shed, cold dispatch, warm pool, budget clamp, anomaly detector) |
 | [`cache-routing-rollout.md`](cache-routing-rollout.md) | Turn exact prefix-cache routing on in production, widen the activation percent and plan-QPS bounds one at a time, verify with `GET /v1/cache/status`, roll back to `off` |
 | [`profiler-queries.md`](profiler-queries.md) | Read-only SQL recipes against the profiler tables (`request_profiles`, `fleet_snapshots`) for latency, fleet and outcome questions |
@@ -52,3 +59,5 @@ follow both rules: [`provider-release.md`](provider-release.md).
 - [App Attest recovery rollout](app-attest-rollout.md) — fixed-provider cohorts, receipt recovery, qualification and gates for later MDM retirement.
 
 - [Stripe account migration](stripe-migration.md) — activate self-service Global Payouts, retain old settlement and move Checkout.
+
+- [Threat review rollout](threat-review-rollout.md): provision attributed Bedrock access and activate conditional author auto-merge.

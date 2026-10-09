@@ -12,6 +12,121 @@
 - Keep the known longer fixed-L4/B8 MTP parity failure and separate reasoning/tool
   compatibility gaps visible; these ports do not establish full release readiness.
 
+## Unreleased — Member-only automatic security clearance
+
+- Limit scan-only merge clearance to verified active Layr-Labs organization members. Non-members, bots and unavailable membership require independent formal human review. Use a separate read-only membership token and retain ordinary CI and current-revision checks.
+- Surface fixed validation-failure reasons in incomplete review reports without exposing raw provider output.
+## Unreleased - Autopilot consent journal contention
+
+- Let independent provider sessions record Autopilot consent concurrently instead of serializing the fleet behind the inventory write lock. Preserve per-session ownership, account-erasure fences, and exclusive protection for identity merges and reward settlement.
+- Keep canonical-machine ownership lookups scoped to materialized ancestor IDs so PostgreSQL does not scan the complete provider-session history on each consent observation.
+
+## Unreleased — demanded prefix reuse
+
+- Retain bounded demanded checkpoint capture, retention and continuation from MLX-LM PR #289 within the newer merged SDK pin, including native cancellation retirement and typical MTP acceptance. Rebuild and validate the combined SDK and provider; earlier full-model measurements retain their recorded dependency pins and acceptance settings.
+- Retain a distinct demanded shared-prefix checkpoint even beside the deepest checkpoint, within the existing three-boundary and memory limits. Give authenticated repeated checkpoints access to the reserved SSD write share on their first local appearance; unique extensions continue to use the novel share.
+- Preserve the demanded native-contiguous frontier between the first and latest checkpoints, account for its actual backing allocation before capture, and retire displaced native owners through the tracked fence. A small MiMo fixture verifies reopened fork parity with real MTP off and on; full-model hardware qualification remains separate.
+- Capture one aligned demanded boundary in eligible dense Qwen and the verified current Nemotron Lightning and Bonsai text prompts below the normal solo stripe, so repeated short prefixes can be published for reuse. Nemotron and Bonsai require their exact catalog IDs, weight aggregates and actual recurrent classes; Bonsai remains MTP-ineligible. Keep novel requests and other serving layouts on their existing geometry, and price the extra range in the first-content projection.
+- Preserve the original proposed long-prefill endpoint when the benchmark-only demanded partition splits a range. Share bounded request-local continuation with first-content projection and restore it on rollback; abandon it on incompatible actual progress. Serving long stays disabled pending same-donor adjacent-frontier, output and cost qualification.
+- Bound COMPLETE donation hashing by the checkpoint being written, preserving its authenticated address and backend endpoint rules while avoiding unused suffix work. Native-media addresses and ordinary lookup remain unchanged.
+- Reuse immutable compiled prompt templates within the bounded contract cache and avoid fixture-only body/token copies during production planning. Keep request dates, prompt data, proof identity and render limits isolated.
+- Reconcile first-content input-token budgets from current verified exact counts matching each serving renderer before preflight and dispatch, preserving the original arrival time, account/alias policy and earlier caller deadlines. Missing or conflicting renderer identity keeps the fallback clock; calibrated uncertainty and provider recount cannot extend the budget.
+
+## Unreleased — bounded cache holder matching
+
+- Reduce dense cache-routing query copies by retaining the deepest compatible endpoint for each provider and tier. Preserve shorter valid fallbacks, complete hint values and matching/valid-holder counts; bounded scratch overflow restores the original path. The original source-bound synthetic dense workloads measured 43–46% lower CPU query time and 97–98% fewer cumulative allocated bytes; these are not new measurements of the merged coordinator or evidence of production cache-hit or model TPS gains.
+
+## Unreleased - Autopilot daily earnings floor
+
+### Autopilot reward recording and authorization
+
+- Evaluate reward authorization at the declaration's original server receive time, preventing later grants from qualifying an earlier day. Record consent independently of baseline computation and batch PostgreSQL cohort lookups so fleet size does not multiply socket-path database round trips.
+
+- End new Autopilot floor accrual after November 7, 2026 UTC for every machine, regardless of opt-in date. November 7 settles at midnight November 8; pending rewards for earlier eligible days remain payable without resetting baselines or ordinary base rewards.
+- Add a separately funded daily inference-earnings floor only for machines with saved Autopilot consent. Freeze the first-ever opt-in baseline from the exact preceding 168 hours, including sponsored inference. Machines with shorter earnings history use comparable mature machines with the same chip, performance tier and memory; no matching cohort leaves the baseline pending. The daily floor is 110% of the seven-day daily average, rounded down to whole micro-USD, and remains frozen through Autopilot off/on.
+- Require trusted macOS 27 or later, at least two distinct downloaded eligible models and saved Autopilot consent at daily close, plus at least 90% uptime across each UTC day. Merge overlapping sessions and identity aliases when measuring uptime; unqualified days receive no top-up and do not consume the independent pool.
+- Persist authenticated consent evidence, baseline and canonical-machine daily receipts across reconnects and identity aliases. Historical opt-in dates were not recorded by older software: unknown history requires an evidenced admin backfill, never a guessed deployment/reconnect date or a reset through off/on. Backfill does not create earlier consent or reward days. Earlier positive evidence linked after freezing exposes `history_conflict` and holds further payments without rewriting the baseline or finalized receipts.
+- Add admin inspection, absolute pool-cap funding and baseline-repair endpoints. The independent cumulative pool starts unfunded, does not reset automatically and never pays a partial shortfall; pending funding retries recalculate income, while finalized days remain final. Payments default off and do not activate live Autopilot control. Provider publication and production activation remain separate approvals; existing accounting archives do not yet cover the new financial tables.
+
+## Unreleased - machine model diagnostics
+
+- Extend the authenticated admin machine view with per-session reported pins, resident models, hardware, snapshot freshness and the running provider's Always ready/idle-timeout configuration. Unknown reports remain distinct from empty pin sets or disabled settings. These read-only diagnostics do not activate Autopilot, change pins or idle policy, or guarantee ready capacity.
+
+## Unreleased - machine-scoped Autopilot
+
+- Persist each canonical machine's desired Autopilot mode in the database, defaulting to shadow. Admins list and edit machines through authenticated endpoints without a coordinator restart; live control still requires verified identity, provider consent and acknowledgement, with global shadow and pause overriding intent. Other machines retain ordinary serving and hypothetical planning; memory, pins and donor safeguards remain enforced.
+- Distinguish desired machine mode from current session activity, and report live-cohort, acknowledged-live and shadow populations separately. Mode revisions revoke stale grants, failed policy reads remove live authority, and demotion preserves accepted-operation recovery. This change does not deploy or activate a production cohort by itself.
+- Keep capacity freshness checks current across policy reads and durable command delivery, so slow database operations cannot extend a provider snapshot's lifetime.
+- Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
+
+## Unreleased - KV admission estimates
+
+- Reduce ordinary engine concurrency when fixed recurrent or MTP workspace would otherwise consume its KV grant before any request can run. Heartbeats and local admission use the same memory-limited width; load and reserve-raise preflights preserve a serviceable workspace-aware grant, without lowering activation or minimum-KV safeguards.
+- Estimate cold-model KV cost from fresh native reports for the same artifact and verified runtime instead of always using the generic bytes-per-token fallback. Live slot budgets remain authoritative; missing evidence retains the fallback, and provider memory checks still decide whether a load or request actually fits.
+- Share cold-rate evidence once per fleet sample instead of scanning peers for every provider. Unused on-disk advertisements do not trigger forecast work, and registry read leases do not span donor walks.
+
+## Unreleased - withdrawal funding queue
+
+- Queue confirmed withdrawals when Stripe payout funding is insufficient. Earnings stay reserved, the coordinator retries automatically, and Billing shows a Queued status. International exchange estimates refresh when queued payments are sent; uncertain Stripe outcomes keep their existing payment identity and funds reserved. Funding waits do not shorten the return-check and account-erasure protection windows after Global Payouts dispatch.
+
+## Unreleased — Bedrock review and conditional merge clearance
+
+- Support an explicitly approved ongoing OpenRouter budget with daily and per-attempt caps, retaining historical charges and unknown reservations. Preflight now rejects exhausted budget capacity even when provider funding is available.
+
+- Limit scanner checkouts to trusted scripts and threat definitions so preflight does not spend its timeout fetching unrelated repository content.
+- Preserve exact source coordinates in review excerpts and keep summaries below strict output limits. Require human review when the final model still reports uncertainty.
+
+- Add attributed Bedrock review with bounded OpenRouter fallback, explicit usage reporting, and optional current-revision merge clearance. Medium/high findings, incomplete scans, and review-control changes require an independent formal security override. Cloud and merge-policy activation remain a separate verified rollout.
+- Validate the enabled Sonnet 5.5 profile for the first pass and matching OpenRouter backup, retaining Opus 5.5 and Sol 6.1. Exercise the full production response schema in the bounded Bedrock smoke test and record the deployed configuration.
+
+## 0.9.19 - prepared candidate (not published)
+
+This candidate contains the SSD write-endurance correction below. The version
+bump does not publish, register or deploy the release; full artifact qualification
+and publication remain separate gates.
+
+- Enforce the SSD prefix-cache write budget across cache instances, model reloads and provider restarts using a persistent root-wide rolling-day ledger. Charge serialized cache-file bytes, including encryption framing, before writing; exhausted budgets retain read access and report `write_rate_limited`.
+- Forward `DARKBLOOM_PREFIX_CACHE_DISK_GB` and `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` into newly installed launchd provider jobs.
+
+## Unreleased - typical MTP acceptance
+
+- Default eligible sampled target-prefix MTP requests to typical acceptance (delta `0.2`) when `[backend] mtp_acceptance` and the model override are absent. Sampled output is approximate, not distribution-exact; explicit `exact` restores exact acceptance and invalid values remain safely exact. Greedy behavior, native MiMo exact acceptance, disabled MTP and model eligibility are unchanged. Benchmark acceptance still defaults to `exact`; the recorded single-host B=1 runs do not qualify sampled quality or fleet-wide speed.
+- Add per-model typical MTP draft acceptance for sampled requests (`[backend] mtp_acceptance`, `mtp_acceptance_by_model`), ported from mlx-serve PR #427. Greedy requests are unchanged; slot posture telemetry reports `mtp_acceptance`.
+- Pin the merged SDK implementation from `mlx-swift-lm` main; its file tree matches the engine revision used in the recorded acceptance benchmarks.
+
+## Unreleased — provider restart and drain status
+
+- Let `darkbloom restart` and `darkbloom stop` finish their graceful drain on a provider that has served native MiMo requests. The drain tried to retire the native owner once; after any served request that attempt only starts joining the finished request's consumer, so the drain reported `timedOut` with 0 unfinished requests within milliseconds, the command failed, and the service was left draining with automatic restart disabled. The drain now retries the retirement within its own deadline and reports `drained` once the owner retires.
+- Report a provider that has stopped serving on `darkbloom status`. After a `stop`, `restart`, `start` or `update` drain that timed out, was interrupted or never relaunched, the old process stays alive and refuses new work, so the console shows it offline while `status` printed only `Daemon: running`. A `Not serving:` line now names the drain state and the commands that finish or interrupt it.
+
+## 0.9.18 - prepared candidate (not published)
+
+The next provider release is prepared from changes merged since `v0.9.17`.
+This is not signed-artifact qualification or a release announcement. Included
+changes are detailed in the retained topic entries below:
+
+- [Provider service replacement](#unreleased--provider-service-replacement) (#1315), [shared-host memory admission](#unreleased--shared-host-memory-admission) (#1264), and [system tool output readers](#unreleased--system-tool-output-readers) (#1327).
+- [Authenticated legacy enrollment](#unreleased---frozen-legacy-mdm-authorization) (#1344), including the signed CLI eligibility check. Older providers cannot use the new authenticated reenrollment contract; coordinate the bridge rollout before publication.
+- [Native queued cancellation retirement](#unreleased---native-queued-cancellation-retirement) in the pinned SDK and [provider lifecycle coverage](#unreleased---provider-test-coverage) (#1253).
+- [MLX gather row tiles](#unreleased---mlx-gather-row-tiles) (#1237), including the compiled nested MLX and regenerated Swift kernels. Changed numerical paths require fresh qualification; earlier full-model results do not qualify this candidate.
+- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere (#1322).
+- The merged [DevNet installer binding](#unreleased--devnet) is included; pending provider build-environment and release-qualification PRs are not.
+
+The bundled coordinator build fix aligns the digest-pinned Go builder and local
+toolchain at Go 1.26.8, satisfying the unchanged `go.mod` minimum of 1.26.0.
+Release Integrity now rejects missing pins, local/container drift and toolchains
+below the module minimum. The bundled [upgrade safety changes](#unreleased---coordinator-upgrade-safety)
+add migration budgets, early trust preflight and a default-off soft-delete
+mutation gate. Coordinator deployment and provider publication remain
+separate approvals; see the [candidate rollout checks](docs/operations/provider-release.md#0918-candidate-rollout).
+
+## Unreleased - coordinator upgrade safety
+
+- Add `EIGENINFERENCE_MIGRATION_TIMEOUT` (default `15m`) for the positive total `--migrate-only` deadline, and `EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` (default `1m`, minimum `1ms`) for all concurrent index builders on dedicated connections. Ordinary SQL DDL retains its 3-second lock and 10-minute statement defaults.
+- Preserve invalid indexes and fail with operator inspection guidance, including legacy earnings indexes; never automatically drop a potentially active external build. Schema versions and financial semantics are unchanged.
+- Validate production App Attest serving prerequisites before database access or migrations, reusing the later pre-freeze validator. Explicit development and actual opted-in memory-store startup remain exempt; database-only maintenance intentionally skips full application validation.
+- Default `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED` to `false`, blocking new erasure confirmations (including `force`) and owned-provider removal with 503 `soft_delete_mutations_disabled` after authorization. Plan/status/cancel and accepted scrub/outbox work continue. Prior tombstones or erasures still require compatible fallback code; disabling the flag does not restore old-image compatibility. Production env refresh preserves explicit opt-ins.
+
 ## Unreleased - MLX gather row tiles
 
 - Backport row-tile selection for `gather_mm` and `gather_qmm` in the provider's pinned MLX dependencies, with matching regenerated Swift kernel sources. Rebuild with a source-matched metallib; earlier full-model measurements do not qualify performance on these pins.
@@ -60,7 +175,7 @@
 
 ## Unreleased — soft-delete schema
 
-- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Nothing sets `deleted_at` yet. After this release runs, roll back only to coordinator images built with goose.
+- Prepare account erasure: add `deleted_at` to users, API keys, provider records and provider tokens, hide soft-deleted rows from every live read, let a Privy user sign up again after erasure, index the erase paths, and cascade referrer code changes to referrals. Account erasure and ordinary provider removal write `deleted_at` behind the [mutation gate](#unreleased---coordinator-upgrade-safety). After these migrations run, roll back only to compatible goose-based coordinator images.
 
 - Exclude soft-deleted users from small-model interest exports before pagination, and exclude deleted users and provider records from initial legacy MDM cohort qualification. Repeated cohort reads preserve the frozen snapshot.
 - Suppress stale registry-supplied provider locations in memory-store usage flows when the stored provider record is soft-deleted.
@@ -81,6 +196,16 @@
 ## Unreleased - Mac CI cost controls
 
 - Cancel superseded pull-request CI and integration runs without cancelling default-branch pushes. Bound provider unit-test stalls with the existing diagnostic watchdog, and reuse compatible integration build caches while retaining every test gate and parallel job.
+
+## Unreleased - archived analytics reader
+
+- Add bounded asynchronous historical SELECT submission, polling, pagination and cancellation over pinned archive catalogs. Keep query results private and source retirement disabled while preparing the 14-day completed-detail storage plan.
+- Allow explicit recapture generations, shard large completion catalogs, enforce replay deadlines and verify reused BigQuery catalog contents before publication.
+- Pin and validate prior coverage before republishing, rejecting altered or duplicate catalog rows rather than incorporating them into a new verified digest. Unverifiable legacy catalogs fail closed without changing reader aliases.
+- Add an opt-in validated local snapshot path for leaderboard, network totals and network series with source freshness checks and 503 responses when unavailable. Persist accepted source cutoffs and generation checksums in a separate private state file; snapshot mode fails closed if that file is missing or corrupt.
+- Refresh database-backed network totals every 5 minutes with a 15-minute stale-success ceiling and cache successful network series for 5 minutes. Preserve shared top-200 leaderboard caching, failure cooldowns and the 30-second stats refresh.
+- Reconcile aligned usage buckets across public series and reject reused BigQuery external tables whose manifest, configuration or schema differs from the verified publication.
+- Replace the earlier telemetry-only retirement proposal with a 14-day completed-detail target covering telemetry and accounting. Keep active state and financial replay fences operational; continuous capture, broad reader migration and source retirement remain unimplemented and disabled.
 
 ## Unreleased - provider test coverage
 
@@ -142,11 +267,25 @@
 
 ## Unreleased — cache reliability
 
+- Preserve healthy SSD checkpoints when missing-file reconciliation alone satisfies the disk limit, and retain same-tag publications across reconciliation. Keep AR allocation refusals cold until the SDK can prove native retirement completion before a shorter retry.
+
+- Preserve negotiated healthy preload incumbents across interrupted response bodies and readiness-probe transport failures. Keep malformed completed reports fail-closed, and do not acknowledge newcomers or retain explicitly failed members after an uncertain partial attempt.
+- Align preload model-ID validation with the registration request bound so an already accepted long identifier cannot disable unrelated verified contracts. Keep the explicit artifact allowlist and tokenizer capacity limits unchanged.
+- Preserve negotiated preload incumbents through uncertain control transport completion, and keep configured catalogs above 128 models usable without expanding cache-routing allowlists or native tokenizer capacity.
+
 - Remove caller-supplied top-level `user`, generic `metadata`, `safety_identifier` and `prompt_cache_key` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.
+- Bound retained cache-attempt bookkeeping by logical bytes as well as record count. Detach retained metadata, preserve receipt and dispatch ownership checks, and fall back to ordinary inference when the optional cache record cannot be admitted. Under byte pressure, reclaim up to 64 completed attempts' late-receipt grace records, never live ones, before refusing, and report retained bytes, refusals and reclamations as aggregate cache status fields and gauges.
+- Preserve healthy verified prompt contracts when unrelated artifacts or preload members fail. Bind Go participation to the current catalog, child and exact verified set; keep strict preload reports, fresh partial-readiness confirmation, bounded retries and Rust replacement/cancellation ownership.
+- Account for optional cache-planning decisions across the inference endpoints, recorded when a request's plan is first computed (during admission preflight for public requests), and keep planning within the original first-content deadline. Preserve eligibility, inference contexts and independent retry/receipt ownership. Legacy plan metrics keep their definitions; one population grows: a media request to a verified, preloaded model is now counted once as `ineligible` in `exact_cache_plan_total` / `exact_cache.plan` because the planner is consulted to record its decision, with no routing or billing effect.
+- Align cache-planning client concurrency with sidecar workers and reserve health/control connection headroom under nondefault worker configurations. Bound waiting requests and payload bytes within the original deadline, preserving cancellation, independent health/control traffic, exact prefix identities and fail-cold behavior.
+- Select a bounded, demand-driven tokenizer preload set when the verified catalog exceeds the configured loaded-contract capacity. Keep the full verified set within capacity, current Registry eligibility, fair replacement and failure backoff; do not raise the sidecar limit or wait for preloading on inference requests. Negotiate incremental tokenizer preload so healthy acknowledged contracts remain usable during a retry or selection change without exceeding loaded-contract capacity, keeping legacy fallback explicit and failing closed on protocol loss.
+- Allow one bounded, fully authenticated shorter complete-checkpoint restore after a proven pre-allocation capacity refusal. Retire failed native/host owners before retrying, retain request/epoch fences and original remaining read/time budgets, and leave generic allocation, corruption and cancellation cold. No capture-cap, precision, encryption or first-attempt admission change.
+- Reject substituted FIFO cache entries without blocking encrypted-cache read or touch operations; preserve descriptor-based path checks and regular-file behavior.
+- Preserve surviving encrypted SSD checkpoints and routing announcements during routine active-store capacity/TTL eviction. Coordinate durable writes and index commits with retirement to prevent rename-to-index races without global invalidation. Keep destructive epoch fencing for unsafe changes, native authentication and bounded stale-hint invalidation.
+- Refuse and retry SSD epoch checks when parent-directory opens or metadata status probes fail transiently, preserving the existing store's ownership. Continue disowning proven missing, substituted, malformed or oversized records; verify the original capability again when connected retirement observes an eviction.
+- Use actual malformed files in the resident-preflight corruption fixture, retaining its no-I/O and corruption assertions; cover confirmed missing-parent status and typed `ENOENT` reads separately.
 
 ## Unreleased — provider 0.9.17
-
-- Honor an explicitly configured `TMPDIR` for anonymous runtime metallib snapshots, preserving unlink-before-copy and digest binding. Invalid or unwritable explicit directories fail without falling back elsewhere.
 
 - Keep the normal startup selection and explicit `--model` override authoritative while Autopilot is waiting or observing in shadow. Cached planning inventory can no longer make ordinary routing load unselected models.
 - Separate cached candidates from serving advertisements in Autopilot protocol 3; retain full shadow planning and require an acknowledged live lease before additional models become loadable. Older coordinators keep the selected models serving without activating the new protocol.

@@ -55,14 +55,15 @@ private final class Sides {
 
     func configuration(outputCount: Int = 5, recording: Bool = true, lifetime: Int = 30, startup: Int = 10,
                        schedule: String = "serial_v1", progress: Int? = 60_000,
-                       keepRunFiles: Bool = true) throws -> PairConfiguration {
+                       keepRunFiles: Bool = true, localRank: Int = 0) throws -> PairConfiguration {
         let request = try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...40), chunkSize: 16,
             outputCount: outputCount, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "test"))
-        return try PairConfiguration(request: request, stageCut: 8, local: sides[0], remote: sides[1],
+        // Each of the two directories belongs to a rank; the local side is the one of the local rank.
+        return try PairConfiguration(request: request, stageCut: 8, local: sides[localRank], remote: sides[1 - localRank],
             remoteTransport: ["/bin/sh", "-c"], coordinator: Self.coordinator, prefillSchedule: schedule,
             recording: recording, lifetimeSeconds: lifetime, startupSeconds: startup, requestSeconds: 10,
             rankOneDelaySeconds: 0, progressTimeoutMilliseconds: progress, keepRunFiles: keepRunFiles,
-            sensitive: ["operator@peer-mac.example"])
+            sensitive: ["operator@peer-mac.example"], localRank: localRank)
     }
 
     func runDirectory(_ configuration: PairConfiguration, _ rank: Int) -> URL {
@@ -97,6 +98,49 @@ final class PairDriverTests: XCTestCase {
             XCTAssertEqual(rank.signalsSentByDriver, 0, file: file, line: line)
             XCTAssertEqual(rank.workerProcessesLeft, 0, file: file, line: line)
         }
+    }
+
+    func testLocalRankOneRunsRankZeroBehindTheRemoteTransportAndKeepsEverythingByRank() throws {
+        let sides = try Sides(modes: ["ok", "ok"], skews: [-90_000_000_000, 500_000_000_000])
+        let plain = try sides.configuration(), turned = try sides.configuration(localRank: 1)
+        // The default arrangement keeps its labels, identities, matrix and commands.
+        XCTAssertEqual(plain.roles, ["rank 0 local", "rank 1 remote"])
+        XCTAssertEqual(plain.peerIDs, ["rank0-local", "rank1-remote"])
+        XCTAssertEqual(plain.deviceMatrix, "[[null,\"rdma_en5\"],[\"rdma_en7\",null]]\n")
+        XCTAssertEqual(plain.command(0, script: "x y"), ["/bin/sh", "-c", "x y"])
+        XCTAssertEqual(plain.command(1, script: "x y"), ["/bin/sh", "-c", "/bin/sh -c 'x y'"])
+        // Turned round: the labels say which side held which rank, rank 0 goes
+        // through the remote transport, and the matrix is still by rank.
+        XCTAssertEqual(turned.roles, ["rank 0 remote", "rank 1 local"])
+        XCTAssertEqual(turned.peerIDs, ["rank0-remote", "rank1-local"])
+        XCTAssertEqual(turned.deviceMatrix, "[[null,\"rdma_en5\"],[\"rdma_en7\",null]]\n")
+        XCTAssertEqual(turned.command(0, script: "x y"), ["/bin/sh", "-c", "/bin/sh -c 'x y'"])
+        XCTAssertEqual(turned.command(1, script: "x y"), ["/bin/sh", "-c", "x y"])
+        XCTAssertEqual(turned.runDirectory(0), plain.runDirectory(0).replacingOccurrences(
+            of: plain.membershipEpoch.uuidString.lowercased(), with: turned.membershipEpoch.uuidString.lowercased()))
+        // With the same two sides and the ranks exchanged between them, the matrix follows the ranks.
+        var exchanged = plain; exchanged.localRank = 1
+        XCTAssertEqual(exchanged.deviceMatrix, "[[null,\"rdma_en7\"],[\"rdma_en5\",null]]\n")
+        var invalid = plain; invalid.localRank = 2
+        XCTAssertThrowsError(try invalid.validate())
+
+        let report = PairDriver(configuration: turned).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.evidence?.selectedTokenIDs, [100, 101, 102, 103, 104])
+        XCTAssertEqual(report.ranksAgreeOnTokens, true)
+        XCTAssertEqual(report.ranks.map(\.role), ["rank 0 remote", "rank 1 local"])
+        XCTAssertEqual(report.ranks.map(\.rank), [0, 1])
+        for rank in report.ranks {
+            XCTAssertTrue(rank.launched && rank.readyObserved && rank.shutdownCompleteObserved && rank.exitObserved)
+            XCTAssertEqual(rank.exitStatus, 0); XCTAssertTrue(rank.evidenceCollected)
+        }
+        // Rank 0 was started before rank 1, and each from its own side's directory.
+        XCTAssertEqual(report.ranks[0].events, ["ready", "admitted", "committedToken x5", "finished:length", "retired:clean", "shutdownComplete"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sides.runDirectory(turned, 0).appendingPathComponent("observed.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sides.runDirectory(turned, 1).appendingPathComponent("observed.json").path))
+        XCTAssertTrue(report.timing.note.contains("Rank 0 ran on the second Mac"))
+        XCTAssertFalse(PairDriver(configuration: try sides.configuration()).configuration.roles.contains("rank 0 remote"))
+        assertEndedByItself(report, sides, turned)
     }
 
     func testCompletedRunRelaysTokensCollectsBothRanksAndShutsDownCleanly() throws {

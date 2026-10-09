@@ -19,6 +19,16 @@ public struct PairSide: Equatable, Sendable {
 public struct PairConfiguration: Sendable {
     public static let roles = ["rank 0 local", "rank 1 remote"]
     public static let peerIDs = ["rank0-local", "rank1-remote"]
+    /// Which rank the local process holds. 0 is the arrangement every run
+    /// before this option had, with its labels and bytes unchanged. 1 turns
+    /// the sides round: rank 0 runs on the second Mac behind the remote
+    /// transport and rank 1 here, for a placement whose first range belongs
+    /// on the second Mac when only this Mac can reach the other.
+    public var localRank = 0
+    /// Each rank's role in a report, saying which side held it.
+    public var roles: [String] { localRank == 0 ? Self.roles : ["rank 0 remote", "rank 1 local"] }
+    /// Each rank's member ID in the worker identity both ranks are given.
+    public var peerIDs: [String] { localRank == 0 ? Self.peerIDs : ["rank0-remote", "rank1-local"] }
     public static let arithmeticEnvironment = [
         ("DARKBLOOM_CBV2_ATTN_QUERY_BLOCK", "128"), ("DARKBLOOM_BF16_WEIGHTS", "1"), ("MLX_ENABLE_TF32", "1"),
     ]
@@ -47,6 +57,7 @@ public struct PairConfiguration: Sendable {
     /// the second Mac: `/usr/bin/ssh` with its options and destination.
     public var remoteTransport: [String]
     /// Rank 0's own address on the link and a free port; rank 0 listens there.
+    /// With `localRank` 1 that is the second Mac's own link address.
     public var coordinator: String
     public var prefillSchedule: String
     public var recording: Bool
@@ -93,7 +104,7 @@ public struct PairConfiguration: Sendable {
                 requireProgressGuard: Bool = true, keepRunFiles: Bool = false, preflightOnly: Bool = false,
                 generationMode: String = PairConfiguration.pipelineMode, repetitions: Int = 1,
                 workerTransport: String = PairConfiguration.jacclTransport,
-                membershipEpoch: UUID = UUID(), sensitive: [String] = []) throws {
+                membershipEpoch: UUID = UUID(), sensitive: [String] = [], localRank: Int = 0) throws {
         self.request = request; self.stageCut = stageCut; self.local = local; self.remote = remote
         self.remoteTransport = remoteTransport; self.coordinator = coordinator
         self.prefillSchedule = prefillSchedule; self.recording = recording
@@ -105,6 +116,7 @@ public struct PairConfiguration: Sendable {
         self.generationMode = generationMode; self.repetitions = repetitions
         self.workerTransport = workerTransport
         self.membershipEpoch = membershipEpoch; self.sensitive = sensitive
+        self.localRank = localRank
         try validate()
     }
 
@@ -169,6 +181,7 @@ public struct PairConfiguration: Sendable {
         try request.validate()
         try require(request.supportedCuts.contains(stageCut), "stage cut must be one of the request model's cuts: "
             + request.supportedCuts.map(String.init).joined(separator: ", "))
+        try require((0...1).contains(localRank), "the local rank is 0 or 1")
         for (name, side) in [("local", local), ("remote", remote)] {
             try require(Self.isPath(side.modelDirectory), "\(name) model directory must be an absolute path of letters, digits, '.', '_', '-', '/'")
             try require(Self.isPath(side.workerPath), "\(name) worker must be an absolute path of letters, digits, '.', '_', '-', '/'")
@@ -216,12 +229,13 @@ public struct PairConfiguration: Sendable {
         return value
     }
 
-    func side(_ rank: Int) -> PairSide { rank == 0 ? local : remote }
-    func transport(_ rank: Int) -> [String] { rank == 0 ? ["/bin/sh", "-c"] : remoteTransport }
+    /// Everything below is by rank; only these two say which side a rank is on.
+    func side(_ rank: Int) -> PairSide { rank == localRank ? local : remote }
+    func transport(_ rank: Int) -> [String] { rank == localRank ? ["/bin/sh", "-c"] : remoteTransport }
 
     /// Row i, column j: the device rank i uses to reach rank j. Both Macs must
     /// read the same bytes; the runtime compares their digest before loading.
-    public var deviceMatrix: String { "[[null,\"\(local.rdmaDevice)\"],[\"\(remote.rdmaDevice)\",null]]\n" }
+    public var deviceMatrix: String { "[[null,\"\(side(0).rdmaDevice)\"],[\"\(side(1).rdmaDevice)\",null]]\n" }
 
     /// One directory per run and side, named after the membership epoch.
     func runRoot(_ rank: Int) -> String {
@@ -245,7 +259,7 @@ public struct PairConfiguration: Sendable {
     /// What the transport runs: `sh -c` gets the script as is; the remote
     /// login shell gets one quoted `sh -c` command.
     func command(_ rank: Int, script: String) -> [String] {
-        transport(rank) + [rank == 0 ? script : "/bin/sh -c " + Self.quoted(script)]
+        transport(rank) + [rank == localRank ? script : "/bin/sh -c " + Self.quoted(script)]
     }
 
     /// The environment name the guarded JACCL reads. A worker built on the
@@ -313,8 +327,8 @@ public struct PairConfiguration: Sendable {
         var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
             "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,
             "--artifact-sha256", artifactSHA256, "--configuration-sha256", configurationSHA256,
-            "--peer0-id", Self.peerIDs[0], "--peer0-build-sha256", workerSHA256,
-            "--peer1-id", Self.peerIDs[1], "--peer1-build-sha256", workerSHA256]
+            "--peer0-id", peerIDs[0], "--peer0-build-sha256", workerSHA256,
+            "--peer1-id", peerIDs[1], "--peer1-build-sha256", workerSHA256]
         if prefillSchedule != "serial_v1" { arguments += ["--prefill-schedule", prefillSchedule] }
         // The pipeline's launch is unchanged; any other mode is declared to both ranks.
         if generationMode != Self.pipelineMode { arguments += [Self.generationModeArgument, generationMode] }

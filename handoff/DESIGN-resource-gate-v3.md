@@ -440,11 +440,12 @@ MiB swapped out since its first check (limits 512 and 64 MiB), so the kernel
 is taking anonymous memory`. This is the first time the mid-load stop and
 release ran on hardware.
 
-On Mac A the same state cost 439 MiB of compression and the load completed:
-the kernel compressed that much, then took file pages (2.0 GiB one at a time,
-the rest of the 10.2 GiB whole; the mapping process held the model caches but
-not every cached file on that Mac). That is under the limit, so the guard did
-not act. One attempt only was made on Mac A.
+On Mac A the same state cost 439 MiB of compression and the load completed.
+The first 8 GiB came out of cached files the mapping process did not hold
+(it mapped the model caches, not every cached file on that Mac) with nothing
+compressed; the last 2 GiB came page by page in 0.6 s, 0.44 GiB of it from
+anonymous memory. That is under the limit, so the guard did not act; a longer
+load would have reached it. One attempt only was made on Mac A.
 
 Four things follow.
 

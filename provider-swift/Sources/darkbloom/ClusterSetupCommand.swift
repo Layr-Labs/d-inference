@@ -24,6 +24,12 @@ extension Cluster {
         var dryRun = false
 
         mutating func run() async throws {
+            // Bare `darkbloom cluster` in a terminal opens the console, which continues this flow.
+            if Console.replacesGuidedSetup(arguments: CommandLine.arguments, json: json, yes: yes, temporary: temporary,
+                dryRun: dryRun, inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,
+                terminalType: ProcessInfo.processInfo.environment["TERM"]) {
+                return try await Console.runAsGuidedSetup()
+            }
             Darkbloom.ensureLogging()
             let mode = temporary ? ClusterLinkRepair.Mode.temporary : .durable, dryRun = dryRun
             var flow = ClusterLinkSetupFlow(mayPrompt: ClusterLinkSetupFlow.mayPrompt(

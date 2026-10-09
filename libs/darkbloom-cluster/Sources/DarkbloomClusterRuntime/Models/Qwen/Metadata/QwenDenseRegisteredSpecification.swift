@@ -5,15 +5,21 @@ import Foundation
 struct QwenDenseRegisteredSpecification {
     let model: QwenRegisteredDenseModel
     let configurationSHA256: String, manifestSHA256: String, artifactSHA256: String, inventorySHA256: String
+    /// SHA-256 of the canonical per-tensor content inventory, or nil for a model
+    /// nobody has inventoried. It is in no existing fingerprint, so no receipt,
+    /// commitment or agreement changes when a model gains one.
+    let contentInventorySHA256: String?
     let manifestBytes: Int, manifestFileCount: Int, sourceBytes: Int, tensorCount: Int, largestTensorBytes: Int
     let layers: Int, hidden: Int, queryHeads: Int, linearValueHeads: Int, namedStateBytes: Int
 
     private init(model: QwenRegisteredDenseModel, configurationSHA256: String, manifestSHA256: String,
+                 contentInventorySHA256: String? = nil,
                  artifactSHA256: String, inventorySHA256: String, manifestBytes: Int, manifestFileCount: Int,
                  sourceBytes: Int, tensorCount: Int, largestTensorBytes: Int, layers: Int, hidden: Int,
                  queryHeads: Int, linearValueHeads: Int, namedStateBytes: Int) {
         self.model = model; self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
         self.artifactSHA256 = artifactSHA256; self.inventorySHA256 = inventorySHA256; self.manifestBytes = manifestBytes
+        self.contentInventorySHA256 = contentInventorySHA256
         self.manifestFileCount = manifestFileCount; self.sourceBytes = sourceBytes; self.tensorCount = tensorCount
         self.largestTensorBytes = largestTensorBytes; self.layers = layers; self.hidden = hidden
         self.queryHeads = queryHeads; self.linearValueHeads = linearValueHeads; self.namedStateBytes = namedStateBytes
@@ -27,6 +33,7 @@ struct QwenDenseRegisteredSpecification {
         .init(model: .qwen35NineB,
             configurationSHA256: "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
             manifestSHA256: "4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4",
+            contentInventorySHA256: "e636e715e70904e6c6ae7a59bd9244fbeaf199fa5972aaa808499646cff7e1c0",
             artifactSHA256: "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
             inventorySHA256: "4a543a467846927736165c44a68802ad15794482ffdf3a1c60113a38c6abfb51",
             manifestBytes: 6_113_952_230, manifestFileCount: 12, sourceBytes: 5_038_041_600,

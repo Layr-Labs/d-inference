@@ -12,6 +12,10 @@ import Foundation
 @main enum StageLoadCheck {
     static func main() {
         do {
+            // A leading `content-inventory` selects that mode: no rank, no cut, no model.
+            if CommandLine.arguments.dropFirst().first == ContentInventoryCommand.name {
+                Darwin.exit(try ContentInventoryCommand.run(Array(CommandLine.arguments.dropFirst(2))))
+            }
             var fields: [String: String] = [:]
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard arguments.count % 2 == 0 else { throw Failure("Expected --name value pairs") }

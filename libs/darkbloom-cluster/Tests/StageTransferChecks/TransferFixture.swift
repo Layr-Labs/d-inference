@@ -1,13 +1,16 @@
+import CryptoKit
 import Foundation
 
-/// Two real safetensors files in a temporary directory, split into two stages.
+/// Two real safetensors files and their manifest, split into two stages.
 /// Stage 0 holds two tensors of one shape, so a transfer that swaps them is
 /// distinguishable only by content. Stage 1 holds one tensor of ten rows, which
-/// the small piece limit below cuts into four pieces.
+/// the small piece limit below cuts into four pieces. Each file also stores a
+/// tensor no stage owns, as a real artifact stores vision and MTP tensors.
 struct TinyStageArtifact {
     struct Stored {
         let name: String, localName: String
-        let stage: Int
+        /// Nil for a stored tensor that belongs to no stage.
+        let stage: Int?
         let dtype: QwenStageStoredDType
         let shape: [Int]
         let file: String
@@ -17,6 +20,7 @@ struct TinyStageArtifact {
     static let first = "model-00001-of-00002.safetensors", second = "model-00002-of-00002.safetensors"
     /// In payload order within each file, which is not name order.
     static let stored = [
+        Stored(name: "mtp.fc.weight", localName: "", stage: nil, dtype: .bfloat16, shape: [3], file: first),
         Stored(name: "language_model.model.layers.0.b.weight", localName: "language_model.model.layers.0.b.weight",
                stage: 0, dtype: .uint32, shape: [4, 4], file: first),
         Stored(name: "language_model.model.embed_tokens.weight", localName: "language_model.model.embed_tokens.weight",
@@ -27,6 +31,7 @@ struct TinyStageArtifact {
                stage: 0, dtype: .bfloat16, shape: [4, 2], file: first),
         Stored(name: "language_model.lm_head.weight", localName: "language_model.lm_head.weight",
                stage: 1, dtype: .uint32, shape: [10, 4], file: second),
+        Stored(name: "vision_tower.patch_embed.weight", localName: "", stage: nil, dtype: .float32, shape: [2], file: second),
         Stored(name: "language_model.model.layers.1.A_log", localName: "language_model.model.layers.0.A_log",
                stage: 1, dtype: .float32, shape: [3], file: second),
         Stored(name: "language_model.model.layers.1.a.weight", localName: "language_model.model.layers.0.a.weight",
@@ -40,12 +45,13 @@ struct TinyStageArtifact {
     let content: [String: Data]
     let stages: [QwenStageTransferPlan.DeliveredStage]
 
-    init() throws {
-        directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("stage-transfer-fixture-" + UUID().uuidString.lowercased())
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+    /// Writes the artifact into `directory`, which must not exist yet.
+    init(directory: URL) throws {
+        self.directory = directory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         var records: [LayerStageTensorContentRecord] = [], content: [String: Data] = [:]
+        var files: [[String: Any]] = [], digests = Data()
         for file in [Self.first, Self.second] {
             // safetensors: 8-byte little-endian header length, JSON header, then payloads.
             var header: [String: Any] = ["__metadata__": ["format": "mlx"]], payload = Data()
@@ -59,17 +65,26 @@ struct TinyStageArtifact {
             }
             let headerData = try JSONSerialization.data(withJSONObject: header, options: [.sortedKeys])
             var length = UInt64(headerData.count).littleEndian
-            try (Data(bytes: &length, count: 8) + headerData + payload)
-                .write(to: directory.appendingPathComponent(file), options: .withoutOverwriting)
+            let stored = Data(bytes: &length, count: 8) + headerData + payload
+            try stored.write(to: directory.appendingPathComponent(file), options: .withoutOverwriting)
+            let digest = SHA256.hash(data: stored)
+            digests.append(contentsOf: digest)
+            files.append(["path": file, "sha256": sha256(stored), "size_bytes": stored.count])
             var offset = 8 + headerData.count
             for tensor in tensors {
-                let layout = try LayerStageTensorLayout(canonicalName: tensor.name, shape: tensor.shape,
-                    sourceDType: tensor.dtype.rawValue, byteCount: tensor.byteCount)
-                records.append(try .init(source: .init(layout: layout, sourceFile: file, sourceOffset: offset),
-                                         contentSHA256: sha256(content[tensor.name]!)))
+                if tensor.stage != nil {
+                    let layout = try LayerStageTensorLayout(canonicalName: tensor.name, shape: tensor.shape,
+                        sourceDType: tensor.dtype.rawValue, byteCount: tensor.byteCount)
+                    records.append(try .init(source: .init(layout: layout, sourceFile: file, sourceOffset: offset),
+                                             contentSHA256: sha256(content[tensor.name]!)))
+                }
                 offset += tensor.byteCount
             }
         }
+        let manifest: [String: Any] = ["aggregate_sha256": sha256(digests), "file_count": files.count,
+            "total_size_bytes": files.reduce(0) { $0 + ($1["size_bytes"] as! Int) }, "files": files]
+        try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+            .write(to: directory.appendingPathComponent("manifest.json"), options: .withoutOverwriting)
         inventory = try LayerStageTensorContentInventory(records: records)
         self.content = content
         // `inventory.active` order: ascending local name within the stage.
@@ -81,8 +96,6 @@ struct TinyStageArtifact {
                 })
         }
     }
-
-    func remove() { try? FileManager.default.removeItem(at: directory) }
 
     func session(stages delivered: [Int] = [0, 1], epoch: Character = "e",
                  limits: QwenStageTransferLimits = limits) throws -> QwenStageTransferSession {

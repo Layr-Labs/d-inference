@@ -34,15 +34,15 @@ class FakeAPI:
         self.artifacts = [{"id":10,"name":f"unsigned-provider-{SHA}-1","expired":False,"size_in_bytes":100,
                           "digest":"sha256:" + "b"*64,"workflow_run":{"id":123,"head_sha":SHA}}]
         self.provider_version = "0.9.13"
+        self.provider_source = None
     def get(self,path):
         if path == "actions/runs/123":return self.run
         if path == "git/ref/tags/v0.9.13":return {"object":{"type":"tag","sha":"c"*40}}
         if path == "git/tags/" + "c"*40:return self.tag
         if path == "commits/" + SHA:return self.commit
         if path == "git/ref/heads/master":return {"object":{"sha":"d"*40}}
-        if path.startswith("contents/"):
-            source = ('public static let version = "'+self.provider_version+'"' if "ProviderCore.swift" in path
-                      else 'var LatestProviderVersion = "0.9.13"')
+        if path == f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={SHA}":
+            source = self.provider_source if self.provider_source is not None else 'public static let version = "'+self.provider_version+'"'
             return {"content":base64.b64encode(source.encode()).decode()}
         raise AssertionError(path)
     def pages(self,path,key):
@@ -52,6 +52,24 @@ class FakeAPI:
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_missing_or_malformed_source_response_is_rejected(self):
+        for response in ({}, {"content": None}, {"content": "not-valid-base64!"}):
+            with self.subTest(response=response):
+                api = FakeAPI()
+                get = api.get
+                with patch.object(api, "get", side_effect=lambda path: response if path.startswith("contents/") else get(path)):
+                    with self.assertRaises(ValueError):
+                        select(api, "123", "1")
+
+    def test_missing_malformed_or_ambiguous_provider_source_is_rejected(self):
+        for source in ("", 'public static let version = "invalid"',
+                       'public static let version = "0.9.13"\npublic static let version = "0.9.13"'):
+            with self.subTest(source=source):
+                api = FakeAPI()
+                api.provider_source = source
+                with self.assertRaises(ValueError):
+                    select(api, "123", "1")
+
     def test_success_binds_original_source_attempt_and_immutable_artifact(self):
         value=select(FakeAPI(),"123","1")
         self.assertEqual(value["source_sha"],SHA)

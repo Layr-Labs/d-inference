@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -8,8 +8,14 @@ identical. Only one producer of this shape is live today: the coordinator's own
 emitter, which forwards to Datadog. The coordinator has no client ingestion
 route; the retired `POST /v1/telemetry/events` is not registered and gets a
 plain 404. What each live datum is and where it goes:
-[`telemetry-inventory.md`](telemetry-inventory.md); design and failure modes:
+[telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md); design and failure modes:
 [`../architecture/telemetry.md`](../architecture/telemetry.md).
+
+Only the Swift implementation and its public fixed-vector checks are local to
+this repository. Go/TypeScript references below identify external contracts;
+local symmetry tests do not execute those implementations or certify their
+current live compatibility. Coordinate changes and record private qualification
+separately, without introducing a backend build into the public provider suite.
 
 The terminal-profile [prediction decision fields](prediction-decision-telemetry.md)
 use the separate Go/Swift profiler protocol, not this event shape or its
@@ -19,7 +25,7 @@ folded by the coordinator before storage; it adds no event fields.
 Durable cache statistics use optional typed heartbeat objects, not event
 `fields`: [`slots[].prefix_cache`](protocol-messages.md#slotsprefix_cache) and
 `backend_capacity.prefix_cache_maintenance`. The live producer/consumer and
-counter units are listed in the [telemetry inventory](telemetry-inventory.md).
+counter units are listed in the [telemetry inventory](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md).
 The client event facade remains disabled.
 
 Cache donation outcomes also use the separate typed heartbeat protocol:
@@ -40,28 +46,28 @@ and do not add fields to the TypeScript event mirror.
 
 Paged allocator observations use the separate optional
 [`slots[].paged_storage`](protocol-messages.md#slotspaged_storage) heartbeat
-object (`coordinator/protocol/paged_storage_telemetry.go`, `PagedStorageTelemetry`).
+object ([coordinator/protocol/paged_storage_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/paged_storage_telemetry.go), `PagedStorageTelemetry`).
 They add no event fields. The native queue captures
 `PagedKVStorageSnapshot`; `PagedStorageTelemetryAdapter` copies its scalars and
 computes age for the heartbeat without traversing allocator ownership. Optional
 `allocator_padding_bytes` and `last_allocation_allowance_bytes` distinguish
 retained nonusable bytes from released preparation allowance. The canonical
-`coordinator/tests/protocol/testdata/paged_footprint_wire.json` fixture pins their
+[paged_footprint_wire.json](../../provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/paged_footprint_wire.json) fixture pins their
 wire representation and omission behavior across Swift, Go and TypeScript.
 
 Process ownership uses optional
 [`backend_capacity.telemetry.process_memory`](protocol-messages.md#backend_capacitytelemetryprocess_memory)
-(`coordinator/protocol/process_memory_telemetry.go`, `ProcessMemoryTelemetry`).
+([coordinator/protocol/process_memory_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/process_memory_telemetry.go), `ProcessMemoryTelemetry`).
 The Swift producer, Go consumer and TypeScript mirror share the canonical
-`coordinator/tests/protocol/testdata/process_memory_wire.json` fixture. These scalar
+[process_memory_wire.json](../../provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/process_memory_wire.json) fixture. These scalar
 observations add no event fields.
 
 ## Autopilot tick diagnostics
 
-`coordinator/registry/autopilot_control.go` (`newAutopilotControl`) writes the
+[coordinator/registry/autopilot_control.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_control.go) (`newAutopilotControl`) writes the
 structured `model autopilot tick` process log. Its aggregate `live_cohort`,
 `live_active`, `shadow`, `live_proposed` and `shadow_proposed` fields follow the
-[admin summary contract](api-contracts.md#experimental-model-autopilot).
+[admin summary contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#experimental-model-autopilot).
 `observe_only` remains the global switch; it does not label every machine in a
 mixed rollout. These are coordinator process-log attributes, not new fields or
 kinds in `TelemetryEvent`, and contain no machine/account identifiers.
@@ -87,10 +93,10 @@ Go/Swift profiler fixture. They do not add an event kind or a TS event field.
 
 | Mirror | File | Types | Role today |
 |---|---|---|---|
-| Go (canon) | `coordinator/protocol/telemetry.go` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
-| Go emitter | `coordinator/telemetry/emitter.go` | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator`; Datadog is the sole durable sink |
+| Go (canon) | [coordinator/protocol/telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/telemetry.go) | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
+| Go emitter | [coordinator/telemetry/emitter.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/telemetry/emitter.go) | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator`; Datadog is the sole durable sink |
 | Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | inert: `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing) |
-| TypeScript | `console-ui/src/lib/telemetry-types.ts` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | types for the no-op `console-ui/src/lib/telemetry.ts` facade |
+| TypeScript | [console-ui/src/lib/telemetry-types.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/lib/telemetry-types.ts) | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | types for the no-op [console-ui/src/lib/telemetry.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/lib/telemetry.ts) facade |
 
 ## Event fields
 
@@ -136,7 +142,7 @@ No server-side field allowlist exists: nothing ingests client events, and the
 coordinator emitter does not filter. Each emitting call site passes a fixed set
 of operational keys (bounded enums, counters, byte counts and durations; never
 prompt, completion, media or cache content), enumerated in
-[`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
+[telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md#coordinator-emitted-events).
 No mirror carries a field filter. To add a field, add it at the call site with a bounded value and
 list it in the inventory.
 
@@ -152,33 +158,23 @@ field allowlist.
 |---|---|---|---|
 | `mtp_acceptance` | `exact`, `typical` | Present when `ProviderMTPStatusSnapshot.acceptance` supplies the installed rule; otherwise omitted. Distinguishes the rule from `mtp_acceptance_rate`: typical deliberately keeps more drafts, so a higher ratio alone is not a better-drafter claim. | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift`, `emitSlotPostureTelemetry` |
 
-## Coordinator emitter
+## External Emitter
 
-`Emitter.Emit` (`coordinator/telemetry/emitter.go`) is the one live path that
-builds this shape. It does not filter fields; every call site passes its fixed
-keys. Each event goes to three places in order:
-
-| Sink | What |
-|---|---|
-| `slog` | `telemetry: <message>` at the mapped level, with `kind`, `request_id` (when set) and every field as attributes |
-| in-process registry | `telemetry_events_total{source, severity, kind}` via `Metrics.IncCounterEvent` (`coordinator/api/`), readable at `GET /v1/admin/metrics` |
-| Datadog Logs API | `datadog.Client.ForwardLog` (`coordinator/datadog/datadog.go`) → `https://http-intake.logs.<site>/api/v2/logs`, only when `DD_API_KEY` is set |
-
-Call sites (`Owner.Emit`, `Owner.EmitRequest`, `Owner.EmitPanic` in `coordinator/api/observation/events.go`)
-and their fields are enumerated in
-[`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
+The [platform emitter and sinks](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/telemetry.md)
+are maintained outside this repository. Provider fixed-vector and Swift symmetry
+tests do not execute them or establish their live retention/configuration.
 
 ## Tests that pin the mirrors
 
 | Test | File | Pins |
 |---|---|---|
-| `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/tests/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
+| `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | [coordinator/tests/protocol/telemetry_symmetry_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/protocol/telemetry_symmetry_test.go) | canonical event encodes to the exact JSON string; the kind set |
 | `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
-| `TestTelemetryE2E_NoClientIngestionRoute` | `coordinator/tests/api/operations/contracts/telemetry_e2e_test.go` | the retired ingest route is gone: 404, body not reflected, nothing counted |
+| `TestTelemetryE2E_NoClientIngestionRoute` | [coordinator/tests/api/operations/contracts/telemetry_e2e_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/api/operations/contracts/telemetry_e2e_test.go) | the retired ingest route is gone: 404, body not reflected, nothing counted |
 | `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryClientTests.swift`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryOverflowQueueTests.swift` | the client facade stays inert and the legacy queue purge removes only regular files |
 
 ## Related
 
-- [`telemetry-inventory.md`](telemetry-inventory.md) — every datum, producer, sink, cadence, retention
+- [telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md) — every datum, producer, sink, cadence, retention
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes, Datadog metric names
 - [`protocol-messages.md`](protocol-messages.md) — the heartbeat fields the coordinator turns into metrics

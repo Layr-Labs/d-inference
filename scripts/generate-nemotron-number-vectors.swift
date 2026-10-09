@@ -1,9 +1,10 @@
 // Run from the repository root. Captures the actual Swift Double spelling;
-// Rust and Swift-Jinja consume the same oracle in their offline filter tests.
+// Swift-Jinja consumes this oracle in its offline filter tests. Cross-language
+// regeneration is qualified separately in the private platform repository.
 import Foundation
 
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-let source = root.appendingPathComponent("coordinator/promptsidecar/src/render/json/swift_236_edges.json")
+let source = root.appendingPathComponent("fixtures/prompt-contract/swift_236_edges.json")
 let rows = try JSONSerialization.jsonObject(with: Data(contentsOf: source)) as! [[String: Any]]
 var bits = Set(rows.compactMap { ($0["bits"] as? String).flatMap { UInt64($0, radix: 16) } })
 for value: Double in [0, -0.0, 1, -1, 0.0001, 0.00001, 1e-6, 1e-7, 1e15, 1e16,

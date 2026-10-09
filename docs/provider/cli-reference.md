@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -212,7 +212,7 @@ under the config lock and refuses to overwrite concurrent schedule/preload edits
 `schedule` never starts or stops the provider. Saved edits apply on the next
 start/restart, not live; use `darkbloom restart` for a running provider. The Mac
 must stay awake. See [availability configuration](../reference/configuration.md#provider-availability)
-and [calendar/window semantics](../architecture/scheduling.md#provider-availability-windows).
+and [calendar/window semantics](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#provider-availability-windows).
 
 ### `darkbloom switch`
 
@@ -260,7 +260,7 @@ Rollback restores the previous hash/fingerprint pair
 Eligible local off-catalog models can remain in the selection for owner-only
 inference, just as at registration. They do not become publicly routable; tracked
 models still need their pinned catalog hashes and required runtime capabilities
-(`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
+([coordinator/registry/provider_models_replace.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_models_replace.go), `ReplaceProviderModels`).
 
 Success requires a matching completion receipt from the running provider, not
 just mailbox publication. The provider requires a matching
@@ -452,7 +452,7 @@ a fallback; the kill switch and capability/span-mask vetoes can still force
 contiguous. Inspect the measured engine's `resolvedKVBackend` and report
 `kvBackend` block (`provider-swift/Sources/darkbloom/BenchmarkCommand.swift`,
 `Benchmark.kvBackend`). The
-[five-artifact rollout](../design/release-090-paged-qwen-cache.md) is **not yet
+[five-artifact rollout](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/release-090-paged-qwen-cache.md) is **not yet
 validated**; benchmark selection alone is not release evidence.
 
 Environment inputs for the harnesses are in
@@ -462,7 +462,7 @@ uses reusable-buffer reads and up to four independent file readers by default,
 retaining complete integrity checks. It affects load/verification work, not
 ordinary resident decode; explicit overrides provide the original serial path.
 For a pinned GPT-OSS matrix with aggregate B=2/B=4 decode, raw token timing,
-and mixed prompt arrivals, see [the profiling workflow](../developer/test.md#6-scripts-and-release-integrity).
+and mixed prompt arrivals, see [the profiling workflow](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md#6-scripts-and-release-integrity).
 
 ### `darkbloom update`
 
@@ -476,7 +476,7 @@ and mixed prompt arrivals, see [the profiling workflow](../developer/test.md#6-s
 
 Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
 `replaceFailed`, or a failed check (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
-See [installation → Update](./installation.md#update).
+See [installation → Update](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/provider/installation.md).
 
 ### `darkbloom enroll` / `darkbloom unenroll`
 
@@ -651,7 +651,7 @@ shadow even when other machines are live. `paused` retains ready
 models; `recovering` means an accepted transition is still settling. Policy changes
 are consumed at the next capacity poll. `models` uses the existing safe restart.
 See [architecture](../architecture/model-autopilot.md) and
-[operator procedures](../operations/model-autopilot.md).
+[operator procedures](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/model-autopilot.md).
 
 ## `darkbloom beta`
 
@@ -1097,7 +1097,7 @@ finite scores and matching ordinary-forward controls; `inconclusive` preserves
 evidence and exits 2. Neither status certifies free generation, model quality
 or speculative verification
 (`provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmark.swift`).
-See the [developer test procedure](../developer/test.md#ordinary-teacher-forced-score-diagnostics).
+See the [developer test procedure](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md#ordinary-teacher-forced-score-diagnostics).
 
 ## `darkbloom update`
 
@@ -1376,7 +1376,7 @@ override `provider.toml` for one process, are in
 
 | Key | Default | Effect |
 |---|---|---|
-| `[provider] memory_reserve_gb` | `4` | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages, so this is not a free-page floor. Set process-start `DARKBLOOM_MEMORY_AVAILABILITY=free-only` for shared hosts; see [memory admission](../architecture/scheduling.md#shared-host-memory-admission). |
+| `[provider] memory_reserve_gb | 4 | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages, so this is not a free-page floor. Set process-start DARKBLOOM_MEMORY_AVAILABILITY=free-only for shared hosts; see [memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
 | `[provider] auto_update` | `true` | Startup + periodic self-update |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
@@ -1479,9 +1479,9 @@ explicit affirmative value for SSD caching. Resident payload retention requires
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1`; both switches are forwarded to the daemon,
 and the global disable wins (`PrefixCachePolicy.isEnabled`, `isMemoryEnabled`). Coordinator cache preference separately requires
 `EIGENINFERENCE_CACHE_ROUTING_MODE=on`; its default is `off`, and no provider CLI
-cache setting enables it (`coordinator/registry/config.go`, `ReadConfig`). Resident
+cache setting enables it ([coordinator/registry/config.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/config.go), `ReadConfig`). Resident
 routing also requires the separate live capability described in
-[`cache-aware-routing.md`](../architecture/cache-aware-routing.md). Effects and defaults are specified
+[cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md). Effects and defaults are specified
 once in [`reference/configuration.md`](../reference/configuration.md).
 
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides the compiled SSD

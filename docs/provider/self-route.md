@@ -1,13 +1,13 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-09
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
 configuration — by adding one request header or pinning an API key. For
 operators who run a provider and also consume the network. Nothing changes on
 the provider; the policy lives entirely on the coordinator
-(`coordinator/api/inference/self_route.go`, `resolveSelfRoutePolicy`).
+([coordinator/api/inference/self_route.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/self_route.go), `resolveSelfRoutePolicy`).
 
 Self-route is not [direct mode](./direct-mode.md): direct mode is a local
 socket on the provider Mac with no coordinator involved; self-route is regular
@@ -32,7 +32,7 @@ fleet traffic whose scheduler is told which machine may serve it.
    |---|---|---|
    | `X-Darkbloom-Route: self` | one request | **Exclusive.** Only providers owned by the calling account; free; never falls back to the paid fleet — an explicit error if your machine cannot serve |
    | `X-Darkbloom-Route: prefer` | one request | **Prefer.** Owned machine first (free when it serves), otherwise the paid fleet. Takes a normal balance reservation up front; billing is decided at settlement by who served |
-   | API key `self_route_only = true` | every request on that key | Hard ceiling: exclusive self-route regardless of header. Set in the console key form (`console-ui/src/components/api-keys/KeyForm.tsx`) or `PATCH` the key with `{"self_route_only": true}` (`coordinator/api/access/keys/handlers.go`) |
+   | API key `self_route_only = true` | every request on that key | Hard ceiling: exclusive self-route regardless of header. Set in the console key form ([console-ui/src/components/api-keys/KeyForm.tsx](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/components/api-keys/KeyForm.tsx)) or `PATCH` the key with `{"self_route_only": true}` ([coordinator/api/access/keys/handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/access/keys/handlers.go)) |
 
    Header values are trimmed and case-insensitive. A key with
    `self_route_only` ignores `prefer`.
@@ -52,7 +52,7 @@ fleet traffic whose scheduler is told which machine may serve it.
    also works with a sealed private-text body.
 
 3. Discover what your machine serves with the same header. `GET /v1/models`
-   follows the resolved route mode (`coordinator/api/catalog/models_endpoints.go`,
+   follows the resolved route mode ([coordinator/api/catalog/models_endpoints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/models_endpoints.go),
    `HandleListModels`): with `self` (or a `self_route_only` key) it lists only
    models on your online owned machines; header-less and `prefer` requests see
    the public catalog.
@@ -68,12 +68,12 @@ fleet traffic whose scheduler is told which machine may serve it.
    `CoordinatorSettings.privateOnly`) registers the provider as private-only:
    the coordinator serves it exclusively to the owner's self-route requests and
    never to the public fleet (gate reason `private_only`,
-   `coordinator/registry/routing_eligibility.go`). It then earns nothing;
+   [coordinator/registry/routing_eligibility.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/routing_eligibility.go)). It then earns nothing;
    restart after changing the key.
 
 5. In the console, the chat "Use my machine" toggle sends `prefer`
-   (`console-ui/src/lib/chat/stream.ts`, forwarded upstream by
-   `console-ui/src/app/api/chat/route.ts`); free-only routing there is the
+   ([console-ui/src/lib/chat/stream.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/lib/chat/stream.ts), forwarded upstream by
+   [console-ui/src/app/api/chat/route.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/app/api/chat/route.ts)); free-only routing there is the
    per-key `self_route_only` ceiling. Creating a My Machine only key in the
    API console adopts it as this browser's chat key when none is tracked
    (logout, chat `401`, and untracked auto-provision drop a leftover
@@ -86,11 +86,11 @@ fleet traffic whose scheduler is told which machine may serve it.
 ## What the coordinator relaxes — and what it does not
 
 Self-route to an owned machine relaxes exactly two gates in the scheduler
-(`coordinator/registry/scheduler.go`, `providerPassesRoutingGatesLocked`;
+([coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go), `providerPassesRoutingGatesLocked`;
 `relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)`):
 
 - the hardware-trust floor (`Registry.MinTrustLevel`, set by
-  [`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft)), so an
+  [EIGENINFERENCE_MIN_TRUST](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md#routing-admission-and-ttft)), so an
   un-enrolled or `self_signed` machine of yours can serve you;
 - private-only admission, so a `private_only` provider is eligible.
 
@@ -102,7 +102,7 @@ explained in [attestation](./attestation.md); the mechanism in
 
 Requests served by an owned machine are free; `prefer` requests that fall back
 to the fleet are charged normally. Settlement rules are in
-[`architecture/billing.md`](../architecture/billing.md).
+[architecture/billing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/billing.md).
 
 ## Verify
 
@@ -117,7 +117,7 @@ returns `503 machine_offline`.
 ## Troubleshooting
 
 Exclusive self-route fails fast with the real cause instead of queueing
-(`coordinator/api/inference/self_route.go`, `selfRouteUnavailable`):
+([coordinator/api/inference/self_route.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/self_route.go), `selfRouteUnavailable`):
 
 | Status / code | Meaning | Fix |
 |---|---|---|
@@ -132,5 +132,5 @@ Exclusive self-route fails fast with the real cause instead of queueing
 
 - [Direct mode](./direct-mode.md) — local HTTP endpoint without the coordinator.
 - [Attestation](./attestation.md) — trust levels and the flags self-route does not bypass.
-- [`architecture/billing.md`](../architecture/billing.md) — free vs. charged settlement.
+- [architecture/billing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/billing.md) — free vs. charged settlement.
 - [CLI reference](./cli-reference.md) — `private_only` and the other `provider.toml` keys.

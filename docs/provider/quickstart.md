@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-09
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -211,7 +211,7 @@ private_only = false         # true = serve only your own self-route traffic
   other ID, including unlisted Qwen, GPT-OSS and Gemma, stays contiguous.
   **The candidate rollout is not yet validated**; see the retained failures
   and remaining gates in the
-  [Qwen-first rollout decision](../design/qwen-first-paged-ssd-rollout.md).
+  [Qwen-first rollout decision](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/qwen-first-paged-ssd-rollout.md).
   Use `"contiguous"` to pin that backend, or `"paged"` to require paged
   construction. Per-model `engine_v2_kv_backend_by_model` entries override
   the global setting (`EngineV2KVBackendPolicy.parseSelection`,
@@ -241,7 +241,7 @@ private_only = false         # true = serve only your own self-route traffic
 ## Earnings and billing
 
 During the public alpha the platform fee is 0%, so providers keep 100% of the
-per-token revenue (`coordinator/payments/pricing.go:39-43`).
+per-token revenue ([coordinator/payments/pricing.go:39-43](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/payments/pricing.go)).
 
 There is no `darkbloom earnings` CLI command. View payouts, Stripe Connect
 status, and usage in the console at `https://console.darkbloom.dev`.

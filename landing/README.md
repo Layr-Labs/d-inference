@@ -45,9 +45,13 @@ project settings or DNS.
 The old `/index.html`, `/terms.html` and `/privacy.html` URLs permanently
 redirect to `/`, `/terms` and `/privacy`. The published terms and privacy
 text is preserved. The old homepage earnings calculator is replaced by the
-new site's About page; the console's calculator remains available in
-`console-ui/`. `assets/cube-hero.png` is retained solely for existing
-inference test fixtures.
+new site's About page; the console is owned by the sibling
+[platform repository](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui).
+`assets/cube-hero.png` remains available to public native inference fixtures.
+
+Hosting operations require specific human approval. Landing keeps its own
+server-side API routes; it does not build or deploy the centralized coordinator.
+Existing upstream endpoints and environment variables are unchanged.
 
 Use a budget-capped coordinator key for the public demo. The chat route's
 in-memory rate limiter is per instance; distributed enforcement belongs in

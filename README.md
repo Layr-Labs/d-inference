@@ -1,376 +1,79 @@
-# Darkbloom
+# Darkbloom Provider
 
-> **Public Alpha** — Darkbloom is a decentralized private-inference network for Apple Silicon. Expect rough edges, breaking changes, and downtime. Alpha pricing, the platform fee and payout rules are stated once, in [billing](docs/architecture/billing.md#invariants).
+Darkbloom's Apple Silicon provider, native inference runtime integrations, and
+marketing site live here. The provider runs models locally with MLX and can
+connect to the Darkbloom network or serve a local OpenAI-compatible API.
 
-Darkbloom turns idle Macs into a private, OpenAI-compatible inference cloud.
+## Repository Ownership
 
-Today, AI compute reaches you through a stack of markups — chipmaker to hyperscaler to API vendor. Meanwhile, over 100 million Apple Silicon Macs sit mostly idle, each with up to 512 GB of unified memory and up to 819 GB/s of bandwidth — enough to run frontier-scale models at interactive speeds. Darkbloom connects that idle capacity directly to demand, and pays the people who own the machines.
+Use sibling checkouts, never one repository nested inside the other:
 
-The person running a provider node has root and physical custody of the machine doing your inference. Darkbloom is designed to keep prompts and responses inside the hardened provider process, using these controls:
-
-- **In-process inference.** The network provider runs MLX inside its hardened process, without a separate inference server or subprocess.
-- **Runtime hardening.** `PT_DENY_ATTACH`, Hardened Runtime and coordinator-verified SIP restrict debugging, memory access and code injection.
-- **Hop-by-hop encryption.** The coordinator opens the request for routing and billing, then seals it with NaCl Box (X25519 + XSalsa20-Poly1305) to the provider's attested key. The provider process decrypts it to run the model.
-- **Provider authorization.** Complete legacy verification combines Secure Enclave signatures, MDM/MDA evidence and APNs code identity. When independently enabled and qualified, eligible macOS 27+ providers can instead use App Attest authorization without MDM. The two paths retain separate evidence; see [provider authorization](docs/reference/provider-authorization.md).
-
-These controls depend on the security of the operating system, hardware and attested software. See [privacy expectations](docs/consumer/privacy-expectations.md) for what each party can observe and what metadata is retained.
-
-The API is OpenAI- and Anthropic-compatible, so most clients work by changing one base URL.
-
----
-
-## Contents
-
-- [How it works](#how-it-works)
-- [Privacy & security](#privacy--security)
-- [Quickstart (consumers)](#quickstart-consumers)
-- [API surface](#api-surface)
-- [Models](#models)
-- [Pricing](#pricing)
-- [Run a provider](#run-a-provider)
-- [Self-route & direct mode](#self-route--direct-mode)
-- [Repository layout](#repository-layout)
-- [Development](#development)
-- [Documentation](#documentation)
-- [License & disclaimer](#license--disclaimer)
-
----
-
-## How it works
-
-```mermaid
-flowchart LR
-    U["<b>Consumer</b><br/>OpenAI / Anthropic SDK · curl · Web UI"]
-    subgraph coord["Coordinator · Go · GCP Confidential VM (AMD SEV)"]
-        CO["Auth · Routing · Billing<br/>Attestation · Encrypted transport"]
-    end
-    subgraph prov["Provider · Swift CLI · hardened macOS process"]
-        P["mlx-swift-lm (in-process)"] --> G["Apple Silicon GPU (Metal)"]
-    end
-
-    U -->|"HTTPS · OpenAI-compatible<br/>TLS + optional NaCl Box"| CO
-    CO -->|"WebSocket · outbound from provider<br/>mandatory per-request NaCl Box"| P
-    P -.->|"encrypted SSE chunks"| CO
-    CO -.->|"streamed response"| U
+```text
+Darkbloom/
+  d-inference/          Swift provider, local native APIs, MLX and landing
+  darkbloom-platform/   Coordinator, prompt sidecar, consumer console and admin
 ```
 
-A consumer calls the coordinator over a standard HTTPS, OpenAI-compatible API. The **coordinator** is a Go control plane running in a Confidential VM; it authenticates the request, picks a provider, handles billing, and relays the encrypted payload. **Providers** are Apple Silicon Macs running the `darkbloom` Swift CLI; they connect *outbound* over WebSocket — **no port forwarding or inbound firewall changes are needed** — decrypt the request inside a hardened process, and run inference in-process on the GPU via MLX.
+Centralized backend, console and admin code belongs exclusively in
+[darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d).
+Never implement, commit, push or upload that code here. Device-local Swift APIs
+remain provider code. Check `git remote -v` and the intended diff before pushing.
 
-## Privacy & security
+Source ownership does not grant deployment authority. Infrastructure, hosting
+and traffic changes require specific human approval. Release/model registration
+remains an external API operation.
 
-Plaintext exists in the coordinator's Confidential-VM memory while it handles the request and inside the provider process while it runs inference. The coordinator writes no prompt or completion content to logs or storage. Provider hardening and attestation constrain which process can decrypt and use that content.
+## Run A Provider
 
-### Encryption, hop by hop
+Start with [installation](docs/provider/installation.md), then
+[quickstart](docs/provider/quickstart.md). Use [direct mode](docs/provider/direct-mode.md)
+for local inference, [hardware requirements](docs/provider/hardware-requirements.md)
+for model fit, and [cache storage](docs/provider/cache-storage.md) for encrypted
+SSD storage and daily write limits.
 
-```mermaid
-sequenceDiagram
-    participant C as Consumer
-    participant K as Coordinator (CVM)
-    participant P as Provider (Secure Enclave-bound)
+The provider is the plaintext inference endpoint. Network encryption does not
+hide prompts from that process or from the coordinator's transient request
+processing. See the [encryption and storage trust model](docs/architecture/security/encryption.md)
+and [provider attestation](docs/provider/attestation.md); do not infer security
+guarantees from a repository split.
 
-    C->>K: Request over TLS<br/>(optionally NaCl Box-sealed to coordinator key)
-    Note over K: Decrypts in CVM memory for routing + billing.<br/>Never logs or retains prompt content.
-    K->>P: Re-encrypts body with a fresh ephemeral key →<br/>provider's attested X25519 key (mandatory NaCl Box)
-    Note over P: Only the hardened provider process decrypts.<br/>Runs inference in-process on the GPU.
-    P-->>K: Response SSE chunks encrypted to<br/>coordinator's ephemeral key
-    K-->>C: Relays response (re-sealed if sender encryption is on)
-```
+## Develop
 
-| Hop | Protection |
-|-----|------------|
-| Consumer → Coordinator | TLS by default; **optionally** NaCl Box-sealed to the coordinator's X25519 key (`GET /v1/encryption-key`) |
-| Inside Coordinator | Decrypts in Confidential-VM memory for routing & billing only; **never logs or retains prompt content** |
-| Coordinator → Provider | **Mandatory** per-request NaCl Box to the provider's attested X25519 key, with a fresh ephemeral key per request |
-| Provider → Coordinator | Response chunks encrypted back to the coordinator's ephemeral key |
-
-The [encryption reference](docs/architecture/security/encryption.md) defines the keys, endpoint visibility and retained metadata for each hop. Sender sealing terminates at the coordinator; it does not hide the request from the coordinator or the provider process.
-
-### Provider hardening
-
-| Layer | What it does |
-|-------|--------------|
-| In-process inference | MLX runs inside the provider process — no subprocess, local server, or IPC to observe |
-| Hardened Runtime + SIP | Blocks debugger attachment, memory reads, and code injection; immutable for the process lifetime |
-| `PT_DENY_ATTACH` | Kernel-level denial of debugger attach |
-
-### Attestation & trust
-
-```mermaid
-flowchart TB
-    SE["Secure Enclave P-256 key<br/>hardware-bound, keychain-ACL"] --> SIG["Signs attestation blob"]
-    SIG --> SS["<b>self_signed</b>"]
-    SS --> MDM["MDM SecurityInfo cross-check<br/>SIP · Secure Boot · FileVault"]
-    MDM --> MDA["Apple MDA certificate chain<br/>Enterprise Attestation Root CA"]
-    MDA --> HW["<b>hardware</b>"]
-    HW --> APNS["APNs code-identity attestation (v0.6.0+)<br/>proves the running binary is genuine"]
-    CHAL["Challenge-response every 5 min<br/>re-verifies SIP / Secure Boot"] -.-> SS
-    CHAL -.-> HW
-```
-
-Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go`](coordinator/api/inference/dispatch.go) (`commitFirstContent`) and [`response_metadata.go`](coordinator/api/inference/response/response_metadata.go) (`WriteCommittedProviderHeaders`).
-
-| Level | Verification |
-|-------|--------------|
-| `none` | No attestation — not admitted for private text traffic |
-| `self_signed` | Secure Enclave P-256 signature + periodic challenge-response |
-| `hardware` | MDM enrollment + Apple Managed Device Attestation (MDA) certificate chain |
-
-The strongest live-network gate is **APNs code-identity attestation**, which proves the running provider binary is genuine and team-provisioned. Privacy-redacted provider trust status is public at **`GET /v1/providers/attestation`**; hardware serials, UDIDs, and raw Apple certificates remain private to providers and the coordinator.
-
-## Quickstart (consumers)
-
-The API is OpenAI-compatible — point any OpenAI SDK at the Darkbloom base URL.
-
-**Base URL:** `https://api.darkbloom.dev/v1`
-**Auth:** `Authorization: Bearer <key>`, where `<key>` is an API key (`sk-db-…`, created in the [console](https://console.darkbloom.dev)) or a Privy session JWT.
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="https://api.darkbloom.dev/v1",
-    api_key="sk-db-...",
-)
-
-stream = client.chat.completions.create(
-    model="gemma-4-26b",                       # use an id from GET /v1/models
-    messages=[{"role": "user", "content": "Hello, Darkbloom!"}],
-    stream=True,
-)
-for chunk in stream:
-    if chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="")
-```
+Tool versions are in `mise.toml`; supported commands are in `Makefile`:
 
 ```bash
-curl https://api.darkbloom.dev/v1/chat/completions \
-  -H "Authorization: Bearer sk-db-..." \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemma-4-26b","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+mise install
+make provider-build
+make provider-test
+make landing
+make docs-check
 ```
 
-The **Anthropic Messages API** works too — point the Anthropic SDK at the same base URL and use `/v1/messages`.
+Provider builds require Apple Silicon, the documented Xcode toolchain, and the
+recursive MLX dependencies. See [build](docs/developer/build.md),
+[test](docs/developer/test.md), [navigation](docs/developer/navigation.md), and
+[contribution rules](CONTRIBUTING.md). Public golden vectors check fixed expected
+behavior; they are not private cross-implementation qualification or live fleet
+evidence.
 
-See [`docs/consumer/quickstart.md`](docs/consumer/quickstart.md) for authentication, streaming, and SDK details.
+## Layout
 
-## API surface
-
-OpenAI-compatible, with Anthropic Messages support. Inference endpoints require a Bearer key; reads marked *public* need no auth.
-
-| Method & path | Purpose |
-|---------------|---------|
-| `POST /v1/chat/completions` | OpenAI Chat Completions (streaming + non-streaming) |
-| `POST /v1/responses` | OpenAI Responses API (auto-detects `input` vs `messages`) |
-| `POST /v1/completions` | OpenAI legacy text completions |
-| `POST /v1/messages` | Anthropic Messages API |
-| `GET /v1/models` | List models (OpenAI shape) |
-| `GET /v1/models/{id}` | Retrieve a model |
-| `GET /v1/models/catalog` | *Public* — full model catalog with Darkbloom metadata |
-| `GET /v1/pricing` | *Public* — live per-token pricing |
-| `GET /v1/encryption-key` | *Public* — coordinator X25519 key for optional sender-side sealing |
-| `GET /v1/providers/attestation` | *Public* — privacy-redacted provider attestation status |
-| `GET /v1/payments/balance`, `GET /v1/payments/usage` | Account balance and usage |
-
-Supported across the inference endpoints: **streaming (SSE)**, **tool / function calling**, **vision / multimodal** input, **reasoning models**, and server-side **continuous batching** for throughput. `n > 1` is rejected with `400` (on chat completions and the Responses API). Unimplemented OpenAI endpoints (e.g. `/v1/embeddings`) return a structured `404`.
-
-Full request/response schemas: [`docs/reference/api-contracts.md`](docs/reference/api-contracts.md).
-
-## Models
-
-The model catalog is **owned by the coordinator** and DB-backed — there is no hardcoded model list. Consumer-facing names are stable aliases (e.g. `gemma-4-26b`, `gpt-oss-20b`) that resolve to concrete, versioned builds; aliases can be re-pointed to new builds without breaking clients. Providers download approved models from `https://models.darkbloom.ai` and verify per-file and aggregate SHA-256 hashes before serving.
-
-**The authoritative, live list is always [`GET /v1/models`](https://api.darkbloom.dev/v1/models)** (or the public `GET /v1/models/catalog`). Representative current models:
-
-| Alias | Family | Notes |
-|-------|--------|-------|
-| `gemma-4-26b` | Gemma 4 (MoE, ~4B active) | Google's latest MoE; multimodal (text + vision) |
-| `gpt-oss-20b` | GPT-OSS 20B (MoE, ~3.6B active) | OpenAI open-weight reasoning model |
-
-Quantization and exact build details evolve — query `/v1/models` rather than hardcoding them. See [`docs/consumer/models.md`](docs/consumer/models.md).
-
-## Pricing
-
-Pricing is per-token and resolved per request: a provider's custom price, else a platform price, else built-in fallbacks.
-
-| Item | Fallback default |
-|------|------------------|
-| Input tokens | $0.05 / 1M |
-| Output tokens | $0.20 / 1M |
-| Minimum charge | $0.0001 / request |
-| Platform fee | see [billing invariants](docs/architecture/billing.md#invariants) |
-
-Per-token rates target roughly half of comparable hosted APIs. **Live per-model pricing is always at [`GET /v1/pricing`](https://api.darkbloom.dev/v1/pricing).** Funding uses Stripe deposits into the internal micro-USD ledger; provider payouts run through Stripe Connect. Requests routed to your own machine via [self-route](#self-route--direct-mode) are **free**. See [`docs/reference/pricing-model.md`](docs/reference/pricing-model.md).
-
-## Run a provider
-
-Earn by serving inference on your idle Mac — and stop paying for your own usage via [self-route](#self-route--direct-mode).
-
-### Requirements
-
-| | Minimum | Recommended |
-|---|---|---|
-| **Chip** | Apple Silicon (M1+) | M1 Pro/Max/Ultra or newer |
-| **macOS** | 14 (Sonoma) | Latest stable |
-| **Memory** | 8 GB (start is rejected below 8 GB) | 32 GB+ for large or multi-model |
-| **Disk** | 50 GB free | 100 GB+ |
-| **Network** | Outbound HTTPS (443) | Low-latency path to `api.darkbloom.dev` |
-
-A model loads when it fits in available memory plus a small headroom (`weights + ~2 GB`), after the OS reserve. See [`docs/provider/hardware-requirements.md`](docs/provider/hardware-requirements.md).
-
-### Install
-
-```bash
-curl -fsSL https://api.darkbloom.dev/install.sh | bash
-```
-
-Zero prerequisites and no `sudo`. The installer fetches the latest signed release, verifies the bundle / binary / `mlx.metallib` SHA-256 against the coordinator's release record, checks the Apple Developer ID code signature, provisions the Secure Enclave helper, and offers to install the MDM enrollment profile for hardware trust. See [`docs/provider/installation.md`](docs/provider/installation.md).
-
-### First run
-
-```bash
-darkbloom start              # background launchd service (interactive model picker + memory policy)
-darkbloom start --schedule   # optional availability wizard before background startup
-darkbloom start --foreground # run attached to the terminal
-darkbloom idle keep-loaded   # keep models loaded while idle (instant responses); default frees after 60 min
-darkbloom login              # link your account (RFC 8628 device-code flow)
-darkbloom status             # config, hardware, schedule, live trust verdict
-darkbloom doctor             # local diagnostics + coordinator's trust view
-```
-
-[`docs/provider/quickstart.md`](docs/provider/quickstart.md) walks through the full flow.
-
-Ordinary `start` does not prompt for a schedule. Use `darkbloom schedule` to edit
-saved availability without starting or stopping the service,
-`darkbloom schedule --show` to inspect it, or `darkbloom schedule --disable` to turn scheduling off
-without deleting saved windows. See the [schedule CLI reference](docs/provider/cli-reference.md#darkbloom-schedule)
-for presets, loading choices, custom configuration paths and restart requirements.
-
-### CLI reference
-
-| Command | Purpose |
-|---------|---------|
-| `start` | Start serving (launchd daemon, `--foreground`, or `--local`) |
-| `schedule` | Edit, show or disable saved weekly provider availability |
-| `stop` / `restart` | Stop (`--uninstall` removes the agent) / restart in place |
-| `status` | Hardware, config, schedule, and live daemon/trust state |
-| `doctor` / `verify` | Diagnostics (`verify` = strict, non-zero on any warning) |
-| `models` | `catalog`, `list`, `download`, `remove` cached models |
-| `login` / `logout` | Link / unlink the provider to a Darkbloom account |
-| `enroll` / `unenroll` | MDM enrollment for hardware-trust attestation |
-| `benchmark` | Local tokens/sec benchmark |
-| `update` | Check for and apply provider updates |
-| `logs` | Tail provider logs |
-
-There is **no** `serve` or `earnings` command — use `start`, and view earnings in the [console](https://console.darkbloom.dev). Full flags: [`docs/provider/cli-reference.md`](docs/provider/cli-reference.md).
-
-### Configuration
-
-Config lives at `~/.config/darkbloom/provider.toml` (created on first start):
-
-```toml
-[provider]
-name = "darkbloom-mac-1"
-memory_reserve_gb = 4
-auto_update = true
-auto_restart = true
-
-[backend]
-enabled_models = []        # empty = advertise all downloaded models
-idle_timeout_mins = 60     # free when idle: unload after N idle minutes, reload on demand (0 = always ready)
-max_model_slots = 3        # max models resident at once
-continuous_batching = true
-
-[gemma_optimizations]
-prefill_layer18 = true     # default ON; 18-layer prefill submissions
-weighted_r1 = true         # default ON; coupled weighted-unsort + safe R1
-
-[coordinator]
-url = "wss://api.darkbloom.dev/ws/provider"
-heartbeat_interval_secs = 5
-private_only = false       # true = serve only your own self-route traffic
-
-# Optional availability windows — outside them the node disconnects and frees GPU memory
-[schedule]
-enabled = true             # windows only take effect when this is true
-
-[[schedule.windows]]
-days  = ["mon", "tue", "wed", "thu", "fri"]
-start = "22:00"
-end   = "08:00"
-```
-
-`[gemma_optimizations]` is authoritative for production provider processes.
-Both selected controls default to `true` even when an older config omits the
-section. To roll back either optimization, set its key to `false` and run
-`darkbloom restart`; restart is the activation boundary.
-
-## Self-route & direct mode
-
-Running a node also makes your **own** inference free.
-
-- **Self-route** — *"use my own machine, for free."* Add `X-Darkbloom-Route: self` to any request to route **only** to a provider your account owns, through the same encrypted coordinator hops, with no fallback to the paid fleet (you get an explicit error if your machine can't serve). `X-Darkbloom-Route: prefer` routes to your machine first but falls back to the paid fleet so you're never stuck. An API key can also be pinned to owned-only with `self_route_only`. See [`docs/provider/self-route.md`](docs/provider/self-route.md).
-
-- **Direct mode** — when the client can reach your Mac (same machine / LAN / tailnet), `darkbloom start --local` serves an OpenAI-compatible endpoint locally and **skips the coordinator entirely**: lowest latency, offline-capable, bytes never leave your network. See [`docs/provider/direct-mode.md`](docs/provider/direct-mode.md).
-
-## Repository layout
-
-| Path | Language | Role |
-|------|----------|------|
-| `coordinator/` | Go | Control plane: OpenAI/Anthropic API, routing, attestation, billing, model registry |
-| `coordinator/internal/` | Go | Focused production components behind application and domain-owner contracts |
-| `coordinator/tests/` | Go | Separate mirrored test tree, HTTP/WS contract suites and isolated backend fixtures |
-| `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
-| `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
-| `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
-| `landing/` | Next.js 16 / React 19 | [Darkbloom marketing site](landing/README.md), imported from eigen-homepages |
-| `e2e/` | Go | System-level end-to-end & load test harness |
-| `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers, docs lint (`docs-check.sh`, `docs-stamp.sh`) |
-| `libs/` | Git submodules | Pinned forks of `mlx`, `mlx-swift`, `mlx-swift-lm` compiled into the provider |
-| `docs/` | Markdown | How-tos, runbooks, reference, architecture, design records, dated reports — map in [`docs/README.md`](docs/README.md), rules in [`docs/AGENTS.md`](docs/AGENTS.md) |
-
-The coordinator and provider share WebSocket message types that must stay in sync (`coordinator/protocol/` ↔ `provider-swift/Sources/ProviderCore/Protocol/`).
-Coordinator assembly and package boundaries are mapped in
-[`docs/architecture/components/coordinator.md`](docs/architecture/components/coordinator.md);
-test selectors, fixture ownership and production coverage are in
-[`docs/developer/test.md`](docs/developer/test.md).
-
-## Development
-
-```bash
-# Run these commands from the repository root.
-# Coordinator (Go)
-go test ./coordinator/...
-make coordinator-build-linux                  # → coordinator/coordinator-linux
-
-# Provider (Swift) — depends on libs/mlx-swift and libs/mlx-swift-lm submodules
-(cd provider-swift && swift test)
-(cd provider-swift && swift build -c release)    # → provider-swift/.build/release/darkbloom
-
-# Console UI (Next.js 16)
-(cd console-ui && npm ci && npm run dev)
-(cd console-ui && npm run build && npm test)     # production build + vitest
-```
-
-Build, test, and release details: [`docs/developer/build.md`](docs/developer/build.md), [`docs/developer/test.md`](docs/developer/test.md), [`docs/operations/provider-release.md`](docs/operations/provider-release.md).
-
-## Documentation
-
-Full technical docs live in [`docs/`](docs/README.md). Starting points:
-
-| You want to… | Start here |
+| Path | Ownership |
 |---|---|
-| Call the API | [`docs/consumer/quickstart.md`](docs/consumer/quickstart.md) |
-| Understand the system | [`docs/architecture/overview.md`](docs/architecture/overview.md) |
-| Understand the privacy model | [`docs/architecture/security/encryption.md`](docs/architecture/security/encryption.md) |
-| Run a provider node | [`docs/provider/installation.md`](docs/provider/installation.md) → [`docs/provider/quickstart.md`](docs/provider/quickstart.md) |
-| Verify a provider's attestation | [`docs/consumer/verification.md`](docs/consumer/verification.md) |
-| Build or contribute | [`docs/developer/build.md`](docs/developer/build.md) |
-| Find third-party library credits | [Third-party acknowledgements](ACKNOWLEDGEMENTS.md) |
+| `provider-swift/` | CLI, on-device services, inference, security and tests |
+| `libs/` | Pinned native MLX dependencies |
+| `landing/` | Independent Next.js marketing site and its API routes |
+| `fixtures/` | Public, revision-bound test inputs |
+| `scripts/` | Provider builds, native qualification, install and publication helpers |
+| `docs/` | Provider/native explanations, references, operations and historical evidence |
 
-## License & disclaimer
+See the [documentation index](docs/README.md). Platform API and consumer guides
+are maintained in the [platform documentation](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs).
+Existing [changelog history](CHANGELOG.md) remains a record of work before and
+after the ownership split, not evidence of a new release or deployment.
 
-Proprietary. All rights reserved.
+## License
 
-> 🚧 Darkbloom is under active development and has not been audited. It is upgraded rapidly; features may be added, removed, or changed, and interfaces will have breaking changes. Use it for testing only, not in production. Darkbloom is provided "as is" and Eigen Labs, Inc. does not guarantee its functionality or provide production support. 🚧
-
-**Security bugs:** report vulnerabilities to **security@eigenlabs.org** — *not* via GitHub Issues.
+See [LICENSE](LICENSE) and [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md). Published
+[privacy](docs/legal/privacy-policy.md) and [terms](docs/legal/terms-of-service.md)
+remain unchanged by source cleanup.

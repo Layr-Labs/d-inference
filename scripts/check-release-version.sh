@@ -20,17 +20,10 @@ read_version() {
 PROVIDER_VERSION=$(read_version \
     "$ROOT/provider-swift/Sources/ProviderCore/ProviderCore.swift" \
     'public static let version =')
-COORDINATOR_VERSION=$(read_version \
-    "$ROOT/coordinator/api/server.go" \
-    'var LatestProviderVersion =')
 
 SEMVER='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
 if [[ ! "$PROVIDER_VERSION" =~ $SEMVER ]]; then
     echo "release version check: invalid ProviderCore.version: $PROVIDER_VERSION" >&2
-    exit 1
-fi
-if [ "$PROVIDER_VERSION" != "$COORDINATOR_VERSION" ]; then
-    echo "release version check: provider=$PROVIDER_VERSION coordinator=$COORDINATOR_VERSION" >&2
     exit 1
 fi
 if [ -n "$EXPECTED" ]; then

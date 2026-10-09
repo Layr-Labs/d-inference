@@ -14,12 +14,11 @@ body:
     attributes:
       label: Component
       options:
-        - coordinator (Go)
-        - provider (Rust, legacy)
         - provider-swift (Swift CLI)
-        - console-ui (Next.js)
+        - native runtime / MLX
+        - landing (Next.js)
         - enclave (Swift Secure Enclave helper)
-        - infra / deploy / CI
+        - CI / provider release
         - docs
     validations:
       required: true

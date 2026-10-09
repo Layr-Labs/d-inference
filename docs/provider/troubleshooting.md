@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -189,7 +189,7 @@ the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts); all othe
 IDs remain contiguous. Automatic paged failures still fall back to contiguous.
 Explicit settings, capability/span-mask vetoes and `DARKBLOOM_CBV2_PAGED_KV=0`
 still apply, so clearing the guard does not guarantee paged service. The
-[Qwen-first rollout](../design/qwen-first-paged-ssd-rollout.md) is **not yet
+[Qwen-first rollout](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/qwen-first-paged-ssd-rollout.md) is **not yet
 validated**; clearing a guard is not validation of that rollout.
 
 `kv backend posture` ✗ means an explicit backend request was refused or the

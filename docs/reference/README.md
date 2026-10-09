@@ -1,49 +1,15 @@
-# Reference — exact shapes and values
+# Provider Reference
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-09
 
-Tables and schemas for Darkbloom's public interfaces, wire protocol,
-configuration, and formats. Consult these; do not read them front to back.
-Every row cites the code that defines it. For how and why things work, use
-[`../architecture/README.md`](../architecture/README.md).
+Exact public wire shapes, manifests and local configuration.
 
-[App Attest shadow protocol](app-attest-shadow.md) defines the coexistence exchange, observations, storage, and packaging requirements.
-
-[Provider serving authorization](provider-authorization.md) defines independent legacy/App Attest authorization, expiry, revocation and MDM-removal readiness.
-
-## Interfaces
-
-| Page | Content |
-|---|---|
-| [api-contracts.md](api-contracts.md) | Every coordinator HTTP route: method, path, auth, request and response shapes, headers, status codes, SSE framing |
-| [protocol-messages.md](protocol-messages.md) | Every WebSocket message between coordinator and provider, field by field, with the Go and Swift types |
-
-## Configuration and schemas
-
-| Page | Content |
-|---|---|
-| [configuration.md](configuration.md) | Every environment variable of the coordinator, provider CLI, console UI, and admin UI: default, where read, effect |
-| [prediction-decision-telemetry.md](prediction-decision-telemetry.md) | Coordinator policy and encoded budget, provider prediction/verdict, observation boundaries and compatibility |
-| [telemetry-schema.md](telemetry-schema.md) | Telemetry event shape in its Go/Swift/TypeScript mirrors, closed enums, call-site-fixed fields and casing rules pinned by the symmetry tests |
-| [telemetry-inventory.md](telemetry-inventory.md) | Every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file |
-| [personal-data-rules.md](personal-data-rules.md) | Account erasure: every personal column and its rule, retained data with reasons, outbox targets, erasure table schemas, constants |
-| [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, formulas, every billing constant (single home for money constants), routes, service accounts |
-| [model-registry-format.md](model-registry-format.md) | Manifest schema, registration payload, alias format |
-| [soft-delete.md](soft-delete.md) | Tables with `deleted_at`, every store read that hides a soft-deleted row (Postgres and MemoryStore), unfiltered paths, indexes, effects |
-| [sqlc-type-mapping.md](sqlc-type-mapping.md) | Postgres type and nullability → generated Go type in `coordinator/store/postgres/storedb`, the `sqlc.yaml` flag that causes it, and the store conversion |
-| [qwen4-next-support.md](qwen4-next-support.md) | Native Flash-Next private serving/state contract and pending qualification; not a catalog or release claim |
-
-## Prefix cache formats
-
-| Page | Content |
-|---|---|
-| [ssd-kv-cache.md](ssd-kv-cache.md) | DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status and outcome vocabularies |
-
-## Vocabulary
-
-| Page | Content |
-|---|---|
-| [`../glossary.md`](../glossary.md) | Canonical term for each thing and the page that owns its definition |
-
-Superseded designs (for example the pre-v0.7.5 SSD cache design) live under
-[`../design/README.md`](../design/README.md).
+- [App Attest shadow protocol, machine inventory, and evidence](app-attest-shadow.md)
+- [Configuration reference](configuration.md)
+- [Model registry format](model-registry-format.md)
+- [Prediction decision telemetry](prediction-decision-telemetry.md)
+- [Provider ↔ coordinator protocol messages](protocol-messages.md)
+- [Provider Serving Authorization](provider-authorization.md)
+- [Qwen 3.8 Next (Flash-Next) native support reference](qwen4-next-support.md)
+- [SSD KV cache reference](ssd-kv-cache.md)
+- [Telemetry event schema](telemetry-schema.md)

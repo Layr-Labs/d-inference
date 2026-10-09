@@ -42,11 +42,8 @@ struct DeadlineDecisionProfileTests {
 
     @Test("unbounded reason vocabulary matches the coordinator fixture")
     func coordinatorReasonParity() throws {
-        let fixtureURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("coordinator/tests/protocol/testdata/deadline_unbounded_reasons.json")
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "deadline_unbounded_reasons", withExtension: "json", subdirectory: "Fixtures/Protocol"))
         struct Fixture: Decodable { let reasons: [String] }
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: fixtureURL))
         #expect(DeadlineUnboundedReason.allCases.map(\.rawValue) == fixture.reasons)

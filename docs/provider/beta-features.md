@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-09-27
+> Last updated: 2026-10-09
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
@@ -83,7 +83,7 @@ so an environment-variable toggle would silently no-op for the normal daemon
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`, `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT`, `MLX_GATHER_QMM_EXPERT_SLICES` | **Outputs**, not inputs: `GemmaOptimizationEnvironment.apply` overwrites them from config at every serve start. The single exception is a shell `MLX_GATHER_QMM_EXPERT_SLICES=1`, which restores the descriptor-retract drain instead of the `trust` default and is copied into the daemon plist for that reason | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` (`projection`, `daemonDrainPassthrough`) |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | Tighten-only cap on MTP verification width; passthrough-listed | [`reference/configuration.md`](../reference/configuration.md) |
 
-The [Qwen-first paging rollout](../design/qwen-first-paged-ssd-rollout.md) is
+The [Qwen-first paging rollout](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/qwen-first-paged-ssd-rollout.md) is
 **not yet validated**. Its candidate backend selection does not change the
 [SSD-enabled, no-resident-retention defaults](../architecture/prefix-cache.md#invariants)
 or enable coordinator cache routing.

@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -10,7 +10,7 @@ Read this to understand why a box
 serves a repeated prompt cold or warm; for the file format and every SSD knob
 see [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md), and for the
 coordinator's use of cache state in routing see
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
 
 ## Context
 
@@ -95,12 +95,12 @@ Complete Qwen checkpoints support native contiguous and segmented paged storage.
 Historical attention checkpoints require the resolved paged backend and an exact
 loaded layer/owner/type map; ordinary attention snapshots remain a separate codec.
 
-**Release acceptance remains incomplete.** The [final versioned build](../reports/2026-09-07-release090-final-build.md),
-[Qwen 3.5/3.6 concurrency checks](../reports/2026-09-07-qwen-concurrency-final.md)
+**Release acceptance remains incomplete.** The [final versioned build](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-07-release090-final-build.md),
+[Qwen 3.5/3.6 concurrency checks](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-07-qwen-concurrency-final.md)
 and [memory lifecycle checks](../reports/2026-09-06-coresidency-lifecycle.md)
 record completed validation. Final sustained, connected-serving, quality and
 production-key restart checks remain subject to the
-[acceptance criteria](../design/release-090-acceptance.md).
+[acceptance criteria](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
 defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
 `gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
@@ -153,7 +153,7 @@ still gate cache construction in `EngineV2SlotFactory`.
 `BonsaiEncryptedCheckpointLiveTests` exercises an encrypted full checkpoint
 with a fixture key and real weights; it does not establish signed Keychain
 persistence or hosted routing readiness. Use the
-[Bonsai rollout procedure](../operations/cache-routing-rollout.md#add-bonsai-to-an-existing-routing-cohort)
+[Bonsai rollout procedure](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#add-bonsai-to-an-existing-routing-cohort)
 to qualify the final signed artifact and add its exact coordinator tuple.
 
 ### Flash-Next complete state
@@ -182,7 +182,7 @@ those promises as contiguous-style request reservations. Contiguous slots retain
 their existing provider reservation path. See
 [process ownership](hardware-support.md#process-ownership).
 
-The [provider integration report](../reports/2026-09-05-paged-complete-provider.md)
+The [provider integration report](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-05-paged-complete-provider.md)
 records factory and ownership tests, with exact-model and release gates still open.
 
 ### Block hashing
@@ -196,7 +196,7 @@ on that stride; `acceptsCheckpoint` still enforces the 1,024-token floor and
 block alignment on the provider. The coordinator's promptsidecar computes the same chain
 (`darkbloom-block-chain-v1`, `PromptContractIdentity.blockHashVersion`) so it
 can predict which provider holds a prefix — see
-[`prompt-contract-sidecar.md`](prompt-contract-sidecar.md).
+[prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md).
 
 Each ordinary COMPLETE donation hashes only through its validated checkpoint
 position, bounded by the same backend lookup maximum. Earlier retained windows
@@ -349,7 +349,7 @@ It requires verified weight and prompt-contract identities to advertise
 weight hash because entries never cross loaded model instances. Paged resident
 hits report the memory tier locally but do not yet publish coordinator holder
 anchors. Resident and durable SSD routing evidence remain separate; see
-[`cache-aware-routing.md`](cache-aware-routing.md).
+[cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
 
 ### SSD provider gates
 
@@ -441,7 +441,7 @@ state validation. Missing/replaced indexed files and corruption reconcile only t
 entries, preserving the current per-file eviction policy. Binding drift and
 whole-root rebuilds retain their epoch barriers; unloaded-root maintenance
 validates the durable record without rotating it.
-See [routing evidence lifecycle](cache-aware-routing.md) and
+See [routing evidence lifecycle](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md) and
 [eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
@@ -464,7 +464,7 @@ or above the store's 1,024-token floor, so a donor prefilled in 512-token
 chunks retains 1,024 first. The durable path skips the prompt end itself
 because export needs a token after the checkpoint; the resident
 bank keeps that endpoint, since a longer next turn restores it. The rule rests on the
-[chunk-partition parity measurement](../reports/2026-09-27-qwen-chunk-partition-parity.md):
+[chunk-partition parity measurement](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-27-qwen-chunk-partition-parity.md):
 on dense Qwen3.5-9B the recurrent state at a boundary is bit-identical under
 every partition tried and a restore continues token-exactly under any
 partition; on the MoE Qwen3.6-35B-A3B the state depends on the partition from
@@ -547,9 +547,9 @@ canonical `nvidia-nemotron-3.5-lightning` ID, the qualified model aggregate,
 actual `NemotronH35Model` with nonempty recurrent state, and a store minimum of
 at least 1,024 tokens. Aliases, replacement weights and other recurrent families
 remain excluded; the historical evidence and three-pair limits are recorded in the
-[all-model qualification report](../reports/2026-10-03-all-model-prefix-qualification.md).
+[all-model qualification report](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-03-all-model-prefix-qualification.md).
 Those measurements remain bound to their recorded sources and runtime settings;
-they do not qualify the [current combined dependency pins](../developer/build.md#pinned-mlx-dependencies).
+they do not qualify the [current combined dependency pins](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/build.md#pinned-mlx-dependencies).
 Bonsai additionally requires canonical `ternary-bonsai-2-27b`, aggregate
 `ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c`,
 the actual final `PrismHadamardQwen35` wrapper with nonempty recurrent state,
@@ -712,7 +712,7 @@ capacity and exactness gates still decide whether adoption can proceed
 (`EngineV2Bridge+SSDPrefixCache.swift`, `SSDPrefixCache+StagePlan.swift`).
 
 Coordinator receipt negotiation and local Go tests are recorded in
-[`cache-aware-routing.md`](cache-aware-routing.md). The initial complete SSD
+[cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md). The initial complete SSD
 implementation passed [121 native tests](../reports/evidence/ssd-prefix-2026-09-05/native-initial/manifest.json)
 and [266 focused provider tests](../reports/evidence/ssd-prefix-2026-09-05/provider-initial/manifest.json).
 The combined follow-up source snapshot, including bounded attention reads,
@@ -743,7 +743,7 @@ checkpoint ownership remain authoritative. Nested scopes release independently;
 ending a transfer never makes a previously captured calibration guard valid
 again (`SSDPrefixCache`, `SSDHybridCheckpointStore`,
 `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/WholeMacUnboundedActivity.swift`).
-See [first-content routing](first-content-routing.md) for the calibrated-work
+See [first-content routing](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/first-content-routing.md) for the calibrated-work
 rules applied to these signals.
 
 ## Invariants
@@ -784,7 +784,7 @@ rules applied to these signals.
 | `pending` / `scan_pending`, `error` / `scan_failed` | Startup disk scan not finished or failed | `SSDPrefixCache.swift` |
 | SSD repeat served cold | Prefix shorter than one block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |
 | Recurrent repeat served cold | No actual checkpoint, incompatible geometry/identity, scope mismatch, SSD stage refusal/eviction, or opt-in memory bank eviction | `HybridPrefixCache.swift`, `EngineLoopV2+HybridPrefix.swift`, `PrefixCachePolicy+Hybrid.swift` |
-| Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, `coordinator/registry/cache_routing_hints.go` |
+| Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, [coordinator/registry/cache_routing_hints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_routing_hints.go) |
 | Load refused with `pagedUnavailable` | Explicit `paged` and preflight/capacity/pool construction failed | `EngineV2Factory+BackendPreparation.swift` |
 | Every slot contiguous despite `paged` config | `DARKBLOOM_CBV2_PAGED_KV` set to a negative value, or `supportsPagedKV == false` | `EngineV2KVBackendPolicy.swift`, `EngineV2Factory+BackendPreparation.swift` |
 
@@ -812,7 +812,7 @@ rules applied to these signals.
 ## Related
 
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — DBK3 format, paths, env knobs, eviction, per-family table
-- [`cache-aware-routing.md`](cache-aware-routing.md) — how the coordinator consumes cache state
+- [cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md) — how the coordinator consumes cache state
 - [`inference.md`](inference.md) — the request path this cache sits in
 - [`hardware-support.md`](hardware-support.md) — the KV budget the grants come from
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/kv-cache-lookup-shadowing.md`](../design/kv-cache-lookup-shadowing.md) — superseded design records

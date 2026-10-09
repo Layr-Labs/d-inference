@@ -3523,9 +3523,24 @@ threats:
       - coordinator/api/accounts/erasure/handlers.go
       - coordinator/api/accounts/erasure/loop.go
       - coordinator/auth/privy.go
+      - coordinator/auth/privy_delete_user.go
+      - coordinator/api/access/auth.go
       - coordinator/api/accounts/erasure/outbox.go
       - coordinator/api/accounts/erasure/outbox_redaction.go
       - coordinator/billing/stripe_redaction.go
+      - coordinator/internal/store/erasure/mdm.go
+      - coordinator/store/postgres/users.go
+      - coordinator/store/memory/users.go
+      - coordinator/store/postgres/apikey.go
+      - coordinator/store/postgres/device_auth.go
+      - coordinator/store/memory/apikey.go
+      - coordinator/store/memory/device_auth.go
+      - coordinator/store/postgres/rejections.go
+      - coordinator/store/postgres/model_prices.go
+      - coordinator/store/postgres/queries/erasure.sql
+      - coordinator/store/postgres/queries/api_keys.sql
+      - coordinator/store/postgres/schema/migrations/00033_erasure_outbox_privy_user.sql
+      - coordinator/store/postgres/schema/migrations/00034_erasure_revoked_credentials.sql
     mitigations:
       - description: >
           The plan returns the account email and a 15-minute confirm token; the token
@@ -3555,7 +3570,38 @@ threats:
           usable. Checkout revalidates its captured referrer identity and
           the webhook uses local attribution instead of old personal metadata. Marker tests search every text, JSON,
           array and bytea column (and every MemoryStore value) after a scrub of the
-          seeded tables.
+          seeded tables. A late rejection record of an erased account keeps no model
+          names or parameters, and a price write is refused from the confirm on.
+          The plan lists the Macs for manual MicroMDM removal with the scrub's
+          historical and shared ownership rules, and leaves out a Mac that another
+          account can still use.
+        status: implemented
+      - description: >
+          Cancel restores credentials by provenance, not by timestamp. The confirm
+          lists in erasure_revoked_credentials, in its own transaction, each API key
+          and provider token that it changed from live to revoked, and marks the
+          request credential_provenance 1. Cancel restores only listed credentials
+          that are still inactive with deleted_at equal to requested_at. A revoke
+          during the grace period (RevokeKey, RevokeProviderToken) deletes the list
+          row first, so a key that leaked stays revoked. A request confirmed before
+          migration 34 has no list and restores no credential. The scrub deletes the
+          list, and a scrubbed request cannot be canceled.
+        status: implemented
+      - description: >
+          Privy user deletion is irreversible and authenticated by the app secret.
+          The scrub stores the original DID only in the privy_user outbox row
+          (erasure_outbox.external_id), never in the status API or an error text,
+          and the worker clears it when the row is done. The worker leases only rows
+          of erased requests (LeaseDueErasureOutbox), so the deletion runs only after
+          the scrub commits; CancelAccountErasure requires a pending request, so no
+          cancel can follow a deletion. The DID comes from the erased account's own
+          users row in the scrub transaction, not from input. From the confirm until
+          the row is done, CreateUser refuses the DID under advisory lock
+          (714321, hashtext(DID)), and a login answers 403 account_pending_deletion.
+          Under the same lock the worker checks that no live account holds the DID;
+          if one does (made by an older build), it does not delete the Privy user
+          and moves the row to manual_action. After the deletion a token of the DID
+          gets 401, because Privy answers 404 for the user and no account is made.
         status: implemented
       - description: >
           Backups, point-in-time recovery and Datadog logs keep data until their

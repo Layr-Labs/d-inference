@@ -472,19 +472,22 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
+    public var cache: CacheSettings
 
     public init(
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
-        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings()
+        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
+        cache: CacheSettings = CacheSettings()
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
+        self.cache = cache
     }
 
     enum CodingKeys: String, CodingKey {
@@ -493,6 +496,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case coordinator
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
+        case cache
     }
 
     public init(from decoder: Decoder) throws {
@@ -504,6 +508,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.gemmaOptimizations = try container.decodeIfPresent(
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
+        self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
+        try self.cache.validate()
     }
 
     /// Generate a default config based on detected hardware.

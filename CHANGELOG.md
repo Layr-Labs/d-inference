@@ -4,6 +4,10 @@
 
 - Make typical MTP acceptance a per-model opt-in with an `exact` default. This reverses the typical default from #1376: typical acceptance is not yet benchmarked. Only `[backend.mtp_acceptance_by_model]` with an exact model ID selects `typical` or `exact`; every other model uses `exact`. The global `[backend] mtp_acceptance` key is retired: it still parses, selects nothing, and logs one startup warning that names `mtp_acceptance_by_model`. A slot that cannot honour `typical` (MTP off, or a drafter without target-prefix acceptance, such as native MiMo) installs `exact`, logs one warning, and reports `exact` in slot posture telemetry. The benchmark-only `DARKBLOOM_MTP_ACCEPTANCE` override and its `exact` default are unchanged.
 
+## Unreleased — provider cache storage controls
+
+- Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.
+
 ## Unreleased — Member-only automatic security clearance
 
 - Limit scan-only merge clearance to verified active Layr-Labs organization members. Non-members, bots and unavailable membership require independent formal human review. Use a separate read-only membership token and retain ordinary CI and current-revision checks.

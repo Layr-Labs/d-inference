@@ -29,7 +29,9 @@ struct DistributedHTTPTerminalIntegrationTests {
         #expect(try await httpDeliveryEventually { session.base.reserveCount == 1 })
         let lease = session.base.last
         #expect(try await httpDeliveryEventually { lease.cancelCount == 1 })
-        #expect(lease.releaseCount == 0 && completed.finishCount == 0)
+        // The deadline failed the request: its error frame may already have
+        // reached the client, but the native request is still owned.
+        #expect(lease.releaseCount == 0)
         session.invalidatePairBeforeStatusCallback()
         #expect(try await localHostEventually { await host.status.phase == .stopping })
         // The error frame is written when the deadline fails the request; the

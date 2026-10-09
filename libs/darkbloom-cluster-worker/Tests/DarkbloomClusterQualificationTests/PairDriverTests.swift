@@ -12,7 +12,7 @@ private final class Sides {
     private(set) var sides: [PairSide] = []
 
     init(modes: [String], skews: [Int64] = [0, 0], evidenceTokenDelta: Int = 0, evidenceDeltaRanks: [Int] = [1],
-         alterWorker: Bool = false, alterMetallib: Bool = false) throws {
+         alterWorker: Bool = false, alterMetallib: Bool = false, removeProgressGuard: Bool = false) throws {
         let files = FileManager.default
         root = files.temporaryDirectory.appendingPathComponent("pair-check-\(UUID().uuidString.lowercased())")
         let fake = try Self.fakeWorker()
@@ -23,6 +23,12 @@ private final class Sides {
             let worker = side.appendingPathComponent("darkbloom-cluster-worker")
             var bytes = try Data(contentsOf: fake)
             if alterWorker && rank == 1 { bytes.append(0) }
+            if removeProgressGuard {
+                // The same edit on both sides: a worker built on the stock JACCL
+                // does not contain the name the guard reads. Never executed.
+                let marker = Data(PairConfiguration.progressGuardMarker.utf8)
+                while let range = bytes.range(of: marker) { bytes[range.lowerBound] = UInt8(ascii: "X") }
+            }
             try bytes.write(to: worker)
             try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: worker.path)
             try Data("metallib\(alterMetallib && rank == 1 ? "!" : "")".utf8).write(to: side.appendingPathComponent("mlx.metallib"))
@@ -46,13 +52,15 @@ private final class Sides {
     }
 
     func configuration(outputCount: Int = 5, recording: Bool = true, lifetime: Int = 30, startup: Int = 10,
-                       schedule: String = "serial_v1", progress: Int? = nil) throws -> PairConfiguration {
+                       schedule: String = "serial_v1", progress: Int? = 60_000,
+                       keepRunFiles: Bool = true) throws -> PairConfiguration {
         let request = try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...40), chunkSize: 16,
             outputCount: outputCount, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "test"))
         return try PairConfiguration(request: request, stageCut: 8, local: sides[0], remote: sides[1],
             remoteTransport: ["/bin/sh", "-c"], coordinator: Self.coordinator, prefillSchedule: schedule,
             recording: recording, lifetimeSeconds: lifetime, startupSeconds: startup, requestSeconds: 10,
-            rankOneDelaySeconds: 0, progressTimeoutMilliseconds: progress, sensitive: ["operator@peer-mac.example"])
+            rankOneDelaySeconds: 0, progressTimeoutMilliseconds: progress, keepRunFiles: keepRunFiles,
+            sensitive: ["operator@peer-mac.example"])
     }
 
     func runDirectory(_ configuration: PairConfiguration, _ rank: Int) -> URL {
@@ -108,6 +116,9 @@ final class PairDriverTests: XCTestCase {
             XCTAssertTrue(rank.evidenceCollected)
             XCTAssertEqual(rank.evidenceSelectedTokenIDs, [100, 101, 102, 103, 104])
             XCTAssertEqual(rank.events.last, "shutdownComplete")
+            XCTAssertEqual(rank.workerHasProgressGuard, true)
+            // Wired memory of the Mac, before the launch and after the last exit.
+            XCTAssertGreaterThan(rank.wiredBytesBefore ?? 0, 1 << 28); XCTAssertGreaterThan(rank.wiredBytesAfter ?? 0, 1 << 28)
         }
         XCTAssertEqual(report.ranks[0].events, ["ready", "admitted", "committedToken x5", "finished:length", "retired:clean", "shutdownComplete"])
         XCTAssertEqual(report.ranks[1].events, ["ready", "admitted", "finished:length", "retired:clean", "shutdownComplete"])
@@ -127,7 +138,7 @@ final class PairDriverTests: XCTestCase {
             environment.removeValue(forKey: "__CF_USER_TEXT_ENCODING")
             XCTAssertEqual(environment, ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
                 "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "128", "DARKBLOOM_BF16_WEIGHTS": "1", "MLX_ENABLE_TF32": "1",
-                "JACCL_RANK": String(rank), "JACCL_COORDINATOR": Sides.coordinator,
+                "JACCL_RANK": String(rank), "JACCL_COORDINATOR": Sides.coordinator, "JACCL_PROGRESS_TIMEOUT_MS": "60000",
                 "JACCL_IBV_DEVICES": configuration.runDirectory(rank) + "/devices.json"])
             XCTAssertEqual(observed["matrix"] as? String, "[[null,\"rdma_en5\"],[\"rdma_en7\",null]]\n")
             // An interrupted driver or a closed terminal must not take a worker down.
@@ -144,6 +155,27 @@ final class PairDriverTests: XCTestCase {
         let text = String(decoding: try QualificationReportFiles.encode(report), as: UTF8.self)
         for secret in ["10.77.0.1", NSUserName(), sides.root.path, "peer-mac", "operator@"] {
             XCTAssertFalse(text.contains(secret), "report contains \(secret)")
+        }
+    }
+
+    func testRunFilesAreRemovedFromBothSidesUnlessKept() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        let configuration = try sides.configuration(keepRunFiles: false)
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        // The records were read before the directories went away.
+        XCTAssertEqual(report.ranks.map(\.evidenceCollected), [true, true])
+        XCTAssertEqual(report.ranks.map(\.runFilesRemoved), [true, true])
+        for rank in 0...1 {
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sides.sides[rank].scratchDirectory), [])
+        }
+        // A failed run cleans up too, after its workers have ended.
+        let failing = try Sides(modes: ["ok", "exit-before-ready"])
+        let failed = PairDriver(configuration: try failing.configuration(keepRunFiles: false)).run()
+        XCTAssertEqual(failed.outcome, "failed")
+        XCTAssertEqual(failed.ranks.map(\.runFilesRemoved), [true, true])
+        for rank in 0...1 {
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: failing.sides[rank].scratchDirectory), [])
         }
     }
 
@@ -201,6 +233,20 @@ final class PairDriverTests: XCTestCase {
         let file = sides.root.appendingPathComponent("preflight.json")
         try QualificationFiles.writeNew(QualificationReportFiles.encode(report), to: file)
         XCTAssertThrowsError(try QualificationReportFiles.subject(file))
+    }
+
+    func testRefusesAWorkerWithoutTheProgressGuardBeforeLaunchingAnything() throws {
+        let sides = try Sides(modes: ["ok", "ok"], removeProgressGuard: true)
+        let report = PairDriver(configuration: try sides.configuration()).run()
+        XCTAssertEqual(report.outcome, "refused")
+        XCTAssertTrue(report.failure?.contains("no JACCL progress guard") == true, report.failure ?? "")
+        // Identical on both sides, so only the missing guard stands in the way.
+        XCTAssertEqual(report.workerHashesIdentical, true)
+        XCTAssertEqual(report.ranks.map(\.workerHasProgressGuard), [false, false])
+        XCTAssertEqual(report.ranks.map(\.launched), [false, false])
+        for rank in 0...1 {
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sides.sides[rank].scratchDirectory), [])
+        }
     }
 
     func testRefusesDifferentMetalLibraries() throws {
@@ -341,6 +387,7 @@ final class PairDriverTests: XCTestCase {
             ("startup beyond lifetime", changed { $0.startupSeconds = 31 }),
             ("schedule", changed { $0.prefillSchedule = "eager" }),
             ("progress timeout", changed { $0.progressTimeoutMilliseconds = 10 }),
+            ("guard required without a timeout", changed { $0.progressTimeoutMilliseconds = nil }),
             ("relative transport", changed { $0.remoteTransport = ["ssh", "peer"] }),
             ("empty transport", changed { $0.remoteTransport = [] }),
         ]

@@ -101,7 +101,7 @@ darkbloom-cluster-pair-check run --request request.json --stage-cut 4 --report p
   --local-worker /ABS/darkbloom-cluster-worker --remote-worker /ABS/darkbloom-cluster-worker \
   --local-model-dir /ABS/MODEL --remote-model-dir /ABS/MODEL \
   --local-rdma-device rdma_enX --remote-rdma-device rdma_enY \
-  --coordinator RANK0_LINK_IPV4:PORT --progress-timeout-ms 20000
+  --coordinator RANK0_LINK_IPV4:PORT
 
 # 4. Degree of agreement.
 darkbloom-cluster-pair-check compare --reference reference-cut4.json --candidate pair-cut4.json
@@ -122,12 +122,18 @@ recording worker writes, read back and join into the same evidence.
 **Pair run.** Before launching anything the driver hashes the worker and the
 `mlx.metallib` beside it on both Macs and refuses to continue unless both pairs
 are identical; it also refuses if a worker from that path is already running.
+It refuses a worker that does not contain JACCL's progress guard: on the stock
+JACCL a rank whose peer dies spins in the completion poll and nothing inside
+the process ends it. The guard's limit, `JACCL_PROGRESS_TIMEOUT_MS`, is set for
+both ranks from `--progress-timeout-ms` (default 60000; a rank waiting in a
+receive also waits out its peer's compute, so raise it for a prompt chunk that
+needs longer). `--allow-unguarded-jaccl yes` lifts the refusal.
 It asks each worker to describe its runtime for that Mac's `config.json` and
 `manifest.json` and requires equal answers. It then writes the same device
 matrix on both sides (under `--local-scratch-dir` / `--remote-scratch-dir`,
 default `/tmp`), sets `JACCL_RANK`, `JACCL_IBV_DEVICES`, `JACCL_COORDINATOR`,
-the three arithmetic variables and, if given, `JACCL_PROGRESS_TIMEOUT_MS`, and
-starts rank 0, then rank 1. Each worker's lifetime is a deadline on its own
+the three arithmetic variables and `JACCL_PROGRESS_TIMEOUT_MS`, and starts
+rank 0, then rank 1. Each worker's lifetime is a deadline on its own
 Mac's clock, computed there; reservation deadlines are translated to that
 clock. The request itself is driven by `ClusterWorkerPair`.
 
@@ -149,9 +155,13 @@ exits, and one blocked in a native call ends at its lifetime. A failed run can
 therefore take up to `--lifetime-seconds` (default 240, at most 300); use a
 short lifetime for first attempts. Interrupting the driver (Ctrl-C) or closing
 its terminal does not reach the workers: they ignore both, see their input end
-and exit the same way. The report gives each rank's exit status
-and the number of worker processes left on each Mac. For rank 1 the status is
-the one `ssh` relays; 255 means the SSH connection itself failed.
+and exit the same way. The report gives each rank's exit status,
+the number of worker processes left on each Mac and each Mac's wired memory
+before the launch and after the last exit. For rank 1 the status is the one
+`ssh` relays; 255 means the SSH connection itself failed. Each side's run
+directory is removed at the end, once no worker is left there, unless
+`--keep-run-files yes`. The driver itself, like the reference, ends at a hard
+deadline kept by a thread; a worker's own last resort is the same.
 
 The second Mac needs the worker and `mlx.metallib` in one directory (the driver
 hashes both) and the artifact. Copy `mlx-swift-lm_MLXLMCommon.bundle` and

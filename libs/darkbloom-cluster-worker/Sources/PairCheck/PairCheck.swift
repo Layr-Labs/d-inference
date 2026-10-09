@@ -27,8 +27,8 @@ import Foundation
               --local-rdma-device NAME --remote-rdma-device NAME --coordinator RANK0_LINK_IPV4:PORT
               [--evidence final-row|none] [--prefill-schedule serial_v1|one_chunk_lookahead_v1]
               [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N] [--rank1-delay-seconds N]
-              [--progress-timeout-ms N] [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS]
-              [--preflight-only yes]
+              [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
+              [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
           darkbloom-cluster-pair-check compare --reference REPORT.json --candidate REPORT.json
               [--near-tie-ulps N] [--allow-cut-difference yes] [--json yes] [--require VERDICT[,VERDICT]]
               [--model-dir /ABS/MODEL]
@@ -130,7 +130,7 @@ import Foundation
             "--local-rdma-device", "--remote-rdma-device", "--coordinator", "--evidence", "--prefill-schedule",
             "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
-            "--preflight-only"]
+            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -171,8 +171,14 @@ import Foundation
             prefillSchedule: fields["--prefill-schedule"]?.first ?? "serial_v1", recording: evidence == "final-row",
             lifetimeSeconds: lifetime, startupSeconds: try integer(fields, "--startup-seconds") ?? min(120, lifetime),
             requestSeconds: try integer(fields, "--request-seconds") ?? min(100, lifetime), rankOneDelaySeconds: delay,
-            progressTimeoutMilliseconds: try integer(fields, "--progress-timeout-ms"),
+            progressTimeoutMilliseconds: try integer(fields, "--progress-timeout-ms") ?? 60_000,
+            requireProgressGuard: fields["--allow-unguarded-jaccl"]?.first != "yes",
+            keepRunFiles: fields["--keep-run-files"]?.first == "yes",
             preflightOnly: fields["--preflight-only"]?.first == "yes", sensitive: sensitive)
+        // Last resort for the driver itself: inspections, the workers' whole
+        // lifetime, their exit, and collection, with room to spare.
+        try QualificationDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+            + UInt64(lifetime + 420) * 1_000_000_000, status: 124)
         // The artifact's tokenizer, if this Mac has it, only to print readable output.
         let tokenizer = try? await PromptTokenizer.load(modelDirectory: URL(fileURLWithPath: configuration.local.modelDirectory))
         var driver = PairDriver(configuration: configuration)
@@ -183,7 +189,8 @@ import Foundation
         var lines = ["outcome: \(report.outcome)" + (report.failure.map { " (\($0))" } ?? "")]
         for rank in report.ranks {
             let exit = rank.exitSignal.map { "signal \($0)" } ?? rank.exitStatus.map { "status \($0)" } ?? (rank.launched ? "not observed" : "not launched")
-            lines.append("\(rank.role): \(rank.chip ?? "unknown chip"), ready \(rank.readyObserved), shutdown acknowledged \(rank.shutdownCompleteObserved), exit \(exit), worker processes left \(rank.workerProcessesLeft.map(String.init) ?? "unknown")")
+            let wired = rank.wiredBytesBefore.flatMap { before in rank.wiredBytesAfter.map { String(format: "%+.2f GiB", Double($0 - before) / 1_073_741_824) } } ?? "unknown"
+            lines.append("\(rank.role): \(rank.chip ?? "unknown chip"), ready \(rank.readyObserved), shutdown acknowledged \(rank.shutdownCompleteObserved), exit \(exit), worker processes left \(rank.workerProcessesLeft.map(String.init) ?? "unknown"), wired memory change \(wired)")
         }
         if let evidence = report.evidence {
             lines.append("tokens: \(evidence.selectedTokenIDs.count) (\(evidence.finishReason)); ranks agree: \(report.ranksAgreeOnTokens.map { "\($0)" } ?? "not recorded")")

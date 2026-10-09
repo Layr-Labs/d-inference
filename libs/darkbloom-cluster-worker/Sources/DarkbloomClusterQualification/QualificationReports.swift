@@ -267,6 +267,13 @@ public struct PairRankReport: Codable, Equatable, Sendable {
     public var exitSignal: Int32?
     public var signalsSentByDriver = 0
     public var workerProcessesLeft: Int?
+    /// The Mac's wired memory before anything was launched and after the last
+    /// worker ended. Other processes move it too; a loaded stage is gigabytes.
+    public var wiredBytesBefore: Int?
+    public var wiredBytesAfter: Int?
+    public var workerHasProgressGuard: Bool?
+    /// Whether this run's directory on that Mac was removed at the end.
+    public var runFilesRemoved: Bool?
     public var evidenceCollected = false
     public var evidenceSelectedTokenIDs: [Int]?
     public var diagnostics: String?

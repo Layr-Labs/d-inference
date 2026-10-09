@@ -32,6 +32,9 @@ import Foundation
         enum CodingKeys: String, CodingKey { case mode, clockSkewNanoseconds, evidenceTokenDelta, evidenceDeltaRanks, firstToken }
     }
 
+    /// The name the guarded JACCL reads; the driver looks for it in a worker.
+    static let progressGuardName = "JACCL_PROGRESS_TIMEOUT_MS"
+
     static let profile = ClusterWorkerProfile(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248_320,
         maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320)
     static let artifact = String(repeating: "a", count: 64), configuration = String(repeating: "b", count: 64)
@@ -87,6 +90,7 @@ import Foundation
             return wasIgnored
         }
         let observed: [String: Any] = ["arguments": arguments, "environment": environment,
+            "progressTimeout": environment[progressGuardName] ?? "",
             "matrix": String(decoding: matrix, as: UTF8.self), "processID": Int(getpid()),
             "ignoresInterrupt": ignored[0], "ignoresHangup": ignored[1], "ignoresTerminate": ignored[2]]
         try? JSONSerialization.data(withJSONObject: observed, options: [.sortedKeys])

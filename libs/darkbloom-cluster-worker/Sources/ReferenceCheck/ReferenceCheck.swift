@@ -39,8 +39,11 @@ import Foundation
             let modelDirectory = URL(fileURLWithPath: model)
             let started = DispatchTime.now().uptimeNanoseconds
             // Covers a native call that never returns; nothing is released by it.
+            // The thread is the bound that is relied on: an alarm alone did not
+            // end a process spinning in a native loop on real hardware.
             signal(SIGALRM) { _ in Darwin._exit(124) }
             alarm(UInt32(seconds + 5))
+            try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
             let result = try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
                 request: .init(requestID: request.requestUUID, promptTokenIDs: request.promptTokenIDs,
                     stopTokenIDs: request.stopTokenIDs, chunkSize: request.chunkSize, outputCount: request.outputCount),

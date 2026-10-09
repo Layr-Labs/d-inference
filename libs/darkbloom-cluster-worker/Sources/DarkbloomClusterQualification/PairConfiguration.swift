@@ -39,6 +39,11 @@ public struct PairConfiguration: Sendable {
     public var requestSeconds: Int
     public var rankOneDelaySeconds: Double
     public var progressTimeoutMilliseconds: Int?
+    /// Refuse a worker that does not contain JACCL's progress guard. Without
+    /// it a rank whose peer dies spins in the completion poll forever.
+    public var requireProgressGuard: Bool
+    /// Leave each side's run directory (device matrix, records) in place.
+    public var keepRunFiles: Bool
     /// Inspect both sides and stop: hashes, running workers, runtime
     /// description and the selected cut. Nothing is launched or written.
     public var preflightOnly: Bool
@@ -50,13 +55,16 @@ public struct PairConfiguration: Sendable {
                 remoteTransport: [String], coordinator: String, prefillSchedule: String = "serial_v1",
                 recording: Bool = true, lifetimeSeconds: Int = 240, startupSeconds: Int = 120,
                 requestSeconds: Int = 100, rankOneDelaySeconds: Double = 2, progressTimeoutMilliseconds: Int? = nil,
-                preflightOnly: Bool = false, membershipEpoch: UUID = UUID(), sensitive: [String] = []) throws {
+                requireProgressGuard: Bool = true, keepRunFiles: Bool = false, preflightOnly: Bool = false,
+                membershipEpoch: UUID = UUID(), sensitive: [String] = []) throws {
         self.request = request; self.stageCut = stageCut; self.local = local; self.remote = remote
         self.remoteTransport = remoteTransport; self.coordinator = coordinator
         self.prefillSchedule = prefillSchedule; self.recording = recording
         self.lifetimeSeconds = lifetimeSeconds; self.startupSeconds = startupSeconds
         self.requestSeconds = requestSeconds; self.rankOneDelaySeconds = rankOneDelaySeconds
-        self.progressTimeoutMilliseconds = progressTimeoutMilliseconds; self.preflightOnly = preflightOnly
+        self.progressTimeoutMilliseconds = progressTimeoutMilliseconds
+        self.requireProgressGuard = requireProgressGuard; self.keepRunFiles = keepRunFiles
+        self.preflightOnly = preflightOnly
         self.membershipEpoch = membershipEpoch; self.sensitive = sensitive
         try validate()
     }
@@ -134,6 +142,7 @@ public struct PairConfiguration: Sendable {
         try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
         try require((0...30).contains(rankOneDelaySeconds), "rank 1 delay must be 0...30 seconds")
         try require(progressTimeoutMilliseconds.map { (1000...600_000).contains($0) } ?? true, "progress timeout must be 1000...600000 ms")
+        try require(!requireProgressGuard || progressTimeoutMilliseconds != nil, "a guarded run needs a progress timeout")
         try require(!remoteTransport.isEmpty && remoteTransport[0].hasPrefix("/")
             && remoteTransport.allSatisfy { !$0.isEmpty && !$0.utf8.contains(0) && $0.utf8.count <= 2048 },
             "remote transport must be an absolute executable and its arguments")
@@ -146,8 +155,20 @@ public struct PairConfiguration: Sendable {
     /// read the same bytes; the runtime compares their digest before loading.
     public var deviceMatrix: String { "[[null,\"\(local.rdmaDevice)\"],[\"\(remote.rdmaDevice)\",null]]\n" }
 
-    func runDirectory(_ rank: Int) -> String {
-        "\(side(rank).scratchDirectory)/darkbloom-pair-\(membershipEpoch.uuidString.lowercased())/rank\(rank)"
+    /// One directory per run and side, named after the membership epoch.
+    func runRoot(_ rank: Int) -> String {
+        "\(side(rank).scratchDirectory)/darkbloom-pair-\(membershipEpoch.uuidString.lowercased())"
+    }
+    func runDirectory(_ rank: Int) -> String { "\(runRoot(rank))/rank\(rank)" }
+
+    /// Removes exactly the directory this run created on that side.
+    func removalScript(_ rank: Int) -> String {
+        """
+        set -eu
+        D=\(Self.quoted(runRoot(rank)))
+        /bin/rm -rf "$D"
+        if [ -e "$D" ]; then printf 'removed=0\\n'; else printf 'removed=1\\n'; fi
+        """
     }
     func evidencePath(_ rank: Int) -> String { "\(runDirectory(rank))/evidence/\(request.requestID).json" }
 
@@ -159,7 +180,12 @@ public struct PairConfiguration: Sendable {
         transport(rank) + [rank == 0 ? script : "/bin/sh -c " + Self.quoted(script)]
     }
 
-    /// Hashes, hardware and any worker already running from this path.
+    /// The environment name the guarded JACCL reads. A worker built on the
+    /// stock JACCL does not contain it.
+    static let progressGuardMarker = "JACCL_PROGRESS_TIMEOUT_MS"
+
+    /// Hashes, hardware, whether the worker carries the progress guard, wired
+    /// memory, and any worker already running from this path.
     func inspectionScript(_ rank: Int) -> String {
         let worker = Self.quoted(side(rank).workerPath)
         return """
@@ -170,6 +196,7 @@ public struct PairConfiguration: Sendable {
         printf 'metallib=%s\\n' "$(/usr/bin/shasum -a 256 "$D/mlx.metallib" | /usr/bin/cut -d ' ' -f 1)"
         printf 'chip=%s\\n' "$(/usr/sbin/sysctl -n machdep.cpu.brand_string)"
         printf 'os=%s\\n' "$(/usr/bin/sw_vers -productVersion)"
+        printf 'guard=%s\\n' "$(/usr/bin/grep -a -c \(Self.progressGuardMarker) "$W" || true)"
         \(Self.runningScript)
         """
     }
@@ -178,9 +205,11 @@ public struct PairConfiguration: Sendable {
         "set -eu\nW=\(Self.quoted(side(rank).workerPath))\n\(Self.runningScript)"
     }
 
-    /// Processes whose executable is exactly this worker. Counting, no signal.
+    /// Processes whose executable is exactly this worker (counting, no signal)
+    /// and the Mac's wired memory in bytes.
     private static let runningScript = """
         printf 'running=%s\\n' "$(/bin/ps -axo comm= | /usr/bin/awk -v w="$W" '$0 == w { n++ } END { print n + 0 }')"
+        printf 'wired=%s\\n' "$(/usr/bin/vm_stat | /usr/bin/awk -v p="$(/usr/sbin/sysctl -n hw.pagesize)" '/Pages wired down/ { gsub("[.]", "", $4); printf "%.0f", $4 * p }')"
         """
 
     func capabilityScript(_ rank: Int, workerSHA256: String) -> String {

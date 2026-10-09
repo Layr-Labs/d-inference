@@ -25,7 +25,7 @@ public struct PairDriver: Sendable {
 
     struct Inspection: Equatable {
         var worker = "", metallib = "", chip = "", os = ""
-        var running = -1
+        var running = -1, guardMarkers = 0
     }
 
     private final class Collector: @unchecked Sendable {
@@ -33,10 +33,15 @@ public struct PairDriver: Sendable {
         private let done = DispatchSemaphore(value: 0)
         private var tokens: [Int] = [], stamps: [UInt64] = []
         private var finish: String?, failure: String?
+        private let first: @Sendable () -> Void
+        init(first: @escaping @Sendable () -> Void) { self.first = first }
         func record(_ event: ClusterWorkerRequestEvent) -> Bool {
             lock.lock(); defer { lock.unlock() }
             switch event {
-            case .token(let id): tokens.append(id); stamps.append(DispatchTime.now().uptimeNanoseconds); return true
+            case .token(let id):
+                tokens.append(id); stamps.append(DispatchTime.now().uptimeNanoseconds)
+                if tokens.count == 1 { first() }
+                return true
             case .finished(let reason): finish = reason.rawValue; done.signal(); return false
             case .failed(let message): failure = message; done.signal(); return false
             }
@@ -91,9 +96,17 @@ public struct PairDriver: Sendable {
             var left: [Int?] = [nil, nil]
             if hashesEqual != nil {
                 for rank in 0...1 {
-                    left[rank] = (try? helper(rank, c.runningScript(rank), seconds: 30))
-                        .flatMap { Self.fields($0)["running"] }.flatMap { Int($0) }
+                    let fields = (try? helper(rank, c.runningScript(rank), seconds: 30)).map { Self.fields($0) } ?? [:]
+                    left[rank] = fields["running"].flatMap { Int($0) }
                     ranks[rank].workerProcessesLeft = left[rank]
+                    ranks[rank].wiredBytesAfter = fields["wired"].flatMap { Int($0) }
+                }
+            }
+            // Nothing this run wrote stays behind, once no worker can still use it.
+            if !c.keepRunFiles {
+                for (rank, endpoint) in endpoints.enumerated() where endpoint.launched && left[rank] == 0 {
+                    ranks[rank].runFilesRemoved = (try? helper(rank, c.removalScript(rank), seconds: 30))
+                        .map { Self.fields($0)["removed"] == "1" } ?? false
                 }
             }
             let launched = endpoints.filter(\.launched)
@@ -118,9 +131,11 @@ public struct PairDriver: Sendable {
                     throw QualificationError("the worker or the mlx.metallib beside it could not be hashed")
                 }
                 inspections.append(.init(worker: worker, metallib: metallib, chip: fields["chip"] ?? "",
-                                         os: fields["os"] ?? "", running: running))
+                    os: fields["os"] ?? "", running: running, guardMarkers: fields["guard"].flatMap { Int($0) } ?? 0))
                 ranks[rank].workerSHA256 = worker; ranks[rank].metallibSHA256 = metallib
                 ranks[rank].chip = fields["chip"]; ranks[rank].operatingSystem = fields["os"]
+                ranks[rank].wiredBytesBefore = fields["wired"].flatMap { Int($0) }
+                ranks[rank].workerHasProgressGuard = inspections[rank].guardMarkers > 0
             } catch {
                 return finish("refused", "\(ranks[rank].role): inspection failed: \(error)")
             }
@@ -132,6 +147,9 @@ public struct PairDriver: Sendable {
         }
         guard metallibEqual == true else {
             return finish("refused", "the mlx.metallib files beside the workers differ")
+        }
+        if c.requireProgressGuard, let bare = (0...1).first(where: { inspections[$0].guardMarkers == 0 }) {
+            return finish("refused", "\(ranks[bare].role): the worker has no JACCL progress guard; if its peer died it would spin forever")
         }
         if let busy = (0...1).first(where: { inspections[$0].running != 0 }) {
             return finish("refused", "\(ranks[busy].role): \(inspections[busy].running) worker process(es) from this path are already running")
@@ -243,8 +261,11 @@ public struct PairDriver: Sendable {
         timing.admissionSeconds = Double(DispatchTime.now().uptimeNanoseconds - now) / 1e9
 
         // 6. Start; rank 0's committed tokens arrive here and are allowed to continue.
-        let collector = Collector()
         let started = DispatchTime.now().uptimeNanoseconds
+        let announce = self.log
+        let collector = Collector {
+            announce("pair-check: first committed token after \(String(format: "%.2f", Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9)) s")
+        }
         do { try lease.start { collector.record($0) } }
         catch { return finish("failed", "start failed: \(error)") }
         let concluded = collector.wait(until: requestDeadline + 5_000_000_000)

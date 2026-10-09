@@ -11,13 +11,15 @@ public struct ClusterAdmittedModel: Equatable, Sendable {
 }
 
 extension ClusterRuntimeAdapter {
-    /// Every model a capability may name, in declaration order. Read from the
-    /// adapters themselves, so a model added to an adapter appears here
-    /// without a second list to keep in step.
+    /// Every model a capability may name: each adapter's registered pairs, in
+    /// declaration order. Read from the list admission itself checks, so a
+    /// model registered there appears here without a second list to keep in step.
     public static var admittedModels: [ClusterAdmittedModel] {
-        allCases.map {
-            ClusterAdmittedModel(adapterID: $0.rawValue, adapterVersion: $0.version,
-                runtimeModelID: $0.runtimeModelID, profileID: $0.profileID)
+        allCases.flatMap { adapter in
+            adapter.registeredProfiles.map {
+                ClusterAdmittedModel(adapterID: adapter.rawValue, adapterVersion: adapter.version,
+                    runtimeModelID: $0.runtimeModelID, profileID: $0.profileID)
+            }
         }
     }
 }

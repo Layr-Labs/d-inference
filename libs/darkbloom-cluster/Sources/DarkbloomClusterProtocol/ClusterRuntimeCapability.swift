@@ -2,7 +2,7 @@ import Foundation
 
 /// Names understood by this protocol revision, not a second artifact catalog.
 /// Artifact, configuration, profile and Plan hashes come from the native adapter.
-public enum ClusterRuntimeAdapter: String, Sendable {
+public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     case qwen35Dense = "qwen35-dense-layer-stage"
     public var version: Int { 1 }
     public var runtimeModelID: String { "registered_qwen35_9b" }

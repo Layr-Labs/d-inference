@@ -34,9 +34,13 @@ func memberFixtureNative(executable: URL) throws {
             profile: MemberFixtureConfiguration.profile, executionPlanSHA256: start.common.planSHA256.hex, requestCapacityBytes: 4096)
         try FileHandle.standardOutput.write(contentsOf: ClusterWorkerCodec.encode(ClusterWorkerEventFrame(
             membershipEpoch: start.common.epoch, sequence: 0, requestID: nil, event: .ready(ready))))
-        // A worker that reported Ready keeps running: the owner must end it.
-        // Exiting here would race the owner's refusal and its cleanup.
-        while true { pause() }
+        // A worker that reported Ready keeps running until its owner fences
+        // it by closing its command stream, and then ends by itself. Exiting
+        // at once would race the owner's refusal; ignoring the fence would
+        // hold the owner to this child's whole lifetime before any signal.
+        var byte: UInt8 = 0
+        while read(STDIN_FILENO, &byte, 1) > 0 {}
+        return
     }
     guard configuration.behavior == "key-only" else { throw MemberFixtureError.invalid }
     let connection = try ClusterBootstrapConnection.connect(path: path, ownerProcessID: owner,

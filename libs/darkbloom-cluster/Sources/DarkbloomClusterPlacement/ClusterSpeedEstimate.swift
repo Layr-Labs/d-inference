@@ -49,29 +49,31 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public let layerCount: Int
     public let rested: ClusterSpeedRates
     public let sustained: ClusterSpeedRates?
-    /// Verified load of the probed stage, hash included, in bytes of weights
-    /// per second; and its release. Budgets are derived from these.
-    public let loadBytesPerSecond: Double?
-    public let releaseBytesPerSecond: Double?
+    /// The verified loader's two rates on this device: artifact bytes hashed
+    /// per second (every rank hashes the whole artifact before it loads) and
+    /// weight bytes materialized per second. Startup budgets are derived from
+    /// these. Release has not been timed by any probe yet.
+    public let hashBytesPerSecond: Double?
+    public let materializeBytesPerSecond: Double?
     public let measuredUTC: String
     /// Where the figures came from, in plain words.
     public let provenance: String
 
     public init(key: ClusterSpeedKey, promptTokens: Int, chunkTokens: Int, probedLayers: Int, layerCount: Int,
-                rested: ClusterSpeedRates, sustained: ClusterSpeedRates?, loadBytesPerSecond: Double?,
-                releaseBytesPerSecond: Double?, measuredUTC: String, provenance: String) throws {
+                rested: ClusterSpeedRates, sustained: ClusterSpeedRates?, hashBytesPerSecond: Double? = nil,
+                materializeBytesPerSecond: Double? = nil, measuredUTC: String, provenance: String) throws {
         schema = Self.schemaName; self.key = key; self.promptTokens = promptTokens; self.chunkTokens = chunkTokens
         self.probedLayers = probedLayers; self.layerCount = layerCount; self.rested = rested
-        self.sustained = sustained; self.loadBytesPerSecond = loadBytesPerSecond
-        self.releaseBytesPerSecond = releaseBytesPerSecond; self.measuredUTC = measuredUTC; self.provenance = provenance
+        self.sustained = sustained; self.hashBytesPerSecond = hashBytesPerSecond
+        self.materializeBytesPerSecond = materializeBytesPerSecond; self.measuredUTC = measuredUTC; self.provenance = provenance
         try validate()
     }
 
     public func validate() throws {
         guard schema == Self.schemaName, promptTokens > 0, chunkTokens > 0, layerCount > 0,
               (1...layerCount).contains(probedLayers), rested.valid, sustained?.valid ?? true,
-              loadBytesPerSecond.map({ $0.isFinite && $0 > 0 }) ?? true,
-              releaseBytesPerSecond.map({ $0.isFinite && $0 > 0 }) ?? true,
+              hashBytesPerSecond.map({ $0.isFinite && $0 > 0 }) ?? true,
+              materializeBytesPerSecond.map({ $0.isFinite && $0 > 0 }) ?? true,
               provenance.utf8.count <= 1024, measuredUTC.utf8.count <= 64 else {
             throw ClusterPlacementError("Speed measurement is malformed")
         }
@@ -124,17 +126,17 @@ public struct ClusterDeviceSpeed: Codable, Equatable, Sendable {
     public let rested: ClusterSpeedRates
     /// Nil when no settled rate is known.
     public let sustained: ClusterSpeedRates?
-    public let loadBytesPerSecond: Double?
-    public let releaseBytesPerSecond: Double?
+    public let hashBytesPerSecond: Double?
+    public let materializeBytesPerSecond: Double?
     /// Prompt length the prefill rate holds at, when measured.
     public let promptTokens: Int?
     public let explanation: String
 
     public init(source: Source, absolute: Bool, rested: ClusterSpeedRates, sustained: ClusterSpeedRates?,
-                loadBytesPerSecond: Double? = nil, releaseBytesPerSecond: Double? = nil,
+                hashBytesPerSecond: Double? = nil, materializeBytesPerSecond: Double? = nil,
                 promptTokens: Int? = nil, explanation: String) {
         self.source = source; self.absolute = absolute; self.rested = rested; self.sustained = sustained
-        self.loadBytesPerSecond = loadBytesPerSecond; self.releaseBytesPerSecond = releaseBytesPerSecond
+        self.hashBytesPerSecond = hashBytesPerSecond; self.materializeBytesPerSecond = materializeBytesPerSecond
         self.promptTokens = promptTokens; self.explanation = explanation
     }
 
@@ -223,7 +225,7 @@ public enum ClusterSpeedEstimator {
         return devices.indices.map { index -> ClusterDeviceSpeed in
             if let m = own[index] {
                 return .init(source: .measured, absolute: true, rested: m.rested, sustained: m.sustained,
-                    loadBytesPerSecond: m.loadBytesPerSecond, releaseBytesPerSecond: m.releaseBytesPerSecond,
+                    hashBytesPerSecond: m.hashBytesPerSecond, materializeBytesPerSecond: m.materializeBytesPerSecond,
                     promptTokens: m.promptTokens, explanation: "measured at \(m.promptTokens) prompt tokens: " + m.provenance)
             }
             if let reference, let m = own[reference], let r = ratio(devices[index], over: devices[reference]) {
@@ -237,12 +239,13 @@ public enum ClusterSpeedEstimator {
                     explanation: "no measurement on this Mac and nothing to scale by; assumed equal to the measured Mac")
             }
             // No device has measured this model: only ratios can be known.
-            if index > 0, let r = ratio(devices[index], over: devices[0]) {
+            // Two Macs of one chip and OS build are equal by assumption, not by a ratio.
+            if index > 0, devices[index] != devices[0], let r = ratio(devices[index], over: devices[0]) {
                 return .init(source: r.source, absolute: false,
                     rested: .init(prefillTokensPerSecond: r.prefill, decodeTokensPerSecond: r.decode), sustained: nil,
                     explanation: "estimate: relative to the first Mac by " + r.note + "; this model's own speed is unknown")
             }
-            if index == 0, devices.count > 1, let r = ratio(devices[1], over: devices[0]) {
+            if index == 0, devices.count > 1, devices[1] != devices[0], let r = ratio(devices[1], over: devices[0]) {
                 return .init(source: r.source, absolute: false,
                     rested: .init(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1), sustained: nil,
                     explanation: "estimate: the reference for " + r.note + "; this model's own speed is unknown")

@@ -440,23 +440,23 @@ public enum ClusterPlacementPlanner {
         /// Best first: tier; then inside the GPU working set; then, among
         /// placements that fit now, those with comfortable headroom; then
         /// predicted request time. Equal times are broken by the larger
-        /// smallest headroom, the lower cut, the order the devices were given
-        /// in and the mode's place in the layout, so the result is the same
-        /// whichever Mac asks.
+        /// smallest headroom, the lower cut, the devices' labels in rank order
+        /// and the mode's place in the layout. Nothing depends on the order
+        /// the devices were given in, so the result is the same whichever
+        /// Mac asks.
         func ordered(_ candidates: [ClusterPlacementCandidate], regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
             func group(_ c: ClusterPlacementCandidate) -> Int {
                 let tight = c.tier == 0 && c.smallestHeadroomShare < policy.comfortableHeadroomShare
                 return c.tier * 4 + (c.withinGPUWorkingSet ? 0 : 2) + (tight ? 1 : 0)
             }
             func time(_ c: ClusterPlacementCandidate) -> Double { c.prediction(regime).requestSeconds }
-            func index(_ label: String) -> Int { devices.firstIndex { $0.label == label } ?? 0 }
             return candidates.sorted { a, b in
                 if group(a) != group(b) { return group(a) < group(b) }
                 if time(a) != time(b) { return time(a) < time(b) }
                 if a.smallestHeadroomShare != b.smallestHeadroomShare { return a.smallestHeadroomShare > b.smallestHeadroomShare }
                 if a.cuts != b.cuts { return a.cuts.lexicographicallyPrecedes(b.cuts) }
-                let ia = a.ranks.map { index($0.device) }, ib = b.ranks.map { index($0.device) }
-                if ia != ib { return ia.lexicographicallyPrecedes(ib) }
+                let la = a.ranks.map(\.device), lb = b.ranks.map(\.device)
+                if la != lb { return la.lexicographicallyPrecedes(lb) }
                 return (modes.firstIndex(of: a.mode) ?? 0) < (modes.firstIndex(of: b.mode) ?? 0)
             }
         }

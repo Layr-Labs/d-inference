@@ -17,9 +17,11 @@ task_flags=(-swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-maco
 task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
 xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterProtocol \
   -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
+  -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterProtocol.dylib \
   "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
 xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterPlacement \
   -emit-module-path "$task_build/DarkbloomClusterPlacement.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
+  -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterPlacement.dylib \
   "$task_package"/Sources/DarkbloomClusterPlacement/*.swift -o "$task_build/libDarkbloomClusterPlacement.dylib"
 xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement \
   "$R/Support/ClusterRuntimeError.swift" \

@@ -109,6 +109,11 @@ struct SyntheticFamily: ClusterPlacementFamily {
     var stateBytesPerToken = 512
     /// Set to make the family answer as if a layer's tensors were scattered.
     var scatter = false
+    /// Set to make the embedding one both ends load, and odd layers cost double.
+    var tiedEmbedding = false
+    var unevenCost = false
+    func loadsAtBothEnds(storedTensor name: String) -> Bool { tiedEmbedding && name.hasPrefix("embed.") }
+    func layerCost(_ layer: Int) -> Double { unevenCost && layer % 2 == 1 ? 2 : 1 }
 
     func layer(ofStoredTensor name: String) -> Int? {
         let parts = name.split(separator: ".")

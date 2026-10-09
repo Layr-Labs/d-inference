@@ -94,7 +94,8 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
 
     public var layerCount: Int { layers.count }
     public var maximumContextTokens: Int { maximumPromptTokens + maximumOutputTokens }
-    /// Bytes a single Mac holds when it loads every layer.
+    /// Bytes the ranges of a placement hold together. A tensor both ends load
+    /// is counted at each end, as it is held at each.
     public var wholeModelLoadedBytes: Int {
         ingress.loadedBytes + egress.loadedBytes + layers.reduce(0) { $0 + $1.weights.loadedBytes }
     }
@@ -219,6 +220,12 @@ public protocol ClusterPlacementFamily {
     func loadedBytes(ofStoredTensor name: String, storedBytes: Int) -> Int
     /// Bytes of this tensor that exist a second time while a request runs.
     func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int
+    /// True for a tensor both the first and the last range load (a tied
+    /// embedding: read on the way in and again as the output projection).
+    func loadsAtBothEnds(storedTensor name: String) -> Bool
+    /// Relative compute cost of a layer. 1 for every layer unless the family
+    /// has measured its kinds apart.
+    func layerCost(_ layer: Int) -> Double
 }
 
 extension ClusterPlacementFamily {
@@ -226,6 +233,8 @@ extension ClusterPlacementFamily {
     public var requestChargeEveryRankBytes: Int { 0 }
     public func loadedBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { storedBytes }
     public func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { 0 }
+    public func loadsAtBothEnds(storedTensor name: String) -> Bool { false }
+    public func layerCost(_ layer: Int) -> Double { 1 }
 }
 
 /// Builds a layout from an artifact's tensor headers through a family's stage
@@ -249,6 +258,15 @@ public enum ClusterModelLayoutBuilder {
             let loaded = family.loadedBytes(ofStoredTensor: tensor.name, storedBytes: tensor.byteCount)
             let work = family.requestWorkBytes(ofStoredTensor: tensor.name, storedBytes: tensor.byteCount)
             guard loaded > 0, work >= 0 else { throw ClusterPlacementError("Tensor \(tensor.name) has an invalid loaded size") }
+            if family.loadsAtBothEnds(storedTensor: tensor.name) {
+                // Stored once, held by both ends. A layer's tensor cannot be.
+                guard family.layer(ofStoredTensor: tensor.name) == nil else {
+                    throw ClusterPlacementError("Tensor \(tensor.name) names a layer and cannot load at both ends")
+                }
+                ingress.add(stored: tensor.byteCount, loaded: loaded, work: work)
+                egress.add(stored: 0, loaded: loaded, work: work)
+                continue
+            }
             if stages.allSatisfy({ $0 == nil }) {
                 guard family.layer(ofStoredTensor: tensor.name) == nil else {
                     throw ClusterPlacementError("Tensor \(tensor.name) names a layer but no stage loads it")
@@ -289,7 +307,7 @@ public enum ClusterModelLayoutBuilder {
             layers: try layers.enumerated().map { index, weights in
                 let state = try family.requestState(layer: index)
                 return ClusterModelLayout.Layer(index: index, kind: family.layerKind(index), weights: weights,
-                    stateFixedBytes: state.fixedBytes, stateBytesPerToken: state.bytesPerToken, cost: 1)
+                    stateFixedBytes: state.fixedBytes, stateBytesPerToken: state.bytesPerToken, cost: family.layerCost(index))
             },
             ingress: ingress, egress: egress, excluded: excluded,
             admittedCuts: family.admittedCuts, structuralCuts: cuts,

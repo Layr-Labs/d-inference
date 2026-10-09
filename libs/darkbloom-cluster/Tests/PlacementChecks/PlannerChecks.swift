@@ -86,6 +86,14 @@ func checkLayoutBuilder(_ checks: PlacementChecks) throws {
         _ = try ClusterModelLayoutBuilder.build(family: SyntheticFamily(layerCount: 8, admittedCuts: [5], structural: [2, 4, 6]),
             tensors: tensors, artifactSHA256: "", configurationSHA256: "")
     }
+    // A tied embedding is stored once and held by both ends.
+    var tied = SyntheticFamily(layerCount: 8, admittedCuts: Array(1..<8)); tied.tiedEmbedding = true; tied.unevenCost = true
+    let tiedLayout = try ClusterModelLayoutBuilder.build(family: tied, tensors: tensors, artifactSHA256: "", configurationSHA256: "")
+    checks.require("a tensor both ends load is stored once and held by the first and the last range",
+        tiedLayout.ingress.loadedBytes == gib && tiedLayout.egress.loadedBytes == 2 * gib && tiedLayout.egress.storedBytes == gib
+            && tiedLayout.range(0..<4).loadedBytes == 5 * gib && tiedLayout.range(4..<8).loadedBytes == 6 * gib
+            && tiedLayout.range(2..<6).loadedBytes == 4 * gib)
+    checks.require("a family's measured layer costs reach the layout", tiedLayout.range(0..<4).cost == 6 && tiedLayout.layers[1].cost == 2)
     // The surveyed table: bytes on each side at each cut of the resident row.
     let mimo = try surveyedMiMoLayout()
     func gibText(_ bytes: Int) -> Double { (Double(bytes) / Double(gib) * 100).rounded() / 100 }
@@ -373,7 +381,7 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
         try .init(key: .init(artifactSHA256: artifact, chip: subject.chip, osBuild: subject.osBuild, runtimeBinarySHA256: "bin", probe: "p"),
             promptTokens: 8192, chunkTokens: 512, probedLayers: 4, layerCount: 64,
             rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: decode), sustained: nil,
-            loadBytesPerSecond: nil, releaseBytesPerSecond: nil, measuredUTC: "2026-10-09T00:00:00Z", provenance: "constructed")
+            measuredUTC: "2026-10-09T00:00:00Z", provenance: "constructed")
     }
     let both = ClusterSpeedEstimator.estimate(devices: [a, b], artifactSHA256: "m", measurements: [try measurement("m", a, 300, 28), try measurement("m", b, 800, 27)])
     checks.require("measured on both: both measured", both.map(\.source) == [.measured, .measured] && both[1].rested.prefillTokensPerSecond == 800)
@@ -390,6 +398,36 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
     checks.require("with nothing measured the devices are assumed equal and nothing is absolute",
         nothing.allSatisfy { $0.source == .assumedEqual && !$0.absolute })
     checks.require("an estimate is labelled wherever it is shown", ClusterPlacementExplanation.speed("b", indexed[1]).contains("ESTIMATE"))
+}
+
+/// Budgets follow what was measured, with their margins in words. The rates
+/// here are the ones real 27B loads recorded on each Mac.
+func checkBudgets(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    func speed(prefill: Double, sustained: Double?, hash: Double, materialize: Double) -> ClusterDeviceSpeed {
+        .init(source: .measured, absolute: true, rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: 27),
+            sustained: sustained.map { .init(prefillTokensPerSecond: $0, decodeTokensPerSecond: 27) },
+            hashBytesPerSecond: hash, materializeBytesPerSecond: materialize, explanation: "constructed from recorded loads")
+    }
+    let devices = [try SyntheticMac.idle(256).device("a", speed: speed(prefill: 299, sustained: nil, hash: 1.8e9, materialize: 2.45e9)),
+                   try SyntheticMac.idle(128).device("b", speed: speed(prefill: 760, sustained: 545, hash: 2.65e9, materialize: 7.5e9))]
+    let pipeline = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [16], mode: .pipeline, prefillSchedule: .oneChunkLookahead, layout: big)
+    let split = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [16], mode: .phaseSplit, prefillSchedule: .oneChunkLookahead, layout: big)
+    let budgets = ClusterPlacementBudgets.derive(candidate: pipeline, devices: devices, layout: big)
+    // Recorded: rank 0 on the slower-loading Mac ready in 10.7 s at cut 16.
+    checks.require("27B at cut 16: the predicted load of the slowest rank is the 10.7 s real loads recorded, and the budget five times it",
+        budgets.map { abs($0.predictedStartupSeconds - 10.7) < 0.6 && $0.slowestRank == 0 && $0.startupSeconds == Int(($0.predictedStartupSeconds * 5).rounded(.up)) } ?? false)
+    checks.require("first token: 10 s plus the slower Mac alone with a quarter in hand (4.181 ms per token for 299 tok/s)",
+        budgets?.firstTokenBaseMilliseconds == 10_000 && budgets?.firstTokenMicrosecondsPerPromptToken == 4181
+            && abs((budgets?.firstTokenSeconds(promptTokens: 8192) ?? 0) - 44.25) < 0.01)
+    let splitBudgets = ClusterPlacementBudgets.derive(candidate: split, devices: devices, layout: big)
+    checks.require("under a phase split the last rank loads every layer through the loader twice, and the budget follows",
+        (splitBudgets?.predictedStartupSeconds ?? 0) > (budgets?.predictedStartupSeconds ?? .infinity) && splitBudgets?.slowestRank == 1)
+    checks.require("each budget says its prediction and its margin", budgets?.basis.count == 2
+        && (budgets?.basis[0].contains("times 5.0") ?? false) && (budgets?.basis[1].contains("1.25 times") ?? false))
+    let unmeasured = [devices[0], try SyntheticMac.idle(128).device("b")]
+    checks.require("no budget is derived for a device without measured rates",
+        ClusterPlacementBudgets.derive(candidate: try ClusterPlacementPlanner.evaluate(devices: unmeasured, cuts: [16], mode: .pipeline,
+            prefillSchedule: .oneChunkLookahead, layout: big), devices: unmeasured, layout: big) == nil)
 }
 
 func checkProfiles(_ checks: PlacementChecks) throws {

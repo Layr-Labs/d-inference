@@ -34,6 +34,7 @@ import Foundation
             let layouts = try checkRegisteredLayouts(inputs, checks)
             try checkDeviceMixes(layouts.nine, layouts.twentySeven, checks)
             try checkSpeed(layouts.twentySeven, checks)
+            try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }

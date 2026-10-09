@@ -36,6 +36,39 @@ struct QwenLongPrefillBudgetGeometry: Encodable, Equatable {
     let queryHeads: Int, kvHeads: Int, headDimension: Int
     let linearKeyHeads: Int, linearValueHeads: Int
     let linearKeyDimension: Int, linearValueDimension: Int, convolutionKernel: Int
+    /// How many of `layers` hold attention KV and how many hold convolution
+    /// and SSM state, for a model whose layer kinds follow no interval; its
+    /// other layers hold no request state. Absent for an interval model, and
+    /// absent from its encoded form.
+    let stateLayers: StateLayers?
+    struct StateLayers: Encodable, Equatable { let attention: Int, recurrent: Int }
+
+    var attentionLayers: Int { stateLayers?.attention ?? layers / fullAttentionInterval }
+    var recurrentLayers: Int { stateLayers?.recurrent ?? layers - layers / fullAttentionInterval }
+
+    /// A model that names its state-bearing layers by count instead of by an
+    /// interval. `fullAttentionInterval` is 0: there is none.
+    init(layers: Int, attentionLayers: Int, recurrentLayers: Int, hiddenSize: Int,
+         queryHeads: Int, kvHeads: Int, headDimension: Int,
+         linearKeyHeads: Int, linearValueHeads: Int,
+         linearKeyDimension: Int, linearValueDimension: Int, convolutionKernel: Int) throws {
+        guard (1...128).contains(layers), (0...layers).contains(attentionLayers),
+              (0...(layers - attentionLayers)).contains(recurrentLayers),
+              (1...8192).contains(hiddenSize), (1...128).contains(queryHeads),
+              (1...128).contains(kvHeads), queryHeads % kvHeads == 0,
+              (1...512).contains(headDimension), (1...128).contains(linearKeyHeads),
+              (1...128).contains(linearValueHeads), linearValueHeads % linearKeyHeads == 0,
+              (1...512).contains(linearKeyDimension), linearKeyDimension % 32 == 0,
+              (1...512).contains(linearValueDimension), (1...16).contains(convolutionKernel) else {
+            throw QwenLongPrefillBudgetError.invalid("Invalid bounded budget geometry with explicit state layers")
+        }
+        self.layers = layers; self.fullAttentionInterval = 0; self.hiddenSize = hiddenSize
+        self.queryHeads = queryHeads; self.kvHeads = kvHeads; self.headDimension = headDimension
+        self.linearKeyHeads = linearKeyHeads; self.linearValueHeads = linearValueHeads
+        self.linearKeyDimension = linearKeyDimension; self.linearValueDimension = linearValueDimension
+        self.convolutionKernel = convolutionKernel
+        self.stateLayers = .init(attention: attentionLayers, recurrent: recurrentLayers)
+    }
 
     init(layers: Int, fullAttentionInterval: Int, hiddenSize: Int,
          queryHeads: Int, kvHeads: Int, headDimension: Int,
@@ -55,7 +88,7 @@ struct QwenLongPrefillBudgetGeometry: Encodable, Equatable {
         self.queryHeads = queryHeads; self.kvHeads = kvHeads; self.headDimension = headDimension
         self.linearKeyHeads = linearKeyHeads; self.linearValueHeads = linearValueHeads
         self.linearKeyDimension = linearKeyDimension; self.linearValueDimension = linearValueDimension
-        self.convolutionKernel = convolutionKernel
+        self.convolutionKernel = convolutionKernel; self.stateLayers = nil
     }
 }
 
@@ -83,7 +116,7 @@ struct QwenLongPrefillTensorBudget: Encodable, Equatable {
                                 product([g.linearValueHeads, g.linearValueDimension])])
         let conv = try product([4, g.convolutionKernel - 1, channels])
         let ssm = try product([4, g.linearValueHeads, g.linearValueDimension, g.linearKeyDimension])
-        let attention = g.layers / g.fullAttentionInterval, recurrent = g.layers - attention
+        let attention = g.attentionLayers, recurrent = g.recurrentLayers
         let kv = try product([2, 4, maximumTokens, g.kvHeads, g.headDimension])
         let boundary = try product([chunkSize, g.hiddenSize, 4])
         let recurrentBytes = try product([3, recurrent, sum([conv, ssm])])

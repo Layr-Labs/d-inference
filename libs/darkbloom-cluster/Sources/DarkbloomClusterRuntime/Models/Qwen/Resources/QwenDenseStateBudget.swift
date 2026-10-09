@@ -13,7 +13,7 @@ enum QwenDenseStateBudget {
     /// transient formula. No state tensor is constructed, captured or read here.
     static func finalState(_ g: QwenLongPrefillBudgetGeometry) throws -> QwenDenseFinalStateGeometry {
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
-        let full = g.layers / g.fullAttentionInterval, recurrent = g.layers - full
+        let full = g.attentionLayers, recurrent = g.recurrentLayers
         let channels = try sum([product([2, g.linearKeyHeads, g.linearKeyDimension]),
                                 product([g.linearValueHeads, g.linearValueDimension])])
         let kvShape = [1, g.kvHeads, 8192, g.headDimension]

@@ -92,6 +92,9 @@ import Foundation
             alarm(UInt32(seconds + 5))
             try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
             let result: QwenStagedGenerationReference.Result
+            // Counts which route the routed experts' gathers take in this run;
+            // zero attempts for a model that has none.
+            QwenRoutedExpertRouteObservation.arm()
             do {
                 result = try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
                     request: .init(requestID: request.requestUUID, promptTokenIDs: request.promptTokenIDs,
@@ -118,6 +121,7 @@ import Foundation
                 Darwin.exit(handoff?.corruptSegment != nil && released ? 0 : 2)
             }
             alarm(0)
+            let route = QwenRoutedExpertRouteObservation.finish()
             if handoff?.corruptSegment != nil {
                 throw Failure("A corrupted hand-off segment was adopted without refusal")
             }
@@ -221,6 +225,14 @@ import Foundation
                 "rankRecordsJoinToThisEvidence": true,
                 "residualFramesAPairSenderWouldRefuse": result.unownedResidualFrames.count,
             ]
+            // Present for a run in which the route was requested or a routed
+            // gather was counted; a dense model's summary is as it was.
+            if route.requested || route.attempts > 0 {
+                summary["expertTileRoute"] = ["requested": route.requested, "kernelsInMetallib": route.kernelsAvailable,
+                    "routedGathers": route.attempts, "tookTheRoute": route.hits, "fellBack": route.fallbacks,
+                    "fellBackForMissingKernels": route.fallbackMetallibUnavailable,
+                    "fellBackRetracted": route.fallbackSortednessRetracted] as [String: Any]
+            }
             if !result.unownedResidualFrames.isEmpty {
                 FileHandle.standardError.write(Data(("darkbloom-cluster-reference: \(result.unownedResidualFrames.count) stage 0 "
                     + "residual(s) would be refused by a pair's sender, first at frame \(result.unownedResidualFrames[0])\n").utf8))

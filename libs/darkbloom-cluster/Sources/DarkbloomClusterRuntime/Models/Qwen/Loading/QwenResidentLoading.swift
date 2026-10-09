@@ -84,6 +84,7 @@ func loadQwenResidentStage(_ admission: QwenResidentAdmission, source prepared: 
                           payload: some QwenLayerStagePayloadSource, check: () throws -> Void,
                           constructed: (Module) -> Void = { _ in }) throws -> QwenResidentLoadedStage {
     let plan = admission.plan, index = admission.configuration.rank
+    try admission.definition.arithmetic.requireNativeRoute()
     let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
         try inspectOtherQwenLayerStage(source: prepared.source, stage: plan.stages[1 - index], check: check)
     }

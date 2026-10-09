@@ -223,6 +223,16 @@ export async function streamChat(
 
     try {
       const chunk = JSON.parse(payload);
+      // HTTP 200 is already committed when a provider fails mid-stream.
+      // The coordinator's error event is terminal, even if DONE follows it.
+      if (chunk.error) {
+        const message = typeof chunk.error.message === "string" && chunk.error.message.trim()
+          ? chunk.error.message
+          : "the request could not be completed";
+        window.dispatchEvent(new Event("darkbloom-promotion-usage"));
+        callbacks.onError(`Stream failed: ${message}`);
+        return;
+      }
       // Receipts and token deltas share the SSE transport, but each payload
       // is decoded only once before choosing its destination.
       if (chunk.se_signature) {

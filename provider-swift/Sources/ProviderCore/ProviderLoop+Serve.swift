@@ -313,6 +313,12 @@ extension ProviderLoop {
                 // paths never see them, and direct work handlers refuse
                 // member mode independently.
                 if consumeClusterMemberEvent(event, send: send) { continue }
+                if memberControlRequiresStop {
+                    // The accepted control connection ended or lost trust.
+                    // End the loop instead of reconnecting under a new nonce.
+                    await coordinator.shutdown()
+                    break
+                }
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)

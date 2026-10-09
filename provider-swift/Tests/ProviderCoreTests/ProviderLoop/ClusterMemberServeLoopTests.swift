@@ -107,6 +107,22 @@ struct ClusterMemberServeLoopTests {
             #expect(capacity?.slots.isEmpty == true && capacity?.freeForLoadGb == 0)
         }
     }
+
+    @Test func acceptedLeaderLoopEndsWhenItsControlConnectionDrops() async throws {
+        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, task in
+            try await fixture.accept(try await fixture.awaitRegistration())
+            await fixture.mock.dropActiveWebSocket()
+            // Without the stop, the client would reconnect after its one-second
+            // backoff and run a second ten-second negotiation.
+            let ended = await ServeLoopFixture.finishes(task, within: .seconds(5))
+            #expect(ended, "the leader kept running after its accepted control connection dropped")
+            // A leader stop is a normal return, not a negotiation failure.
+            if ended { try await task.value }
+            #expect(await fixture.loop.memberControlRequiresStop)
+            #expect(await fixture.loop.memberConnectionID == nil)
+            #expect(fixture.mock.snapshot().registers.count == 1)
+        }
+    }
 }
 
 private extension ProviderLoop {

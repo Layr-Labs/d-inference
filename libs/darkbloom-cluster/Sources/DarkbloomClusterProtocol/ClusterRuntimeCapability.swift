@@ -4,15 +4,37 @@ import Foundation
 /// Artifact, configuration, profile and Plan hashes come from the native adapter.
 public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     case qwen35Dense = "qwen35-dense-layer-stage"
+    /// The same two-stage layer pipeline for Qwen3.5-architecture models whose
+    /// feed-forward is a routed bank of experts beside a shared expert.
+    case qwen35RoutedExperts = "qwen35-routed-expert-layer-stage"
     public var version: Int { 1 }
-    public var runtimeModelID: String { "registered_qwen35_9b" }
-    public var profileID: String { "registered_qwen35_9b_greedy_generation_v1" }
+    /// The adapter's original pair: the first row of `registeredProfiles`.
+    public var runtimeModelID: String { registeredProfiles[0].runtimeModelID }
+    public var profileID: String { registeredProfiles[0].profileID }
     /// Every model/profile pair this adapter revision executes, the original
     /// pair first. A capability naming any other pair, or a model from one row
     /// with the profile of another, is refused.
     public var registeredProfiles: [(runtimeModelID: String, profileID: String)] {
-        [(runtimeModelID, profileID),
-         ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")]
+        switch self {
+        case .qwen35Dense:
+            [("registered_qwen35_9b", "registered_qwen35_9b_greedy_generation_v1"),
+             ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")]
+        case .qwen35RoutedExperts:
+            [("registered_qwen35_35b_a3b", "registered_qwen35_35b_a3b_greedy_generation_v1")]
+        }
+    }
+    /// The one arithmetic policy a capability of this adapter may name. An
+    /// adapter whose arithmetic depends on more of the process environment
+    /// names its own policy, so a rank started under another one is refused.
+    public var arithmeticPolicyID: String {
+        switch self {
+        case .qwen35Dense: "qwen_cbv2_query128_bf16_tf32_default_v1"
+        case .qwen35RoutedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
+        }
+    }
+    /// The adapter that registers a runtime model, or nil for an unregistered ID.
+    public static func registering(runtimeModelID: String) -> ClusterRuntimeAdapter? {
+        allCases.first { $0.registeredProfiles.contains { $0.runtimeModelID == runtimeModelID } }
     }
 }
 

@@ -107,9 +107,11 @@ extension DistributedCBv2Engine {
     /// and not when both peers have retired, which for a peer still inside a
     /// collective can be its whole progress limit later. The lease and every
     /// resource stay owned until retirement. A clean finish is still published
-    /// at retirement: a client is not told "done" while the pair is busy.
-    private func publishFailure(_ state: DistributedRequestState) {
-        guard !state.terminalPublished, let reason = state.terminal else { return }
+    /// at retirement: a client is not told "done" while the pair is busy. A
+    /// request refused before its lease started has no peer to wait for and
+    /// keeps the order "retired, released, then told".
+    func publishFailure(_ state: DistributedRequestState) {
+        guard state.leaseStarted, !state.terminalPublished, let reason = state.terminal else { return }
         switch reason {
         case .stop, .length, .cancelled: return
         default: break

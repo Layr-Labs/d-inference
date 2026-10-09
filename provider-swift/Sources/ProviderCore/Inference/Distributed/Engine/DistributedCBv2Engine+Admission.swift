@@ -89,6 +89,8 @@ extension DistributedCBv2Engine {
                     guard let self, let state else { return false }
                     return self.onQueue { self.receive(event, state: state) }
                 }
+                state.leaseStarted = true
+                publishFailure(state)
             } catch {
                 stop(state, reason: .error("distributed owner start failed: \(error)"))
             }

@@ -32,10 +32,10 @@ struct DistributedHTTPTerminalIntegrationTests {
         #expect(lease.releaseCount == 0 && completed.finishCount == 0)
         session.invalidatePairBeforeStatusCallback()
         #expect(try await localHostEventually { await host.status.phase == .stopping })
-        let responses = await host.responses
-        #expect(responses.hasActiveResponse && lease.releaseCount == 0)
-        // The response remains pending, but native request ownership is still
-        // held. Only the explicit fake ACK below permits the real engine to end.
+        // The error frame is written when the deadline fails the request; the
+        // native request ownership is still held. Only the explicit fake ACK
+        // below permits the real engine to release it.
+        #expect(lease.releaseCount == 0)
         lease.acknowledge()
         let (data, reply) = try await client.value
         let http = try #require(reply as? HTTPURLResponse)
@@ -43,7 +43,8 @@ struct DistributedHTTPTerminalIntegrationTests {
         #expect(http.statusCode == 200 && text.contains("\"role\":\"assistant\""))
         #expect(text.contains("\"error\"") && text.contains("attempt_usage"))
         #expect(text.contains("prefill_stall") || text.contains("deadline_unreachable"))
-        #expect(text.hasSuffix("data: [DONE]\n\n") && lease.releaseCount == 1)
+        #expect(text.hasSuffix("data: [DONE]\n\n"))
+        #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })
         #expect(try await localHostEventually { await host.status.cleanupComplete })
     }
 }

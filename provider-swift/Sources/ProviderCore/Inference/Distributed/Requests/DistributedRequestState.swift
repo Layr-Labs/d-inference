@@ -80,6 +80,9 @@ final class DistributedRequestState: @unchecked Sendable {
     var cleanStopAnswered = false
     /// A failure was delivered to the consumer before retirement.
     var terminalPublished = false
+    /// The lease accepted `start`. Only a started request can have a peer
+    /// inside a collective, so only its failure is published before retirement.
+    var leaseStarted = false
 
     init(
         request: CBv2Request, lease: any DistributedResidentRequestLease,

@@ -29,7 +29,7 @@ func TestAutopilotRewardsPrunedHistoryIsNeverAssumedComplete(t *testing.T) {
 					f.earning(t, "session", "owner", amount, f.optIn.Add(-48*time.Hour))
 					if phase == "baseline_overflow_journal" {
 						f.earning(t, "session", "owner", 1, f.optIn.Add(-47*time.Hour))
-						if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "session", AccountID: "owner", Supported: true, OptedIn: true, At: f.optIn}); err == nil {
+						if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "session", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: f.optIn}); err == nil {
 							t.Fatal("overflowing baseline was frozen")
 						}
 					} else {
@@ -61,6 +61,7 @@ func TestAutopilotRewardsPrunedHistoryIsNeverAssumedComplete(t *testing.T) {
 					f.earning(t, "session", "owner", 8, f.optIn.Add(time.Hour))
 					f.earning(t, "other", "other", 1, f.optIn)
 					bounded.Prune(1)
+					f.observe(t, store.MachineObservation{SessionID: "serving", AccountID: "owner", SEKey: "session-se", At: enrollment.NextDay})
 					if receipt := f.settle(t, enrollment.MachineID, enrollment.NextDay); receipt.Status != earningsfloor.HistoryRequired || receipt.AmountMicroUSD != 0 || receipt.FloorMicroUSD != 11 {
 						t.Fatalf("pruned actual earnings were treated as zero: %+v", receipt)
 					}
@@ -78,7 +79,7 @@ func TestAutopilotRewardsPrunedHistoryIsNeverAssumedComplete(t *testing.T) {
 						if err := f.backend.OpenProviderSession(t.Context(), session, "", "owner"); err != nil {
 							t.Fatal(err)
 						}
-						if err := f.backend.TouchProviderSession(t.Context(), session, "", "owner", session+"-key", f.start); err != nil {
+						if err := f.backend.TouchProviderSession(t.Context(), session, "", "owner", session+"-key", time.UnixMicro(f.clock.Load())); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -86,6 +87,7 @@ func TestAutopilotRewardsPrunedHistoryIsNeverAssumedComplete(t *testing.T) {
 						t.Fatal(err)
 					}
 					bounded.Prune(1)
+					f.observe(t, store.MachineObservation{SessionID: "serving", AccountID: "owner", SEKey: "session-se", At: enrollment.NextDay})
 					if receipt := f.settle(t, enrollment.MachineID, enrollment.NextDay); receipt.Status != earningsfloor.HistoryRequired || receipt.AmountMicroUSD != 0 {
 						t.Fatalf("pruned key association silently lost income: %+v", receipt)
 					}
@@ -95,6 +97,7 @@ func TestAutopilotRewardsPrunedHistoryIsNeverAssumedComplete(t *testing.T) {
 					f.earning(t, "other", "owner", 1000, f.optIn.Add(time.Hour))
 					f.earning(t, "session", "owner", 8, f.optIn.Add(time.Hour))
 					bounded.Prune(1)
+					f.observe(t, store.MachineObservation{SessionID: "serving", AccountID: "owner", SEKey: "session-se", At: enrollment.NextDay})
 					if receipt := f.settle(t, enrollment.MachineID, enrollment.NextDay); receipt.AmountMicroUSD != 3 || receipt.InferenceMicroUSD != 8 {
 						t.Fatalf("unrelated pruned machine blocked complete source: %+v", receipt)
 					}

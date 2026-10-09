@@ -1558,6 +1558,11 @@ See [persistence](../architecture/storage.md#autopilot-machine-settings) and
 
 ### Autopilot reward administration
 
+Provider WebSocket capture records consent without calculating a baseline.
+This admin listing may materialize a previously journaled enrollment using its
+original opt-in timestamp; the [billing mechanism](../architecture/billing.md#autopilot-rewards)
+describes that separation.
+
 `coordinator/api/autopilot/rewards.go` (`RewardsHandler`) owns the payloads;
 `rewards_decode.go` in that directory rejects ambiguous JSON. The adapter
 `coordinator/api/autopilot_handlers.go` (`handleAdminAutopilotRewards`) requires
@@ -1586,7 +1591,8 @@ Response records are defined in `coordinator/store/earningsfloor/types.go`:
 | `enrollments[].machine_id`, `account_id` | Current canonical machine UUID and authenticated payout account; financial records may retain an original pre-merge ID |
 | `first_opt_in_at`, `first_observed_at` | Frozen first-ever anchor (null while unknown), and the first positive used to initialize enrollment respectively. Both remain unchanged when later evidence sets `history_conflict`; backfill does not move accrual to an older date |
 | `seven_day_earnings_micro_usd`, `daily_floor_micro_usd`, `baseline_known`, `baseline_evidence` | Frozen baseline values and evidence. Zero values with `baseline_known=false` are unknown, not a measured zero floor |
-| `baseline_source` | Closed enum: `""` while unknown, `"tracked"` for an automatically frozen baseline, `"verified_history"` for an evidenced admin import. Assigned by the store, not a baseline-request field; independent of the free-form evidence string |
+| `baseline_source` | Closed enum: `""` while unknown, `"tracked"` for an automatically frozen personal-history baseline, `"cohort"` for an automatically frozen comparable-machine baseline, `"verified_history"` for an evidenced admin import. Assigned by the store, not a baseline-request field; independent of the evidence string. All known sources stay frozen through off/on |
+| Cohort `baseline_evidence` | JSON string containing `chip_class`, `memory_gb`, `peer_count`, `peer_fingerprint_sha256`, `window_start`, `window_end` and `statistic="mean_seven_day_micro_usd_floor"`. The fingerprint hashes sorted canonical peer IDs; it does not expose the peer IDs. `coordinator/internal/payments/floorpolicy/cohort.go` (`CohortBaselineValue`) |
 | `history_conflict` | Linked history contradicts the frozen anchor or invalidates an automatic baseline's creation-history proof; [history rules](pricing-model.md#autopilot-rewards). May be true with `baseline_known=true`; frozen fields stay unchanged, but unfinalized days are held without payment or cursor advance. Ordinary baseline import still returns 409 for the frozen value |
 | `opted_in`, `observed_at` | Whether the latest durable declaration qualifies as saved opt-in, and that declaration's observation watermark; not a connection/readiness indicator or the consent snapshot for every prior day |
 | `next_day` | Next chronological UTC settlement day; pending funding/history does not advance it |
@@ -1600,6 +1606,10 @@ enrollment reads are separate snapshots, not an atomic financial export.
 There is no receipt-list or manual settlement endpoint here. Use the
 [operator runbook](../operations/autopilot-rewards.md) for restricted financial
 verification and backfill evidence requirements.
+Daily receipts distinguish final unpaid `ineligible` days from pending history
+or funding under the [status reference](pricing-model.md#autopilot-rewards).
+The enrollment's current `opted_in` field alone does not prove a day's OS/model
+qualification or uptime.
 
 ### Autopilot inventory report
 

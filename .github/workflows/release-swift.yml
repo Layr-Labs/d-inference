@@ -131,6 +131,9 @@ jobs:
       mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
+      # Package.swift compiles ProviderCore with this environment's defaults.
+      # qualify-sdk does not set it: tests must see production defaults.
+      DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -478,6 +481,8 @@ jobs:
             | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
+          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -756,6 +761,8 @@ jobs:
             | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
+          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
           REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \

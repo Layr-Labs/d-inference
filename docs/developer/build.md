@@ -248,6 +248,12 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 
 ## Bedrock review workflow
 
+The conditional gate uses a separate organization-membership read token.
+`python3 .github/scripts/test-threat-bedrock.py` checks active member identity,
+outsiders, bots, pending membership, repeat lookups and the independent human
+review path. The budget suite checks that local validator reasons remain visible
+without exposing raw provider output. See [review configuration](threat-model-review.md).
+
 The optional Bedrock reviewer installs hash-locked dependencies from
 `.github/scripts/requirements-bedrock.txt` in its trusted workflow.
 Review, preflight and smoke checkouts fetch only the trusted scanner scripts and
@@ -1084,7 +1090,9 @@ After the optimized provider is packaged with its resources, run
 (the child validates retained latches that MLX reads at its first Metal touch,
 so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
-`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
+`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. The first line is
+`build-environment-runtime-smoke: <prod|dev> coordinator=<url> cdn=<url>`. The release workflow
+requires `<prod|dev>` to match the release environment. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches
 a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.

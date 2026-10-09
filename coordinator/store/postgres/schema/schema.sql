@@ -3837,7 +3837,7 @@ CREATE TABLE public.autopilot_reward_enrollments (
         (NOT baseline_known AND first_opt_in_at IS NULL AND seven_day_earnings_micro_usd = 0 AND baseline_evidence = '')
     ),
     CONSTRAINT autopilot_reward_enrollments_source_check CHECK (
-        (baseline_known AND baseline_source IN ('tracked', 'verified_history')) OR
+        (baseline_known AND baseline_source IN ('tracked', 'cohort', 'verified_history')) OR
         (NOT baseline_known AND baseline_source = '')
     ),
     CONSTRAINT autopilot_reward_enrollments_floor_check CHECK (
@@ -3854,6 +3854,9 @@ CREATE TABLE public.autopilot_reward_consents (
     session_id TEXT NOT NULL CHECK (session_id <> ''),
     opted_in BOOLEAN NOT NULL,
     supported BOOLEAN NOT NULL,
+    qualified BOOLEAN NOT NULL DEFAULT FALSE,
+    chip TEXT NOT NULL DEFAULT '' CHECK (octet_length(chip) <= 128),
+    memory_gb DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (memory_gb >= 0 AND memory_gb < 'Infinity'::double precision),
     PRIMARY KEY (session_id, at),
     CONSTRAINT autopilot_reward_consents_supported_check CHECK (NOT opted_in OR supported),
     CONSTRAINT autopilot_reward_consents_day_check CHECK ((at AT TIME ZONE 'UTC')::date = (last_observed_at AT TIME ZONE 'UTC')::date)
@@ -3869,7 +3872,7 @@ CREATE TABLE public.autopilot_reward_settlements (
     inference_micro_usd BIGINT NOT NULL CHECK (inference_micro_usd >= 0),
     due_micro_usd BIGINT NOT NULL CHECK (due_micro_usd >= 0),
     amount_micro_usd BIGINT NOT NULL CHECK (amount_micro_usd >= 0),
-    status TEXT NOT NULL CHECK (status IN ('paid', 'zero', 'opted_out', 'pool_exhausted', 'history_required')),
+    status TEXT NOT NULL CHECK (status IN ('paid', 'zero', 'opted_out', 'ineligible', 'pool_exhausted', 'history_required')),
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (machine_id, day),
     CONSTRAINT autopilot_reward_settlements_amount_check CHECK (

@@ -3,6 +3,15 @@
 import PackageDescription
 import Foundation
 
+// Release builds select the default coordinator and model CDN. The release
+// workflow sets DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
+let releaseEnvironment = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
+    .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
+precondition(["prod", "dev"].contains(releaseEnvironment),
+             "DARKBLOOM_RELEASE_ENVIRONMENT must be prod or dev")
+let providerCoreSwiftSettings: [SwiftSetting] =
+    releaseEnvironment == "dev" ? [.define("DARKBLOOM_ENV_DEV")] : []
+
 let package = Package(
     name: "DarkbloomProvider",
     // macOS 14 (Sonoma) — matches libs/mlx-swift-lm and libs/mlx-swift declared
@@ -143,7 +152,8 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "NIOCore", package: "swift-nio"),
             ],
-            path: "Sources/ProviderCore"
+            path: "Sources/ProviderCore",
+            swiftSettings: providerCoreSwiftSettings
         ),
 
         // ----------------------------------------------------------------

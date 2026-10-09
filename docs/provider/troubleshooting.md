@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-08
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -129,6 +129,7 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 | Provider offline after logout / at the login window | GUI LaunchAgents run only inside a logged-in session | Enable automatic login; see `console session` above |
 | Daemon restarts every few minutes, then `kv backend crash-loop guard` appears | `crashLoopTripThreshold` restarts inside the watchdog window (`provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift`; value in [runtime constants](./cli-reference.md#runtime-constants)) | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `darkbloom restart` prints `Provider is not running. Start it with darkbloom start.` | Plist not installed | `darkbloom start` |
+| Console shows the provider offline while `darkbloom status` prints `Daemon: running` and a `Not serving:` line | A `stop`, `restart`, `start` or `update` drain timed out, was interrupted (Ctrl+C), or drained without a relaunch. The old process stays alive and refuses new work (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`, `Status.lifecycleDrainLine`); the command also turned automatic restart off (`provider-swift/Sources/darkbloom/ServiceDrain.swift`, `ServiceDrain.prepare`) | `darkbloom restart` to serve again or `darkbloom stop` to stay stopped, each with a new drain deadline; add `--force` to interrupt unfinished work |
 
 ## Coordinator connection
 

@@ -18,3 +18,10 @@ type AutopilotRewardsStore interface {
 	SetAutopilotRewardPoolCap(context.Context, int64) (earningsfloor.Pool, error)
 	SettleAutopilotRewardDay(context.Context, string, time.Time) (earningsfloor.Settlement, error)
 }
+
+// AutopilotConsentJournal records receive-time evidence without calculating a
+// baseline or acquiring the reward pool. A successful unbound declaration is
+// durable; inventory binding and reward enrollment happen asynchronously.
+type AutopilotConsentJournal interface {
+	RecordAutopilotConsent(context.Context, earningsfloor.Consent) error
+}

@@ -78,7 +78,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/profilesign` | CMS signing of the enrollment profile. |
 | `coordinator/billing` | Billing service, Stripe Checkout and Connect, referrals. |
 | `coordinator/payments` | Ledger and pricing. |
-| `coordinator/payments/autopilotrewards`, `coordinator/internal/payments/floorpolicy` | Closed-UTC-day reward worker and pure floor arithmetic respectively. `AutopilotRewardsStore` in `coordinator/store/earnings_floor.go` owns durable consent/baseline/pool/receipt operations; no live registry or ordinary base-reward budget dependency. |
+| `coordinator/payments/autopilotrewards`, `coordinator/internal/payments/floorpolicy` | Closed-UTC-day reward worker and pure floor/cohort arithmetic and cohort evidence respectively. `AutopilotRewardsStore` in `coordinator/store/earnings_floor.go` owns durable consent/qualification, frozen personal or cohort baselines, canonical-session daily uptime, pool and receipt operations; no live registry or ordinary base-reward budget dependency at settlement. Shared `coordinator/internal/payments/rewardeligibility/os.go` (`OSVersionEligible`) parses authenticated OS evidence, and `coordinator/internal/payments/rewardpolicy/uptime.go` (`UptimeByProviderKey`) unions online sessions. |
 | `coordinator/ratelimit` | Per-account, financial and service-tier limiters; expected-output admission. |
 | `coordinator/modelpolicy` | Exact-model first-content deadline policy. |
 | `coordinator/mediafetch` | SSRF-guarded remote media resolution. |

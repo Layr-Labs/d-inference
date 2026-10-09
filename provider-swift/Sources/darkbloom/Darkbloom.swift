@@ -34,6 +34,7 @@ struct Darkbloom: AsyncParsableCommand {
             Status.self,
             Doctor.self,
             Models.self,
+            Cache.self,
             Local.self,
             Login.self,
             Logout.self,
@@ -86,7 +87,7 @@ public func runUpdateBannerIfEnabled() async {
     if let snapshot = try? loadRuntimeSnapshot(configPath: nil) {
         coordinatorURL = snapshot.config.coordinator.url
     } else {
-        coordinatorURL = "https://api.darkbloom.dev"
+        coordinatorURL = BuildEnvironment.current.coordinatorHTTPURL
     }
     await UpdateBanner.run(coordinatorURL: coordinatorURL)
 }

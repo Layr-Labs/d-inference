@@ -1,6 +1,6 @@
 # Fan control (experimental)
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-09
 
 Hold the fans of an Apple Silicon Mac at a fixed speed while the provider is
 serving and the GPU is hot, so thermal throttling does not cut decode
@@ -108,6 +108,22 @@ Modes reported by `fan status` are `disabled`, `waiting_for_provider`,
 mid-override is reconciled on the next start
 (`provider-swift/Sources/DarkbloomFanService/FanOwnershipRecovery.swift`).
 
+If startup discovery returns no fans or no valid GPU sensors, an enabled,
+awake helper retries discovery immediately on its first tick, then at most once
+every 30 seconds. Transiently invalid sensor readings can therefore recover
+without restarting the helper. Retries continue while the inventory remains
+unusable; permanently unsupported hardware continues to report `unsupported`.
+Sleep preserves the retry deadline, so wake permits an overdue attempt but
+does not shorten the interval. Disabled and shutting-down helpers do not retry.
+
+Recovery first restores any journaled or controller-owned override to automatic
+control. A failed restoration retains the journal, reports `error`, and prevents
+inventory replacement. Successful discovery replaces the inventory and its
+controller together, clears stale readings and policy samples, and requires a
+fresh provider lease before fans can engage. Discovery alone never takes manual
+control. This handles an unusable inventory returned at startup; an exception
+that prevents the helper process from starting still requires separate diagnosis.
+
 Only signed Darkbloom code can talk to the helper: the XPC service
 `io.darkbloom.fan` (`FanIPC.machServiceName`) checks the connecting process's
 Team ID against `FanIPC.teamID` = `SLDQ2GJ6TL`
@@ -153,7 +169,7 @@ the new app bundle.
 | `fan: run this command through sudo from the provider account (SUDO_UID is required)` | Run from a root shell (`sudo -i`) or with `SUDO_UID` stripped | Run `sudo darkbloom fan …` from the provider user's shell |
 | `fan: signed fan helper was not found; reinstall Darkbloom` | CLI not running from `Darkbloom.app/Contents/MacOS`, or the helper is missing from the bundle | Reinstall with `scripts/install.sh`; use `~/.darkbloom/bin/darkbloom` |
 | `fan: fan helper signature verification failed` | Helper not signed by Team `SLDQ2GJ6TL` | Reinstall from the official release |
-| `fan: fan control is unavailable: …` / `supported: false` | No SMC fans or GPU sensors | Nothing to do on this model |
+| `fan: fan control is unavailable: …` / `supported: false` | No SMC fans or valid GPU sensors | Check `fan diagnose`; permanently unsupported hardware cannot use fan control. An enabled helper retries an unusable startup inventory every 30 seconds while awake. |
 | Fans never engage although the GPU is hot | No provider lease (`fan status` shows `waiting_for_provider`): the daemon is not running, or fewer than 3 consecutive samples were above threshold | `darkbloom status`; `darkbloom restart` |
 | `fan status` mode `error` or `safety_override` | SMC write refused or reading failed | `sudo darkbloom fan disable`, check `fan diagnose`, re-enable |
 | Fan control stops after an update | Helper is not replaced by the unprivileged updater | `sudo darkbloom fan enable` |

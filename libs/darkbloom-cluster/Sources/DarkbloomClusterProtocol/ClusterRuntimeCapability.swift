@@ -20,7 +20,8 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             [("registered_qwen35_9b", "registered_qwen35_9b_greedy_generation_v1"),
              ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")]
         case .qwen35RoutedExperts:
-            [("registered_qwen35_35b_a3b", "registered_qwen35_35b_a3b_greedy_generation_v1")]
+            [("registered_qwen35_35b_a3b", "registered_qwen35_35b_a3b_greedy_generation_v1"),
+             ("registered_qwen36_35b_a3b", "registered_qwen36_35b_a3b_greedy_generation_v1")]
         }
     }
     /// The one arithmetic policy a capability of this adapter may name. An

@@ -68,10 +68,11 @@ struct PreparedQwenCheckpoint<Stored: QwenStoredTensorDescribing> {
 extension PreparedQwenCheckpoint where Stored == TensorDescriptor {
     /// Reuses a fully verified descriptor owner without a second full-file hash.
     init(model: any LanguageModel, checkpoint: VerifiedCheckpoint, originalConfiguration: Data,
-         policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil) throws {
+         policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil,
+         scope: TensorDescriptorScope = .dense) throws {
         try checkpoint.requireConfiguration(originalConfiguration)
         try checkpoint.checkUnchanged()
-        try self.init(model: model, descriptors: tensorDescriptors(checkpoint: checkpoint),
+        try self.init(model: model, descriptors: tensorDescriptors(checkpoint: checkpoint, scope: scope),
                       policy: policy, partitionKind: partitionKind)
     }
 }

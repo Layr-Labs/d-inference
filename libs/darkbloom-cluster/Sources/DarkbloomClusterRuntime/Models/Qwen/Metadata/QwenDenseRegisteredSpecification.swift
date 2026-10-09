@@ -15,6 +15,11 @@ struct QwenDenseRegisteredSpecification {
     let kvHeads: Int
     /// The routed-expert feed-forward of every layer, or nil for a dense one.
     let routedExperts: QwenRoutedExpertGeometry?
+    /// True when the artifact's weight files also hold unsigned-byte tensors
+    /// that no stage owns (the Qwen3.6 MTP head's MXFP8 payloads). Its headers
+    /// are then read under a scope that can describe them; a stage still
+    /// loads none.
+    let unownedUInt8Tensors: Bool
     /// The `model_type` the artifact's configuration must declare.
     var rootModelType: String { routedExperts == nil ? "qwen3_5" : QwenRoutedExpertStageMetadata.rootModelType }
 
@@ -23,7 +28,8 @@ struct QwenDenseRegisteredSpecification {
                  artifactSHA256: String, inventorySHA256: String, manifestBytes: Int, manifestFileCount: Int,
                  sourceBytes: Int, tensorCount: Int, largestTensorBytes: Int, layers: Int, hidden: Int,
                  queryHeads: Int, linearValueHeads: Int, namedStateBytes: Int,
-                 kvHeads: Int = 4, routedExperts: QwenRoutedExpertGeometry? = nil) {
+                 kvHeads: Int = 4, routedExperts: QwenRoutedExpertGeometry? = nil,
+                 unownedUInt8Tensors: Bool = false) {
         self.model = model; self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
         self.artifactSHA256 = artifactSHA256; self.inventorySHA256 = inventorySHA256; self.manifestBytes = manifestBytes
         self.contentInventorySHA256 = contentInventorySHA256
@@ -31,6 +37,7 @@ struct QwenDenseRegisteredSpecification {
         self.largestTensorBytes = largestTensorBytes; self.layers = layers; self.hidden = hidden
         self.queryHeads = queryHeads; self.linearValueHeads = linearValueHeads; self.namedStateBytes = namedStateBytes
         self.kvHeads = kvHeads; self.routedExperts = routedExperts
+        self.unownedUInt8Tensors = unownedUInt8Tensors
     }
     func expectedGeometry() throws -> QwenLongPrefillBudgetGeometry {
         try .init(layers: layers, fullAttentionInterval: 4, hiddenSize: hidden, queryHeads: queryHeads,
@@ -68,5 +75,20 @@ struct QwenDenseRegisteredSpecification {
             queryHeads: 16, linearValueHeads: 32, namedStateBytes: 558_344_232,
             kvHeads: 2, routedExperts: .init(experts: 256, expertsPerToken: 8,
                                              expertIntermediate: 512, sharedIntermediate: 512)),
+        // Qwen3.6 35B A3B, catalog `qwen3.6-35b-a3b-vl-mtp-mxfp8` 2026-08-11-r1:
+        // the same geometry. Its routers are 8-bit, which the configuration
+        // declares per module. Its vision tower and its MTP head, the only
+        // tensors that are not affine, are in the same files and are never read.
+        .init(model: .qwen36ThirtyFiveBA3B,
+            configurationSHA256: "b852ada32203b112e217e5cb48afeadaf16594c0f5d3f5f7a380897e5e8732c2",
+            manifestSHA256: "54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc",
+            artifactSHA256: "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+            inventorySHA256: "9f18359fe9a49c2b07f490154ca5771990432f34cc86aaf3e0ad5e85e485d0d3",
+            manifestBytes: 21_308_856_601, manifestFileCount: 13, sourceBytes: 19_508_787_456,
+            tensorCount: 1637, largestTensorBytes: 268_435_456, layers: 40, hidden: 2048,
+            queryHeads: 16, linearValueHeads: 32, namedStateBytes: 558_344_232,
+            kvHeads: 2, routedExperts: .init(experts: 256, expertsPerToken: 8,
+                                             expertIntermediate: 512, sharedIntermediate: 512),
+            unownedUInt8Tensors: true),
     ]
 }

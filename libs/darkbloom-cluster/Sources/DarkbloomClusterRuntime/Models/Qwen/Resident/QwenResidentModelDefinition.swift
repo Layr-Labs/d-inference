@@ -44,6 +44,9 @@ struct QwenResidentModelDefinition {
             // 4, 8, ... 36. As for the 27B, structural and nothing more.
             profileID = "registered_qwen35_35b_a3b_greedy_generation_v1"
             supportedCuts = structural
+        case .qwen36ThirtyFiveBA3B:
+            profileID = "registered_qwen36_35b_a3b_greedy_generation_v1"
+            supportedCuts = structural
         }
         // Routed experts are token-local, so they change neither the state a
         // mode moves nor its framing; what they need is their own arithmetic
@@ -62,7 +65,7 @@ struct QwenResidentModelDefinition {
         // the layer kinds and head counts), so both rows carry every mode. A
         // model that must not run one drops it from its own row here.
         switch model {
-        case .qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B:
+        case .qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B:
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
         }
         guard supportedGenerationModes.first == .pipeline,

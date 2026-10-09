@@ -24,7 +24,9 @@ foundation and the work to make it run for real.
   Stop through the owner; let the worker release and exit.
 - Do not change RDMA, network, firewall or other system settings on either Mac.
   Name the change and ask.
-- One heavy Swift/Metal/GPU job per machine at a time.
+- One heavy Swift/Metal/GPU job per machine at a time. One compile may run
+  beside it, capped at 8 jobs. A timing that will be quoted, and any model that
+  needs most of a Mac's memory, runs with nothing else on that Mac.
 - Model identity comes from the manifest, config and tensor evidence, not from
   a directory or branch name.
 - Machine addresses, host names and serials stay out of committed files.

@@ -33,6 +33,10 @@
 
 - Reduce dense cache-routing query copies by retaining the deepest compatible endpoint for each provider and tier. Preserve shorter valid fallbacks, complete hint values and matching/valid-holder counts; bounded scratch overflow restores the original path. The original source-bound synthetic dense workloads measured 43–46% lower CPU query time and 97–98% fewer cumulative allocated bytes; these are not new measurements of the merged coordinator or evidence of production cache-hit or model TPS gains.
 
+## Unreleased - performance observation freshness
+
+- Keep provider measurement age and expiry tied to the newest observation when older completed work arrives later. Delayed receipts no longer expire fresh aggregate, qualified or workload-bucket evidence, or cause the next sample to reseed an estimate across a false evidence gap. Existing arrival-order rate averaging and completed-work counts are preserved.
+
 ## Unreleased - Autopilot daily earnings floor
 
 ### Autopilot reward recording and authorization

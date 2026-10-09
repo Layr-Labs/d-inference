@@ -24,6 +24,7 @@ isolated_filters=(
   SSDShorterNativeBlockRestoreTests
   SSDNativeCheckpointOracleTests
   emptyNativePoolTeardownUsesActualRetiredAdapter
+  allocatorReleasesDenseBackingAfterSparseCompaction
   processLedgerCannotCombineOldUsageWithNewMaterializationCredit
   defaultApplyProjectsSettings
   stageDelta

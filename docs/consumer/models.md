@@ -1,8 +1,12 @@
 # Models reference
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-09
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/catalog/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
+
+The provider's [selective KV working-set experiment](../architecture/inference.md#selective-full-attention-working-set-experiment)
+is restricted to offline benchmark construction for Gemma 4 and GPT-OSS. It
+changes no public model capability, context limit or serving default.
 
 ## `GET /v1/models`
 

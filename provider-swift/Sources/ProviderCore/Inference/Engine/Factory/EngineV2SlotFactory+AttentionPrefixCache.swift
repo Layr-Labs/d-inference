@@ -23,7 +23,7 @@ extension EngineV2SlotFactory {
         logInfo: @Sendable (String) -> Void,
         logWarning: @Sendable (String) -> Void
     ) async -> AttentionPrefixCachePreparation {
-        guard !scriptedEngine else {
+        guard !scriptedEngine, preparedBackend?.selectiveRetentionEnabled != true else {
             return .init(status: .init(state: .disabled, reason: .unsupportedBackend))
         }
         if let preparedBackend, !preparedBackend.modelCapabilities.supportsPrefixReuse {

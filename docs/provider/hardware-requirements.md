@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -262,6 +262,12 @@ the reduction does not lower the load, activation or operating-system reserves.
 | Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
 | When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Exact MiMo IDs default to native contiguous text-only COMPLETE checkpoints; media stays uncached. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+
+The [selective KV benchmark experiment](../architecture/inference.md#selective-full-attention-working-set-experiment)
+does not qualify a smaller RAM tier or a larger context window. Dense prefill
+and conservative admission still apply, and gather compaction has a transient
+source-plus-destination peak. Its logical storage counters require separate
+physical-memory and model-quality measurements before any serving change.
 
 ## Storage
 

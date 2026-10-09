@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -463,6 +463,15 @@ retaining complete integrity checks. It affects load/verification work, not
 ordinary resident decode; explicit overrides provide the original serial path.
 For a pinned GPT-OSS matrix with aggregate B=2/B=4 decode, raw token timing,
 and mixed prompt arrivals, see [the profiling workflow](../developer/test.md#6-scripts-and-release-integrity).
+
+For experimental retention measurement, use
+`DARKBLOOM_CBV2_SELECTIVE_KV=half` with a Gemma 4 or GPT-OSS benchmark and
+`--kv-backend contiguous`, with MTP off. The [working-set experiment](../architecture/inference.md#selective-full-attention-working-set-experiment)
+keeps dense prefill and configured windows, then reduces older full-attention
+history. It disables prefix reuse, retains conservative admission and is refused
+by serving construction. The ordinary token-score JSON includes the mode and
+logical compaction counters; these are not physical memory measurements or
+quality certification. Unset the variable for the native dense control.
 
 ### `darkbloom update`
 

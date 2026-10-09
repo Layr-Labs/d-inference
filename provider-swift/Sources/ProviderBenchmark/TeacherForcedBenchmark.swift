@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import MLX
 import MLXLLM
 import MLXVLM
 @_spi(Diagnostics) import MLXLMCommon
@@ -34,6 +35,11 @@ public enum TeacherForcedBenchmark {
         let metallibSHA256: String
         let modelDirectory: String
         let resolvedBackend: String
+        /// Explicitly distinguish lossy working-set experiments from dense controls.
+        let selectiveKVMode: String
+        let selectiveKVStatistics: CBv2SelectiveKVStatistics?
+        let peakMLXMemoryBytes: Int
+        let finalMemory: ProcessMemoryTelemetry?
         let cacheMode = "off"
         let mtpEnabled = false
         let concurrency = 1
@@ -133,6 +139,7 @@ public enum TeacherForcedBenchmark {
                 throw Failure.unexpectedServingMode
             }
             let start = engine.teacherForcedScoringActivity()
+            Memory.peakMemory = 0
             let plain = try engine.teacherForcedTop1(
                 promptTokens: request.promptTokens, continuation: request.continuation)
             let afterPlain = engine.teacherForcedScoringActivity()
@@ -150,7 +157,11 @@ public enum TeacherForcedBenchmark {
                 inputSHA256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
                 verifiedModelAggregateSHA256: verified, executableSHA256: executable,
                 metallibSHA256: metallib, modelDirectory: modelDirectory.path,
-                resolvedBackend: session.backend, kvCapacityBytes: cache.engineKVCapacityBytes,
+                resolvedBackend: session.backend,
+                selectiveKVMode: engine.selectiveKVStatistics() == nil ? "0" : "half",
+                selectiveKVStatistics: engine.selectiveKVStatistics(),
+                peakMLXMemoryBytes: Memory.peakMemory, finalMemory: await session.memorySnapshot(),
+                kvCapacityBytes: cache.engineKVCapacityBytes,
                 productionGrant: grant, plainTop1: plain, activity: activity,
                 diagnostic: first, repeatedDiagnostic: repeated,
                 meanForcedTokenNLL: first.allFinite ? first.records.reduce(0.0) {

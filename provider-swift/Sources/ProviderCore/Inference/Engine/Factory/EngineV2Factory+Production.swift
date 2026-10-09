@@ -195,6 +195,10 @@ extension EngineV2Factory {
         constructionPurpose: ConstructionPurpose = .serving,
         checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
     ) throws -> ProductionBuild {
+        guard !preparedBackend.selectiveRetentionEnabled || mtpDrafter == nil else {
+            throw CBv2KVError.backendIneligible(
+                reason: "selective KV benchmarks require MTP off until sparse assistant capture is qualified")
+        }
         let (backend, caches) = try preparedBackend.consume(
             model: model,
             maxConcurrentRequests: maxConcurrentRequests)
@@ -203,7 +207,8 @@ extension EngineV2Factory {
             throw EngineV2ProductionError.pagedUnavailable(violation)
         }
         let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
-            ? prefixCache : nil
+            && !preparedBackend.selectiveRetentionEnabled ? prefixCache : nil
+        let completePrefixCache = preparedBackend.selectiveRetentionEnabled ? nil : completePrefixCache
         var schedulerConfig = preparedBackend.schedulerConfig
         schedulerConfig.enablePrefixCache =
             effectivePrefixCache != nil || preparedBackend.residentPrefixCacheEnabled

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -644,6 +644,62 @@ window. The diagnostic contains only layer and dtype metadata
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`).
 The [runtime validation report](../reports/2026-09-05-paged-runtime-dtype.md)
 records tiny-model correctness and remaining release gates.
+
+### Selective full-attention working-set experiment
+
+`DARKBLOOM_CBV2_SELECTIVE_KV=half` requires singleton benchmark construction, an explicit
+contiguous backend, MTP off, and a loaded Gemma 4 or GPT-OSS model. Serving construction
+rejects it; unset, empty and `0` preserve the ordinary dense path. MiMo and other
+families are excluded pending their own evidence.
+
+The implementation is `CBv2SelectiveSequenceKV` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/SelectiveSequenceKV.swift`;
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SelectiveKV.swift`
+owns the provider gate. `CBv2SelectiveSequenceKV` preserves dense prefill. After at least 4,096 tokens,
+it can compact old full-attention KV before a decode update, no more often than
+every 256 positions. It retains the first four entries, at least the latest 512,
+and half of older history in 16-token chunks. One quarter of the retained chunk
+budget covers evenly spaced history; the rest follows attention mass from at
+most four current queries. GQA scores use the owning KV head; a maximum across
+query heads avoids averaging away a sparse retrieval head. Learned sinks enter
+the normalization denominator and never become fictitious KV tokens.
+
+Original rotated keys stay unchanged and selected indices stay chronological.
+The absolute RoPE clock advances independently of retained count. Multi-token
+causal masks still cover the entire new query rectangle. Configured sliding
+windows are unchanged. Speculative transactions suspend compaction; rejected
+suffixes roll back without losing confirmed values at the storage layer.
+The provider requires MTP off because assistant captures currently lack sparse
+absolute-position metadata. Gemma target-layer borrowers reuse their source's
+selected working set.
+
+This lossy request-local state cannot be donated or adopted as an exact prefix.
+The engine fences all resident, ordinary and complete checkpoint paths, including
+direct SDK construction. Native admission reservations remain conservative;
+compaction does not claim additional request capacity or relax load safeguards.
+Dense prefill still determines peak prompt memory. The scorer materializes at
+most `queryHeads * 4 * history` FP32 score elements, plus normalization
+intermediates. It also casts the full key history to FP32:
+`kvHeads * history * headDim * 4` bytes for non-FP32 keys. That cast aliases
+existing FP32 keys on GPT-OSS but is an additional allocation on BF16 Gemma.
+A compact gather temporarily coexists with its source until the submitted
+graph retires. Neither the cast, score scratch nor destination has an explicit
+serving reservation yet; logical byte counters are not physical allocator
+receipts. Admission cannot credit this experiment's reduction.
+
+For a fixed query and unchanged K/V, dropping attention probability mass
+`d` changes the output norm by at most `2 * d * max(norm(V))`, including a
+zero-value denominator-only sink. This follows by separating retained and
+removed weighted averages. It motivates ranking attention mass, but it does
+not bound later-layer or later-token errors: selection observes only the
+current queries and Gemma borrowers can have different attention patterns.
+
+The teacher-forced benchmark reports `selectiveKVMode` and logical
+`selectiveKVStatistics`. Compare exact model, binary, metallib and token inputs
+against dense contiguous controls. Required qualification includes held-out
+retrieval, tools, coding and long generation, plus allocator peak, time to first
+token and decode throughput. A local attention-mass estimate is not a bound on
+future questions or end-to-end model quality.
 
 ### Supported `model_type`s and quantization
 

@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "scope": "initial_teacher_forced_pilots",
+  "hardware": "Apple M4 Max, 128 GiB",
+  "reports": [
+    {
+      "model": "gpt-oss-20b",
+      "model_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+      "input_sha256": "cbd780c09b1e8690b147f5635593395c477394dc89a1f59db136157ceac73bf0",
+      "binary_sha256": "50e9a73eef1553a561d69480e66075c147e9fe849d1c54b7d72f1c7e6b6935b3",
+      "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+      "prompt_tokens": 17534,
+      "forced_tokens": 6,
+      "dense_top1": [
+        200005,
+        35644,
+        50005,
+        6516,
+        12,
+        49505
+      ],
+      "selective_top1": [
+        200005,
+        35644,
+        50005,
+        6516,
+        12,
+        49505
+      ],
+      "dense_mean_nll": 10.355741659800211,
+      "selective_mean_nll": 10.211071332295736,
+      "dense_peak_mlx_bytes": 14399778448,
+      "selective_peak_mlx_bytes": 14399780880,
+      "selective_statistics": {
+        "lastPruneRetainedStorageBytes": 1368096768,
+        "lastPruneSourceStorageBytes": 2586378240,
+        "pruningEvents": 36,
+        "sequenceLayers": 36,
+        "tokenEntriesRemoved": 306432
+      }
+    },
+    {
+      "model": "gemma-4-26b-qat-4bit",
+      "model_sha256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+      "input_sha256": "ab2f1e33fa134f17cbd6920fc150ec3b16407ecd3a87af5e69954886bc66c874",
+      "binary_sha256": "50e9a73eef1553a561d69480e66075c147e9fe849d1c54b7d72f1c7e6b6935b3",
+      "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+      "prompt_tokens": 21436,
+      "forced_tokens": 7,
+      "dense_top1": [
+        68002,
+        236772,
+        50657,
+        236772,
+        236832,
+        236800,
+        236819
+      ],
+      "selective_top1": [
+        68002,
+        236772,
+        50657,
+        236772,
+        236832,
+        236800,
+        236819
+      ],
+      "dense_mean_nll": 7.084437779017857e-06,
+      "selective_mean_nll": 6.539481026785714e-06,
+      "dense_peak_mlx_bytes": 17248135354,
+      "selective_peak_mlx_bytes": 17248151754,
+      "selective_statistics": {
+        "lastPruneRetainedStorageBytes": 689848320,
+        "lastPruneSourceStorageBytes": 1317457920,
+        "pruningEvents": 15,
+        "sequenceLayers": 15,
+        "tokenEntriesRemoved": 156960
+      }
+    }
+  ]
+}

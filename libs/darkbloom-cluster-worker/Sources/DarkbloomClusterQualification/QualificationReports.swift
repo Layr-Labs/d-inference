@@ -35,7 +35,8 @@ public struct QualificationIdentity: Codable, Equatable, Sendable {
     }
 
     /// Field names that differ, and optional fields only one side carries.
-    public func differences(from other: Self, allowCutDifference: Bool = false) -> (differing: [String], notCompared: [String]) {
+    public func differences(from other: Self, allowCutDifference: Bool = false,
+                            allowScheduleDifference: Bool = false) -> (differing: [String], notCompared: [String]) {
         var differing: [String] = [], skipped: [String] = []
         func required<T: Equatable>(_ name: String, _ a: T, _ b: T) { if a != b { differing.append(name) } }
         func optional<T: Equatable>(_ name: String, _ a: T?, _ b: T?) {
@@ -48,7 +49,8 @@ public struct QualificationIdentity: Codable, Equatable, Sendable {
         required("promptTokenIDsSHA256", promptTokenIDsSHA256, other.promptTokenIDsSHA256)
         required("chunkSize", chunkSize, other.chunkSize); required("outputCount", outputCount, other.outputCount)
         required("stopTokenIDs", stopTokenIDs, other.stopTokenIDs)
-        required("prefillSchedule", prefillSchedule, other.prefillSchedule)
+        // The schedule decides when rank 0 computes a chunk, not what is computed.
+        if !allowScheduleDifference { required("prefillSchedule", prefillSchedule, other.prefillSchedule) }
         required("artifactSHA256", artifactSHA256, other.artifactSHA256)
         required("configurationSHA256", configurationSHA256, other.configurationSHA256)
         optional("requestFingerprint", requestFingerprint, other.requestFingerprint)

@@ -30,8 +30,8 @@ import Foundation
               [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
           darkbloom-cluster-pair-check compare --reference REPORT.json --candidate REPORT.json
-              [--near-tie-ulps N] [--allow-cut-difference yes] [--json yes] [--require VERDICT[,VERDICT]]
-              [--model-dir /ABS/MODEL]
+              [--near-tie-ulps N] [--allow-cut-difference yes] [--allow-schedule-difference yes]
+              [--json yes] [--require VERDICT[,VERDICT]] [--model-dir /ABS/MODEL]
         """
 
     /// `--name value` pairs; names in `repeated` may occur more than once.
@@ -203,7 +203,7 @@ import Foundation
 
     static func compare(_ arguments: [String]) async throws {
         let fields = try parse(arguments, allowed: ["--reference", "--candidate", "--near-tie-ulps",
-            "--allow-cut-difference", "--json", "--require", "--model-dir"])
+            "--allow-cut-difference", "--allow-schedule-difference", "--json", "--require", "--model-dir"])
         guard let referencePath = fields["--reference"]?.first, let candidatePath = fields["--candidate"]?.first else {
             throw Failure(usage)
         }
@@ -220,7 +220,8 @@ import Foundation
         let reference = try QualificationReportFiles.subject(URL(fileURLWithPath: referencePath))
         let candidate = try QualificationReportFiles.subject(URL(fileURLWithPath: candidatePath))
         let comparison = try QualificationComparator(nearTieULPs: threshold,
-            allowCutDifference: fields["--allow-cut-difference"]?.first == "yes").compare(reference: reference, candidate: candidate)
+            allowCutDifference: fields["--allow-cut-difference"]?.first == "yes",
+            allowScheduleDifference: fields["--allow-schedule-difference"]?.first == "yes").compare(reference: reference, candidate: candidate)
         if fields["--json"]?.first == "yes" {
             print(String(decoding: try QualificationReportFiles.encode(comparison), as: UTF8.self), terminator: "")
         } else {

@@ -145,6 +145,17 @@ final class QualificationComparatorTests: XCTestCase {
         XCTAssertTrue(allowed.reasons.contains { $0.contains("stage cuts differ (8 and 16)") })
     }
 
+    func testPrefillScheduleIsPartOfTheIdentityUnlessExplicitlyAllowed() throws {
+        var lookahead = try Constructed.identity()
+        lookahead.prefillSchedule = "one_chunk_lookahead_v1"
+        let refused = try Constructed.compare(Constructed.reference(), Constructed.pair(), candidateIdentity: lookahead)
+        XCTAssertEqual(refused.verdict, .incomparable); XCTAssertEqual(refused.identityDifferences, ["prefillSchedule"])
+        let allowed = try Constructed.compare(Constructed.reference(), Constructed.pair(), candidateIdentity: lookahead,
+                                              comparator: .init(allowScheduleDifference: true))
+        XCTAssertEqual(allowed.verdict, .exact)
+        XCTAssertTrue(allowed.reasons.contains { $0.contains("prefill schedules differ (serial_v1 and one_chunk_lookahead_v1)") })
+    }
+
     func testIncomparableWhenEqualTokensHaveNoFinalRowToSettleThem() throws {
         let result = try Constructed.compare(Constructed.reference(), Constructed.pair(row: nil))
         XCTAssertEqual(result.verdict, .incomparable)

@@ -331,6 +331,7 @@ final class PairDriverTests: XCTestCase {
         let configuration = try sides.configuration()
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "failed")
+        XCTAssertTrue(report.failure?.contains("rank 0 local ended with status 9 during the request") == true, report.failure ?? "")
         XCTAssertEqual(report.ranks[0].exitStatus, 9)
         // Rank 1 was waiting on its peer: it was cancelled, said so and exited.
         XCTAssertEqual(report.ranks[1].events.last, "failed:runtimeError")

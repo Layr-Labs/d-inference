@@ -185,7 +185,8 @@ in the final row, how many state entries differ, and one of:
 Two different chips are not expected to be bit-identical, so anything but
 `diverged` and `incomparable` can be an acceptable result; read the numbers.
 `--allow-cut-difference yes` compares two runs of one request at different
-cuts. `--require exact,tokensEqualLogitsDiffer` turns the verdict into an exit
+cuts, and `--allow-schedule-difference yes` a lookahead pair run with a serial
+one or with the reference, which is always serial. `--require exact,tokensEqualLogitsDiffer` turns the verdict into an exit
 status. `--model-dir` adds the decoded text around a divergence.
 
 Tests (no model, no second Mac; two copies of a fake worker stand in for the

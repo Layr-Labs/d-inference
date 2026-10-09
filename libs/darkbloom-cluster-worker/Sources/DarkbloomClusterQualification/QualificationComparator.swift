@@ -78,9 +78,11 @@ public struct QualificationComparator: Sendable {
     /// of the reference's top logit, in the row's native precision.
     public var nearTieULPs: Float
     public var allowCutDifference: Bool
+    public var allowScheduleDifference: Bool
 
-    public init(nearTieULPs: Float = 4, allowCutDifference: Bool = false) {
+    public init(nearTieULPs: Float = 4, allowCutDifference: Bool = false, allowScheduleDifference: Bool = false) {
         self.nearTieULPs = nearTieULPs; self.allowCutDifference = allowCutDifference
+        self.allowScheduleDifference = allowScheduleDifference
     }
 
     /// Spacing of adjacent representable values at `value` for a row dtype.
@@ -97,7 +99,8 @@ public struct QualificationComparator: Sendable {
     }
 
     public func compare(reference: QualificationSubject, candidate: QualificationSubject) throws -> QualificationComparison {
-        let identity = reference.identity.differences(from: candidate.identity, allowCutDifference: allowCutDifference)
+        let identity = reference.identity.differences(from: candidate.identity, allowCutDifference: allowCutDifference,
+                                                      allowScheduleDifference: allowScheduleDifference)
         let a = reference.evidence, b = candidate.evidence
         let prefix = zip(a.selectedTokenIDs, b.selectedTokenIDs).prefix { $0 == $1 }.count
         let countsEqual = a.selectedTokenIDs.count == b.selectedTokenIDs.count
@@ -112,6 +115,9 @@ public struct QualificationComparator: Sendable {
             committedTokensEqual: zipOptional(a.committedTokens, b.committedTokens).map { $0 == $1 })
         if allowCutDifference && reference.identity.stageCut != candidate.identity.stageCut {
             result.reasons.append("stage cuts differ (\(reference.identity.stageCut) and \(candidate.identity.stageCut)) and were allowed to")
+        }
+        if allowScheduleDifference && reference.identity.prefillSchedule != candidate.identity.prefillSchedule {
+            result.reasons.append("prefill schedules differ (\(reference.identity.prefillSchedule) and \(candidate.identity.prefillSchedule)) and were allowed to")
         }
         if let rows = try compareLogits(a, b) { result.logits = rows }
         else {

@@ -280,8 +280,13 @@ public struct PairDriver: Sendable {
         }
         guard concluded, let reason = result.finish else {
             lease.cancel(reason: concluded ? .runtimeError : .deadline)
+            // Name a rank whose process is already gone; the other is still
+            // on its own way out and is reported with its exit status below.
+            let gone = (0...1).compactMap { rank in
+                endpoints[rank].termination.map { "\(ranks[rank].role) ended with \($0.signalled ? "signal" : "status") \($0.status) during the request" }
+            }
             return finish("failed", (result.failure ?? "the request did not finish before its deadline")
-                + " after \(result.tokens.count) committed token(s)")
+                + " after \(result.tokens.count) committed token(s)" + (gone.isEmpty ? "" : "; " + gone.joined(separator: "; ")))
         }
         log("pair-check: request finished (\(reason)) with \(result.tokens.count) tokens")
 

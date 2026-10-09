@@ -196,6 +196,41 @@ class Server:
         return self.process.returncode, time.perf_counter() - began, clean_exit
 
 
+def swap_used_mb():
+    match = re.search(r"used = ([\d.]+)M", output_of(["sysctl", "-n", "vm.swapusage"]))
+    return float(match.group(1)) if match else None
+
+
+class PressureGuard(threading.Thread):
+    """Stops the server (SIGTERM, graceful) if the Mac comes under memory pressure.
+
+    For a model that needs most of the machine: the kernel's pressure level leaving
+    "normal" (1), or swap growing by more than the allowance since the session began,
+    ends the session before other work on the Mac is hurt. It never sends SIGKILL."""
+
+    def __init__(self, server, allowance_mb, note):
+        super().__init__(daemon=True)
+        self.server, self.allowance_mb, self.note = server, allowance_mb, note
+        self.baseline = swap_used_mb() or 0.0
+        self.tripped = None
+        self.done = threading.Event()
+
+    def run(self):
+        while not self.done.wait(2.0):
+            level = output_of(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]).strip()
+            swap = swap_used_mb()
+            reason = None
+            if level.isdigit() and int(level) > 1:
+                reason = f"memory pressure level {level}"
+            elif swap is not None and swap - self.baseline > self.allowance_mb:
+                reason = f"swap grew by {swap - self.baseline:.0f} MB"
+            if reason and self.server.process and self.server.process.poll() is None:
+                self.tripped = reason
+                self.note(f"pressure guard: {reason}; stopping the server (SIGTERM)")
+                self.server.process.send_signal(signal.SIGTERM)
+                return
+
+
 def leftover_processes(binary):
     """Serving processes of this binary (`<binary> start ...`); other commands of the
     same binary, such as a model download running beside the benchmark, do not count."""
@@ -206,7 +241,9 @@ def leftover_processes(binary):
 def run_session(arguments, session, note):
     out = arguments.out
     name = session["name"]
-    record = {"session": name, "started_utc": utc(), "model": arguments.model, "runs": [], "failures": []}
+    record = {"session": name, "started_utc": utc(), "model": arguments.model, "runs": [], "failures": [],
+              "load_average_start": list(os.getloadavg()),
+              "lanes_held": os.environ.get("WITH_LANE_HELD")}
     record["leftover_before"] = leftover_processes(arguments.binary)
     if record["leftover_before"]:
         record["failures"].append("a provider from this binary was already running; session not started")
@@ -215,6 +252,10 @@ def run_session(arguments, session, note):
     server = Server(arguments, out / f"{name}.server.log")
     record["command"] = clean(" ".join(server.start()))
     stopping = threading.Event()
+    guard = None
+    if arguments.pressure_guard_swap_mb is not None:
+        guard = PressureGuard(server, arguments.pressure_guard_swap_mb, note)
+        guard.start()
 
     def on_signal(number, _frame):
         note(f"signal {number}: stopping the server")
@@ -252,11 +293,17 @@ def run_session(arguments, session, note):
             if run.get("sample_memory"):
                 argv += ["--sample-every", str(run["sample_memory"]), "--sample-command",
                          f"vm_stat; sysctl -n vm.swapusage; ps -o rss= -p {server.process.pid}"]
-            note(f"{name}: run {label}")
+            note(f"{name}: run {label} (load average {os.getloadavg()[0]:.1f})")
+            record.setdefault("load_average_by_run", {})[label] = list(os.getloadavg())
             try:
                 status = loadgen.main(argv)
             except SystemExit as error:
                 status = error.code
+            except KeyboardInterrupt:
+                raise
+            except Exception as error:  # a run that cannot proceed is a recorded failure, not a crash
+                status = f"{type(error).__name__}: {error}"[:500]
+                note(f"{name}: run {label} raised {status}")
             record["runs"].append({"label": label, "exit": status})
             if status not in (0, None):
                 record["failures"].append(f"run {label} exited {status}")
@@ -274,6 +321,10 @@ def run_session(arguments, session, note):
     finally:
         for number, handler in previous.items():
             signal.signal(number, handler)
+        if guard:
+            guard.done.set()
+            if guard.tripped:
+                record["failures"].append(f"stopped by the pressure guard: {guard.tripped}")
         status, seconds, clean_exit = server.stop(arguments.stop_seconds, note)
         record["server_exit_status"] = status
         record["stop_seconds"] = round(seconds, 2)
@@ -310,6 +361,8 @@ def main():
     parser.add_argument("--start-seconds", type=float, default=600.0)
     parser.add_argument("--stop-seconds", type=float, default=300.0)
     parser.add_argument("--settle-seconds", type=float, default=5.0)
+    parser.add_argument("--pressure-guard-swap-mb", type=float,
+                        help="stop the server if memory pressure leaves normal or swap grows by more than this")
     arguments = parser.parse_args()
     for name in ("binary", "work", "config", "out", "plan", "calibration"):
         setattr(arguments, name, getattr(arguments, name).expanduser().resolve())

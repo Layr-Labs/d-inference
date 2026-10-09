@@ -9,6 +9,7 @@ file written by loadgen.py or serve_bench.py, or from the catalog JSON that
     tables.py cells   LABEL=SUMMARY.json [LABEL=SUMMARY.json ...]
     tables.py soak    LABEL=SUMMARY.json [...]
     tables.py memory  LABEL=SESSION.json [...]
+    tables.py matrix  MODEL@MAC=RUN-DIRECTORY [...]
 """
 
 from __future__ import annotations
@@ -115,13 +116,59 @@ def memory(arguments):
               f"{'; '.join(record.get('failures') or []) or 'none'} |")
 
 
+def matrix(arguments):
+    """One row per model directory written by serve_bench.py with the reduced plan."""
+    import os
+
+    def load(path):
+        try:
+            return json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def find(report, prompt, concurrency):
+        for item in (report or {}).get("cells", []):
+            if item.get("target_prompt_tokens") == prompt and item.get("concurrency") == concurrency:
+                return item
+        return {}
+
+    print("| Model | Mac | Ready s | Footprint GiB loaded / peak seen | 64-tok prompt: first token s, decode tok/s | "
+          "4k prompt: first token s, prefill tok/s, decode tok/s | 4 clients: output tok/s at 64 / 4k | "
+          "Soak ok/all, output tok/s | Requests failed | Stop s, left over | Session failures |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    for argument in arguments:
+        label, _, folder = argument.partition("=")
+        model, _, mac = label.partition("@")
+        session = load(os.path.join(folder, "s1-shapes.session.json")) or {}
+        one = load(os.path.join(folder, "warm-c1.summary.json"))
+        four = load(os.path.join(folder, "warm-c4.summary.json"))
+        soak_report = (load(os.path.join(folder, "soak-mixed-c4.summary.json")) or {}).get("soak") or {}
+        small, large = find(one, 64, 1), find(one, 4096, 1)
+        failed = sum(item.get("failed", 0) for report in (one, four) for item in (report or {}).get("cells", []))
+        failed += soak_report.get("failed", 0)
+        loaded = (session.get("memory_loaded") or {}).get("process_footprint_bytes")
+        after = (session.get("memory_after_load") or {}).get("process_footprint_bytes")
+        gib = lambda value: "—" if value is None else f"{value / (1 << 30):.1f}"
+        print(f"| `{model}` | {mac} | {number(session.get('listening_after_seconds'))} | {gib(loaded)} / {gib(after)} | "
+              f"{number(pick(small, 'first_token_s'), 3)}, {number(pick(small, 'client_decode_tps'))} | "
+              f"{number(pick(large, 'first_token_s'), 2)}, {number(pick(large, 'client_prefill_tps'), 0)}, "
+              f"{number(pick(large, 'client_decode_tps'))} | "
+              f"{number(find(four, 64, 4).get('aggregate_output_tokens_per_second'))} / "
+              f"{number(find(four, 4096, 4).get('aggregate_output_tokens_per_second'))} | "
+              f"{soak_report.get('ok', '—')}/{soak_report.get('requests', '—')}, "
+              f"{number(soak_report.get('aggregate_output_tokens_per_second'))} | {failed} | "
+              f"{number(session.get('stop_seconds'), 2)}, {len(session.get('leftover_after') or [])} | "
+              f"{'; '.join(session.get('failures') or []) or 'none'} |")
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__, file=sys.stderr)
         return 64
     command, arguments = sys.argv[1], sys.argv[2:]
     {"catalog": lambda: catalog(arguments[0]), "cells": lambda: cells(arguments),
-     "soak": lambda: soak(arguments), "memory": lambda: memory(arguments)}[command]()
+     "soak": lambda: soak(arguments), "memory": lambda: memory(arguments),
+     "matrix": lambda: matrix(arguments)}[command]()
     return 0
 
 

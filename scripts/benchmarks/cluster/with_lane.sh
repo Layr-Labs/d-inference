@@ -1,11 +1,12 @@
 #!/bin/bash
 # with_lane.sh -- run one heavy command under a shared "one heavy job" lane.
 #
-# usage: LANE=/abs/lane.sh with_lane.sh "<purpose>" <max-seconds> -- command [args...]
+# usage: LANE=/abs/lane.sh [LANE2=/abs/second-lane.sh] with_lane.sh "<purpose>" <max-seconds> -- command [args...]
 #
 # The lane script must implement `acquire "<purpose>"` (exit 0 when taken, any
 # other status when occupied) and `release`. This wrapper retries the acquire
-# once a minute, runs the command, follows every process the command starts,
+# once a minute (LANE_RETRY_SECONDS changes the interval; holders that re-take
+# the lane within seconds of releasing it will starve a once-a-minute waiter), runs the command, follows every process the command starts,
 # and releases only after all of them have exited. A command that outlives
 # <max-seconds> is asked to stop: SIGINT to every followed process, then
 # SIGTERM 30 s later. Nothing is ever sent SIGKILL: a process that holds a
@@ -24,14 +25,34 @@ purpose="${1:?purpose}"; limit="${2:?max seconds}"; shift 2
 [[ "${1:-}" == "--" ]] && shift
 [[ $# -ge 1 ]] || { echo "with_lane: no command" >&2; exit 64; }
 max_wait="${LANE_MAX_WAIT_SECONDS:-21600}"
+retry="${LANE_RETRY_SECONDS:-60}"
 waited=0
 while true; do
   "$LANE" acquire "$purpose" >/dev/null; status=$?
   [[ $status -eq 0 ]] && break
   if (( waited >= max_wait )); then echo "with_lane: lane still occupied after ${waited}s" >&2; exit 73; fi
-  sleep 60; waited=$((waited + 60))
+  sleep "$retry"; waited=$((waited + retry))
 done
 echo "with_lane: acquired after ${waited}s at $(date -u +%H:%M:%SZ): $purpose" >&2
+held="$(basename "$LANE")"
+# Optional second lane (for example a compile lane that an undisturbed timing
+# run must also hold). It is taken after the first and released before it.
+if [[ -n "${LANE2:-}" ]]; then
+  waited2=0
+  while true; do
+    "$LANE2" acquire "$purpose" >/dev/null; status=$?
+    [[ $status -eq 0 ]] && break
+    if (( waited2 >= max_wait )); then
+      echo "with_lane: second lane still occupied after ${waited2}s; releasing the first" >&2
+      "$LANE" release >/dev/null; exit 73
+    fi
+    sleep "$retry"; waited2=$((waited2 + retry))
+  done
+  held="$held+$(basename "$LANE2")"
+  echo "with_lane: second lane acquired after ${waited2}s at $(date -u +%H:%M:%SZ)" >&2
+fi
+export WITH_LANE_HELD="$held"
+echo "with_lane: lanes held: $held; load average at start: $(sysctl -n vm.loadavg 2>/dev/null)" >&2
 "$@" &
 child=$!
 known="$child"
@@ -68,6 +89,7 @@ while [[ -n "${known// /}" ]]; do
   refresh
 done
 wait "$child" 2>/dev/null; status=$?
+if [[ -n "${LANE2:-}" ]]; then "$LANE2" release >/dev/null || echo "with_lane: second lane release failed" >&2; fi
 "$LANE" release >/dev/null; release_status=$?
 echo "with_lane: released (status $release_status) at $(date -u +%H:%M:%SZ) after $((SECONDS - started))s; command status $status" >&2
 (( stopped > 0 )) && exit 75

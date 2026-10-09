@@ -23,7 +23,10 @@ peer_setup || { echo "the second Mac does not answer over the cable"; exit 30; }
 key="$1"; cut="$2"; M=$(local_model "$key"); PM=$(peer_model "$key"); O=$E/$key; D=$O/cable; R=$G/run/pair/cable
 mkdir -p "$D" "$O/compare" "$O/stage" "$R"
 oracle() { echo "$O/reference/ref-a-$1-cut$cut-run1.json"; }
-[ -s "$(oracle p4k)" ] || { echo "no oracle (step B) at cut $cut: D not started"; exit 31; }
+# The request lists can be narrowed (D_RECORDED, D_LOOKAHEAD, D_TIMED; D_SHORT_TIMED=no
+# and D_FAULT=no skip those parts), for a later prompt size under the same hold.
+RECORDED="${D_RECORDED:-short p4k p8k}"; LOOKAHEAD="${D_LOOKAHEAD:-p4k p8k}"; TIMED="${D_TIMED:-p4k p8k}"
+for n in $RECORDED; do [ -s "$(oracle $n)" ] || { echo "no oracle (step B) for $n at cut $cut: D not started"; exit 31; }; done
 peer_wired() { "${PEER[@]}" "/usr/bin/vm_stat | /usr/bin/awk -v p=\"\$(/usr/sbin/sysctl -n hw.pagesize)\" '/Pages wired down/ { gsub(\"[.]\", \"\", \$4); printf \"%.0f\", \$4 * p }'"; }
 peer_vm_line() { "${PEER[@]}" "/usr/bin/vm_stat | /usr/bin/awk -v p=\"\$(/usr/sbin/sysctl -n hw.pagesize)\" '/Pages free/ {gsub(\"[.]\",\"\",\$3); f=\$3*p} /File-backed pages/ {gsub(\"[.]\",\"\",\$3); c=\$3*p} /Pages wired down/ {gsub(\"[.]\",\"\",\$4); w=\$4*p} /Pages occupied by compressor/ {gsub(\"[.]\",\"\",\$5); z=\$5*p} END {printf \"free %.1f GiB, file-backed %.1f GiB, wired %.1f GiB, compressor %.1f GiB\", f/2^30, c/2^30, w/2^30, z/2^30}'"; }
 workers_here() { ps -axo command= | grep "[d]arkbloom-cluster-worker " | grep -c "gemma4"; }
@@ -94,12 +97,12 @@ cable "preflight-cut$cut" short serial_v1 --evidence none --preflight-only yes |
 
 # ---- 2 recorded, against the oracle ------------------------------------------
 fail=0
-for n in short p4k p8k; do
+for n in $RECORDED; do
   cable "pair-$n-cut$cut-serial" $n serial_v1 || { fail=1; tail -6 "$D/pair-$n-cut$cut-serial.stderr"; continue; }
   compare "$O/compare/cable-vs-oracle-$n-cut$cut-serial.txt" "$(oracle $n)" "$D/pair-$n-cut$cut-serial.json" --require exact,tokensEqualLogitsDiffer
   grep -q -E '^verdict: (exact|tokensEqualLogitsDiffer)' "$O/compare/cable-vs-oracle-$n-cut$cut-serial.txt" || fail=1
 done
-for n in p4k p8k; do
+for n in $LOOKAHEAD; do
   cable "pair-$n-cut$cut-lookahead" $n one_chunk_lookahead_v1 || { fail=1; tail -6 "$D/pair-$n-cut$cut-lookahead.stderr"; continue; }
   compare "$O/compare/cable-vs-oracle-$n-cut$cut-lookahead.txt" "$(oracle $n)" "$D/pair-$n-cut$cut-lookahead.json" --allow-schedule-difference yes --require exact,tokensEqualLogitsDiffer
   grep -q -E '^verdict: (exact|tokensEqualLogitsDiffer)' "$O/compare/cable-vs-oracle-$n-cut$cut-lookahead.txt" || fail=1
@@ -107,15 +110,15 @@ for n in p4k p8k; do
 done
 
 # ---- 3 timed: four requests per run, nothing recorded ------------------------
-for n in p4k p8k; do
+for n in $TIMED; do
   cable "timed-$n-cut$cut-serial" $n serial_v1 --evidence none --repetitions 4 || fail=1
   cable "timed-$n-cut$cut-lookahead" $n one_chunk_lookahead_v1 --evidence none --repetitions 4 || fail=1
 done
-cable "timed-short-cut$cut-serial" short serial_v1 --evidence none --repetitions 4 || fail=1
+[ "${D_SHORT_TIMED:-yes}" = yes ] && { cable "timed-short-cut$cut-serial" short serial_v1 --evidence none --repetitions 4 || fail=1; }
 
 # ---- 4 one rank ended mid-decode ---------------------------------------------
 stem="fault-rank1-sigterm-mid-decode-cut$cut"
-if [ -s "$D/$stem.observation.json" ]; then echo "$stem exists; kept"; else
+if [ "${D_FAULT:-yes}" != yes ]; then echo "fault and the request after it: not part of this run"; elif [ -s "$D/$stem.observation.json" ]; then echo "$stem exists; kept"; else
   before_a=$(wired_bytes); before_b=$(peer_wired)
   trigger="$R/fault-trigger.$$"; rm -f "$trigger"; mkfifo "$trigger"; exec 9<> "$trigger"
   # The session to the second Mac is open before the request starts, so the
@@ -149,8 +152,10 @@ for r in d.get("ranks") or []:
     for line in (r.get("runtimeLines") or [])[-3:]: print("     ", line[:260])
 PY
 fi
+if [ "${D_FAULT:-yes}" = yes ]; then
 cable "pair-short-cut$cut-after-fault" short serial_v1 || fail=1
 [ -s "$D/pair-short-cut$cut-after-fault.json" ] && compare "$O/compare/cable-after-fault-vs-oracle-short-cut$cut.txt" "$(oracle short)" "$D/pair-short-cut$cut-after-fault.json" --require exact,tokensEqualLogitsDiffer
+fi
 echo "memory after: Mac A $(vm_line); Mac B $(peer_vm_line); worker processes left: Mac A $(workers_here), Mac B $(workers_there)"
 echo "gate refusals in this run: $refusals"
 echo "== D for $key at cut $cut ended $(date -u +%Y-%m-%dT%H:%M:%SZ); recorded and timed runs $([ $fail = 0 ] && echo 'all passed' || echo 'NOT all passed')"

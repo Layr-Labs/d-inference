@@ -43,7 +43,8 @@ alone() { # MAC REQUEST
   return $rc
 }
 echo "== $key at cut $cut: each Mac alone and the second Mac's reference, $(date -u +%Y-%m-%dT%H:%M:%SZ); Mac A $(vm_line)"
-for n in p4k p8k; do alone a $n; done
+ALONE="${W_ALONE:-p4k p8k}"; BREF="${W_BREF:-short p4k p8k}"
+for n in $ALONE; do alone a $n; done
 held_b=no; trap '[ $held_b = yes ] && "$T/tools/lane-b.sh" release >/dev/null 2>&1' EXIT
 tries=0
 until "$T/tools/lane-b.sh" acquire "gemma4: the second Mac's reference and timed runs alone ($key, cut $cut), about 6 min" >/dev/null 2>&1; do
@@ -54,13 +55,13 @@ done
 held_b=yes; echo "lane-b.sh held at $(date -u +%H:%M:%SZ)"
 "$S/stage-peer.sh" || exit 21
 "$T/tools/copy-uncached.sh" "$O/requests" "$PEER_DIR/gemma4/evidence/$key/requests" 2>&1 | scrub | tail -1
-"${PEER[@]}" "$PEER_ENV $PEER_G/tools/references.sh $PEER_BIN $PM $PEER_G/evidence/$key/requests $PEER_G/evidence/$key/reference b 'short p4k p8k' '$cut:1' 2>&1" | scrub
+"${PEER[@]}" "$PEER_ENV $PEER_G/tools/references.sh $PEER_BIN $PM $PEER_G/evidence/$key/requests $PEER_G/evidence/$key/reference b '$BREF' '$cut:1' 2>&1" | scrub
 "${PEER[@]}" "cd $PEER_G/evidence/$key/reference && tar cf - ref-b-*-cut$cut-run1.json*" | tar xf - -C "$O/reference"
 for f in "$O"/reference/ref-b-*-cut$cut-run1.json.std*; do [ -e "$f" ] && { scrub < "$f" > "$f.s"; mv -f "$f.s" "$f"; }; done
-for n in short p4k p8k; do
+for n in $BREF; do
   [ -s "$O/reference/ref-b-$n-cut$cut-run1.json" ] && compare "$O/compare/mac-a-vs-mac-b-$n-cut$cut.txt" "$O/reference/ref-a-$n-cut$cut-run1.json" "$O/reference/ref-b-$n-cut$cut-run1.json" --require exact,tokensEqualLogitsDiffer
 done
-for n in p4k p8k; do alone b $n; done
+for n in $ALONE; do alone b $n; done
 echo "Mac B $("${PEER[@]}" "ps -axo command= | grep -c '[d]arkbloom-cluster-reference'") reference processes left; Mac A $(ps -axo command= | grep -c '[d]arkbloom-cluster-reference')"
 "$T/tools/lane-b.sh" release >/dev/null 2>&1; held_b=no; echo "lane-b.sh released at $(date -u +%H:%M:%SZ)"
 echo "== done $(date -u +%H:%M:%SZ)"

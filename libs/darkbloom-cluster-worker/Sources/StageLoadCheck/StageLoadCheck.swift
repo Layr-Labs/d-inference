@@ -19,24 +19,64 @@ import Foundation
             if CommandLine.arguments.dropFirst().first == TransferCommand.name {
                 Darwin.exit(try TransferCommand.run(Array(CommandLine.arguments.dropFirst(2))))
             }
+            if CommandLine.arguments.dropFirst().first == MiMoReferenceCommand.name {
+                let status = try MiMoReferenceCommand.run(Array(CommandLine.arguments.dropFirst(2)))
+                GateMeasurement.write()
+                Darwin.exit(status)
+            }
             let fields = try StageCheckArguments.parse(Array(CommandLine.arguments.dropFirst()),
-                allowed: ["--model-dir", "--rank", "--stage-cut", "--deadline-seconds", "--hold-seconds"])
+                allowed: ["--model-dir", "--rank", "--stage-cut", "--deadline-seconds", "--hold-seconds",
+                          GateMeasurement.modeArgument, GateMeasurement.outputArgument,
+                          "--probe-prefill-tokens", "--probe-decode-steps", "--probe-residency"])
+            // A MiMo artifact is recognised by its pinned configuration and has
+            // its own, longer bound: it hashes 173 GB before it reads a tensor.
+            let mimo = fields["--model-dir"].flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0 + "/config.json")) }
+                .map(MiMoResidentStageLoadCheck.handles(configuration:)) ?? false
+            let longest = mimo ? MiMoResidentStageLoadCheck.maximumDeadlineSeconds : 300
             guard let path = fields["--model-dir"], path.hasPrefix("/"),
                   let rank = fields["--rank"].flatMap(Int.init), (0...1).contains(rank),
                   let cut = fields["--stage-cut"].flatMap(Int.init),
-                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds),
+                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...longest).contains(seconds),
                   let hold = Int(fields["--hold-seconds"] ?? "0"), (0...240).contains(hold), hold < seconds else {
                 throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut CUT [--deadline-seconds 10...300] [--hold-seconds 0...240]\n"
-                    + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B\n"
-                    + "  --hold-seconds keeps the loaded stage that long before release (less than the deadline)")
+                    + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B;\n"
+                    + "  " + MiMoResidentStageLoadCheck.supportedCutsDescription
+                    + " (deadline up to \(MiMoResidentStageLoadCheck.maximumDeadlineSeconds) s)\n"
+                    + "  --hold-seconds keeps the loaded stage that long before release (less than the deadline)\n"
+                    + "  " + GateMeasurement.usage)
             }
+            try GateMeasurement.configure(fields)
             let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds) * 1_000_000_000
-            let receipt = try QwenResidentStageLoadCheck.run(modelDirectory: URL(fileURLWithPath: path),
-                rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            print(String(decoding: try encoder.encode(receipt), as: UTF8.self))
-            Darwin.exit(receipt.modelReleased ? 0 : 2)
+            let released: Bool
+            let probeNames = ["--probe-prefill-tokens", "--probe-decode-steps", "--probe-residency"]
+            guard mimo || probeNames.allSatisfy({ fields[$0] == nil }) else {
+                throw Failure("The stage probe exists for the MiMo adapter only")
+            }
+            if mimo {
+                // All three or none: a probe is never half-specified.
+                var probe: MiMoResidentStageLoadCheck.Probe?
+                if probeNames.contains(where: { fields[$0] != nil }) {
+                    guard let tokens = fields["--probe-prefill-tokens"].flatMap(Int.init),
+                          let steps = fields["--probe-decode-steps"].flatMap(Int.init),
+                          let residency = fields["--probe-residency"], ["on", "off"].contains(residency) else {
+                        throw Failure("A stage probe needs --probe-prefill-tokens N --probe-decode-steps N --probe-residency on|off")
+                    }
+                    probe = try .init(prefillTokens: tokens, decodeSteps: steps, residency: residency == "on")
+                }
+                let receipt = try MiMoResidentStageLoadCheck.run(modelDirectory: URL(fileURLWithPath: path),
+                    rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold, probe: probe)
+                print(String(decoding: try encoder.encode(receipt), as: UTF8.self))
+                released = receipt.modelReleased
+            } else {
+                let receipt = try QwenResidentStageLoadCheck.run(modelDirectory: URL(fileURLWithPath: path),
+                    rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
+                print(String(decoding: try encoder.encode(receipt), as: UTF8.self))
+                released = receipt.modelReleased
+            }
+            GateMeasurement.write()
+            Darwin.exit(released ? 0 : 2)
         } catch let failure as QwenResidentReleasedFailure {
             // A load that began and failed: the failure and what was still held
             // after release go to standard output as one record, like a receipt.
@@ -44,6 +84,7 @@ import Foundation
             encoder.outputFormatting = [.sortedKeys]
             if let record = try? encoder.encode(failure) { print(String(decoding: record, as: UTF8.self)) }
             FileHandle.standardError.write(Data("darkbloom-cluster-stage-check: \(failure)\n".utf8))
+            GateMeasurement.write()
             Darwin.exit(1)
         } catch {
             FileHandle.standardError.write(Data("darkbloom-cluster-stage-check: \(error)\n".utf8))

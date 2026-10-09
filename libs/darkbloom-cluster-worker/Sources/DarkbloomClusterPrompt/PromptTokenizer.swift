@@ -13,7 +13,12 @@ public struct PromptTokenizer: Sendable {
     public static let registeredManifests: [(sha256: String, modelID: String)] = [
         (registeredManifestSHA256, "registered_qwen35_9b"),
         ("d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc", "registered_qwen38_27b"),
+        // GPT-OSS prompts are raw text: its chat format is not the wrapper below.
+        ("a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996", "registered_gpt_oss_20b"),
     ]
+    /// Models whose chat format is not the wrapper below. Their prompts are raw
+    /// text only, so a request never carries a chat format the model does not have.
+    static let rawTextOnlyModelIDs: Set<String> = ["registered_gpt_oss_20b"]
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.
     static let assistantSuffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -56,6 +61,9 @@ public struct PromptTokenizer: Sendable {
     /// tokens are repeated and cut so the whole prompt has exactly that many
     /// tokens; the chat wrapper around the text is never cut.
     public func encodeChat(userText: String, promptTokenCount: Int?) throws -> (tokenIDs: [Int], source: QualificationPromptSource) {
+        guard !Self.rawTextOnlyModelIDs.contains(modelID) else {
+            throw QualificationError("\(modelID) has its own chat format; write its request from raw text (--raw-text-file)")
+        }
         let prefix = encodeRaw(Self.userPrefix), suffix = encodeRaw(Self.assistantSuffix)
         var body = encodeRaw(userText)
         guard !body.isEmpty else { throw QualificationError("The prompt text produced no tokens") }

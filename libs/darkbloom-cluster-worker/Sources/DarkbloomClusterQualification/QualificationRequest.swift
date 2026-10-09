@@ -82,6 +82,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         .init(modelID: modelID, profileID: profileID, supportedCuts: supportedCuts),
         .init(modelID: "registered_qwen38_27b", profileID: "registered_qwen38_27b_greedy_generation_v1",
               supportedCuts: Array(stride(from: 4, through: 60, by: 4))),
+        // GPT-OSS 20B on its own adapter; any cut is structurally legal there.
+        .init(modelID: "registered_gpt_oss_20b", profileID: "registered_gpt_oss_20b_greedy_generation_v1",
+              supportedCuts: [6, 8, 10, 12]),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }

@@ -195,6 +195,22 @@ struct EngineV2KVBackendGateTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
+    @Test("contiguous elastic windows require a qualified loaded family")
+    func contiguousElasticWindowsRequireLoadedFamily() throws {
+        let candidates: [(any LanguageModel, Bool)] = [
+            (try tinyGemma4Text(), true), (try tinyGPTOSS(), true), (try tinyQwen(), false),
+        ]
+        for (model, expected) in candidates {
+            let prepared = try EngineV2Factory.prepareProductionBackend(
+                model: model, kvBytesCapacity: gateTestCapacity, maxConcurrentRequests: 2,
+                kvBackend: .contiguous, maxContextLength: 2_048,
+                environment: gateEnvironment())
+            let (backend, _) = try prepared.consume(model: model, maxConcurrentRequests: 2)
+            let contiguous = try #require(backend as? CBv2ContiguousKVBackend)
+            #expect(contiguous.config.elasticWindowStorage == expected)
+        }
+    }
+
     @Test("qualification constructs width 16 while unknown serving stays at 8")
     func qualificationConstructionPreservesRequestedWidth() async throws {
         for purpose in [EngineV2Factory.ConstructionPurpose.serving, .benchmark] {

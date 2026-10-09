@@ -3,7 +3,9 @@
 
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 extension EngineV2Factory {
     /// Resolved resources with a one-time transfer to the same model/concurrency.
@@ -209,7 +211,10 @@ extension EngineV2Factory {
                 configuredHybridCache = nil
             }
             let backend = CBv2ContiguousKVBackend(
-                config: CBv2ContiguousBackendConfig(bytesCapacity: contiguousCapacity))
+                config: CBv2ContiguousBackendConfig(
+                    bytesCapacity: contiguousCapacity,
+                    elasticWindowStorage: model is Gemma4TextModel || model is MLXVLM.Gemma4
+                        || model is GPTOSSModel))
             let caches = try adapter.newCaches { index, kind in
                 CBv2LayerCache(layerIndex: index, kind: kind)
             }

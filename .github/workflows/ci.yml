@@ -655,6 +655,11 @@ jobs:
         # green under.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
+      - name: Verify elastic contiguous window backing
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: ../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests' --no-parallel
       - name: Run Nemotron production SDK gates
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

@@ -235,8 +235,9 @@ public struct EnrollmentService: Sendable {
         process.arguments = arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        let childExit = ProcessExitObserver()
+        try childExit.run(process)
+        childExit.wait()
         return process.terminationStatus
     }
 }

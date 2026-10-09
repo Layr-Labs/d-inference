@@ -109,7 +109,7 @@ struct AppAttestDeepDiagnosisTests {
         #expect(start?.message.contains("did NOT shut down cleanly") == true)
     }
 
-    @Test func repeatedFreshKeyInvalidKeyAsksForReport() {
+    @Test func repeatedGenerationsAndInvalidKeyAttestationAskForReport() {
         let d = AppAttestDeepDiagnosis.evaluate(
             status(history: AppAttestKeyHistory(generationsLast24h: 5, keyAgeSeconds: 30),
                    failure: AppAttestLastAppleFailure(observedAt: 990, action: .attestation, result: "apple_invalid_key",
@@ -120,6 +120,32 @@ struct AppAttestDeepDiagnosisTests {
         #expect(check(d, "last apple failure")?.message.contains("devicecheck 3") == true)
     }
 
+    @Test(arguments: [1, 3])
+    func generationCountDoesNotEstablishPerKeyAttestationHistory(_ count: Int) {
+        let d = AppAttestDeepDiagnosis.evaluate(
+            status(history: AppAttestKeyHistory(generationsLast24h: count, lastSuccessAgeSeconds: 1),
+                   failure: AppAttestLastAppleFailure(observedAt: 990, action: .attestation,
+                                                      result: "apple_invalid_key",
+                                                      nativeErrorChain: [.init(domain: .devicecheck, code: 3)])),
+            pushHistory: nil, now: 1_000)
+        let history = check(d, "key history")
+        #expect(history?.message.contains("\(count) key generation attempt(s)") == true)
+        #expect(history?.message.contains("last Apple success 1s ago") == true)
+        #expect(history?.message.contains("brand-new") == false)
+        #expect(history?.message.contains("first attestation") == false)
+        #expect(check(d, "last apple failure")?.level == .warn)
+        #expect(check(d, "last apple failure")?.message.contains("apple_invalid_key") == true)
+        if count >= 3 {
+            #expect(history?.level == .warn)
+            #expect(history?.fix?.contains("darkbloom report") == true)
+            // The last failure remains recorded after a newer successful exchange.
+            #expect(history?.message.contains("last recorded Apple failure was an attestation") == true)
+            #expect(history?.message.contains("latest attestation failed") == false)
+        } else {
+            #expect(history?.level == .pass)
+            #expect(history?.fix == nil)
+        }
+    }
 
     @Test func cryptoTokenKitKeyLossIsExplained() {
         let d = AppAttestDeepDiagnosis.evaluate(

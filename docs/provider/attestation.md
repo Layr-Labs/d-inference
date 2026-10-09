@@ -321,3 +321,7 @@ also carries closed, device-wide `devicecheckd` pattern matches, not provider-sp
 - [`../consumer/verification.md`](../consumer/verification.md) — how consumers read your verdict.
 - [`troubleshooting.md`](./troubleshooting.md) — doctor checks and symptom → fix rows.
 - [`../design/apns-code-attestation.md`](../design/apns-code-attestation.md) — design record for code identity.
+
+Local [cache-volume checks](../architecture/security/encryption.md#provider-cache-storage)
+are storage suitability checks, not evidence of peripheral firmware authenticity
+and not part of the coordinator's provider attestation verdict.

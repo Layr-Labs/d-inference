@@ -93,6 +93,8 @@
 
 ## Provider how-tos
 
+- [`provider/cache-storage.md`](provider/cache-storage.md): set cache write limits and choose a suitable external disk.
+
 - [`provider/installation.md`](provider/installation.md): install, update, uninstall; what the installer verifies.
 - [`provider/quickstart.md`](provider/quickstart.md): login, start, check status, start earning.
 - [`provider/hardware-requirements.md`](provider/hardware-requirements.md): minimum hardware, chip families, RAM tiers → which catalog models load, disk for the SSD cache.

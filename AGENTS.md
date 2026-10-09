@@ -2,7 +2,50 @@
 
 Darkbloom is a decentralized private inference network for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing, auth, billing, attestation, and capacity management, and providers run local inference workloads on macOS hardware using MLX-Swift. Request bodies are encrypted hop by hop (NaCl Box on each leg): the coordinator decrypts inside its confidential-VM memory for routing and billing, does not log or retain prompt content, and re-seals each request to the provider's attested key; the provider is the plaintext endpoint. Exact model: `docs/architecture/security/encryption.md`. Docs map: `docs/README.md`; docs rules: `docs/AGENTS.md`.
 
+## Repository Ownership And Workspace
+
+**All centralized coordinator/backend code belongs in
+[`Layr-Labs/darkbloom-platform`](https://github.com/Layr-Labs/darkbloom-platform),
+not this repository.** This includes APIs, authentication, billing, routing,
+storage and migrations, trust/attestation services, telemetry, the prompt
+sidecar, platform deployment code, and the admin and consumer console apps.
+
+**Do not implement, commit, push, or upload centralized coordinator/backend code to
+`Layr-Labs/d-inference`, even while its old platform directories remain.**
+The consumer console is being imported into darkbloom-platform. Retained
+platform copies here are temporary, not a second development home. This policy
+does not authorize deleting retained source, changing hosting, or deploying
+services.
+
+This repository owns provider software, the provider app, native inference,
+MLX dependencies, and provider-side integrations. The provider app's on-device
+Swift backend and local APIs remain provider software; they are not the
+centralized platform backend.
+
+Create a parent `Darkbloom/` workspace with both repositories as sibling clones:
+
+```text
+Darkbloom/
+  d-inference/          # Provider software and provider app
+  darkbloom-platform/   # Coordinator, backend, admin and consumer console
+```
+
+```bash
+mkdir -p Darkbloom
+git clone --recurse-submodules git@github.com:Layr-Labs/d-inference.git Darkbloom/d-inference
+git clone git@github.com:Layr-Labs/darkbloom-platform.git Darkbloom/darkbloom-platform
+```
+
+Before editing or pushing, enter the correct clone and check `git remote -v`
+and `git diff --stat`. For backend work, use `Darkbloom/darkbloom-platform` and
+follow that repository's `AGENTS.md`; commit and open PRs there. Do not
+copy backend patches into the provider clone to satisfy an old workflow. Split
+cross-repository changes by ownership while preserving their shared contracts.
+
 ## Project Structure
+
+This inventory includes transitional platform copies. Use the ownership rules
+above, not the presence of a directory below, to choose where new work belongs.
 
 ```text
 coordinator/          Go control plane with domain-owned packages

@@ -170,9 +170,12 @@ final class QwenStageTransferReceiver<Intake: QwenStageTransferIntake> {
 
     private func collectDigests(joining: Bool) throws {
         for digest in try intake.completedDigests(joining: joining) {
-            guard session.records.indices.contains(digest.tensor),
-                  digest.contentSHA256 == session.records[digest.tensor].contentSHA256 else {
-                throw ProbeError("Stage tensor content differs from its pinned SHA-256")
+            guard session.records.indices.contains(digest.tensor) else {
+                throw ProbeError("Stage transfer intake reported a tensor outside the plan")
+            }
+            guard digest.contentSHA256 == session.records[digest.tensor].contentSHA256 else {
+                throw ProbeError("Stage tensor content differs from its pinned SHA-256: "
+                    + session.plan.tensors[digest.tensor].sourceName)
             }
             verified.insert(digest.tensor)
         }

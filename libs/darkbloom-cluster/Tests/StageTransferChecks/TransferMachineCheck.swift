@@ -133,7 +133,7 @@ private func checkWrongBytes(_ artifact: TinyStageArtifact, _ checks: StageTrans
     let flipped = try TransferScenario(artifact)
     flipped.source.flippedPiece = 3
     var outcome = flipped.run()
-    try checks.refuses("one flipped bit in a tensor", because: contentDiffers) {
+    try checks.refuses("one flipped bit in a tensor", because: contentDiffers + ": language_model.model.layers.0.a.scales") {
         if let error = outcome.receiver { throw error }
     }
     try checks.require("a flipped bit stops the transfer at that window's boundary",
@@ -415,7 +415,7 @@ private func checkIntakeAndMisuse(_ artifact: TinyStageArtifact, _ checks: Stage
     let unknown = try TransferScenario(artifact)
     unknown.intake.reportsUnknownTensor = true
     outcome = unknown.run()
-    try checks.refuses("a digest for a tensor outside the plan", because: contentDiffers) {
+    try checks.refuses("a digest for a tensor outside the plan", because: "reported a tensor outside the plan") {
         if let error = outcome.receiver { throw error }
     }
     try checks.require("an unplanned digest verifies nothing", !unknown.isVerified)

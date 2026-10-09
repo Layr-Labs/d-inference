@@ -1,5 +1,9 @@
 version: "1.1"
 created: "2026-05-14"
+# Historical complete-checkpoint page sharing reviewed 2026-10-09 in T-041:
+# destination-link authentication preserves payload integrity; filesystem
+# page membership and equal hard-link/keyed-page identities expose overlap
+# within retained executions. This does not re-verify other threat entries.
 # Autopilot cohort payout and repair boundaries reviewed 2026-10-08 in T-055
 # and T-060. This does not re-verify unrelated historical entries.
 # Initial legacy MDM cohort soft-delete filtering verified 2026-10-06.
@@ -2090,6 +2094,15 @@ threats:
       shape), file count, mtimes/createdAt (activity timing), and the
       cached-model identity (modelKey directory — already public via
       heartbeats). None of these confirm a specific prefix.
+      Historical complete checkpoints additionally expose page-directory
+      membership and shared keyed-page names/hard-link inode equality. A disk
+      observer can correlate overlapping pages among retained endpoints of one
+      execution; page addresses never share across independent executions.
+      Tokens, scope, native plaintext digests and ordered tensor coordinates
+      remain encrypted. Every final page link is authenticated against the
+      encrypted endpoint reference before publication; source-path replacement
+      cannot turn an unrelated page into valid READY evidence. This records the
+      new linkage surface without enlarging the accepted TTL or tenant scope.
       Payload roots can be operator-selected external APFS volumes. Their
       controllers are outside the attested process boundary: UUID cloning,
       retained ciphertext, replay of authenticated data and filesystem metadata,

@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -1069,7 +1069,14 @@ Providers advertise SSD capability only after scan readiness under the
 complete-checkpoint contract (`SSDHybridCheckpointStore+Maintenance.swift`,
 `ready_boundary_mode="checkpoint"`). Actual checkpoint anchors are emitted only
 after durable commit and donor/export retirement, and only when the coordinator
-echoes that mode. Resident
+echoes that mode. Historical complete checkpoints may share immutable encrypted
+pages within one submission execution. Each endpoint owns all of its links;
+removing another endpoint cannot weaken READY. A stage authenticates the complete
+reference graph before native finish. The holder's stage estimate uses all logical
+read bytes, while local disk enforcement counts unique physical page inodes.
+A missing or corrupted page invalidates only that endpoint through the existing
+cold-miss path (`SSDSharedCheckpointPages`, `SSDCheckpointPageAccounting`).
+Resident
 capability is advertised only for an actually constructed hybrid checkpoint
 bank with verified model identity and prompt contract; local paged L1 currently
 has no publication callback and does not advertise resident routing evidence.

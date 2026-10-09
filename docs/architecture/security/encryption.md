@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -179,9 +179,14 @@ The provider encrypts attention blocks and complete checkpoints before disk I/O
 using the existing DBK3 authenticated-encryption format. Keys remain in the
 Mac's Secure Enclave/Keychain hierarchy; selecting a different payload volume
 does not copy keys there. Lookup names remain keyed HMACs. Some operational
-metadata (sizes, model/layout binding and times) remains visible; the precise
-[format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
-are unchanged. TTL checks on reuse, tenant binding and authentication remain in
+metadata (sizes, model/layout binding and times) remains visible; the
+[DBK3 fields](../../reference/ssd-kv-cache.md#dbk3-file-format) remain unchanged.
+Historical complete checkpoints additionally expose their page-directory
+membership and which endpoints share a page through equal keyed page names or
+hard-link inode identities. This reveals overlap within a retained execution
+without revealing its tokens, cache scope or native plaintext digest. Sharing
+does not span independent executions. Ordered tensor coordinates and the complete
+reference graph stay inside the encrypted endpoint. TTL checks on reuse, tenant binding and authentication remain in
 force. Switching locations leaves earlier ciphertext in its old location; the
 new location's maintenance does not sweep the old one or securely erase a disk.
 TTL limits ordinary cache reuse, not physical retention: detached or inaccessible

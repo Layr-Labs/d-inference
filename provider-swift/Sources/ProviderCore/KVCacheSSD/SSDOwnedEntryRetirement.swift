@@ -44,6 +44,7 @@ enum SSDOwnedEntryRetirement {
                     continue
                 }
                 if SSDBlockStore.removeItemIfSafe(at: url, under: root) {
+                    SSDCheckpointPageFiles.remove(for: url)
                     result.indexedBytesFreed += index.remove(tag16: tag)
                     result.removed.insert(url.standardizedFileURL.path)
                 } else if SSDBlockStore.indexedBlockFileStatus(at: url, under: root) != .regular {

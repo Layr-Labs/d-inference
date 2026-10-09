@@ -36,6 +36,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     let kvBudget: GlobalKVCacheBudget?
     let diskBudget: SSDDiskBudget
     let rateLimiter: SSDWriteRateLimiter
+    let sharedPages = SSDSharedCheckpointPages()
+    let sharedPageAccounting = SSDCheckpointPageAccounting()
     let writeDemand: SSDCheckpointDemand
     /// Coordinator repeat-demand hints for in-flight receipts; see
     /// `SSDHybridCheckpointStore+DemandAdmission.swift`.
@@ -233,7 +235,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         var result = statsBox.snapshot()
         let usage = index.usageSnapshot()
         result.entries = usage.entries
-        result.bytesOnDisk = usage.bytes
+        result.bytesOnDisk = sharedPageAccounting.diskBytes(indexedBytes: usage.bytes)
         return result
     }
 

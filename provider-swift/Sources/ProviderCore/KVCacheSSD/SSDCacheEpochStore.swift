@@ -354,6 +354,7 @@ final class SSDCacheEpochStore: @unchecked Sendable {
                 try removeStaleBlock(at: file, under: root)
             }
         }
+        SSDCheckpointPageFiles.removeOrphans(under: root)
     }
 
     /// Per-file removals do not hold `recordLock`, so a superseded instance
@@ -362,7 +363,10 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     /// one that is still present but cannot be removed (or was replaced by a
     /// link, device or directory) still fails the rebuild.
     static func removeStaleBlock(at file: URL, under root: URL) throws {
-        if SSDBlockStore.removeItemIfSafe(at: file, under: root) { return }
+        if SSDBlockStore.removeItemIfSafe(at: file, under: root) {
+            SSDCheckpointPageFiles.remove(for: file)
+            return
+        }
         guard SSDNoFollowIO.regularFileStatus(at: file) == .missing else {
             throw SSDBlockStoreError.ioFailure(
                 "failed to remove stale block during epoch rotation")

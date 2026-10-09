@@ -22,6 +22,38 @@ struct LaunchAgentPathsAndErrorsTests {
         ])["DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY"] == "0")
     }
 
+    @Test("lossless compression opt-in survives provider plist serialization and restart refresh")
+    func compressionOptInSurvivesServicePlist() throws {
+        let key = SSDPrefixCachePolicy.compressionEnvironmentFlag
+        let arguments = LaunchAgent.serviceProgramArguments(binaryPath: "/test/darkbloom",
+            coordinatorURL: "https://coordinator.invalid", models: ["gpt-oss-20b"], configPath: nil)
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launch-agent-compression-\(UUID().uuidString).plist")
+        defer { try? FileManager.default.removeItem(at: path) }
+        let settings: [String?] = [nil, "", "off", "lz4"]
+        for input in settings {
+            var environment = ["UNRELATED_SECRET": "excluded"]
+            environment[key] = input
+            let plist = LaunchAgent.makeServicePlist(label: "io.darkbloom.provider.test",
+                programArguments: arguments, logPath: "/test/provider.log", environment: environment)
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: path)
+            try LaunchAgent.refreshTerminationAllowance(at: path)
+            let restored = try #require(PropertyListSerialization.propertyList(
+                from: Data(contentsOf: path), format: nil) as? [String: Any])
+            let variables = restored["EnvironmentVariables"] as? [String: String] ?? [:]
+            let expected = input?.isEmpty == false ? input : nil
+            #expect(variables[key] == expected)
+            #expect(variables["UNRELATED_SECRET"] == nil)
+            #expect(restored["ProgramArguments"] as? [String] == arguments)
+            for model in ["gemma-4-26b-qat-4bit", "gpt-oss-20b"] {
+                #expect(SSDPrefixCachePolicy.losslessCompressionEnabled(modelId: model,
+                    environment: variables) == (input == "lz4"))
+            }
+            #expect(!SSDPrefixCachePolicy.losslessCompressionEnabled(modelId: "mimo-v2.6-flash",
+                environment: variables))
+        }
+    }
+
     @Test("the plist lives in the user LaunchAgents folder under the service label")
     func plistPathShape() {
         let path = LaunchAgent.plistPath()

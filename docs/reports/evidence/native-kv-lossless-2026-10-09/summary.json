@@ -1,0 +1,18 @@
+[
+  {
+    "allBitExact": true,
+    "encodedFrameBytes": 1621177,
+    "model": "gemma",
+    "nativeBytes": 1863680,
+    "packets": 24,
+    "savingFraction": 0.1301205142513736
+  },
+  {
+    "allBitExact": true,
+    "encodedFrameBytes": 368498,
+    "model": "gpt",
+    "nativeBytes": 399360,
+    "packets": 8,
+    "savingFraction": 0.07727864583333333
+  }
+]

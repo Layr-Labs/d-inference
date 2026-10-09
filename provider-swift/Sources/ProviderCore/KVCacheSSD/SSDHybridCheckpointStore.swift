@@ -12,6 +12,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         let identity: CBv2CompleteCheckpointIdentity
         var backendLayout = CBv2CompleteCheckpointManifest.layout
         var nativePrefillChunkSize: Int? = nil
+        var losslessCompression = false
         let root: URL
         let dedicatedRoot: URL
         let epochStore: SSDCacheEpochStore?

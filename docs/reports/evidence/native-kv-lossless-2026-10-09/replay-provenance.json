@@ -1,0 +1,58 @@
+{
+  "archivedCodecBinarySHA256": "34bfa8279cd1010c2e1c443882cd94971a645af62fc69e99b608c444082b1a29",
+  "codecBinarySHA256": "69f2065582dd56886d4e96f9c880f06533dcccecf214085a6c2879b9d283da7e",
+  "codecManifestSHA256": "f1f5c2bc0640c5903cdd04dd50022518233c3d00b70d756b60953c6cc73faa02",
+  "codecMode": "verified-source-build",
+  "codecSourceSHA256": "6bf3651d010bb5ac0c1886673f97a85580fcd35c6d6e816d40234ebcff501a98",
+  "codecSourceVerified": true,
+  "compiler": {
+    "arguments": [
+      "-O",
+      "SSDLosslessChunkCodec.swift",
+      "main.swift",
+      "-o",
+      "codec-probe"
+    ],
+    "buildTimeoutSeconds": 60,
+    "invocationExecutableSHA256": "34129c71a01a74f7f3b2443521519b2e5447553fa187f5fcafaaf8c42cc192e2",
+    "path": "/usr/bin/swiftc",
+    "version": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)\nTarget: arm64-apple-macosx27.0.0",
+    "versionOutputSHA256": "04630ab8fa201f57c63c59730e638135e32584a97e16e004a417eb8ed283dc83"
+  },
+  "driverSHA256": "569666c189d1b13238731eb4c7aead5d70aece636215ae677bdd8dd2e0225c8f",
+  "frozenResultsSHA256": "24a2d3744972c7f037bd3d958d87f4e3910f3ae964b261b995dba01a3cc88faa",
+  "frozenSummarySHA256": "9538a3d4e37b43d6eb1e2d98380fc85f4ad8fdd5afc7f67ef20dfee3a366d6da",
+  "inputArchiveSHA256": "8d10972e4c00da8de70871250ecf5c62732e2afd5b86dbdeadc52366d443bb36",
+  "inputManifestSHA256": "bffc4198cd3e97873a3747f99cbbde518f5347a51412a7bdfb8eb9d5b6f1ebb3",
+  "measuredKVPackets": 32,
+  "models": {
+    "gemma": {
+      "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+      "modelManifestSHA256": "e54060e2449ca3d6c2d009c8fc81e94a0a7b15e69dc708217c3111636144d0c0",
+      "receiptSHA256": "83e55f311dc3f128d0e1538f0a6ae30a1673b347ed8554a92d0aae247fea1433",
+      "verifiedGammaRecords": 5,
+      "verifiedNativeRecords": 29
+    },
+    "gpt": {
+      "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+      "modelManifestSHA256": "cd90542be64059b1dc82a7c45eb48d70d13de333ad4ca70cb0da394e1101348e",
+      "receiptSHA256": "861f2b3bcebda89e16f342a45f3a174f139fc5e4eae7e1294fab31bbbbfe3582",
+      "verifiedGammaRecords": 0,
+      "verifiedNativeRecords": 8
+    }
+  },
+  "originalRunnerSHA256": "d374800818edcb5f5fde369bc75fbd6a302df3f26a1b796f83b7af2980827388",
+  "probePackageArchiveSHA256": "8bea5ef51dd9b6199a5fcb0a56bc1c4f7cd0df2218122bbb8c6ef0d3ae1d90b5",
+  "probePackageDiffSHA256": "ec7fd303b511a6aed88c6a0b57462b462f6e2eef65a2b59ecf4301264cc9dd0c",
+  "probeSDKBase": "b40f465e9d9a3bccd5760e95858a2cc8f013acd7",
+  "probeSources": {
+    "BenchNativeKVPackets.swift": "11ab465661a998d9857f5d4bc2eea47525c571e6c996424edfeecf812e896870",
+    "main.swift": "21e31f2c092095de78879ada0391c6d6fd6e0e8cca21e934ef57bcaaa43d48c3"
+  },
+  "resultsSHA256": "f4ab9a166aa811719829894db0cb0734b707a7c6296aeccd150717a719041405",
+  "runnerSHA256": "7650a2defa9f07b3911aaca17c3464da10adc7774caee61a91c09cbaad34c119",
+  "schema": "darkbloom.native-kv-lossless-replay.v1",
+  "scope": "All archive members verified, including gamma; only K/V replayed. Fresh CPU timings, no model/GPU run or encrypted SSD qualification.",
+  "summarySHA256": "9538a3d4e37b43d6eb1e2d98380fc85f4ad8fdd5afc7f67ef20dfee3a366d6da",
+  "verifiedArchiveMembers": 41
+}

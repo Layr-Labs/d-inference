@@ -1,0 +1,24 @@
+{
+  "bitExact" : true,
+  "decodeSeconds" : [
+    0.005710667,
+    0.0050556250000000002,
+    0.005769209,
+    0.0053859579999999997,
+    0.0062004169999999997
+  ],
+  "encodedFrameBytes" : 4088778,
+  "encodeSeconds" : [
+    0.0091985420000000005,
+    0.0095693329999999993,
+    0.0155835,
+    0.0088964170000000002,
+    0.011545
+  ],
+  "input" : "stored-values.bin",
+  "inputSHA256" : "9840433105308fe90923372d8c6c4b90a93b7b44921f79c73a3931580adde705",
+  "nativeBytes" : 5719040,
+  "savingFraction" : 0.28505868117726052,
+  "schema" : "darkbloom.production-lossless-codec-benchmark.v1",
+  "scope" : "actual production codec source compiled -O; public Qwen BF16 owner0 packet; no encryption, disk IO, device readback or whole-model performance claim"
+}

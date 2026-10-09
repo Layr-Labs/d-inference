@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -38,6 +38,36 @@ their own ledgers (`CacheStorage.writeBudgetRoot`).
 
 ## DBK3 file format
 
+Complete checkpoints can opt into lossless byte-plane shuffle plus native LZ4
+with `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION=lz4`. It defaults off and excludes
+MiMo. `darkbloom start` forwards an explicit setting into the installed
+LaunchAgent; stop and start to replace a previously saved setting.
+`SSDLosslessChunkCodec` writes a two-byte encoding/element-width frame
+inside each encrypted chunk. Incompressible segments use a raw frame. Native
+tensor byte counts remain the authenticated decode/allocation bounds; the
+reader requires the decoder to reach end-of-stream at exactly that size with
+no trailing input. Native inference tensors and attention arithmetic are unchanged.
+
+The optional authenticated `chunkCodec` field is `byteplanes-lz4-v1`, paired
+with header flag bit 0. Nil retains legacy canonical metadata and flag 0.
+New readers accept legacy files; older readers refuse flagged files. The
+complete-checkpoint writer charges header/framing/ciphertext/tag bytes before
+each physical write; a budget refusal removes the atomic temporary file and
+publishes no checkpoint. Already issued writes remain charged. Decoded staging
+and native memory admission continue to use full tensor sizes.
+
+[Short native-packet measurements](../reports/2026-10-09-native-kv-lossless-samples.md)
+saved 13.01% for Gemma 4 and 7.73% for GPT-OSS 20B, restoring every byte exactly.
+Those 32/33-token samples exclude encrypted file overhead and do not establish
+long-context, active-memory or packed INT4 savings.
+
+Encoded lengths depend on tensor contents and remain visible to a disk
+observer. This experimental length signal is separate from the existing
+cache-hit timing risk; see [the privacy model](../architecture/security/encryption.md#provider-cache-storage).
+Code: `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLosslessChunkCodec.swift`
+(`encode`, `decode`), `SSDBlockStore+Streaming.swift` (`writeStreaming`,
+`readStreaming`), `SSDPrefixCachePolicy.swift` (`losslessCompressionEnabled`).
+
 Every `.dbk3` file is the reviewed v1 `DBKV` chunked AES-GCM scheme (the
 retired `EncryptedKVStore`) with `formatVersion = 3` (`SSDBlockStore.swift`,
 header comment and `enum SSDBlockStore`).
@@ -46,7 +76,7 @@ header comment and `enum SSDBlockStore`).
 |---|---|---|
 | 0 | 4 | `magic` = `"DBKV"` (`0x44 0x42 0x4B 0x56`) |
 | 4 | 2 | uint16 LE `format_version` = 3 |
-| 6 | 2 | uint16 LE flags (reserved, 0) |
+| 6 | 2 | uint16 LE flags (bit 0 requires authenticated `chunkCodec`; other bits reserved) |
 | 8 | 12 | `file_IV` (random per file; folded into HKDF info) |
 | 20 | 4 | uint32 LE wrapped-DEK length N |
 | 24 | N | wrapped DEK = AES-256-GCM(KEK, DEK, AAD = metadata) |
@@ -188,7 +218,8 @@ Names and effects only; defaults and parsing rules are in
 the allowlisted variables in `passthroughEnvKeys`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`). The cache
 switches `DARKBLOOM_PREFIX_CACHE` and `DARKBLOOM_PREFIX_CACHE_MEMORY` are on that
-list; the test-root and persistent-key benchmark controls are not.
+list, as is the explicit `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION` setting;
+the test-root and persistent-key benchmark controls are not.
 
 | Variable | Effect | Code |
 |---|---|---|
@@ -201,6 +232,7 @@ list; the test-root and persistent-key benchmark controls are not.
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` | Max staged bytes per adoption | `SSDPrefixCachePolicy.swift` (`maxStageBytes`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | Max estimated staging time | `SSDPrefixCachePolicy.swift` (`maxStageMillis`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | Enables writing window sidecar files (format only) | `SSDPrefixCachePolicy.swift` (`windowSidecarEnabled`) |
+| `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION` | Exact `lz4` enables experimental complete-checkpoint lossless compression; unset/other values disable it; MiMo always excluded | `SSDPrefixCachePolicy.swift` (`losslessCompressionEnabled`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | fsync every block write (GCM auth otherwise catches torn writes) | `SSDPrefixCachePolicy.swift` (`strictFsync`) |
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | Permit an in-memory KEK fallback and an isolated payload root; an accepted test root normally forces an ephemeral key | `SSDPrefixCacheFactory.swift` |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | Exactly `1` requests the normal persistent KEK within an accepted test root; benchmark-only, not forwarded to LaunchAgents | `SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) |

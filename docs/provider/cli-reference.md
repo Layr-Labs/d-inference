@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1507,6 +1507,7 @@ must support the checkpoint contract described in
 |---|---|
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
+| `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`losslessCompressionEnabled`); explicit `lz4` opts into lossless complete-checkpoint encoding; unset/empty remains off |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
@@ -1568,3 +1569,14 @@ Source: `provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.sw
 | `revision` | empty string | CLI-generated identity for the approved configuration |
 | `paused` | `false` | Suspend new automatic changes while retaining ready models |
 | `min_idle_seconds` | `60` | Inactivity guard, independent from minimum residence |
+
+### Experimental lossless checkpoint compression
+
+Set `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION=lz4` before `darkbloom start` to
+losslessly encode complete checkpoint segments before encryption. An explicit
+value is saved in the provider LaunchAgent environment; stop and start with the
+intended value to update an existing plist. It also applies in foreground/local
+mode. It is off by default and excludes MiMo. Native inference precision and
+decoded RAM requirements are unchanged. Codec framing, actual write charging and the
+content-dependent length signal are specified in the
+[SSD cache reference](../reference/ssd-kv-cache.md#dbk3-file-format).

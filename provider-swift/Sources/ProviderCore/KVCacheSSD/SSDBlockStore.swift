@@ -10,7 +10,7 @@
 // ```
 // 0       4       magic = "DBKV"
 // 4       2       uint16 LE  format_version (= 3)
-// 6       2       uint16 LE  flags (reserved, must be 0)
+// 6       2       uint16 LE  flags (bit 0 = authenticated lossless chunk codec)
 // 8      12       file_IV       random per-file; folded into HKDF info
 // 20      4       uint32 LE  wrapped_DEK length (N)
 // 24      N       wrapped_DEK   AES-256-GCM(KEK, DEK, AAD=metadata)
@@ -31,6 +31,9 @@
 // weight hash + layout epoch (model identity — already public per box),
 // block shape descriptors (architecture — public), and createdAt. NO raw
 // chain hashes, NO token ids/counts, NO scope/salt values, NO request ids.
+// The optional lossless codec adds a public codec identity and observable
+// content-dependent ciphertext lengths. It remains an opt-in experiment;
+// its two-byte frame and byte-plane width stay inside authenticated ciphertext.
 //
 // The WS-4.2 windowed sidecar (`SSDWindowSidecar`) is the same file format
 // with the same crypto: only its filename tag domain and three optional
@@ -120,6 +123,9 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
     let layerCount: Int
     let chunks: [SSDBlockChunkDescriptor]
     let chunkPlaintextSizes: [Int]
+    /// Nil preserves legacy AAD exactly. The declared sizes always describe
+    /// decoded native tensors; encoding details live inside each sealed frame.
+    let chunkCodec: String?
     let createdAt: Int64
     /// WS-4.2 windowed sidecar discriminator (`SSDWindowSidecar.kind`), nil
     /// on an ordinary full-attention block. Optional so a v0.7.5 block file
@@ -139,7 +145,8 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
         lookupTag: String, weightHash: String, layoutEpoch: String, blockSize: Int,
         layerCount: Int, chunks: [SSDBlockChunkDescriptor], chunkPlaintextSizes: [Int],
         createdAt: Int64 = Int64(Date().timeIntervalSince1970),
-        windowKind: String? = nil, windowBaseTag: String? = nil, windowTokens: Int? = nil
+        windowKind: String? = nil, windowBaseTag: String? = nil, windowTokens: Int? = nil,
+        chunkCodec: String? = nil
     ) {
         self.schema = "darkbloom.kv.v3"
         self.lookupTag = lookupTag
@@ -149,6 +156,7 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
         self.layerCount = layerCount
         self.chunks = chunks
         self.chunkPlaintextSizes = chunkPlaintextSizes
+        self.chunkCodec = chunkCodec
         self.createdAt = createdAt
         self.windowKind = windowKind
         self.windowBaseTag = windowBaseTag
@@ -431,8 +439,9 @@ enum SSDBlockStore {
         guard version == formatVersion else {
             throw SSDBlockStoreError.unsupportedVersion(version)
         }
-        guard readUInt16LE(prefix, at: 6) == 0 else {
-            throw SSDBlockStoreError.malformedHeader("flags ≠ 0 in v3")
+        let flags = readUInt16LE(prefix, at: 6)
+        guard flags <= 1 else {
+            throw SSDBlockStoreError.malformedHeader("unsupported v3 flags")
         }
         let fileIV = prefix.subdata(in: 8..<20)
         let wrappedLen = Int(readUInt32LE(prefix, at: 20))
@@ -454,6 +463,10 @@ enum SSDBlockStore {
         }
         guard metadata.schema == "darkbloom.kv.v3" else {
             throw SSDBlockStoreError.malformedHeader("schema \(metadata.schema)")
+        }
+        guard (flags == 0 && metadata.chunkCodec == nil)
+            || (flags == 1 && metadata.chunkCodec == SSDLosslessChunkCodec.identity) else {
+            throw SSDBlockStoreError.malformedHeader("chunk codec and header flags disagree")
         }
         return ParsedHeader(
             fileIV: fileIV, wrappedDEK: wrappedDEK, metadataBytes: metadataBytes,
@@ -509,12 +522,12 @@ enum SSDBlockStore {
 
     // MARK: - Byte helpers
 
-    static func assembleHeader(fileIV: Data, wrappedDEK: Data, metadataJSON: Data) throws -> Data {
+    static func assembleHeader(fileIV: Data, wrappedDEK: Data, metadataJSON: Data, flags: UInt16 = 0) throws -> Data {
         var header = Data()
         header.reserveCapacity(28 + wrappedDEK.count + metadataJSON.count)
         header.append(contentsOf: magic)
         header.append(uint16LE(formatVersion))
-        header.append(uint16LE(0))
+        header.append(uint16LE(flags))
         header.append(fileIV)
         guard wrappedDEK.count <= UInt32.max else {
             throw SSDBlockStoreError.sizeOverflow("wrapped DEK too large")

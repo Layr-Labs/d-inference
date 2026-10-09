@@ -19,6 +19,15 @@ import Foundation
 
 enum SSDPrefixCachePolicy {
 
+    /// Explicit experiment: encoded length is content-dependent even though
+    /// plaintext and byte-plane width remain inside authenticated encryption.
+    static let compressionEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION"
+
+    static func losslessCompressionEnabled(modelId: String, environment: [String: String]) -> Bool {
+        !modelId.lowercased().contains("mimo")
+            && environment[compressionEnvironmentFlag]?.trimmingCharacters(in: .whitespacesAndNewlines) == "lz4"
+    }
+
     // MARK: - TTL
 
     /// Sliding TTL override (seconds): **30 minutes MAXIMUM**, sliding on

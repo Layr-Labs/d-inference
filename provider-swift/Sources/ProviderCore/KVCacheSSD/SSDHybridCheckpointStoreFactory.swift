@@ -66,6 +66,8 @@ enum SSDHybridCheckpointStoreFactory {
             let cache = SSDHybridCheckpointStore(config: .init(
                 modelId: modelId, identity: identity, backendLayout: backendLayout,
                 nativePrefillChunkSize: nativePrefillChunkSize,
+                losslessCompression: SSDPrefixCachePolicy.losslessCompressionEnabled(
+                    modelId: modelId, environment: environment),
                 root: root, dedicatedRoot: wholeRoot,
                 epochStore: epoch, maxReadBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
                 maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),

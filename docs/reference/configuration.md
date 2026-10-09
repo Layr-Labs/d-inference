@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -914,6 +914,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints use the byte value as a payload-read cap; native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION` | `lz4` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Experimental lossless complete-checkpoint compression. MiMo is excluded; compressed lengths are observable. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | `fsync` after every write. |
 
 ### Resident recurrent prefix cache

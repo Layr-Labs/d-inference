@@ -1,0 +1,5 @@
+6bf3651d010bb5ac0c1886673f97a85580fcd35c6d6e816d40234ebcff501a98  provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLosslessChunkCodec.swift
+8ef284e566ee910bce7658c78f23743d7c8ebb324bec01ba3f5e840b7d8cfff3  /tmp/kv-lossless-native-bench/main.swift
+5d6982e6236aa35c04703bf44f85e31d88d941162f8e69cdc955ed6a808e31da  /tmp/kv-lossless-native-bench/codec-bench-refactored
+10f5befecf315d957d58ff439c8847bed009e4ef3565b399083fe72f47f0995a  /tmp/darkbloom-real-kv-lossless/stored-keys.bin
+9840433105308fe90923372d8c6c4b90a93b7b44921f79c73a3931580adde705  /tmp/darkbloom-real-kv-lossless/stored-values.bin

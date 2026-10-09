@@ -4,7 +4,7 @@ import CryptoKit
 import Foundation
 
 extension SSDBlockStore {
-    /// Charge the complete DBK3 file, including metadata and authentication tags.
+    /// Exact size for raw files; upper bound for framed compressed files.
     static func serializedByteCount(metadata: SSDBlockMetadata) throws -> Int {
         let header = try assembleHeader(
             fileIV: Data(count: fileIVLength),
@@ -12,12 +12,21 @@ extension SSDBlockStore {
             metadataJSON: canonicalEncode(metadata))
         var bytes = header.count + 4 // chunk count
         for size in metadata.chunkPlaintextSizes {
-            guard size >= 0, size <= Int.max - bytes - 4 - gcmTagLength else {
+            let frameBytes = metadata.chunkCodec == nil ? 0 : SSDLosslessChunkCodec.frameBytes
+            guard size >= 0, size <= Int.max - bytes - 4 - gcmTagLength - frameBytes else {
                 throw SSDBlockStoreError.sizeOverflow("serialized block size overflow")
             }
-            bytes += 4 + size + gcmTagLength
+            bytes += 4 + size + gcmTagLength + frameBytes
         }
         return bytes
+    }
+
+    /// Advisory lower bound before encoding. Actual compressed ciphertext is
+    /// charged by the writer, so native tensor size cannot reject a small frame.
+    static func minimumEncodedByteCount(metadata: SSDBlockMetadata) throws -> Int {
+        let maximum = try serializedByteCount(metadata: metadata)
+        guard metadata.chunkCodec != nil else { return maximum }
+        return maximum - metadata.chunkPlaintextSizes.reduce(0, +)
     }
 
     /// DBK3 wire format with one plaintext chunk alive at a time. The producer
@@ -26,6 +35,8 @@ extension SSDBlockStore {
         to url: URL, metadata: SSDBlockMetadata, kekKey: SymmetricKey,
         maximumChunkBytes: Int, strictFsync: Bool = false,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil,
+        elementBytes: (Int) -> Int = { _ in 1 },
+        beforeBytesWrite: (Int) throws -> Void = { _ in },
         chunk: (Int) throws -> Data
     ) throws -> Int {
         guard isSafeBlockURL(url) else {
@@ -37,11 +48,16 @@ extension SSDBlockStore {
         let fileIV = randomBytes(fileIVLength)
         let dek = SymmetricKey(size: .bits256)
         let wrappedDEK = try wrapDEK(dek: dek, kekKey: kekKey, aad: metadataJSON)
+        guard metadata.chunkCodec == nil || metadata.chunkCodec == SSDLosslessChunkCodec.identity else {
+            throw SSDBlockStoreError.malformedHeader("unsupported chunk codec")
+        }
         let header = try assembleHeader(
-            fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
+            fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON,
+            flags: metadata.chunkCodec == nil ? 0 : 1)
         return try SSDNoFollowIO.writeAtomically(
             to: url, strictFsync: strictFsync, beforeOperation: beforeOperation
         ) { handle in
+            try beforeBytesWrite(header.count + 4)
             try handle.write(contentsOf: header)
             try handle.write(contentsOf: uint32LE(UInt32(metadata.chunkPlaintextSizes.count)))
             for index in metadata.chunkPlaintextSizes.indices {
@@ -49,10 +65,13 @@ extension SSDBlockStore {
                 guard plaintext.count == metadata.chunkPlaintextSizes[index] else {
                     throw SSDBlockStoreError.malformedHeader("streamed chunk size mismatch")
                 }
+                let payload = try metadata.chunkCodec == nil ? plaintext
+                    : SSDLosslessChunkCodec.encode(plaintext, elementBytes: elementBytes(index))
                 let nonce = try deriveChunkNonce(dek: dek, fileIV: fileIV, chunkIndex: UInt32(index))
                 let sealed = try AES.GCM.seal(
-                    plaintext, using: dek, nonce: AES.GCM.Nonce(data: nonce), authenticating: metadataJSON)
-                try handle.write(contentsOf: uint32LE(UInt32(plaintext.count + gcmTagLength)))
+                    payload, using: dek, nonce: AES.GCM.Nonce(data: nonce), authenticating: metadataJSON)
+                try beforeBytesWrite(payload.count + gcmTagLength + 4)
+                try handle.write(contentsOf: uint32LE(UInt32(payload.count + gcmTagLength)))
                 try handle.write(contentsOf: sealed.ciphertext)
                 try handle.write(contentsOf: sealed.tag)
             }
@@ -103,10 +122,13 @@ extension SSDBlockStore {
             let length = Int(readUInt32LE(
                 try readExactly(4, from: handle, what: "chunk length", beforeRead: beforeRead), at: 0))
             let expected = header.metadata.chunkPlaintextSizes[index]
-            guard length == expected + gcmTagLength else {
+            let overhead = header.metadata.chunkCodec == nil ? 0 : SSDLosslessChunkCodec.frameBytes
+            let validLength = header.metadata.chunkCodec == nil ? length == expected + gcmTagLength
+                : (length >= overhead + gcmTagLength && length <= expected + overhead + gcmTagLength)
+            guard validLength else {
                 throw SSDBlockStoreError.malformedHeader("streamed ciphertext size mismatch")
             }
-            let ciphertext = try readExactly(expected, from: handle, what: "chunk ciphertext", beforeRead: beforeRead)
+            let ciphertext = try readExactly(length - gcmTagLength, from: handle, what: "chunk ciphertext", beforeRead: beforeRead)
             let tag = try readExactly(gcmTagLength, from: handle, what: "chunk tag", beforeRead: beforeRead)
             onBytesRead(length + 4)
             let nonce = try deriveChunkNonce(dek: dek, fileIV: header.fileIV, chunkIndex: UInt32(index))
@@ -118,10 +140,12 @@ extension SSDBlockStore {
             } catch {
                 throw SSDBlockStoreError.authenticationFailed("streamed chunk \(index): \(error)")
             }
-            guard plaintext.count == expected else {
+            let native = try header.metadata.chunkCodec == nil ? plaintext
+                : SSDLosslessChunkCodec.decode(plaintext, nativeBytes: expected)
+            guard native.count == expected else {
                 throw SSDBlockStoreError.authenticationFailed("streamed plaintext size mismatch")
             }
-            try consumeChunk(index, plaintext)
+            try consumeChunk(index, native)
         }
         if requireEOF {
             try beforeRead?(1)
@@ -147,7 +171,8 @@ extension SSDBlockStore {
         else { throw SSDBlockStoreError.malformedHeader("invalid streamed chunk limits/count") }
         var total = 0
         for size in metadata.chunkPlaintextSizes {
-            guard size >= 0, size <= maximumChunkBytes, size <= Int(UInt32.max) - gcmTagLength else {
+            let overhead = metadata.chunkCodec == nil ? 0 : SSDLosslessChunkCodec.frameBytes
+            guard size >= 0, size <= maximumChunkBytes, size <= Int(UInt32.max) - gcmTagLength - overhead else {
                 throw SSDBlockStoreError.sizeOverflow("streamed chunk exceeds limit")
             }
             let (next, overflow) = total.addingReportingOverflow(size)

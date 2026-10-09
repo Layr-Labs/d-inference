@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -174,6 +174,17 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/tests/api/log_personal_data_test.go` |
 
 ## Provider cache storage
+
+`DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION=lz4` is a default-off experiment for
+non-MiMo complete checkpoints. Authentication covers the selected codec and
+each compressed payload; decode bounds use authenticated native tensor sizes.
+Byte-plane widths remain encrypted. Compressed ciphertext lengths depend on
+KV contents and are observable on disk. This adds a content-dependent length
+signal that the existing SEC-035 timing-risk approvals do not cover. Enabling
+compression is not a claim that this additional leakage has been approved for
+a production default. `SSDPrefixCachePolicy.losslessCompressionEnabled` owns
+the activation gate; `SSDLosslessChunkCodec.decode` requires exact decoded
+length and complete stream consumption.
 
 The provider encrypts attention blocks and complete checkpoints before disk I/O
 using the existing DBK3 authenticated-encryption format. Keys remain in the

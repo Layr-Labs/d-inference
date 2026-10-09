@@ -63,6 +63,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
     }
 
     func makeStore(readCap: Int = 16 << 20, epoch: Bool = true, useGlobalBudget: Bool = true, diskBudget: SSDDiskBudget = SSDDiskBudget(),
+                   losslessCompression: Bool = false,
                    maxWriteBytesPerDay: Int = 1 << 30,
                    writeBudget: SSDWriteBudget? = nil,
                    diskBudgetBytes: @escaping @Sendable () -> Int = { 1 << 30 },
@@ -77,6 +78,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
             keyFingerprint: keyFingerprint)) : nil
         let store = SSDHybridCheckpointStore(config: .init(modelId: "fixture-model", identity: identity,
             backendLayout: backendLayout,
+            losslessCompression: losslessCompression,
             root: modelRoot, dedicatedRoot: root, epochStore: epochStore, maxReadBytes: readCap,
             maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, strictFsync: false,
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes, maintainWholeRoot: {}),

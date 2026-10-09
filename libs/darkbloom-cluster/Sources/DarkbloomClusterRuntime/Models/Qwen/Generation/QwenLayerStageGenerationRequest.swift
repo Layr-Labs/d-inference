@@ -11,11 +11,18 @@ struct QwenLayerStageGenerationProfile: Equatable, Encodable {
     let maximumChunkTokens: Int
     let maximumOutputTokens: Int
     let maximumContextTokens: Int
+    /// The dtype of the logits row the output rank selects from, when it is not
+    /// the activation dtype. Nil for every model whose head returns its
+    /// activation dtype, and then it is in neither the fingerprint nor the encoding.
+    let logitsDType: String?
     let fingerprint: String
+
+    /// The dtype of the row a token is selected from and a recording captures.
+    var selectedRowDType: String { logitsDType ?? activationDType }
 
     init(identifier: String, vocabularySize: Int, hiddenSize: Int, activationDType: String,
          maximumPromptTokens: Int, maximumChunkTokens: Int, maximumOutputTokens: Int,
-         maximumContextTokens: Int) throws {
+         maximumContextTokens: Int, logitsDType: String? = nil) throws {
         guard !identifier.isEmpty, identifier.utf8.count <= 128,
               identifier.utf8.allSatisfy({ (33...126).contains($0) }),
               (1...262_144).contains(vocabularySize), (1...8192).contains(hiddenSize),
@@ -26,15 +33,24 @@ struct QwenLayerStageGenerationProfile: Equatable, Encodable {
             throw ProbeError("Generation profile exceeds native software bounds")
         }
         _ = try qwenStageWireElementBytes(activationDType)
+        if let logitsDType {
+            guard logitsDType != activationDType else {
+                throw ProbeError("A logits dtype is named only when it differs from the activation dtype")
+            }
+            _ = try qwenStageWireElementBytes(logitsDType)
+        }
+        self.logitsDType = logitsDType
         self.identifier = identifier; self.vocabularySize = vocabularySize
         self.hiddenSize = hiddenSize; self.activationDType = activationDType
         self.maximumPromptTokens = maximumPromptTokens; self.maximumChunkTokens = maximumChunkTokens
         self.maximumOutputTokens = maximumOutputTokens; self.maximumContextTokens = maximumContextTokens
-        fingerprint = sha256(Data([
+        var fields = [
             "qwen-stage-generation-profile-v1", identifier, String(vocabularySize), String(hiddenSize),
             activationDType, String(maximumPromptTokens), String(maximumChunkTokens),
             String(maximumOutputTokens), String(maximumContextTokens),
-        ].joined(separator: "|").utf8))
+        ]
+        if let logitsDType { fields.append("logits=" + logitsDType) }
+        fingerprint = sha256(Data(fields.joined(separator: "|").utf8))
     }
 }
 

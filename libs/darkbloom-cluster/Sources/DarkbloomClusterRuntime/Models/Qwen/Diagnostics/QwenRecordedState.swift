@@ -37,7 +37,7 @@ struct QwenRecordedState: Encodable, Equatable {
         for layer in plan.stages.flatMap(\.layers) {
             let components: [String]
             switch layer.kind {
-            case "full_attention": components = ["kv.keys", "kv.values", "kv.position_offsets"]
+            case "full_attention", "sliding_attention": components = ["kv.keys", "kv.values", "kv.position_offsets"]
             case "linear_attention": components = ["conv", "ssm"]
             default: throw ProbeError("Recorded state has an unsupported layer policy")
             }

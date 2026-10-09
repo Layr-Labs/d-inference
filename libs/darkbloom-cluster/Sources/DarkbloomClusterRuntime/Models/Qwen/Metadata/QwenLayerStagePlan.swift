@@ -148,6 +148,16 @@ struct QwenLayerStagePlan {
             "stages": stages.map(\.fingerprint)]))
     }
 
+    /// A plan assembled by another registered family's own planner, which owns
+    /// every value: this stores them and derives nothing. Such a plan names no
+    /// dense Qwen parameter, so `parameter(canonicalSourceName:)` refuses every
+    /// name and the family supplies its own source mapping.
+    init(originalConfiguration: Data, fingerprint: String, layers: Int, interval: Int, stages: [Stage]) {
+        self.originalConfiguration = originalConfiguration; self.fingerprint = fingerprint
+        self.layers = layers; self.interval = interval; self.stages = stages
+        namespace = ""; quantizablePaths = []; requiredParameterNames = []
+    }
+
     /// Input names must already be sanitized by the original model. No raw-HF
     /// conversion, name guessing, payload selection, fusion or dtype conversion.
     /// MTP/vision are explicit exclusions; every other unknown path is an error.

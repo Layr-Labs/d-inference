@@ -39,10 +39,10 @@ public enum QwenResidentStageLoadCheck {
     private static let nativeNames = ["JACCL_RANK", "MLX_RANK", "JACCL_IBV_DEVICES", "MLX_IBV_DEVICES",
         "JACCL_COORDINATOR", "MLX_JACCL_COORDINATOR", "JACCL_RING", "MLX_JACCL_RING"]
 
-    /// The admission this rank's worker would pass on this Mac, with a synthetic
-    /// device matrix and no transport environment.
-    static func admit(modelDirectory: URL, rank: Int, stageCut: Int,
-                      deadlineUptimeNanoseconds: UInt64) throws -> QwenResidentAdmission {
+    /// This process's environment with the synthetic device matrix for `rank`,
+    /// and the reader that serves that matrix. For any registered family's check.
+    static func syntheticTransport(rank: Int) throws -> (environment: [String: String],
+                                                         read: (URL, Int) throws -> Data) {
         var environment = ProcessInfo.processInfo.environment
         guard nativeNames.allSatisfy({ environment[$0] == nil }) else {
             throw ProbeError("Stage load check refuses a cluster transport environment; it creates no collective")
@@ -50,6 +50,16 @@ public enum QwenResidentStageLoadCheck {
         environment["JACCL_RANK"] = String(rank)
         environment["JACCL_IBV_DEVICES"] = matrixPath
         environment["JACCL_COORDINATOR"] = "127.0.0.1:1"
+        return (environment, { url, limit in
+            url.path == matrixPath ? matrix : try BoundedProbeInput.data(url, maximumBytes: limit)
+        })
+    }
+
+    /// The admission this rank's worker would pass on this Mac, with a synthetic
+    /// device matrix and no transport environment.
+    static func admit(modelDirectory: URL, rank: Int, stageCut: Int,
+                      deadlineUptimeNanoseconds: UInt64) throws -> QwenResidentAdmission {
+        let transport = try syntheticTransport(rank: rank)
         // The artifact's own configuration selects the registered model. Bytes
         // that belong to no registered model have no definition and stop here.
         let configBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("config.json"),
@@ -68,26 +78,35 @@ public enum QwenResidentStageLoadCheck {
             configBytes: configBytes,
             manifestBytes: BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"),
                                                   maximumBytes: 4_194_304),
-            environment: environment, now: DispatchTime.now().uptimeNanoseconds,
-            read: { url, limit in
-                url.path == matrixPath ? matrix : try BoundedProbeInput.data(url, maximumBytes: limit)
-            })
+            environment: transport.environment, now: DispatchTime.now().uptimeNanoseconds,
+            read: transport.read)
     }
 
     /// `holdSeconds` keeps the loaded stage for that long before releasing it,
     /// so a second load can be tried on the same Mac while this one is resident.
     public static func run(modelDirectory: URL, rank: Int, stageCut: Int,
                            deadlineUptimeNanoseconds: UInt64, holdSeconds: Int = 0) throws -> Receipt {
-        guard (0...240).contains(holdSeconds) else { throw ProbeError("Stage load check holds for 0...240 seconds") }
         let admission = try admit(modelDirectory: modelDirectory, rank: rank, stageCut: stageCut,
                                   deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
+        return try measure(rank: rank, stageCut: stageCut, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
+                           holdSeconds: holdSeconds) { check, constructed in
+            try loadQwenResidentStage(admission, check: check, constructed: constructed).loaded
+        }
+    }
+
+    /// One admitted stage's measured load, hold and release. `load` is the
+    /// registered family's own loader; everything measured around it is the same.
+    static func measure(rank: Int, stageCut: Int, deadlineUptimeNanoseconds: UInt64, holdSeconds: Int,
+        load: (_ check: () throws -> Void, _ constructed: (Module) -> Void) throws -> LoadedQwenLayerStage
+    ) throws -> Receipt {
+        guard (0...240).contains(holdSeconds) else { throw ProbeError("Stage load check holds for 0...240 seconds") }
         let control = QwenResidentControl(deadline: deadlineUptimeNanoseconds)
         try QwenResidentProcessLease.shared.acquire()
         defer { QwenResidentProcessLease.shared.release() }
         try control.check()
         try QwenResidentResourceEnvironment.require()
 
-        var stage: QwenResidentLoadedStage?
+        var stage: LoadedQwenLayerStage?
         weak var retired: Module?
         return try MLX.withError { nativeError in
             func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
@@ -102,14 +121,14 @@ public enum QwenResidentStageLoadCheck {
                 try autoreleasepool {
                     // The weak reference is set when the model is built, so
                     // it also answers for a load that fails part-way.
-                    stage = try loadQwenResidentStage(admission, check: checked, constructed: { retired = $0 })
+                    stage = try load(checked, { retired = $0 })
                 }
                 try settle()
                 let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
                 let loadedBytes = Memory.snapshot().activeMemory
                 // Copy out plain values only: a second reference to the stage
                 // here would keep the model alive past the release below.
-                guard let receipt = stage?.loaded.receipt, let layers = stage?.loaded.layerCount else {
+                guard let receipt = stage?.receipt, let layers = stage?.layerCount else {
                     throw ProbeError("Stage loader returned no stage")
                 }
                 let holdStarted = DispatchTime.now().uptimeNanoseconds

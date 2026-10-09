@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -930,7 +930,8 @@ library beside the runner. Focused suites include `ProviderLifecycleTests`,
 `CoordinatorLifecycleBarrierTests`, `ProviderSignalTests`, and
 `AutoUpdateLifecycleOverlapTests`. They cover accepted concurrent/cold work,
 slow final writes, expiry, force, command interruption, update overlap, process
-identity, wire ordering, unsupported acknowledgements and real-process SIGTERM.
+identity, wire ordering, unsupported acknowledgements, and real-process SIGTERM
+and SIGHUP.
 
 The isolated launchd integration is opt-in on a logged-in macOS session:
 

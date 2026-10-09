@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-09
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -50,7 +50,10 @@ Requests never leave the machine and are never billed.
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running
    ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
-   discovery file.
+   discovery file. Closing the terminal window does the same
+   ([stop signals](./cli-reference.md#graceful-stop-and-restart)), unless the
+   command was started with hangups ignored (for example under `nohup`), in
+   which case it keeps serving.
 
 3. Or start unified. This goes through the normal LaunchAgent path, so the
    flags are recorded in the plist and survive reboots:

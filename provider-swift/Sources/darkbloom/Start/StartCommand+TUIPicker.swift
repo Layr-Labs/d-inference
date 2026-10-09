@@ -11,6 +11,7 @@ extension Start {
 
     /// Interactive multi-select model picker using raw terminal mode.
     /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
+    /// Input that ends (the terminal closed) or can no longer be read cancels too.
     /// Enforces memory budget and shows two sections: downloaded and available.
     /// `inputFD` and `outputFD` default to the terminal; tests pass other descriptors.
     internal func runModelPicker(
@@ -163,7 +164,13 @@ extension Start {
         var buf = [UInt8](repeating: 0, count: 3)
         while true {
             let n = read(inputFD, &buf, 3)
-            guard n > 0 else { continue }
+            if n < 0, Self.waitToRetryPickerRead(on: inputFD, after: errno) { continue }
+            guard n > 0 else {
+                // No key can arrive any more: the input ended (the terminal
+                // went away) or the read failed for good. Cancel, as Esc does.
+                print()
+                return []
+            }
 
             if n == 1 {
                 switch buf[0] {
@@ -210,6 +217,26 @@ extension Start {
             }
 
             lastLineCount = render(pos: cursorPos, sel: selected, prevLines: lastLineCount)
+        }
+    }
+
+    /// Decides whether a failed read of the picker's input is repeated, and
+    /// waits first when the retry needs it. A read that a signal interrupted
+    /// is repeated at once. A non-blocking descriptor with nothing to read yet
+    /// is repeated once it is readable; waiting here is what keeps that retry
+    /// from spinning. Any other failure will not clear, so the picker must
+    /// stop reading.
+    private static func waitToRetryPickerRead(on inputFD: Int32, after readError: Int32) -> Bool {
+        switch readError {
+        case EINTR:
+            return true
+        case EAGAIN:
+            var input = pollfd(fd: inputFD, events: Int16(POLLIN), revents: 0)
+            // The repeated read reports whatever ended the wait. A wait that
+            // cannot be made at all would turn the retry back into a spin.
+            return poll(&input, 1, -1) >= 0 || errno == EINTR
+        default:
+            return false
         }
     }
 }

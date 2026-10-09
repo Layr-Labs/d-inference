@@ -24,8 +24,9 @@ private func reject(_ body: () throws -> Void) throws {
         try discovery(f)
         try journal(f)
         try recovery(f)
+        try modeAndServingPolicy(f)
         try linkFindings()
-        print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery, journal uncertainty, explicit recovery and local link findings passed")
+        print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery, journal uncertainty, explicit recovery, generation mode, pair-serving policy and local link findings passed")
     }
 
     static func tree(_ root: URL) throws -> [String: String] {
@@ -74,7 +75,7 @@ private func reject(_ body: () throws -> Void) throws {
         let nonce = UUID().uuidString.lowercased(), epoch = UUID().uuidString.lowercased()
         let sample = ClusterLiveStatus(schema: ClusterLiveStatus.schemaName, nonce: nonce, binding: binding,
             authenticationConfigured: true, hostPhase: "serving", session: .init(binding: binding, phase: "ready",
-                observedMembershipEpoch: epoch, observedPrefillSchedule: .serial, ready: true,
+                observedMembershipEpoch: epoch, observedPrefillSchedule: .serial, observedGenerationMode: .pipeline, ready: true,
                 admission: .init(remainingLifetimeNanoseconds: 8_000_000_000, remainingRequests: 16, activeRequest: false, draining: false, valid: true),
                 members: (0..<2).map { .init(peerID: "peer-\($0)", rank: $0, transport: $0 == 0 ? .localPipes : .authenticatedSSH,
                     nativeReady: true, requestCapacityBytes: 1024, nativeCleanupObserved: false, ownerReleaseAcknowledged: false, ownerTermination: nil) },
@@ -106,6 +107,11 @@ private func reject(_ body: () throws -> Void) throws {
         }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["observedPrefillSchedule"] = "one_chunk_lookahead_v1"; $0["session"] = s }) }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["mtpEnabled"] = true; $0["session"] = s }) }
+        // The running mode is the saved one, and is reported only with an epoch.
+        try require(sample.binding.generationMode == .pipeline && sample.session.observedGenerationMode == .pipeline, "generation mode missing from status")
+        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["observedGenerationMode"] = "phase_split_v1"; $0["session"] = s }) }
+        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s.removeValue(forKey: "observedGenerationMode"); $0["session"] = s }) }
+        try reject { _ = try decode(changed { var b = $0["binding"] as! [String: Any]; b["generationMode"] = "phase_split_v1"; $0["binding"] = b }) }
         // The direct native bootstrap cannot be reported as owner-authenticated.
         try require(!sample.session.nativeBootstrapOwnerAuthenticated && String(decoding: encoded, as: UTF8.self).contains("\"nativeBootstrap\":\"directNative\""), "bootstrap honesty missing from status")
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["nativeBootstrapOwnerAuthenticated"] = true; $0["session"] = s }) }
@@ -180,6 +186,29 @@ private func reject(_ body: () throws -> Void) throws {
             membershipEpoch: epoch, leaseID: epoch, ownerIncarnation: epoch, nativeLaunchID: epoch)))
         try require(refused.outcome == .refusedLiveWorker && refused.liveProcessIdentifier == 77 && !refused.journalEmpty && !refused.recoveryPerformed,
             "a running recorded worker must be reported, not cleared")
+    }
+
+    /// What the status binding shows of the mode, and what `cluster doctor`
+    /// says about a model that is not served on a pair.
+    static func modeAndServingPolicy(_ f: InstalledFixture) throws {
+        func validation(_ fixture: InstalledFixture) -> [ClusterDiagnosticsReport.Check] {
+            ClusterInstalledMetadataChecks.localInstalledMetadata(reference: fixture.reference, paths: fixture.paths,
+                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        }
+        let ordinary = validation(f)
+        try require(ordinary.map(\.name) == ["localInstalledMetadata"] && ordinary[0].outcome == .passed, "ordinary setup: \(ordinary.map(\.detail))")
+        let all: [ClusterGenerationMode] = [.pipeline, .pipelineCompactDecode, .phaseSplit]
+        let split = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-split"), probe: f.probe, owner: f.owner, worker: f.worker,
+            generationMode: "phase_split_v1", advertisedModes: all)
+        let shown = try ClusterStatusBinding(configuration: split.configuration, capability: split.capability)
+        try require(shown.generationMode == .phaseSplit && shown.peers.map(\.supportedGenerationModes) == [all, all], "the binding does not show the mode and each worker's support")
+        try require(validation(split).first?.outcome == .passed, "an advertised mode failed the doctor")
+        let big = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-27b"), probe: f.probe, owner: f.owner, worker: f.worker,
+            advertisedModes: all, registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "EigenLabs/Qwen3.8-27B-4bit-mtp"))
+        let refused = validation(big)
+        try require(refused.map(\.name) == ["pairServingPolicy", "localInstalledMetadata"] && refused[0].outcome == .failed && refused[1].outcome == .notRun,
+            "a withheld model was reported as a metadata fault: \(refused.map(\.name))")
+        try require(refused[0].detail.contains("policy decision") && refused[0].detail.contains("EigenLabs/Qwen3.8-27B-4bit-mtp"), "policy refusal text: \(refused[0].detail)")
     }
 
     static func journal(_ f: InstalledFixture) throws {

@@ -42,12 +42,16 @@ private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool) th
     print("Saved setup: \(report.configurationState.rawValue)")
     if let saved = report.saved {
         print("Cluster: \(saved.clusterID) · member \(saved.memberID) (\(saved.role.rawValue))")
-        print("Model: \(saved.publicModelID) · selected prefill: \(saved.prefillSchedule.rawValue)")
+        print("Model: \(saved.publicModelID) · selected prefill: \(saved.prefillSchedule.rawValue) · generation mode: \(saved.generationMode.rawValue)")
+        for peer in saved.peers {
+            print("  \(peer.id) rank \(peer.rank) worker supports: \(peer.supportedGenerationModes.map(\.rawValue).joined(separator: ", "))")
+        }
     }
     if let live = report.live {
         print("Live leader: \(live.ready ? "ready" : "not ready") · admission \(live.admissionAvailable ? "available" : "closed") · \(live.hostPhase)")
         print("Response authentication: \(live.authenticationConfigured ? "configured bearer" : "not configured (--no-auth)")")
         print("Epoch: \(live.session.observedMembershipEpoch ?? "not observed") · MTP off: \(live.session.mtpOffReason)")
+        print("Running generation mode: \(live.session.observedGenerationMode?.rawValue ?? "not observed")")
         if let state = live.session.admission {
             print("Lifetime remaining: \(state.remainingLifetimeNanoseconds / 1_000_000) ms · admissions: \(state.remainingRequests) · active: \(state.activeRequest)")
         }

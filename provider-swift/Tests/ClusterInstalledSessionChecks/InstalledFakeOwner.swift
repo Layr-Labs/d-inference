@@ -41,7 +41,9 @@ import DarkbloomClusterProcess
                 // attachment exists and none of its arguments reach the worker.
                 guard attachment == nil else { throw ClusterOwnerStateError.invalid("Fixture received an unselected bootstrap attachment") }
                 return try .init(launch: .init(executable: worker,
-                    arguments: [String(rank), "normal"],
+                    // "workers:a,b" selects the stand-in worker behaviour per rank.
+                    arguments: [String(rank), behavior.hasPrefix("workers:")
+                        ? String(behavior.dropFirst(8).split(separator: ",")[rank]) : "normal"],
                     environment: ["FIXTURE_READY_PATH": ProcessInfo.processInfo.environment["FIXTURE_READY_PATH"]!]),
                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, lifetimeDeadline: deadline)

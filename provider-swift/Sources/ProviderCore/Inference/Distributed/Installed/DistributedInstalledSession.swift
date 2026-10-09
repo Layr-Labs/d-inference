@@ -73,6 +73,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         return .init(binding: diagnosticBinding, phase: phase.rawValue,
             observedMembershipEpoch: values.2?.uuidString.lowercased(),
             observedPrefillSchedule: values.2 == nil ? nil : configuration.selectedPrefillSchedule,
+            observedGenerationMode: values.2 == nil ? nil : configuration.selectedGenerationMode,
             ready: ready, admission: state.map { .init(remainingLifetimeNanoseconds: $0.remainingLifetimeNanoseconds,
                 remainingRequests: $0.admissionsRemaining, activeRequest: $0.hasActiveRequest,
                 draining: $0.isDraining, valid: $0.isValid) }, members: members,
@@ -82,9 +83,18 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     }
 
     /// Longest a clean stop can legitimately take: a rank still inside a
-    /// collective when its peer went away ends itself at the progress limit.
+    /// collective when its peer went away ends itself at the progress limit,
+    /// then releases its model within the selected model's stop margin.
     public var cooperativeStopAllowanceNanoseconds: UInt64 {
-        UInt64(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) * 1_000_000 + 15_000_000_000
+        UInt64(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) * 1_000_000 + prepared.plan.budgets.stopMarginNanoseconds
+    }
+
+    /// The selected model's first-token allowance. It does not depend on the
+    /// generation mode: under phase split the first token is still selected by
+    /// the pair, before the hand-off.
+    public func firstTokenBudgetPolicy() throws -> DistributedFirstTokenBudgetPolicy {
+        try .init(baseMilliseconds: prepared.plan.budgets.firstTokenBaseMilliseconds,
+                  millisecondsPerInputToken: prepared.plan.budgets.firstTokenMillisecondsPerPromptToken)
     }
 
     /// Call before and after LocalTokenizerLoader.load(from: model.directory).
@@ -143,7 +153,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         try requireStarting(); try prepared.requireUnchanged()
         let now = DispatchTime.now().uptimeNanoseconds
         let lifetime = now + prepared.plan.maximumLifetimeNanoseconds
-        let startupDeadline = min(lifetime, now + DistributedInstalledPlan.startupAllowanceNanoseconds)
+        let startupDeadline = min(lifetime, now + prepared.plan.budgets.startupAllowanceNanoseconds)
         // No relay exists for the direct native bootstrap: the owners carry no
         // bootstrap rounds and the status reports the exchange as unauthenticated.
         let relay = try prepared.plan.bootstrap.ownerAuthenticated ? ClusterOwnerBootstrapRelay(identity: wireIdentity,
@@ -157,7 +167,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             if stopped { endpoint.requestNativeCleanup(); throw DistributedEngineError.shuttingDown }
         }
         let values = lock.withLock { endpoints }
-        let pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline, maximumRequests: capability.maxRequests)
+        let pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline, maximumRequests: capability.maxRequests,
+            timing: prepared.plan.budgets.pairTiming)
         lock.withLock { self.pair = pair }
         let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
@@ -237,9 +248,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     private func finishStop() async {
         await startup.value()
-        let values = lock.withLock { (pair, endpoints, lifetime, draining) }
+        let values = lock.withLock { (pair, endpoints, draining) }
         if let pair = values.0 {
-            if values.3 { await pair.drainAndShutdown() } else { await pair.shutdown() }
+            if values.2 { await pair.drainAndShutdown() } else { await pair.shutdown() }
         }
         else {
             for endpoint in values.1 { endpoint.requestNativeCleanup() }
@@ -247,10 +258,10 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         var released = true
         for endpoint in values.1 {
-            // Each owner keeps its own retirement ceiling past the lifetime; a
-            // release acknowledgement cannot arrive later than that.
-            let deadline = max(values.2, DispatchTime.now().uptimeNanoseconds)
-                + ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds + 3_000_000_000
+            // Each owner keeps its own retirement ceiling past its lifetime,
+            // which the endpoint tracks; a release acknowledgement cannot
+            // arrive later than that.
+            let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
             if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) { released = false }
         }
         lock.withLock { phase = released ? .released : .quarantined }

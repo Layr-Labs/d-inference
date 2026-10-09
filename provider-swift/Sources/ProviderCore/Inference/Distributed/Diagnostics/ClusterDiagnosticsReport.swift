@@ -8,6 +8,13 @@ public struct ClusterDiagnosticsReport: Encodable, Sendable {
         public let outcome: Outcome
         public let detail: String
     }
+    /// An error as a check's detail: printable characters only, bounded.
+    static func boundedDetail(_ error: Error) -> String {
+        String(String(describing: error).filter { character in
+            character.unicodeScalars.allSatisfy { $0.value >= 32 && $0.value != 127 }
+        }.prefix(1024))
+    }
+
     public let schema = "darkbloom_cluster_diagnostics_v1"
     public let operation: String
     public let configurationState: ConfigurationState

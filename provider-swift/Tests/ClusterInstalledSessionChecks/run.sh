@@ -40,6 +40,8 @@ build_module ProviderCoreFoundation "$task_provider/Sources/ProviderCoreFoundati
 build_module InstalledContract \
   "$task_sources/Config/ClusterConfiguration.swift" \
   "$task_sources/Config/ClusterConfigurationCodec.swift" \
+  "$task_sources/Config/ClusterGenerationSelection.swift" \
+  "$task_sources/Config/ClusterCapabilityRecord.swift" \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
@@ -47,6 +49,7 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterPairApproval.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
+  "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \

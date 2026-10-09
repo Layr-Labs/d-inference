@@ -14,7 +14,16 @@ The checks exercise public model/manifest/tokenizer joins and bounded metadata-c
 - The plan sets `JACCL_PROGRESS_TIMEOUT_MS`, and a pinned worker whose bytes do not carry the collective progress guard is refused by the validation the leader, the owner and `cluster doctor` share. The stand-in metadata producer is built twice, with and without the names the validation looks for.
 - The owner refuses while the ordinary provider's instance lock is held, except by the process that launched it or by a `--cluster-member` process.
 
-Six actual local owner/stand-in lifecycle scenarios follow:
+Four more rules cover what the saved setup selects:
+
+- Generation mode. A setup that names none starts its workers with the command line it always had and keeps its saved bytes. A named mode reaches both ranks as `--generation-mode` only when the pinned capability record advertises it; one that is not advertised is refused when the setup is read, naming the mode and the worker. The status binding shows the selected mode and what each worker's record advertises.
+- Time budgets. Startup, first-token, admission and shutdown waits come from the selected registered model's row. The 9B's row is pinned to the figures the path has always used, and the mode does not change it.
+- Pair serving of the registered 27B is withheld. Saving such a setup works; preparing it is refused with the policy sentence, with or without a named mode, and its budgets are reachable only behind that refusal.
+- A worker description this build cannot read (a mode or a field from a newer worker) is explained as a mixed install, not as a difference.
+
+Seven actual local owner/stand-in lifecycle scenarios follow:
+
+- A phase-split setup whose stand-in rank 0 publishes tokens in relayed batches of 1, 2, 4 and 8 with a pause before each, and answers a client stop only after a further pause: the published tokens are exactly the accepted ones, the finish is clean, the session stays ready and takes another request.
 
 - Clean drain retains the active request until explicit resource release, then requires native cleanup, owner release acknowledgements and natural owner exits.
 - The sixteenth active request retains readiness, while further admission is refused after quota exhaustion.

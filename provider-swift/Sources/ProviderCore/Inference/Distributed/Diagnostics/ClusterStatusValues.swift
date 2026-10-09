@@ -14,6 +14,8 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
     public let configurationModelSHA256: String
     public let planSHA256: String
     public let prefillSchedule: ClusterPrefillSchedule
+    /// The saved setup's selected generation mode; the pipeline when it names none.
+    public let generationMode: ClusterGenerationMode
     public let peers: [Peer]
     public let maximumLifetimeSeconds: Int
     public let maximumRequests: Int
@@ -22,6 +24,9 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
         public let id: String
         public let rank: Int
         public let runtimeBinarySHA256: String
+        /// What the pinned capability record advertises for this member's
+        /// worker. A saved description, not a probe of the installed binary.
+        public let supportedGenerationModes: [ClusterGenerationMode]
     }
 
     init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) throws {
@@ -32,8 +37,10 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
         publicModelID = configuration.publicModelID; runtimeModelID = capability.runtimeModelID
         artifactSHA256 = capability.artifactSHA256; configurationModelSHA256 = capability.configurationSHA256
         planSHA256 = configuration.selectedPlanSHA256; prefillSchedule = configuration.selectedPrefillSchedule
+        generationMode = configuration.selectedGenerationMode
         maximumLifetimeSeconds = capability.maxLifetimeSeconds; maximumRequests = capability.maxRequests
-        peers = configuration.peers.map { .init(id: $0.id, rank: $0.rank, runtimeBinarySHA256: $0.runtimeBinarySHA256) }
+        peers = configuration.peers.map { .init(id: $0.id, rank: $0.rank, runtimeBinarySHA256: $0.runtimeBinarySHA256,
+            supportedGenerationModes: ClusterGenerationSelection.supportedModes(for: $0, capability: capability)) }
     }
 }
 
@@ -61,6 +68,11 @@ public struct ClusterSessionObservation: Codable, Sendable, Equatable {
     /// Retained only after both actual native Ready values passed pair binding.
     public let observedMembershipEpoch: String?
     public let observedPrefillSchedule: ClusterPrefillSchedule?
+    /// The mode this leader started its rank with, reported once both ranks
+    /// are ready. The owner does not see the follower's mode: the ranks bind
+    /// the mode into their own agreement and neither becomes ready on a
+    /// different one.
+    public let observedGenerationMode: ClusterGenerationMode?
     public let ready: Bool
     public let admission: Admission?
     public let members: [Member]
@@ -75,11 +87,13 @@ public struct ClusterSessionObservation: Codable, Sendable, Equatable {
     public let collectiveProgressLimitMilliseconds: Int
 
     init(binding: ClusterStatusBinding, phase: String, observedMembershipEpoch: String?,
-         observedPrefillSchedule: ClusterPrefillSchedule?, ready: Bool, admission: Admission?, members: [Member],
+         observedPrefillSchedule: ClusterPrefillSchedule?, observedGenerationMode: ClusterGenerationMode?,
+         ready: Bool, admission: Admission?, members: [Member],
          mtpEnabled: Bool, mtpOffReason: String, nativeBootstrap: DistributedInstalledBootstrap,
          collectiveProgressLimitMilliseconds: Int) {
         self.binding = binding; self.phase = phase; self.observedMembershipEpoch = observedMembershipEpoch
-        self.observedPrefillSchedule = observedPrefillSchedule; self.ready = ready; self.admission = admission
+        self.observedPrefillSchedule = observedPrefillSchedule; self.observedGenerationMode = observedGenerationMode
+        self.ready = ready; self.admission = admission
         self.members = members; self.mtpEnabled = mtpEnabled; self.mtpOffReason = mtpOffReason
         self.nativeBootstrap = nativeBootstrap; nativeBootstrapOwnerAuthenticated = nativeBootstrap.ownerAuthenticated
         self.collectiveProgressLimitMilliseconds = collectiveProgressLimitMilliseconds

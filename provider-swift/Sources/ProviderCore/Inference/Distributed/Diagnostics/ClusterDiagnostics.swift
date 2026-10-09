@@ -64,16 +64,10 @@ public enum ClusterDiagnostics {
         checks.append(.init(name: "savedConfiguration", outcome: .passed,
             detail: "Canonical configuration/capability pins and selected policy verified; this is not readiness."))
         if doctor {
-            do {
-                try await Task.detached {
-                    _ = try DistributedInstalledValidation.validate(reference: reference, paths: saved.paths,
-                        deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
-                }.value
-                checks.append(.init(name: "localInstalledMetadata", outcome: .passed,
-                    detail: "Local worker hash, config/manifest/tokenizer pins, trust-file metadata/pin and installed runtime description verified. Weight payloads and SSH authentication were not tested."))
-            } catch {
-                checks.append(.init(name: "localInstalledMetadata", outcome: .failed, detail: bounded(error)))
-            }
+            checks += await Task.detached {
+                ClusterInstalledMetadataChecks.localInstalledMetadata(reference: reference, paths: saved.paths,
+                    deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+            }.value
         } else {
             checks.append(.init(name: "localInstalledMetadata", outcome: .notRun, detail: "Run cluster doctor for local installed metadata checks."))
         }
@@ -106,9 +100,5 @@ public enum ClusterDiagnostics {
             deviceJournal: journal, checks: checks, localLink: localLink, configuredLinkDevice: saved.linkDevice)
     }
 
-    private static func bounded(_ error: Error) -> String {
-        String(String(describing: error).filter { character in
-            character.unicodeScalars.allSatisfy { $0.value >= 32 && $0.value != 127 }
-        }.prefix(512))
-    }
+    private static func bounded(_ error: Error) -> String { ClusterDiagnosticsReport.boundedDetail(error) }
 }

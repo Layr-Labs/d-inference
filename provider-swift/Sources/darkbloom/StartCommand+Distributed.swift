@@ -20,8 +20,8 @@ extension Start {
         // away needs its progress limit to do so; nothing signals it sooner.
         let stopAllowance = session.cooperativeStopAllowanceNanoseconds
         let token = try noAuth ? nil : LocalEndpoint.loadOrCreateToken()
-        let budget = try DistributedFirstTokenBudgetPolicy(
-            baseMilliseconds: 10_000, millisecondsPerInputToken: 1)
+        // From the selected registered model's row, like the stop allowance.
+        let budget = try session.firstTokenBudgetPolicy()
         let server = DistributedLocalServer(
             session: session, config: .init(host: bind, port: port, authToken: token),
             firstTokenBudgetPolicy: budget,

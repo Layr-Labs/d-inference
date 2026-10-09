@@ -13,9 +13,12 @@ enum DistributedCapabilityProbe {
         let arguments = ["--describe-runtime", "--config", plan.configurationURL.path,
             "--manifest", plan.manifestURL.path, "--expected-executable-sha256", plan.capability.runtimeBinarySHA256]
         let bytes = try run(executable: executable.url, arguments: arguments, deadline: deadline)
-        guard try ClusterRuntimeCapabilityCodec.decode(bytes) == plan.capability,
+        // A record this build cannot read is a mixed install, and is said so;
+        // one it can read but that differs is a worker changed since setup.
+        let described = try ClusterCapabilityRecord.decode(bytes, writtenBy: "the installed worker (\(executable.url.path))")
+        guard described == plan.capability,
               ClusterConfigurationCodec.sha256(bytes) == plan.configuration.capabilitySHA256 else {
-            throw ClusterConfigurationError.invalid("Installed runtime description differs from the saved capability")
+            throw ClusterConfigurationError.invalid("Installed runtime description differs from the saved capability: the worker or the model's metadata changed since this setup was saved. Run `darkbloom cluster configure` again with this worker's own description.")
         }
         try executable.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)

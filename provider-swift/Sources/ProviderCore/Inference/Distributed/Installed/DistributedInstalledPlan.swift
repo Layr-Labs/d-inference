@@ -10,11 +10,18 @@ struct DistributedInstalledPlan: Sendable {
     let capability: ClusterRuntimeCapability
     let partition: ClusterRuntimePartition
     let paths: ClusterUserPaths
+    /// The selected registered model's owner-side time budgets.
+    let budgets: DistributedInstalledTimeBudgets
 
     init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
         configuration = saved.configuration; capability = saved.capability; self.paths = paths
+        // No plan exists for a model a pair may not serve, so nothing below
+        // this point (owner, session, member registration) can start one.
+        budgets = try DistributedInstalledPairServingTable.servingBudgets(runtimeModelID: capability.runtimeModelID,
+            publicModelID: configuration.publicModelID)
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
         try capability.requireSupport(for: configuration.selectedPrefillSchedule)
+        try ClusterGenerationSelection.requireSupport(for: configuration.selectedGenerationMode, peers: configuration.peers, capability: capability)
         guard capability.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
               capability.stateSemantics == "requestOwnedKVAndRecurrent",
               capability.schedulingPolicy == "serial", capability.selectionPolicy == "greedy",
@@ -28,8 +35,6 @@ struct DistributedInstalledPlan: Sendable {
     /// The collective progress limit every native rank is started with. A rank
     /// whose peer stops answering fails by itself after this long.
     static let collectiveProgressLimitMilliseconds = 60_000
-    /// Longest a rank may take to load and join its peer.
-    static let startupAllowanceNanoseconds: UInt64 = 90_000_000_000
 
     var localPeer: ClusterConfiguration.Peer { configuration.peers[configuration.localRank] }
     var maximumLifetimeNanoseconds: UInt64 { UInt64(capability.maxLifetimeSeconds) * 1_000_000_000 }
@@ -89,6 +94,7 @@ struct DistributedInstalledPlan: Sendable {
             "--deadline-uptime-nanoseconds", String(deadline)]
             + (try DistributedInstalledPrefillSelection.workerArguments(capability: capability,
                 schedule: configuration.selectedPrefillSchedule))
+            + (try DistributedInstalledGenerationSelection.workerArguments(configuration: configuration, capability: capability))
             + (startupDeadline.map { [DistributedInstalledWorkerFeatures.startupDeadlineArgument, String($0)] } ?? [])
             + (attachment?.workerArguments ?? [])
     }

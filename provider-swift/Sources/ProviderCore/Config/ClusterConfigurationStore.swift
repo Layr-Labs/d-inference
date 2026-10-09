@@ -54,9 +54,11 @@ public struct ClusterConfigurationStore: Sendable {
         guard ClusterConfigurationCodec.sha256(capabilityData) == capabilityHash else {
             throw ClusterConfigurationError.invalid("Saved capability digest differs")
         }
-        let capability = try ClusterRuntimeCapabilityCodec.decode(capabilityData)
+        let capability = try ClusterCapabilityRecord.decode(capabilityData, writtenBy: "the worker this setup was saved with")
         let configuration = try ClusterConfigurationCodec.decode(data, capability: capability, capabilitySHA256: capabilityHash)
-        guard try ClusterConfigurationCodec.encode(configuration, capability: capability, capabilitySHA256: capabilityHash) == data else {
+        // The pipeline is saved as the absence of the field, never by name.
+        guard configuration.generationMode != .pipeline,
+              try ClusterConfigurationCodec.encode(configuration, capability: capability, capabilitySHA256: capabilityHash) == data else {
             throw ClusterConfigurationError.invalid("Saved cluster configuration is not canonical")
         }
         return Saved(configuration: configuration, capability: capability)
@@ -70,10 +72,11 @@ public struct ClusterConfigurationStore: Sendable {
         guard ClusterConfigurationSyntax.hash(capabilitySHA256) else { throw ClusterConfigurationError.invalid("Invalid capability input digest") }
         let capabilityData = try ClusterConfigurationFiles.read(capabilityInput, maximum: ClusterRuntimeCapabilityCodec.maximumBytes)
         guard ClusterConfigurationCodec.sha256(capabilityData) == capabilitySHA256 else { throw ClusterConfigurationError.invalid("Capability input digest differs") }
-        let capability = try ClusterRuntimeCapabilityCodec.decode(capabilityData)
+        let capability = try ClusterCapabilityRecord.decode(capabilityData, writtenBy: "the worker (\(capabilityInput.lastPathComponent))")
         let input = try ClusterConfigurationFiles.read(configurationInput, maximum: ClusterConfigurationCodec.maximumBytes)
         var configuration = try ClusterConfigurationCodec.decode(input, capability: capability, capabilitySHA256: capabilitySHA256)
         configuration.makePrefillSelectionExplicit()
+        configuration.makeGenerationSelectionCanonical()
         let data = try ClusterConfigurationCodec.encode(configuration, capability: capability, capabilitySHA256: capabilitySHA256)
         let digest = ClusterConfigurationCodec.sha256(data)
         let destination = try paths.configurationURL(sha256: digest)

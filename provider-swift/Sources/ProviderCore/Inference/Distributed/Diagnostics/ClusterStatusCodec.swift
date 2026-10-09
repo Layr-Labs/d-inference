@@ -44,6 +44,10 @@ enum ClusterStatusCodec {
               value.session.observedPrefillSchedule == nil || value.session.observedPrefillSchedule == binding.prefillSchedule else {
             throw ClusterConfigurationError.invalid("Status schedule observation differs")
         }
+        guard (value.session.observedMembershipEpoch == nil) == (value.session.observedGenerationMode == nil),
+              value.session.observedGenerationMode == nil || value.session.observedGenerationMode == binding.generationMode else {
+            throw ClusterConfigurationError.invalid("Status generation mode observation differs")
+        }
         for (rank, member) in value.session.members.enumerated() {
             guard member.rank == rank, member.peerID == binding.peers[rank].id,
                   member.transport == (rank == 0 ? .localPipes : .authenticatedSSH),

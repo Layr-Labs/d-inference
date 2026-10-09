@@ -16,6 +16,14 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     public private(set) var prefillSchedule: ClusterPrefillSchedule?
     public var selectedPrefillSchedule: ClusterPrefillSchedule { prefillSchedule ?? .serial }
     mutating func makePrefillSelectionExplicit() { prefillSchedule = selectedPrefillSchedule }
+    /// How the two ranks divide a request. Omitted for the pipeline, which is
+    /// what every setup saved before this field runs: such a setup keeps its
+    /// bytes and its digest. Null is rejected by the strict codec.
+    public private(set) var generationMode: ClusterGenerationMode?
+    public var selectedGenerationMode: ClusterGenerationMode { generationMode ?? .pipeline }
+    /// The pipeline has one saved spelling, the omitted one, so naming it in an
+    /// input does not make a second digest for the same setup.
+    mutating func makeGenerationSelectionCanonical() { if generationMode == .pipeline { generationMode = nil } }
     public let chunkTokens: Int
     public let requestTimeoutSeconds: Int
     public let peers: [Peer]
@@ -94,6 +102,8 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
             try require(peer.runtimeBinarySHA256 == capability.runtimeBinarySHA256, "Peer native build differs from the capability")
             try require(ClusterConfigurationSyntax.label(peer.jacclDevice, maximum: 63), "Invalid JACCL device name")
         }
+        // After the peers: the refusal names the workers the record describes.
+        try ClusterGenerationSelection.requireSupport(for: selectedGenerationMode, peers: peers, capability: capability)
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         try require(ClusterConfigurationSyntax.sshPath(trust.identityFile) && ClusterConfigurationSyntax.sshPath(trust.knownHostsFile)
             && trust.identityFile != trust.knownHostsFile && ClusterConfigurationSyntax.hash(trust.knownHostsSHA256), "Invalid existing SSH trust inputs")

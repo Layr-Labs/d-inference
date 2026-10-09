@@ -37,6 +37,13 @@ public enum ClusterConfigurationCodec {
             }
             expected.insert("prefillSchedule")
         }
+        if let mode = object["generationMode"] {
+            guard let name = mode as? String, ClusterGenerationMode(rawValue: name) != nil else {
+                throw ClusterConfigurationError.invalid("Unknown or malformed generation mode; this build knows "
+                    + ClusterGenerationMode.allCases.map(\.rawValue).joined(separator: ", "))
+            }
+            expected.insert("generationMode")
+        }
         if let attachment = object["nativeMember"] {
             guard let fields = attachment as? [String: Any] else {
                 throw ClusterConfigurationError.invalid("Native member attachment must be a non-null object")

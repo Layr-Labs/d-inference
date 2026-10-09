@@ -16,6 +16,10 @@ Checks cover:
   arbitrary remote/DNS/URL-disagreement/credential-injection cases refuse.
 - A held empty device gate remains only an empty-journal observation; a nonempty
   journal remains unproven ownership and its contents are unchanged.
+- The status binding carries the selected generation mode and what the saved
+  record advertises for each worker; the status refuses a running mode that
+  differs from the saved one. A setup for a model that is not served on a pair
+  is reported under `pairServingPolicy`, not as a metadata fault.
 - A local link inspection becomes doctor checks: one for the Mac, one per active
   or saved-setup port; a blocked port fails only where serving would use it, and
   the report never calls the inspection a physical probe. The inspection itself

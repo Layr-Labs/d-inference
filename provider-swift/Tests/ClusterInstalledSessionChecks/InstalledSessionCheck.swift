@@ -13,6 +13,26 @@ func rejected(_ body:() throws->Void) throws {
     do { try body() } catch is CheckFailure { throw CheckFailure(message:"assertion inside refusal") } catch { return }
     throw CheckFailure(message:"expected refusal")
 }
+final class TokenBox: @unchecked Sendable {
+    private let lock=NSLock()
+    private var tokens:[(Int,Duration)]=[],finish:Duration?,failure=false
+    func add(_ event:DistributedResidentEvent,at time:Duration) {
+        lock.withLock {
+            switch event {
+            case .token(let token): tokens.append((token,time))
+            case .finished(let reason): finish=time; if case .error = reason { failure=true }
+            }
+        }
+    }
+    static func milliseconds(_ value:Duration)->Int { Int(value.components.seconds*1000+value.components.attoseconds/1_000_000_000_000_000) }
+    var count:Int { lock.withLock { tokens.count } }
+    var values:[Int] { lock.withLock { tokens.map(\.0) } }
+    var finished:Bool { lock.withLock { finish != nil } }
+    var failed:Bool { lock.withLock { failure } }
+    var gapsMilliseconds:[Int] { lock.withLock { tokens.indices.map { Self.milliseconds(tokens[$0].1-($0==0 ? .zero : tokens[$0-1].1)) } } }
+    var lastTokenMilliseconds:Int { lock.withLock { Self.milliseconds(tokens.last?.1 ?? .zero) } }
+    var finishMilliseconds:Int { lock.withLock { Self.milliseconds(finish ?? .zero) } }
+}
 final class EndpointBox: @unchecked Sendable {
     let lock=NSLock(); var values:[ClusterRemoteWorkerEndpoint]=[]
     func add(_ value:ClusterRemoteWorkerEndpoint){ lock.withLock { values.append(value) } }
@@ -37,13 +57,18 @@ final class EndpointBox: @unchecked Sendable {
         try bootstrapSelection(fixture,prepared)
         try progressGuardIsRequired(fixture,prepared,unguarded:URL(fileURLWithPath:CommandLine.arguments[4]))
         try ordinaryProviderExclusion(fixture)
+        try generationModeSelection(fixture,prepared)
+        try perModelBudgets(fixture,prepared)
+        try pairServingStaysWithheld(fixture)
+        try unreadableCapabilityRecord(fixture)
+        try await phaseSplitSession(fixture)
         try fileAndProbeChecks(fixture,prepared)
         try await normalAndDrain(fixture,prepared)
         try await exhausted(fixture,prepared)
         try await failedStart(fixture,prepared)
         try await missingRelease(fixture,prepared)
         try await expired(fixture)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, bounded IO and 6 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, withheld pair serving, bounded IO and 7 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -150,6 +175,181 @@ final class EndpointBox: @unchecked Sendable {
         try rejected{try check(arguments:nil)} // A holder that cannot be identified is not assumed to be a member.
         try require(ftruncate(descriptor,0)==0,"lock fixture");try rejected{try check(parent:4242)} // No record: nothing proves who holds it.
         try require(flock(descriptor,LOCK_UN)==0,"lock fixture");try check()
+    }
+    static let allModes:[ClusterGenerationMode]=[.pipeline,.pipelineCompactDecode,.phaseSplit]
+    static func refusal(_ body:() throws->Void) throws->String {
+        do { try body() } catch is CheckFailure { throw CheckFailure(message:"assertion inside refusal") } catch { return String(describing:error) }
+        throw CheckFailure(message:"expected refusal")
+    }
+    /// The saved setup names the mode. The pipeline is the absence of the
+    /// argument; any other mode reaches both ranks only when the pinned record
+    /// advertises it, and is refused before launch when it does not.
+    static func generationModeSelection(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
+        let plan=prepared.plan
+        try require(plan.configuration.generationMode==nil && plan.configuration.selectedGenerationMode == .pipeline,"an existing setup must run the pipeline")
+        let saved=try Data(contentsOf:URL(fileURLWithPath:f.reference.configuration))
+        try require(!String(decoding:saved,as:UTF8.self).contains("generationMode"),"an existing setup's saved bytes gained a field")
+        try require(try DistributedInstalledGenerationSelection.workerArguments(configuration:plan.configuration,capability:plan.capability).isEmpty,
+            "the pipeline must be the absence of the argument")
+        // Naming the pipeline is the same setup, byte for byte.
+        let named=try InstalledFixture.make(root:f.root.appendingPathComponent("named-pipeline"),probe:f.probe,owner:f.owner,worker:f.worker,generationMode:"pipeline_v1")
+        let namedBytes=try Data(contentsOf:URL(fileURLWithPath:named.reference.configuration))
+        try require(!String(decoding:namedBytes,as:UTF8.self).contains("generationMode")
+            && (try ClusterConfigurationStore(paths:named.paths).load(reference:named.reference)).configuration.generationMode==nil,
+            "naming the pipeline produced a second saved spelling of the same setup")
+        // A mode the worker's record does not advertise is refused when the setup is read.
+        let refused=try refusal{_ = try InstalledFixture.make(root:f.root.appendingPathComponent("unadvertised"),probe:f.probe,owner:f.owner,worker:f.worker,generationMode:"phase_split_v1")}
+        try require(refused.contains("phase_split_v1") && refused.contains("member peer-0") && refused.contains(f.probe.path) && refused.contains("which advertises: pipeline_v1"),
+            "refusal did not name the mode and the worker: \(refused)")
+        try rejected{_ = try InstalledFixture.make(root:f.root.appendingPathComponent("unknown-mode"),probe:f.probe,owner:f.owner,worker:f.worker,generationMode:"phase_split")}
+        // Advertised: both ranks get the argument, once, and the status says so.
+        let split=try InstalledFixture.make(root:f.root.appendingPathComponent("phase-split"),probe:f.probe,owner:f.owner,worker:f.worker,
+            generationMode:"phase_split_v1",advertisedModes:allModes)
+        let splitPrepared=try split.prepare(),splitPlan=splitPrepared.plan
+        try require(String(decoding:try Data(contentsOf:URL(fileURLWithPath:split.reference.configuration)),as:UTF8.self).contains("\"generationMode\":\"phase_split_v1\""),"selected mode was not saved")
+        let deadline=DispatchTime.now().uptimeNanoseconds+100_000_000_000
+        for rank in 0..<2 {
+            // The follower builds the same arguments from its own saved setup.
+            let object=try JSONSerialization.jsonObject(with:Data(contentsOf:split.root.appendingPathComponent("input.json"))) as! [String:Any]
+            var member=object;if rank==1 { member["memberID"]="peer-1";member["role"]="follower" }
+            let configuration=try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:member),capability:split.capability,capabilitySHA256:split.configuration.capabilitySHA256)
+            let rankPlan=try DistributedInstalledPlan(saved:.init(configuration:configuration,capability:split.capability),paths:split.paths)
+            let binding=try rankPlan.binding(epoch:UUID(),lease:UUID(),incarnation:UUID())
+            let arguments=try rankPlan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
+            // The same setup without the field: the pipeline's command line, to which the mode adds exactly one pair.
+            member.removeValue(forKey:"generationMode")
+            let pipeline=try DistributedInstalledPlan(saved:.init(configuration:ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:member),
+                capability:split.capability,capabilitySHA256:split.configuration.capabilitySHA256),capability:split.capability),paths:split.paths)
+            let plain=try pipeline.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
+            try require(arguments==plain+["--generation-mode","phase_split_v1"] && !plain.contains("--generation-mode"),
+                "rank \(rank) was not started with the pipeline's arguments plus the selected mode: \(arguments)")
+            try require(!arguments.contains("--qualification-switches"),"the owner passed a qualification switch")
+        }
+        let binding=try ClusterStatusBinding(configuration:splitPlan.configuration,capability:splitPlan.capability)
+        try require(binding.generationMode == .phaseSplit && binding.peers.allSatisfy{$0.supportedGenerationModes==allModes},"status binding omitted the mode or the workers' support")
+        try require(try ClusterStatusBinding(configuration:plan.configuration,capability:plan.capability).peers.allSatisfy{$0.supportedGenerationModes==[.pipeline]},
+            "a pipeline-only worker was reported as supporting more")
+        // A record that describes another build covers neither worker.
+        let other=ClusterConfiguration.Peer(id:"peer-9",rank:1,host:"peer-9.local",port:22,user:"fixture",ownerExecutable:"/o",workerExecutable:"/w",
+            modelDirectory:"/m",runtimeBinarySHA256:String(repeating:"9",count:64),jacclDevice:"rdma_en9")
+        try require(ClusterGenerationSelection.supportedModes(for:other,capability:split.capability).isEmpty,"a record was applied to a worker it does not describe")
+        let foreign=try refusal{try ClusterGenerationSelection.requireSupport(for:.pipeline,peers:[other],capability:split.capability)}
+        try require(foreign.contains("member peer-9") && foreign.contains("nothing in the saved record"),"foreign worker refusal: \(foreign)")
+    }
+    /// The model-dependent waits come from the selected registered model's
+    /// row. The 9B's are the figures the path has always used.
+    static func perModelBudgets(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
+        typealias Table=DistributedInstalledPairServingTable
+        let nine=DistributedInstalledTimeBudgets(startupAllowanceNanoseconds:90_000_000_000,firstTokenBaseMilliseconds:10_000,firstTokenMillisecondsPerPromptToken:1,
+            admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,stopMarginNanoseconds:15_000_000_000)
+        try require(Table.qwen35.pairServing == .open(nine),"the 9B's budgets changed, or the 9B is no longer open")
+        try require(prepared.plan.budgets==nine,"the plan did not take its budgets from the selected model's row")
+        try require(nine.pairTiming == .standard,"the 9B's pair timing differs from the process module's standing values")
+        let (session,_)=try session(f,prepared)
+        try require(try session.firstTokenBudgetPolicy() == DistributedFirstTokenBudgetPolicy(baseMilliseconds:10_000,millisecondsPerInputToken:1),"9B first-token budget changed")
+        try require(session.cooperativeStopAllowanceNanoseconds==75_000_000_000,"9B stop allowance changed")
+        // The mode does not enter the budgets: a phase-split setup of the same model gets the same row.
+        let split=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-split"),probe:f.probe,owner:f.owner,worker:f.worker,
+            generationMode:"phase_split_v1",advertisedModes:allModes).prepare()
+        try require(split.plan.budgets==nine,"the generation mode changed a time budget")
+        // The 27B's row is withheld; its groundwork figures follow from its own measurements.
+        guard case .withheld(let big)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not withheld") }
+        let slowestStageLoad=13.7,phaseSplitFactor=12.3/7.3,slowPrefillTokensPerSecond=300.0
+        try require(Double(big.startupAllowanceNanoseconds)/1e9 >= 5*slowestStageLoad*phaseSplitFactor
+            && big.startupAllowanceNanoseconds <= 150_000_000_000,"27B startup allowance is not five whole-model loads inside half a session")
+        try require(Double(big.firstTokenMillisecondsPerPromptToken) >= 1000/slowPrefillTokensPerSecond
+            && big.firstTokenMillisecondsPerPromptToken > nine.firstTokenMillisecondsPerPromptToken,"27B first-token rate is faster than its slower Mac alone")
+        try require(big.firstTokenBaseMilliseconds+8192*big.firstTokenMillisecondsPerPromptToken==42_768,"27B first-token budget at 8,192 tokens")
+        try require(nine.firstTokenBaseMilliseconds+8192*nine.firstTokenMillisecondsPerPromptToken==18_192,"9B first-token budget at 8,192 tokens")
+        try require(big.shutdownAcknowledgementNanoseconds==3*nine.shutdownAcknowledgementNanoseconds
+            && big.stopMarginNanoseconds>nine.stopMarginNanoseconds && big.admissionWaitNanoseconds==nine.admissionWaitNanoseconds,"27B release and admission waits")
+        // Every model the runtime registers has exactly one row.
+        let registered=ClusterRuntimeAdapter.qwen35Dense.registeredProfiles.map(\.runtimeModelID)
+        try require(Table.rows.map(\.runtimeModelID)==registered,"the table and the runtime's registered models differ")
+    }
+    /// The 27B is not open to pair serving. Nothing in the installed path can
+    /// start it: not a setup, not a mode, not its budgets.
+    static func pairServingStaysWithheld(_ f:InstalledFixture) throws {
+        typealias Table=DistributedInstalledPairServingTable
+        let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
+        func isPolicy(_ message:String)->Bool {
+            message.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && message.contains("registered_qwen38_27b") && message.contains("not open to serving on a two-Mac pair")
+                && message.contains("policy decision") && message.contains("generation mode or time budget")
+        }
+        for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
+            // Saving a setup is not serving it, and stays possible.
+            let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
+                generationMode:mode,advertisedModes:allModes,registered:model)
+            let prepare=try refusal{_ = try big.prepare()}
+            try require(isPolicy(prepare),"27B refusal does not say why: \(prepare)")
+            try require(isPolicy(try refusal{_ = try DistributedInstalledValidation.validate(reference:big.reference,paths:big.paths,deadline:DispatchTime.now().uptimeNanoseconds+5_000_000_000)}),
+                "the shared validation did not refuse the 27B as policy")
+            try require(isPolicy(try refusal{_ = try DistributedInstalledPlan(saved:.init(configuration:big.configuration,capability:big.capability),paths:big.paths)}),
+                "a plan exists for a model that is not served on a pair")
+        }
+        // The refusal is keyed on the runtime's model, whatever the public name; a model without a row is refused too.
+        let withheld=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")}
+        try require(withheld.contains("renamed/public-id") && withheld.contains("registered_qwen38_27b") && withheld.contains("policy decision"),"renamed 27B: \(withheld)")
+        let unknown=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_future",publicModelID:"future/model")}
+        try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
+    }
+    /// A worker whose description this build cannot read is a mixed install,
+    /// and the refusal says so instead of reporting a difference.
+    static func unreadableCapabilityRecord(_ f:InstalledFixture) throws {
+        let mixed=try InstalledFixture.make(root:f.root.appendingPathComponent("mixed-install"),probe:f.probe,owner:f.owner,worker:f.worker)
+        let described=mixed.root.appendingPathComponent("model/fixture-capability.json")
+        var record=try JSONSerialization.jsonObject(with:Data(contentsOf:described)) as! [String:Any]
+        record["supportedGenerationModes"]=["pipeline_v1","a_mode_from_a_newer_worker_v1"]
+        var bytes=try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys,.withoutEscapingSlashes]);bytes.append(10)
+        try bytes.write(to:described)
+        let message=try refusal{_ = try mixed.prepare()}
+        try require(message.contains("cannot read the capability record written by the installed worker") && message.contains(f.probe.path)
+            && message.contains("Unknown generation mode") && message.contains("not built from the same tree") && message.contains("cluster configure"),
+            "mixed install was not explained: \(message)")
+        record.removeValue(forKey:"supportedGenerationModes");record["aFieldFromANewerWorker"]=1
+        bytes=try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys,.withoutEscapingSlashes]);bytes.append(10)
+        try bytes.write(to:described)
+        try require(try refusal{_ = try mixed.prepare()}.contains("not built from the same tree"),"an unknown field was not explained")
+        // A readable record that differs is a changed worker, a different sentence.
+        record.removeValue(forKey:"aFieldFromANewerWorker");record["maxRequests"]=15
+        bytes=try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys,.withoutEscapingSlashes]);bytes.append(10)
+        try bytes.write(to:described)
+        let changed=try refusal{_ = try mixed.prepare()}
+        try require(changed.contains("differs from the saved capability") && !changed.contains("same tree"),"changed worker: \(changed)")
+    }
+    /// A phase-split session as its owner sees it: tokens reach rank 0 in
+    /// batches with a pause before each, and a client stop takes effect only
+    /// after rank 1's next batch boundary. The session stays ready throughout.
+    /// The stand-in workers imitate that cadence; they are not told the mode.
+    /// What depends on the mode here is the reported running mode; the rest
+    /// shows that the unchanged request path holds under the mode's timing.
+    static func phaseSplitSession(_ f:InstalledFixture) async throws {
+        let split=try InstalledFixture.make(root:f.root.appendingPathComponent("split-session"),probe:f.probe,owner:f.owner,worker:f.worker,
+            generationMode:"phase_split_v1",advertisedModes:allModes)
+        let(s,box)=try session(split,try split.prepare(),behavior:"workers:batched,clean-stop")
+        try require(s.diagnosticObservation.observedGenerationMode==nil,"a mode was reported as running before both ranks were ready")
+        try await s.start()
+        let observed=s.diagnosticObservation
+        try require(observed.observedGenerationMode == .phaseSplit && observed.binding.generationMode == .phaseSplit && observed.ready,"running mode not reported")
+        let tokens=TokenBox()
+        let lease=try s.reserve(.init(id:.init(1),promptTokens:[1,2,3],sampling:.init(temperature:0),maxTokens:24),
+            identity:s.expectedIdentity,profileID:s.profile.id,capacityLimit:1800,
+            deadlineContext:.init(generationDeadline:ContinuousClock.now.advanced(by:.seconds(8)),firstTokenDeadline:ContinuousClock.now.advanced(by:.seconds(2))))
+        let begin=ContinuousClock.now
+        // The client stops after the eleventh token, inside the fourth batch.
+        try lease.start{event in tokens.add(event,at:ContinuousClock.now-begin); return tokens.count<11}
+        await lease.waitUntilRetired();lease.releaseResources()
+        try require(tokens.values==Array(9..<20),"published tokens differ from the accepted ones: \(tokens.values)")
+        try require(tokens.finished && !tokens.failed,"a client stop at a batch boundary was not a clean finish")
+        // Batches of 1, 2, 4 and 8: the stand-in pauses 80 ms before tokens 1, 3 and 7.
+        let gaps=tokens.gapsMilliseconds
+        try require([1,3,7].allSatisfy{gaps[$0]>=60},"tokens did not arrive in batches: \(gaps)")
+        try require(tokens.finishMilliseconds-tokens.lastTokenMilliseconds>=200,"the stop took effect before the stand-in's batch boundary")
+        try require(s.readiness() != nil && s.status == .ready && box.snapshot.allSatisfy{!$0.nativeCleanupObserved},"a clean phase-split stop cost the session")
+        // The stand-in for rank 1 always reports a client stop, so the second request stops too.
+        let again=try request(s,2);try again.start{_ in false};await again.waitUntilRetired();again.releaseResources()
+        try require(s.readiness() != nil && s.admissionState?.admissionsRemaining==14,"the session was not reusable after a batched request")
+        try require(await s.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) == .released,"phase-split session did not release")
     }
     static func fileAndProbeChecks(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
         let deadline=DispatchTime.now().uptimeNanoseconds+2_000_000_000

@@ -66,6 +66,50 @@ import DarkbloomClusterProtocol
         for malformed in malformedSchedules {
             var bad = object; bad["prefillSchedule"] = malformed; try rejected { _ = try decode(bad) }
         }
+        // Generation mode. Omitted means the pipeline and leaves the bytes of
+        // an existing setup exactly as they were: every key is one the input has.
+        try require(configuration.generationMode == nil && configuration.selectedGenerationMode == .pipeline, "Omitted mode must be the pipeline")
+        var plain = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]); plain.append(10)
+        try require(canonical == plain, "A setup without a mode gained or lost bytes")
+        var namedPipeline = object; namedPipeline["generationMode"] = "pipeline_v1"
+        var canonicalPipeline = try decode(namedPipeline)
+        try require(canonicalPipeline.generationMode == .pipeline, "Explicit pipeline was not read")
+        canonicalPipeline.makeGenerationSelectionCanonical()
+        try require(try ClusterConfigurationCodec.encode(canonicalPipeline, capability: capability, capabilitySHA256: capabilityHash) == canonical,
+                    "Naming the pipeline made a second spelling of the same setup")
+        let malformedModes: [Any] = [NSNull(), true, 1, "pipeline", "phase_split", "phaseSplit", ["phase_split_v1"]]
+        for malformed in malformedModes {
+            var bad = object; bad["generationMode"] = malformed; try rejected { _ = try decode(bad) }
+        }
+        // A known mode this worker's record does not advertise: refused when the
+        // setup is read, naming the mode and the worker.
+        var selectedSplit = object; selectedSplit["generationMode"] = "phase_split_v1"
+        do { _ = try decode(selectedSplit); throw ClusterConfigurationError.invalid("unadvertised mode accepted") }
+        catch let ClusterConfigurationError.invalid(message) {
+            try require(message.contains("phase_split_v1") && message.contains("member peer-0") && message.contains("/Users/fixture/bin/darkbloom-worker")
+                && message.contains("which advertises: pipeline_v1"), "Refusal does not name the mode and the worker: \(message)")
+        }
+        var modesObject = try JSONSerialization.jsonObject(with: capabilityData) as! [String: Any]
+        modesObject["supportedGenerationModes"] = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1"]
+        var modesData = try JSONSerialization.data(withJSONObject: modesObject, options: [.sortedKeys, .withoutEscapingSlashes]); modesData.append(10)
+        let modesCapability = try ClusterCapabilityRecord.decode(modesData, writtenBy: "the fixture")
+        let modesHash = ClusterConfigurationCodec.sha256(modesData)
+        selectedSplit["capabilitySHA256"] = modesHash
+        let split = try ClusterConfigurationCodec.decode(bytes(selectedSplit), capability: modesCapability, capabilitySHA256: modesHash)
+        let splitBytes = try ClusterConfigurationCodec.encode(split, capability: modesCapability, capabilitySHA256: modesHash)
+        try require(split.selectedGenerationMode == .phaseSplit && String(decoding: splitBytes, as: UTF8.self).contains("\"generationMode\":\"phase_split_v1\"")
+            && (try ClusterConfigurationCodec.decode(splitBytes, capability: modesCapability, capabilitySHA256: modesHash)) == split, "Advertised mode lost")
+        // A record this build cannot read is explained as a mixed install.
+        for edit in [{ (o: inout [String: Any]) in o["supportedGenerationModes"] = ["pipeline_v1", "a_newer_mode_v1"] },
+                     { (o: inout [String: Any]) in o["aNewerField"] = 1 }] {
+            var newer = try JSONSerialization.jsonObject(with: capabilityData) as! [String: Any]; edit(&newer)
+            var newerData = try JSONSerialization.data(withJSONObject: newer, options: [.sortedKeys, .withoutEscapingSlashes]); newerData.append(10)
+            do { _ = try ClusterCapabilityRecord.decode(newerData, writtenBy: "the worker (capability.json)"); throw ClusterConfigurationError.invalid("unreadable record accepted") }
+            catch let ClusterConfigurationError.invalid(message) {
+                try require(message.contains("cannot read the capability record written by the worker (capability.json)")
+                    && message.contains("not built from the same tree") && message.contains("cluster configure"), "Mixed install not explained: \(message)")
+            }
+        }
         var selectedLookahead = object; selectedLookahead["prefillSchedule"] = "one_chunk_lookahead_v1"
         try rejected { _ = try decode(selectedLookahead) } // Known enum, unsupported adapter capability.
         var advertisedObject = try JSONSerialization.jsonObject(with: capabilityData) as! [String: Any]
@@ -163,6 +207,16 @@ import DarkbloomClusterProtocol
             && legacySaved.configuration.selectedPrefillSchedule == .serial,
             "Legacy saved setup was changed or rejected")
         try require(try Data(contentsOf: legacyURL) == canonical, "Legacy immutable record was rewritten")
+        // The same legacy record runs the pipeline, and a saved record that
+        // names the pipeline is a second spelling the store does not accept.
+        try require(legacySaved.configuration.generationMode == nil && legacySaved.configuration.selectedGenerationMode == .pipeline,
+            "Legacy saved setup does not run the pipeline")
+        let spelled = try ClusterConfigurationCodec.encode(decode(namedPipeline), capability: capability, capabilitySHA256: capabilityHash)
+        let spelledHash = ClusterConfigurationCodec.sha256(spelled), spelledURL = try paths.configurationURL(sha256: spelledHash)
+        try spelled.write(to: spelledURL)
+        try require(chmod(spelledURL.path, 0o600) == 0 && String(decoding: spelled, as: UTF8.self).contains("\"generationMode\":\"pipeline_v1\""),
+            "Cannot create the second-spelling fixture")
+        try rejected { _ = try store.load(reference: .init(configuration: spelledURL.path, sha256: spelledHash)) }
         let output = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result)) as! [String: Any]
         for field in ["distributedEnabled", "readinessVerified", "installationVerified", "modelFilesVerified", "remoteTrustVerified"] {
             try require(output[field] as? Bool == false, "Save result made an unverified claim")
@@ -198,6 +252,6 @@ import DarkbloomClusterProtocol
         try Data("tampered saved record".utf8).write(to: URL(fileURLWithPath: result.configuration))
         try rejected { _ = try store.load(reference: savedReference) }
         try require(try Data(contentsOf: pointer) == oldPointer, "Refused save replaced pointer")
-        print("Cluster configuration: 11 schema/store groups passed; fabricated metadata and local files only")
+        print("Cluster configuration: 12 schema/store groups passed; fabricated metadata and local files only")
     }
 }

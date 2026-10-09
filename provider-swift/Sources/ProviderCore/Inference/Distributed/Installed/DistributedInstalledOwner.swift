@@ -50,7 +50,7 @@ public enum DistributedInstalledOwner {
                 try prepared.requireUnchanged()
                 try DistributedInstalledFiles.check(deadline)
                 try beforeNativeLaunch()
-                let startup = min(deadline, DispatchTime.now().uptimeNanoseconds + DistributedInstalledPlan.startupAllowanceNanoseconds)
+                let startup = min(deadline, DispatchTime.now().uptimeNanoseconds + plan.budgets.startupAllowanceNanoseconds)
                 return try ClusterWorkerProcess(launch: .init(
                     executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                     arguments: plan.nativeArguments(binding: binding, deadline: deadline,

@@ -83,12 +83,13 @@ private func rotationObservation(_ session: LocalHostTestSession, configurationP
         "role": "leader", "configurationSHA256": String(repeating: String(configurationPin), count: 64), "capabilitySHA256": pin,
         "publicModelID": session.model.publicModelID, "runtimeModelID": session.expectedIdentity.modelID,
         "artifactSHA256": pin, "configurationModelSHA256": pin, "planSHA256": pin,
-        "prefillSchedule": "serial_v1", "maximumLifetimeSeconds": 10, "maximumRequests": 16,
+        "prefillSchedule": "serial_v1", "generationMode": "pipeline_v1", "maximumLifetimeSeconds": 10, "maximumRequests": 16,
         "peers": session.expectedIdentity.peers.enumerated().map { rank, peer in
-            ["id": peer.id, "rank": rank, "runtimeBinarySHA256": peer.buildSHA256] as [String: Any]
+            ["id": peer.id, "rank": rank, "runtimeBinarySHA256": peer.buildSHA256,
+             "supportedGenerationModes": ["pipeline_v1"]] as [String: Any]
         }]
     let binding = try JSONDecoder().decode(ClusterStatusBinding.self, from: JSONSerialization.data(withJSONObject: object))
     return .init(binding: binding, phase: "prepared", observedMembershipEpoch: nil, observedPrefillSchedule: nil,
-        ready: false, admission: nil, members: [], mtpEnabled: false, mtpOffReason: "fixture",
+        observedGenerationMode: nil, ready: false, admission: nil, members: [], mtpEnabled: false, mtpOffReason: "fixture",
         nativeBootstrap: .directNative, collectiveProgressLimitMilliseconds: 60_000)
 }

@@ -3,7 +3,9 @@
 # these scripts that has tools/lane.sh, or GEMMA4_TASK_ROOT when that is set
 # (the second Mac has no lane scripts, so it is set there). GEMMA4_MAC is "a"
 # on the Mac that owns the lanes and "b" on the peer.
-S="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve a symbolic link first: the scratch directory links these scripts, and
+# S must be this directory, not the one holding the link.
+S="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf %s "${BASH_SOURCE[0]}")")" && pwd)"
 if [ -n "${GEMMA4_TASK_ROOT:-}" ]; then T="$GEMMA4_TASK_ROOT"; else
   T="$S"; while [ "$T" != / ] && [ ! -x "$T/tools/lane.sh" ]; do T="$(dirname "$T")"; done
 fi

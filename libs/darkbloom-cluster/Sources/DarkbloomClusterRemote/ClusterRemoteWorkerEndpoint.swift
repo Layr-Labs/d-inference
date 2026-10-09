@@ -33,7 +33,6 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     /// side's own lifetime plus the allowance; no child is launched before
     /// the hello is written.
     public var ownerRetirementDeadlineUptimeNanoseconds: UInt64 { lock.withLock { ownerCeiling } }
-    private var ownerRetirementDeadline: UInt64 { ownerRetirementDeadlineUptimeNanoseconds }
     public let expectedIdentity: ClusterWorkerIdentity
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
@@ -235,7 +234,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                 }
                 if let incarnation = work.0 {
                     let frame: OwnerWire?
-                    var writeDeadline = min(ownerRetirementDeadline, now + 500_000_000)
+                    var writeDeadline = min(ownerRetirementDeadlineUptimeNanoseconds, now + 500_000_000)
                     if work.2 && !sentRelease {
                         frame = OwnerWire(kind: "release", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentRelease = true
                     } else if work.1 && !sentFence {
@@ -276,7 +275,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             let released = lock.withLock { ownerReleased }
             if !released { pipe.closeOutput(); try? input.fileHandleForWriting.close() }
             let entered = DispatchTime.now().uptimeNanoseconds
-            let patience = released ? entered + 2_000_000_000 : max(entered, ownerRetirementDeadline)
+            let patience = released ? entered + 2_000_000_000 : max(entered, ownerRetirementDeadlineUptimeNanoseconds)
             while process.isRunning && DispatchTime.now().uptimeNanoseconds < patience {
                 // The owner may emit its final diagnostic after the released
                 // ACK. Keep reading during the bounded exit grace. Unread owner
@@ -310,7 +309,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                 // Keep listening for the terminal and the release ACK until the
                 // owner's retirement ceiling: a child that ends itself at the
                 // lifetime is reported after it, not before.
-                if now >= ownerRetirementDeadline { throw ClusterWorkerOwnerError.deadline }
+                if now >= ownerRetirementDeadlineUptimeNanoseconds { throw ClusterWorkerOwnerError.deadline }
                 try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor)
                 if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
                 if lock.withLock({ ownerReleased }) { return }

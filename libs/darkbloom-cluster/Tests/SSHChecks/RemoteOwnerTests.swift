@@ -189,9 +189,11 @@ func directory() throws -> URL {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let begin = DispatchTime.now().uptimeNanoseconds
         let e = try endpoint(owner, worker, dir, behavior: "late-open+quick+deaf-term", lifetimeNanoseconds: 1_000_000_000, ownerAllowanceNanoseconds: 1_200_000_000)
-        try require(e.ownerRetirementDeadlineUptimeNanoseconds <= begin + 2_300_000_000, "Before a hello the ceiling is the leader's lifetime plus the allowance")
+        let leaderCeiling = e.localLifetimeDeadlineUptimeNanoseconds + 1_200_000_000
+        try require(e.ownerRetirementDeadlineUptimeNanoseconds == leaderCeiling, "Before a hello the ceiling is the leader's lifetime plus the allowance")
         try require(e.waitForNativeCleanup(until: begin + 8_000_000_000), "The endpoint gave up on an owner that was inside its own ceiling")
-        try require(e.ownerRetirementDeadlineUptimeNanoseconds >= begin + 3_600_000_000, "The ceiling did not move with the owner's later start")
+        // The owner slept 1.5 s before it read the open; its hello cannot have arrived sooner.
+        try require(e.ownerRetirementDeadlineUptimeNanoseconds >= leaderCeiling + 1_400_000_000, "The ceiling did not move with the owner's later start")
         try require(e.waitForOwnerReleased(deadline: begin + 10_000_000_000), "Release was lost for an owner that started late")
         try require(e.ownerTermination == .exited(0) && journalBytes(dir) == 0, "A late-starting owner was signalled or left a journal: \(String(describing: e.ownerTermination))")
     }

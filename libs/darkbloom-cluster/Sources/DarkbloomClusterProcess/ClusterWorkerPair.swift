@@ -29,8 +29,10 @@ public struct ClusterWorkerPairTiming: Sendable, Equatable {
 
     public static let standard = ClusterWorkerPairTiming(admissionWaitNanoseconds: 5_000_000_000,
                                                          shutdownAcknowledgementNanoseconds: 2_000_000_000)
-    var isBounded: Bool {
-        (1...60_000_000_000).contains(admissionWaitNanoseconds) && (1...60_000_000_000).contains(shutdownAcknowledgementNanoseconds)
+    /// No wait is absent and none outlasts a minute.
+    static let longestWaitNanoseconds: UInt64 = 60_000_000_000
+    var isWithinLimits: Bool {
+        [admissionWaitNanoseconds, shutdownAcknowledgementNanoseconds].allSatisfy { (1...Self.longestWaitNanoseconds).contains($0) }
     }
 }
 
@@ -75,7 +77,10 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
                 maximumRequests: Int = ClusterWorkerLimits.requestsPerEpoch,
                 timing: ClusterWorkerPairTiming = .standard) throws {
-        guard timing.isBounded, (1...ClusterWorkerLimits.requestsPerEpoch).contains(maximumRequests), workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
+        guard timing.isWithinLimits else {
+            throw ClusterWorkerOwnerError.invalid("Pair waits must be between one nanosecond and one minute")
+        }
+        guard (1...ClusterWorkerLimits.requestsPerEpoch).contains(maximumRequests), workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
               workers[0].expectedIdentity == workers[1].expectedIdentity,
               workers[0].expectedProfile == workers[1].expectedProfile,
               workers[0].executionPlanSHA256 == workers[1].executionPlanSHA256 else {

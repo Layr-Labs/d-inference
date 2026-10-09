@@ -121,10 +121,17 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         }
         try require(ClusterWorkerPairTiming.standard == .init(admissionWaitNanoseconds: seconds(5), shutdownAcknowledgementNanoseconds: seconds(2)),
             "The standing waits changed")
-        var refused = false
-        do { _ = try ClusterWorkerPair(workers: [], startupDeadline: now() + seconds(1), timing: .init(admissionWaitNanoseconds: 0, shutdownAcknowledgementNanoseconds: seconds(2))) }
-        catch { refused = true }
-        try require(refused, "An unbounded wait was accepted")
+        // A wait that is absent or longer than a minute is refused as such, before any rank is used.
+        for unbounded in [ClusterWorkerPairTiming(admissionWaitNanoseconds: 0, shutdownAcknowledgementNanoseconds: seconds(2)),
+                          ClusterWorkerPairTiming(admissionWaitNanoseconds: seconds(5), shutdownAcknowledgementNanoseconds: seconds(61))] {
+            let workers = try (0..<2).map { try child(executable, rank: $0, "normal", startup: 5, lifetime: 20, retirement: .standard) }
+            var message = ""
+            do { _ = try ClusterWorkerPair(workers: workers, startupDeadline: now() + seconds(5), timing: unbounded) }
+            catch ClusterWorkerOwnerError.invalid(let text) { message = text }
+            try require(message == "Pair waits must be between one nanosecond and one minute", "An out-of-range wait was not refused as one: \(message)")
+            for worker in workers { worker.fence() }
+            try require(workers.allSatisfy { $0.waitForExit(until: now() + seconds(5)) && $0.sentSignals.isEmpty }, "Stand-ins of a refused pair did not end")
+        }
 
         // A rank that takes 0.3 s to admit: refused under a 0.1 s wait, admitted under the standing one.
         let hasty = try pair(["slow-admit", "normal"], .init(admissionWaitNanoseconds: seconds(0.1), shutdownAcknowledgementNanoseconds: seconds(2)))

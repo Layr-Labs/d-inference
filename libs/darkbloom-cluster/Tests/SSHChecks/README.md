@@ -11,11 +11,11 @@ Remote sources with Swift 6 warnings as errors, using at most two compiler jobs.
 It launches local CPU stand-in owners/workers over pipes and local Unix sockets.
 It performs no SSH, network-peer, model, MLX or GPU execution.
 
-Eighteen owner groups run first. One of them runs three hundred complete
+Nineteen owner groups run first. One of them runs three hundred complete
 sessions, each with its owner started from a dispatch thread as the product
 starts it, and requires the endpoint to report the owner's exit in every one.
 Taking that exit from `Process.waitUntilExit()` lost it in roughly one such
-session in sixty, so a single session cannot show the fault. The last four
+session in sixty, so a single session cannot show the fault. The last five
 cover how an owner ends its child and what it leaves behind:
 
 - The device journal is written immediately before the child is launched. A
@@ -28,6 +28,11 @@ cover how an owner ends its child and what it leaves behind:
 - A child that ignores its stream lives to its lifetime and is signalled only
   after it. The owner keeps serving the terminal and the release handshake past
   the lifetime.
+- An owner starts its lifetime when it reads the open, after its own
+  preparation. The endpoint's patience follows that later clock, bounded by the
+  hello's arrival: an owner that prepared for a second and a half and then
+  retired a child that ignored its stream is neither abandoned nor signalled,
+  and its terminal, release and cleared journal still arrive.
 - Explicit recovery clears a journal whose owner is gone, and refuses while a
   process holds the device scope, while a running process carries the recorded
   membership epoch, or when the journal is not a record this build wrote.

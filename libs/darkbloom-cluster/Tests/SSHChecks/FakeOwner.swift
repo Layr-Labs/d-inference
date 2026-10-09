@@ -80,6 +80,11 @@ import DarkbloomClusterProcess
             }
         }
         defer { try? filter.fileHandleForWriting.close(); if options.contains("garbage") { filtered.wait() } }
+        // "late-open": this owner prepares for a second and a half before it
+        // reads the open, as an installed owner validates its setup first. Its
+        // lifetime, and its retirement ceiling, start that much later than the
+        // leader's.
+        if options.contains("late-open") { Thread.sleep(forTimeInterval: 1.5) }
         // "quick": short signal margins so a child that ignores everything is
         // retired within a test's patience. The order of the stages is unchanged.
         let policy: ClusterWorkerSignalPolicy = options.contains("quick")

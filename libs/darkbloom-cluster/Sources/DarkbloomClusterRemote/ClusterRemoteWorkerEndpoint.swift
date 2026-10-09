@@ -17,7 +17,23 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     /// release handshake, and slack for the connection.
     public static let standardOwnerRetirementAllowanceNanoseconds: UInt64 =
         ClusterWorkerSignalPolicy.standard.allowanceNanoseconds + ClusterWorkerOwnerService.handshakeAllowanceNanoseconds + 5_000_000_000
-    private let ownerRetirementDeadline: UInt64
+    private let ownerRetirementAllowance: UInt64
+    /// Guarded by `lock`; only ever moved later, once, when the hello arrives.
+    private var ownerCeiling: UInt64
+    private var offeredLifetime: UInt64 = 0
+    /// The latest moment this endpoint still listens to, and refrains from
+    /// signalling, an owner that has not acknowledged a release.
+    ///
+    /// An owner starts its lifetime when it reads the open, after its own
+    /// preparation, so its lifetime ends later than this side's by that delay
+    /// and its retirement ceiling with it. The delay is not known here, but it
+    /// is bounded by the hello: the owner had read the open before it sent
+    /// one, so its lifetime ends no later than the hello's arrival plus the
+    /// lifetime the open offered. Until a hello arrives the ceiling is this
+    /// side's own lifetime plus the allowance; no child is launched before
+    /// the hello is written.
+    public var ownerRetirementDeadlineUptimeNanoseconds: UInt64 { lock.withLock { ownerCeiling } }
+    private var ownerRetirementDeadline: UInt64 { ownerRetirementDeadlineUptimeNanoseconds }
     public let expectedIdentity: ClusterWorkerIdentity
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
@@ -125,7 +141,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
          ownerRetirementAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws {
         let ceiling = lifetimeDeadlineUptimeNanoseconds.addingReportingOverflow(ownerRetirementAllowanceNanoseconds)
         guard !ceiling.overflow, ownerRetirementAllowanceNanoseconds <= 300_000_000_000 else { throw OwnerWire.invalid("Invalid owner retirement allowance") }
-        ownerRetirementDeadline = ceiling.partialValue
+        ownerRetirementAllowance = ownerRetirementAllowanceNanoseconds
+        ownerCeiling = ceiling.partialValue
         self.nativeKeyRelay = nativeKeyRelay
         self.leaseID = nativeKeyRelay?.start.leaseID ?? UUID()
         guard bootstrapRelay == nil || nativeKeyRelay == nil else { throw OwnerWire.invalid("Ambiguous bootstrap relay") }
@@ -200,8 +217,10 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         do {
             let now = DispatchTime.now().uptimeNanoseconds
             guard now < localLifetimeDeadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
+            let offered = localLifetimeDeadlineUptimeNanoseconds - now
+            lock.withLock { offeredLifetime = offered }
             let open = OwnerWire(kind: "open", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
-                incarnation: nil, sequence: 0, clusterID: clusterID, remaining: localLifetimeDeadlineUptimeNanoseconds - now, bootstrapProfile: selectedBootstrapProfile,
+                incarnation: nil, sequence: 0, clusterID: clusterID, remaining: offered, bootstrapProfile: selectedBootstrapProfile,
                 nativeStart: nativeKeyRelay?.start.canonicalBytes,
                 nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(localLifetimeDeadlineUptimeNanoseconds, nativeKeyRelay!.deadlineUptimeNanoseconds))
             try pipe.write(open.encoded(commandStream: true), until: min(localLifetimeDeadlineUptimeNanoseconds, now + 5_000_000_000)); sequence += 1
@@ -311,6 +330,11 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                     guard inc == nativeKeyRelay.start.ownerIncarnation, launch == nativeKeyRelay.start.launchID else { throw OwnerWire.invalid("Committed native owner IDs differ") }
                 }
                 incarnation = inc; launchID = launch
+                // See ownerRetirementDeadlineUptimeNanoseconds: the owner's own
+                // lifetime, and so its ceiling, ends no later than this.
+                let latest = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(offeredLifetime)
+                let ceiling = latest.partialValue.addingReportingOverflow(ownerRetirementAllowance)
+                if !latest.overflow, !ceiling.overflow { ownerCeiling = max(ownerCeiling, ceiling.partialValue) }
             } else {
                 guard incarnation != nil, frame.incarnation == incarnation else { throw OwnerWire.invalid("Remote incarnation differs") }
                 switch frame.kind {

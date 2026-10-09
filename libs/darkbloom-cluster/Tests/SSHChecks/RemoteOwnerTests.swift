@@ -34,8 +34,9 @@ func directory() throws -> URL {
         try journalFollowsTheLaunch(owner, worker)
         try ownerKeepsItsCeilingAfterAReaderError(owner, worker)
         try lifetimeExpiryStillReleases(owner, worker)
+        try ownerCeilingFollowsTheOwnersClock(owner, worker)
         try recovery(worker)
-        print("remote-owner: 18 CPU groups passed")
+        print("remote-owner: 19 CPU groups passed")
     }
     static func codec() throws {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
@@ -174,6 +175,25 @@ func directory() throws -> URL {
         try require(DispatchTime.now().uptimeNanoseconds - begin >= 1_700_000_000, "Child was ended before its lifetime plus margin")
         try require(e.waitForOwnerReleased(deadline: begin + 10_000_000_000), "Release handshake after the lifetime was lost")
         try require(e.ownerTermination == .exited(0) && journalBytes(dir) == 0, "Lifetime expiry left an owner error or a journal")
+    }
+
+    /// An owner starts its lifetime when it reads the open, after its own
+    /// preparation, so it retires its child later than the leader's clock
+    /// alone suggests. The endpoint must not give up on, or signal, an owner
+    /// that is still inside its own ceiling: here the owner prepares for 1.5 s,
+    /// its child ignores its stream and is ended after the owner's lifetime,
+    /// and the terminal, the release and the cleared journal all still arrive.
+    /// Measured from the leader's lifetime alone the endpoint stopped listening
+    /// at 2.2 s and signalled the owner, with its child still running.
+    static func ownerCeilingFollowsTheOwnersClock(_ owner: URL, _ worker: String) throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let begin = DispatchTime.now().uptimeNanoseconds
+        let e = try endpoint(owner, worker, dir, behavior: "late-open+quick+deaf-term", lifetimeNanoseconds: 1_000_000_000, ownerAllowanceNanoseconds: 1_200_000_000)
+        try require(e.ownerRetirementDeadlineUptimeNanoseconds <= begin + 2_300_000_000, "Before a hello the ceiling is the leader's lifetime plus the allowance")
+        try require(e.waitForNativeCleanup(until: begin + 8_000_000_000), "The endpoint gave up on an owner that was inside its own ceiling")
+        try require(e.ownerRetirementDeadlineUptimeNanoseconds >= begin + 3_600_000_000, "The ceiling did not move with the owner's later start")
+        try require(e.waitForOwnerReleased(deadline: begin + 10_000_000_000), "Release was lost for an owner that started late")
+        try require(e.ownerTermination == .exited(0) && journalBytes(dir) == 0, "A late-starting owner was signalled or left a journal: \(String(describing: e.ownerTermination))")
     }
 
     /// Explicit recovery of a journal whose owner is gone.

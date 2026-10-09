@@ -41,7 +41,12 @@ echo "== $key pair on Mac $MAC, cut $cut $(date -u +%H:%M:%SZ) host: $(vm_line)"
 workers && { echo "a worker is already running; stopping here"; exit 20; }
 pair pair-$MAC-short-cut$cut-serial short $cut || { tail -12 $O/pair/pair-$MAC-short-cut$cut-serial.stderr; echo "PAIR SMOKE FAILED"; workers; exit 21; }
 compare $O/compare/$MAC-pair-vs-reference-short-cut$cut.txt $O/reference/ref-$MAC-short-cut$cut-run1.json $O/pair/pair-$MAC-short-cut$cut-serial.json --require exact
-if [ "${ONLY_SMOKE:-0}" = 1 ]; then workers || echo "no worker process left"; echo "== done $key pair smoke on Mac $MAC $(date -u +%H:%M:%SZ) host: $(vm_line)"; exit 0; fi
+if [ "${ONLY_SMOKE:-0}" = 1 ]; then
+  for n in ${SMOKE_MORE:-}; do
+    pair pair-$MAC-$n-cut$cut-serial $n $cut
+    compare $O/compare/$MAC-pair-vs-reference-$n-cut$cut.txt $O/reference/ref-$MAC-$n-cut$cut-run1.json $O/pair/pair-$MAC-$n-cut$cut-serial.json --require exact
+  done
+  workers || echo "no worker process left"; echo "== done $key pair smoke on Mac $MAC $(date -u +%H:%M:%SZ) host: $(vm_line)"; exit 0; fi
 for n in p4k p8k; do
   pair pair-$MAC-$n-cut$cut-serial $n $cut
   compare $O/compare/$MAC-pair-vs-reference-$n-cut$cut.txt $O/reference/ref-$MAC-$n-cut$cut-run1.json $O/pair/pair-$MAC-$n-cut$cut-serial.json --require exact

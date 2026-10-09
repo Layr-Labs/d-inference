@@ -30,8 +30,24 @@ gemma4_arithmetic() {
 # key -> catalog id
 catalog_id() { case "$1" in qat4) echo gemma-4-26b-qat-4bit ;; g26) echo gemma-4-26b ;; g26x8) echo gemma-4-26b-8bit ;; *) return 1 ;; esac; }
 local_model() { echo "$G/models/$(catalog_id "$1")"; }
-# Nothing that names this machine or its user reaches a log or a report.
-scrub() { sed -E -e "s#$HOME#~#g" -e "s#$(hostname -s)#<mac-$MAC>#g" -e "s#$USER#<user>#g" -e 's#([0-9]{1,3}\.){3}[0-9]{1,3}#<address>#g'; }
+# The peer, for the cross-cable step. tools/peer.env is the task's working
+# context; what it names never reaches a log, because scrub removes it.
+peer_setup() {
+  . "$T/tools/peer.env"
+  PEER=(ssh $PEER_CABLE_SSH_OPTS -o BatchMode=yes -o ConnectTimeout=10 "$PEER_CABLE_SSH")
+  PEER_HOME=$("${PEER[@]}" 'printf %s "$HOME"') && [ -n "$PEER_HOME" ] || return 1
+  PEER_HOST=$("${PEER[@]}" 'hostname -s') || return 1
+  PEER_ROOT="$PEER_HOME/$PEER_DIR"; PEER_BIN="$PEER_ROOT/bin/gemma4"; PEER_G="$PEER_ROOT/gemma4"
+  PEER_ENV="GEMMA4_TASK_ROOT=$PEER_ROOT GEMMA4_MAC=b"
+}
+peer_model() { echo "$PEER_G/models/$(catalog_id "$1")"; }
+# Nothing that names a machine or its user reaches a log or a report.
+scrub() {
+  sed -E -e "s#$HOME#~#g" -e "s#/Users/[^/ \"']+#/Users/<user>#g" -e "s#$(hostname -s)#<mac-$MAC>#g" \
+    -e "s#${PEER_HOST:-<no-peer-host>}#<mac-b>#g" -e "s#${PEER_CABLE_SSH:-<no-peer>}#<peer>#g" -e "s#$USER#<user>#g" \
+    -e 's#([0-9]{1,3}\.){3}[0-9]{1,3}#<address>#g'
+}
+wired_bytes() { vm_stat | awk -v p="$(sysctl -n hw.pagesize)" '/Pages wired down/ { gsub("[.]", "", $4); printf "%.0f", $4 * p }'; }
 vm_line() { vm_stat | awk -v p="$(sysctl -n hw.pagesize)" '/Pages free/ {gsub("[.]","",$3); f=$3*p} /File-backed pages/ {gsub("[.]","",$3); c=$3*p} /Pages wired down/ {gsub("[.]","",$4); w=$4*p} /Pages occupied by compressor/ {gsub("[.]","",$5); z=$5*p} END {printf "free %.1f GiB, file-backed %.1f GiB, wired %.1f GiB, compressor %.1f GiB", f/2^30, c/2^30, w/2^30, z/2^30}'; }
 # What the host memory gate says when it refuses or stops a load. A match means:
 # wait and try again later, count it, and do nothing to memory.

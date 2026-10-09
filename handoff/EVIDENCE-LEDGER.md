@@ -178,5 +178,6 @@ and `merged/after-link-durable-20261009T084434Z` in the task's evidence folder.
 | The worker package builds for macOS 26.2 and its tests pass | `965ed6c73` | 48 XCTest cases (14 worker, 34 qualification), 0 failures | — |
 | Every check runner passes | `98be2d03a`, then `85af189f8` | 17 runners: 11 library, 2 worker package, 4 provider (link: 2,072 expectations in 32 groups). `PrefillScheduleChecks` failed to compile at `98be2d03a` because the worker configuration now needs the model catalog; fixed in the runner by `85af189f8` and passing | The runner's stand-in runtime now carries the catalog's real pure sources |
 | The provider builds | `98be2d03a` | `swift build` rc 0 | Provider unit tests were not rerun here; CI runs them |
+| The branch after the stage-transfer slices | `63fd73706` | Library tests 37 in 8 suites; worker package 48 XCTest cases; 18 check runners (the new `StageTransferChecks` included) and the provider build pass. Logs: `merged/after-stage-transfer-20261009T090222Z` | Unit and check level only; no transfer has run |
 | The new `darkbloom` behaves on both Macs without privileges | `85af189f8` build | Mac A: link ready, `cluster --dry-run` opens no prompt. Mac B: link reports the recorded address missing and names the command; `cluster --dry-run` prints fourteen commands and changes nothing | Nothing behind the approval has run |
 

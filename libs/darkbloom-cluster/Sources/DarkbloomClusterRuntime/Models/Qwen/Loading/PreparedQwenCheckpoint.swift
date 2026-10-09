@@ -3,35 +3,21 @@ import MLX
 import MLXLMCommon
 import MLXNN
 
-/// Shared descriptor and quantization preparation. No checkpoint tensor payload
-/// is materialized here; callers validate their full or selected shapes/budgets
-/// before reading. Retaining this value keeps every verified file descriptor open.
-struct PreparedQwenCheckpoint {
-    let checkpoint: VerifiedCheckpoint
-    let canonical: [String: QwenCheckpointTensor]
+/// Shared descriptor and quantization preparation, for descriptors of any
+/// origin: verified files or a pinned inventory. No tensor payload is
+/// materialized here; callers validate their full or selected shapes/budgets
+/// before reading. Descriptors of verified files keep those files open for as
+/// long as something holds them, which after preparation is the payload source.
+struct PreparedQwenCheckpoint<Stored: QwenStoredTensorDescribing> {
+    let canonical: [String: QwenCheckpointTensor<Stored>]
     let sourceTensorCount: Int
     let expectedShapes: [String: [Int]]
 
-    init(model: any LanguageModel, directory: URL, originalConfiguration: Data,
-         policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil,
-         expectedAggregateSHA256: String? = nil, maximumPayloadBytes: Int? = nil,
-         expectedManifestSHA256: String? = nil) throws {
-        let checkpoint = try VerifiedCheckpoint(directory: directory, configurationData: originalConfiguration,
-            expectedAggregateSHA256: expectedAggregateSHA256,
-            maximumPayloadBytes: maximumPayloadBytes, expectedManifestSHA256: expectedManifestSHA256)
-        try self.init(model: model, checkpoint: checkpoint, originalConfiguration: originalConfiguration,
-            policy: policy, partitionKind: partitionKind)
-    }
-
-    /// Reuses a fully verified descriptor owner without a second full-file hash.
     /// This grants no materialization permission; the caller still validates its
     /// source inventory and its independently admitted loading/resource scope.
-    init(model: any LanguageModel, checkpoint: VerifiedCheckpoint, originalConfiguration: Data,
+    init(model: any LanguageModel, descriptors: [String: Stored],
          policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil) throws {
-        try checkpoint.requireConfiguration(originalConfiguration)
-        try checkpoint.checkUnchanged()
-        let descriptors = try tensorDescriptors(checkpoint: checkpoint)
-        var canonicalSources: [String: TensorDescriptor] = [:]
+        var canonicalSources: [String: Stored] = [:]
         // Only converted MLX Qwen layouts are supported. This makes per-tensor sanitize equivalent
         // to the ordinary whole-checkpoint sanitize; raw HF norm shifting is deliberately rejected.
         for (source, tensor) in descriptors {
@@ -73,9 +59,19 @@ struct PreparedQwenCheckpoint {
             let extra = Set(canonical.keys).subtracting(expected.keys).sorted()
             throw ProbeError("Direct loader model keys mismatch; missing=\(missing.prefix(8)), extra=\(extra.prefix(8))")
         }
-        self.checkpoint = checkpoint
         self.canonical = canonical
         self.sourceTensorCount = canonicalSources.count
         self.expectedShapes = expected
+    }
+}
+
+extension PreparedQwenCheckpoint where Stored == TensorDescriptor {
+    /// Reuses a fully verified descriptor owner without a second full-file hash.
+    init(model: any LanguageModel, checkpoint: VerifiedCheckpoint, originalConfiguration: Data,
+         policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil) throws {
+        try checkpoint.requireConfiguration(originalConfiguration)
+        try checkpoint.checkUnchanged()
+        try self.init(model: model, descriptors: tensorDescriptors(checkpoint: checkpoint),
+                      policy: policy, partitionKind: partitionKind)
     }
 }

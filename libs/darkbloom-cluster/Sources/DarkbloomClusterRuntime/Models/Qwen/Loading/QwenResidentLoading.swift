@@ -11,7 +11,7 @@ struct QwenResidentLoadedStage {
 
 /// A private ordered-load gate for this separately admitted resident cut4|8|12|16
 /// scope. The existing default-half-only StageLoadBudget policy is untouched.
-private final class QwenResidentLoadGate {
+private final class QwenResidentLoadGate: QwenLayerStageGate {
     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
     private var next = 0
     private var failed = false
@@ -61,12 +61,20 @@ private final class QwenResidentLoadGate {
     }
 }
 
-/// The sole internal model-returning seam; public facade stores this privately.
-/// All actual source, both compact inventories and allocation limits are checked
-/// before entering the unchanged selected-tensor materializer.
+/// The model-returning seam for this Mac's own artifact; the public facade
+/// stores the result privately. All actual source, both compact inventories and
+/// allocation limits are checked before entering the selected-tensor materializer.
 func loadQwenResidentStage(_ admission: QwenResidentAdmission,
                           check: () throws -> Void) throws -> QwenResidentLoadedStage {
-    let prepared = try prepareQwenResidentSource(admission, check: check)
+    let local = try prepareQwenResidentSource(admission, check: check)
+    return try loadQwenResidentStage(admission, source: local.metadata, payload: local.payload, check: check)
+}
+
+/// The same checks and the same materializer for any payload source: the
+/// metadata fixes every tensor before the payload supplies one.
+func loadQwenResidentStage(_ admission: QwenResidentAdmission, source prepared: QwenResidentSource,
+                          payload: some QwenLayerStagePayloadSource,
+                          check: () throws -> Void) throws -> QwenResidentLoadedStage {
     let plan = admission.plan, index = admission.configuration.rank
     let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
         try inspectOtherQwenLayerStage(source: prepared.source, stage: plan.stages[1 - index], check: check)
@@ -86,9 +94,9 @@ func loadQwenResidentStage(_ admission: QwenResidentAdmission,
             let selected = try QwenDenseStorageRequirement.derive(profile: prepared.profile,
                 plan: plan, role: index == 0 ? .stage0 : .stage1)
             let gate = try QwenResidentLoadGate(inventory: value.inventory)
-            let loaded = try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
+            let loaded = try materializeVerifiedQwenLayerStage(source: prepared.source, payload: payload, plan: plan,
                 stageIndex: index, model: value.model, inventory: value.inventory, commitment: commitment,
-                check: { try check(); try gate.observe(); try check() },
+                gate: gate, check: { try check(); try gate.observe(); try check() },
                 beforeTensor: { try check(); try gate.beforeRead($0); try check() })
             try gate.finish(); try check()
             return .init(loaded: loaded, profile: prepared.profile, selectedRequirement: selected)

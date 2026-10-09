@@ -14,36 +14,34 @@ func qwenLayerStageStorageCommitment(source: PreparedQwenLayerSource, originalCo
         throw ProbeError("Layer-stage inventories do not exactly conserve canonical source storage")
     }
     return QwenLayerStageStorageCommitment(schemaVersion: 1,
-        verifiedAggregateSHA256: source.prepared.checkpoint.aggregate,
+        verifiedAggregateSHA256: source.verifiedAggregateSHA256,
         sourceConfigurationSHA256: sha256(originalConfiguration), planSHA256: plan.fingerprint,
         sourceTensorManifestSHA256: source.sourceTensorManifestSHA256,
         sourceModelTensorBytes: source.sourceBytes,
         largestSourceTensorBytes: source.largestSourceBytes,
-        sourceTensorCount: source.prepared.sourceTensorCount,
+        sourceTensorCount: source.sourceTensorCount,
         canonicalTensorCount: source.tensors.count,
         bf16ConversionEnabled: source.bf16ConversionEnabled,
         stages: inventories.map(\.summary))
 }
 
 /// Materialize registered tensors with a mandatory resource check before each read.
-func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: QwenLayerStagePlan,
+/// The metadata says what each tensor must be; the payload source supplies it,
+/// and makes that check before it gives a tensor its storage.
+func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource,
+    payload: some QwenLayerStagePayloadSource, plan: QwenLayerStagePlan,
     stageIndex: Int, model: any LanguageModel, inventory: QwenStagePreparedInventory,
-    commitment: QwenLayerStageStorageCommitment, check: () throws -> Void,
+    commitment: QwenLayerStageStorageCommitment, gate: any QwenLayerStageGate, check: () throws -> Void,
     beforeTensor: (QwenStageActiveTensor) throws -> Void
 ) throws -> LoadedQwenLayerStage {
     // All source/stage geometry, policies, inventory ownership and caps
     // have now passed. This is the first checkpoint tensor materialization.
-    try source.prepared.checkpoint.checkUnchanged()
-    try source.prepared.checkpoint.bypassTensorPayloadCache()
+    try payload.begin(inventory.active, gate: gate)
     var loadedBytes = 0, largestHostBytes = 0
-    var readAccounting = CheckpointAlignedReadAccounting()
+    var readAccounting: CheckpointAlignedReadAccounting?
     for entry in inventory.active {
         try autoreleasepool {
-            guard let tensor = source.prepared.canonical[entry.sourceName] else {
-                throw ProbeError("Verified stage descriptor disappeared")
-            }
-            try beforeTensor(entry)
-            let read = try tensor.read(.all)
+            let read = try payload.tensor(entry, beforeRead: beforeTensor)
             let sanitized = model.sanitize(weights: [entry.localName: read.array])
             guard sanitized.count == 1, var array = sanitized[entry.localName],
                   array.shape == entry.shape,
@@ -71,10 +69,11 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: Qw
             try check()
             loadedBytes += read.copiedBytes
             largestHostBytes = max(largestHostBytes, read.largestHostTensorBytes)
-            guard let accounting = read.readAccounting, accounting.selectedBytes == read.copiedBytes else {
-                throw ProbeError("Selected-stage aligned read accounting is incomplete")
+            // A payload read from files accounts for every aligned read; others have none.
+            if let accounting = read.readAccounting {
+                if readAccounting == nil { readAccounting = .init() }
+                try readAccounting!.merge(accounting)
             }
-            try readAccounting.merge(accounting)
         }
     }
     model.freeze()
@@ -89,7 +88,8 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: Qw
         }
         return "\(entry.localName):\(value.dtype):\(value.shape)"
     }
-    guard loadedBytes == inventory.summary.loadedTensorBytes, readAccounting.selectedBytes == loadedBytes,
+    guard loadedBytes == inventory.summary.loadedTensorBytes,
+          readAccounting.map({ $0.selectedBytes == loadedBytes }) ?? true,
           largestHostBytes == (inventory.active.map(\.byteCount).max() ?? 0),
           modelParameterLayout(model) == inventory.summary.parameterLayoutSHA256,
           qwenStageLayout(activeLayout) == inventory.summary.activeParameterLayoutSHA256,
@@ -97,7 +97,7 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: Qw
           !kvTypes.isEmpty, kvTypes.allSatisfy({ $0 == source.activationDType }) else {
         throw ProbeError("Resident stage storage/layout or metadata activation dtype differs")
     }
-    try source.prepared.checkpoint.checkUnchanged()
+    try payload.finish()
     let summary = inventory.summary
     let receipt = QwenLayerStageLoadReceipt(schemaVersion: 1, stageIndex: stageIndex,
         verifiedAggregateSHA256: commitment.verifiedAggregateSHA256,
@@ -118,6 +118,6 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: Qw
         selectedPayloadReadAccounting: readAccounting)
     return LoadedQwenLayerStage(model: model, plan: plan, stageIndex: stageIndex,
         receipt: receipt, activationDType: source.activationDType, vocabularySize: source.vocabularySize)
-    // Verified descriptors close after this scope. Resident arrays do not
-    // retain them; source deletion/replacement must not affect a loaded stage.
+    // A file-backed payload's descriptors close when its owner lets go. Resident
+    // arrays do not retain them; source deletion/replacement must not affect a loaded stage.
 }

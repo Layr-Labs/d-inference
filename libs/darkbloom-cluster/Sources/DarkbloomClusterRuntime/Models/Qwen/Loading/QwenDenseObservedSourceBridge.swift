@@ -2,8 +2,8 @@ import Foundation
 import MLX
 import MLXNN
 
-func observedQwenDenseSource(_ prepared: PreparedQwenCheckpoint,
-                             model: Module) -> [QwenDenseObservedSourceTensor] {
+func observedQwenDenseSource<Stored>(_ prepared: PreparedQwenCheckpoint<Stored>,
+                                     model: Module) -> [QwenDenseObservedSourceTensor] {
     let parameters = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
     return prepared.canonical.keys.sorted().map { name in
         let tensor = prepared.canonical[name]!

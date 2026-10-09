@@ -5,9 +5,13 @@ import MLXLMCommon
 import MLXNN
 
 /// Pinned descriptors and scalar metadata only. In particular this value does
-/// not retain the full metadata model or any of its lazy parameter arrays.
+/// not retain the full metadata model, any of its lazy parameter arrays, or
+/// whatever the stage's payload will be read from.
 struct PreparedQwenLayerSource {
-    let prepared: PreparedQwenCheckpoint
+    /// The artifact aggregate the descriptors belong to.
+    let verifiedAggregateSHA256: String
+    /// Stored tensors the sanitizer retained, before any gate/up composition.
+    let sourceTensorCount: Int
     let tensors: [QwenStageSourceTensor]
     let mappings: [QwenLayerStagePlan.Parameter]
     let quantization: [String: BaseConfiguration.Quantization]
@@ -23,8 +27,8 @@ struct PreparedQwenLayerSource {
 
 /// Scalar-record assembly after registered descriptor validation. Does not
 /// read payload tensors or authorize loading.
-func finishPreparedQwenLayerSource(prepared: PreparedQwenCheckpoint, model: any LanguageModel,
-    plan: QwenLayerStagePlan, policy: BaseConfiguration.PerLayerQuantization,
+func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stored>,
+    verifiedAggregateSHA256: String, model: any LanguageModel, plan: QwenLayerStagePlan, policy: BaseConfiguration.PerLayerQuantization,
     convert: Bool, validated: QwenDenseSourceReadPlan, root: [String: Any],
     hidden: Int, vocabulary: Int, check: () throws -> Void
 ) throws -> PreparedQwenLayerSource {
@@ -34,7 +38,7 @@ func finishPreparedQwenLayerSource(prepared: PreparedQwenCheckpoint, model: any 
         let name = record.canonical.name, tensor = prepared.canonical[name]!
         let part = tensor.parts[0]
         tensors.append(QwenStageSourceTensor(sourceName: name, canonicalPartName: part.name,
-            file: part.tensor.file.path, offset: part.tensor.offset, shape: tensor.shape,
+            file: part.tensor.storedFile, offset: part.tensor.storedOffset, shape: tensor.shape,
             sourceDType: String(describing: tensor.dtype),
             loadedDType: record.loadedDType, byteCount: tensor.byteCount))
     }
@@ -59,8 +63,8 @@ func finishPreparedQwenLayerSource(prepared: PreparedQwenCheckpoint, model: any 
         + "model.embed_tokens"
     let activation = try qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
     try check()
-    try prepared.checkpoint.checkUnchanged()
-    return PreparedQwenLayerSource(prepared: prepared, tensors: tensors, mappings: mappings,
+    return PreparedQwenLayerSource(verifiedAggregateSHA256: verifiedAggregateSHA256,
+        sourceTensorCount: prepared.sourceTensorCount, tensors: tensors, mappings: mappings,
         quantization: resolved, activationDType: activation, hiddenSize: hidden,
         vocabularySize: vocabulary, bf16ConversionEnabled: convert, sourceBytes: bytes,
         largestSourceBytes: largest, sourceTensorManifestSHA256: sha256(try canonicalJSONData(tensors)),
@@ -89,7 +93,7 @@ func qwenStageLayout(_ entries: [String]) -> String {
     sha256(Data(entries.sorted().joined(separator: "\n").utf8))
 }
 
-private func qwenStageSourceActivation(_ prepared: PreparedQwenCheckpoint,
+private func qwenStageSourceActivation<Stored>(_ prepared: PreparedQwenCheckpoint<Stored>,
     path: String, convert: Bool
 ) throws -> DType {
     guard let weight = prepared.canonical[path + ".weight"] else {

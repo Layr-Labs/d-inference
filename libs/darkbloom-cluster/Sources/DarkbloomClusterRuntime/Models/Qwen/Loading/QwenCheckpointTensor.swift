@@ -1,10 +1,37 @@
 import Foundation
 import MLX
 
+/// A stored tensor's descriptor: its geometry and where its bytes are. A
+/// verified file descriptor can also read them; a pinned record cannot.
+protocol QwenStoredTensorDescribing {
+    var shape: [Int] { get }
+    var dtype: DType { get }
+    var byteCount: Int { get }
+    var storedFile: String { get }
+    /// Absolute offset, including the eight-byte safetensors prefix and header.
+    var storedOffset: Int { get }
+}
+
+extension QwenStageStoredDType {
+    var native: DType {
+        switch self {
+        case .uint32: .uint32
+        case .float32: .float32
+        case .float16: .float16
+        case .bfloat16: .bfloat16
+        }
+    }
+}
+
+extension TensorDescriptor: QwenStoredTensorDescribing {
+    var storedFile: String { file.path }
+    var storedOffset: Int { offset }
+}
+
 /// Canonical runtime tensor backed by one stored tensor, or by a gate/up pair.
 /// Fusion happens AFTER selecting local rows; no full expert bank is assembled.
-struct QwenCheckpointTensor {
-    struct Part { let name: String; let tensor: TensorDescriptor }
+struct QwenCheckpointTensor<Stored: QwenStoredTensorDescribing> {
+    struct Part { let name: String; let tensor: Stored }
     let parts: [Part]
     let shape: [Int]
     let dtype: DType
@@ -31,7 +58,9 @@ struct QwenCheckpointTensor {
     var sourceModulePaths: [String] {
         parts.map { $0.name.split(separator: ".").dropLast().joined(separator: ".") }
     }
+}
 
+extension QwenCheckpointTensor where Stored == TensorDescriptor {
     func read(_ selection: TensorSelection) throws
         -> (array: MLXArray, copiedBytes: Int, largestHostTensorBytes: Int,
             readAccounting: CheckpointAlignedReadAccounting?) {
@@ -77,9 +106,9 @@ struct QwenCheckpointTensor {
     }
 }
 
-func composeQwenCheckpointTensors(_ tensors: [String: TensorDescriptor]) throws
-    -> [String: QwenCheckpointTensor] {
-    var result: [String: QwenCheckpointTensor] = [:]
+func composeQwenCheckpointTensors<Stored: QwenStoredTensorDescribing>(_ tensors: [String: Stored]) throws
+    -> [String: QwenCheckpointTensor<Stored>] {
+    var result: [String: QwenCheckpointTensor<Stored>] = [:]
     var consumed = Set<String>()
     for name in tensors.keys.sorted() {
         guard !consumed.contains(name) else { continue }

@@ -9,17 +9,19 @@ struct WorkerConfiguration {
     let bootstrap: WorkerBootstrapConfiguration?
     /// Qualification only: selects the recording runtime and its sidecar directory.
     let evidenceDirectory: String?
+    /// When named by the owner, the worker ends itself here unless it is ready.
+    let startupDeadlineUptimeNanoseconds: UInt64?
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
-        let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory"]
+        let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds"]
         let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
         }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory and optional complete bootstrap triple")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline and optional complete bootstrap triple")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
@@ -53,6 +55,12 @@ struct WorkerConfiguration {
         guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
             throw WorkerFailure.invalid("Unknown worker prefill schedule")
         }
+        if let text = fields["--startup-deadline-uptime-nanoseconds"] {
+            guard let startup = UInt64(text), String(startup) == text, startup > now, startup <= deadline else {
+                throw WorkerFailure.invalid("Worker startup deadline must be canonical, in the future and within its lifetime")
+            }
+            startupDeadlineUptimeNanoseconds = startup
+        } else { startupDeadlineUptimeNanoseconds = nil }
         bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
         if let directory = fields["--evidence-directory"] {
             let components = directory.split(separator: "/", omittingEmptySubsequences: false)

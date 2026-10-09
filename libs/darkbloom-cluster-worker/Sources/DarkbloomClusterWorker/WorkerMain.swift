@@ -31,11 +31,18 @@ import Foundation
             // The alarm did not end a rank spinning in the RDMA completion poll
             // on real hardware; this thread is the last resort that is relied on.
             try ProcessDeadline.arm(uptimeNanoseconds: deadline, status: 124)
+            // Loading and the native bootstrap cannot be interrupted from
+            // inside. An owner that names a startup deadline gets a worker
+            // that is gone by then unless it became ready.
+            let startup = try configuration.startupDeadlineUptimeNanoseconds.map {
+                try WorkerStartupDeadline.arm(uptimeNanoseconds: $0)
+            }
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
             try pipes.check()
             let runtime: any WorkerRuntime = try configuration.evidenceDirectory.map {
                 try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0)
             } ?? NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap)
+            startup?.disarm()
             try WorkerCoordinator(runtime: runtime, pipes: pipes).run()
             alarm(0)
             Darwin.exit(0)

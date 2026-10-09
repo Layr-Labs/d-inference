@@ -169,6 +169,47 @@ final class WorkerTests: XCTestCase {
         XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--evidence-directory", "/a", "--evidence-directory", "/b"], now: 100))
     }
 
+    func testStartupDeadlineIsOptionalCanonicalAndWithinTheLifetime() throws {
+        let args = ["--model-dir", "/invented/model", "--rank", "0", "--stage-cut", "4",
+            "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",
+            "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+            "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+            "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+            "--deadline-uptime-nanoseconds", "300000000100"]
+        XCTAssertNil(try WorkerConfiguration(arguments: args, now: 100).startupDeadlineUptimeNanoseconds)
+        let named = try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", "90000000100"], now: 100)
+        XCTAssertEqual(named.startupDeadlineUptimeNanoseconds, 90_000_000_100)
+        XCTAssertEqual(try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", "300000000100"], now: 100)
+            .startupDeadlineUptimeNanoseconds, 300_000_000_100)
+        // In the past, beyond the lifetime, or not canonical.
+        for value in ["100", "99", "300000000101", "090000000100", "+90000000100", "9e10", ""] {
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", value], now: 100), value)
+        }
+        // It composes with the other optional arguments.
+        let all = try WorkerConfiguration(arguments: args + ["--prefill-schedule", "one_chunk_lookahead_v1",
+            "--startup-deadline-uptime-nanoseconds", "90000000100", "--evidence-directory", "/private/run/evidence"], now: 100)
+        XCTAssertEqual(all.startupDeadlineUptimeNanoseconds, 90_000_000_100)
+        XCTAssertEqual(all.load.prefillSchedule, .oneChunkLookahead)
+    }
+
+    func testStartupDeadlineFiresOnlyWhileArmed() throws {
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock(); private var count = 0
+            func set() { lock.lock(); count += 1; lock.unlock() }
+            var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+        }
+        let fired = Flag(), spared = Flag()
+        let begin = DispatchTime.now().uptimeNanoseconds
+        _ = try WorkerStartupDeadline.arm(uptimeNanoseconds: begin + 150_000_000) { fired.set() }
+        let ready = try WorkerStartupDeadline.arm(uptimeNanoseconds: begin + 150_000_000) { spared.set() }
+        XCTAssertEqual(fired.value, 0, "The deadline acted before its time")
+        ready.disarm()
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(fired.value, 1, "A worker that never became ready must be ended exactly once at its startup deadline")
+        XCTAssertEqual(spared.value, 0, "A worker that became ready must not be ended by its startup deadline")
+        XCTAssertEqual(WorkerStartupDeadline.exitStatus, 123)
+    }
+
     func testEvidenceSinkWritesEachRequestOncePrivatelyAndRefusesLinks() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("worker-evidence-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])

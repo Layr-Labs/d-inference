@@ -231,6 +231,28 @@ A blocked native collective cannot be interrupted from inside the process, so
 both products end on a fixed deadline (`--deadline-seconds` for the check, the
 load deadline for the worker).
 
+### How a worker ends
+
+A worker's owner does not signal it while it is within its own deadlines. The
+owner's fence is the end of the worker's command stream, and the worker ends
+itself:
+
+| What happens | What the worker does | Exit status |
+|---|---|---|
+| `shutdown` while idle | releases the model, publishes `shutdownComplete` | 0 |
+| command stream closes, or `cancel` | cancels its request, releases the model | 1 |
+| peer stops answering inside a collective | fails at the collective progress limit (`JACCL_PROGRESS_TIMEOUT_MS`), then releases the model | 1 |
+| not ready by `--startup-deadline-uptime-nanoseconds` | ends at once without releasing anything | 123 |
+| still running at `--deadline-uptime-nanoseconds` | ends at once without releasing anything | 124 |
+
+The last two are last resorts for a process that cannot be interrupted from
+inside: a rank that waits for a peer that never connects, or one that spins in a
+collective. `--startup-deadline-uptime-nanoseconds` is optional and must lie
+within the lifetime; an owner that passes it may treat that moment as final for
+a worker that never became ready. The owner sends SIGTERM only after the
+applicable deadline plus a margin, and SIGKILL only to a process that ignored
+both.
+
 ## Limits
 
 - The worker accepts only the registered Qwen3.5 9B artifact, greedy text,
@@ -239,7 +261,8 @@ load deadline for the worker).
   `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`) is parsed
   but refused: the pinned mlx-c does not carry the bootstrap bridge. Without
   those flags the worker uses the direct native bootstrap, where JACCL opens its
-  own coordinator socket.
+  own coordinator socket. The installed provider therefore starts the worker
+  without them and reports `nativeBootstrap: directNative` in `cluster status`.
 - `--prefill-schedule` accepts `serial_v1` and `one_chunk_lookahead_v1`;
   omission means serial. `--describe-runtime` advertises the supported
   schedules; capability metadata does not report readiness or available memory.

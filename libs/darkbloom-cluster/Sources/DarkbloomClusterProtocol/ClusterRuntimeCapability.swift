@@ -11,6 +11,9 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// alternating sliding-window and full attention with learned sinks, and
     /// routed MXFP4 experts held as the artifact stores them.
     case gptossLayerStage = "gpt-oss-layer-stage"
+    /// MiMo V2.6 text as a two-stage layer pipeline on the product's own text
+    /// class: full and sliding-window attention, routed MXFP4 experts.
+    case mimoV26LayerStage = "mimo-v26-layer-stage"
     public var version: Int { 1 }
     /// The adapter's original pair: the first row of `registeredProfiles`.
     public var runtimeModelID: String { registeredProfiles[0].runtimeModelID }
@@ -27,6 +30,8 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             [("registered_qwen35_35b_a3b", "registered_qwen35_35b_a3b_greedy_generation_v1")]
         case .gptossLayerStage:
             [("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1")]
+        case .mimoV26LayerStage:
+            [("registered_mimo_v26_flash_mopd", "registered_mimo_v26_flash_mopd_greedy_generation_v1")]
         }
     }
     /// The one arithmetic policy a capability of this adapter may name. An
@@ -37,6 +42,17 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         case .qwen35Dense: "qwen_cbv2_query128_bf16_tf32_default_v1"
         case .qwen35RoutedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
         case .gptossLayerStage: "gpt_oss_ordinary_cache_split_experts_bf16_defaults_v1"
+        case .mimoV26LayerStage: "mimo_v26_text_ordinary_cache_bf16_defaults_v1"
+        }
+    }
+    /// The longest session lifetime a capability of this adapter may declare:
+    /// load plus every request. An implementation ceiling per adapter, not a
+    /// promise: 300 seconds unless the adapter's models need more. A rank of
+    /// the MiMo adapter hashes 173 GB and reads up to 142 GB before it is ready.
+    public var maximumLifetimeSeconds: Int {
+        switch self {
+        case .mimoV26LayerStage: 1800
+        default: 300
         }
     }
     /// The adapter that registers a runtime model, or nil for an unregistered ID.

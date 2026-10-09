@@ -2413,6 +2413,8 @@ model lists; the advertised input is deliberately out of order.
 (`tokenizeFailure`) requires an error event before checking its message.
 These use the real batcher and adapter with scripted dependencies, not model inference.
 
+<a id="nested-sdk-test-products"></a>
+
 **Nested `libs/mlx-swift-lm` suites.** The paged-KV correctness gates live in
 the submodule, not in `provider-swift/`. Build them once, stage the metallib,
 then run each suite through [`scripts/run-nested-suite.sh`](../../scripts/run-nested-suite.sh),
@@ -2696,6 +2698,28 @@ unknown-value fallback and the separate benchmark override. These tests are not
 real-model quality or performance measurements.
 
 <a id="resident-prefix-benchmark-validation"></a>
+
+#### Complete benchmark output receipts
+
+BenchCBv2 performance-cell JSON includes optional `tokenReceipts` containing every emitted token ID, finish reason and prompt/completion counts in request order. Old cell JSON without this field still decodes. Compare these identities before drawing conclusions from timings; text snippets and equal aggregate scores cannot prove token parity. The [Gemma normalization controls](../reports/2026-10-09-gemma-normalization-controls.md) demonstrate the separate fidelity and measured-benefit gates. The runtime keeps native normalization after that experiment failed its preregistered benefit gate.
+
+Run the pure receipt regression suite through `scripts/run-nested-suite.sh`
+from the built SDK package:
+
+```bash
+../../scripts/run-nested-suite.sh BenchCBv2TokenReceiptTests --no-parallel
+```
+
+The campaign driver and its archive checks use no GPU in their Python tests:
+
+```bash
+python3 -B -m unittest discover -s scripts/benchmarks -p test_gemma_native_normalization_controls.py
+```
+
+Those tests replay the frozen 24-cell summary, check complete request identities,
+reject image-hash mismatches even under optimized Python, and verify lease-owner
+cleanup. They do not rerun the model campaign. The [build procedure](build.md#gemma-benchmark-evidence-images)
+keeps the native image and experimental candidate separate.
 
 #### Explicit Gemma verifier and projection controls
 

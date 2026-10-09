@@ -1,0 +1,11 @@
+{
+  "sdk_revision": "45fedc12e55075072faa16871992119ad5e77c27",
+  "provider_revision": "776d3eadd1a4c0bd26623ea994eab50648fb86f4",
+  "original_native_normalizer": true,
+  "benchmark_binary_sha256": "1251f40050a59d33eab9ab50506faa458bed79da3e6af1f56d17c02e2139a3c4",
+  "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+  "gemma_source_sha256": "bf04df8668622c4e164208e5ade09f087113961461e700dd5215b121f55bbef8",
+  "local_mlx_swift_revision": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+  "local_mlx_core_revision": "cb77239be31b1df7f5db895226af55c39fc4f093",
+  "token_receipts": true
+}

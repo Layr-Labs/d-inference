@@ -1,0 +1,11 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/.codex/worktrees/kv-gemma-normalization/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Benchmark complete token receipts" started.
+◇ Test summarizedCellsRetainRepeatedTokensAndRequestOrder() started.
+✔ Test summarizedCellsRetainRepeatedTokensAndRequestOrder() passed after 0.001 seconds.
+◇ Test historicalCellJSONWithoutTokenReceiptsStillDecodes() started.
+✔ Test historicalCellJSONWithoutTokenReceiptsStillDecodes() passed after 0.001 seconds.
+✔ Suite "Benchmark complete token receipts" passed after 0.001 seconds.
+✔ Test run with 2 tests in 1 suite passed after 0.001 seconds.

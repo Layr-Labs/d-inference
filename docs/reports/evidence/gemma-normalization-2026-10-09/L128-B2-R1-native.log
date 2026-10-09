@@ -1,0 +1,28 @@
+== BenchCBv2RealModel ==
+model: /Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local
+mode: perf  engines: ["v2"]  batches: [2]  steps: 64
+prompt lengths: [128]  paged nominalMaxSeqLen: 4096
+host: load avg (1m) 6.3 / 16 cores; no darkbloom process
+model loaded in 1.2s
+model class: Gemma4TextModel; layers: 30
+- optimization model: layer18(requested=true, effective=true, interval=18); weightedUnsort(requested=false, effective=false); safeR1GeometryEligible=true; safeR1(requested=false, effective=false, aot=true, nax=false)
+- optimization-run-json: {"model":{"layer18Effective":true,"layer18Interval":18,"layer18Requested":true,"safeR1GeometryEligible":true,"weightedUnsortEffective":false,"weightedUnsortRequested":false},"safeR1AOTAvailable":true,"safeR1Effective":false,"safeR1NAXAvailable":false,"safeR1Requested":false}
+vocabSize=262144
+
+## Performance (maxTokens 64)
+
+| engine | B | prompts (tok) | decode TPS/req | agg TPS | TTFT p50 (ms) | ITL p50 (ms) |
+|---|---|---|---|---|---|---|
+| v2 | 2 | 128/128 | 89.8 | 145.1 | 178 | 11.1 |
+
+- optimization provenance [perf/v2/B2]: layer18(requested=true, effective=true, interval=18); weightedUnsort(requested=false, effective=false); safeR1GeometryEligible=true; layer18ExpectedMinimumSubmissions=1, layer18Submissions=1, layer18Engaged=true; weightedCalls=0, weightedEngaged=false; safeR1(requested=false, effective=false, armed=true, aot=true, nax=false, exactGeometryExpected=false, attempts=0, hits=0, fallbacks=0, fallbackNAX=0, fallbackOuterRoute=0, fallbackQuantization=0, fallbackTopology=0, fallbackAssignmentCount=0, fallbackGeometry=0, fallbackMetallibUnavailable=0)
+- optimization-cell-json [perf/v2/B2]: {"aggregateTPS":145.10054060920393,"batch":2,"decodeTPSPerRequest":89.81613318096834,"engine":"v2","itlP50Ms":11.105000972747803,"optimizationProvenance":{"layer18Engaged":true,"layer18ExpectedMinimumSubmissions":1,"layer18IntermediateSubmissions":1,"model":{"layer18Effective":true,"layer18Interval":18,"layer18Requested":true,"safeR1GeometryEligible":true,"weightedUnsortEffective":false,"weightedUnsortRequested":false},"safeR1":{"aotAvailable":true,"armed":true,"attempts":0,"effective":false,"exactGeometryExpected":false,"fallbackAssignmentCount":0,"fallbackGeometry":0,"fallbackMetallibUnavailable":0,"fallbackNAX":0,"fallbackOuterRoute":0,"fallbackQuantization":0,"fallbackTopology":0,"fallbacks":0,"hits":0,"naxAvailable":false,"requested":false},"weightedUnsortEffectiveCalls":0,"weightedUnsortEngaged":false},"perRequest":["    req 0: prompt=128 tokens=64 ttft=178ms decodeTPS=89.8 finish=length","    req 1: prompt=128 tokens=64 ttft=178ms decodeTPS=89.8 finish=length"],"promptMix":[128,128],"tokenReceipts":[{"completionTokens":64,"finishReason":"length","promptTokens":128,"tokenIDs":[180050,831,100,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771,236771]},{"completionTokens":64,"finishReason":"length","promptTokens":128,"tokenIDs":[236743,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770,236761,236770]}],"ttftP50Ms":178.30753326416016}
+
+Per-request detail:
+    [mem after v2 B=2] gpuActive=13.48 GiB gpuPeak=14.02 GiB
+  v2 B=2:
+    req 0: prompt=128 tokens=64 ttft=178ms decodeTPS=89.8 finish=length
+    req 1: prompt=128 tokens=64 ttft=178ms decodeTPS=89.8 finish=length
+report written to docs/reports/evidence/gemma-normalization-2026-10-09/L128-B2-R1-native.md
+
+DONE

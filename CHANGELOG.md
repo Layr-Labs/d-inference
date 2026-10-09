@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — complete model benchmark receipts
+
+- Preserve full generated token IDs, finish reasons and token counts in benchmark cell JSON for reviewing model arithmetic experiments.
+
 ## Unreleased — compact contiguous sliding-window KV
 
 - Allocate fresh Gemma 4 and GPT-OSS contiguous sliding-window cache backing as tokens arrive, growing to each model's existing window. Preserve exact K/V contents, absolute positions, rollback and checkpoint compatibility; MiMo keeps its existing allocation path.

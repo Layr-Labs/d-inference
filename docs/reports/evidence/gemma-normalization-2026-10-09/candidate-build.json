@@ -1,0 +1,10 @@
+{
+  "sdk_revision": "f4fb61cefc202670a9468874a4d6cc96d6074f66",
+  "provider_revision": "776d3eadd1a4c0bd26623ea994eab50648fb86f4",
+  "original_native_normalizer": false,
+  "benchmark_binary_sha256": "de2ba746424d8a44f5d739a3fbf2ac71de9dcb30d71759d5d948a4b1dcc831a8",
+  "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+  "gemma_source_sha256": "f63d610b3a81657988f508d30b84cbf5db743ea8cd822eb1351f534354087ff8",
+  "normalization_helper_sha256": "3ca83d484fb1d5d06071701920dae8af508f5df15121bf0de95c716852121906",
+  "token_receipts": true
+}

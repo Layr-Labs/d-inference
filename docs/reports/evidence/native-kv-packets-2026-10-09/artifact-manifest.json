@@ -1,0 +1,170 @@
+{
+  "probe-build.json": {
+    "bytes": 516,
+    "sha256": "0ed29a5ec1d900d5ff43b784d4f7c46f41ccafb0b5b727583928efcf9c7ea615"
+  },
+  "gemma/prefill-L0-K.bin": {
+    "bytes": 131072,
+    "sha256": "dd2df63d7cfdd4423645f548eb6b0590cb5d08af036a6d4e019da993a172173f"
+  },
+  "gemma/decode-L5-K.bin": {
+    "bytes": 67584,
+    "sha256": "bd2fa64baf6ffc54a13aade0cf9f8cdc1028277edd11c5a4e4d85c2243647fb8"
+  },
+  "gemma/L5-Gamma.bin": {
+    "bytes": 1024,
+    "sha256": "eba8fbb183b3b06b203ba93d21b3120f141b90f185755b550835573960c47f3f"
+  },
+  "gemma/decode-L29-V.bin": {
+    "bytes": 67584,
+    "sha256": "610a3bbafb7dddf8f52420f567a3f018473fc448f3efa83e03a9636a00e69190"
+  },
+  "gemma/decode-L23-K.bin": {
+    "bytes": 67584,
+    "sha256": "626e2b248fe54a1951f7c39f9d04ac7793974c844f0503edf0b3cab27c9af726"
+  },
+  "gemma/prefill-L29-V.bin": {
+    "bytes": 65536,
+    "sha256": "9daa0fa35a23842f4413120f8803725007fda5419e44b7f1468470ba42b96775"
+  },
+  "gemma/prefill-L23-K.bin": {
+    "bytes": 65536,
+    "sha256": "e356f926a36e64ca5579409ebfbd7ba25545787c4fc9fe33a8780bee598305df"
+  },
+  "gemma/prefill-L11-V.bin": {
+    "bytes": 65536,
+    "sha256": "3cdd05f9fad4dffe970db1af2d99645c3288d1bed34a56b188e937af11fd84b3"
+  },
+  "gemma/decode-L17-V.bin": {
+    "bytes": 67584,
+    "sha256": "90632c6ab153dac58c6c41b744761c8c569030aa143a1efcb57e94212d84a9f7"
+  },
+  "gemma/decode-L0-K.bin": {
+    "bytes": 135168,
+    "sha256": "5ac345458570401f9128c4c1f938459ec1df72a0b26e017458ac8508d4851b8e"
+  },
+  "gemma/prefill-L5-K.bin": {
+    "bytes": 65536,
+    "sha256": "893922e60a0c2cebce06b9f9c9c95eee277d1e5f0e2c4241a291656476dae02a"
+  },
+  "gemma/prefill-L17-V.bin": {
+    "bytes": 65536,
+    "sha256": "5c91c29ea148a87190dbfae6b22baf5d181dd103b09795c2da18ea9a91bae670"
+  },
+  "gemma/decode-L11-V.bin": {
+    "bytes": 67584,
+    "sha256": "593c674513f8bd4200dc96c25a3f03f42d59989c500862949e681d81da4d1a27"
+  },
+  "gemma/L11-Gamma.bin": {
+    "bytes": 1024,
+    "sha256": "406c29349252f80d0bc1fe264f573f9544c9064101d14ae08fd5c665a7e30f89"
+  },
+  "gemma/prefill-L11-K.bin": {
+    "bytes": 65536,
+    "sha256": "946398ee05f11049fbab062d99d48666e91df298650093420ca9ce8981b21cdc"
+  },
+  "gemma/decode-L17-K.bin": {
+    "bytes": 67584,
+    "sha256": "5817d1aaf8fa67c08eb447d339bf85f18e32a6846efd1a0e9f6894cdde20f7b6"
+  },
+  "gemma/L29-Gamma.bin": {
+    "bytes": 1024,
+    "sha256": "6f4fe1277551d71b7aeaaca8c1cd4f9b3cf1312ea5dca30cf17c5ec3ee82b85c"
+  },
+  "gemma/prefill-L17-K.bin": {
+    "bytes": 65536,
+    "sha256": "45698c5969297f26dcae87738839d765406531f671714f6be9c1cc604a68acdf"
+  },
+  "gemma/decode-L11-K.bin": {
+    "bytes": 67584,
+    "sha256": "076d31374d03d1e6040597a279d38bbcec7907c7787fd8eac086fba3a92d2638"
+  },
+  "gemma/L17-Gamma.bin": {
+    "bytes": 1024,
+    "sha256": "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd"
+  },
+  "gemma/decode-L0-V.bin": {
+    "bytes": 135168,
+    "sha256": "416ea658bf98d31d85bc023740200cb63dd283564dec678e03c9f216076e1aed"
+  },
+  "gemma/prefill-L5-V.bin": {
+    "bytes": 65536,
+    "sha256": "4be3811b35485bd857aa5add6eafddb29aa6071de1c904bc4f640a7ac74eb5ba"
+  },
+  "gemma/decode-L29-K.bin": {
+    "bytes": 67584,
+    "sha256": "8a77c3b7d0191cb6fb00193ef505b6636c11501ca6114d7ccb56d530deb785b9"
+  },
+  "gemma/model-manifest.json": {
+    "bytes": 2331,
+    "sha256": "e54060e2449ca3d6c2d009c8fc81e94a0a7b15e69dc708217c3111636144d0c0"
+  },
+  "gemma/decode-L23-V.bin": {
+    "bytes": 67584,
+    "sha256": "0a6c6a50b431d1786919d88d578c71a052833853de49e90af1016b7e50b4a22b"
+  },
+  "gemma/prefill-L0-V.bin": {
+    "bytes": 131072,
+    "sha256": "c954784fb0984aa1b847f35679859f79ea67019b20f1eec8f97017568ded1035"
+  },
+  "gemma/decode-L5-V.bin": {
+    "bytes": 67584,
+    "sha256": "d27f3b0cc7e6f2e0d737913f64edc82169fb46f34da2ca163ada67d48953e1c6"
+  },
+  "gemma/L23-Gamma.bin": {
+    "bytes": 1024,
+    "sha256": "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd"
+  },
+  "gemma/prefill-L29-K.bin": {
+    "bytes": 65536,
+    "sha256": "c973b10e29cbac4d9df219e7b530ce4c60bfa3f6b796de78797bade2c68c9e73"
+  },
+  "gemma/prefill-L23-V.bin": {
+    "bytes": 65536,
+    "sha256": "9ad17b4d3c05842b8ba70df0bfce5f403eae6d12489b22d8712592bf9e933593"
+  },
+  "gemma/receipt.json": {
+    "bytes": 48201,
+    "sha256": "83e55f311dc3f128d0e1538f0a6ae30a1673b347ed8554a92d0aae247fea1433"
+  },
+  "gpt/prefill-L0-K.bin": {
+    "bytes": 32768,
+    "sha256": "6f858816a88da3838aa95197c56e7b952eb38ee1a53cef44e9557ebf63993562"
+  },
+  "gpt/decode-L1-K.bin": {
+    "bytes": 67584,
+    "sha256": "16c2d6033e09c56e0efd64d2d38ac3b3fced640a6282057894349a5cc7776605"
+  },
+  "gpt/prefill-L1-K.bin": {
+    "bytes": 65536,
+    "sha256": "56b07289a966bd97d30dfbbca59ba2a181eccfc33fb6a50426ab7aaea8e4ddb5"
+  },
+  "gpt/decode-L0-K.bin": {
+    "bytes": 33792,
+    "sha256": "54f354e125356bc80d8ac79a1f74b1cc6dc39d1129638b6f3cebd0b6b26afd5d"
+  },
+  "gpt/prefill-L1-V.bin": {
+    "bytes": 65536,
+    "sha256": "627eead1f60a6520161d270221bca6279c33f4f78318757f6f11c53ead56a807"
+  },
+  "gpt/decode-L0-V.bin": {
+    "bytes": 33792,
+    "sha256": "52caa96cd0befaa1f1bc309250cdd584cce557359c6ac10e9485e50cc5698607"
+  },
+  "gpt/model-manifest.json": {
+    "bytes": 2312,
+    "sha256": "cd90542be64059b1dc82a7c45eb48d70d13de333ad4ca70cb0da394e1101348e"
+  },
+  "gpt/prefill-L0-V.bin": {
+    "bytes": 32768,
+    "sha256": "0c79ad23f61872caffcb42a66d532cdf059f4f3f88b23185071d933109a0c2ab"
+  },
+  "gpt/decode-L1-V.bin": {
+    "bytes": 67584,
+    "sha256": "da167b29fe36c1eed4b54cc0985282099ba0cb67be56d7b9375d726649b03906"
+  },
+  "gpt/receipt.json": {
+    "bytes": 35386,
+    "sha256": "861f2b3bcebda89e16f342a45f3a174f139fc5e4eae7e1294fab31bbbbfe3582"
+  }
+}

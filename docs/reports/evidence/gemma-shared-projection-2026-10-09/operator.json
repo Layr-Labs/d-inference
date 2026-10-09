@@ -1,0 +1,67 @@
+{
+  "scope": "Gemma 4 26B global-layer operator fixture, synthetic projections",
+  "model_quality_qualified": false,
+  "production_default_changed": false,
+  "mlx_version": "0.31.2",
+  "device": {
+    "device_name": "Apple M4 Max",
+    "max_recommended_working_set_size": 115448725504,
+    "memory_size": 137438953472,
+    "architecture": "applegpu_g16s",
+    "max_buffer_length": 86586540032,
+    "resource_limit": 499000
+  },
+  "k_norm_sha256": "eba8fbb183b3b06b203ba93d21b3120f141b90f185755b550835573960c47f3f",
+  "dtype": "bfloat16",
+  "rows": [
+    {
+      "length": 1024,
+      "tile": 512,
+      "raw_projection_bytes": 2097152,
+      "native_kv_bytes": 4194304,
+      "transform_tile_bit_equal": true,
+      "v_times_norm_changed_key_elements": 0,
+      "shared_normalization_bit_equal": true,
+      "native_normalization_ms": 0.30174999847076833,
+      "shared_normalization_ms": 0.2809579891618341,
+      "native_attention_ms": 0.268208998022601,
+      "bounded_raw_attention_ms": 1.0258749825879931,
+      "slowdown": 3.8249088962389934,
+      "attention_max_abs_error": 0.002507835626602173,
+      "attention_rms_error": 0.0004708452324848622
+    },
+    {
+      "length": 8192,
+      "tile": 512,
+      "raw_projection_bytes": 16777216,
+      "native_kv_bytes": 33554432,
+      "transform_tile_bit_equal": true,
+      "v_times_norm_changed_key_elements": 0,
+      "shared_normalization_bit_equal": true,
+      "native_normalization_ms": 0.7002920028753579,
+      "shared_normalization_ms": 0.6977079901844263,
+      "native_attention_ms": 0.8514159999322146,
+      "bounded_raw_attention_ms": 7.158375025028363,
+      "slowdown": 8.407611585403934,
+      "attention_max_abs_error": 0.001334547996520996,
+      "attention_rms_error": 0.0002511611091904342
+    },
+    {
+      "length": 32768,
+      "tile": 512,
+      "raw_projection_bytes": 67108864,
+      "native_kv_bytes": 134217728,
+      "transform_tile_bit_equal": true,
+      "v_times_norm_changed_key_elements": 0,
+      "shared_normalization_bit_equal": true,
+      "native_normalization_ms": 2.038792008534074,
+      "shared_normalization_ms": 1.9168329890817404,
+      "native_attention_ms": 1.146334019722417,
+      "bounded_raw_attention_ms": 20.108040975173935,
+      "slowdown": 17.541170923325705,
+      "attention_max_abs_error": 0.000865936279296875,
+      "attention_rms_error": 0.0001518462086096406
+    }
+  ],
+  "gate": "do not promote: bounded reconstruction requires a fused kernel and model validation"
+}

@@ -76,6 +76,11 @@ func buildProviderStartSpec(coordinatorURL, root string, cfg ProviderConfig, ind
 		"TMPDIR":                       filepath.Join(root, "tmp"),
 	}
 	if precision, supplied := os.LookupEnv(EnvKVQuantization); supplied {
+		if ResolveKVBackend(cfg.KVBackend) == KVBackendContiguous {
+			// This fixture is a native control. Its TOML pin must also win
+			// against a supplied environment override, which precedes TOML.
+			precision = "native"
+		}
 		env[EnvKVQuantization] = precision
 	}
 	if cfg.AuthTokenPath != "" {

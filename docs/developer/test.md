@@ -3481,8 +3481,12 @@ models. Native auto must report a concrete usable backend and records its
 actual fallback. Explicit requested backends and expected-backend overrides
 retain exact assertions. The public KV precision environment key is forwarded
 in the provider launch specification so local and owned-host processes use the
-same treatment. Warmup still requires idle loaded slots, positive token budgets
-and no pending load; expected targets must remain resident before measurement.
+same treatment. An explicitly resolved contiguous test control overrides an
+ambient precision value with `native`, matching its TOML pin; paged and auto
+controls preserve the supplied precision value. This test-only control does
+not change the default paged serving path. Warmup still requires idle loaded
+slots, positive token budgets and no pending load; expected targets must remain
+resident before measurement.
 Gate G2 pins both backend arms and secondary probes to native KV, preserving
 its backend-isolation/token-exactness contract and independent dtype controls.
 

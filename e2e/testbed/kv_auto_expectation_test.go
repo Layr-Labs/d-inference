@@ -263,3 +263,44 @@ func TestProviderStartSpecPreservesContiguousNativePinWithoutOverride(t *testing
 		t.Fatal("contiguous fixture lost its native precision pin")
 	}
 }
+
+func TestProviderStartSpecContiguousControlOverridesAmbientPrecision(t *testing.T) {
+	for _, precision := range []string{"balanced", "k8v4", "k8v8", "native", "balnced", ""} {
+		for _, backend := range []string{KVBackendContiguous, ""} {
+			t.Run(precision+"/"+backend, func(t *testing.T) {
+				t.Setenv(EnvKVQuantization, precision)
+				t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", KVBackendContiguous)
+				spec, err := buildProviderStartSpec("http://127.0.0.1:8123", t.TempDir(),
+					ProviderConfig{ModelID: "model", KVBackend: backend}, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if spec.Environment[EnvKVQuantization] != "native" ||
+					!strings.Contains(spec.Config, `engine_v2_kv_backend = "contiguous"`) ||
+					!strings.Contains(spec.Config, `engine_v2_kv_quantization = "native"`) {
+					t.Fatalf("contiguous control inherited ambient precision %q: %+v", precision, spec)
+				}
+			})
+		}
+	}
+}
+
+func TestProviderStartSpecExplicitPagedAndAutoPreservePrecisionOverContiguousEnvironment(t *testing.T) {
+	for _, backend := range []string{KVBackendPaged, KVBackendAuto} {
+		for _, precision := range []string{"balanced", "k8v4", "k8v8", "native", "balnced"} {
+			t.Run(backend+"/"+precision, func(t *testing.T) {
+				t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", KVBackendContiguous)
+				t.Setenv(EnvKVQuantization, precision)
+				spec, err := buildProviderStartSpec("http://127.0.0.1:8123", t.TempDir(),
+					ProviderConfig{ModelID: "model", KVBackend: backend}, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if spec.Environment[EnvKVQuantization] != precision ||
+					!strings.Contains(spec.Config, `engine_v2_kv_backend = "`+backend+`"`) {
+					t.Fatalf("explicit %s lost precision/backend precedence: %+v", backend, spec)
+				}
+			})
+		}
+	}
+}

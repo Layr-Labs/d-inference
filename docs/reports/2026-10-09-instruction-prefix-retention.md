@@ -73,6 +73,75 @@ diagnosis, not proof that lost instructions caused the failure. Prefix
 protection also changes the older chunk partition and budget; even a behavior
 change cannot isolate semantic instruction loss as the sole cause.
 
+## Fixed candidate outcome
+
+The fixed candidate **does not rescue the original regression**. Native
+answers correctly in all six recovery observations at 164 tokens. The
+128-token candidate reaches the 256-token cap in all six, without the final
+answer. Each arm is internally token-exact across the instrumented main and
+five uninstrumented observations. The original campaign is unchanged.
+
+On the twelve new cases, native and candidate each pass ten. Both fail
+`4k-arithmetic-b` and `8k-arithmetic-d` by reaching the same 256-token cap;
+the candidate introduces no additional oracle failure on this small set.
+Only four of twelve complete generated token arrays are equal. Equal answer
+counts therefore do not mean equal model behavior or broad retention quality.
+
+| New case | Native tokens | Candidate tokens | Answer oracle, both arms | Complete token arrays equal |
+|---|---:|---:|---|---|
+| `4k-arithmetic-a` | 77 | 189 | Pass | No |
+| `4k-arithmetic-b` | 256 | 256 | Fail: cap | No |
+| `4k-code-a` | 171 | 171 | Pass | Yes |
+| `4k-code-b` | 185 | 187 | Pass | No |
+| `4k-tool-a` | 192 | 192 | Pass | Yes |
+| `4k-tool-b` | 119 | 119 | Pass | Yes |
+| `8k-arithmetic-c` | 147 | 157 | Pass | No |
+| `8k-arithmetic-d` | 256 | 256 | Fail: cap | No |
+| `8k-code-c` | 191 | 191 | Pass | Yes |
+| `8k-code-d` | 226 | 190 | Pass | No |
+| `8k-tool-c` | 108 | 107 | Pass | No |
+| `8k-tool-d` | 111 | 109 | Pass | No |
+
+At the bounded diagnostic, the complete generated prefix before output 47
+matches. Both captures use the same native control geometry and query cache
+offset 4,648; the emitted output token occupies absolute position 4,649.
+Native chooses ` seems` (7,890), while the candidate chooses ` likely`
+(6,960). The raw logit margin, 7,890 minus 6,960, changes from +0.06152153 to
+−0.01633263. Both records are confirmed and finite. These are two raw logits,
+not full-vocabulary probabilities. Instrumented timing is excluded from
+performance evidence. Protecting the audited header is insufficient to fix
+this behavior; the experiment does not identify which other removed entries
+cause the logit change.
+
+Every new candidate case emits twelve pruning events, one per full-attention
+owning layer. Last-prune native KV backing retains 56.45–59.28% of its source
+storage, including the bounded append capacity. This counter excludes scorer
+scratch and overlapping source/destination buffers. At the common output-8
+observation, candidate active allocation is 92.25–93.06 MiB lower for the
+approximately 4.6K prompts and about 189 MiB lower for the approximately 8.7K
+prompts. These are sampled process allocator deltas, not per-request ownership
+receipts or additional admission capacity. In the new-cohort runs, whole-run MLX peaks remain
+essentially unchanged: 13.75019 GiB native and 13.75014 GiB candidate. No
+speedup is claimed. All four cells complete their strict token comparisons,
+observed cancellation, donor recovery and idle/shutdown ownership checks.
+
+The [frozen artifact manifest](../assets/2026-10-09-instruction-prefix-artifact.json)
+binds parent `f2fb32afae48f4a7fbce4779002103d6de50d005`, SDK
+`f328058257f23b22607e73bbe5325c2e597c130d`, binary
+`d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a`,
+source-matched metallib and model hashes. The
+[comparison](../assets/2026-10-09-instruction-prefix-comparison.json),
+[exact commands](../assets/2026-10-09-instruction-prefix-commands.json) and
+[artifact checksums](../assets/2026-10-09-instruction-prefix-results-manifest.json)
+preserve the complete outcome. Raw observations remain available:
+
+- Recovery: [native](../assets/2026-10-09-instruction-prefix-recovery-0.json.gz)
+  and [candidate](../assets/2026-10-09-instruction-prefix-recovery-instruction-half.json.gz).
+- New cohort: [native](../assets/2026-10-09-instruction-prefix-new-holdout-0.json.gz)
+  and [candidate](../assets/2026-10-09-instruction-prefix-new-holdout-instruction-half.json.gz).
+- Final frozen-binary CPU audits: [recovery](../assets/2026-10-09-instruction-prefix-recovery-final-prompt-audit.json.gz)
+  and [new cohort](../assets/2026-10-09-instruction-prefix-new-holdout-final-prompt-audit.json.gz).
+
 ## Validation status
 
 The native CPU audits and radix build pass. The mandatory dedicated refactor
@@ -83,6 +152,15 @@ tests and thirteen provider tests pass, covering repeated pruning, rollback,
 header validation, factory restrictions and unchanged native reservations.
 The original four-anchor policy remains the regression control.
 
-Final component checks and the fixed model cohort are separate gates. GPU
-phases remain serialized with other cache work. This record retains every
-outcome, including failures, rather than retuning the same labeled holdout.
+The final CPU-only radix gate passes 33 tests, and canonical
+`make provider-build` passes. Hosted provider unit, SDK and prompt-parity checks
+pass at the frozen source head. The standalone SDK build/test gate is still
+running. The published Before/After Mermaid diagrams in the
+[provider draft](https://github.com/Layr-Labs/d-inference/pull/1417) and
+[SDK draft](https://github.com/Layr-Labs/mlx-swift-lm/pull/297) were visually
+verified on GitHub. Global documentation lint still fails only on the
+inherited frozen-report reference to absent
+`coordinator/registry/cache_match_groups.go`; that frozen record is unchanged.
+
+The quality failure and unqualified scratch bounds keep both changes in draft
+and serving disabled. No second policy was tuned against these outcomes.

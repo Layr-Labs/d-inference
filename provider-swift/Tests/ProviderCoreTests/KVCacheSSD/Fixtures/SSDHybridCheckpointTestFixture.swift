@@ -64,6 +64,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
 
     func makeStore(readCap: Int = 16 << 20, epoch: Bool = true, useGlobalBudget: Bool = true, diskBudget: SSDDiskBudget = SSDDiskBudget(),
                    maxWriteBytesPerDay: Int = 1 << 30,
+                   writeBudget: SSDWriteBudget? = nil,
                    diskBudgetBytes: @escaping @Sendable () -> Int = { 1 << 30 },
                    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
                    keyFingerprint: String = "fixture-key",
@@ -79,7 +80,9 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
             root: modelRoot, dedicatedRoot: root, epochStore: epochStore, maxReadBytes: readCap,
             maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, strictFsync: false,
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes, maintainWholeRoot: {}),
-            kekKey: key, kvBudget: useGlobalBudget ? budget : nil, diskBudget: diskBudget, maxWriteBytesPerDay: maxWriteBytesPerDay, donationRecorder: donationRecorder, writeNowSeconds: writeNowSeconds)
+            kekKey: key, kvBudget: useGlobalBudget ? budget : nil, diskBudget: diskBudget,
+            maxWriteBytesPerDay: maxWriteBytesPerDay, writeBudget: writeBudget,
+            donationRecorder: donationRecorder, writeNowSeconds: writeNowSeconds)
         store.scanOnDisk()
         return store
     }

@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -170,7 +170,7 @@ limit (`_MAX_TOKENS`), the contract LRU (`_MAX_LOADED_CONTRACTS`) and, on Linux,
 the address-space limit (`_MEMORY_LIMIT_MIB`). The per-plan deadline
 (`_TIMEOUT_MS`) bounds caller waiting, not the lifetime of already-running
 blocking CPU work. Such a worker keeps its planning permit and transient buffers
-until it exits (`coordinator/promptsidecar/src/planner.rs`, `plan_with_tokens`).
+until it exits (`coordinator/promptsidecar/src/planner.rs`, `plan_internal`).
 Completed connection tasks are reaped continuously.
 Contract misses use a per-contract singleflight (`SingleflightLru`,
 `coordinator/promptsidecar/src/artifact_cache.rs`): one worker loads the contract
@@ -183,6 +183,26 @@ still reads and verifies every declared artifact before tokenizer reuse
 configuration and model metadata remain separate for each contract. Both caches
 use the same singleflight implementation and configured LRU capacity; the
 planner semaphore bounds concurrent loads and plans.
+
+Each loaded contract also owns at most two lazy immutable compiled chat-template
+environments, for plain and tool-bearing requests (`LoadedContract`,
+`coordinator/promptsidecar/src/planner/contract_loading.rs`; `PreparedTemplates`,
+`coordinator/promptsidecar/src/render/prepared.rs`). Only template sources at
+or below 64 KiB in UTF-8 bytes are retained; larger verified templates follow
+the existing ephemeral compilation path without a new rejection. Compilation is singleflight
+within that contract; eviction releases the programs with the contract once
+active users retire. There is no separate renderer cache retaining evicted
+contracts. Model-specific filters stay contract-bound, while messages, tools,
+date and every render context remain request-owned. The `strftime_now` callable
+is supplied in each render context, so reuse never retains an earlier request's
+date. Fuel and output-byte bounds are per render.
+
+The production planning path borrows token IDs from the tokenizer encoding and
+returns only the bounded plan response. Copies of the lowered provider body,
+normalized fixture body and token IDs are created only by `fixture_plan`
+(`Planner`, `coordinator/promptsidecar/src/planner.rs`; `NormalizedRequest.fixture_body`,
+`coordinator/promptsidecar/src/normalize.rs`). This reduces transient allocations
+without caching prompt text, rendered output, tokens or scope-derived proofs.
 
 At startup the sidecar binds its socket and reports live but not ready; it does
 not discover or load every directory left on disk. `Provisioner.VerifiedPreloadArtifacts`

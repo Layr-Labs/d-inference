@@ -286,7 +286,11 @@ validation and compatibility; no client historical opt-in time is trusted.
 
 The authenticated provider session owner records accepted declarations
 synchronously with the original server receive time, independently of controller
-and payment-worker flags. Durable raw declarations can precede verified machine
+and payment-worker flags. It captures reward qualification from trusted OS
+evidence and the report's distinct downloaded eligible models under the
+[daily reward policy](../reference/pricing-model.md#autopilot-rewards).
+This is separate from scheduling activation: saved consent alone can establish
+enrollment but does not satisfy every payment gate. Durable raw declarations can precede verified machine
 binding; only verified machine/account history can freeze a baseline or pay.
 This tracker is separate from connected inventory aggregates and the
 `autopilot_events` command ledger, and retains offline financial history.
@@ -477,7 +481,7 @@ its own `Start/` folder.
 | Cached inventory discovery and verification | `provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`; `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Selection.swift` (`verifySelectedModel`) |
 | Live local controls | `provider-swift/Sources/darkbloom/Autopilot/AutopilotCommand.swift`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotControl.swift` |
 | Protocol | `coordinator/protocol/model_autopilot.go`; `provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift` |
-| Saved-consent reward tracking | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift` (`publishModelAutopilotSnapshot`); `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardConsentSnapshot`); `coordinator/api/provider/autopilot_rewards.go` (`autopilotRewardCapture`); durable contract in `coordinator/store/earnings_floor.go` (`AutopilotRewardsStore`) |
+| Saved-consent and qualification tracking | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift` (`publishModelAutopilotSnapshot`); `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardSnapshot`); `coordinator/api/provider/autopilot_rewards.go` (`autopilotRewardCapture`); durable contract in `coordinator/store/earnings_floor.go` (`AutopilotRewardsStore`) |
 | Shapes and planning | `coordinator/registry/autopilot/shapes.go`; `coordinator/registry/autopilot/coverage.go`; `coordinator/registry/autopilot/planner.go` |
 | Hard request eligibility | `coordinator/registry/autopilot/requirements.go`; `coordinator/registry/autopilot_traits.go` |
 | Demand and policy defaults | `coordinator/registry/autopilot/demand.go` (`DemandTracker.Record`); `coordinator/internal/registry/demandwindow/window.go` (`Window.Record`, `Snapshot`); `coordinator/registry/autopilot/config.go` |

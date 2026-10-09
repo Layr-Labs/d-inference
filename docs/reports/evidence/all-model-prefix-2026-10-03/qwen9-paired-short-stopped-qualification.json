@@ -1,0 +1,153 @@
+{
+  "scope": "Fresh Qwen3.5-9B short actual-MTP cohort stopped at unchanged20.25GiB active disk guard; three complete passing reports and one two-row partial report. Not a complete three-pair comparison.",
+  "model": "qwen/qwen3.5-9b",
+  "startedUTC": "2026-10-04T00:12:18.966374+00:00",
+  "endedUTC": "2026-10-04T00:14:19.385912+00:00",
+  "sourceSnapshotSHA256": "9f56066a82996159866a9aba146cb2cf21ee978d7cbbd9554a4022a1c3a57eea",
+  "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "sourceBundlePlanTemplateSpecHelperOrchestrationBeforeAfterIdentical": true,
+  "allFourSavedResultDigestsMatchClosedCompleteOrPartialReports": true,
+  "allStartedProcessTreesReapedAndQuiescent": true,
+  "maximumTrackedDescendants": 0,
+  "requestedArms": 6,
+  "startedArms": 4,
+  "completeReports": 3,
+  "partialReports": 1,
+  "unstartedArms": 2,
+  "reportedMeasuredRequests": 14,
+  "reportedOutputIDs": 1792,
+  "qualifiedBlocks": 1,
+  "qualifiedThreePairPolicyComparison": false,
+  "qualifiedThreePairEconomicComparison": false,
+  "arms": [
+    {
+      "block": 0,
+      "policy": "production",
+      "status": "pass",
+      "exitCode": 0,
+      "errors": [],
+      "contractFailures": [],
+      "reportedRows": 4,
+      "savedResultDigestMatches": true,
+      "comparisons": [
+        {
+          "donorOutputMatches": true,
+          "forkOutputMatches": true
+        }
+      ]
+    },
+    {
+      "block": 0,
+      "policy": "candidate",
+      "status": "pass",
+      "exitCode": 0,
+      "errors": [],
+      "contractFailures": [],
+      "reportedRows": 4,
+      "savedResultDigestMatches": true,
+      "comparisons": [
+        {
+          "donorOutputMatches": true,
+          "forkOutputMatches": true
+        }
+      ]
+    },
+    {
+      "block": 1,
+      "policy": "candidate",
+      "status": "pass",
+      "exitCode": 0,
+      "errors": [],
+      "contractFailures": [],
+      "reportedRows": 4,
+      "savedResultDigestMatches": true,
+      "comparisons": [
+        {
+          "donorOutputMatches": true,
+          "forkOutputMatches": true
+        }
+      ]
+    },
+    {
+      "block": 1,
+      "policy": "production",
+      "status": "failed",
+      "exitCode": -15,
+      "errors": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active",
+        "test_process_failed"
+      ],
+      "contractFailures": [
+        "incomplete_role_set"
+      ],
+      "reportedRows": 2,
+      "savedResultDigestMatches": true,
+      "comparisons": []
+    },
+    {
+      "block": 2,
+      "policy": "production",
+      "status": "not_started",
+      "exitCode": null,
+      "errors": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active"
+      ],
+      "contractFailures": null,
+      "reportedRows": null
+    },
+    {
+      "block": 2,
+      "policy": "candidate",
+      "status": "not_started",
+      "exitCode": null,
+      "errors": [
+        "free_disk_below_selected_floor_plus0.25GiB_while_active"
+      ],
+      "contractFailures": null,
+      "reportedRows": null
+    }
+  ],
+  "block0AllFourCrossPolicyOutputsMatch": true,
+  "completeReportsWithinArmDonorAndForkOutputMatches": true,
+  "bothPolicyActualShortMinimum": 1024,
+  "productionLongFlag": false,
+  "candidateLongFlag": true,
+  "bothPolicyWarmRestoredTokens": 1024,
+  "bothPolicyWarmReplayTokens": 0,
+  "donorWrittenBytesEach": 93475616,
+  "warmReadBytesEach": 93491444,
+  "noIncrementalShortBoundaryCoverageObserved": true,
+  "allReportedActualMTPAndCheckpointDrainsQualified": true,
+  "actualMTP": {
+    "requestedAndActive": true,
+    "verificationMode": "rectangular",
+    "acceptedTokenRangePerRow": [
+      77,
+      81
+    ]
+  },
+  "diskGuardGiB": {
+    "armStart": 20.0,
+    "whileActive": 20.25,
+    "pollSeconds": 1
+  },
+  "safetyStop": {
+    "block": 1,
+    "policy": "production",
+    "exitCode": -15,
+    "reason": "free_disk_below_selected_floor_plus0.25GiB_while_active",
+    "partialRoles": [
+      "demanded_donor",
+      "warm_fork"
+    ],
+    "completeComparisonAvailable": false
+  },
+  "limits": [
+    "Block0 is one complete matched pair; block1 lacks production cold/novel controls and comparison,block2 never starts. No three-pair or economic median.",
+    "Both policies already reach1024 in short; observations do not add new short prefix coverage.",
+    "Partial recorded request metrics/drains do not qualify the failed whole arm.",
+    "Qwen9 long never starts in this matrix. Any retry needs new directories/provenance; no old partial reports substituted.",
+    "No disk floor, memory/admission reserve, source guard or policy is relaxed."
+  ],
+  "privacy": "Aggregate state/counter/status/identity outcomes only; no private paths/raw logs/output IDs/fingerprints/processIDs/commands/prompts/provider/account identifiers."
+}

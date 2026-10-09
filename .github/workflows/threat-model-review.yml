@@ -179,10 +179,22 @@ jobs:
           path: ${{ runner.temp }}/bedrock-usage.jsonl
           if-no-files-found: warn
           retention-days: 90
+      - name: Create a read-only organization membership token
+        id: membership-token
+        if: ${{ always() && vars.THREAT_REVIEW_REQUIRE_CLEARANCE == 'true' && steps.merge-policy.outputs.overridden != 'true' && vars.THREAT_REVIEW_APP_ID != '' }}
+        continue-on-error: true # Missing membership proof still fails the gate below.
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.THREAT_REVIEW_APP_ID }}
+          private-key: ${{ secrets.THREAT_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-members: read
       - name: Evaluate conditional merge clearance
         if: ${{ always() && vars.THREAT_REVIEW_REQUIRE_CLEARANCE == 'true' }}
         env:
           THREAT_REVIEW_RESULT_FILE: ${{ runner.temp }}/threat-review-result.json
+          THREAT_REVIEW_MEMBERSHIP_TOKEN: ${{ steps.membership-token.outputs.token }}
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/threat-review-gate.py after
       - name: Report infrastructure failure

@@ -83,7 +83,21 @@ sequenceDiagram
 | 4. Settle | `coordinator/api/inference/provider_inference.go` `HandleCompleteAt` → `store.FinalizeConsumerCharge` | Validate the provider's cache report (`validCacheUsage`; a malformed one is cleared so it cannot lower the bill), resolve the price, and compute `totalCost` with cached prompt tokens at the cache-read rate (`billableUsage`, `Rates.Cost` / `CostWithMinimum`); an owned machine serving its owner's request settles free. The reservation finalization gate selects settlement or refund. `FinalizeConsumerCharge` atomically adjusts the consumer balance, records the collected amount, and credits any referral reward. Overage is capped at the reservation amount and falls back to the reservation if funds cannot cover it. Underage refunds the excess. Service holds and direct charges pass no already-debited reservation; insufficient funds collect zero. A duplicate job returns its saved result; conflicting inputs fail. |
 | 5. Record usage | `coordinator/api/inference/completion_accounting.go` `completionAccounting` (called from `HandleCompleteAt`) | In-memory `payments.Ledger.RecordUsage` always (bounded recent history, lazily allocated to the [usage history limit](../reference/pricing-model.md#constants)); a persistent `usage` row (`store.RecordUsage`) unless the request was free self-route. Both carry `cached_tokens` so a cache hit's cost can be reconciled against the published rates; a model-token promotion records `0`, because that path bills cached tokens at the input rate. |
 | 6. Pay out | `HandleCompleteAt` | Normally use the collected amount returned by settlement for fee and provider-payout arithmetic. If an unreserved, non-service request not marked free self-route is uncollected, retain the quoted cost and platform-covered payout (`coordinator/api/inference/consumer_settlement.go`, `settleCompletedConsumer`, `platformCovered` / `settledCost`). Uncollected service requests and requests that lose free-self-route eligibility instead have zero cost and payout; no uncollected charge earns a referral reward. `feePercent` is the consumer override, else the global default (invariant 4). `CreditProviderAccount` credits `totalCost − platformFee` to a linked provider account as withdrawable earnings; `Credit("platform", …)` credits the full platform fee. The referral reward is already credited by settlement and reduces neither amount. |
-| 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
+| 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `holdForSettlement`, `claimSettlement` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `DefaultTerminalSettleGrace` (30 seconds) so a late terminal settles it; otherwise it is refunded. |
+
+First-content admission qualifies exact prompt counts against the selected
+renderer and keeps the original ingress anchor
+(`coordinator/api/inference/first_content_prompt_deadline.go`,
+`Owner.PromptWorkDeadlineForRequest`). These counts adjust the deadline token
+term; monetary reservation still uses the conservative billing inputs above.
+An expired request follows the same refund or terminal-settlement ownership
+path (`coordinator/api/inference/consumer.go`, `refundReservedBalance`;
+`coordinator/api/inference/settlement.go`, `holdForSettlement`,
+`claimSettlement`). A routing cache hint does not earn a cache-read discount:
+settlement uses the provider's
+validated cached-token report (`coordinator/api/inference/provider_inference.go`,
+`HandleCompleteAt`). See [first-content routing](first-content-routing.md) for
+candidate clocks and retry behavior.
 
 ### Rejected Stripe withdrawal refunds
 
@@ -421,22 +435,35 @@ receipt statuses have one home in the
 [Autopilot rewards reference](../reference/pricing-model.md#autopilot-rewards).
 `coordinator/payments/autopilotrewards/engine.go` (`Engine.SettleClosedDays`,
 `Run`) consumes durable enrollment cursors, not the currently connected fleet.
+The worker clamps its eligible-day range at the shared program end; both stores
+also reject later days through `floorpolicy.ValidateDay`. This ends new accrual,
+not payment of already-earned pending days. Opt-in dates and one-time baselines
+do not extend the program (`coordinator/internal/payments/floorpolicy/math.go`,
+`EndsAt`; see the [final-day contract](../reference/pricing-model.md#autopilot-rewards)).
 
 ```mermaid
 flowchart TD
-  A["Authenticated saved-consent declaration"] --> B["ObserveAutopilotConsent: persist original receive time"]
-  B --> C{"Verified canonical machine and account?"}
-  C -->|"not yet"| D["Retain raw journal; retry binding"]
-  D --> C
+  A["Authenticated saved-consent declaration"] --> B["RecordAutopilotConsent: persist original receive time"]
+  B --> W["Worker or enrollment listing"]
+  W --> C{"Verified canonical machine and account?"}
+  C -->|"not yet"| D["Retain raw journal; await inventory binding"]
+  D --> W
   C -->|"yes"| E{"First-ever history known?"}
-  E -->|"no"| F["Hold baseline unknown; audited admin backfill"]
-  E -->|"yes"| G["Freeze baseline once"]
-  F --> G
+  E -->|"no"| F["Hold baseline unknown; preserve anchor"]
+  E -->|"yes"| Q{"Enough personal earnings history?"}
+  Q -->|"yes"| G["Freeze personal baseline once"]
+  Q -->|"no"| R{"Comparable mature cohort exists?"}
+  R -->|"yes"| G2["Freeze cohort baseline once"]
+  R -->|"no"| F
+  F -->|"Verified admin import"| G
   G --> M{"SettleClosedDays: history conflict?"}
+  G2 --> M
   M -->|"yes"| N["Hold machine; preserve frozen baseline"]
-  M -->|"no"| H["Next closed UTC day"]
-  H --> I["SettleAutopilotRewardDay: consent at close and actual income snapshot"]
-  I --> J{"Full shortfall funded?"}
+  M -->|"no"| H["Next closed UTC day before shared end"]
+  H --> I{"SettleAutopilotRewardDay: saved consent,<br/>captured qualification and daily uptime?"}
+  I -->|"opted out / ineligible"| L0["Final unpaid receipt; advance day"]
+  I -->|"eligible"| I2["Read daily actual income snapshot"]
+  I2 --> J{"Full shortfall funded?"}
   J -->|"no"| K["Pending pool_exhausted; retry and recompute"]
   K --> I
   J -->|"yes, or no payment due"| L["Atomic final receipt and any credit; advance day"]
@@ -449,10 +476,10 @@ machine `first_seen` is not evidence of that time. New authenticated socket
 declarations carry no trusted client historical timestamp. The coordinator
 stamps receive time before decoding or authentication, journals accepted
 authenticated declarations, and later materializes enrollment under verified
-machine/account ownership. An identity-not-ready result can therefore leave a durable raw
-declaration even though it cannot yet freeze a baseline or pay
+machine/account ownership. A successful journal write can leave a durable raw
+declaration without a machine binding, frozen baseline or payment
 (`coordinator/api/provider/autopilot_rewards.go`, `autopilotRewardCapture`;
-`coordinator/store/postgres/autopilot_rewards_consent.go`, `ObserveAutopilotConsent`).
+`coordinator/store/postgres/autopilot_rewards_consent.go`, `RecordAutopilotConsent`).
 
 Automatic freezing requires tracked history from the machine's first observation.
 A machine seen before `tracking_started_at`, a gap before its first supported
@@ -464,14 +491,27 @@ the store holds history rather than guessing. The history checks are in
 `coordinator/store/postgres/autopilot_rewards.go` (`autopilotRewardTrackingComplete`)
 and the corresponding memory implementation.
 
+Known first-ever consent and complete personal earnings history are separate
+conditions. A newly observed machine may have a known opt-in anchor and too
+little personal history for its baseline. The store then selects comparable
+mature canonical machines under the
+[cohort rules](../reference/pricing-model.md#autopilot-rewards), excluding the
+enrollee's aliases and deduplicating peers. It freezes the resulting mean once;
+turning Autopilot off/on or later accumulating personal history does not replace
+that cohort baseline. Missing comparable evidence leaves history pending rather
+than a fabricated zero (`coordinator/store/postgres/autopilot_rewards_cohort.go`,
+`autopilotRewardBaseline`; `coordinator/store/memory/autopilot_rewards_cohort.go`,
+`autopilotRewardBaselineLocked`). Cohort fallback does not
+establish an unknown first-ever opt-in or bypass the creation-history proof.
+
 `RestoreAutopilotBaseline` accepts the true first-ever instant, its preceding
 inference total and evidence identifying both sources. This is a privileged
 attestation of history, not automatic verification of the supplied evidence.
 It fills only a missing baseline; it does not create old consent events, move
 the first tracked positive day backward or rewrite a frozen value. The explicit
 [`baseline_source`](../reference/api-contracts.md#autopilot-reward-administration)
-distinguishes an automatic freeze from an evidenced import independently of the
-evidence string. Follow the
+distinguishes personal and cohort automatic freezes from an evidenced import
+independently of the evidence string. Follow the
 [backfill runbook](../operations/autopilot-rewards.md), not an inferred launch date.
 
 Earlier positive evidence from another session is retained even if a later
@@ -492,6 +532,22 @@ not an automatic correction or another import (`ensureAutopilotRewardEnrollment`
 
 #### Capture failure boundary
 
+Socket capture records only the authenticated declaration through
+`store.AutopilotConsentJournal`. A successful unbound write does not occupy the
+retry queue. Baseline materialization belongs to worker/listing paths and uses
+set-based PostgreSQL peer queries; it cannot consume the socket's short journal
+budget. Existing explicit `ObserveAutopilotConsent` store callers still request
+immediate materialization (`coordinator/store/earnings_floor.go`,
+`coordinator/store/postgres/autopilot_rewards_cohort_peers.go`).
+
+PostgreSQL serializes each raw journal session separately and takes the inventory
+barrier in shared mode, so unrelated providers do not serialize their heartbeats
+behind one exclusive lock. Raw capture binds only its own session's rows;
+ancestry-wide binding and reward materialization retain the exclusive barrier.
+Account admission and erasure checks still precede these locks
+(`coordinator/store/postgres/autopilot_rewards_consent.go`,
+`beginAutopilotConsentWrite`; [storage locking](storage.md#autopilot-reward-persistence)).
+
 Only committed raw declarations survive socket or coordinator-process loss.
 `autopilotRewardCapture` uses a bounded in-memory retry queue, not a durable spool.
 A journal outage that outlasts the connection and its final bounded retry can
@@ -503,10 +559,19 @@ continuous history from a receive timestamp, pending-write log or later reconnec
 #### Settlement ownership
 
 The store selects the last durable declaration strictly before each UTC close
-and requires it to qualify as saved opt-in; it does not skip a later
-nonqualifying declaration to reuse an earlier opt-in.
-Today's live readiness, pause, shadow mode and connection status do not decide
-yesterday's eligibility. The [wire declaration](../reference/protocol-messages.md#model_autopilot-state)
+and requires saved opt-in plus the qualification captured with that declaration;
+it does not skip a later nonqualifying declaration to reuse an earlier one.
+Qualification evaluates the lease interval at the original server receive time,
+retains current revocation/binding/privacy checks, and uses accepted downloaded catalog inventory,
+under the [daily policy](../reference/pricing-model.md#autopilot-rewards).
+The machine's daily uptime comes from the union of attributable provider sessions,
+with heartbeat and disconnect boundaries clipped to that UTC day. Aliases and
+overlapping sessions cannot inflate uptime. Opted-out and ineligible days finalize
+without payment or pool spending, then advance the cursor.
+
+Today's live readiness, OS, model list, pause or shadow mode does not replace
+yesterday's captured qualification and online history. Legacy qualification rows
+remain unqualified. The [wire declaration](../reference/protocol-messages.md#model_autopilot-state)
 separates saved consent from scheduling participation. Sequential daily receipts
 preserve each day's result; retries never replace a prior day with today's income.
 The calculation reads a committed earnings snapshot, not a quiescence barrier
@@ -744,7 +809,7 @@ help (`coordinator/api/billing/payouts/stripe_payouts_webhooks.go`).
 |---|---|---|
 | Settled cost above the reservation | Overage debited as `charge` `overage:<request_id>`, clamped to `reserved` (a provider can never bill more than `2 × reserved`); a failed overage debit settles at `totalCost = reserved` | `billing.cost_clamped`, `billing.overage_charged`, `billing.overage_micro_usd` |
 | Completion reports zero completion tokens | Direct consumers still settle at `minimumChargeMicroUSD`; service accounts settle at `0`; the warning text "billed $0" is accurate only for the latter | `billing.zero_usage_complete` |
-| Consumer disconnects after the first streamed chunk | `holdForSettlement` parks the billing record for `defaultTerminalSettleGrace = 30 * time.Second`; a provider terminal inside the grace settles the delivered tokens, otherwise `refundReservedBalance("no_terminal_after_cancel:<id>")` | `routing.client_gone` |
+| Consumer disconnects after the first streamed chunk | `holdForSettlement` parks the billing record for `DefaultTerminalSettleGrace` (`settlement.DefaultGrace = 30 * time.Second`); a provider terminal inside the grace settles the delivered tokens, otherwise `refundReservedBalance("no_terminal_after_cancel:<id>")` | `routing.client_gone` |
 | Provider error, timeout, or dispatch failure before a terminal | `refundReservedBalance` refunds the whole reservation (`reservation_refund:<id>`) or releases the service hold | `billing.reservation_refunds`, `billing.reservation_releases` |
 | Failover after a provider-price top-up | `refundProviderExtra` refunds only the surcharge (`reservation_extra_refund:<id>`) and resets `ReservedMicroUSD` to the base so it cannot refund twice | `billing.reservation_extra_refunds` |
 | Late terminal after finalization | Skipped: no debit, refund, payout, or usage row | log `skipping completion billing for already-finalized reservation` |
@@ -784,7 +849,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 |---|---|---|
 | Prices and cost | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion`, `DefaultCacheReadDiscountPercent`, `DefaultCacheReadPrice`, `minimumChargeMicroUSD`, `platformFeePercent`, `Rates`, `Usage`, `RatesFor`, `DefaultRates`, `Rates.Cost`, `Rates.CostWithMinimum`, `CacheReadDiscount`, `resolveFeePercent`, `PlatformFeeWithPercent`, `ProviderPayoutWithPercent`, `FormatPerTokenUSD`, `FormatPerMillionUSD`); `coordinator/api/modelprice/price.go`, `coordinator/api/modelprice/price.go`, `coordinator/api/types/types.go` (`modelprice.Input`, `ModelPriceQuote`, `RatesQuote`); `coordinator/internal/inference/cacheusage/cache_usage.go` (`billableUsage`); `coordinator/api/types/types.go` (`ModelPriceQuote`, `PricingResponse`, `PriceUpdateResponse`); `coordinator/store/postgres/` (`model_prices`, `GetModelPrice`, `SetModelPrice`) | `GET /v1/pricing`, `PUT /v1/pricing`, `DELETE /v1/pricing`, `PUT /v1/admin/pricing`, `POST /v1/admin/models/register` |
 | Reservation | `coordinator/api/inference/inference_balance.go` (`reserveInferenceBalance`, `topUpReservationForInlinedMedia`); `coordinator/api/inference/consumer.go` (`reservationCost`, `providerReservationCost`, `reserveAdditionalForProvider`, `explicitMaxTokens`, `ensureMaxTokensBound`, `defaultMaxOutputTokens`); `coordinator/api/inference/reservations.go` (`serviceReservationManager`, `useServiceReservation`) | — |
-| Settlement | `coordinator/api/inference/provider_inference.go` (`HandleCompleteAt`); `coordinator/api/inference/consumer.go` (`refundReservedBalance`, `refundProviderExtra`); `coordinator/api/inference/settlement.go` (`settlementHolder`, `holdForSettlement`, `defaultTerminalSettleGrace`); `coordinator/registry/pending_request.go` (`PendingRequest.FinalizeReservation`, `MarkReservationFinalized`); `coordinator/payments/payments.go` (`Ledger.Charge`, `Ledger.RecordUsage`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
+| Settlement | `coordinator/api/inference/provider_inference.go` (`HandleCompleteAt`); `coordinator/api/inference/consumer.go` (`refundReservedBalance`, `refundProviderExtra`); `coordinator/api/inference/settlement.go` (`holdForSettlement`, `claimSettlement`, `DefaultTerminalSettleGrace`); `coordinator/internal/inference/settlement/controller.go` (`Controller`, `DefaultGrace`); `coordinator/registry/pending_request.go` (`PendingRequest.FinalizeReservation`, `MarkReservationFinalized`); `coordinator/payments/payments.go` (`Ledger.Charge`, `Ledger.RecordUsage`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
 | Ledger and balances | `coordinator/store/interface.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres/` (`balances`, `ledger_entries`, `provider_earnings`, `creditTx`, `creditWithdrawableTx`, `CreditWithdrawableOnce`, `Debit`, `CreditProviderAccount`, `idx_provider_earnings_job`) | `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`); `coordinator/api/billing/checkout.go`, `coordinator/api/billing/methods.go`, `coordinator/api/billing/checkout.go`, `coordinator/api/billing/methods.go`, `coordinator/api/billing/wallet.go` (`HandleStripeCreateSession`, `HandleStripeSessionStatus`, `HandleWalletBalance`, `HandleBillingMethods`); `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Stripe response projection | `coordinator/billing/stripe_connect.go` (`parsePayout`, `parseAccount`) | Payout creation and reconciliation share the same decoded fields and parse errors. Account responses select the first currency-default destination, falling back to the first destination. |

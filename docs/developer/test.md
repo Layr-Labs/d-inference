@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -9,7 +9,7 @@ Run from the repository root with the pinned Go toolchain and an isolated local
 
 ```bash
 go test -race ./coordinator/tests/payments/autopilotrewards -count=1
-go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|Migration|Migrate' -count=1
+go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|AutopilotConsent|Migration|Migrate' -count=1
 go test -race ./coordinator/tests/api/provider ./coordinator/tests/api/operations/contracts ./coordinator/tests/api ./coordinator/tests/registry -run 'AutopilotReward|AutopilotConsent' -count=1
 go test ./coordinator/tests/protocol -run Autopilot -count=1
 ```
@@ -21,9 +21,11 @@ isolate databases and coordinate the local server's connection budget.
 | Boundary | Regression owner |
 |---|---|
 | Once-rounded floor, UTC day guards and independent-day worker catch-up | `coordinator/tests/payments/autopilotrewards/engine_test.go` |
+| Shared final day for early/late joiners, post-cutoff rejection and earlier pending-payment retries; fixture clocks remain inside the fixed campaign | `coordinator/tests/payments/autopilotrewards/engine_test.go`; `coordinator/tests/store/contracts/autopilot_rewards_cutoff_test.go` |
 | Exact first-ever window, sponsored inference, whole first partial day, immutable baseline, history gaps, canonical aliases, per-day consent, pool retry and single-count earnings | `coordinator/tests/store/contracts/` (`autopilot_rewards_test.go`, `autopilot_rewards_history_test.go`, `autopilot_rewards_identity_test.go`) |
 | Delayed cross-session consent and frozen-history conflicts without rewriting finalized receipts | `coordinator/tests/store/contracts/autopilot_rewards_history_test.go` (`TestAutopilotRewardsDelayedSessionConsentPreservesFirstOptIn`, `TestAutopilotRewardsLateEarlierConsentFlagsFrozenHistory`) |
 | Migration/schema equivalence, restart persistence, concurrent cap/deduplication and rollback of all financial writes | `coordinator/tests/store/postgres/` (`autopilot_rewards_migration_test.go`, `autopilot_rewards_test.go`, `autopilot_rewards_atomicity_test.go`) |
+| Concurrent independent consent journals, exclusive inventory exclusion, per-session ownership and session-local binding | `coordinator/tests/store/postgres/autopilot_consent_concurrency_test.go` |
 | Authenticated original receive time, pre-binding journal, accepted heartbeat state, daily checkpoints and bounded failed-write queue | `coordinator/tests/api/provider/autopilot_rewards_test.go`, `autopilot_rewards_queue_test.go` in the same directory; `coordinator/tests/registry/autopilot_reward_snapshot_test.go` |
 | Admin auth, exact money JSON, immutable backfill and independently default-off config | `coordinator/tests/api/operations/contracts/autopilot_rewards_test.go`; `coordinator/tests/api/autopilot_rewards_config_test.go` |
 
@@ -345,6 +347,19 @@ swift test --skip-build --disable-xctest --enable-swift-testing --no-parallel \
 ```
 
 Native complete-checkpoint fixtures materialize their synthetic model/scalar parameters before either comparison arm and join donation writers before asserting reservation cleanup. Their bitwise state and continuation checks remain exact.
+
+`SSDShorterNativeBlockRestoreTests` and `SSDNativeCheckpointOracleTests` each run
+in a mandatory fresh process through `scripts/run-provider-tests.sh` and the
+nonempty/no-skip wrapper. Swift's task-local CPU selection does not change the
+native default-stream key used by MLX's per-thread compiled-function cache. A
+prior GPU trace can therefore contaminate a later CPU recomputation after an
+executor hop. These CPU tests must not share that trace history with GPU suites.
+The shorter-restore test retains its exact cold-state and suffix assertions and
+also compares the actual donor's host byte copies with authenticated SSD bytes
+and adopted state. The no-SSD controls compare the same frozen parameters on one
+thread and across sequential owned threads. Isolation changes neither serving
+policy nor numerical tolerances. `scripts/test-native-gpu-ci.py` verifies both
+gates execute once, reject failures/empty/skipped runs and preserve later gates.
 
 Owned eviction defers while an authenticated reader holds its exact-file lease and retires after the lease drains. External unlink remains an absent miss; epoch-invalidation fixtures explicitly rotate the durable epoch because ordinary per-file maintenance preserves it.
 
@@ -1070,6 +1085,28 @@ runs these CPU-only checks; the SDK 27 release preparation workflow additionally
 runs both native lanes on release-plumbing PRs and round-trips the real unsigned
 archive through the same source/inventory verifier used before signing.
 
+## Merged SDK pin validation
+
+After changing `libs/mlx-swift-lm`, compare the merged tree with the tested
+review tree and inspect any additional upstream changes. Run the SDK build and
+complete test suite independently from `make provider`; both consumers must use
+the recorded pins and source-matched Metal libraries. Preserve optional skips
+and expected known issues in the results rather than counting them as native
+model qualification.
+
+The demanded-prefix change requires four separate SDK selections with no skips:
+`CBv2NativeHistoricalRetentionTests`, `CBv2DemandedCheckpointPartitionTests`,
+`CBv2DemandedCheckpointContinuationTests`, and
+`MiMoV26NativeHistoricalRetentionTests.testDemandedMiddleFrontierSurvivesNativePublicationAndReopenedFork`.
+Use the existing [nested SDK procedure](#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+and the asymmetric synthetic fixture prepared by
+`scripts/prepare-mimo-provider-fixtures.py --asymmetric`. The last selection
+requires `MIMO_V26_SERIAL_NATIVE_TESTS=1` and `MIMO_V26_SERIAL_LOAD_FIXTURES`
+pointing to that fixture. These 17 test methods cover retention, partition,
+continuation and actual reopened native checkpoints with MTP off and on.
+They use tiny synthetic weights, so they do not requalify full-model TTFT,
+throughput or fleet cache-hit measurements after a dependency update.
+
 ## Native Flash-Next candidate
 
 The [candidate reference](../reference/qwen4-next-support.md#validation-status-and-next-gates)
@@ -1077,8 +1114,8 @@ records completed local checks and remaining gates. The following are commands
 for a prepared checkout, not claims that this composed candidate has passed
 them. Use the [exact dependency/build prerequisites](build.md#native-flash-next-candidate).
 
-For a merge-only dependency repin, verify the merged commit contains the
-approved head and compare their complete Git trees. Record the locked consumer
+For a merge-only dependency repin, compare the approved and merged Git trees.
+A squash merge need not preserve the review head as an ancestor. Record the locked consumer
 build and documentation checks separately from model execution. Identical
 source does not turn an earlier model receipt into a new binary or hardware
 run, and it does not close an outstanding performance or lifecycle finding.
@@ -1973,6 +2010,31 @@ cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --
 
 A number measured on macOS can differ from the Linux number in CI.
 
+#### Warm planner performance and template ownership
+
+`planner_performance` is an ignored, local-artifact benchmark of the actual
+renderer and tokenizer, rather than a synthetic word tokenizer. It downloads
+nothing and calls no coordinator. Point `PROMPT_BENCH_MODEL_ROOT` at an immutable
+model directory containing `tokenizer.json`, `tokenizer_config.json`, `config.json`
+and `chat_template.jinja`; set `PROMPT_BENCH_MODEL_ID` to the concrete model ID.
+
+```bash
+cd coordinator/promptsidecar
+PROMPT_BENCH_MODEL_ROOT=/absolute/isolated/model PROMPT_BENCH_MODEL_ID=concrete-model \
+  cargo +1.88.0 test --locked --release --test planner_performance -- \
+  --ignored --nocapture --test-threads=1
+```
+
+Run the same fixture, artifact bytes and controls on both comparison revisions.
+Separate short, tool-schema, long-prompt and synchronized burst cells; retain
+sample counts, timing quantiles, allocation traffic and exact count/chain proof
+fingerprints. Cumulative allocated bytes are not peak RSS, and local planner
+timings do not establish production timeout or consumer TTFT improvements.
+`render::prepared` and `planner::retention_tests` cover request-specific dates,
+model filters, template variants, render bounds and release of compiled programs
+when their bounded contract owner retires. Production and fixture projections
+must retain identical exact count and block-chain results.
+
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
 
@@ -2022,7 +2084,15 @@ MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
   MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE=testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim \
   DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
   ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
+  DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
+  ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
 ```
+
+The lifecycle drain gate serves one request through the real native owner, then
+requires the graceful drain that `darkbloom restart` and `darkbloom stop` publish
+to report `drained` within its deadline
+(`provider-swift/Tests/ProviderCoreTests/ProviderLoop/MiMo/ProviderLoopNativeMiMoLifetimeTests.swift`).
 
 Reserve the native lane before these commands. The retained-fault selector must
 run alone and preserve its actual native owner until process exit. CI runs these
@@ -3712,6 +3782,167 @@ and unsupported backends, fresh load hashes and identity rejection. A passing
 construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.
 
+## Model prefix latency and throughput qualification (live)
+
+`NemotronDemandedShortCheckpointTests` checks the qualified short-serving gate
+with real small model classes and empty SSD stores: exact catalog and aggregate,
+recurrent state, layout and floor; aliases, replacement weights and long-serving
+partitions stay excluded. `BonsaiDemandedShortCheckpointTests` uses real small wrapper/store witnesses
+to check the exact Bonsai ID/aggregate, recurrent state, backend/floor, absent MTP
+capability, aliases/replacement weights and unchanged short-only construction.
+Host policy tests do not replace fresh actual-artifact production verification.
+`SSDCheckpointDonationHashTests` checks real chain
+endpoints and authenticated tags, bounded work, ordinary/diffusion endpoint rules,
+invalid geometry and scope/key isolation. Existing encrypted-store write/read,
+duplicate and demand suites cover their integration.
+
+`SSDCheckpointDonationHashBenchmarkTests` is a separate opt-in CPU measurement.
+Set `DARKBLOOM_DONATION_HASH_BENCHMARK=1`, an absolute new
+`DARKBLOOM_DONATION_HASH_BENCHMARK_OUTPUT`, and an absolute
+`DARKBLOOM_DONATION_HASH_BENCHMARK_IDENTITY` JSON containing the actual compiler
+version, bundle SHA-256, source revision and source-snapshot SHA-256. Retain an
+independent receipt verifying those caller-supplied identities before and after.
+It compares real hash/HMAC work in twelve counterbalanced pairs per synthetic
+cell, verifies exact addresses, and includes a deepest-only control. Run it in
+a quiet CPU lane using the already-built matched runner; its results measure
+hash preparation rather than a complete write job, model TTFT or GPU throughput.
+
+The opt-in `ModelPrefixBenchmarkLiveTests` suite loads one exact catalog
+artifact, hashes its payload before and after load, binds the source-matched
+runtime metallib, and uses the actual production factory and KV grant. Run it
+alone on an idle owned GPU after `make provider-test` has built and staged the
+test runner. Model hardware and load requirements still apply; the concrete
+Qwen3.8 builds require their normal runtime capabilities.
+
+Create a JSON specification for the owned artifact, substituting its exact
+catalog hash and absolute paths:
+
+```json
+{
+  "modelID": "Qwen3.5-9B",
+  "openRouterID": "qwen/qwen3.5-9b",
+  "directory": "/path/to/current/model",
+  "expectedWeightHash": "<exact catalog SHA-256>",
+  "modelType": "qwen3_5",
+  "outputPath": "/path/to/owned/results.json",
+  "pairs": 3,
+  "outputTokens": 128,
+  "cases": [{
+    "name": "short", "donorTokens": 1793, "sharedTokens": 1152,
+    "forkTokens": 2304, "demandedTokens": 1024
+  }]
+}
+```
+
+```bash
+cd provider-swift
+DARKBLOOM_PREFIX_MODEL_BENCHMARK=1 DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+DARKBLOOM_PREFIX_MODEL_SPEC=/path/to/owned/specification.json \
+swift test --skip-build --no-parallel --filter ModelPrefixBenchmarkLiveTests
+```
+
+Each pair contains an identical cold fork, a novel donor with zero demand,
+a demanded donor and its warm fork, in counterbalanced order and separate
+scopes. Fixed greedy token IDs and exact output hashes establish output parity;
+actual restored-token usage and SSD read counters establish physical reuse.
+Cells with zero restored tokens demonstrate no cache reuse. These probes do
+not qualify chat quality or answer correctness. TTFT begins before
+submission and includes staging. Generation TPS is `(output tokens - tokens
+in the first nonempty event) / (last-event time - first-event time)`. It is
+undefined for a single output event; MTP may emit multiple IDs per event.
+End-to-end TPS ends at the terminal event. Receipt completion ends when
+`session.complete` returns after receipt retirement and stage refunds.
+For the observed COMPLETE layouts, terminal delivery already waits for
+checkpoint publication. A separate quiescence rate explicitly waits for
+engine idle and the owned checkpoint writer/activity barriers; its recorded
+receipt-to-quiescence tail does not change the earlier timestamps. These
+serialized request rates do not measure saturated throughput or fsync durability.
+The JSON retains every completed row, actual restored tokens, file reads and
+writes, donor cost, and exact-output comparisons, including failed comparisons.
+
+`mtpEnabled` defaults to `false`; set it explicitly to qualify the actual
+assistant-bearing serving configuration. The factory must load and activate
+the real assistant. Each row records active snapshots and actual drafting,
+emission and serial/rectangular verification deltas; an enabled setting or a
+configured verification mode alone cannot pass. `pairOffset` defaults to zero
+and preserves counterbalanced request order across separate processes.
+
+An optional `checkpointPartition` value of
+`demanded_recurrent_qualification` exercises the benchmark-only broader and
+longer recurrent partition. Compare it against a separate `production` run
+with identical cells and artifacts. Its cache-on/off comparison alone does
+not measure an improvement over shipping code. Native historical models do
+not use this override. Run every model sequentially and retain unsupported
+hardware, load refusals and parity failures as unqualified results.
+
+For a same-original-donor adjacent-frontier correctness witness, a case may add:
+
+```json
+{
+  "name": "long", "donorTokens": 16513, "sharedTokens": 14464,
+  "forkTokens": 16896, "demandedTokens": 14336,
+  "adjacentFork": {
+    "sharedTokens": 16400, "forkTokens": 16896,
+    "expectedRestoredTokens": 16384
+  }
+}
+```
+
+The optional object preserves old four-role specifications. It appends
+`adjacent_warm_fork` and `adjacent_cold_fork` after the original four rows, using
+that original donor's literal session/store/scope and hint. Actual input lengths,
+shared prefix and first divergence are validated before import. No second donor,
+new target hint, reconstructed checkpoint or memory-cache substitute qualifies.
+After idle/write/activity joins, cumulative archive counters must match the
+original donor's positive row delta and remain unchanged across all five
+non-donor rows. Both requested boundaries need exact cold/warm and cross-policy
+output equality, real file/byte reads, exact expected restoration and replay
+zero. Every MTP-on row still needs actual active work counters.
+
+The two appended rows have fixed warm-before-cold order and are correctness
+witnesses, excluded from the counterbalanced 256-ID donor-plus-middle-warm
+economic denominator. Four `ModelPrefixBenchmarkAdjacentForkTests` host methods
+cover optional/bounded spec decoding, actual divergence, monotonic donor counter
+proof and hidden/intervening writes. Eight independent pure qualification
+controls additionally reject missing/wrong-order rows, fabricated comparison
+booleans, degraded middle/adjacent payloads, changed donor hints, MTP/drain
+failures and uncharged extra ranges. These controls are separate from native
+execution; report executed counts and retain unrun native gates.
+
+`CBv2DemandedCheckpointContinuationTests` is a required seven-method SDK scheduler/tiny-fixture
+suite, independent of full-model/native qualification. It checks exact ordinary
+and split geometry/three retained roles, live versus projected in-flight work,
+rollback/retry, aligned and terminal targets, real striped admission fallback,
+pause versus incompatible progress, and preemption/capture disarm. It must run
+without an opt-in environment gate through the nonempty/no-skip wrapper:
+
+```bash
+cd libs/mlx-swift-lm
+../../scripts/run-nested-suite.sh CBv2DemandedCheckpointContinuationTests --no-parallel
+```
+
+The source-matched test binary and Metal must already be built/staged; some
+regression paths evaluate small synthetic MLX graphs. Preserve
+existing short partition/range/preemption/packed/capacity, first-content
+projection/deadline and native-retention gates. The benchmark-only long flag
+stays off in serving; passing host geometry does not establish an SSD archive,
+full-model output parity or a policy speedup. Use three fresh source-bound
+policy blocks and the same-original-donor adjacent proof before a separate
+long-serving decision.
+
+For a geometry diagnostic, specify `soloPrefillStripeTokens` explicitly in
+the JSON. The isolated factory does not forward arbitrary process overrides.
+Every row records the effective scheduler configuration and observed prefill
+chunk count; verify both before describing a comparison as matched.
+`captureTokenDiagnostics: true` records actual generated IDs, selected
+log-probabilities and top-two margins for those positions. Keep this raw
+diagnostic output private and publish only curated equality/finite-value
+results. Its additional observation work excludes its timings from performance
+comparisons; a matching recorded slice does not certify every state tensor.
+Requesting top logprobs disables active MTP in its normal eligibility gate, so
+this diagnostic must not be presented as the same MTP execution. Equal prefill
+chunk counts alone also do not control adaptive MTP width/cost history.
+
 ## Qwen recurrent checkpoint retention (live)
 
 `provider-swift/Tests/ProviderCoreTests/Inference/Live/Qwen/Qwen35CheckpointRetentionLiveTests.swift`
@@ -3745,6 +3976,60 @@ NAX in the provider (`ModelRuntimeRequirements`), so on other chips the
 fixture bypasses a product gate and trips the 30-second engine step watchdog
 in prefill. Results and the parity evidence behind the capture rule:
 [2026-09-27 report](../reports/2026-09-27-qwen-chunk-partition-parity.md).
+
+Two focused suites use the same cached dense model, opt-in gates and isolated
+encrypted SSD fixture. `Qwen35AdjacentCheckpointLiveTests` creates a demanded
+fork, withholds its file to reproduce the old publication outcome, and compares
+restored-token counts and exact output after store/engine restarts. It uses a
+1,024-token test stripe. `Qwen35DemandedShortCheckpointLiveTests` uses the
+production 4,096-token stripe to compare novel, demanded-cold and warm-fork
+requests below that stripe. Each prints native TTFT, accounting and donation
+costs; neither substitutes for fleet or load testing.
+
+```bash
+cd provider-swift
+# Build and stage source-matched metallibs with make provider-test first.
+DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+swift test --skip-build --no-parallel --filter Qwen35AdjacentCheckpointLiveTests
+DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+swift test --skip-build --no-parallel --filter Qwen35DemandedShortCheckpointLiveTests
+```
+
+Run GPU suites sequentially and report opt-in skips as unrun. The
+[candidate qualification report](../reports/2026-10-03-prefix-cache-qualification.md)
+distinguishes the local paired archive result from the production baseline.
+
+The report also retains a verification-only
+[`qwen-mixed-benchmark.swift`](../reports/evidence/prefix-qualification-2026-10-03/qwen-mixed-benchmark.swift)
+snapshot for the three mixed cold pairs and separate MTP-off warm fork. To
+reproduce the historical result, use an isolated worktree with the report's
+recorded source and dependency pins, then temporarily copy it into
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Qwen/` with the filename
+`Qwen35MixedCheckpointBenchmark.swift`,
+build the tests and stage the matching metallib, then run the two selectors
+sequentially. Remove that temporary file afterwards, rebuild the original test
+target and stage its metallib again. Cached Qwen weights are required; use an
+idle owned host and retain every cell, including failed measurements.
+
+```bash
+cd provider-swift
+mkdir -p /tmp/darkbloom-cache-performance-validation
+swift build --build-tests
+../scripts/stage-test-metallib.sh .build/arm64-apple-macosx/debug
+DARKBLOOM_MIXED_CHECKPOINT_BENCHMARK=1 \
+  DARKBLOOM_MIXED_CHECKPOINT_BENCHMARK_OUTPUT=/tmp/qwen-mixed-cohort.json \
+  ../scripts/run-nested-suite.sh realMixedCohort --no-parallel
+DARKBLOOM_MIXED_WARM_BENCHMARK=1 \
+  ../scripts/run-nested-suite.sh realMixedWarmFork --no-parallel
+```
+
+The warm fixture writes to
+`/tmp/darkbloom-cache-performance-validation/qwen-mixed-warm.json`.
+This fixture uses explicit width/stripe/budget settings and forced output
+lengths. Every native timing fixture in the report uses `strictFsync=false`:
+write completion is not fsync durability, and OS file-cache versus physical
+storage effects are not separated. The mixed control does not pack, so its
+delta measures capture creation rather than isolated packing overhead.
 
 ## Connected coordinator/provider HTTP cache gate
 
@@ -4146,6 +4431,12 @@ regressions also run in the coordinator/provider unit and race suites. Real
 production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
+
+The conditional gate uses a separate organization-membership read token.
+`python3 .github/scripts/test-threat-bedrock.py` checks active member identity,
+outsiders, bots, pending membership, repeat lookups and the independent human
+review path. The budget suite checks that local validator reasons remain visible
+without exposing raw provider output. See [review configuration](threat-model-review.md).
 
 The threat-review preflight checks the configured OpenRouter budget mode and
 remaining normal-attempt capacity as well as writer access and funding. Offline

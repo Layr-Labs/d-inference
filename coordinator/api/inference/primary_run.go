@@ -182,8 +182,9 @@ func (p *Primary) Run(in PrimaryRequest) (result PrimaryResult) {
 			CompleteCh: make(chan protocol.UsageInfo, 1), ErrorCh: make(chan protocol.InferenceErrorMessage, 1), Timing: d.Timing,
 		}
 		providerdispatch.ConfigurePending(queuePR, d.Request, in.Metadata)
+		d.ConfigureDeadlines(queuePR)
 		d.Forecast.Configure(queuePR, d.Model, d.EstimatedPromptTokens, d.Deadline, false)
-		if receivedAt := firstcontent.TimingReceivedAt(d.Timing); !receivedAt.IsZero() && d.Deadline > 0 {
+		if receivedAt := firstcontent.TimingReceivedAt(d.Timing); d.DeadlineForWork == nil && !receivedAt.IsZero() && d.Deadline > 0 {
 			queuePR.FirstContentDeadline = receivedAt.Add(d.Deadline)
 		}
 		if !queuePR.RefreshFirstContentBudget(time.Now()) {

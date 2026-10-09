@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -46,6 +46,10 @@ A scrubbed account cannot restore raw proofs through a delayed verification
 callback or an in-flight APNs cache load. Runtime token proofs and pending
 challenges for unshared keys are also cleared. Another live account on a shared device keeps its own verification
 evidence; see [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys).
+
+Autopilot earnings-floor qualification is a separate historical check: a new
+authorization does not qualify a declaration received before that grant. See
+the [reward policy](../reference/pricing-model.md#autopilot-rewards).
 
 ## Read verification in chat and network stats
 
@@ -245,3 +249,7 @@ and the [design record](../design/apns-code-attestation.md).
 - [`privacy-expectations.md`](./privacy-expectations.md) — what each party can see.
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — sealing your request and reading a sealed response.
 - [`../provider/attestation.md`](../provider/attestation.md) — the same verdicts from the operator's side.
+
+Local [cache-volume checks](../architecture/security/encryption.md#provider-cache-storage)
+are storage suitability checks, not evidence of peripheral firmware authenticity
+and not part of the coordinator's provider attestation verdict.

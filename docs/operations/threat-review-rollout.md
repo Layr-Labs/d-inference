@@ -3,7 +3,8 @@
 > Last updated: 2026-10-07
 
 This runbook provisions repository-specific Bedrock access and enables author
-auto-merge after complete security review and ordinary CI. Substantial findings
+auto-merge for active Layr-Labs organization members after complete security
+review and ordinary CI. External authors still require independent human review. Substantial findings
 or unavailable review require an independent human override on the exact commit.
 
 ## When to use
@@ -82,17 +83,22 @@ and fallback acceptance tests below. Do not recreate the provisioned resources.
    incomplete-review handling, and explicit OpenRouter fallback using a bounded
    test fixture. Close the synthetic PR without merging its vulnerable commit.
    Verify all three model API contracts; model availability alone is insufficient.
-8. Install the organization rule proposed in `infra/threat-review/merge-rules.json`
+8. Verify the member-only gate is merged. In the review App's organization
+   permissions, grant **Members: read-only** and approve the installation update.
+   Confirm the separate membership token can read an active member, and that an
+   outsider, bot, pending invitation and failed lookup cannot gain automatic
+   clearance. Repository access and old PR association are not membership proof.
+9. Install the organization rule proposed in `infra/threat-review/merge-rules.json`
    while preserving all existing protections. It requires the exact master-branch
    workflow, binds ordinary CI checks to GitHub Actions, and requires an up-to-date
    branch. A named security check alone can be forged by a PR workflow and is not
    sufficient. Confirm the GitHub plan supports exact required workflows and any
    Actions-sharing requirement before proceeding. Do not broaden private-repo
    sharing or add bypass actors as an incidental setup step.
-9. Set `THREAT_REVIEW_REQUIRE_CLEARANCE=true`. Verify the matrix below on the
+10. Set `THREAT_REVIEW_REQUIRE_CLEARANCE=true`. Verify the matrix below on the
    actual required workflow before replacing the existing blanket approval rule.
    Pending rollout, keep every PR subject to the existing human approval.
-10. Once acceptance tests pass, update only the default-branch approval policy:
+11. Once acceptance tests pass, update only the default-branch approval policy:
    set the blanket approving-review count to zero and turn off unconditional
    last-push/unattributed-change approval requirements. Preserve resolved-thread,
    signed-commit, deletion, force-push, squash-only, and access-control rules.
@@ -106,7 +112,9 @@ and fallback acceptance tests below. Do not recreate the provisioned resources.
 
 | Situation | Required result |
 |---|---|
-| Complete scan, no medium/high findings, ordinary CI passes | Author can enable auto-merge; low findings remain visible. |
+| Active Layr-Labs member, complete scan, no medium/high findings, ordinary CI passes | Author can enable auto-merge; low findings remain visible. |
+| Non-member, bot, pending invitation, or unavailable membership lookup | A clean scan cannot waive independent human approval. |
+| Member removed since the previous run | Rerun the security workflow before merge; the next evaluation cannot use old membership. |
 | Medium/high finding or incomplete/failed scan | Security workflow fails until rerun or independent manual override. |
 | Changes to `.github/`, `.agents/`, `scripts/`, `infra/`, `AGENTS.md`, or threat definitions | Independent human override required even if the model is clean. |
 | Author approval, bot approval, comment, label, stale approval, or missing reason | No override. |

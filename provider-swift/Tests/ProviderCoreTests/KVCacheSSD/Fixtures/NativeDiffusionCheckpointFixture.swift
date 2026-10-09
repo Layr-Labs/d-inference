@@ -102,8 +102,10 @@ final class NativeDiffusionCheckpointFixture: @unchecked Sendable {
         }
         return cache
     }
-    func donate(_ store: SSDHybridCheckpointStore, position: Int? = nil) async throws -> [Int] {
+    func donate(_ store: SSDHybridCheckpointStore, position: Int? = nil,
+                observeDonor: ((DiffusionGemmaRequestCache) throws -> Void)? = nil) async throws -> [Int] {
         let cache = try coldCache(prefixCount: position)
+        try observeDonor?(cache)
         let bytes = try cache.stateArrays().reduce(20 << 20) { try $0 + Memory.allocationFootprintUpperBound(byteCount: $1.nbytes) + 4096 }
         let permit = try engine.reserveNativeCheckpoint(bytes: bytes)
         defer { permit.close() }
@@ -117,8 +119,11 @@ final class NativeDiffusionCheckpointFixture: @unchecked Sendable {
         await store.waitForWritesForTesting()
         return positions
     }
-    func file(_ store: SSDHybridCheckpointStore) throws -> URL {
-        let hash = try #require(store.hashes(tokens: tokens, scope: "tenant-a").last)
+    func file(_ store: SSDHybridCheckpointStore, position: Int? = nil) throws -> URL {
+        let hashes = store.hashes(tokens: tokens, scope: "tenant-a")
+        let index = (position ?? tokens.count) / PrefixCachePolicy.blockSize - 1
+        try #require(hashes.indices.contains(index))
+        let hash = hashes[index]
         let tag = store.lookupKeys.checkpointTag(chainHash: hash, cacheSalt: "tenant-a")
         return SSDBlockStore.fileURL(root: modelRoot, tag16Hex: Data(tag.prefix(16)).hexString)
     }

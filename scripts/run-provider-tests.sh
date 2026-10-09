@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run from provider-swift after building tests and staging the matched metallib.
-# Allocator, interleaving, environment, stage-deadline and URLSession mock
+# Allocator, compiled-device, interleaving, environment, stage-deadline and URLSession mock
 # cases need fresh processes. Every isolated suite still has a non-zero/no-skip gate.
 # Keep both outcomes: a failure in the general suite must not silence this gate.
 set -uo pipefail
@@ -21,6 +21,8 @@ export DARKBLOOM_STATE_FILE="$provider_test_state_root/daemon-state.json"
 export DARKBLOOM_LOADED_MODELS_FILE="$provider_test_state_root/loaded-models.json"
 provider_test_status=0
 isolated_filters=(
+  SSDShorterNativeBlockRestoreTests
+  SSDNativeCheckpointOracleTests
   emptyNativePoolTeardownUsesActualRetiredAdapter
   processLedgerCannotCombineOldUsageWithNewMaterializationCredit
   defaultApplyProjectsSettings

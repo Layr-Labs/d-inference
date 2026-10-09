@@ -15,11 +15,16 @@ func (e *ProviderEligibility) PrivateText(id string, now time.Time) bool {
 }
 
 func (e *ProviderEligibility) privateTextLocked(p *Provider, enforceEvidence, allowAppAttest bool, now time.Time) bool {
+	appAttest := allowAppAttest && e.registry.providerHasAppAttestAuthorizationLocked(p, now)
+	return e.privateTextWithAppAttestLocked(p, enforceEvidence, appAttest, now)
+}
+
+// appAttest is the caller's lock-scoped verdict at its authoritative instant.
+func (e *ProviderEligibility) privateTextWithAppAttestLocked(p *Provider, enforceEvidence, appAttest bool, now time.Time) bool {
 	r := e.registry
 	if p.appAttestSecurityDenied {
 		return false
 	}
-	appAttest := allowAppAttest && r.providerHasAppAttestAuthorizationLocked(p, now)
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}

@@ -10,14 +10,13 @@ import (
 // OpenProviderSession records the start of a provider connection. Idempotent
 // (mirrors the postgres ON CONFLICT DO NOTHING): if a row for sessionID already
 // exists — duplicate register, or open racing behind a close — it does nothing.
-func (s *State) OpenProviderSession(_ context.Context, sessionID, serial, accountID string) error {
+func (s *State) OpenProviderSession(_ context.Context, sessionID, serial, accountID string, now time.Time) error {
 
 	for i := range s.ProviderSessions {
 		if s.ProviderSessions[i].SessionID == sessionID {
 			return nil
 		}
 	}
-	now := time.Now()
 	s.ProviderSessionSeq++
 	s.ProviderSessions = append(s.ProviderSessions, store.ProviderSession{
 		ID:           s.ProviderSessionSeq,

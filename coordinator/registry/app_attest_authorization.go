@@ -185,7 +185,13 @@ func (r *Registry) RevokeAppAttestCredential(credentialID string) []string {
 // Caller holds r.mu and p.mu. The current pointer check is also performed at
 // the final writer handoff, including when a same-ID connection was replaced.
 func (r *Registry) providerHasAppAttestAuthorizationLocked(p *Provider, now time.Time) bool {
-	now = r.appAttestNow(now)
+	return r.providerHasAppAttestAuthorizationAtLocked(p, r.appAttestNow(now))
+}
+
+// The supplied instant is authoritative for historical receipt qualification.
+// Current binding, policy and revocation still apply; only the lease interval is
+// evaluated at that instant, without substituting the inspection/test clock.
+func (r *Registry) providerHasAppAttestAuthorizationAtLocked(p *Provider, now time.Time) bool {
 	a := p.appAttestAuthorization
 	_, revoked := r.appAttestRevokedCredentials[a.CredentialID]
 	return r.appAttestServingEnabled && !revoked && !p.appAttestSecurityDenied &&
@@ -225,6 +231,12 @@ func (r *Registry) ProviderServingAuthorization(p *Provider) (AppAttestServingAu
 func (r *Registry) providerAppAttestServingAuthorizedLocked(p *Provider, now time.Time) bool {
 	return r.providerHasAppAttestAuthorizationLocked(p, now) && p.RuntimeVerified &&
 		!providerStateRestoreRequiredLocked(p) && r.providerSupportsPrivateTextAtLocked(p, now)
+}
+
+func (r *Registry) providerAppAttestServingAuthorizedAtLocked(p *Provider, at time.Time) bool {
+	return r.providerHasAppAttestAuthorizationAtLocked(p, at) && p.RuntimeVerified &&
+		!providerStateRestoreRequiredLocked(p) && (&ProviderEligibility{registry: r}).privateTextWithAppAttestLocked(
+		p, r.releasePolicyEnforcedAtLocked(at), true, at)
 }
 
 // ProviderLegacyServingAuthorized evaluates all current public legacy

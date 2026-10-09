@@ -79,7 +79,8 @@ enum QwenDenseObservedSourceValidation {
         var records: [QwenDenseValidatedSourceTensor] = [], total = 0, largest = 0
         for observed in sorted {
             let tensor = observed.canonical
-            guard observed.sourcePartCount == 1, tensor.byteCount > 0, tensor.byteCount <= hostLimit,
+            guard observed.sourcePartCount == QwenRoutedExpertStageMetadata.sourcePartCount(canonicalName: tensor.name),
+                  tensor.byteCount > 0, tensor.byteCount <= hostLimit,
                   tensor.shape == observed.preparedExpectedShape,
                   let packed = observed.constructorParameterIsPacked,
                   (tensor.sourceDType == "U32") == packed,

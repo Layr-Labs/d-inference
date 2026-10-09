@@ -84,7 +84,8 @@ final class QwenLayerStageSession {
               request.profile.activationDType == receipt.embeddingActivationDType else {
             throw ProbeError("Generation profile differs from the actual loaded stage geometry/dtype")
         }
-        let geometry = try CBv2RequestGeometry(model: stage.model, family: .qwen35, feedForwardKind: "dense",
+        let geometry = try CBv2RequestGeometry(model: stage.model, family: .qwen35,
+            feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(stage.model),
             layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
             configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
         if let adopting {

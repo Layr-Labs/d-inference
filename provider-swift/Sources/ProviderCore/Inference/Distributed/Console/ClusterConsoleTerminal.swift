@@ -59,10 +59,11 @@ public final class ClusterConsoleTerminal {
         _ = tcsetattr(input, waits ? TCSAFLUSH : TCSANOW, &saved)
     }
 
-    /// Nil when the terminal does not report a size.
+    /// Nil when the terminal does not report a size. A terminal nobody has
+    /// sized reports 0 by 0, which is no size either.
     public func size() -> ClusterConsoleSize? {
         var window = winsize()
-        guard ioctl(output, TIOCGWINSZ, &window) == 0 else { return nil }
+        guard ioctl(output, TIOCGWINSZ, &window) == 0, window.ws_col > 0, window.ws_row > 0 else { return nil }
         return .init(columns: Int(window.ws_col), rows: Int(window.ws_row))
     }
 

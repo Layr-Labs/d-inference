@@ -146,6 +146,10 @@ extension ClusterConsoleCheck {
         expect(pty.wait { $0.contains("Not available in this build") }, "scrolled to the end")
         expect(resized(60, 10) { $0.count == 10 }, "smaller while scrolled")
         expect(resized(132, 300) { $0.count == 300 && $0[1].hasPrefix("Readiness") }, "a window that shows everything starts at the top: \(pty.screen.prefix(2))")
+        // A terminal that reports no size at all keeps the last size it had.
+        pty.resize(columns: 0, rows: 0); kill(getpid(), SIGWINCH)
+        usleep(200_000)
+        expect(pty.screen.count == 300 && run.isRunning, "an unsized terminal leaves the screen as it was: \(pty.screen.count) rows")
         // A burst of changes ends on the last size.
         for (columns, rows) in [(40, 12), (200, 5), (3, 3), (90, 28), (0, 0), (64, 20)] { pty.resize(columns: columns, rows: rows); kill(getpid(), SIGWINCH) }
         expect(pty.wait { _ in pty.screen.count == 20 && pty.screen.allSatisfy { $0.count <= 64 } }, "a burst of resizes settles on the last size")

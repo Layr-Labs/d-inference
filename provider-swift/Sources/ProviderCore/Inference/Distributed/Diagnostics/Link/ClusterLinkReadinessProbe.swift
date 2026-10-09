@@ -13,7 +13,10 @@ public enum ClusterLinkReadinessProbe {
 
     /// Runs the fixed system tools. Blocking: at most `inspectionTimeoutNanoseconds`.
     public static func inspectLocalLink() -> ClusterLinkReadinessReport {
-        inspect(run: boundedToolRunner())
+        // The owner-only record says which ports Darkbloom has addressed; a
+        // record that cannot be read only means that is not reported.
+        let recorded = (try? ClusterUserPaths()).flatMap { try? ClusterLinkAliasStore(paths: $0).load() }
+        return inspect(run: boundedToolRunner(), recorded: recorded ?? ClusterLinkAliasRecord())
     }
 
     /// The live runner for one inspection: each child gets
@@ -29,10 +32,13 @@ public enum ClusterLinkReadinessProbe {
     }
 
     /// The inspection over any runner, so that checks supply canned tool
-    /// results and never start the real tools.
-    static func inspect(run: ClusterLinkToolRunner) -> ClusterLinkReadinessReport {
+    /// results and never start the real tools. `recorded` is what Darkbloom
+    /// has assigned to ports before, so that a missing address of its own is
+    /// told apart from none, and an address nothing keeps from one that lasts.
+    static func inspect(run: ClusterLinkToolRunner,
+                        recorded: ClusterLinkAliasRecord = ClusterLinkAliasRecord()) -> ClusterLinkReadinessReport {
         do {
-            let devices = try inspectDevices(run: run)
+            let devices = try inspectDevices(run: run, recorded: recorded)
             return .init(state: overallState(of: devices), devices: devices)
         } catch {
             return .init(state: error.state)
@@ -42,7 +48,8 @@ public enum ClusterLinkReadinessProbe {
     /// A machine-level finding that ends the inspection before devices are judged.
     private struct Stopped: Error { let state: ClusterLinkReadinessState }
 
-    private static func inspectDevices(run: ClusterLinkToolRunner) throws(Stopped) -> [ClusterLinkReadinessReport.Device] {
+    private static func inspectDevices(run: ClusterLinkToolRunner,
+                                       recorded: ClusterLinkAliasRecord) throws(Stopped) -> [ClusterLinkReadinessReport.Device] {
         switch ClusterRDMAToolOutput.controlState(try text(run(.rdmaControlStatus), whenUnavailable: .rdmaUnavailable)) {
         case .enabled: break
         case .disabled: throw Stopped(state: .rdmaDisabled)
@@ -62,7 +69,15 @@ public enum ClusterLinkReadinessProbe {
             if device.portActive, case .output(let detail) = run(.rdmaDeviceDetail(device: device.name)) {
                 gidPresent = ClusterRDMAToolOutput.ipv4MappedGIDPresent(inDetail: detail, of: device.name)
             }
-            return judged(device, interfaces: interfaces, ipv4MappedGIDPresent: gidPresent)
+            var judgement = judged(device, interfaces: interfaces, ipv4MappedGIDPresent: gidPresent)
+            // Only a port Darkbloom has on record costs the two extra readings.
+            if let alias = judgement.interface.flatMap(recorded.alias(on:)) {
+                let carried = ClusterNetworkInterfaces.lists(alias.address, on: alias.interface, inListing: interfaceListing) == true
+                judgement.assignedAddress = carried ? .present : .missing
+                judgement.addressKept = ClusterLinkAddressKeeper(interface: alias.interface, address: alias.address)?
+                    .isRunning(run: run)
+            }
+            return judgement
         }
     }
 

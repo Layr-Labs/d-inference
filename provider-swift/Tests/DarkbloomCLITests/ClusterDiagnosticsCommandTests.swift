@@ -27,6 +27,16 @@ import ArgumentParser
     #expect(remove.remove && remove.device == nil)
     let watch = try Cluster.Link.parse(["--watch", "--json"])
     #expect(watch.watch && watch.json)
+    let durable = try Cluster.Link.parse(["--fix", "--dry-run"])
+    #expect(durable.fix && durable.dryRun && !durable.temporary)
+    let temporary = try Cluster.Link.parse(["--fix", "--temporary"])
+    #expect(temporary.temporary && !temporary.dryRun)
+    let plannedRemoval = try Cluster.Link.parse(["--remove", "--dry-run", "--device", "rdma_en6"])
+    #expect(plannedRemoval.remove && plannedRemoval.dryRun)
+    // The two options qualify a fix or a removal and mean nothing elsewhere.
+    for refused in [["--temporary"], ["--dry-run"], ["--remove", "--temporary"], ["--watch", "--dry-run"], ["--watch", "--temporary"]] {
+        #expect(throws: (any Error).self) { _ = try Cluster.Link.parse(refused) }
+    }
 
     // One mode at a time, a device only where it applies, and nothing that
     // selects a host, a file, an address or a privileged command.
@@ -51,7 +61,12 @@ import ArgumentParser
     #expect(setup.json && setup.yes)
     let flagged = try Darkbloom.parseAsRoot(["cluster", "--json"])
     let unattended = try #require(flagged as? Cluster.Setup)
-    #expect(unattended.json && !unattended.yes)
+    #expect(unattended.json && !unattended.yes && !unattended.temporary && !unattended.dryRun)
+    let planned = try Darkbloom.parseAsRoot(["cluster", "--dry-run"])
+    let dryRun = try #require(planned as? Cluster.Setup)
+    #expect(dryRun.dryRun && !dryRun.temporary)
+    let brief = try Cluster.Setup.parse(["--temporary"])
+    #expect(brief.temporary && !brief.dryRun)
 
     // The other cluster commands are reached exactly as before.
     let link = try Darkbloom.parseAsRoot(["cluster", "link"])

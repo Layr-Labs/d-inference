@@ -59,6 +59,39 @@ extension ClusterDiagnosticsCheck {
         try require(try detail(blocked, "localLinkDevice.rdma_en6") == "rdma_en6 (en6): portBridgedWithoutAddress · port active · "
             + "member of bridge0 · no IPv4 address of its own · no IPv4-mapped GID. " + bridgedGuidance, "Mac B device detail")
 
+        // An address Darkbloom assigned to the port that the port does not
+        // have: the doctor says so and names the one command, for the Mac and
+        // for the port.
+        var lostPort = device(6, .portBridgedWithoutAddress, bridge: "bridge0")
+        lostPort.assignedAddress = .missing
+        let lost = report(Link(state: .portBridgedWithoutAddress, devices: [device(2, .noActivePort, bridge: "bridge0"), lostPort]))
+        let lostGuidance = ClusterLinkReadinessReport.addressLostGuidance
+        try requireChecks(lost, [("localLink", .failed), ("localLinkDevice.rdma_en6", .failed)], "lost address checks")
+        try require(try detail(lost, "localLink") == "portBridgedWithoutAddress: " + lostGuidance
+            && lostGuidance.contains("run `darkbloom cluster`"), "lost address guidance for the Mac")
+        try require(try detail(lost, "localLinkDevice.rdma_en6") == "rdma_en6 (en6): portBridgedWithoutAddress · port active · "
+            + "member of bridge0 · no IPv4 address of its own · no IPv4-mapped GID · its recorded address is missing. "
+            + lostGuidance, "lost address detail for the port")
+
+        // Ready, but with an address nothing would put back: the doctor
+        // passes and still says what to run before the address is lost.
+        var temporaryPort = device(6, .ready, bridge: "bridge0")
+        temporaryPort.assignedAddress = .present
+        temporaryPort.addressKept = false
+        let temporary = report(Link(state: .ready, devices: [temporaryPort]))
+        let temporaryGuidance = ClusterLinkReadinessReport.addressTemporaryGuidance
+        try requireChecks(temporary, [("localLink", .passed), ("localLinkDevice.rdma_en6", .passed)], "temporary address checks")
+        try require(try detail(temporary, "localLink") == "ready: an active RDMA port publishes the IPv4-mapped GID that JACCL requires. "
+            + temporaryGuidance + " Local interface state only: no peer was contacted and no collective ran."
+            && temporaryGuidance.contains("run `darkbloom cluster`"), "temporary address guidance for the Mac")
+        try require(try detail(temporary, "localLinkDevice.rdma_en6") == "rdma_en6 (en6): ready · port active · member of bridge0 · "
+            + "own IPv4 address · IPv4-mapped GID published · nothing keeps its address. " + temporaryGuidance,
+            "temporary address detail for the port")
+        var keptPort = temporaryPort
+        keptPort.addressKept = true
+        try require(try detail(report(Link(state: .ready, devices: [keptPort])), "localLink") == detail(ready, "localLink"),
+            "a kept address reads like any ready link")
+
         for state in [ClusterLinkReadinessState.rdmaDisabled, .rdmaUnavailable, .probeFailed] {
             let machine = report(Link(state: state), configuredDevice: "rdma_en7")
             try requireChecks(machine, [("localLink", .failed)], "\(state) checks")

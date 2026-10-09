@@ -292,4 +292,104 @@ extension ClusterLinkCheck {
         expectEqual(foreign.inspect().report.summaryLines.dropFirst().first,
             "  mlx5_0: gidNotPublished · port active · interface not identified · no IPv4-mapped GID", "unconventional device line")
     }
+
+    /// Whether an address Darkbloom gave a port is still there, as the
+    /// read-only inspection reports it.
+    static func assignedAddressReport() {
+        guard let given = ClusterLinkLocalAddress(dottedDecimal: "169.254.10.20") else { expect(false, "fixture address"); return }
+        let record = ClusterLinkAliasRecord(aliases: [.init(interface: "en6", address: given)])
+        func inspect(_ tools: FakeLinkTools, _ recorded: ClusterLinkAliasRecord) -> ClusterLinkReadinessReport {
+            ClusterLinkReadinessProbe.inspect(run: tools.outcome(of:), recorded: recorded)
+        }
+        let lostGuidance = ClusterLinkReadinessReport.addressLostGuidance
+        let temporaryGuidance = ClusterLinkReadinessReport.addressTemporaryGuidance
+        expect(lostGuidance.contains("does not have the address Darkbloom has on record") && temporaryGuidance.contains("Nothing keeps the address"),
+            "what each guidance is about")
+        for guidance in [lostGuidance, temporaryGuidance] {
+            expect(guidance.contains("run `darkbloom cluster` to") && !guidance.contains("--fix")
+                && guidance.contains("approval in a macOS prompt") && guidance.hasSuffix(".") && !guidance.dropLast().contains(". "),
+                "guidance about an assigned address is one sentence naming the one command")
+        }
+        // True also where an earlier attempt never got the address onto the port.
+        expect(!lostGuidance.contains("removed it") && !lostGuidance.contains("put it back") && !lostGuidance.contains("earlier"),
+            "nothing is claimed about how it went missing")
+
+        // Configured earlier and now missing: said plainly, with the one command to run.
+        let lost = inspect(.macB, record)
+        expectEqual(lost.state, .portBridgedWithoutAddress, "the state code is unchanged by a lost address")
+        expectEqual(lost.devices.map(\.assignedAddress), [nil, nil, nil, nil, .missing, nil], "only the recorded port is marked")
+        expectEqual(lost.guidance, lostGuidance, "a lost address has its own guidance")
+        expectEqual(lost.summaryLines.dropFirst(5).first,
+            "  rdma_en6 (en6): portBridgedWithoutAddress · port active · member of bridge0 · no IPv4 address of its own · no IPv4-mapped GID · its recorded address is missing",
+            "lost address in the device line")
+        expectEqual(lost.summaryLines.last, lostGuidance, "lost-address guidance closes the summary")
+        expect(json(lost).contains("\"assignedAddress\" : \"missing\""), "lost address in JSON")
+        for secret in ["169.254", "10.20"] { expect(!json(lost).contains(secret) && !lost.summaryLines.joined().contains(secret), "the address itself is not shown") }
+
+        expectEqual(lost.devices.map(\.addressKept), [nil, nil, nil, nil, false, nil], "and nothing keeps it")
+
+        // Still there, with the job that keeps it: reported as present and kept, nothing to do.
+        var keptTools = FakeLinkTools.macBFixed(address: "169.254.10.20")
+        keptTools.installKeeper(interface: "en6", address: "169.254.10.20")
+        let kept = inspect(keptTools, record)
+        expectEqual(kept.state, .ready, "kept address state")
+        expectEqual(kept.devices.map(\.assignedAddress), [nil, nil, nil, nil, .present, nil], "kept address is marked present")
+        expectEqual(kept.devices.map(\.addressKept), [nil, nil, nil, nil, true, nil], "and marked kept")
+        expectEqual(kept.guidance, nil, "a kept address needs no guidance")
+        expectEqual(kept.summaryLines.last, ClusterLinkReadinessReport.readyScope, "a kept address reads like any ready link")
+        expect(json(kept).contains("\"assignedAddress\" : \"present\"") && json(kept).contains("\"addressKept\" : true"),
+            "kept address in JSON")
+
+        // Still there, but nothing would put it back: ready, and said to be at risk before it is lost.
+        let temporary = inspect(.macBFixed(address: "169.254.10.20"), record)
+        expectEqual([temporary.state, temporary.devices[4].verdict], [.ready, .ready], "a temporary address is still a ready link")
+        expectEqual(temporary.devices[4].addressKept, false, "a temporary address is not kept")
+        expectEqual(temporary.guidance, temporaryGuidance, "a temporary address has its own guidance")
+        expectEqual(Array(temporary.summaryLines.suffix(2)), [temporaryGuidance, ClusterLinkReadinessReport.readyScope],
+            "the guidance comes before the scope of a ready result")
+        expect(temporary.summaryLines.dropFirst(5).first?.hasSuffix(" · nothing keeps its address") == true, "temporary address in the device line")
+        // A keeper reading that could not finish says neither: nothing is claimed about the address.
+        var unread = FakeLinkTools.macBFixed(address: "169.254.10.20")
+        unread.keeperJobs["en6"] = .timedOut
+        expectEqual(inspect(unread, record).devices[4].addressKept, nil, "an unread keeper is not reported either way")
+        expectEqual(inspect(unread, record).guidance, nil, "and no guidance is built on it")
+        expect(json(temporary).contains("\"addressKept\" : false"), "temporary address in JSON")
+        // A job for another address, or one that is not loaded, keeps nothing.
+        var otherJob = FakeLinkTools.macBFixed(address: "169.254.10.20"), unloaded = keptTools
+        otherJob.installKeeper(interface: "en6", address: "169.254.10.21")
+        unloaded.keeperJobs = [:]
+        expectEqual([inspect(otherJob, record).guidance, inspect(unloaded, record).guidance], [temporaryGuidance, temporaryGuidance],
+            "only the keeper as written, and loaded, counts")
+        // The two extra readings are made only for a port on record.
+        var commands = [ClusterLinkToolCommand]()
+        _ = ClusterLinkReadinessProbe.inspect(run: { commands.append($0); return keptTools.outcome(of: $0) }, recorded: record)
+        expectEqual(commands.filter { $0 == .keeperJob(interface: "en6") || $0 == .keeperJobFile(interface: "en6") }.count, 2,
+            "the keeper of a recorded port is read once")
+        expect(!FakeLinkTools.macB.inspect().commands.contains { if case .keeperJob = $0 { return true } else { return false } },
+            "no keeper is looked for without a record")
+
+        // Nothing recorded: the plain guidance and no extra field.
+        let never = inspect(.macB, ClusterLinkAliasRecord())
+        expectEqual(never.guidance, ClusterLinkReadinessState.portBridgedWithoutAddress.guidance, "no record, plain guidance")
+        expect(never.devices.allSatisfy { $0.assignedAddress == nil && $0.addressKept == nil } && !json(never).contains("assignedAddress")
+            && !json(never).contains("addressKept"), "no record, no field")
+        expectEqual(FakeLinkTools.macB.inspect().report, never, "the default inspection assumes no record")
+
+        // The port has some other address now: Darkbloom's is gone, but the port is ready, so nothing is asked.
+        let replaced = inspect(.macBFixed(address: "169.254.10.21"), record)
+        expectEqual(replaced.devices[4].assignedAddress, .missing, "another address is not the assigned one")
+        expectEqual([replaced.state, replaced.devices[4].verdict], [.ready, .ready], "a ready port stays ready")
+        expectEqual(replaced.guidance, nil, "a ready port needs no guidance")
+
+        // The recorded port is down: the cable comes first.
+        var down = FakeLinkTools.macB
+        down.deviceList = .output(LinkFixtures.deviceList(active: nil))
+        let unplugged = inspect(down, record)
+        expectEqual(unplugged.guidance, ClusterLinkReadinessState.noActivePort.guidance, "a port that is down asks for the cable")
+        expectEqual(unplugged.devices[4].assignedAddress, .missing, "the record still applies to a port that is down")
+
+        // A record for a port this Mac does not list changes nothing.
+        let elsewhere = ClusterLinkAliasRecord(aliases: [.init(interface: "en9", address: given)])
+        expectEqual(inspect(.macB, elsewhere), never, "a record for another port")
+    }
 }

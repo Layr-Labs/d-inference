@@ -1166,11 +1166,12 @@ and for what the member answers.
 
 ### Guided link setup
 
-`darkbloom cluster`, the same as `darkbloom cluster setup [--json] [--yes]`
+`darkbloom cluster`, the same as
+`darkbloom cluster setup [--json] [--yes] [--temporary] [--dry-run]`
 (`provider-swift/Sources/darkbloom/ClusterSetupCommand.swift`, `Cluster.Setup`),
-gets this Mac's link ready in one command. It prints one line per step as each
-is observed, and the only thing it asks of the person is approval in the macOS
-prompt. It runs the inspection, the change watch and the approval-gated fix
+gets this Mac's link ready in one command and keeps it ready. It prints one
+line per step as each is observed, and the only thing it asks of the person is
+approval in the macOS prompt. It runs the inspection, the change watch and the approval-gated fix
 described in the next sections; its decisions and wording are one state machine
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkSetupFlow.swift`,
 `ClusterLinkSetupFlow`).
@@ -1179,19 +1180,26 @@ described in the next sections; its decisions and wording are one state machine
 |---|---|---|
 | RDMA | RDMA is enabled and lists its devices | Prints the guidance for `rdmaDisabled`, `rdmaUnavailable` or `probeFailed` and stops |
 | Connection | An RDMA port is active | Waits for a Thunderbolt 5 connection, polling as `cluster link --watch` does, until a port comes up or the wait is interrupted |
-| Address | The active port publishes the IPv4-mapped GID | If the port only lacks an address: says what it is about to do, opens the macOS prompt, then applies and verifies exactly as `cluster link --fix` does. A cancelled prompt is reported with how to run the command again. More than one such port, or any other state, prints what to do and stops |
+| Address | The active port publishes the IPv4-mapped GID, and an address Darkbloom assigned to it has its keeper | If the port only lacks an address: says what it is about to do, opens the macOS prompt, then installs and verifies exactly as `cluster link --fix` does, so the address is also put back whenever macOS removes it. A port that does not have the address Darkbloom has on record for it is named as such and repaired by the same one approval; when its keeper is installed and running the flow first waits `keeperWaitSeconds` (one keeper interval and 4 seconds) for the keeper to put the address back, without a prompt, and installs the keeper afresh only if it has not. A port that is ready on an address Darkbloom added but nothing keeps is reported as ready, and the same prompt installs only the keeper; a cancelled or unavailable prompt leaves the link ready. A cancelled prompt is reported with how to run the command again. More than one such port, or any other state, prints what to do and stops |
 | Done | — | Prints that this Mac's link is ready and that the other Mac needs the same command. Pairing and model steps are not part of this flow |
 
 The wait and the prompt happen on their own only when standard output is a
 terminal and `--json` is not given (`ClusterLinkSetupFlow.mayPrompt`). Otherwise
 the command prints what it found and the next step, and exits non-zero unless
-the link is ready; `--yes` allows the wait and the prompt there too. `--json`
+the link is ready; `--yes` allows the wait and the prompt there too.
+`--temporary` adds the address alone, as `cluster link --fix --temporary` does.
+`--dry-run` waits for nothing and opens no prompt: where the flow would ask, it
+prints the exact commands an approval would run, and exits 0. `--json`
 prints one object at the end: `schema` is `darkbloom_cluster_setup_v1`, with
 `ready`, `state` (the link state the flow last observed; `ready` after a
 verified fix) and `narration`, the lines in order. The exit status is 0 when
-the link is ready, the fix's own status (see [Link fix and
+the link is ready or a dry run printed its plan, the fix's own status (see [Link fix and
 removal](#link-fix-and-removal)) when the fix ended any other way, and 1 for
-every other stop, including an interrupted wait.
+every other stop, including an interrupted wait. A link that is ready on an
+address nothing keeps still exits 0 when the keeper was not installed because
+no prompt was allowed, the prompt was cancelled or it could not be shown; the
+lines say what to run. If the keeper's installation was approved and then
+failed, the exit status is the fix's own even though the link is still ready.
 
 ### Local link readiness
 
@@ -1209,8 +1217,8 @@ checks; `darkbloom cluster status` does not run it.
 | Tools run | `/usr/bin/rdma_ctl status`, `/usr/bin/ibv_devinfo`, `/sbin/ifconfig -a`, then `/usr/bin/ibv_devinfo -v -d <device>` for each device whose port is active; `--fix` also reads `/sbin/route -n get default`. Absolute paths, no shell, null standard input, environment limited to `PATH`, `LANG` and `LC_ALL` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolCommand.swift` (`ClusterLinkToolCommand`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolProcess.swift` (`ClusterLinkToolProcess.run`) |
 | Time bounds | `childTimeoutNanoseconds = 3_000_000_000` per tool, `inspectionTimeoutNanoseconds = 10_000_000_000` for all of them, `reapTimeoutNanoseconds = 1_000_000_000` to await a killed tool | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessProbe.swift` (`ClusterLinkReadinessProbe`); `ClusterLinkToolProcess` |
 | Size bounds | `maximumOutputBytes = 256 * 1024` per tool, `maximumDevices = 32` | `ClusterLinkReadinessProbe` |
-| Report | `schema` is `darkbloom_cluster_link_readiness_v1`; `state`, `guidance`, one `devices` entry per RDMA device, and the constant `physicalProbePerformed: false`. Device and interface names only: no IP address, MAC address, GID, host name or serial number. An unknown fact is omitted rather than written as `null` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessReport.swift` (`ClusterLinkReadinessReport`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkName.swift` (`ClusterLinkName`) |
-| Doctor checks | `localLink` for the Mac; `localLinkDevice.<device>` for each active port and for the saved setup's port; `configuredLinkDevice` when the saved setup names a device this Mac does not list. A port that is not ready fails only where serving would use it. The doctor report sets `localLinkInspectionPerformed` and keeps `physicalProbePerformed` `false` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkDiagnosticChecks.swift` (`diagnosticChecks`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnosticsReport.swift` (`ClusterDiagnosticsReport`) |
+| Report | `schema` is `darkbloom_cluster_link_readiness_v1`; `state`, `guidance`, one `devices` entry per RDMA device, and the constant `physicalProbePerformed: false`. Device and interface names only: no IP address, MAC address, GID, host name or serial number. An unknown fact is omitted rather than written as `null`. A device carries `assignedAddress` (`present` or `missing`) and `addressKept` (whether the address keeper is loaded with the job definition Darkbloom writes; omitted when that could not be read) only when the record of [link fixes](#link-fix-and-removal) names its interface; those two readings are `/bin/launchctl print system/<label>` and `/usr/bin/plutil -convert json -o - <file>` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessReport.swift` (`ClusterLinkReadinessReport`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkName.swift` (`ClusterLinkName`) |
+| Doctor checks | `localLink` for the Mac; `localLinkDevice.<device>` for each active port and for the saved setup's port; `configuredLinkDevice` when the saved setup names a device this Mac does not list. A port that is not ready fails only where serving would use it. A ready port whose address nothing keeps passes, and its detail carries the guidance below. The doctor report sets `localLinkInspectionPerformed` and keeps `physicalProbePerformed` `false` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkDiagnosticChecks.swift` (`diagnosticChecks`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnosticsReport.swift` (`ClusterDiagnosticsReport`) |
 
 `state`, and each device's `verdict`, is one value of
 `ClusterLinkReadinessState`
@@ -1218,7 +1226,19 @@ checks; `darkbloom cluster status` does not run it.
 Every state except `ready` carries one `guidance` sentence. For the two states
 that only lack an address (`fixableByAddingAddress`) it offers
 `darkbloom cluster link --fix`; for the others it names the change the operator
-must make and says that Darkbloom will not make it.
+must make and says that Darkbloom will not make it. When the port that decides
+the state has `assignedAddress: missing`, meaning the record holds an address
+for it that the port does not carry now, the guidance says exactly that and
+names the one command, `darkbloom cluster`
+(`ClusterLinkReadinessReport.addressLostGuidance`). It does not say how the
+address went missing: macOS removes one when it reconfigures the port, and an
+earlier attempt that was approved elsewhere or failed part-way leaves the same
+record. A `ready` state carries guidance in one case: the deciding port has
+`assignedAddress: present` and `addressKept: false`, an address nothing would
+put back, and the sentence names the same command
+(`ClusterLinkReadinessReport.addressTemporaryGuidance`). The text summary then
+prints that sentence before the scope line. The doctor's `localLink` and
+`localLinkDevice.<device>` checks carry the same sentences.
 
 | State | Meaning |
 |---|---|
@@ -1233,46 +1253,78 @@ must make and says that Darkbloom will not make it.
 
 ### Link fix and removal
 
-`darkbloom cluster link --fix [--device <rdma device>] [--json]` gives the one
-active port that lacks an IPv4 address a link-local one, so that it publishes
-the IPv4-mapped GID. `darkbloom cluster link --remove [--device <rdma device>]
-[--json]` takes that address away again. Nothing is changed without a person
-approving the macOS authorization prompt: Darkbloom runs one fixed command
-through `/usr/bin/osascript` (`do shell script … with administrator
-privileges`) and never uses `sudo` or sees a password. The address is lost at a
-restart or when the cable is replugged; `--fix` is safe to run again and adds
-it back.
+`darkbloom cluster link --fix [--device <rdma device>] [--temporary] [--dry-run] [--json]`
+gives the one active port that lacks an IPv4 address a link-local one, so that
+it publishes the IPv4-mapped GID, and keeps it there.
+`darkbloom cluster link --remove [--device <rdma device>] [--dry-run] [--json]`
+undoes everything a fix installed and nothing else, including a keeper whose
+record is gone. Nothing is changed without
+a person approving the macOS authorization prompt: Darkbloom passes one fixed
+command line to `/usr/bin/osascript` (`do shell script … with administrator
+privileges`) and never uses `sudo` or sees a password.
+
+An address added with `ifconfig` alone does not last. macOS removes it at a
+restart, and on a Mac that shares its internet over the Thunderbolt Bridge it
+was also seen removed, without sleep, restart or replug, at the moment another
+network device was disconnected. A fix therefore installs an address keeper: a
+root launchd job that runs every `intervalSeconds = 10` seconds and at start-up,
+and adds the address back only when the port has no IPv4 address at all, so a
+port that has any other address keeps just that one. It is
+one file under `/Library/LaunchDaemons`; it runs `/sbin/ifconfig` and
+`/usr/bin/grep` and installs no program. It leaves the bridge, its members,
+Internet Sharing and every network service as they are. macOS lists it under
+System Settings → General → Login Items & Extensions, where it can be switched
+off; `--remove` deletes it. `--temporary` adds the address without the keeper.
+
+The install writes nothing to launchd's own database of enabled and disabled
+jobs, because a removal could not take such an entry out again. If the job was
+switched off under Login Items & Extensions, macOS may refuse to start it and
+the fix then ends as `commandFailed` or `appliedButNotReady`; switch it on
+there and run `darkbloom cluster` again; the address itself is added before
+the job is started, so the link is usable meanwhile. `--remove` works from the
+record below and, for ports the record does not name, from the keepers it
+finds installed: a file named as above whose content is exactly a job
+definition Darkbloom writes names its port and address, so a keeper left
+behind by a deleted `~/.darkbloom`, or installed from another account, is
+still removed. Run `darkbloom cluster link --remove` before deleting
+`~/.darkbloom`.
 
 | Item | Value | Source |
 |---|---|---|
-| When `--fix` acts | Exactly one active port has verdict `portWithoutIPv4Address` or `portBridgedWithoutAddress`, or `--device` names such a port. A Mac that is already `ready` is left alone, and any other state stops before the prompt | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepair.swift` (`ClusterLinkFixPlan.make`) |
-| Privileged command | `/sbin/ifconfig <interface> inet <address> netmask 255.255.0.0 alias`; removal is `/sbin/ifconfig <interface> inet <address> -alias`. Built only from a validated interface name and a generated address; `--device` is matched against the listed devices and never placed in the command | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAliasCommand.swift` (`ClusterLinkAliasCommand`) |
-| Address | `169.254.x.y` with both octets in 1–254, derived from a SHA-256 of this Mac's hardware UUID and the interface name, so the same port gets the same address each time and two Macs almost never choose the same one. It appears only in the command shown to macOS and in the record below; never in output, JSON or logs | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkLocalAddress.swift` (`derived`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkMachineIdentity.swift` (`hardwareUUID`) |
-| Verification | After the command runs, the port's device must be `ready` (up to `verificationAttempts = 10` probes one second apart), no bridge may have gained or lost a member, and the default route must leave through the same interface as before | `ClusterLinkRepair` (`unmetConditions`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkTopology.swift` (`ClusterLinkTopology`) |
-| Record | `~/.darkbloom/cluster-device/link-alias.json`, mode `0600`, schema `darkbloom_cluster_link_alias_v1`: the interface and address of each alias added and not yet removed. Written before the prompt, and again after an approved one, under the file lock and with the strict cluster file policy. After a cancelled prompt or a failed command the entry is dropped once the port is seen without the address; it is kept when no prompt could be shown, so that an address added with the printed command can still be removed. `--remove` acts only on what the record names, only while the port still carries that address, and clears entries whose address is gone | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAliasRecord.swift` (`ClusterLinkAliasStore`) |
+| When `--fix` acts | Exactly one active port has verdict `portWithoutIPv4Address` or `portBridgedWithoutAddress`, or `--device` names such a port. A Mac that is already `ready` is left alone, with one exception unless `--temporary`: a ready port whose address is the recorded one and has no running keeper (`assignedAddress: present`, `addressKept: false`) gets the keeper, by the same commands. A ready port on any other address is never touched, and any other state stops before the prompt | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepair.swift` (`ClusterLinkFixPlan.make`) |
+| Address keeper | Label `io.darkbloom.cluster-link.<interface>`, file `/Library/LaunchDaemons/io.darkbloom.cluster-link.<interface>.plist` (owner `root:wheel`, mode `644`), keys `Label`, `ProgramArguments`, `RunAtLoad` and `StartInterval`. Its program is `/bin/sh -c` with `/sbin/ifconfig <interface> \| /usr/bin/grep -qw inet \|\| /sbin/ifconfig <interface> inet <address> netmask 255.255.0.0 alias` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAddressKeeper.swift` (`ClusterLinkAddressKeeper`) |
+| Commands approved for a fix | In order, joined with `&&`: `/bin/launchctl bootout system/<label>` (errors ignored), `/bin/rm -f <file>`, `/usr/bin/plutil -create xml1 <file>`, seven `/usr/bin/plutil -insert … <file>` commands that write the four keys, `/usr/sbin/chown root:wheel <file>`, `/bin/chmod 644 <file>`, `/bin/sh -c '<the keeper's script>'`, `/bin/launchctl bootstrap system <file>`. The script is run once before the job is started, so the address is there even where launchd refuses the job. The file is built key by key from fixed values; nothing a user could have prepared is copied into place. With `--temporary` the only command is `/sbin/ifconfig <interface> inet <address> netmask 255.255.0.0 alias` | `ClusterLinkAddressKeeper` (`installCommands`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkPrivilegedRequest.swift` (`ClusterLinkPrivilegedRequest`) |
+| Commands approved for a removal | For one port, only those whose target is found, in this order and joined with `;` so that each runs whatever an earlier one reported: `/bin/launchctl bootout system/<label>`, `/bin/rm -f <file>`, `/sbin/ifconfig <interface> inet <address> -alias`. The last is also included whenever the keeper is loaded, because the keeper may put the address back while the prompt is open. What is found afterwards decides the outcome, not the exit status | `ClusterLinkPrivilegedRequest` (`commands`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkFixRemnants.swift` (`ClusterLinkFixRemnants.observed`) |
+| What may enter a command | A validated interface name and a generated or recorded link-local address. `--device` is matched against the listed devices and never placed in a command | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkName.swift` (`ClusterLinkName`) |
+| Address | `169.254.x.y` with both octets in 1–254, derived from a SHA-256 of this Mac's hardware UUID and the interface name, so the same port gets the same address each time and two Macs almost never choose the same one. A recorded address that differs from the derived one, as after a home directory copied from another Mac, is used only while something of it is still on this Mac. Apart from a dry run it appears only in the commands handed to macOS, in the keeper's file and in the record below; never in output, JSON or logs | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkLocalAddress.swift` (`derived`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkMachineIdentity.swift` (`hardwareUUID`) |
+| Verification | After the commands run, the port's device must be `ready` (up to `verificationAttempts = 10` probes one second apart), no bridge may have gained or lost a member, the default route must leave through the same interface as before, and, unless `--temporary`, the keeper must be loaded with exactly the job definition above | `ClusterLinkRepair` (`fix`, `unmetConditions`); `ClusterLinkAddressKeeper` (`isRunning`, `isDescribed`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkTopology.swift` (`ClusterLinkTopology`) |
+| Read-only tools | `/sbin/route -n get default`, `/bin/launchctl print system/<label>`, `/usr/bin/plutil -convert json -o - <file>` and `/bin/ls /Library/LaunchDaemons` (a keeper's file counts as present by its name, whatever it holds), beside those of the readiness inspection | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolCommand.swift` (`ClusterLinkToolCommand`) |
+| Record | `~/.darkbloom/cluster-device/link-alias.json`, mode `0600`, schema `darkbloom_cluster_link_alias_v1`: the interface and address of each fix not yet removed. Written before the prompt, and again after an approved one, under the file lock and with the strict cluster file policy. After a cancelled prompt or a failed command an entry this fix created is dropped once the port is seen with nothing of the fix on it, and an entry from an earlier fix stays as it was; the entry is kept when no prompt could be shown, so that what is added with the printed commands can still be removed. `--remove` acts only on what the record names, or what an installed keeper's own job definition names, and only on what it finds: the port's address, the loaded keeper and the keeper's file. An entry with none of the three left is cleared without a prompt | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkAliasRecord.swift` (`ClusterLinkAliasStore`) |
+| Dry run | `--dry-run` performs every read, decides exactly as a real run would, and stops where the prompt would open: no prompt, no record change, nothing run. It prints the commands, one per line, and they are the one place besides the manual commands below where the address is shown; with `--json` they are `plannedCommands` | `ClusterLinkRepair` (`fix`, `remove`) |
 | Prompt wait | `promptTimeoutNanoseconds = 300_000_000_000` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkApproval.swift` (`ClusterLinkApproval`) |
-| Result | `schema` is `darkbloom_cluster_link_repair_v1`; `operation`, `outcome`, `message`, and where they apply `device`, `interface`, `state`, `unmet` and `candidates`. Never the address | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepairOutcome.swift` (`ClusterLinkRepairResult`) |
+| Result | `schema` is `darkbloom_cluster_link_repair_v1`; `operation`, `outcome`, `message`, and where they apply `device`, `interface`, `state`, `unmet`, `candidates`, `durable` (whether the fix includes the keeper, or found it running) and `plannedCommands` (dry run only; `/` may appear escaped as `\/`, which is the same JSON string) | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkRepairOutcome.swift` (`ClusterLinkRepairResult`) |
 
 `outcome` is one value of `ClusterLinkRepairOutcome`; the exit status is its
 `exitCode`.
 
 | Outcome | Exit status | Meaning |
 |---|---|---|
-| `alreadyReady` | 0 | `--fix`: the link, or the named device, is already ready. No prompt |
-| `fixed` | 0 | `--fix`: approved, applied, and all three verification conditions hold |
-| `removed` | 0 | `--remove`: approved, and the port no longer carries the address |
-| `alreadyAbsent` | 0 | `--remove`: the recorded address was already gone; the record was cleared. No prompt |
-| `nothingRecorded` | 0 | `--remove`: no recorded alias, or none for the named device. No prompt |
-| `nothingFixable` | 1 | The state, given as `state`, is not one that adding an address cures; `probeFailed` here also covers a bridge, route or interface listing that could not be read before acting. No prompt |
+| `dryRun` | 0 | `--dry-run`: the commands in `plannedCommands` would run after approval. Nothing was asked or changed |
+| `alreadyReady` | 0 | `--fix`: the link, or the named device, is already ready and, unless `--temporary`, has no temporary address of Darkbloom's to keep. No prompt |
+| `fixed` | 0 | `--fix`: approved, applied, and every verification condition holds |
+| `removed` | 0 | `--remove`: nothing of the fix is left on the port |
+| `alreadyAbsent` | 0 | `--remove`: nothing of the recorded fix was found. The spent record entry is cleared, except on a dry run. No prompt |
+| `nothingRecorded` | 0 | `--remove`: no recorded fix and no installed keeper of Darkbloom's, or none for the named device. No prompt |
+| `nothingFixable` | 1 | The state, given as `state`, is not one that adding an address cures; `probeFailed` here also covers a bridge, route, interface or keeper reading that could not be made before acting. No prompt |
 | `ambiguousPorts` | 1 | More than one port qualifies; `candidates` lists them for `--device`. No prompt |
 | `deviceNotListed` | 1 | `--device` names no RDMA device on this Mac. No prompt |
 | `machineIdentityUnavailable` | 1 | The hardware UUID could not be read. No prompt |
 | `recordUnavailable` | 1 | The record could not be read or written. No prompt |
 | `approvalDeclined` | 2 | The prompt was cancelled: `osascript` reported error `-128` or `-60006` |
-| `approvalUnavailable` | 3 | No prompt could be shown or answered, for example in an SSH session without a desktop: `osascript` failed in any other way or did not finish in time. The equivalent `sudo /sbin/ifconfig …` command is printed on standard error, the only place the address is shown |
-| `commandFailed` | 4 | Approved, but `ifconfig` exited non-zero |
-| `appliedButNotReady` | 4 | `--fix`: applied, but the conditions in `unmet` do not hold: `deviceNotReady`, `bridgeMembersChanged`, `defaultRouteChanged` or `stateUnreadable`. The address stays until `--remove` |
-| `removalNotVerified` | 4 | `--remove`: approved, but the port still carries the address or could not be read afterwards |
+| `approvalUnavailable` | 3 | No prompt could be shown or answered, for example in an SSH session without a desktop: `osascript` failed in any other way or did not finish in time. The same commands, each under `sudo`, are printed on standard error |
+| `commandFailed` | 4 | Approved, but one of the commands exited non-zero. After a failed keeper installation the message also names Login Items & Extensions. For a removal this is reported only when something of the fix is still found afterwards |
+| `appliedButNotReady` | 4 | `--fix`: applied, but the conditions in `unmet` do not hold: `deviceNotReady`, `bridgeMembersChanged`, `defaultRouteChanged`, `stateUnreadable` or `addressKeeperNotRunning`. What was done stays until `--remove` |
+| `removalNotVerified` | 4 | `--remove`: approved, but something of the fix is still found, or the port could not be read afterwards |
 
 ### Link watch
 

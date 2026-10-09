@@ -10,9 +10,14 @@ public enum ClusterLinkRepairOutcome: Sendable, Equatable {
         case defaultRouteChanged
         /// The bridge and route state could not be read afterwards.
         case stateUnreadable
+        /// The job that keeps the address is not installed and loaded as written,
+        /// whether or not the address itself is there.
+        case addressKeeperNotRunning
     }
 
-    // Nothing needed doing.
+    // Nothing was changed.
+    /// `--dry-run`: the commands an approval would run were worked out and not run.
+    case dryRun
     case alreadyReady
     case alreadyAbsent
     case nothingRecorded
@@ -36,6 +41,7 @@ public enum ClusterLinkRepairOutcome: Sendable, Equatable {
 
     public var code: String {
         switch self {
+        case .dryRun: return "dryRun"
         case .alreadyReady: return "alreadyReady"
         case .alreadyAbsent: return "alreadyAbsent"
         case .nothingRecorded: return "nothingRecorded"
@@ -58,7 +64,7 @@ public enum ClusterLinkRepairOutcome: Sendable, Equatable {
     /// stop, so a caller can tell "declined" from "could not ask".
     public var exitCode: Int32 {
         switch self {
-        case .alreadyReady, .alreadyAbsent, .nothingRecorded, .fixed, .removed: return 0
+        case .dryRun, .alreadyReady, .alreadyAbsent, .nothingRecorded, .fixed, .removed: return 0
         case .nothingFixable, .ambiguousPorts, .deviceNotListed, .machineIdentityUnavailable, .recordUnavailable: return 1
         case .approvalDeclined: return 2
         case .approvalUnavailable: return 3
@@ -68,7 +74,8 @@ public enum ClusterLinkRepairOutcome: Sendable, Equatable {
 }
 
 /// What a fix or removal did, by device and interface name only. The address
-/// involved is never part of the encoded result or its text.
+/// involved is never part of the encoded result or its text, except in the
+/// commands of a dry run, whose whole purpose is to show them.
 public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
     public enum Operation: String, Encodable, Sendable { case fix, remove }
 
@@ -79,23 +86,30 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
     public let interface: String?
     /// The devices to choose among when the outcome is `ambiguousPorts`.
     public let candidates: [String]
-    /// Set only for `approvalUnavailable`: the command an administrator can
-    /// run instead. It contains the address, so it is never encoded; the
-    /// command line prints it on standard error.
-    public let manualCommand: String?
+    /// Whether the fix installs the job that keeps the address, as opposed to
+    /// adding the address alone. Nil where no fix was attempted or planned.
+    public let durable: Bool?
+    /// Set only for `dryRun`: the exact commands an approval would run, in order.
+    public let plannedCommands: [String]
+    /// Set only for `approvalUnavailable`: the commands an administrator can
+    /// run instead. They contain the address, so they are never encoded; the
+    /// command line prints them on standard error.
+    public let manualCommands: [String]
 
     init(operation: Operation, outcome: ClusterLinkRepairOutcome, device: String? = nil, interface: String? = nil,
-         candidates: [String] = [], manualCommand: String? = nil) {
+         candidates: [String] = [], durable: Bool? = nil, plannedCommands: [String] = [], manualCommands: [String] = []) {
         self.operation = operation
         self.outcome = outcome
         self.device = device
         self.interface = interface
         self.candidates = candidates
-        self.manualCommand = manualCommand
+        self.durable = durable
+        self.plannedCommands = plannedCommands
+        self.manualCommands = manualCommands
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, operation, outcome, state, unmet, device, interface, candidates, message
+        case schema, operation, outcome, state, unmet, device, interface, candidates, durable, plannedCommands, message
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -108,6 +122,8 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
         try container.encodeIfPresent(device, forKey: .device)
         try container.encodeIfPresent(interface, forKey: .interface)
         if !candidates.isEmpty { try container.encode(candidates, forKey: .candidates) }
+        try container.encodeIfPresent(durable, forKey: .durable)
+        if !plannedCommands.isEmpty { try container.encode(plannedCommands, forKey: .plannedCommands) }
         try container.encode(message, forKey: .message)
     }
 }

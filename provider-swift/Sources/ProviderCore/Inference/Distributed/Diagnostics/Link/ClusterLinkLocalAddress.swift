@@ -1,9 +1,11 @@
 import Foundation
 import CryptoKit
 
-/// The IPv4 link-local address chosen for one Thunderbolt port. It reaches the
-/// approval prompt and the owner-only alias record, and nothing else: no
-/// report, summary or log line carries it.
+/// The IPv4 link-local address chosen for one Thunderbolt port. It appears
+/// only in the commands of a fix or a removal: in the approval prompt, in the
+/// job definition a durable fix installs, in the owner-only alias record, and
+/// where those commands are printed on request (a dry run, or the manual
+/// commands on standard error). No report, summary or log line carries it.
 struct ClusterLinkLocalAddress: Equatable, Sendable {
     static let netmask = "255.255.0.0"
     private static let validOctets: ClosedRange<UInt8> = 1...254

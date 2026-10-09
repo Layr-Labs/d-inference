@@ -2,8 +2,8 @@ import Foundation
 
 /// Every tool invocation the link inspection and its fix may make to read
 /// state. All are read-only and run by absolute path without a shell; none
-/// takes operator-supplied text. The one privileged change is a separate
-/// type, `ClusterLinkAliasCommand`.
+/// takes operator-supplied text. Privileged changes are a separate type,
+/// `ClusterLinkPrivilegedRequest`.
 enum ClusterLinkToolCommand: Equatable, Sendable {
     case rdmaControlStatus
     case rdmaDeviceList
@@ -11,6 +11,12 @@ enum ClusterLinkToolCommand: Equatable, Sendable {
     case rdmaDeviceDetail(device: String)
     case interfaceList
     case defaultRoute
+    /// Whether the address keeper for this interface is loaded in launchd.
+    case keeperJob(interface: String)
+    /// The address keeper's job definition for this interface, as JSON.
+    case keeperJobFile(interface: String)
+    /// The names in the directory that holds every keeper's job definition.
+    case keeperJobFileList
 
     var executable: String {
         switch self {
@@ -18,6 +24,9 @@ enum ClusterLinkToolCommand: Equatable, Sendable {
         case .rdmaDeviceList, .rdmaDeviceDetail: return "/usr/bin/ibv_devinfo"
         case .interfaceList: return "/sbin/ifconfig"
         case .defaultRoute: return "/sbin/route"
+        case .keeperJob: return "/bin/launchctl"
+        case .keeperJobFile: return "/usr/bin/plutil"
+        case .keeperJobFileList: return "/bin/ls"
         }
     }
 
@@ -28,6 +37,11 @@ enum ClusterLinkToolCommand: Equatable, Sendable {
         case .rdmaDeviceDetail(let device): return ["-v", "-d", device]
         case .interfaceList: return ["-a"]
         case .defaultRoute: return ["-n", "get", "default"]
+        case .keeperJob(let interface):
+            return ["print", "system/" + ClusterLinkAddressKeeper.label(forInterface: interface)]
+        case .keeperJobFile(let interface):
+            return ["-convert", "json", "-o", "-", ClusterLinkAddressKeeper.plistPath(forInterface: interface)]
+        case .keeperJobFileList: return [ClusterLinkAddressKeeper.directory]
         }
     }
 }

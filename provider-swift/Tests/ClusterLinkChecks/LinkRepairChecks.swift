@@ -130,13 +130,14 @@ extension ClusterLinkCheck {
         expectEqual(plan([unnamed]), .stop(.nothingFixable(.portWithoutIPv4Address)), "no interface to address")
     }
 
+    /// The address alone (`--temporary`): every way that fix can go.
     static func fixOutcomes() {
         let expectedAdd = ClusterLinkLocalAddress(dottedDecimal: FakeRepairWorld.en6Address)
-            .flatMap { ClusterLinkAliasCommand(action: .add, interface: "en6", address: $0) }
-        expect(expectedAdd != nil, "fixture command")
+            .flatMap { ClusterLinkPrivilegedRequest(.addAddress, interface: "en6", address: $0) }
+        expect(expectedAdd != nil, "fixture request")
 
         // Already ready: nothing is asked, read beyond the probe, or written.
-        let ready = FakeRepairWorld(.macA)
+        let ready = FakeRepairWorld.temporary(.macA)
         ready.approval = FakeRepairWorld.applying
         let readyResult = ready.fix()
         expectEqual(readyResult.outcome, .alreadyReady, "ready Mac")
@@ -156,7 +157,7 @@ extension ClusterLinkCheck {
         failed.interfaces = .timedOut
         for (state, tools) in [(ClusterLinkReadinessState.rdmaDisabled, disabled), (.rdmaUnavailable, unavailable),
                                (.noActivePort, down), (.gidNotPublished, unpublished), (.probeFailed, failed)] {
-            let world = FakeRepairWorld(tools)
+            let world = FakeRepairWorld.temporary(tools)
             world.approval = FakeRepairWorld.applying
             let result = world.fix()
             expectEqual(result.outcome, .nothingFixable(state), "\(state) outcome")
@@ -164,7 +165,7 @@ extension ClusterLinkCheck {
             expectEqual(world.recordSaves, 0, "\(state) writes no record")
             expectEqual(result.outcome.exitCode, 1, "\(state) exit status")
             // Naming the port changes none of that.
-            let named = FakeRepairWorld(tools)
+            let named = FakeRepairWorld.temporary(tools)
             named.approval = FakeRepairWorld.applying
             expectEqual(named.fix(device: "rdma_en7").outcome, .nothingFixable(state), "\(state) outcome for a named port")
             expectEqual(named.approvalRequests, [], "\(state) is never prompted for a named port")
@@ -172,15 +173,15 @@ extension ClusterLinkCheck {
         }
         // A stop about a named port says which port and gives that port's own
         // verdict; a stop about the link as a whole names none.
-        let namedStop = FakeRepairWorld(unpublished).fix(device: "rdma_en7")
+        let namedStop = FakeRepairWorld.temporary(unpublished).fix(device: "rdma_en7")
         expectEqual([namedStop.device, namedStop.interface], ["rdma_en7", "en7"], "a stop about a named port names it")
         expect(namedStop.message.contains("rdma_en7 is gidNotPublished"), "a stop about a named port gives its verdict")
-        let linkStop = FakeRepairWorld(unpublished).fix()
+        let linkStop = FakeRepairWorld.temporary(unpublished).fix()
         expectEqual([linkStop.device, linkStop.interface], [nil, nil], "a stop about the link names no port")
         expect(linkStop.message.contains("the link state is gidNotPublished"), "a stop about the link gives the link state")
 
         // Mac B: one bridged port, approved.
-        let fixed = FakeRepairWorld(.macB)
+        let fixed = FakeRepairWorld.temporary(.macB)
         fixed.approval = FakeRepairWorld.applying
         let fixedResult = fixed.fix()
         expectEqual(fixedResult.outcome, .fixed, "Mac B fixed")
@@ -190,16 +191,18 @@ extension ClusterLinkCheck {
             "the applied alias is recorded")
         expectEqual(fixed.pauses, 0, "no wait when the port is ready at once")
         expectEqual(fixedResult.outcome.exitCode, 0, "fixed exit status")
-        expectEqual(fixedResult.manualCommand, nil, "no manual command after a fix")
+        expectEqual(fixedResult.manualCommands, [], "no manual command after a fix")
+        expectEqual(fixedResult.durable, false, "an address-only fix says so")
+        expect(compactJSON(fixedResult).contains("\"durable\":false"), "an address-only fix says so in JSON")
         expect(fixed.commands.contains(.defaultRoute), "the default route is read")
-        expect(fixedResult.message.contains("restart") && fixedResult.message.contains("cable")
-            && fixedResult.message.contains("darkbloom cluster link --fix") && fixedResult.message.contains("--remove"),
-            "success says the address does not last and how to undo it")
+        expect(fixedResult.message.contains("temporary") && fixedResult.message.contains("restart")
+            && fixedResult.message.contains("run `darkbloom cluster` to keep it") && fixedResult.message.contains("--remove"),
+            "success says the address does not last, how to keep it and how to undo it")
 
         // The same Mac with a port that has no bridge at all.
         var plain = FakeLinkTools.macB
         plain.interfaces = .output(LinkFixtures.loopback + LinkFixtures.port("en6", active: true, ipv4: nil))
-        let plainWorld = FakeRepairWorld(plain)
+        let plainWorld = FakeRepairWorld.temporary(plain)
         plainWorld.approval = { command, world in
             world.tools.interfaces = .output(LinkFixtures.loopback
                 + LinkFixtures.port("en6", active: true, ipv4: command.address.dottedDecimal))
@@ -220,7 +223,7 @@ extension ClusterLinkCheck {
         // While the prompt is open another command can clear the entry as
         // spent, as a second prompt that is cancelled or a `--remove` does on
         // not seeing the address yet. An approved alias is recorded all the same.
-        let cleared = FakeRepairWorld(.macB)
+        let cleared = FakeRepairWorld.temporary(.macB)
         cleared.approval = { command, world in
             world.record = ClusterLinkAliasRecord()
             return FakeRepairWorld.applying(command, world)
@@ -230,7 +233,7 @@ extension ClusterLinkCheck {
             "an approved alias is recorded whatever happened to its entry meanwhile")
 
         // The GID can take a moment to appear: the probe is repeated, bounded.
-        let slow = FakeRepairWorld(.macB)
+        let slow = FakeRepairWorld.temporary(.macB)
         slow.approval = { _, _ in .applied }
         slow.onPause = { world in
             if world.pauses == 2 { world.tools = .macBFixed(address: FakeRepairWorld.en6Address) }
@@ -240,7 +243,7 @@ extension ClusterLinkCheck {
 
         for (answer, outcome, exit) in [(ClusterLinkApprovalResult.declined, ClusterLinkRepairOutcome.approvalDeclined, Int32(2)),
                                         (.unavailable, .approvalUnavailable, 3), (.commandFailed, .commandFailed, 4)] {
-            let world = FakeRepairWorld(.macB)
+            let world = FakeRepairWorld.temporary(.macB)
             world.approval = { _, _ in answer }
             let result = world.fix()
             expectEqual(result.outcome, outcome, "\(answer) outcome")
@@ -250,33 +253,33 @@ extension ClusterLinkCheck {
             // administrator adds with the printed command can still be removed.
             expectEqual(world.record.aliases.count, answer == .unavailable ? 1 : 0, "\(answer) record")
             expectEqual(world.pauses, 0, "\(answer) is not verified")
-            expectEqual(result.manualCommand, answer == .unavailable ? expectedAdd?.manualCommand : nil, "\(answer) manual command")
+            expectEqual(result.manualCommands, answer == .unavailable ? expectedAdd?.manualCommands ?? ["?"] : [], "\(answer) manual command")
             expectNoAddress(compactJSON(result), "\(answer) JSON")
             expectNoAddress(result.summaryLines.joined(separator: "\n"), "\(answer) summary")
         }
 
         // The administrator runs the printed command by hand: the link is then
         // ready, and the address is still Darkbloom's to remove.
-        let manual = FakeRepairWorld(.macB)
+        let manual = FakeRepairWorld.temporary(.macB)
         manual.approval = { _, _ in .unavailable }
         expectEqual(manual.fix().outcome, .approvalUnavailable, "no prompt possible")
         manual.tools = .macBFixed(address: FakeRepairWorld.en6Address)
         manual.approval = FakeRepairWorld.applying
         expectEqual(manual.fix().outcome, .alreadyReady, "ready after the manual command")
         expectEqual(manual.remove().outcome, .removed, "the manually added address can be removed")
-        expectEqual(manual.approvalRequests.last?.action, .remove, "the removal names the recorded address")
+        expectEqual(manual.approvalRequests.last?.purpose, .remove(.init(address: true)), "the removal undoes the address alone")
         expectEqual(manual.approvalRequests.last?.address.dottedDecimal, FakeRepairWorld.en6Address, "the recorded address")
 
         // A command that reported an error but added the address anyway stays
         // recorded, so that `--remove` can still take it away.
-        let halfApplied = FakeRepairWorld(.macB)
+        let halfApplied = FakeRepairWorld.temporary(.macB)
         halfApplied.approval = { command, world in
             world.tools.interfaces = .output(LinkFixtures.macBInterfaceListing(en6Address: command.address.dottedDecimal))
             return .commandFailed
         }
         expectEqual(halfApplied.fix().outcome, .commandFailed, "command failed after adding the address")
         expectEqual(halfApplied.record.aliases.map(\.interface), ["en6"], "an address that is present stays recorded")
-        let unseen = FakeRepairWorld(.macB)
+        let unseen = FakeRepairWorld.temporary(.macB)
         unseen.approval = { _, world in
             world.tools.interfaces = .timedOut
             return .declined
@@ -287,7 +290,7 @@ extension ClusterLinkCheck {
         // Approved and run, yet one of the three conditions does not hold.
         typealias Unmet = ClusterLinkRepairOutcome.Unmet
         let attempts = ClusterLinkRepair.verificationAttempts
-        let unchanged = FakeRepairWorld(.macB)
+        let unchanged = FakeRepairWorld.temporary(.macB)
         unchanged.approval = { _, _ in .applied }
         let unchangedResult = unchanged.fix()
         expectEqual(unchangedResult.outcome, .appliedButNotReady([.deviceNotReady]), "port still not ready")
@@ -296,7 +299,7 @@ extension ClusterLinkCheck {
         expectEqual(unchangedResult.outcome.exitCode, 4, "not-ready exit status")
         expect(unchangedResult.message.contains("--remove"), "not-ready says how to undo")
 
-        let unbridged = FakeRepairWorld(.macB)
+        let unbridged = FakeRepairWorld.temporary(.macB)
         unbridged.approval = { command, world in
             world.tools = .macBFixed(address: command.address.dottedDecimal)
             world.tools.interfaces = .output(LinkFixtures.macBInterfaceListing(en6Address: command.address.dottedDecimal,
@@ -305,7 +308,7 @@ extension ClusterLinkCheck {
         }
         expectEqual(unbridged.fix().outcome, .appliedButNotReady([.bridgeMembersChanged]), "bridge member list changed")
 
-        let rerouted = FakeRepairWorld(.macB)
+        let rerouted = FakeRepairWorld.temporary(.macB)
         rerouted.approval = { command, world in
             world.tools = .macBFixed(address: command.address.dottedDecimal)
             world.tools.defaultRoute = .output(LinkFixtures.defaultRoute(interface: "en6"))
@@ -313,7 +316,7 @@ extension ClusterLinkCheck {
         }
         expectEqual(rerouted.fix().outcome, .appliedButNotReady([.defaultRouteChanged]), "default route changed")
 
-        let routeLost = FakeRepairWorld(.macB)
+        let routeLost = FakeRepairWorld.temporary(.macB)
         routeLost.approval = { command, world in
             world.tools = .macBFixed(address: command.address.dottedDecimal)
             world.tools.defaultRoute = .unavailable
@@ -321,7 +324,7 @@ extension ClusterLinkCheck {
         }
         expectEqual(routeLost.fix().outcome, .appliedButNotReady([.defaultRouteChanged]), "default route disappeared")
 
-        let everything = FakeRepairWorld(.macB)
+        let everything = FakeRepairWorld.temporary(.macB)
         everything.approval = { _, world in
             world.tools.interfaces = .output(LinkFixtures.macBInterfaceListing(bridgeMembers: ["en2"]))
             world.tools.defaultRoute = .output(LinkFixtures.defaultRoute(interface: "en6"))
@@ -330,7 +333,7 @@ extension ClusterLinkCheck {
         expectEqual(everything.fix().outcome, .appliedButNotReady([.deviceNotReady, .bridgeMembersChanged, .defaultRouteChanged]),
             "every unmet condition is named, in a fixed order")
 
-        let unreadable = FakeRepairWorld(.macB)
+        let unreadable = FakeRepairWorld.temporary(.macB)
         unreadable.approval = { command, world in
             world.tools = .macBFixed(address: command.address.dottedDecimal)
             world.tools.defaultRoute = .timedOut
@@ -339,19 +342,19 @@ extension ClusterLinkCheck {
         expectEqual(unreadable.fix().outcome, .appliedButNotReady([.stateUnreadable]), "state unreadable afterwards")
 
         // Preconditions that fail before any prompt.
-        let anonymous = FakeRepairWorld(.macB)
+        let anonymous = FakeRepairWorld.temporary(.macB)
         anonymous.machineIdentifier = nil
         anonymous.approval = FakeRepairWorld.applying
         expectEqual(anonymous.fix().outcome, .machineIdentityUnavailable, "no machine value to derive from")
         expectEqual(anonymous.approvalRequests, [], "no prompt without an address")
 
-        let unwritable = FakeRepairWorld(.macB)
+        let unwritable = FakeRepairWorld.temporary(.macB)
         unwritable.recordFailsToSave = true
         unwritable.approval = FakeRepairWorld.applying
         expectEqual(unwritable.fix().outcome, .recordUnavailable, "record cannot be written")
         expectEqual(unwritable.approvalRequests, [], "no prompt for an alias that could not be recorded")
 
-        let unreadableRecord = FakeRepairWorld(.macB)
+        let unreadableRecord = FakeRepairWorld.temporary(.macB)
         unreadableRecord.recordFailsToLoad = true
         unreadableRecord.approval = FakeRepairWorld.applying
         expectEqual(unreadableRecord.fix().outcome, .recordUnavailable, "record cannot be read before a fix")
@@ -360,7 +363,7 @@ extension ClusterLinkCheck {
 
         var routeUnknown = FakeLinkTools.macB
         routeUnknown.defaultRoute = .timedOut
-        let blind = FakeRepairWorld(routeUnknown)
+        let blind = FakeRepairWorld.temporary(routeUnknown)
         blind.approval = FakeRepairWorld.applying
         let blindResult = blind.fix()
         expectEqual(blindResult.outcome, .nothingFixable(.probeFailed), "topology unreadable beforehand")
@@ -373,7 +376,7 @@ extension ClusterLinkCheck {
             "an unreadable baseline is not reported as the port's own state")
 
         // Several candidate ports, and names that do not belong.
-        let ambiguous = FakeRepairWorld(twoBlockedPorts)
+        let ambiguous = FakeRepairWorld.temporary(twoBlockedPorts)
         ambiguous.approval = { _, _ in .declined }
         let ambiguousResult = ambiguous.fix()
         expectEqual(ambiguousResult.outcome, .ambiguousPorts, "two candidate ports")
@@ -383,7 +386,7 @@ extension ClusterLinkCheck {
         expectEqual(ambiguous.fix(device: "rdma_en5").outcome, .approvalDeclined, "a named candidate is used")
         expectEqual(ambiguous.approvalRequests.map(\.interface), ["en5"], "the named port is the one prompted for")
         for hostile in hostileNames + ["rdma_en9", "rdma_en6; id", "rdma_en6\" with administrator privileges"] {
-            let world = FakeRepairWorld(.macB)
+            let world = FakeRepairWorld.temporary(.macB)
             world.approval = FakeRepairWorld.applying
             let result = world.fix(device: hostile)
             expectEqual(result.outcome, .deviceNotListed, "--device \(hostile.debugDescription)")
@@ -396,7 +399,7 @@ extension ClusterLinkCheck {
         // Tool output that puts hostile text where a name belongs never yields a target.
         var poisoned = FakeLinkTools.macB
         poisoned.deviceList = .output(LinkFixtures.deviceBlock("rdma_en6\"; do shell script \"id", active: true))
-        let poisonedWorld = FakeRepairWorld(poisoned)
+        let poisonedWorld = FakeRepairWorld.temporary(poisoned)
         poisonedWorld.approval = FakeRepairWorld.applying
         expectEqual(poisonedWorld.fix().outcome, .nothingFixable(.probeFailed), "hostile device listing")
         expectEqual(poisonedWorld.approvalRequests, [], "hostile device listing is never prompted")
@@ -405,7 +408,7 @@ extension ClusterLinkCheck {
     static func removeOutcomes() {
         guard let recorded = ClusterLinkLocalAddress(dottedDecimal: "169.254.10.20"),
               let foreign = ClusterLinkLocalAddress(dottedDecimal: "169.254.77.7"),
-              let expectedRemove = ClusterLinkAliasCommand(action: .remove, interface: "en6", address: recorded) else {
+              let expectedRemove = ClusterLinkPrivilegedRequest(.remove(.init(address: true)), interface: "en6", address: recorded) else {
             expect(false, "fixture addresses"); return
         }
         let entry = ClusterLinkAliasRecord.Alias(interface: "en6", address: recorded)
@@ -420,7 +423,7 @@ extension ClusterLinkCheck {
         let emptyResult = empty.remove()
         expectEqual(emptyResult.outcome, .nothingRecorded, "nothing recorded")
         expectEqual(empty.approvalRequests, [], "nothing recorded is never prompted")
-        expectEqual(empty.commands, [], "nothing recorded reads nothing")
+        expectEqual(empty.commands, [.keeperJobFileList], "nothing recorded: only the job definitions' directory is looked at")
         expectEqual(emptyResult.outcome.exitCode, 0, "nothing recorded exit status")
 
         let removed = world()
@@ -457,7 +460,7 @@ extension ClusterLinkCheck {
             expectEqual(result.outcome, outcome, "remove \(answer) outcome")
             expectEqual(result.outcome.exitCode, exit, "remove \(answer) exit status")
             expectEqual(kept.record.aliases, [entry], "remove \(answer) keeps the record")
-            expectEqual(result.manualCommand, answer == .unavailable ? expectedRemove.manualCommand : nil, "remove \(answer) manual command")
+            expectEqual(result.manualCommands, answer == .unavailable ? expectedRemove.manualCommands : [], "remove \(answer) manual command")
             expectNoAddress(compactJSON(result) + result.summaryLines.joined(), "remove \(answer) output")
         }
 
@@ -519,7 +522,7 @@ extension ClusterLinkCheck {
     static func repairVocabulary() {
         typealias Outcome = ClusterLinkRepairOutcome
         let outcomes: [(Outcome, String, Int32)] = [
-            (.alreadyReady, "alreadyReady", 0), (.fixed, "fixed", 0), (.removed, "removed", 0), (.alreadyAbsent, "alreadyAbsent", 0),
+            (.dryRun, "dryRun", 0), (.alreadyReady, "alreadyReady", 0), (.fixed, "fixed", 0), (.removed, "removed", 0), (.alreadyAbsent, "alreadyAbsent", 0),
             (.nothingRecorded, "nothingRecorded", 0), (.nothingFixable(.noActivePort), "nothingFixable", 1),
             (.ambiguousPorts, "ambiguousPorts", 1), (.deviceNotListed, "deviceNotListed", 1),
             (.machineIdentityUnavailable, "machineIdentityUnavailable", 1), (.recordUnavailable, "recordUnavailable", 1),
@@ -531,7 +534,7 @@ extension ClusterLinkCheck {
             expectEqual(outcome.exitCode, exit, "\(code) exit status")
             for operation in [ClusterLinkRepairResult.Operation.fix, .remove] {
                 let result = ClusterLinkRepairResult(operation: operation, outcome: outcome, device: "rdma_en6", interface: "en6",
-                    manualCommand: "sudo /sbin/ifconfig en6 inet 169.254.10.20 netmask 255.255.0.0 alias")
+                    manualCommands: ["sudo /sbin/ifconfig en6 inet 169.254.10.20 netmask 255.255.0.0 alias"])
                 let encoded = compactJSON(result)
                 expect(encoded.contains("\"outcome\":\"\(code)\"") && encoded.contains("\"operation\":\"\(operation.rawValue)\"")
                     && encoded.contains("\"schema\":\"darkbloom_cluster_link_repair_v1\""), "\(code) JSON identity")
@@ -550,7 +553,8 @@ extension ClusterLinkCheck {
         expect(compactJSON(unmet).contains("\"unmet\":[\"bridgeMembersChanged\",\"defaultRouteChanged\"]"), "unmet conditions are encoded")
         expect(unmet.message.contains("bridge") && unmet.message.contains("default route"), "unmet conditions are explained")
         expectEqual(ClusterLinkRepairOutcome.Unmet.allCases.map(\.rawValue),
-            ["deviceNotReady", "bridgeMembersChanged", "defaultRouteChanged", "stateUnreadable"], "stable unmet codes")
+            ["deviceNotReady", "bridgeMembersChanged", "defaultRouteChanged", "stateUnreadable", "addressKeeperNotRunning"],
+            "stable unmet codes")
         expect(ClusterLinkRepairResult(operation: .fix, outcome: .approvalUnavailable).message.contains("SSH"),
             "unavailable approval explains the usual cause")
     }

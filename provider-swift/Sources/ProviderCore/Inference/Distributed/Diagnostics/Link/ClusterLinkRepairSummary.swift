@@ -7,16 +7,23 @@ extension ClusterLinkRepairResult {
         let port = interface.map { "Thunderbolt port \($0)" } ?? "the Thunderbolt port"
         let rdmaDevice = device ?? "its RDMA device"
         switch outcome {
+        case .dryRun:
+            return "Dry run: nothing was changed. With your approval in the macOS prompt, these commands would run as an administrator, in this order."
         case .alreadyReady:
             return "The link is already ready; nothing was changed."
         case .alreadyAbsent:
-            return "The link-local address Darkbloom gave \(port) was already gone, as happens after a restart or a cable replug; its record was cleared."
+            // Worded for a dry run too, which finds the same and leaves the record as it is.
+            return "Nothing Darkbloom gave \(port) is left on this Mac: a temporary address goes when macOS next reconfigures the port or restarts. A removal has nothing to undo and only clears Darkbloom's record of it."
         case .nothingRecorded:
-            return "Darkbloom has no record of an address it added there; nothing was changed."
+            return "Darkbloom has no record of an address it added there and found no system job of its own; nothing was changed."
         case .fixed:
-            return "\(port.prefix(1).uppercased() + port.dropFirst()) now has a link-local address of its own and \(rdmaDevice) is ready. The address does not survive a restart or a cable replug: run `darkbloom cluster link --fix` again afterwards. `darkbloom cluster link --remove` takes it away."
+            let ready = "\(port.prefix(1).uppercased() + port.dropFirst()) now has a link-local address of its own and \(rdmaDevice) is ready."
+            guard durable == true, let interface else {
+                return ready + " The address is temporary: macOS removes it when it next reconfigures the port, and at a restart; run `darkbloom cluster` to keep it. `darkbloom cluster link --remove` takes it away."
+            }
+            return ready + " A system job (\(ClusterLinkAddressKeeper.label(forInterface: interface))) puts the address back within about \(ClusterLinkAddressKeeper.intervalSeconds) seconds whenever macOS leaves the port without an IPv4 address, and after a restart. `darkbloom cluster link --remove` removes the job and the address."
         case .removed:
-            return "The link-local address Darkbloom gave \(port) was removed."
+            return "Everything Darkbloom gave \(port) was removed: its link-local address and, where installed, the system job that kept it."
         case .nothingFixable(let state):
             guard let device else {
                 return "Nothing was changed: the link state is \(state.rawValue). " + (state.guidance ?? "The link is ready.")
@@ -42,9 +49,12 @@ extension ClusterLinkRepairResult {
         case .approvalDeclined:
             return "The macOS prompt was cancelled; nothing was changed."
         case .approvalUnavailable:
-            return "macOS did not grant approval: its prompt could not be shown here, as in an SSH session without a desktop, or it was not answered in time or was refused; nothing was changed. An administrator can run the one command printed on standard error instead."
+            return "macOS did not grant approval: its prompt could not be shown here, as in an SSH session without a desktop, or it was not answered in time or was refused; nothing was changed. An administrator can run the commands printed on standard error instead."
         case .commandFailed:
-            return "The change was approved, but `ifconfig` reported an error; run `darkbloom cluster link` to see the current state."
+            // macOS refuses to start a job that was switched off in Login Items.
+            let switchedOff = operation == .fix && durable == true
+                ? " If the system job was switched off under System Settings, General, Login Items & Extensions, switch it on there and run `darkbloom cluster` again." : ""
+            return "The change was approved, but one of its commands reported an error; run `darkbloom cluster link` to see the current state and `darkbloom cluster link --remove` to undo whatever was done." + switchedOff
         case .appliedButNotReady(let unmet):
             let problems = unmet.map { condition -> String in
                 switch condition {
@@ -52,15 +62,17 @@ extension ClusterLinkRepairResult {
                 case .bridgeMembersChanged: return "the bridge member list changed"
                 case .defaultRouteChanged: return "the default route now uses a different interface"
                 case .stateUnreadable: return "Darkbloom could not read the bridge and route state afterwards"
+                case .addressKeeperNotRunning: return "the system job that should keep the address there is not installed and loaded as written"
                 }
             }
-            return "The address was added to \(port), but \(problems.joined(separator: ", and ")). It is still in place; `darkbloom cluster link --remove` takes it away."
+            return "The change was made to \(port), but \(problems.joined(separator: ", and ")). What was done is still in place; `darkbloom cluster link --remove` takes it away."
         case .removalNotVerified:
-            return "The removal was approved, but Darkbloom could not confirm that \(port) no longer carries the address; run `darkbloom cluster link --remove` again."
+            return "The removal was approved, but Darkbloom could not confirm that nothing it gave \(port) is left; run `darkbloom cluster link --remove` again."
         }
     }
 
+    /// The outcome, the message, and for a dry run the commands themselves.
     public var summaryLines: [String] {
-        ["Link \(operation.rawValue): \(outcome.code)", message]
+        ["Link \(operation.rawValue): \(outcome.code)", message] + plannedCommands.map { "  " + $0 }
     }
 }

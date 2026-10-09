@@ -34,16 +34,22 @@ import Darwin
             ("operator summary", operatorSummary),
             ("bounded child process", boundedChildProcess),
             ("link-local address", linkLocalAddress),
-            ("alias command", aliasCommand),
+            ("address keeper", addressKeeper),
+            ("privileged requests", privilegedRequests),
             ("approval results", approvalResults),
             ("topology text", topologyText),
             ("fix gating", fixGating),
             ("fix outcomes", fixOutcomes),
             ("remove outcomes", removeOutcomes),
+            ("durable fix outcomes", durableFixOutcomes),
+            ("dry runs", dryRuns),
+            ("fix remnants", fixRemnants),
             ("repair vocabulary", repairVocabulary),
             ("alias record file", aliasRecordFile),
             ("watch reducer", watchReducer),
             ("setup flow", setupFlow),
+            ("setup flow modes", setupFlowModes),
+            ("assigned address", assignedAddressReport),
         ]
         for (_, group) in groups { group() }
         guard failures.isEmpty else {

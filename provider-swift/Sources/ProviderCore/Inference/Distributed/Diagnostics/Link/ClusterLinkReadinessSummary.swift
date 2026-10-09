@@ -17,6 +17,8 @@ extension ClusterLinkReadinessReport.Device {
             case nil: facts.append("GID table not read")
             }
         }
+        if assignedAddress == .missing { facts.append("its recorded address is missing") }
+        if addressIsTemporary { facts.append("nothing keeps its address") }
         return ClusterLinkName.label(device: device, interface: interface) + ": " + facts.joined(separator: " · ")
     }
 }
@@ -28,6 +30,7 @@ extension ClusterLinkReadinessReport {
     /// Compact operator text: the state, one line per device, then either the
     /// guidance or the scope of a ready result.
     public var summaryLines: [String] {
-        ["Local link: \(state.rawValue)"] + devices.map { "  " + $0.summary } + [guidance ?? Self.readyScope]
+        ["Local link: \(state.rawValue)"] + devices.map { "  " + $0.summary } + [guidance].compactMap { $0 }
+            + (state == .ready ? [Self.readyScope] : [])
     }
 }

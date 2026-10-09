@@ -12,7 +12,8 @@ final class FakeRepairWorld {
     static let en6Address = "169.254.188.90"
 
     var tools: FakeLinkTools
-    var approval: (ClusterLinkAliasCommand, FakeRepairWorld) -> ClusterLinkApprovalResult = { _, _ in .unavailable }
+    var mode = ClusterLinkRepair.Mode.durable
+    var approval: (ClusterLinkPrivilegedRequest, FakeRepairWorld) -> ClusterLinkApprovalResult = { _, _ in .unavailable }
     var machineIdentifier: String? = FakeRepairWorld.machine
     var record = ClusterLinkAliasRecord()
     var recordFailsToLoad = false
@@ -20,19 +21,47 @@ final class FakeRepairWorld {
     var onPause: (FakeRepairWorld) -> Void = { _ in }
 
     private(set) var commands = [ClusterLinkToolCommand]()
-    private(set) var approvalRequests = [ClusterLinkAliasCommand]()
+    private(set) var approvalRequests = [ClusterLinkPrivilegedRequest]()
     private(set) var recordSaves = 0
     private(set) var pauses = 0
 
     init(_ tools: FakeLinkTools) { self.tools = tools }
 
-    /// Approval that behaves like the real change: the port gets the address.
-    static func applying(_ command: ClusterLinkAliasCommand, _ world: FakeRepairWorld) -> ClusterLinkApprovalResult {
-        switch command.action {
-        case .add: world.tools = .macBFixed(address: command.address.dottedDecimal)
-        case .remove: world.tools = .macB
+    /// A world whose fixes add the address alone.
+    static func temporary(_ tools: FakeLinkTools) -> FakeRepairWorld {
+        let world = FakeRepairWorld(tools)
+        world.mode = .temporary
+        return world
+    }
+
+    /// Approval that behaves like the real change on Mac B's `en6`.
+    static func applying(_ request: ClusterLinkPrivilegedRequest, _ world: FakeRepairWorld) -> ClusterLinkApprovalResult {
+        let address = request.address.dottedDecimal
+        switch request.purpose {
+        case .addAddress:
+            world.giveAddress(address)
+        case .keepAddress:
+            world.giveAddress(address)
+            world.tools.installKeeper(interface: request.interface, address: address)
+        case .remove(let remnants):
+            // As the commands do: a loaded job goes together with the address it adds.
+            if remnants.address || remnants.keeperJob { world.takeAddress() }
+            if remnants.keeperJob { world.tools.keeperJobs[request.interface] = nil }
+            if remnants.keeperFile { world.tools.keeperJobFiles[request.interface] = nil }
         }
         return .applied
+    }
+
+    /// The port gets the address and publishes its GID; the keeper is untouched.
+    func giveAddress(_ address: String) {
+        tools.interfaces = FakeLinkTools.macBFixed(address: address).interfaces
+        tools.details = FakeLinkTools.macBFixed(address: address).details
+    }
+
+    /// macOS strips the port again.
+    func takeAddress() {
+        tools.interfaces = FakeLinkTools.macB.interfaces
+        tools.details = FakeLinkTools.macB.details
     }
 
     var environment: ClusterLinkRepair.Environment {
@@ -43,9 +72,9 @@ final class FakeRepairWorld {
                     return tools.outcome(of: command)
                 }
             },
-            requestApproval: { [self] command in
-                approvalRequests.append(command)
-                return approval(command, self)
+            requestApproval: { [self] request in
+                approvalRequests.append(request)
+                return approval(request, self)
             },
             machineIdentifier: { [self] in machineIdentifier },
             loadRecord: { [self] in
@@ -63,12 +92,12 @@ final class FakeRepairWorld {
             })
     }
 
-    func fix(device: String? = nil) -> ClusterLinkRepairResult {
-        ClusterLinkRepair.fix(device: device, in: environment)
+    func fix(device: String? = nil, dryRun: Bool = false) -> ClusterLinkRepairResult {
+        ClusterLinkRepair.fix(device: device, mode: mode, dryRun: dryRun, in: environment)
     }
 
-    func remove(device: String? = nil) -> ClusterLinkRepairResult {
-        ClusterLinkRepair.remove(device: device, in: environment)
+    func remove(device: String? = nil, dryRun: Bool = false) -> ClusterLinkRepairResult {
+        ClusterLinkRepair.remove(device: device, dryRun: dryRun, in: environment)
     }
 }
 

@@ -145,6 +145,15 @@ enum LinkFixtures {
 
     static let macBInterfaces = macBInterfaceListing()
 
+    /// `plutil -convert json -o -` of the keeper's job definition, in the key
+    /// order and with the escaped slashes that tool really prints.
+    static func keeperJobJSON(interface: String, address: String, interval: Int = 10) -> String {
+        let script = "\\/sbin\\/ifconfig \(interface) | \\/usr\\/bin\\/grep -qw inet || "
+            + "\\/sbin\\/ifconfig \(interface) inet \(address) netmask 255.255.0.0 alias"
+        return "{\"ProgramArguments\":[\"\\/bin\\/sh\",\"-c\",\"\(script)\"],\"StartInterval\":\(interval),"
+            + "\"Label\":\"io.darkbloom.cluster-link.\(interface)\",\"RunAtLoad\":true}\n"
+    }
+
     /// `route -n get default`.
     static func defaultRoute(interface: String) -> String {
         """
@@ -168,6 +177,13 @@ struct FakeLinkTools {
     var interfaces: ClusterLinkToolOutcome
     var details: [String: ClusterLinkToolOutcome] = [:]
     var defaultRoute = ClusterLinkToolOutcome.output(LinkFixtures.defaultRoute(interface: "en0"))
+    /// By interface: `launchctl print` of the address keeper, and its job
+    /// definition as `plutil` prints it. Absent means not loaded, no file.
+    var keeperJobs: [String: ClusterLinkToolOutcome] = [:]
+    var keeperJobFiles: [String: ClusterLinkToolOutcome] = [:]
+    /// The `ls` of the job definitions' directory, when it is not simply the
+    /// files above among a few that belong to others.
+    var keeperDirectory: ClusterLinkToolOutcome?
 
     static let macA = FakeLinkTools(deviceList: .output(LinkFixtures.deviceList(active: "rdma_en7")),
         interfaces: .output(LinkFixtures.macAInterfaces),
@@ -192,7 +208,19 @@ struct FakeLinkTools {
         case .interfaceList: return interfaces
         case .rdmaDeviceDetail(let device): return details[device] ?? .unavailable
         case .defaultRoute: return defaultRoute
+        case .keeperJob(let interface): return keeperJobs[interface] ?? .unavailable
+        case .keeperJobFile(let interface): return keeperJobFiles[interface] ?? .unavailable
+        case .keeperJobFileList:
+            let names = ["com.example.agent.plist", "io.darkbloom.other.plist"]
+                + keeperJobFiles.keys.sorted().map { "io.darkbloom.cluster-link.\($0).plist" }
+            return keeperDirectory ?? .output(names.joined(separator: "\n") + "\n")
         }
+    }
+
+    /// As after an approved durable fix: the keeper's file and loaded job.
+    mutating func installKeeper(interface: String, address: String) {
+        keeperJobs[interface] = .output("system/io.darkbloom.cluster-link.\(interface) = {\n\tstate = not running\n}\n")
+        keeperJobFiles[interface] = .output(LinkFixtures.keeperJobJSON(interface: interface, address: address))
     }
 
     /// Runs the inspection and returns the report with the commands it issued.

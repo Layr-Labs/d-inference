@@ -10,12 +10,15 @@ extension ClusterLinkReadinessReport {
     /// saved setup's port, or any active port when nothing is saved and none
     /// is ready. Elsewhere its readiness is reported as not observed.
     func diagnosticChecks(configuredDevice: String?) -> [ClusterDiagnosticsReport.Check] {
+        // A ready link may still carry advice: an address nothing would put back.
+        let finding = state == .ready
+            ? ["an active RDMA port publishes the IPv4-mapped GID that JACCL requires.", guidance, Self.readyScope] : [guidance]
         var checks = [ClusterDiagnosticsReport.Check(name: "localLink", outcome: state == .ready ? .passed : .failed,
-            detail: "\(state.rawValue): " + (guidance ?? "an active RDMA port publishes the IPv4-mapped GID that JACCL requires. " + Self.readyScope))]
+            detail: "\(state.rawValue): " + finding.compactMap { $0 }.joined(separator: " "))]
         for device in devices where device.portActive || device.device == configuredDevice {
             let configured = device.device == configuredDevice
             let servingWouldUseIt = configured || (configuredDevice == nil && state != .ready)
-            let detail = [device.summary + ".", configured ? "The saved setup uses this device." : nil, device.verdict.guidance]
+            let detail = [device.summary + ".", configured ? "The saved setup uses this device." : nil, device.guidance]
             checks.append(.init(name: "localLinkDevice.\(device.device)",
                 outcome: device.verdict == .ready ? .passed : servingWouldUseIt ? .failed : .notObserved,
                 detail: detail.compactMap { $0 }.joined(separator: " ")))

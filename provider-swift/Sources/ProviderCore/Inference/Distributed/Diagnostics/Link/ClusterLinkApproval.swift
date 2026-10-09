@@ -11,7 +11,7 @@ enum ClusterLinkApprovalResult: Equatable, Sendable {
     case commandFailed
 }
 
-/// Asks macOS to run one `ClusterLinkAliasCommand` as an administrator. macOS
+/// Asks macOS to run one `ClusterLinkPrivilegedRequest` as an administrator. macOS
 /// shows its own authorization prompt; Darkbloom never sees a password and
 /// never uses `sudo`.
 enum ClusterLinkApproval {
@@ -22,13 +22,13 @@ enum ClusterLinkApproval {
     /// AppleScript's "User canceled" and Authorization Services' cancellation.
     private static let cancellationErrors = [-128, -60006]
 
-    static func arguments(for command: ClusterLinkAliasCommand) -> [String] {
-        ["-e", command.appleScript]
+    static func arguments(for request: ClusterLinkPrivilegedRequest) -> [String] {
+        ["-e", request.appleScript]
     }
 
     /// Shows the prompt and waits for the answer.
-    static func request(_ command: ClusterLinkAliasCommand) -> ClusterLinkApprovalResult {
-        result(of: ClusterLinkToolProcess.execute(executable: executable, arguments: arguments(for: command),
+    static func request(_ request: ClusterLinkPrivilegedRequest) -> ClusterLinkApprovalResult {
+        result(of: ClusterLinkToolProcess.execute(executable: executable, arguments: arguments(for: request),
             deadline: DispatchTime.now().uptimeNanoseconds + promptTimeoutNanoseconds,
             maximumOutputBytes: maximumOutputBytes, mergingStandardError: true))
     }

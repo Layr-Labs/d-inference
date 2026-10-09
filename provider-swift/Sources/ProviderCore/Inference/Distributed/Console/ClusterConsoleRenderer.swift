@@ -9,6 +9,9 @@ public struct ClusterConsoleFrame: Equatable, Sendable {
     public let maximumScroll: Int
     /// Rows the body occupies.
     public let bodyRows: Int
+    /// The question this frame shows in full, on its own row; nil when none
+    /// is open or the window cannot show all of it.
+    public let question: ClusterConsoleState.Question?
 
     /// The screen as plain text, one line per row.
     public var text: String { lines.map(\.text).joined(separator: "\n") }
@@ -48,12 +51,23 @@ public enum ClusterConsoleRenderer {
     /// Text is not stretched across a very wide window.
     static let maximumTextColumns = 132
 
+    /// Whether a window of this size shows the whole screen, with the row a question is asked on.
+    static func showsStatusLine(_ size: ClusterConsoleSize) -> Bool {
+        size.columns >= minimumColumns && size.rows >= minimumRows
+    }
+
+    /// Whether a window of this size shows every word of a question. A
+    /// question is asked, and answered, only where it does.
+    static func canShow(_ question: ClusterConsoleState.Question, at size: ClusterConsoleSize) -> Bool {
+        showsStatusLine(size) && text(of: question).count <= min(size.columns, maximumTextColumns)
+    }
+
     public static func frame(_ state: ClusterConsoleState) -> ClusterConsoleFrame {
         let columns = max(state.size.columns, 0), rows = max(state.size.rows, 0)
-        guard columns >= minimumColumns, rows >= minimumRows else {
+        guard showsStatusLine(state.size) else {
             let lines = ["darkbloom cluster", "The window is too small.", "q closes."]
-                .prefix(rows).map { ClusterConsoleLine(clip($0, columns), .normal, indent: 0) }
-            return .init(lines: columns > 0 ? Array(lines) : [], maximumScroll: 0, bodyRows: 0)
+                .prefix(rows).map { ClusterConsoleLine(clip($0, columns), .normal, indent: 0, from: .frame) }
+            return .init(lines: columns > 0 ? Array(lines) : [], maximumScroll: 0, bodyRows: 0, question: nil)
         }
         let width = min(columns, maximumTextColumns)
         let body = ClusterConsoleContent.body(state).flatMap { wrap($0, width: width) }
@@ -66,8 +80,9 @@ public enum ClusterConsoleRenderer {
         lines += Array(repeating: .blank, count: rows - 2 - lines.count)
         lines.append(statusLine(state, width: width))
         // One column short: writing the last cell of the last row scrolls some terminals.
-        lines.append(.init(clip(keys(state), width - 1), .dim, indent: 0))
-        return .init(lines: lines, maximumScroll: maximumScroll, bodyRows: bodyRows)
+        lines.append(.init(clip(keys(state), width - 1), .dim, indent: 0, from: .frame))
+        return .init(lines: lines, maximumScroll: maximumScroll, bodyRows: bodyRows,
+            question: state.asking.flatMap { canShow($0, at: state.size) ? $0 : nil })
     }
 
     // MARK: - Fixed rows
@@ -75,25 +90,29 @@ public enum ClusterConsoleRenderer {
     private static func header(_ state: ClusterConsoleState, width: Int, position: (Int, Int, Int)?) -> ClusterConsoleLine {
         var parts = ["Darkbloom cluster"]
         if let snapshot = state.snapshot {
-            parts.append(snapshot.saved.pairing.map { "cluster \($0.clusterID)" } ?? "no saved setup")
+            parts.append(snapshot.saved.pairing.map { "cluster \($0.clusterID)" }
+                ?? (snapshot.saved.state == .unreadable ? "saved setup unreadable" : "no saved setup"))
             parts.append("link \(snapshot.link.state.rawValue)")
             parts.append("read \(snapshot.observedAt)")
         }
         if state.options.dryRun { parts.append("dry run") }
         let title = sanitized(parts.joined(separator: " \u{B7} "))
-        guard let (offset, shown, total) = position else { return .init(clip(title, width), .title, indent: 0) }
+        guard let (offset, shown, total) = position else { return .init(clip(title, width), .title, indent: 0, from: .frame) }
         // Where the body is scrolled to stays visible however narrow the window is.
         let place = "lines \(offset + 1)-\(min(offset + shown, total)) of \(total)"
         let room = max(width - place.count - 2, 0), left = clip(title, room)
-        return .init(clip(left + String(repeating: " ", count: max(width - left.count - place.count, 1)) + place, width), .title, indent: 0)
+        return .init(clip(left + String(repeating: " ", count: max(width - left.count - place.count, 1)) + place, width), .title,
+            indent: 0, from: .frame)
     }
 
     /// The one row that answers "what is happening now": a question waiting
     /// for a key, a refusal, an action in flight, or a refresh.
     private static func statusLine(_ state: ClusterConsoleState, width: Int) -> ClusterConsoleLine {
         let text: String, style: ClusterConsoleLine.Style
-        if let action = state.confirming {
-            (text, style) = (question(action, state), .prompt)
+        if let question = state.asking {
+            // The reducer withdraws a question the window can no longer show;
+            // should one be open anyway, it is not passed off as readable.
+            (text, style) = (canShow(question, at: state.size) ? self.text(of: question) : "Window too narrow to ask. Any key cancels.", .prompt)
         } else if let notice = state.notice {
             (text, style) = (notice, .warning)
         } else if let action = state.inFlight {
@@ -103,26 +122,25 @@ public enum ClusterConsoleRenderer {
         } else {
             (text, style) = ("", .normal)
         }
-        return .init(clip(sanitized(text), width), style, indent: 0)
+        return .init(clip(sanitized(text), width), style, indent: 0, from: .frame)
     }
 
-    private static func question(_ action: ClusterConsoleAction, _ state: ClusterConsoleState) -> String {
-        switch action {
-        case .approveSetup:
-            let peer = state.snapshot?.candidate?.pairing?.peerID ?? "the peer"
-            return "Save this setup and trust \(peer) by the host key shown? y approves; any other key cancels."
+    /// One row, both answers, and short enough for an 80-column window.
+    static func text(of question: ClusterConsoleState.Question) -> String {
+        switch question {
+        case .approveSetup(let digest):
+            return "y: save setup \(ClusterConsoleText.short(digest)) and trust its pinned keys. Any other key cancels."
         case .startSession:
-            return "Start the distributed session? Both Macs load the model. y starts; any other key cancels."
+            return "y: start the session; both Macs load the model. Any other key cancels."
         case .recoverJournal:
-            return "Clear the device journal if its owner and worker are both gone? y recovers; any other key cancels."
-        case .fixLink, .stopSession, .exportDiagnostics:
-            return "\(action.title)? y confirms; any other key cancels."
+            return "y: clear the journal if its owner and worker are gone. Any other key cancels."
         }
     }
 
     private static func keys(_ state: ClusterConsoleState) -> String {
-        state.showsHelp ? "? back   q close"
-            : "r refresh  f fix link  a approve  s start  x stop  c recover  e export  ? help  q close"
+        // Short enough that an 80-column window shows the last key too.
+        state.showsHelp ? "? back   q quit"
+            : "r read  f fix  a approve  s start  x stop  c recover  e export  ? help  q quit"
     }
 
     // MARK: - Fitting text
@@ -162,6 +180,6 @@ public enum ClusterConsoleRenderer {
             current = word
         }
         rows.append(current)
-        return rows.map { .init(margin + $0, line.style, indent: 0) }
+        return rows.map { .init(margin + $0, line.style, indent: 0, from: line.source) }
     }
 }

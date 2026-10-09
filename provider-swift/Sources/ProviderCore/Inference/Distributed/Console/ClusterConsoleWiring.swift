@@ -2,18 +2,27 @@ import Foundation
 
 /// The console's honesty contract in code: which elements run or read a real
 /// operation, and which the gate names but this build cannot do. The same
-/// identifiers are the rows of `handoff/TUI-wiring.md`; a check compares the
-/// two, so an element cannot be shown as live without a wired row.
+/// identifiers are the rows of `handoff/TUI-wiring.md`. Every line of the
+/// screen that states something names the row it was read from
+/// (`ClusterConsoleLine.Source`), and every action names its own; checks hold
+/// those names to the wired list and the wired list to the table.
 public enum ClusterConsoleWiring {
     /// Elements the screen shows from a real operation.
     public static let wired: [String] = [
-        "link.rdma", "link.port", "link.narration", "link.wait", "link.alias", "doctor.checks", "installed.worker",
-        "journal.state",
+        "link.rdma", "link.port", "link.narration", "link.wait", "link.fix", "link.alias", "doctor.checks",
+        "installed.worker", "journal.state",
         "pair.saved", "pair.hostkey", "pair.identity", "pair.approval", "pair.approve",
         "model.admitted", "model.saved", "model.ranks", "model.metadata", "model.files", "model.admission",
         "session.start", "session.stop", "session.process", "session.status", "session.recover",
         "host.local", "export.diagnostics",
-        "intent.setup", "intent.alias", "intent.journal", "intent.running",
+    ]
+
+    /// Operator intent that is persisted and read back when the screen
+    /// opens, with the wired element that shows it. Nothing else is
+    /// remembered between two screens.
+    public static let reconciledAtLaunch: [(id: String, shownBy: String)] = [
+        ("intent.setup", "pair.saved"), ("intent.alias", "link.alias"), ("intent.journal", "journal.state"),
+        ("intent.running", "session.status"),
     ]
 
     /// Something the gate names that the screen cannot do, with the reason it
@@ -33,6 +42,8 @@ public enum ClusterConsoleWiring {
               reason: "Nothing watches for a cable before this command is run."),
         .init(id: "link.physical", title: "Link speed and a physical transfer check", exists: true,
               reason: "The transfer check is a separate build of the worker package, not an installed command."),
+        .init(id: "link.remove", title: "Remove the port's address and its system job", exists: true,
+              reason: "`darkbloom cluster link --remove` does it, after its own macOS prompt; this screen has no key for it."),
         .init(id: "pair.discovery", title: "Find a peer", exists: false,
               reason: "A peer is known only from a setup you pass in; nothing discovers one."),
         .init(id: "pair.verify", title: "Prove the peer holds its pinned key", exists: false,
@@ -43,6 +54,8 @@ public enum ClusterConsoleWiring {
               reason: "Only the worker hashes weights, and only while loading them."),
         .init(id: "model.preadmission", title: "Admission before a start", exists: false,
               reason: "A worker admits when it loads; it has no admission-only mode."),
+        .init(id: "model.servable", title: "Whether a start would serve the saved model on this Mac", exists: true,
+              reason: "Only `darkbloom start --local --distributed` applies the model's chip and runtime requirements; its refusal is shown as it prints it."),
         .init(id: "model.picker", title: "Choose among local models", exists: true,
               reason: "Nothing lists local distributed models; another model is another setup, approved with `a`."),
         .init(id: "session.percent", title: "Load progress as a percentage", exists: false,

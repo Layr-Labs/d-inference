@@ -197,7 +197,9 @@ class Server:
 
 
 def leftover_processes(binary):
-    listing = output_of(["pgrep", "-fl", str(binary)])
+    """Serving processes of this binary (`<binary> start ...`); other commands of the
+    same binary, such as a model download running beside the benchmark, do not count."""
+    listing = output_of(["pgrep", "-fl", "--", re.escape(str(binary)) + " start "])
     return [clean(line) for line in listing.splitlines() if line.strip()]
 
 
@@ -309,6 +311,8 @@ def main():
     parser.add_argument("--stop-seconds", type=float, default=300.0)
     parser.add_argument("--settle-seconds", type=float, default=5.0)
     arguments = parser.parse_args()
+    for name in ("binary", "work", "config", "out", "plan", "calibration"):
+        setattr(arguments, name, getattr(arguments, name).expanduser().resolve())
     arguments.out.mkdir(parents=True, exist_ok=True)
 
     def note(message):

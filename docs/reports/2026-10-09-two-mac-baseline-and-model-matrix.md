@@ -132,8 +132,9 @@ Concurrency (closed loop):
 | 2 | 65.6 (16/16) | 85.6 (16/16) | 151.2 |
 | 4 | 77.6 (32/32) | 106.6 (32/32) | 184.2 |
 | 8, default width 4 | 76.8 (4/48) | 103.7 (4/48) | — |
-| 8, width set to 8 | not run | 120.6 (48/48) | — |
+| 8, width set to 8 | 83.3 (48/48) | 120.6 (48/48) | 204.0 |
 
+Mac A soak (10 min, 4 clients, mixed sizes): 136/136 ok, 28.3 output and 743 prompt tok/s.
 Mac B soak (10 min, 4 clients, mixed sizes): 210/210 ok, 44.4 output and 1,158 prompt tok/s.
 
 ## Before and after for the pair: what exists
@@ -214,23 +215,44 @@ below is then a contiguous-fallback figure.
 
 | Model | Mac | Ready s | Footprint GiB loaded / peak seen | 64-tok prompt: first token s, decode tok/s | 4k prompt: first token s, prefill tok/s, decode tok/s | 4 clients: output tok/s at 64 / 4k | Soak ok/all, output tok/s | Requests failed | Stop s, left over | Session failures |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `gpt-oss-20b` | B | 6.8 | 12.0 / 14.0 | 0.075, 111.9 | 1.42, 2,886, 108.4 | 184.5 / 52.6 | 105/105, 73.7 | 0 | 0.15, 0 | none |
+| `ternary-bonsai-2-27b` | B | 8.6 | 10.0 / 12.0 | 0.340, 34.2 | 9.17, 447, 34.2 | 52.4 / 10.2 | 25/25, 16.7 | 0 | 0.14, 0 | none |
+| `qwen3.6-35b-a3b-vl-mtp-mxfp8` | B | 7.5 | 21.0 / 21.0 | 0.071, 102.1 | 1.11, 3,702, 110.8 | 202.4 / 56.2 | 117/117, 81.7 | 0 | 0.15, 0 | none |
 | `EigenLabs/Qwen3.8-27B-4bit-mtp` | B | 6.8 | 18.0 / 21.0 | 0.193, 38.6 | 7.09, 578, 37.3 | 58.1 / 13.5 | 30/30, 18.5 | 0 | 0.15, 0 | none |
+| `gemma-4-26b-qat-4bit` | B | 6.8 | 15.0 / 19.0 | 0.101, 105.5 | 1.11, 3,693, 103.6 | 208.6 / 57.0 | 119/119, 82.8 | 0 | 0.15, 0 | none |
+| `qwen3.5-35b-a3b` | B | 7.8 | 20.0 / 24.0 | 0.068, 122.3 | 1.11, 3,692, 133.0 | 207.0 / 55.7 | 110/110, 77.1 | 0 | 0.20, 0 | none |
+| `nvidia-nemotron-3.5-lightning` | A | 219.8 | — / — | 0.094, 107.8 | 2.03, 2,022, 71.5 | 199.0 / 42.9 | 103/103, 72.4 | 0 | 0.20, 0 | none |
 | `nvidia-nemotron-3.5-lightning` | B | 6.5 | 18.0 / 19.0 | 0.130, 77.1 | 1.39, 2,958, 54.2 | 186.1 / 52.1 | 113/113, 79.1 | 0 | 0.15, 0 | none |
 
 
 
 | Model | Mac | Backend at load | MTP active | Prefix cache | Lanes held | Load average at start |
 |---|---|---|---|---|---|---|
+| `nvidia-nemotron-3.5-lightning` | A | paged | 1 | ready | lane.sh+lane-build.sh | 10.8 |
 | `EigenLabs/Qwen3.8-27B-4bit-mtp` | B | paged | 1 | ready | lane-b.sh | 2.1 |
+| `gemma-4-26b-qat-4bit` | B | paged | 0 | ready | lane-b.sh | 2.8 |
+| `gpt-oss-20b` | B | paged | 0 | ready | lane-b.sh | 3.1 |
 | `nvidia-nemotron-3.5-lightning` | B | paged | 1 | ready | lane-b.sh | 2.8 |
+| `qwen3.5-35b-a3b` | B | paged | 1 | ready | lane-b.sh | 3.0 |
+| `qwen3.6-35b-a3b-vl-mtp-mxfp8` | B | paged | 1 | ready | lane-b.sh | 2.6 |
+| `ternary-bonsai-2-27b` | B | paged | 0 | ready | lane-b.sh | 3.5 |
 
 - **`nvidia-nemotron-3.5-lightning` passes with default MTP on the paged
-  backend** (Mac B: every request, MTP rounds counted). The first-round
-  "failed" was the install fault (Investigation A).
+  backend on both Macs** (every request; `mtp_active 1`, rounds counted). The
+  first-round "failed" was the install fault (Investigation A).
+- `mimo-v2.6-flash-mopd` was never loaded: the provider's `doctor` said it
+  did not fit at each of three gated attempts (Investigation B).
 - Nemotron with default MTP is much slower than with MTP off on Mac B:
   decode 54–77 tok/s against 128–134, prefill 2,958 against 3,831 tok/s at 4k
   (the MTP-off figures are from the first round on contiguous, so backend and
   MTP both differ; worth a clean A/B).
+- On Mac A only Nemotron (and Qwen3.5 9B, stage 3) were re-run on paged
+  before the night ended; the other Mac A models have first-round rows only.
+- Mac B's paged rows show 13–20% lower 4k prefill than its first-round
+  contiguous rows for the same models (for example `qwen3.5-35b-a3b` 3,692
+  against 4,269 tok/s). The second round ran back to back for over an hour on
+  a Mac that slows under sustained load, so backend and thermal state are
+  confounded; a rested A/B of the two backends was not done.
 - `EigenLabs/Qwen3.8-27B-4bit-mtp` on Mac B, paged, MTP active: 578 prefill
   tok/s at 4k (7.1 s to first token), 37–39 decode tok/s, 58 output tok/s at
   four clients with short prompts.
@@ -365,6 +387,8 @@ Measured:
 | Memory at the attempt (`vm_stat`) | free 0–9 GiB, inactive 197–208 GiB, active 38–39, wired 8, compressor 1; pressure normal, swap 0 | `memory-precheck.txt`, journal |
 | Wired memory during the attempt | 7.9 → 8.2 GiB (nothing was materialised) | session file |
 | The product's own verdict, an hour later, from `darkbloom doctor` | `[FAIL] model fits in RAM — mimo-v2.6-flash-mopd needs ~182.9 GB but only 163.4 GB is usable now (19.4 GB short for preload)` | `investigation/mimo/doctor-macA.txt` |
+| `doctor` again inside a two-lane hold at 10:10 UTC (attempt 2 gate) | `needs ~182.9 GB but only 180.3 GB is usable now (2.6 GB short)` → not started | `investigation/mimo/attempt2/doctor-before.txt` |
+| `doctor` again inside a two-lane hold at 11:15 UTC (attempt 3 gate, app-layout install) | `needs ~182.9 GB but only 175.9 GB is usable now (7.0 GB short)` → not started | `investigation/mimo/attempt3-app-layout/doctor-before.txt` |
 
 Read in the source at `f93e4cf7f` (file and line references in the journal):
 
@@ -419,9 +443,12 @@ Answers to the questions asked:
    other processes at or below about 45 GiB (47.5 minus a small margin) at the
    moment of loading, which tonight means the other agents' and tools'
    resident memory would have to shrink by 2–20 GiB depending on the moment.
-   Nothing was stopped or purged to get there. A second attempt was queued
-   behind the provider's own `doctor` verdict (it starts only if `doctor`
-   prints `[PASS] model fits in RAM`); see the journal for its outcome.
+   Nothing was stopped or purged to get there. Two further attempts were
+   gated on the provider's own `doctor` verdict inside two-lane holds; both
+   times it said the model did not fit (2.6 and 7.0 GB short), so the model
+   was never loaded tonight. Note also that once it does load, MiMo's native
+   path builds a paged KV pool like Nemotron's, so it needs the app-layout
+   install described in Investigation A.
 3. *Where would an operator have had to look?* Only at `darkbloom doctor`
    run from a second terminal. The server's stdout says "Startup preload: 0
    model(s) loaded" (and only at exit when piped); the skip/failure line with

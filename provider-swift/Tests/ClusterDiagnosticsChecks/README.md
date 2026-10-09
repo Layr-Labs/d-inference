@@ -16,6 +16,10 @@ Checks cover:
   arbitrary remote/DNS/URL-disagreement/credential-injection cases refuse.
 - A held empty device gate remains only an empty-journal observation; a nonempty
   journal remains unproven ownership and its contents are unchanged.
+- A local link inspection becomes doctor checks: one for the Mac, one per active
+  or saved-setup port; a blocked port fails only where serving would use it, and
+  the report never calls the inspection a physical probe. The inspection itself
+  is covered by `ClusterLinkChecks`.
 
 No GPU/model, SSH, remote network or physical collective runs. The small metadata
 child is CPU-only. Actual HTTP authentication/route/client tests and CLI parsing

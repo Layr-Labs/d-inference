@@ -12,3 +12,17 @@ import ArgumentParser
     #expect(throws: (any Error).self) { _ = try Cluster.Status.parse(["--enable"]) }
     #expect(throws: (any Error).self) { _ = try Cluster.Status.parse(["--host", "remote.example"]) }
 }
+
+@Test func clusterLinkParsesOnlyItsOutputFormatAndIsRegistered() throws {
+    let summary = try Cluster.Link.parse([])
+    #expect(!summary.json)
+    let report = try Cluster.Link.parse(["--json"])
+    #expect(report.json)
+    let dispatched = try Darkbloom.parseAsRoot(["cluster", "link", "--json"])
+    #expect(dispatched is Cluster.Link)
+    // The command reads local state only: nothing selects a host, a device, a file or a fix.
+    for refused in [["--fix"], ["--enable"], ["--device", "rdma_en7"], ["--config", "/tmp/provider.toml"],
+                    ["--host", "remote.example"]] {
+        #expect(throws: (any Error).self) { _ = try Cluster.Link.parse(refused) }
+    }
+}

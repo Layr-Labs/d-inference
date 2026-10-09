@@ -1,33 +1,14 @@
 import Foundation
 
-public struct ClusterDiagnosticsReport: Encodable, Sendable {
-    public enum ConfigurationState: String, Encodable, Sendable { case notConfigured, verified, invalid }
-    public enum Outcome: String, Encodable, Sendable { case passed, failed, notRun, notObserved }
-    public struct Check: Encodable, Sendable {
-        public let name: String
-        public let outcome: Outcome
-        public let detail: String
-    }
-    public let schema = "darkbloom_cluster_diagnostics_v1"
-    public let operation: String
-    public let configurationState: ConfigurationState
-    public let saved: ClusterStatusBinding?
-    public let live: ClusterLiveStatus?
-    public let deviceJournal: ClusterDeviceJournalObservation
-    public let checks: [Check]
-    /// These commands never run a new physical collective or change ownership.
-    public let physicalProbePerformed = false
-    public let recoveryPerformed = false
-}
-
 public enum ClusterDiagnostics {
     public static func status(providerConfiguration: URL) async -> ClusterDiagnosticsReport {
         await inspect(providerConfiguration: providerConfiguration, doctor: false)
     }
 
     /// Reuses the actual startup metadata validator, including the fixed bounded
-    /// describe-runtime child. It performs no SSH, model load, matrix/config
-    /// publication, lease acquisition, journal recovery or inference request.
+    /// describe-runtime child, and reads this Mac's own RDMA link state. It
+    /// performs no SSH, model load, matrix/config publication, lease
+    /// acquisition, journal recovery, collective or inference request.
     public static func doctor(providerConfiguration: URL) async -> ClusterDiagnosticsReport {
         await inspect(providerConfiguration: providerConfiguration, doctor: true)
     }
@@ -36,11 +17,15 @@ public enum ClusterDiagnostics {
         let paths: ClusterUserPaths
         let reference: ClusterConfigurationReference?
         let binding: ClusterStatusBinding?
+        /// The RDMA device the saved setup assigns to this Mac.
+        let linkDevice: String?
     }
 
     private static func inspect(providerConfiguration: URL, doctor: Bool) async -> ClusterDiagnosticsReport {
         var checks = [ClusterDiagnosticsReport.Check]()
         let operation = doctor ? "doctor" : "status"
+        // Only the doctor starts the link tools, so `cluster status` is no slower.
+        let localLink = doctor ? await Task.detached { ClusterLinkReadinessProbe.inspectLocalLink() }.value : nil
         let saved: Saved
         do {
             saved = try await Task.detached {
@@ -48,18 +33,23 @@ public enum ClusterDiagnostics {
                 let reference = try ClusterConfigurationStore.optionalInstalledReference(providerConfiguration: providerConfiguration)
                 let loaded = try reference.map { try ClusterConfigurationStore(paths: paths).load(reference: $0) }
                 let binding = try loaded.map { try ClusterStatusBinding(configuration: $0.configuration, capability: $0.capability) }
-                return Saved(paths: paths, reference: reference, binding: binding)
+                let linkDevice = (loaded?.configuration).flatMap { configuration in
+                    configuration.peers.first { $0.rank == configuration.localRank }?.jacclDevice
+                }
+                return Saved(paths: paths, reference: reference, binding: binding, linkDevice: linkDevice)
             }.value
         } catch {
             return .init(operation: operation, configurationState: .invalid, saved: nil, live: nil,
                 deviceJournal: (try? ClusterUserPaths()).map { .read(paths: $0) } ?? .unsafeOrChanging,
-                checks: [.init(name: "savedConfiguration", outcome: .failed, detail: bounded(error))])
+                checks: [.init(name: "savedConfiguration", outcome: .failed, detail: bounded(error))],
+                localLink: localLink, configuredLinkDevice: nil)
         }
         let journal = ClusterDeviceJournalObservation.read(paths: saved.paths)
         guard let binding = saved.binding, let reference = saved.reference else {
             return .init(operation: operation, configurationState: .notConfigured, saved: nil, live: nil,
                 deviceJournal: journal, checks: [.init(name: "savedConfiguration", outcome: .notRun,
-                    detail: "No saved cluster reference; ordinary solo behavior is unchanged.")])
+                    detail: "No saved cluster reference; ordinary solo behavior is unchanged.")],
+                localLink: localLink, configuredLinkDevice: nil)
         }
         checks.append(.init(name: "savedConfiguration", outcome: .passed,
             detail: "Canonical configuration/capability pins and selected policy verified; this is not readiness."))
@@ -99,7 +89,7 @@ public enum ClusterDiagnostics {
         checks.append(.init(name: "deviceExclusion", outcome: .notRun,
             detail: "Journal metadata only. Nonempty means ownership is unproven, not orphaned; empty/absent is not a free-device proof. No lock or journal was changed."))
         return .init(operation: operation, configurationState: .verified, saved: binding, live: live,
-            deviceJournal: journal, checks: checks)
+            deviceJournal: journal, checks: checks, localLink: localLink, configuredLinkDevice: saved.linkDevice)
     }
 
     private static func bounded(_ error: Error) -> String {

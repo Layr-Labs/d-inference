@@ -17,7 +17,7 @@ extension Cluster {
 
     struct Doctor: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "doctor",
-            abstract: "Check local installed metadata and trust files without inference, SSH probes or recovery.")
+            abstract: "Check local installed metadata, trust files and this Mac's RDMA link state without inference, SSH probes or recovery.")
         @OptionGroup var configOptions: ConfigOptions
         @Flag(help: "Print each check's observed, failed or not-run scope as JSON.") var json = false
         mutating func run() async throws {

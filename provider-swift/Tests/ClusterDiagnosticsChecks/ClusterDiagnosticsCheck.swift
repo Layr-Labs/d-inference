@@ -4,8 +4,8 @@ import CryptoKit
 import DarkbloomClusterProtocol
 @testable import InstalledContract
 
-private struct Failure: Error { let message: String }
-private func require(_ value: Bool, _ message: String) throws { if !value { throw Failure(message: message) } }
+struct Failure: Error { let message: String }
+func require(_ value: Bool, _ message: String) throws { if !value { throw Failure(message: message) } }
 private func reject(_ body: () throws -> Void) throws {
     do { try body() } catch is Failure { throw Failure(message: "Assertion in refusal") } catch { return }
     throw Failure(message: "Expected refusal")
@@ -22,7 +22,8 @@ private func reject(_ body: () throws -> Void) throws {
         try status(f)
         try discovery(f)
         try journal(f)
-        print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery and journal uncertainty passed")
+        try linkFindings()
+        print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery, journal uncertainty and local link findings passed")
     }
 
     static func tree(_ root: URL) throws -> [String: String] {

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -998,3 +998,51 @@ grant, runtime approval or serving capacity. No CLI command or environment
 variable constructs or selects one today; the member role is reachable only
 through an explicit code path that also constructs the member control
 owner, keeping the whole surface default-off.
+
+### Local link readiness
+
+`darkbloom cluster link [--json]`
+(`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`, `Cluster.Link`)
+reads this Mac's own RDMA and network-interface state and reports whether
+JACCL could initialise on it. It reads no provider configuration, changes no
+setting, contacts no peer and runs no collective, and it exits non-zero unless
+the state is `ready`. `darkbloom cluster doctor` runs the same inspection and
+appends its findings as checks; `darkbloom cluster status` does not run it.
+
+| Item | Value | Source |
+|---|---|---|
+| Tools run | `/usr/bin/rdma_ctl status`, `/usr/bin/ibv_devinfo`, `/sbin/ifconfig -a`, then `/usr/bin/ibv_devinfo -v -d <device>` for each device whose port is active. Absolute paths, no shell, null standard input, environment limited to `PATH`, `LANG` and `LC_ALL` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolCommand.swift` (`ClusterLinkToolCommand`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkToolProcess.swift` (`ClusterLinkToolProcess.run`) |
+| Time bounds | `childTimeoutNanoseconds = 3_000_000_000` per tool, `inspectionTimeoutNanoseconds = 10_000_000_000` for all of them, `reapTimeoutNanoseconds = 1_000_000_000` to await a killed tool | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessProbe.swift` (`ClusterLinkReadinessProbe`); `ClusterLinkToolProcess` |
+| Size bounds | `maximumOutputBytes = 256 * 1024` per tool, `maximumDevices = 32` | `ClusterLinkReadinessProbe` |
+| Report | `schema` is `darkbloom_cluster_link_readiness_v1`; `state`, `guidance`, one `devices` entry per RDMA device, and the constant `physicalProbePerformed: false`. Device and interface names only: no IP address, MAC address, GID, host name or serial number. An unknown fact is omitted rather than written as `null` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessReport.swift` (`ClusterLinkReadinessReport`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkName.swift` (`ClusterLinkName`) |
+| Doctor checks | `localLink` for the Mac; `localLinkDevice.<device>` for each active port and for the saved setup's port; `configuredLinkDevice` when the saved setup names a device this Mac does not list. A port that is not ready fails only where serving would use it. The doctor report sets `localLinkInspectionPerformed` and keeps `physicalProbePerformed` `false` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkDiagnosticChecks.swift` (`diagnosticChecks`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnosticsReport.swift` (`ClusterDiagnosticsReport`) |
+
+`state`, and each device's `verdict`, is one value of
+`ClusterLinkReadinessState`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkReadinessState.swift`).
+Every state except `ready` carries one `guidance` sentence naming the change
+the operator must make; Darkbloom makes none of them.
+
+| State | Meaning |
+|---|---|
+| `ready` | An active port publishes an IPv4-mapped GID, the condition JACCL checks before it uses a device. Local state only: it does not show that the peer is reachable |
+| `rdmaDisabled` | `rdma_ctl status` printed `disabled`. RDMA is enabled from macOS Recovery with `rdma_ctl enable` |
+| `rdmaUnavailable` | `rdma_ctl` or `ibv_devinfo` is missing or exited non-zero, as `ibv_devinfo` does when there is no RDMA device |
+| `noActivePort` | No RDMA device has an active port |
+| `portWithoutIPv4Address` | The active port's interface has no IPv4 address and is not a bridge member |
+| `portBridgedWithoutAddress` | The active port's interface is a bridge member, such as the Thunderbolt Bridge, and has no IPv4 address of its own |
+| `gidNotPublished` | No IPv4-mapped GID is listed although the interface has an IPv4 address, or the interface could not be identified |
+| `probeFailed` | A tool timed out, exceeded its output bound or printed unrecognized text |
+
+### Provider configuration file mode
+
+Every provider save replaces `provider.toml` atomically and owner-only (mode
+`0600`); a file an earlier release left group- or world-readable is tightened
+by the next save, and a stricter existing mode is kept
+(`provider-swift/Sources/ProviderCore/Config/ProviderConfigFile.swift`,
+`ProviderConfigFile.replace`). The cluster readers refuse a `provider.toml`
+that group or others can access
+(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift`,
+`installedReference` and `optionalInstalledReference`), so until such a file is
+saved again or its mode is corrected by hand, `darkbloom cluster status` and
+`darkbloom cluster doctor` report the saved setup as `invalid`.

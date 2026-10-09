@@ -52,7 +52,9 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusClient.swift \
-  "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift
+  "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift \
+  "$task_sources"/Inference/Distributed/Diagnostics/ClusterDiagnosticsReport.swift \
+  "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift
 
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
@@ -61,7 +63,7 @@ for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker Cl
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
     InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
-    ClusterDiagnosticsCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_diagnostics/ClusterDiagnosticsCheck.swift") ;;
+    ClusterDiagnosticsCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_diagnostics/ClusterDiagnosticsCheck.swift" "$task_diagnostics/ClusterLinkFindingsCheck.swift") ;;
   esac
   xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
     "${task_inputs[@]}" -o "$task_build/$task_name"

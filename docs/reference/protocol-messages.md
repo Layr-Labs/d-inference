@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -979,7 +979,11 @@ drift correction for the coordinator's ledger, not reservations.
 
 Go `ClusterMemberAcceptedMessage` (`coordinator/protocol/execution_role.go`) ·
 Swift `CoordinatorMessage.clusterMemberAccepted` (`ClusterMemberAccepted`).
-Sent once per member-role connection after registration. One acceptance per
+Sent once per member-role connection as the last step of handling
+[`register`](#register) (`acknowledgeClusterMember`,
+`coordinator/api/provider/cluster_member.go`): after every check that can
+refuse the connection, and whether or not a native runtime catalog is
+configured. A refused or solo registration is sent none. One acceptance per
 negotiation, before a ten-second deadline; the negotiation is discarded on
 reconnect. It proves protocol support and connection binding only — never
 attestation, runtime approval, native-owner authorization or serving

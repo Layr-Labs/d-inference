@@ -1,6 +1,6 @@
 # Experimental cluster control protocol
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 Exact member-role and native-pair public-control shapes on the provider
 WebSocket, as staged on the private `kimi/cluster-foundation-20261007`
@@ -9,8 +9,13 @@ branch. Member registration and negotiation are implemented end to end
 on the coordinator and mirrored by the Swift codec; the provider member
 dispatcher consumes committed starts through the staged member control. The
 default native runtime catalog is empty, so every native-pair handler fails
-closed and no provider can enter member mode today: there is no CLI path and
-no product distributed wiring yet (see the staging handoff).
+closed; a member registration is still acknowledged, because the acknowledgment
+confirms the role and the connection binding only. A provider enters member
+mode only through the explicit distributed start opt-in
+(`provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift`,
+`makeClusterMemberLoop`), and no coordinator selector reserves a pair yet:
+`BeginNativePair` (`coordinator/api/native_pair.go`) has no production caller
+(see the staging handoff).
 
 ## Member registration and acknowledgment
 
@@ -25,6 +30,19 @@ inventory, a separate cluster inventory and a fresh connection nonce.
 | `execution_role` | String | Exactly `cluster_member` | `provider-swift/Sources/ProviderCore/Protocol/ProviderExecutionRole.swift`, `ClusterMemberNegotiation.accept` |
 | `member_registration_nonce` | String | Exact nonce from this connection's registration | `ClusterMemberNegotiation.accept` |
 | `provider_id` | String | Nonempty, at most 128 UTF-8 bytes | `ClusterMemberNegotiation.accept` |
+
+The coordinator queues the acknowledgment as the last step of handling
+`register` (`coordinator/api/provider/cluster_member.go`,
+`acknowledgeClusterMember`, called from `providerReadLoop` in
+`coordinator/api/provider/session.go`): after every step that can refuse the
+connection, including native-pair attachment when a runtime catalog is
+configured, so a refused member never observes an acceptance. The frame carries
+the registry's own record of the connection
+(`coordinator/registry/execution_role.go`, `ClusterMemberAcceptance`): the nonce
+it registered with and the coordinator-assigned connection ID. A solo
+registration is sent nothing. If the acknowledgment cannot be queued the
+coordinator closes the socket with status 1013 so the provider negotiates again
+on a new connection instead of waiting out its deadline.
 
 The provider accepts one acknowledgment before the negotiation's ten-second
 deadline and discards that negotiation on reconnect (`memberRoleFailure` ends

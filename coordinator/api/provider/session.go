@@ -441,6 +441,17 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				}
 			}
 
+			// Last step of registration: every refusal above has already closed
+			// the connection, so only a member the coordinator kept learns that
+			// its role was accepted.
+			if err := s.acknowledgeClusterMember(loopCtx, provider); err != nil {
+				s.logger.Warn("failed to acknowledge cluster member registration",
+					"provider_id", providerID, "error", err)
+				s.observation.Incr("provider.enqueue_failed", []string{"msg:cluster_member_accepted"})
+				_ = conn.Close(websocket.StatusTryAgainLater, "member acknowledgement unavailable")
+				return
+			}
+
 		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
 			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
 				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")

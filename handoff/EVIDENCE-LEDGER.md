@@ -107,3 +107,24 @@ Level: unit, simulated verbs (ASan, UBSan, TSan). Nothing here has run on RDMA h
 | Stale bytes follow a partial payload on the pin, and the fix clears them | `97fbd680` | On the pin 4 of 5 groups fail with a non-zero stale tail; all pass with the fix |
 | A silent peer, a lost completion and a failed completion end in an error, with resources released and the group closed | `aec94c2b` | On the previous commit 34 of 38 cases fail (a silent peer is ended only by the harness watchdog; a failed completion is accepted as data); 38 of 38 pass |
 | The source GID index follows the advertised GID | `83291eb6` | Compiles; no test. On Mac A the IPv4-mapped GID is at index 2, not 1 |
+
+## Two-Mac transport over RDMA (2026-10-08, after Mac B's port got its address)
+
+`darkbloom-cluster-collective-check`, rank 0 on Mac A, rank 1 on Mac B, one
+Thunderbolt cable. Level: physical. No model. "Stock" is the pinned JACCL;
+"guarded" is the mlx fork branch (`aec94c2b`), "guarded+GID" adds `83291eb6`.
+
+| Claim | Build | Result | Remaining uncertainty |
+|---|---|---|---|
+| The guided setup fixes a bridged port for real | `b01fa68ad` | Run by the owner in Terminal on Mac B: approval prompt, address added, device ready, bridge members unchanged, 0600 record written | Cancel and no-desktop paths not exercised for real |
+| Two ranks initialize and agree | stock | Both exit 0; ranks 0 and 1; world size 2 on both | — |
+| Reductions and transfers are exact | stock | 5.36 GiB payload: 80,000 reductions of 1–8 elements (Int32 and Float32), reductions and point-to-point up to 1 GiB in both directions, 512 ordered messages — **0 mismatches on both ranks** | — |
+| The bytes went over RDMA, not IP | stock | IP byte counters on the link interfaces moved 0.0003% of the payload; `libthunderboltrdma` and `libibverbs` loaded in the process | Counter-based, not a packet capture |
+| Throughput | stock | Point-to-point 1 GiB: 8.7 GiB/s A→B, 6.4 GiB/s B→A (sender or receiver side, whichever returned first); all-reduce 1 GiB: 5.2 GiB/s per direction on A | One 1 GiB send from B took 2.8 s on B's clock (0.16 s on A's); not explained |
+| The runtime's own `Collective` type works on the link | stock | Wrapper mode: barrier, agreement, checked transfers, 4,000 token-selection steps, 0 failures | — |
+| The progress guard does not misfire on good traffic | guarded | 1.38 GiB, 48,000 small reductions, 0 mismatches. The driver does report a success status on good completions | — |
+| The source GID change works | guarded+GID | Same workload, 0 mismatches | Stock also works here, so the fixed index is tolerated on this pair; the change is not shown to be needed |
+| A dead peer ends in an error, not a hang | guarded, limit 4 s | Rank 1 ended with SIGTERM 5 s into a run: rank 0 reported "[jaccl] mesh all_reduce: no completion for 4001 ms … The group is closed" and exited 1 about 4 s later | A killed rank holding a loaded model has not been tried |
+| Without the guard a dead peer hangs the survivor | stock, alarm only | Rank 0 spun in `jaccl::MeshImpl::all_reduce` → `tbt_poll_cq` at 100% CPU for more than 9 minutes past its 40 s alarm; exited 1 s after SIGTERM | Why the alarm did not fire is not established |
+| The thread deadline ends it | stock, `39c1bb003` | Same fault: rank 0 exits 124 at its 30 s deadline; a rank with no peer exits 124 at 8.8 s of 8 s | — |
+| Nothing is left behind | all | No process on either Mac after any run; wired memory at its earlier level on both (A about 11.0 GiB, B about 5.4 GiB); a clean run passes after the faults | Small buffers only; no model was loaded |

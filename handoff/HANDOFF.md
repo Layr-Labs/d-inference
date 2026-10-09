@@ -14,7 +14,7 @@ one Thunderbolt cable; the link reports 80 Gb/s and RDMA is enabled on both.
 | Gate | Status | Evidence | Next action |
 |---|---|---|---|
 | G0 Review, reproduction, repair | **Passed, with open findings** | Starting revision verified; 13 checks, package tests and coordinator suite reproduced; two coordinator failures shown to be toolchain-related; three independent reviews done; backend plan proven by a real-JACCL build | Work through [DESIGN-gap-map.md](DESIGN-gap-map.md) |
-| G1 Two-Mac qualification | **Blocked** | Both Macs inventoried. First two-rank run refused at JACCL initialization: Mac B's Thunderbolt port has no IPv4 address of its own | Mac B's port needs its own IPv4 address (administrator). Then rerun the transport check in both modes and record device evidence |
+| G1 Two-Mac qualification | **Passed** | Real collectives over RDMA between the two Macs: 5.36 GiB exact, IP counters at 0.0003% of payload, about 8.7 GiB/s peak; dead-peer behaviour characterized with and without the progress guard; nothing left behind | Keep the guarded JACCL as a requirement for any run with a model loaded |
 | G2 One real model on both ranks | **Blocked** on G1 only for the two-rank part | Artifact verified on both Macs. Each Mac loads and releases both ranks' stages of the real model through the verified loader, and both derive the same stage commitment | After the link: transport check, then the worker pair. Fix C1, C2, B1 on the way; compare against a single-host reference |
 | G3 Terminal UI | **Not started** | Existing surface mapped: `cluster configure/status/doctor/worker-owner`, hand-rolled termios UI elsewhere in the CLI, no TUI library | Start from the link probe and `cluster doctor`; add the missing verbs (C13) |
 | G4 Model matrix | **Not started** | The runtime admits one model | Inventory after G2 |
@@ -38,13 +38,9 @@ Nothing has been pushed. The clone's push URL is disabled on purpose.
 
 ## What only the owner can unblock
 
-1. **Mac B's Thunderbolt port.** It is a member of the Thunderbolt Bridge and
-   has no IPv4 address of its own, so its RDMA device publishes no IPv4-mapped
-   GID and JACCL refuses it. Mac A's port has its own address and works. The
-   change is a network setting on Mac B.
-2. Nothing else. The 9B artifact is on both Macs and verified, and the swap
-   rule that would have forced a restart of Mac B was changed (`960b855f5`,
-   wants a second opinion).
+Nothing at the moment. Mac B's port got its address through `darkbloom cluster`
+(approved by the owner in the macOS prompt). The address is lost at a restart
+or a cable replug; running `darkbloom cluster` again on that Mac reapplies it.
 
 ## Resuming
 

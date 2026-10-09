@@ -56,6 +56,10 @@
 - Keep capacity freshness checks current across policy reads and durable command delivery, so slow database operations cannot extend a provider snapshot's lifetime.
 - Keep lease enqueue from waiting on a concurrent socket close while holding registry/provider locks; shutdown still stops admission before draining queued frames, and in-flight cancellation waits for the transport fence.
 
+## Unreleased - Autopilot target preflight
+
+- Refuse an Autopilot load whose target failed its startup self-test or has no weight hash before any resident model is unloaded. Such a command used to unload its victims first and then fail, leaving the Mac with fewer models.
+
 ## Unreleased - KV admission estimates
 
 - Reduce ordinary engine concurrency when fixed recurrent or MTP workspace would otherwise consume its KV grant before any request can run. Heartbeats and local admission use the same memory-limited width; load and reserve-raise preflights preserve a serviceable workspace-aware grant, without lowering activation or minimum-KV safeguards.

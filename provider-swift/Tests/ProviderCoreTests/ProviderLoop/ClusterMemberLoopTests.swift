@@ -8,16 +8,18 @@ private final class MemberMessages: @unchecked Sendable {
     func append(_ value: OutboundMessage) { lock.withLock { values.append(value) } }
     var snapshot: [OutboundMessage] { lock.withLock { values } }
 }
-private func makeMemberLoop(endpoint: LocalInferenceHTTPConfig? = nil, stopOnDisconnect: Bool = false) throws -> ProviderLoop {
+private func makeMemberLoop(endpoint: LocalInferenceHTTPConfig? = nil, stopOnDisconnect: Bool = false,
+                            role: ProviderExecutionRole = .clusterMember,
+                            autopilot: ModelAutopilotSettings = .init()) throws -> ProviderLoop {
     let hardware = HardwareInfo(machineModel: "fixture", chipName: "Apple M4", chipFamily: .m4, chipTier: .pro,
         memoryGb: 24, memoryAvailableGb: 20, cpuCores: .init(total: 12, performance: 8, efficiency: 4),
         gpuCores: 16, memoryBandwidthGbs: 200)
     return try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused", hardware: hardware,
         models: [.init(id: "fixture-member-model", modelType: "qwen3", sizeBytes: 1, estimatedMemoryGb: 1)],
         config: ProviderConfig(provider: .init(name: "member-test", memoryReserveGB: 1),
-            backend: .init(idleTimeoutMins: 0, maxModelSlots: 3),
+            backend: .init(idleTimeoutMins: 0, maxModelSlots: 3, modelAutopilot: autopilot),
             coordinator: .init(heartbeatIntervalSecs: 60)),
-        localEndpoint: endpoint, executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect),
+        localEndpoint: endpoint, executionRole: role, clusterMemberStopsOnDisconnect: stopOnDisconnect),
         attestationSigner: nil)
 }
 
@@ -47,6 +49,49 @@ struct ClusterMemberLoopTests {
         if case .inferenceError(_, let failure, _) = messages[2] { #expect(failure.code == .modelUnavailable) }
         else { Issue.record("inference accepted") }
         #expect(await loop.memberWorkIsEmpty())
+    }
+
+    /// Model autopilot postdates the research branch. Saved consent is valid
+    /// for a solo provider and must never apply to a control-only member.
+    @Test func autopilotLeaseAndCommandAreDroppedAndSavedConsentNeverApplies() async throws {
+        let consent = ModelAutopilotSettings(enabled: true, consentRecorded: true,
+            selectedModels: ["fixture-member-model"], revision: "member-fixture")
+        let expiry = Int64(Date().timeIntervalSince1970 * 1_000) + 60_000
+        let lease = ModelAutopilotControl(sessionId: "session", revision: "member-fixture",
+            enabled: true, expiresAtMs: expiry)
+        let command = ModelAutopilotCommand(commandId: "command", loadModelId: "fixture-member-model",
+            expiresAtMs: expiry, sessionId: "session", revision: "member-fixture")
+
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let solo = try makeMemberLoop(role: .solo, autopilot: consent)
+        await solo.memberTestStateFile(path)
+        #expect(await solo.autopilotConsented)
+        await solo.handleAutopilotControl(lease)
+        #expect(await solo.autopilotControl == lease)
+
+        let member = try makeMemberLoop(autopilot: consent)
+        await member.memberTestStateFile(path)
+        let recorder = MemberMessages(), send = SendHandle { recorder.append($0) }
+        #expect(await member.consumeClusterMemberEvent(.modelAutopilotControl(lease), send: send))
+        #expect(await member.consumeClusterMemberEvent(.modelAutopilot(command), send: send))
+        #expect(recorder.snapshot.isEmpty)
+        // The handlers themselves refuse too, for a caller that bypasses the dispatcher.
+        #expect(await member.autopilotConsented == false)
+        await member.handleAutopilotControl(lease)
+        await member.handleModelAutopilot(command, send: send)
+        #expect(await member.autopilotControl == nil)
+        #expect(await member.autopilotCommand == nil)
+        #expect(await member.memberWorkIsEmpty())
+        #expect(await member.state.modelAutopilot?.enabled == false)
+        // The bypassed command is refused as from any provider that never opted in.
+        let replies = recorder.snapshot
+        try #require(replies.count == 1)
+        guard case .modelAutopilotStatus(let status) = replies[0] else {
+            Issue.record("unexpected member reply"); return
+        }
+        #expect(status.status == .failed && status.error == "not_opted_in")
     }
 
     @Test func emptyCapacityAndNoPersistenceOrBackgroundLoad() async throws {

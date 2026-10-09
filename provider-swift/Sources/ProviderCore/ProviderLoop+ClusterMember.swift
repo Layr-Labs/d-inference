@@ -42,9 +42,11 @@ extension ProviderLoop {
         case .prefetchModel(let id, _):
             rejectClusterMemberPrefetch(id, send: send)
             return true
-        case .desiredModels:
-            // Desired solo residency has no meaning in this role. No retry or
-            // delayed task is retained, including an empty revoke.
+        case .desiredModels, .modelAutopilotControl, .modelAutopilot:
+            // Solo residency has no meaning in this role: desired builds,
+            // autopilot leases and placement commands are all dropped. No
+            // retry, delayed task, lease or command is retained, including
+            // an empty revoke, and nothing is acknowledged.
             return true
         case .trustStatus(_, let status, _, _):
             if status == "untrusted" || status == "offline" {

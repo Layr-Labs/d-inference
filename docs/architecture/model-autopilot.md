@@ -1,6 +1,6 @@
 # Experimental model Autopilot
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-09
 
 Autopilot observes demand for an explicitly approved cached model inventory and
 can manage their memory residency during a separately enabled live rollout.
@@ -289,6 +289,7 @@ No causal improvement is inferred from command success alone.
 6. Operator pause stops new reservations while keeping pending ownership: `SetAutopilotPaused`.
 7. An uncertain send or watchdog expiry never implies rollback: `sendAutopilotCommand` and `markAutopilotWatchdogs`.
 8. Shadow consent and leases never transfer residency ownership or create actual capacity: `refreshControlLeases`, `autopilotFleetSnapshotLocked` and `modelAutopilotController.tick`.
+9. A control-only cluster member never participates, whatever consent its saved configuration records: `autopilotConsented` is false in that role, so it advertises no participation, and `consumeClusterMemberEvent` drops a control lease or command that arrives anyway.
 
 ## Failure modes
 

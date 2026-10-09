@@ -1323,6 +1323,118 @@ line, schema `darkbloom_cluster_link_watch_v1`
 | `portDown` | A device's port stopped being active, or an active device left the listing | `device`, `interface`, and `verdict` while the device is still listed |
 | `stateChanged` | The link state differs from the previous poll; emitted after that poll's port events | `previousState`, and `guidance` when `--fix` applies to the new state |
 
+### Cluster console
+
+`darkbloom cluster console [--json | --plain] [--dry-run] [--temporary] [--config <path>]`
+(`provider-swift/Sources/darkbloom/ClusterConsoleCommand.swift`, `Cluster.Console`)
+shows this Mac's link, saved setup, model and session on one screen and runs
+the cluster commands from it. Bare `darkbloom cluster` opens the same screen
+when standard input and output are both terminals, `TERM` names one that can
+draw a screen (set, and not `dumb`), and none of `--json`, `--yes`,
+`--temporary` and `--dry-run` is given
+(`Cluster.Console.replacesGuidedSetup`); in every other case, and always as
+`darkbloom cluster setup`, it is the line-by-line
+[guided link setup](#guided-link-setup) with its output unchanged. Opened this
+way the command ends as the guided setup does: with status 1 unless the link
+is `ready` when the screen closes, read once more at that moment
+(`Cluster.Console.runAsGuidedSetup`).
+
+Everything shown is read when the screen opens, when `r` is pressed and after
+each action. Between those, a probe is run again only where something is
+being waited for (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleReducer.swift`,
+`poll`): the link inspection every `pollIntervalSeconds = 2` seconds while the
+link is not `ready`, and `cluster status` at the same interval while this Mac
+leads a saved cluster or the screen started a session.
+
+| Section | Read from | Source |
+|---|---|---|
+| Readiness | The link inspection, the guided setup's sentences for it, for a port Darkbloom has on record whether it carries its assigned address and whether the system job that keeps it is loaded, the worker binary's pin and whether it carries the progress guard, the device journal's state, and the checks of `cluster doctor`. One link inspection serves the link lines and the doctor | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleLiveOperations.swift` (`ClusterConsoleOperations.live`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleLinkObservations.swift` (`ClusterConsoleLinkSetup`) |
+| Pairing and trust | The saved setup's cluster, member and peer labels; the fingerprint of each key in its pinned known-hosts file, as a host key, a certificate authority or a revoked key, and how many further keys are not listed; whether that file still matches its pin; whether the identity file is owner-only. No host name, user name, address or path | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSavedSetup.swift` (`ClusterConsolePairing`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleHostKeys.swift` (`ClusterConsoleTrust.observe`) |
+| Model | The models the cluster runtime in this build accepts a setup for, the saved model and Plan, the layers each rank owns, and the manifest's files by presence and size. Weight contents are not hashed here, and the chip and runtime requirements a start applies to the model are not evaluated here. Each rank's admission is shown from the leader's status once a session reports it, and as not observed until then | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeAdmittedModels.swift` (`ClusterRuntimeAdapter.admittedModels`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleInstalled.swift` (`ClusterConsoleInstalled.inspect`) |
+| Session | The process the screen started, its output, and the leader's `GET /v1/cluster/status` report | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSessionProcess.swift` (`ClusterConsoleSessionProcess`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleContent.swift` (`liveSession`) |
+| Not available in this build | What the screen cannot do, each with its reason | `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleWiring.swift` (`ClusterConsoleWiring.unavailable`) |
+
+Error text an operation worded is shown as worded, less anything in it that
+names this Mac, its user or a peer
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSnapshotRedaction.swift`).
+
+| Key | Action | Runs |
+|---|---|---|
+| `r` | Read everything again | The probes above |
+| `f` | Fix link | `ClusterLinkRepair.fix`, as `cluster link --fix`: the address and the system job that keeps it, behind one macOS prompt. With `--temporary` the address alone; with `--dry-run` the same call's dry run, which lists the commands an approval would run and asks, records and changes nothing |
+| `a`, then `y` | Approve the setup passed with `--input`, `--capability` and `--capability-sha256` | `ClusterConfigurationStore.configure`, as `cluster configure`, on a private copy of the two files, refused unless they are still the setup whose digest was on the screen (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleCandidateSetup.swift`, `ClusterConsoleReviewedSetup.hold`) |
+| `s`, then `y` | Start the session; refused on a follower, without a saved setup, and beside a session that is already serving | `darkbloom start --local --distributed` as a child process in a session of its own, with default signal handling and none of the screen's descriptors, so closing the terminal window does not reach it (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleSessionProcess.swift`) |
+| `x` | Stop the session this screen started | SIGINT to that child, once; nothing stronger is ever sent |
+| `c`, then `y` | Recover | `ClusterDeviceRecovery.recover`, as `cluster recover` |
+| `e` | Export diagnostics | `ClusterDiagnosticExport.write` into the current directory |
+| `?` | Keys and the unavailable list with reasons | — |
+| `q`, Ctrl-C | Close. With a session this screen started still running: asks, stops it and closes when it has ended. Then waits for an action in flight. A second `q` skips either wait and says on the restored terminal what is still finishing | — |
+
+One action runs at a time; a result under Activity is the operation's own
+summary or error text. While a session is serving, whether this screen started
+it or another process did, `f`, `a` and `c` are refused with the reason: the
+link, the saved setup and the journal are that session's. `f` and `a` are
+refused as well while the device journal is not empty, which is what shows a
+session on a follower. What stood in an action's way is checked again when its
+question is answered. A session this screen started is asked to stop, with one
+interrupt, on every way the screen ends, a signal, a closed terminal and an
+error included; a second signal while the screen is still closing ends the
+process after `forcedExitGraceMilliseconds = 2000`.
+
+A question (`a`, `s`, `c`) is asked on one row, which fits an 80-column
+window, and only in a window that shows every word of it; a narrower window
+says how wide it must be. `y` answers a question only while the frame last
+drawn shows it and has shown it for `questionDwellMilliseconds = 500`
+(`ClusterConsoleState.drew`, `questionShownAt`), so a `y` typed or pasted
+ahead of the question, or before it could be read, does nothing. Any other
+key cancels. A
+question about a setup is withdrawn when a later reading finds a different
+setup, and any question is withdrawn when the window stops showing all of it.
+Pasted text is read as one key that does nothing, and a paste whose end does
+not arrive within `pasteMilliseconds = 1000` is given up on
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleKey.swift`, `ClusterConsoleKeyDecoder`).
+
+The one thing the screen starts by itself is the guided setup's address step,
+as `darkbloom cluster setup` takes it in a terminal: when a reading finds a
+port that only lacks an address, or whose address nothing keeps, the fix is
+started once and macOS shows its approval prompt. Where the system job is
+loaded and about to put a lost address back, the link is first read
+`keeperReadings` more times (the setup's `keeperWaitSeconds` at the poll
+interval). The step is the screen's only while it waits for a cable or for
+that job: it is taken at most once, and is spent by any other reading, by a
+fix asked for with `f`, and when a session or anything else stands in its way
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleReducer.swift`,
+`onboardingFix`).
+
+With `--json` or `--plain`, or when standard input or output is not a
+terminal, the command prints the same state and exits 0 without opening a
+screen, waiting or asking. `--json` prints one object, schema
+`darkbloom_cluster_console_v1`
+(`ClusterConsoleSnapshot`): `observedAt`, `link` (the
+[link report](#local-link-readiness)), `setup` (`lines`, `next`, `fixDevice`),
+`diagnostics` (the doctor's report), `saved`, `candidate` and
+`admittedModels`. A second screen for the same user is refused with status 1
+while one is open (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleInstanceLock.swift`,
+`ClusterConsoleInstanceLock`); the lock is an empty file in the user's
+temporary directory, and opening a screen writes nothing under the home
+directory.
+
+The export is one owner-only file,
+`darkbloom-cluster-diagnostics-<UTC time>.json`, schema
+`darkbloom_cluster_diagnostic_export_v1`, holding the snapshot, the activity
+list and the last `sessionOutputLines = 200` lines of session output. Each
+text value is redacted before the document is written: network and hardware
+addresses, host names, user names, serial numbers, keys, fingerprints,
+credentials, long encoded values and whole paths under any home directory,
+`~` or a volume are replaced by a placeholder in angle brackets such as
+`<ipv4>`, `<host>` or `<home-path>`; digests of public files and schema names
+are kept. Addresses are replaced before names, so a name cannot split one. A second, separately written
+look then searches every value for what the first should have removed, and
+the file is not written when it finds any. An existing file is never replaced
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterDiagnosticExport.swift`,
+`ClusterDiagnosticExport.render`; `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift`,
+`ClusterDiagnosticRedaction`; `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterDiagnosticResidue.swift`).
+
 ### Provider configuration file mode
 
 Every provider save replaces `provider.toml` atomically and owner-only (mode

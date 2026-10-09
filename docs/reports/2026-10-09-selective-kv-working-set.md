@@ -55,8 +55,10 @@ scratch: non-FP32 keys are cast in full to FP32 before scoring. Its payload is
 `4 * kvHeads * history * headDim` bytes per owning layer, in addition to the
 score/normalization intermediates and the compact destination overlapping its
 source. GPT's FP32 keys alias; Gemma's BF16 keys incur this cast. At 32,768
-positions, eight KV heads and global width 512, the Gemma cast alone is 512 MiB
-for a layer, before allocator rounding. This implementation does not claim
+positions, Gemma 26B's two global KV heads and width 512 require a 128 MiB cast
+per global owning layer, before allocator rounding (640 MiB across its five
+global layers if their graph lifetimes overlap). Its eight-head local layers
+do not enter this selector. This implementation does not claim
 bounded serving scratch or admit-time savings. Decode-event allocator samples
 in the generated-output harness are observations of live allocations, not
 proof that a between-event transient was absent.

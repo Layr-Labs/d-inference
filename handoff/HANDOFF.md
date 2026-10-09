@@ -61,6 +61,36 @@ Decisions waiting for the owner: D4 (the 27B on mixed chips), the memory gate
 change in B13, and the defaults taken for B11 (section 10 of
 [DESIGN-stage-transfer.md](DESIGN-stage-transfer.md)).
 
+## When the link is back
+
+Check `darkbloom cluster link` on both Macs first; both must print
+`Local link: ready`. Then, in this order, each under the lanes it takes itself:
+
+1. **Transport on the pushed MLX branch.** The two-rank collective check with
+   the worker built at nested MLX `b7658964` (the earlier 5.36 GiB run used the
+   three fixes before the upstream backports).
+2. **The pair programme, one command per model**, from the task's evidence
+   folder `phase-split-20261009T055312Z`: `tools/pair-measure.sh 9b all`, then
+   `tools/pair-measure.sh 27b all` (each needs `PEER_HOST_KEY_ALIAS` and a new
+   `OUT` folder). It runs a preflight, the cut sweep (9B: 4, 8, 12, 16; 27B:
+   12, 16, 20, 24), the pipeline against the compact pipeline against the phase
+   split at the best cut, recorded runs compared with each Mac's reference, and
+   four faults. The binaries it uses were built from `31c268e09` and are
+   identical on both Macs (digest over `bin/phase`: `7eb539c4…`); on each Mac
+   alone they give `exact` against the reference for both models.
+3. **The installed path**: `procedure/linkday.sh` in the evidence folder
+   `g2-product-20261009T052100Z` (written, never run): one streamed HTTP
+   completion through `darkbloom start --local --distributed` with the
+   pipeline and with the phase split, a client stop, a rank ended mid-decode
+   and mid-hand-off.
+4. **The durable address itself**: how the approval prompt read, whether the
+   job is listed and running, and `cluster link` again some hours later.
+
+None of this has run. The single-Mac "before" to compare with is the
+product's serving path in `docs/reports/2026-10-09-two-mac-baseline-and-model-matrix.md`;
+give Mac B a rest between shapes and report rested and settled figures
+separately, because it slows under sustained load.
+
 ## Resuming
 
 1. Read [AGENT-HANDOFF.md](../AGENT-HANDOFF.md) for the rules.

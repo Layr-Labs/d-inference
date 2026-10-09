@@ -206,6 +206,9 @@ public enum ProviderMessage: Sendable, Equatable {
         public var executionRole: ProviderExecutionRole
         public var memberRegistrationNonce: String?
         public var clusterModels: [ModelInfo]?
+        /// Member role only; nil is accepted by the coordinator but never
+        /// paired. Mirrors RegisterMessage.ClusterMembership (Go).
+        public var clusterMembership: ClusterMembership?
         public var modelAutopilot: ModelAutopilotSnapshot?
         public var autopilotInventory: [ModelInfo]?
         public var hardware: HardwareInfo
@@ -271,11 +274,13 @@ public enum ProviderMessage: Sendable, Equatable {
             autopilotInventory: [ModelInfo]? = nil,
             executionRole: ProviderExecutionRole = .solo,
             memberRegistrationNonce: String? = nil,
-            clusterModels: [ModelInfo]? = nil
+            clusterModels: [ModelInfo]? = nil,
+            clusterMembership: ClusterMembership? = nil
         ) {
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
+            self.clusterMembership = clusterMembership
             self.modelAutopilot = modelAutopilot
             self.autopilotInventory = autopilotInventory
             self.hardware = hardware
@@ -901,6 +906,7 @@ extension ProviderMessage: Codable {
         case executionRole = "execution_role"
         case memberRegistrationNonce = "member_registration_nonce"
         case clusterModels = "cluster_models"
+        case clusterMembership = "cluster_membership"
         case publicKey = "public_key"
         case encryptedResponseChunks = "encrypted_response_chunks"
         case attestation
@@ -1012,6 +1018,7 @@ extension ProviderMessage: Codable {
                 try container.encode(r.executionRole, forKey: .executionRole)
                 try container.encodeIfPresent(r.memberRegistrationNonce, forKey: .memberRegistrationNonce)
                 try container.encodeIfPresent(r.clusterModels, forKey: .clusterModels)
+                try container.encodeIfPresent(r.clusterMembership, forKey: .clusterMembership)
             }
             try container.encodeIfPresent(r.modelAutopilot, forKey: .modelAutopilot)
             try container.encodeIfPresent(r.autopilotInventory, forKey: .autopilotInventory)
@@ -1323,7 +1330,8 @@ extension ProviderMessage: Codable {
                 autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory),
                 executionRole: try container.decodeIfPresent(ProviderExecutionRole.self, forKey: .executionRole) ?? .solo,
                 memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
-                clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels)
+                clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
+                clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership)
             ))
 
         case .heartbeat:

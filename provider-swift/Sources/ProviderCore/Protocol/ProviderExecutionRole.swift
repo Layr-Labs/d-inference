@@ -47,5 +47,6 @@ public enum ClusterMemberControlError: String, Error, Sendable, LocalizedError {
     case negotiationFailed = "Coordinator did not accept the control-only member role."
     case incompatibleConfiguration = "Control-only member mode cannot own a solo endpoint or engine."
     case connectionEnded = "Cluster member control connection ended."
+    case invalidMembership = "Cluster membership claim is malformed."
     public var errorDescription: String? { rawValue }
 }

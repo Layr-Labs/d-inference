@@ -91,7 +91,8 @@ public enum CoordinatorClientCodec {
             autopilotInventory: inventory.isEmpty ? nil : inventory,
             executionRole: config.executionRole,
             memberRegistrationNonce: memberMode ? memberRegistrationNonce : nil,
-            clusterModels: memberMode ? servingModels : nil
+            clusterModels: memberMode ? servingModels : nil,
+            clusterMembership: memberMode ? config.clusterMembership : nil
         ))
     }
 

@@ -124,6 +124,7 @@ public enum ProviderProtocolCodec {
             try fields.append(("execution_role", encodeValue(register.executionRole)))
             try appendIfPresent(register.memberRegistrationNonce, key: "member_registration_nonce", to: &fields)
             try appendIfPresent(register.clusterModels, key: "cluster_models", to: &fields)
+            try appendIfPresent(register.clusterMembership, key: "cluster_membership", to: &fields)
         }
         if register.privateOnly {
             try fields.append(("private_only", encodeValue(true)))

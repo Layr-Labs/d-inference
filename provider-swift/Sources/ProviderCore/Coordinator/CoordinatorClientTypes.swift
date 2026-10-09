@@ -181,6 +181,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// Restrictive registration role. Default solo; the control-only cluster
     /// member role requires the caller to also drive the member control owner.
     public let executionRole: ProviderExecutionRole
+    /// The saved cluster claim a member registers. Read only in member mode;
+    /// nil registers none, which the coordinator accepts but never pairs.
+    public let clusterMembership: ClusterMembership?
 
     public init(
         url: String,
@@ -201,7 +204,8 @@ public struct CoordinatorClientConfig: Sendable {
         apnsEnvironment: String? = nil,
         idleUnloadMins: UInt64? = nil,
         autopilotInventory: [ModelInfo] = [],
-        executionRole: ProviderExecutionRole = .solo
+        executionRole: ProviderExecutionRole = .solo,
+        clusterMembership: ClusterMembership? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -222,6 +226,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.apnsEnvironment = apnsEnvironment
         self.idleUnloadMins = idleUnloadMins
         self.executionRole = executionRole
+        self.clusterMembership = clusterMembership
     }
 }
 

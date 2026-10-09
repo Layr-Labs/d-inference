@@ -161,13 +161,32 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             }
             var total = physicalBytes(files)
             let limit = max(0, budgetBytes)
+            var retentionPriorities: [String: SSDEvictionPriority] = [:]
+            if total > limit, SSDDiskBudget.shared.hasActiveUtilityRetentionStore {
+                for group in Dictionary(grouping: files, by: { $0.modelRoot }).values {
+                    guard let modelRoot = group.first?.modelRoot else { continue }
+                    retentionPriorities.merge(SSDDiskBudget.shared.retentionPriorities(
+                        root: modelRoot, urls: group.map(\.url), now: nowSeconds), uniquingKeysWith: { _, new in new })
+                }
+            }
+
+            func priority(_ file: OwnedFile) -> SSDEvictionPriority {
+                let measured = retentionPriorities[file.url.standardizedFileURL.path]
+                return .init(probationary: measured?.probationary ?? false,
+                    savedMillisPerByte: measured?.savedMillisPerByte ?? 0,
+                    lastAccess: file.modifiedAt, tieBreak: file.url.path)
+            }
+
             var attempted = Set<String>()
             while total > limit {
                 let candidates = files.filter {
                     !attempted.contains($0.url.standardizedFileURL.path)
                 }.sorted {
-                    if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt < $1.modifiedAt }
-                    return $0.url.path < $1.url.path
+                    if retentionPriorities.isEmpty {
+                        if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt < $1.modifiedAt }
+                        return $0.url.path < $1.url.path
+                    }
+                    return priority($0) < priority($1)
                 }
                 guard !candidates.isEmpty else { break }
                 var planned: [OwnedFile] = []

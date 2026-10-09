@@ -71,10 +71,15 @@ extension SSDHybridCheckpointStore {
             do { try check() } catch { staged.close(); throw error }
             let installed = lock.withLock {
                 guard !Task.isCancelled, !closed, reading[requestID] === access,
-                    epochMatches(epoch) else { return false }
+                    epochMatches(epoch),
+                    let generation = index.retentionGeneration(tag16: Data(candidate.tag.prefix(16)))
+                else { return false }
                 stages[requestID] = staged
                 if !loaded.usesProcessMemoryOwner { stageReservations[requestID] = lease }
-                authenticatedReceipts[requestID] = (epoch, [Data(candidate.tag.prefix(16)): loaded.file])
+                // The exact-file lease is still held here. A replacement after
+                // staging cannot give this old authenticated stage a new witness.
+                authenticatedReceipts[requestID] = (
+                    epoch, [Data(candidate.tag.prefix(16)): loaded.file], UUID(), generation)
                 return true
             }
             guard installed else { staged.close(); return .init(.skippedPolicy) }

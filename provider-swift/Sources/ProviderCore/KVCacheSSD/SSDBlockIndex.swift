@@ -12,8 +12,9 @@
 // bumps `lastAccess` AND touches the file's mtime, so recency survives a
 // process restart (the scan seeds `lastAccess` from mtime).
 //
-// Eviction is `unlink` + index removal, oldest-by-last-hit first (LRU),
-// coordinated across models by `SSDDiskBudget` under one box-wide budget.
+// Eviction is `unlink` + index removal, coordinated across models by
+// `SSDDiskBudget` under one box-wide budget. LRU is the default; complete
+// checkpoints can opt into measured retention priority.
 // Eviction never rotates the model's cache epoch: the coordinator learns of
 // a removed file through an ordinary lookup miss, and every other file it
 // recorded for this provider stays valid evidence.
@@ -31,6 +32,9 @@ final class SSDBlockIndex: @unchecked Sendable {
         var fileBytes: Int
         /// Unix seconds of the last hit (or write). Sliding-TTL anchor.
         var lastAccess: Int64
+        let writtenAt: Int64
+        let generation = UUID()
+        var retention = SSDCheckpointRetentionValue()
     }
 
     private let lock = NSLock()
@@ -49,10 +53,10 @@ final class SSDBlockIndex: @unchecked Sendable {
         lock.withLock { (entries.count, _totalBytes) }
     }
 
-    func insert(tag16: Data, fileBytes: Int, lastAccess: Int64) {
+    func insert(tag16: Data, fileBytes: Int, lastAccess: Int64, writtenAt: Int64? = nil) {
         lock.withLock {
             if let old = entries[tag16] { _totalBytes -= old.fileBytes }
-            entries[tag16] = Entry(fileBytes: fileBytes, lastAccess: lastAccess)
+            entries[tag16] = Entry(fileBytes: fileBytes, lastAccess: lastAccess, writtenAt: writtenAt ?? lastAccess)
             _totalBytes += fileBytes
         }
     }
@@ -160,6 +164,53 @@ final class SSDBlockIndex: @unchecked Sendable {
         }
     }
 
+    /// Only a receipt for this exact indexed generation may train retention.
+    func retentionGeneration(tag16: Data) -> UUID? {
+        lock.withLock { entries[tag16]?.generation }
+    }
+
+    @discardableResult
+    func creditRetention(tag16: Data, generation: UUID, savedMillis: Double, now: Int64) -> Bool {
+        lock.withLock {
+            guard entries[tag16]?.generation == generation else { return false }
+            entries[tag16]?.retention.observe(savedMillis: savedMillis, now: now)
+            return true
+        }
+    }
+
+    func retentionPriority(tag16: Data, now: Int64) -> SSDEvictionPriority? {
+        lock.withLock {
+            guard let entry = entries[tag16] else { return nil }
+            return retentionPriority(tag: tag16, entry: entry, now: now)
+        }
+    }
+
+    func lowestRetentionPriority(now: Int64) -> SSDEvictionPriority? {
+        lock.withLock {
+            var lowest: SSDEvictionPriority?
+            for (tag, entry) in entries {
+                let candidate = retentionPriority(tag: tag, entry: entry, now: now)
+                if lowest.map({ candidate < $0 }) ?? true { lowest = candidate }
+            }
+            return lowest
+        }
+    }
+
+    func retentionEntries(now: Int64) -> [(tag16: Data, priority: SSDEvictionPriority)] {
+        lock.withLock {
+            entries.map { tag, entry in
+                (tag, retentionPriority(tag: tag, entry: entry, now: now))
+            }.sorted { $0.priority < $1.priority }
+        }
+    }
+
+    private func retentionPriority(tag: Data, entry: Entry, now: Int64) -> SSDEvictionPriority {
+        .init(probationary: entry.retention.isProbationary(writtenAt: entry.writtenAt, now: now),
+            savedMillisPerByte: entry.fileBytes > 0
+                ? entry.retention.value(now: now) / Double(entry.fileBytes) : 0,
+            lastAccess: entry.lastAccess, tieBreak: tag.hexString)
+    }
+
     func removeAll() {
         lock.withLock {
             entries.removeAll()
@@ -179,6 +230,8 @@ final class SSDBlockIndex: @unchecked Sendable {
 /// (unlink + index removal).
 protocol SSDEvictableStore: AnyObject, Sendable {
     var evictionRoot: URL { get }
+    /// Immutable opt-in owned by the store's configuration, not a budget policy.
+    var utilityRetentionEnabled: Bool { get }
     /// False once the store is closed or a different-binding successor has
     /// taken its root. It then refuses every file removal, so whole-root
     /// maintenance must not pick it to bracket one.
@@ -201,12 +254,27 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     /// Return paths actually unlinked; arbitrary external destruction uses the
     /// separate index-reconciliation method above.
     func retireOwnedEntries(_ urls: [URL]) -> Set<String>
+    func evictionPriority(now: Int64) -> SSDEvictionPriority?
+    func evictLowestPriorityEntry(now: Int64) -> Int
+    func retentionPriorities(urls: [URL], now: Int64) -> [String: SSDEvictionPriority]
+}
+
+extension SSDEvictableStore {
+    var utilityRetentionEnabled: Bool { false }
+
+    func evictionPriority(now: Int64) -> SSDEvictionPriority? {
+        oldestEntryAccess().map {
+            SSDEvictionPriority(savedMillisPerByte: 0, lastAccess: $0, tieBreak: evictionRoot.path)
+        }
+    }
+    func evictLowestPriorityEntry(now: Int64) -> Int { evictOldestEntry() }
+    func retentionPriorities(urls: [URL], now: Int64) -> [String: SSDEvictionPriority] { [:] }
 }
 
 /// Process-wide disk budget across all models, resolved by `PrefixCachePolicy`.
-/// When the limit is hit, the globally-oldest-by-last-hit
-/// entry is unlinked, across every registered model store, until the
-/// total is back under budget.
+/// When the limit is hit, the lowest-priority entry is unlinked across every
+/// registered model store until the total is back under budget. Stores without
+/// utility retention supply ordinary LRU priority.
 ///
 /// Enforcement runs only on the (serial, utility-QoS) write-behind
 /// consumers, so the lock never sits on a request path.
@@ -268,14 +336,34 @@ final class SSDDiskBudget: @unchecked Sendable {
         }
     }
 
+    /// Unloaded roots have no evidence and therefore retain ordinary LRU order.
+    func retentionPriorities(root: URL, urls: [URL], now: Int64) -> [String: SSDEvictionPriority] {
+        let key = root.standardizedFileURL.resolvingSymlinksInPath().path
+        return lock.withLock {
+            guard let owner = stores.values.first(where: {
+                $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
+                    && $0.ownsEvictionRoot
+            }) else { return [:] }
+            return owner.retentionPriorities(urls: urls, now: now)
+        }
+    }
+
+    /// Whole-root sweeps avoid grouping files or querying per-root priorities
+    /// when every registered store retains the default LRU policy.
+    var hasActiveUtilityRetentionStore: Bool {
+        lock.withLock {
+            stores.values.contains { $0.utilityRetentionEnabled && $0.ownsEvictionRoot }
+        }
+    }
+
     var totalBytes: Int {
         lock.withLock { stores.values.reduce(0) { $0 + $1.diskBytesOnDisk } }
     }
 
-    /// Evict oldest-by-last-hit (across all stores) until the box-wide
+    /// Evict lowest-priority entries (across all stores) until the box-wide
     /// total is at most `budgetBytes`. Returns the number of evictions.
     @discardableResult
-    func enforce(budgetBytes: Int) -> Int {
+    func enforce(budgetBytes: Int, now: Int64 = Int64(Date().timeIntervalSince1970)) -> Int {
         lock.withLock {
             var evicted = 0
             var blockedStores: Set<ObjectIdentifier> = []
@@ -285,19 +373,20 @@ final class SSDDiskBudget: @unchecked Sendable {
             // entry therefore cannot stop eviction in another store.
             while stores.values.reduce(0, { $0 + $1.diskBytesOnDisk }) > limit {
                 var victim: SSDEvictableStore?
-                var victimAccess = Int64.max
+                var victimPriority: SSDEvictionPriority?
                 for store in stores.values {
                     guard !blockedStores.contains(ObjectIdentifier(store)) else {
                         continue
                     }
-                    if let access = store.oldestEntryAccess(), access < victimAccess {
-                        victimAccess = access
+                    if let priority = store.evictionPriority(now: now),
+                        victimPriority.map({ priority < $0 }) ?? true {
+                        victimPriority = priority
                         victim = store
                     }
                 }
                 guard let victim else { return evicted }
                 let indexedBytesBefore = victim.diskBytesOnDisk
-                guard victim.evictOldestEntry() > 0 else {
+                guard victim.evictLowestPriorityEntry(now: now) > 0 else {
                     // Stale accounting can disappear without unlinking a file.
                     // Re-evaluate the limit after that progress, and count only
                     // actual physical evictions in both telemetry counters.

@@ -1246,3 +1246,8 @@ write produces no ready endpoint. The store authenticates and restores complete
 native state before issuing existing evidence. See the
 [SSD cache reference](../reference/ssd-kv-cache.md#dbk3-file-format) for codec
 framing and physical write charging.
+
+Provider-local complete-checkpoint capacity eviction has an independent,
+opt-in [measured retention policy](prefix-cache.md#measured-complete-checkpoint-retention).
+Its volatile utility scores do not enter holder proofs, routing discounts or
+heartbeat schemas. An evicted holder still produces the ordinary miss path.

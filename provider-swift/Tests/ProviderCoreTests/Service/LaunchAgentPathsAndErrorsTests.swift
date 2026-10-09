@@ -14,6 +14,7 @@ struct LaunchAgentPathsAndErrorsTests {
         let environment = [
             "DARKBLOOM_PREFIX_CACHE_DISK_GB": "50",
             "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY": "25",
+            "DARKBLOOM_PREFIX_CACHE_SSD_UTILITY_RETENTION": "1",
         ]
         let forwarded = LaunchAgent.passthroughEnvironment(from: environment)
         for (key, value) in environment { #expect(forwarded[key] == value) }

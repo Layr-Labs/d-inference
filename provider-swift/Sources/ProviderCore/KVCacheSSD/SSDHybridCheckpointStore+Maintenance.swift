@@ -3,6 +3,7 @@ import MLXLMCommon
 
 extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenceSource {
     var evictionRoot: URL { config.root }
+    var utilityRetentionEnabled: Bool { config.utilityRetentionEnabled }
     var ownsEvictionRoot: Bool {
         lock.withLock { !closed }
             && (config.epochStore == nil || config.epochStore?.current != nil)
@@ -11,8 +12,37 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
     func evictOldestEntry() -> Int {
-        for entry in index.oldestEntries() {
-            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: entry.tag16.hexString)
+        evictEntries(index.oldestEntries().map(\.tag16))
+    }
+
+    func evictionPriority(now: Int64) -> SSDEvictionPriority? {
+        guard config.utilityRetentionEnabled else {
+            return oldestEntryAccess().map {
+                .init(savedMillisPerByte: 0, lastAccess: $0, tieBreak: config.root.path)
+            }
+        }
+        guard let priority = index.lowestRetentionPriority(now: now) else { return nil }
+        return .init(probationary: priority.probationary, savedMillisPerByte: priority.savedMillisPerByte,
+            lastAccess: priority.lastAccess, tieBreak: config.root.path + ":" + priority.tieBreak)
+    }
+
+    func evictLowestPriorityEntry(now: Int64) -> Int {
+        guard config.utilityRetentionEnabled else { return evictOldestEntry() }
+        return evictEntries(index.retentionEntries(now: now).map(\.tag16))
+    }
+
+    func retentionPriorities(urls: [URL], now: Int64) -> [String: SSDEvictionPriority] {
+        guard config.utilityRetentionEnabled else { return [:] }
+        return Dictionary(uniqueKeysWithValues: urls.compactMap { url in
+            guard let tag = SSDPrefixCache.hexDecode(url.deletingPathExtension().lastPathComponent) else { return nil }
+            guard let priority = index.retentionPriority(tag16: tag, now: now) else { return nil }
+            return (url.standardizedFileURL.path, priority)
+        })
+    }
+
+    private func evictEntries(_ tags: [Data]) -> Int {
+        for tag in tags {
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
             let retired = retireIndexedEntries([url])
             // Reconciliation may already satisfy the global limit. Return to
             // enforcement before selecting another physical victim.
@@ -167,7 +197,8 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                     sharedPageAccounting.register(checkpoint: file)
                     logicalBytes = SSDCheckpointPageFiles.logicalBytes(checkpoint: file, manifestBytes: size)
                 } else { logicalBytes = size }
-                index.insert(tag16: tag, fileBytes: logicalBytes, lastAccess: Int64(date.timeIntervalSince1970))
+                index.insert(tag16: tag, fileBytes: logicalBytes, lastAccess: Int64(date.timeIntervalSince1970),
+                    writtenAt: metadata.createdAt)
             }
         }
         lock.withLock { if !closed { scanReady = true } }

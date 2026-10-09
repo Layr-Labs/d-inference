@@ -15,6 +15,8 @@ private final class QwenResidentLoadGate: QwenLayerStageGate {
     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
     private var next = 0
     private var failed = false
+    /// This load's record at the host memory gate, and its first sample.
+    private let watch = QwenDenseStageLoadWatch("Resident load")
     init(inventory: QwenStagePreparedInventory) throws {
         active = inventory.active; host = active.map(\.byteCount).max() ?? 0
         bounds = try active.map { try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount) }
@@ -40,8 +42,8 @@ private final class QwenResidentLoadGate: QwenLayerStageGate {
                 try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
             let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
                 remaining, h, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-            let os = try QwenDenseStageLoadResources.requireInitial()
-            guard try QwenDenseStageLoadResources.admits(os, bytes: required, for: "Resident load"), Memory.memoryLimit >= allocator else {
+            let os = try QwenDenseStageLoadResources.observeOS()
+            guard try watch.admits(os, bytes: required), Memory.memoryLimit >= allocator else {
                 throw ProbeError("Resident load exceeds the allocator limit")
             }
         } catch { failed = true; throw error }

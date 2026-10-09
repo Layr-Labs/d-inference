@@ -25,8 +25,9 @@ public enum QwenResidentStageLoadCheck {
         public let loadSeconds: Double
         /// How long the loaded stage was kept before its release (0 unless asked).
         public let heldSeconds: Double
-        /// What the host memory gate decided during this load.
-        public let resourceAdmission: QwenDenseStageLoadAdmissionSummary
+        /// What the host memory gate decided: this load's record, with how
+        /// much was compressed and swapped out since its first sample.
+        public let resourceAdmission: QwenResidentResourceAdmissionReport
         public let collectiveCreated = false
     }
 

@@ -172,8 +172,9 @@ public enum QwenStagedGenerationReference {
         public let activeBytesAfterRelease: Int
         public let cacheBytesAfterRelease: Int
         public let stageModelsReleased: [Bool]
-        /// What the host memory gate decided during the loads and the request.
-        public let resourceAdmission: QwenDenseStageLoadAdmissionSummary
+        /// What the host memory gate decided: one record per load and per
+        /// request, each with what was compressed and swapped out since its first sample.
+        public let resourceAdmission: QwenResidentResourceAdmissionReport
         /// Present when the run handed stage 0's state across the in-process boundary.
         public let handoff: HandoffReceipt?
     }

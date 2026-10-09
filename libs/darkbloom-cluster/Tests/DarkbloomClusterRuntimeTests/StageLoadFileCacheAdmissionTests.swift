@@ -3,38 +3,75 @@ import Testing
 @testable import DarkbloomClusterRuntime
 
 // Version 3 of the host memory gate: free pages plus part of the file cache.
-// Every observation is constructed; the policy is pure. Each test sits on one
-// boundary of the rule and fails if that part of the rule is removed.
-//
-// The constructed Mac has 128 GiB, 16 KiB pages and 108 GiB of non-compressed
-// pageable memory, so the kernel's file-cache reserve (10/27 of it) is exactly
-// 40 GiB.
+// Every observation is constructed; the policy is pure. Each test names the
+// boundary of the rule it stands on. The suites beside this one cover the
+// second kernel bound, the compression guard, the per-load record and the
+// real sampler.
+
+/// A constructed Mac: 16 KiB pages and, unless said otherwise, 128 GiB with
+/// 108 GiB of non-compressed pageable memory, so the kernel's file-cache
+/// reserve (10/27 of it) is exactly 40 GiB. Free pages are few and the rest
+/// of pageable memory is active or inactive; `fileBacked` and `anonymous` say
+/// what those pages are. Unless said otherwise as much of the file cache as
+/// fits is on the inactive queue.
+enum ConstructedMac {
+    static let gib = QwenDenseStageLoadPolicy.gib
+    static let mib = 1_048_576
+    static let page = 16_384
+    static let pageablePages = 27 * 262_144
+    /// Lifetime counters of every constructed sample before any growth.
+    static let compressionPages = 1_000_000, swapoutPages = 500, liveCompressionPages = 2_000_000
+    static let now: UInt64 = 1_100
+
+    static func observation(freeBytes: Int = 256 * mib, fileBackedGiB: Int = 80, anonymousGiB: Int = 27,
+                            pressure: Int = 1, swapBytes: Int = 0, kernelMinimumGiB: Int? = nil,
+                            speculativeBytes: Int = 0, inactiveFileBackedBytes: Int? = nil,
+                            inactiveAnonymousPages: Int? = nil, reportsInactive: Bool = true,
+                            compressedBytes: Int = 0, swappedOutBytes: Int = 0,
+                            liveCompressedBytes: Int? = 0, physicalGiB: Int = 128,
+                            pageablePages: Int = ConstructedMac.pageablePages, activeGiB: Int = 32,
+                            fileBackedPages: Int? = nil) -> QwenDenseStageLoadOSObservation {
+        let free = freeBytes / page, speculative = speculativeBytes / page
+        let active = activeGiB * gib / page, inactive = pageablePages - active - free - speculative
+        let fileBacked = fileBackedPages ?? fileBackedGiB * gib / page, anonymous = anonymousGiB * gib / page
+        let inactiveFile = inactiveFileBackedBytes.map { $0 / page } ?? min(fileBacked, inactive)
+        let inactiveAnonymous = inactiveAnonymousPages ?? min(anonymous, max(0, inactive - inactiveFile))
+        return .init(startedNanoseconds: 900, completedNanoseconds: 1_000, timestampUTC: "2026-10-09T00:00:00Z",
+            physicalMemoryBytes: physicalGiB * gib, pageSizeBytes: page, kernelFreePages: free + speculative,
+            freePages: free, inactivePages: inactive, speculativePages: speculative, actualFreeBytes: free * page,
+            estimatedReclaimableBytes: (free + inactive + speculative) * page, pressureLevel: pressure,
+            swapUsedBytes: swapBytes, activePages: active, fileBackedPages: fileBacked,
+            anonymousPages: anonymous, wiredPages: max(0, physicalGiB * gib / page - pageablePages),
+            purgeablePages: gib / page, compressorPages: gib / page,
+            kernelFileCacheMinimumPages: kernelMinimumGiB.map { $0 * gib / page },
+            inactiveFileBackedPages: reportsInactive ? inactiveFile : nil,
+            inactiveAnonymousPages: reportsInactive ? inactiveAnonymous : nil,
+            compressionPages: compressionPages + compressedBytes / page,
+            swapoutPages: swapoutPages + swappedOutBytes / page,
+            liveCompressionPages: liveCompressedBytes.map { liveCompressionPages + $0 / page })
+    }
+
+    static func decide(_ value: QwenDenseStageLoadOSObservation, required: Int,
+                       since first: QwenDenseStageLoadBaseline? = nil) throws -> QwenDenseStageLoadAdmission {
+        try QwenDenseStageLoadPolicy.decide(value, requiredBytes: required, purpose: "Test load", now: now, since: first)
+    }
+}
 
 @Suite("Stage load admission on file cache (constructed observations)")
 struct StageLoadFileCacheAdmissionTests {
-    private static let gib = QwenDenseStageLoadPolicy.gib
-    private static let mib = 1_048_576
-    private static let page = 16_384
-    private static let pageablePages = 27 * 262_144
+    private static let gib = ConstructedMac.gib
+    private static let mib = ConstructedMac.mib
+    private static let page = ConstructedMac.page
 
-    /// Free pages are few and the rest of pageable memory is active or
-    /// inactive. `fileBacked` and `anonymous` say what those pages are.
     private static func observation(freeBytes: Int = 256 * mib, fileBackedGiB: Int = 80, anonymousGiB: Int = 27,
                                     pressure: Int = 1, swapBytes: Int = 0, kernelMinimumGiB: Int? = nil,
                                     speculativeBytes: Int = 0) -> QwenDenseStageLoadOSObservation {
-        let free = freeBytes / page, speculative = speculativeBytes / page
-        let active = 32 * gib / page, inactive = pageablePages - active - free - speculative
-        return .init(startedNanoseconds: 900, completedNanoseconds: 1_000, timestampUTC: "2026-10-09T00:00:00Z",
-            physicalMemoryBytes: 128 * gib, pageSizeBytes: page, kernelFreePages: free + speculative,
-            freePages: free, inactivePages: inactive, speculativePages: speculative, actualFreeBytes: free * page,
-            estimatedReclaimableBytes: (free + inactive + speculative) * page, pressureLevel: pressure,
-            swapUsedBytes: swapBytes, activePages: active, fileBackedPages: fileBackedGiB * gib / page,
-            anonymousPages: anonymousGiB * gib / page, wiredPages: 5 * gib / page, purgeablePages: gib / page,
-            compressorPages: gib / page, kernelFileCacheMinimumPages: kernelMinimumGiB.map { $0 * gib / page })
+        ConstructedMac.observation(freeBytes: freeBytes, fileBackedGiB: fileBackedGiB, anonymousGiB: anonymousGiB,
+            pressure: pressure, swapBytes: swapBytes, kernelMinimumGiB: kernelMinimumGiB, speculativeBytes: speculativeBytes)
     }
 
     private static func decide(_ value: QwenDenseStageLoadOSObservation, required: Int) throws -> QwenDenseStageLoadAdmission {
-        try QwenDenseStageLoadPolicy.decide(value, requiredBytes: required, purpose: "Test load", now: 1_100)
+        try ConstructedMac.decide(value, required: required)
     }
 
     @Test func theCacheHeavyMacThatVersionTwoRefusedIsAdmitted() throws {
@@ -48,6 +85,9 @@ struct StageLoadFileCacheAdmissionTests {
         #expect(decision.actualFreeBytes == 256 * Self.mib)
         #expect(decision.fileCacheReserveBytes == 40 * Self.gib && decision.pageableBytes == 108 * Self.gib)
         #expect(decision.fileCacheAboveReserveBytes == 40 * Self.gib)
+        // 75.75 GiB of the 80 is inactive: 71.5 GiB could go before half is active.
+        #expect(decision.fileCacheBeforeAnonymousBytes == 71 * Self.gib + 512 * Self.mib)
+        #expect(decision.countableFileCacheBytes == 40 * Self.gib && !decision.structural)
         #expect(decision.countedReclaimableBytes == 30 * Self.gib)
         #expect(decision.admissibleBytes == 30 * Self.gib + 256 * Self.mib)
         #expect(decision.fileBackedBytes == 80 * Self.gib && decision.anonymousBytes == 27 * Self.gib)
@@ -129,10 +169,10 @@ struct StageLoadFileCacheAdmissionTests {
     }
 
     @Test func freePagesAloneAreAdmittedWithoutUsingTheCache() throws {
-        let free = try Self.decide(Self.observation(freeBytes: 20 * Self.gib), required: 16 * Self.gib)
+        let free = try Self.decide(Self.observation(freeBytes: 20 * Self.gib, fileBackedGiB: 60), required: 16 * Self.gib)
         #expect(free.admitted && !free.reclaimableUsedForAdmission)
         // The cache is still reported, so the receipt shows it was not needed.
-        #expect(free.countedReclaimableBytes == 30 * Self.gib)
+        #expect(free.countedReclaimableBytes == 15 * Self.gib)
         // An observation without the new counters is judged exactly as version 2 judged it.
         let old = QwenDenseStageLoadOSObservation(startedNanoseconds: 900, completedNanoseconds: 1_000,
             timestampUTC: "2026-10-09T00:00:00Z", physicalMemoryBytes: 128 * Self.gib, pageSizeBytes: Self.page,
@@ -156,14 +196,17 @@ struct StageLoadFileCacheAdmissionTests {
     @Test func aRefusalNamesTheRequirementTheFreePagesAndTheCacheCounted() throws {
         let decision = try Self.decide(Self.observation(fileBackedGiB: 50, anonymousGiB: 57), required: 16 * Self.gib)
         #expect(decision.refusal == "Test load needs 16.00 GiB of admissible memory and has 7.75 GiB: 0.25 GiB free plus "
-            + "7.50 GiB of file cache counted (three quarters of the 10.00 GiB above the 40.00 GiB reserve, "
-            + "at most 32.00 GiB; 50.00 GiB file-backed)")
+            + "7.50 GiB of file cache counted (three quarters of the 10.00 GiB the kernel can take before anonymous "
+            + "memory: 10.00 GiB above the 40.00 GiB reserve, 50.00 GiB before half of the cache is active; "
+            + "at most 32.00 GiB; 50.00 GiB file-backed). More file cache cannot change this: with 57.00 GiB of "
+            + "anonymous memory in use this Mac can count at most 8.06 GiB, so 7.93 GiB of the requirement has to be free pages")
         #expect(throws: ProbeError.self) {
             try QwenDenseStageLoadPolicy.requireAdmissible(Self.observation(fileBackedGiB: 50, anonymousGiB: 57),
                 requiredBytes: 16 * Self.gib, purpose: "Test load", now: 1_100)
         }
         // More than the Mac has is refused whatever is free.
-        let huge = try Self.decide(Self.observation(freeBytes: 60 * Self.gib), required: 129 * Self.gib)
+        let huge = try Self.decide(Self.observation(freeBytes: 60 * Self.gib, fileBackedGiB: 40, anonymousGiB: 7),
+                                   required: 129 * Self.gib)
         #expect(huge.refusal == "Test load needs 129.00 GiB, more than this Mac's 128.00 GiB")
         #expect(QwenDenseStageLoadPolicy.gibText(6 * Self.gib - 1) == "5.99 GiB")
         #expect(QwenDenseStageLoadPolicy.gibText(0) == "0.00 GiB")
@@ -186,7 +229,9 @@ struct StageLoadFileCacheAdmissionTests {
                 pressureLevel: base.pressureLevel, swapUsedBytes: base.swapUsedBytes, activePages: active,
                 fileBackedPages: fileBacked, anonymousPages: anonymous, wiredPages: base.wiredPages,
                 purgeablePages: base.purgeablePages, compressorPages: base.compressorPages,
-                kernelFileCacheMinimumPages: kernelMinimum)
+                kernelFileCacheMinimumPages: kernelMinimum, inactiveFileBackedPages: base.inactiveFileBackedPages,
+                inactiveAnonymousPages: base.inactiveAnonymousPages, compressionPages: base.compressionPages,
+                swapoutPages: base.swapoutPages, liveCompressionPages: base.liveCompressionPages)
         }
         _ = try Self.decide(with(), required: 0)
         // A count whose byte size overflows, or exceeds the Mac, is thrown out, not wrapped.
@@ -204,31 +249,6 @@ struct StageLoadFileCacheAdmissionTests {
         #expect(throws: ProbeError.self) {
             _ = try QwenDenseStageLoadPolicy.decide(Self.observation(), requiredBytes: 0, purpose: "Test load",
                 now: 1_000 + 1_000_000_001)
-        }
-    }
-
-    @Test func theProcessRecordKeepsTheFirstTheTightestAndWhetherCacheWasNeeded() throws {
-        let record = QwenDenseStageLoadAdmissionRecord()
-        #expect(record.summary().decisions == 0 && record.summary().first == nil)
-        record.note(try Self.decide(Self.observation(freeBytes: 20 * Self.gib), required: 16 * Self.gib))
-        #expect(!record.summary().reclaimableUsedForAdmission)
-        record.note(try Self.decide(Self.observation(), required: 30 * Self.gib))
-        record.note(try Self.decide(Self.observation(freeBytes: 64 * Self.mib), required: 8 * Self.gib))
-        record.note(try Self.decide(Self.observation(fileBackedGiB: 50, anonymousGiB: 57), required: 16 * Self.gib))
-        let summary = record.summary()
-        #expect(summary.policy == QwenDenseStageLoadPolicy.identifier)
-        #expect(summary.decisions == 4 && summary.refusals == 1 && summary.reclaimableUsedForAdmission)
-        #expect(summary.first?.actualFreeBytes == 20 * Self.gib)
-        #expect(summary.tightest?.requiredBytes == 30 * Self.gib)
-        #expect(summary.fewestFreePages?.actualFreeBytes == 64 * Self.mib)
-        #expect(summary.lastRefusal?.admitted == false)
-        // The record encodes with every counter of each decision.
-        let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(summary)) as? [String: Any])
-        let tightest = try #require(object["tightest"] as? [String: Any])
-        for key in ["actualFreeBytes", "countedReclaimableBytes", "fileBackedBytes", "fileCacheReserveBytes",
-                    "anonymousBytes", "inactiveBytes", "pressureLevel", "swapUsedBytes", "compressorBytes",
-                    "reclaimableUsedForAdmission", "requiredBytes", "admissibleBytes"] {
-            #expect(tightest[key] != nil, "missing \(key)")
         }
     }
 }

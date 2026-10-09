@@ -10,6 +10,8 @@ final class QwenGenerationDiagnosticResources {
     private(set) var minimumActualFreeBytes = Int.max
     private(set) var minimumAllocatorLimitBytes = Int.max
     private var previousCheck: UInt64?
+    /// This capture's record at the host memory gate, and its first sample.
+    private let watch = QwenDenseStageLoadWatch("Generation diagnostics")
 
     init(loaded: LoadedQwenLayerStage, profile: QwenRegisteredDenseModelProfile,
          plan: QwenLayerStagePlan, request: QwenLayerStageGenerationRequest, rank: Int,
@@ -51,13 +53,13 @@ final class QwenGenerationDiagnosticResources {
         let now = DispatchTime.now().uptimeNanoseconds
         if !force, let previousCheck, now >= previousCheck, now - previousCheck < 250_000_000 { return }
         try QwenResidentResourceEnvironment.require()
-        let os = try QwenDenseStageLoadResources.requireInitial()
+        let os = try QwenDenseStageLoadResources.observeOS()
         let native = QwenDenseStageLoadResources.observeNative()
         let free = try budget.requiredActualFreeBytes(minimum: QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
             headroom: QwenDenseStageLoadPolicy.loadingHeadroomBytes)
         let allocator = try budget.requiredAllocatorBytes(active: native.activeBytes, cache: native.cacheBytes,
             headroom: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
-        guard try QwenDenseStageLoadResources.admits(os, bytes: free, for: "Generation diagnostics"), native.allocatorLimitBytes >= allocator else {
+        guard try watch.admits(os, bytes: free), native.allocatorLimitBytes >= allocator else {
             throw ProbeError("Generation diagnostics exceed the allocator limit")
         }
         observationCount = try QwenLongPrefillCheckedBytes.sum([observationCount, 1])

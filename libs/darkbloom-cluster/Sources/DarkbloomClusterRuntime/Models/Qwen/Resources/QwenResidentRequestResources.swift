@@ -6,6 +6,8 @@ struct QwenResidentRequestAllowance {
     let stateBytes: Int
     let fusionBytes: Int
     let reservedBytes: Int
+    /// This request's record at the host memory gate, and its first sample.
+    let watch = QwenDenseStageLoadWatch("Resident request")
 
     /// Actual allocator bounds applied per named array. The original F32 state
     /// formula is retained; weights are already resident and charged by active
@@ -72,13 +74,13 @@ struct QwenResidentRequestAllowance {
             throw ProbeError("Invalid additional resident allowance")
         }
         try QwenResidentResourceEnvironment.require()
-        let os = try QwenDenseStageLoadResources.requireInitial()
+        let os = try QwenDenseStageLoadResources.observeOS()
         let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
             try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard try QwenDenseStageLoadResources.admits(os, bytes: free, for: "Resident request"), Memory.memoryLimit >= allocator else {
+        guard try watch.admits(os, bytes: free), Memory.memoryLimit >= allocator else {
             throw ProbeError("Resident request exceeds the allocator limit")
         }
     }

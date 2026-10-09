@@ -77,9 +77,8 @@ public enum SchedulerPrefillBenchmark {
         SchedulerPrefillDecisionScenarios.qwenReleaseWorkloads
 
     /// `kvBackend` is the operator-facing selection handed to the production
-    /// factory, exactly as in `ThroughputSweep.run`. `.auto` resolves
-    /// CONTIGUOUS, so a run that does not forward the wrapper's selection
-    /// here measures a different arm than the sweep it is reported beside.
+    /// factory, exactly as in `ThroughputSweep.run`. Quantized `.auto` requires
+    /// paged storage; native `.auto` retains its model policy and fallback.
     public static func run(
         modelID: String,
         modelDirectory: URL,

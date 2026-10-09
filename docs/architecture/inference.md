@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -261,7 +261,10 @@ the fixed rate reduction takes effect without a timing-profile entry.
 
 `DeadlineRuntimeEnvironment.permitsQualification` rejects `MLX_*`, `MTPLX_*`,
 `QWEN_*`, and unrecognized or performance-affecting `DARKBLOOM_*` settings.
-Only exact credential, local-state and update-control keys are exempt.
+Exact credential, local-state and update-control keys are exempt. The resolved
+`DARKBLOOM_CBV2_KV_QUANTIZATION` key is accepted only for native precision by
+both deadline and serving-profile environment checks. Balanced and 8-bit cache
+formats still require separate format-bound measurements before using a profile.
 CLI-projected MLX settings also retain the timing fallback until that execution
 environment is covered by reviewed evidence. This deadline-only guard does not
 change universal serving-profile admission.
@@ -655,7 +658,7 @@ records tiny-model correctness and remaining release gates.
 | `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
-| `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
@@ -663,9 +666,26 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
-`detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
+`detectQuantization`). Weight precision is independent of live KV precision.
+`EngineV2KVQuantizationPolicy` selects balanced affine K4/V4 by default, with
+FP32 group64 metadata and geometry-derived post-RoPE key Hadamard blocks.
+The newest 128 confirmed tokens and pending/speculative state stay native;
+recurrent and assistant storage remain native. Active Gemma assistants retain
+their last owning full and windowed source rows natively. MiMo remains excluded
+even with an operator override. Precision fallback is selected at load time;
+quantized construction requires a supported paged route and refuses silent
+native fallback. Physical row costs, native tails and transient ownership feed
+admission instead of a blanket compression ratio. Memory sizing
 (native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+Quantized slots reuse durable prefixes only through the complete packed
+checkpoint contract, which preserves the coded rows and original-precision
+tail. Their legacy resident blocks and attention-only native tensor snapshots
+are disabled. DiffusionGemma's packed prefix codec remains unqualified, so its
+quantized slots report `unsupported_layout` and retain no resident or SSD prefix
+payloads. Generation continues with packed KV; selecting `native` preserves the
+existing native prefix policy.
 
 ### Native MiMo V2.6 candidate
 

@@ -452,11 +452,15 @@ struct SelfUpdaterTests {
         if includeResource {
             let builtBundle = try activeBuildProduct(
                 PackagedRuntimeSmoke.mlxLMCommonBundleName)
-            try fm.copyItem(
-                at: builtBundle,
-                to: resources.appendingPathComponent(
-                    PackagedRuntimeSmoke.mlxLMCommonBundleName,
-                    isDirectory: true))
+            let repository = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent()
+            try runTestProcess("/bin/bash", [
+                repository.appendingPathComponent("scripts/stage-swiftpm-resource-bundles.sh").path,
+                builtBundle.deletingLastPathComponent().path, app.path,
+                root.appendingPathComponent("resource-bundles.txt").path,
+            ])
         }
 
         if includeFanHelper {

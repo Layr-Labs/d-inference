@@ -68,6 +68,7 @@ provider-build: ## Build the Swift provider CLI with its source-matched metallib
 
 provider-test: ## Build and run Swift provider tests with source-matched metallibs
 	python3 scripts/test-stage-test-metallib.py
+	python3 scripts/test-stage-swiftpm-resource-bundles.py
 	cd provider-swift && swift build --build-tests
 	@set -eu; \
 	    bin_path="$$(cd provider-swift && swift build --show-bin-path)"; \

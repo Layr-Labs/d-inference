@@ -9,7 +9,8 @@ import Testing
 @Suite("Nemotron native paging and complete prefix eligibility", .serialized)
 struct NemotronPagingPrefixIntegrationTests {
     private var environment: [String: String] {
-        [KVBackendGuardStore.pathEnvKey: "/dev/null"]
+        [KVBackendGuardStore.pathEnvKey: "/dev/null",
+         EngineV2KVQuantizationPolicy.environmentKey: "native"]
     }
 
     private func tinyTarget() throws -> NemotronH35Model {
@@ -26,16 +27,36 @@ struct NemotronPagingPrefixIntegrationTests {
         return NemotronH35Model(try JSONDecoder().decode(NemotronH35Configuration.self, from: data))
     }
 
-    private func preparation(_ model: NemotronH35Model, paged: Bool = true) throws
+    private func preparation(_ model: NemotronH35Model, paged: Bool = true,
+                             precision: EngineV2KVQuantizationSelection = .native) throws
         -> EngineV2Factory.ProductionBackendPreparation
     {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
+        var resolvedEnvironment = environment
+        resolvedEnvironment[EngineV2KVQuantizationPolicy.environmentKey] = precision.rawValue
         return try EngineV2Factory.prepareProductionBackend(
             model: model, modelID: EngineV2SupportedModels.nemotron35LightningRegistryModelID,
             kvBytesCapacity: 128 << 20, maxConcurrentRequests: 1, kvBackend: .auto,
             maxContextLength: 1024,
-            environment: paged ? environment : environment.merging(
+            environment: paged ? resolvedEnvironment : resolvedEnvironment.merging(
                 [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"]) { _, value in value })
+    }
+
+    @Test("Balanced Lightning stores packed attention while preserving native recurrent state")
+    func balancedTargetUsesPackedCompleteFormat() throws {
+        let model = try tinyTarget()
+        let prepared = try preparation(model, precision: .balanced)
+        #expect(prepared.kind == .paged && prepared.kvQuantization == .balanced)
+        #expect(prepared.fallbackReason == nil)
+        let format = try #require(prepared.pagedPoolConfig?.quantization)
+        #expect(format.keyBits == 4 && format.valueBits == 4)
+        #expect(prepared.pagedLayerDTypes == model.cbv2CompleteCheckpointKVDTypes)
+        #expect(prepared.layerKinds.count == 1)
+        #expect(model.cbv2RecurrentStateSpec.layers.count == 2)
+        #expect(!prepared.residentPrefixCacheEnabled)
+        let identity = try #require(storage(model, prepared))
+        #expect(identity.backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout)
+        #expect(identity.fingerprintFields["storage.quantization"] == format.identity)
     }
 
     private func storage(_ model: NemotronH35Model,

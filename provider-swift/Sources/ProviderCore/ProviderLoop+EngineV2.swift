@@ -699,6 +699,8 @@ extension ProviderLoop {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                kvQuantizationConfig: loopConfig.config.backend.engineV2KVQuantization,
+                kvQuantizationConfigByModel: loopConfig.config.backend.engineV2KVQuantizationByModel,
                 mtpAcceptanceConfig: loopConfig.config.backend.mtpAcceptance,
                 mtpAcceptanceConfigByModel: loopConfig.config.backend.mtpAcceptanceByModel,
                 prefillDeadlineMode:

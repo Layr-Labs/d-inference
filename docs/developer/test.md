@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -2564,6 +2564,33 @@ production-default live cache tests and model benchmarks; record any explicit
 numerical override as a separate experiment.
 
 #### Ordinary teacher-forced score diagnostics
+
+For live attention-precision policy and CLI scope checks:
+
+```bash
+cd provider-swift
+swift test --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark'
+```
+
+Use the production session for free-generation quality comparisons:
+
+```bash
+darkbloom benchmark --model "$MODEL_ID" --runtime-generation --kv-backend paged \
+  --kv-quantization native --runtime-prompt-file "$PUBLIC_PROMPT_FILE" \
+  --runtime-prompt-date 2026-10-09 --max-tokens 4096 > "$NATIVE_REPORT"
+darkbloom benchmark --model "$MODEL_ID" --runtime-generation --kv-backend paged \
+  --kv-quantization balanced --runtime-prompt-file "$PUBLIC_PROMPT_FILE" \
+  --runtime-prompt-date 2026-10-09 --max-tokens 4096 > "$PACKED_REPORT"
+```
+
+Keep the artifact and prompt/date fixed. These reports record actual resolved
+precision/backend, generated IDs and rendered text, finish reason, runtime
+identity, timing and memory. Target-only is an explicit diagnostic control;
+repeat with `--runtime-mtp` to measure the configured assistant. A `length`
+finish or fluent text is not a correctness result. Ordinary scalar
+`MLX.generate` benchmarks do not exercise the production compressed cache.
+MiMo is excluded from this new mode and retains its native owned benchmark.
+
 
 Build and stage the source-matched metallib for both test products as above.
 From the repository root, run the numerical/engine controls and the provider

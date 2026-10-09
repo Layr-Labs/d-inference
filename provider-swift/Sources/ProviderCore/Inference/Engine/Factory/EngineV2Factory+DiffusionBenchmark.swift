@@ -13,6 +13,14 @@ public struct DiffusionGemmaBenchmarkIteration: Sendable {
     public let text: String
     public let usage: CBv2Usage
     public let totalMilliseconds: Double
+    public var promptTokens: [Int]? = nil
+    public var renderDate: String? = nil
+    public var preRequestActiveMemoryBytes: Int? = nil
+    public var peakMLXMemoryBytes: Int? = nil
+    public var peakObservedKVBytesInUse: Int? = nil
+    public var peakObservedKVBytesReserved: Int? = nil
+    public var peakObservedPagedCommittedBytes: Int? = nil
+    public var peakObservedPagedLivePageBytes: Int? = nil
     public var prefillMilliseconds: Double {
         (EngineV2NativeBlockTiming.prefillSeconds(usage.timing) ?? 0) * 1000
     }
@@ -32,6 +40,7 @@ public struct DiffusionGemmaBenchmarkResult: Sendable {
     public let iterations: [DiffusionGemmaBenchmarkIteration]
     public let weightHash: String
     public let backend: String
+    public let kvQuantization: String
     public let loadMilliseconds: Double
     public let grant: EngineV2BenchmarkProductionGrant
 }
@@ -148,6 +157,7 @@ extension EngineV2Factory {
                 stopTokens: await bundle.bridge.stopTokenIds)
             await bundle.bridge.shutdown()
             return .init(iterations: results, weightHash: hash, backend: kind.rawValue,
+                kvQuantization: bundle.bridge.kvQuantization.rawValue,
                 loadMilliseconds: loadMs, grant: grant)
         } catch {
             await bundle.bridge.shutdown()

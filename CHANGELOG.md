@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — live KV compression
+
+- Default supported provider attention caches to rotated K4/V4 storage with FP32 group metadata, a native recent 128-token tail and native pending/speculative state. Keep MiMo native. Provide `balanced`, `k8v4`, `k8v8` and `native` precision controls; active Gemma assistants retain their two shared source owners at native precision.
+- Add production runtime generation and precision controls to benchmark commands, recording output tokens, text, runtime/artifact identities, timing and memory for paired model evaluations.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

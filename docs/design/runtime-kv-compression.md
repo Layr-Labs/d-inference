@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-09
 
-Status: **Proposed** — 2026-10-09 — format selection and offline reference prototype; serving integration and model qualification remain required.
+Status: **In progress** — 2026-10-09 — the serving implementation excludes MiMo under the revised scope; see [the implemented cache policy](../architecture/kv-cache-quantization.md). Model qualification and PR review remain required.
 
 Use one rotation-assisted four-bit attention KV representation across the
 current model catalog, with native recent state and an eight-bit precision

@@ -170,11 +170,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" follows the exact-model policy in
-    /// `EngineV2KVBackendPolicy.preferredBackend`; "paged" and "contiguous"
+    /// `[backend]`): quantized "auto" requires paged; native "auto" follows
+    /// `EngineV2KVBackendPolicy.preferredBackend`. "paged" and "contiguous"
     /// are explicit selections. `DARKBLOOM_CBV2_PAGED_KV` is a
     /// negative-polarity kill switch and cannot turn paged on.
-    /// Automatic paged failures may fall back, but a box that cannot
+    /// Native automatic paged failures may fall back, but a box that cannot
     /// construct an explicitly requested paged backend REFUSES the load
     /// (`EngineV2ProductionError.pagedUnavailable` ⇒ 503, the coordinator
     /// reroutes) rather than degrading, because refusal is reserved for a
@@ -186,8 +186,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
     /// `EngineV2SlotFactory` passes — is `true`, so the veto is inert and
     /// an explicit "paged" VLM slot gets paged like any other.
-    /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` always degrades,
-    /// never refuses. A resolved-contiguous slot also gets NO SSD prefix
+    /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` forces contiguous;
+    /// live quantization then refuses until native precision is selected.
+    /// A resolved-contiguous slot also gets NO SSD prefix
     /// cache (`PrefixCachePolicy.adoptionIsExact`).
     /// See `EngineV2KVBackendPolicy`.
     public var engineV2KVBackend: String
@@ -195,6 +196,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
+    /// Live attention precision; balanced K4/V4 is the default. MiMo stays native.
+    /// Explicit contiguous storage requires native precision.
+    public var engineV2KVQuantization: String
+    public var engineV2KVQuantizationByModel: [String: String]
     /// Startup model preload (default true) for coordinator and standalone
     /// serving. An explicit `preload_models` list takes precedence; otherwise
     /// previously loaded models go first, then the selected models. The
@@ -298,6 +303,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
+        engineV2KVQuantization: String = "balanced",
+        engineV2KVQuantizationByModel: [String: String] = [:],
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -321,6 +328,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
+        self.engineV2KVQuantization = engineV2KVQuantization
+        self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -346,6 +355,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
         case engineV2KVBackendByModel = "engine_v2_kv_backend_by_model"
+        case engineV2KVQuantization = "engine_v2_kv_quantization"
+        case engineV2KVQuantizationByModel = "engine_v2_kv_quantization_by_model"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -393,6 +404,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2KVBackendByModel =
             try container.decodeIfPresent(
                 [String: String].self, forKey: .engineV2KVBackendByModel) ?? [:]
+        self.engineV2KVQuantization =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVQuantization) ?? "balanced"
+        self.engineV2KVQuantizationByModel =
+            try container.decodeIfPresent([String: String].self, forKey: .engineV2KVQuantizationByModel) ?? [:]
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =
@@ -433,6 +448,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
         try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
         try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
+        try container.encode(engineV2KVQuantization, forKey: .engineV2KVQuantization)
+        try container.encode(engineV2KVQuantizationByModel, forKey: .engineV2KVQuantizationByModel)
         try container.encode(startupPreload, forKey: .startupPreload)
         try container.encode(preloadModels, forKey: .preloadModels)
         try container.encode(startupPreloadTimeoutSecs, forKey: .startupPreloadTimeoutSecs)

@@ -22,16 +22,34 @@ struct GPTOSSDefaultPrefixCacheWiringTests {
         return GPTOSSModel(try JSONDecoder().decode(GPTOSSConfiguration.self, from: data))
     }
 
-    private func preparation(_ model: GPTOSSModel, paged: Bool = true) throws
+    private func preparation(_ model: GPTOSSModel, paged: Bool = true,
+                             precision: EngineV2KVQuantizationSelection = .native) throws
         -> EngineV2Factory.ProductionBackendPreparation
     {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
-        var environment = [KVBackendGuardStore.pathEnvKey: "/dev/null"]
+        var environment = [KVBackendGuardStore.pathEnvKey: "/dev/null",
+                           EngineV2KVQuantizationPolicy.environmentKey: precision.rawValue]
         if !paged { environment[EngineV2KVBackendPolicy.killSwitchEnvKey] = "0" }
         return try EngineV2Factory.prepareProductionBackend(
             model: model, modelID: modelID, kvBytesCapacity: 128 << 20,
             maxConcurrentRequests: 1, kvBackend: .auto, maxContextLength: 1024,
             environment: environment, pagedPreflightOverride: { _ in })
+    }
+
+    @Test("Balanced precision preserves default complete SSD with its packed layout")
+    func balancedConstructsPackedHistoricalStore() async throws {
+        let model = try tinyTarget()
+        let prepared = try preparation(model, precision: .balanced)
+        #expect(prepared.kind == .paged && prepared.kvQuantization == .balanced)
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("gptoss-packed-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = await construct(model, prepared, root: root)
+        let cache = try #require(result?.cache)
+        #expect(cache.config.backendLayout == CBv2CompleteCheckpointManifest.quantizedHistoricalLayout)
+        #expect(cache.config.identity.modelAggregateHash == weightHash)
+        #expect(cache.config.identity.promptContractID == promptContractID)
+        await cache.closeAndWait()
     }
 
     private func construct(

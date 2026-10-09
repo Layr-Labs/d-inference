@@ -166,11 +166,15 @@ import Testing
     let decoded = ConfigManager.parse(toml)
 
     // Retired keys are never re-emitted, so a config round-trip sheds them.
-    #expect(!toml.contains("adaptive_prefill"))
-    #expect(!toml.contains("engine_v2 ="))
-    #expect(!toml.contains("continuous_batching"))
-    #expect(!toml.contains("legacy_compiled_decode"))
-    #expect(!toml.contains("kv_quant"))
+    let emittedKeys = Set(toml.split(separator: "\n").compactMap { line -> String? in
+        guard let separator = line.firstIndex(of: "=") else { return nil }
+        return line[..<separator].trimmingCharacters(in: .whitespaces)
+    })
+    for retired in ["adaptive_prefill", "engine_v2", "continuous_batching", "legacy_compiled_decode", "kv_quant"] {
+        #expect(!emittedKeys.contains(retired))
+    }
+    #expect(emittedKeys.contains("engine_v2_kv_quantization"))
+    #expect(decoded.backend.engineV2KVQuantization == "balanced")
     #expect(decoded.backend.retiredKeysPresent.isEmpty)
 }
 

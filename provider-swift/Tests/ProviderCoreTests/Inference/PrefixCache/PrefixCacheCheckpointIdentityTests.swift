@@ -279,6 +279,39 @@ struct PrefixCacheCheckpointIdentityTests {
         #expect(identity(mtp: .init(enabled: true, fixedDraftTokens: 2), codec: nil, storage: base) != baseID)
     }
 
+    @Test("Resolved packed precision, recent band and assistant owner exemptions separate namespaces")
+    func quantizedStorageNamespace() throws {
+        let types: [DType] = [.bfloat16, .float32]
+        let base = PagedKVPoolConfig(pageSize: 16, capacityBytes: 64 << 20,
+            segmentSizeBytes: 64 << 10, layerDTypes: types, quantization: .init())
+        func namespace(_ config: PagedKVPoolConfig) throws -> String {
+            let storage = try #require(CompleteCheckpointStorageIdentity(kind: .paged,
+                layerDTypes: types, pagedConfig: config))
+            let resolved = try #require(identity(storage: storage))
+            return SSDHybridCheckpointStoreFactory.namespace(modelId: "target",
+                identity: resolved, backendLayout: storage.backendLayout)
+        }
+        let balanced = try namespace(base)
+        let storage = try #require(CompleteCheckpointStorageIdentity(kind: .paged,
+            layerDTypes: types, pagedConfig: base))
+        #expect(storage.backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout)
+        #expect(storage.fingerprintFields["storage.quantization"] == base.quantization?.identity)
+        for change in 0 ..< 5 {
+            var other = base
+            switch change {
+            case 0: other.quantization = nil
+            case 1: other.quantization = .init(keyBits: 8, valueBits: 4)
+            case 2: other.quantization = .init(keyBits: 8, valueBits: 8)
+            case 3: other.quantization = .init(recentTokenCount: 64)
+            default: other.nativeLayerIndices = [1]
+            }
+            #expect(try namespace(other) != balanced)
+        }
+        var resized = base
+        resized.capacityBytes *= 2
+        #expect(try namespace(resized) == balanced, "Capacity does not change numerical storage compatibility")
+    }
+
     @Test("Historical eligibility refuses incompatible native mappings and storage")
     func historicalStorageRefusal() {
         let window = CBv2LayerKind(attention: .slidingWindow(128), headDim: 64, kvHeads: 1, queryHeads: 2)

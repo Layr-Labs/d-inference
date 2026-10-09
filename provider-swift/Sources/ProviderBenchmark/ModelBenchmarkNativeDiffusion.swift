@@ -12,13 +12,16 @@ extension ModelBenchmark {
         let report = try await EngineV2Factory.runDiffusionGemmaBenchmark(
             modelID: modelID, directory: directory, prompt: prompt,
             iterations: iterations, maxTokens: maxTokens, backend: backend)
-        print("Native diffusion baseline: cache off, reasoning off, seed 341, unchanged checkpoint denoising recipe.")
+        print("Native diffusion: prefix cache off, precision \(report.kvQuantization), reasoning off, seed 341, unchanged checkpoint denoising recipe.")
         print("Generation TPS includes first-block work and excludes terminal EOS; native framing tokens may remain.")
         print("This is not a finalized-visible-token performance-target certification.")
         var results = [BenchmarkIterationResult]()
         for (index, sample) in report.iterations.enumerated() {
-            let record: [String: Any] = [
+            var record: [String: Any] = [
                 "iteration": index + 1, "backend": report.backend, "weightHash": report.weightHash,
+                "kvQuantization": report.kvQuantization,
+                "runtimeIdentity": EngineV2Factory.benchmarkRuntimeIdentity(),
+                "tokenIDs": sample.tokenIDs, "text": sample.text,
                 "loadIncludingIntegrityMilliseconds": report.loadMilliseconds,
                 "promptTokens": sample.usage.promptTokens,
                 "completionTokensIncludingEOS": sample.usage.completionTokens,
@@ -41,7 +44,19 @@ extension ModelBenchmark {
                 "rawTextSHA256": SHA256.hash(data: Data(sample.text.utf8))
                     .map { String(format: "%02x", $0) }.joined(),
                 "kvGrantBytes": report.grant.grantBytes, "speedTargetQualified": false,
+                "capacityObservation": "Host samples before submit and at delta/terminal events; excludes unobserved prefill transient peaks. Pre-request active bytes include weights and setup allocations.",
             ]
+            record["promptTokens"] = sample.promptTokens
+            record["renderDate"] = sample.renderDate
+            record["preRequestActiveMemoryBytes"] = sample.preRequestActiveMemoryBytes
+            record["peakMLXMemoryBytes"] = sample.peakMLXMemoryBytes
+            record["peakObservedKVBytesInUse"] = sample.peakObservedKVBytesInUse
+            record["peakObservedKVBytesReserved"] = sample.peakObservedKVBytesReserved
+            record["peakObservedPagedCommittedBytes"] = sample.peakObservedPagedCommittedBytes
+            record["peakObservedPagedLivePageBytes"] = sample.peakObservedPagedLivePageBytes
+            if let peak = sample.peakMLXMemoryBytes, let baseline = sample.preRequestActiveMemoryBytes {
+                record["peakMLXMemoryDeltaBytes"] = max(0, peak - baseline)
+            }
             print("NATIVE_BLOCK_BENCHMARK " + String(decoding: try JSONSerialization.data(
                 withJSONObject: record, options: [.sortedKeys]), as: UTF8.self))
             results.append(.init(iteration: index + 1, promptTokens: sample.usage.promptTokens,

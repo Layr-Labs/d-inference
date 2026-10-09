@@ -61,7 +61,8 @@ struct EngineV2BenchmarkMTPAcceptanceTests {
             configuration: ModelConfiguration(id: modelID), model: target,
             processor: Processor(), tokenizer: tokenizer))
         let weightHash = try #require(WeightHasher.computeHash(snapshotDir: targetDirectory))
-        let environment = ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"]
+        let environment = ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
+                           EngineV2KVQuantizationPolicy.environmentKey: "native"]
 
         let defaultSession = try await EngineV2Factory.makeBenchmarkSession(
             modelId: modelID, modelDirectory: targetDirectory, isVLM: false,

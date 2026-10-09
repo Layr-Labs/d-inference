@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -437,19 +437,31 @@ shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
 |---|---|
 | Throughput | `--model <id>` (`String?`), `--prompt <text>` (`ModelBenchmark.defaultPrompt`), `--iterations <n>` (`ModelBenchmark.defaultIterations`), `--max-tokens <n>` (`ModelBenchmark.defaultMaxTokens`) |
 | Ordinary token scores | `--teacher-forced-input <json>` (`String?`, unset), explicit `--model <id>` and `--kv-backend contiguous\|paged` (`BenchmarkCommand.swift`, `teacherForcedOptionError`) |
+| Runtime generation | `--runtime-generation`, optional `--runtime-prompt-file <utf8>`, `--runtime-prompt-date YYYY-MM-DD`, `--runtime-mtp`; production slot output and memory as JSON, prefix cache off (`RuntimeGenerationBenchmark`) |
+| Live KV precision | `--kv-quantization balanced\|k8v4\|k8v8\|native`; resolves every production benchmark engine. Use `--runtime-generation`, teacher forcing, sweep or scheduler modes to exercise serving KV. Ordinary scalar `MLX.generate` benchmarks do not measure this representation. MiMo stays native. |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
 | Arrival invariance | `--arrival-invariance`, `--arrival-width` (`4`, range `1...16`), `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly one integer ≥2 per row, overrides uniform length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`); requested width alone is not measured forward-width evidence |
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
 
-`--kv-backend auto` uses the candidate's
-[exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts): eligible
-cohort models try paged, all other IDs use contiguous, and automatic paged
-failures or the version-bound crash-loop guard fall back to contiguous.
+Ordinary DiffusionGemma generation uses its production native block engine and
+honors `--kv-quantization`. Its `NATIVE_BLOCK_BENCHMARK` records include resolved
+precision, prepared prompt tokens/date, generated text/tokens and observed cache
+memory. Runtime generation emits one autoregressive request; it does not use
+`--iterations`. Cache capacity peaks sample the host before submission and on
+delta/terminal events, so they do not capture every prefill transient.
+
+With balanced live quantization, `--kv-backend auto` requires paged storage.
+Missing required sweep cells return a nonzero exit status for balanced, `k8v4`
+and `k8v8`, including `auto`. Scheduler-prefill lengths must exceed one token;
+its producer and arrival invariance already reject incomplete measurements.
+With `--kv-quantization native`, auto uses the
+[exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts)
+and retains its observable contiguous fallback.
 Explicit `--kv-backend paged` refuses construction failures rather than measuring
-a fallback; the kill switch and capability/span-mask vetoes can still force
-contiguous. Inspect the measured engine's `resolvedKVBackend` and report
+a fallback; kill-switch and capability/span-mask vetoes require native precision
+to serve contiguous. Inspect the measured engine's `resolvedKVBackend` and report
 `kvBackend` block (`provider-swift/Sources/darkbloom/BenchmarkCommand.swift`,
 `Benchmark.kvBackend`). The
 [five-artifact rollout](../design/release-090-paged-qwen-cache.md) is **not yet
@@ -1017,6 +1029,15 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--prompt <text>` | Prompt text |
 | `--iterations <n>` | Number of iterations (default from `ModelBenchmark`) |
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
+| `--runtime-generation` | Generate through the production CBv2 slot and emit tokens/text, resolved precision/backend, model/runtime identity, timings and memory as JSON |
+| `--kv-quantization <precision>` | `balanced`, `k8v4`, `k8v8` or `native`; native is the paired control and contiguous rollback |
+
+For paired live-cache comparisons, use the same artifact, public prompt and
+`--runtime-prompt-date` with `--runtime-generation --kv-backend paged`, once
+with `--kv-quantization native` and once with `balanced`. Target-only generation
+is the default in this diagnostic; `--runtime-mtp` explicitly includes the
+configured artifact assistant. A generation limit is reported as `length`,
+not a correctness pass. Prefix caches remain off in these runs.
 
 For native Qwen4 model types, the ordinary command uses the production CBv2
 model/factory path with MTP and prefix caching off. It preserves model/tokenizer
@@ -1386,7 +1407,9 @@ override `provider.toml` for one process, are in
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4`; explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed higher default. `ServingPerformanceProfiles`, `BackendSettings` |
 | `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
-| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
+| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Quantized auto requires paged. Native auto follows the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts) and retains observable contiguous fallback (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
+| `[backend] engine_v2_kv_quantization` | `"balanced"` | Live attention precision: `balanced` K4/V4, `k8v4`, `k8v8` or `native`. Quantized `auto` selects paged independent of model ID; an unavailable paged route refuses rather than silently serving native. Durable reuse requires the complete packed checkpoint contract; legacy resident/tensor prefixes are disabled. Quantized DiffusionGemma reports prefix `unsupported_layout` until its packed codec is qualified. MiMo stays native (`EngineV2KVQuantizationPolicy.resolve`). |
+| `[backend] engine_v2_kv_quantization_by_model` | `{}` | Exact model-ID precision overrides the global setting; `DARKBLOOM_CBV2_KV_QUANTIZATION` overrides both. MiMo exclusion precedes every override. |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
 | `[backend] mtp_acceptance_by_model` | `{}` | Exact model ID to acceptance string; overrides `mtp_acceptance` for that model. An unknown override resolves to `exact`, not the global value. Same eligibility and native MiMo exclusion as above (`MTPAcceptancePolicy.resolve`) |

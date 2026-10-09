@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -9,6 +9,14 @@ operator has to plan for. For operators choosing or checking a machine. The
 memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
+
+Balanced live KV compression reduces older attention-history storage while
+retaining native recent, speculative, recurrent and assistant state. It does
+not reduce model-load quotations, OS reserves, activation floors or minimum
+serveable KV headroom. Actual packed rows, metadata and transient ownership
+determine request capacity; the RAM-tier table remains subject to the same
+load gate. MiMo remains native. Precision and rollback controls are in the
+[CLI reference](cli-reference.md#providertoml-keys-read-by-the-cli).
 
 ## Registering interest for unsupported hardware
 

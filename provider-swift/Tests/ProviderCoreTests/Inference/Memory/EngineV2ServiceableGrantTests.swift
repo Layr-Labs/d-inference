@@ -264,7 +264,8 @@ private struct ServiceableGrantFixture {
             kvBytesCapacity: grant, maxConcurrentRequests: 2,
             hybridPrefixCache: cache, mtpConfig: .init(enabled: false),
             kvBackend: .contiguous, maxContextLength: 2_048,
-            environment: [KVBackendGuardStore.pathEnvKey: "/dev/null"])
+            environment: [KVBackendGuardStore.pathEnvKey: "/dev/null",
+                          EngineV2KVQuantizationPolicy.environmentKey: "native"])
         engine = try #require(build.engine as? EngineV2)
         bridge = try EngineV2Factory.makeBridge(modelId: modelID,
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [],
@@ -301,7 +302,8 @@ private struct ServiceableGrantFixture {
             preparedModel: .init(snapshot: .init(model: model, eosTokenIds: [], extraEOSTokens: []),
                 servingModel: model, assistant: nil,
                 mtpStatus: .disabled(.configDisabled, configured: false), mtpArtifact: nil),
-            environment: ["DARKBLOOM_PREFIX_CACHE": "0", KVBackendGuardStore.pathEnvKey: "/dev/null"],
+            environment: ["DARKBLOOM_PREFIX_CACHE": "0", KVBackendGuardStore.pathEnvKey: "/dev/null",
+                          EngineV2KVQuantizationPolicy.environmentKey: "native"],
             startServingTelemetry: false, emitTelemetry: { _ in })
     }
 

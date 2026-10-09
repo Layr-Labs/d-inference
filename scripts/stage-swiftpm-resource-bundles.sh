@@ -23,6 +23,14 @@ bundles=("$bin_dir"/*.bundle)
 }
 
 : > "$manifest"
+normalized=""
+cleanup_normalization() {
+  if [[ -n "$normalized" && -d "$normalized" ]]; then
+    rm -rf "$normalized"
+  fi
+}
+trap cleanup_normalization EXIT
+
 for source_bundle in "${bundles[@]}"; do
   [[ -d "$source_bundle" && ! -L "$source_bundle" ]] || {
     echo "SwiftPM resource bundle must be a real directory: $source_bundle" >&2
@@ -32,6 +40,23 @@ for source_bundle in "${bundles[@]}"; do
   destination="$resource_root/$bundle_name"
   rm -rf "$destination"
   /usr/bin/ditto "$source_bundle" "$destination"
+  [[ ! -e "$destination/Contents/MacOS" ]] || {
+    echo "Resource bundle unexpectedly contains executable code: $bundle_name" >&2
+    exit 1
+  }
+  # Swift Build emits Contents/Resources bundles; native SwiftPM also emits
+  # flat resource bundles. Publish the existing flat signed-app contract in
+  # either case, so the installer and strict updater seal one exact path.
+  if [[ -d "$destination/Contents/Resources" ]]; then
+    normalized=$(mktemp -d "$resource_root/.swiftpm-resource.XXXXXX")
+    /usr/bin/ditto "$destination/Contents/Resources" "$normalized"
+    if [[ -f "$destination/Contents/Info.plist" ]]; then
+      cp -p "$destination/Contents/Info.plist" "$normalized/Info.plist"
+    fi
+    rm -rf "$destination"
+    mv "$normalized" "$destination"
+    normalized=""
+  fi
   [[ -d "$destination" ]] || {
     echo "Failed to stage SwiftPM resource bundle: $bundle_name" >&2
     exit 1

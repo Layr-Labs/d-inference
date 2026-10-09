@@ -13,7 +13,8 @@ struct Qwen4PagingPrefixIntegrationTests {
     private let flashNextID = "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp"
 
     private var environment: [String: String] {
-        [KVBackendGuardStore.pathEnvKey: "/dev/null"]
+        [KVBackendGuardStore.pathEnvKey: "/dev/null",
+         EngineV2KVQuantizationPolicy.environmentKey: "native"]
     }
 
     private func tinyTarget() throws -> Qwen4ExpTextModel {
@@ -51,10 +52,12 @@ struct Qwen4PagingPrefixIntegrationTests {
     private func preparation(
         _ model: Qwen4ExpTextModel,
         selection: EngineV2KVBackendSelection = .auto,
-        paged: Bool = true
+        paged: Bool = true,
+        precision: EngineV2KVQuantizationSelection = .native
     ) throws -> EngineV2Factory.ProductionBackendPreparation {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         var environment = environment
+        environment[EngineV2KVQuantizationPolicy.environmentKey] = precision.rawValue
         if !paged {
             environment[EngineV2KVBackendPolicy.killSwitchEnvKey] = "0"
         }
@@ -63,6 +66,23 @@ struct Qwen4PagingPrefixIntegrationTests {
             kvBytesCapacity: 128 << 20, maxConcurrentRequests: 1,
             kvBackend: selection, maxContextLength: 1024,
             environment: environment)
+    }
+
+    @Test("Balanced Flash-Next keeps indexer/recurrent state and uses packed complete attention")
+    func balancedTargetUsesPackedCompleteFormat() throws {
+        let model = try tinyTarget()
+        let prepared = try preparation(model, precision: .balanced)
+        #expect(prepared.kind == .paged && prepared.kvQuantization == .balanced)
+        #expect(prepared.fallbackReason == nil)
+        let format = try #require(prepared.pagedPoolConfig?.quantization)
+        #expect(format.keyBits == 4 && format.valueBits == 4)
+        #expect(prepared.layerKinds.count == 1)
+        #expect(prepared.layerKinds[0].qwen4IndexerCompressRatio == 4)
+        #expect(model.cbv2RecurrentStateSpec.layers.count == 1)
+        #expect(!prepared.residentPrefixCacheEnabled)
+        let identity = try #require(storage(prepared))
+        #expect(identity.backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout)
+        #expect(identity.fingerprintFields["storage.quantization"] == format.identity)
     }
 
     private func storage(

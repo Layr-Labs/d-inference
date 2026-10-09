@@ -70,6 +70,19 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
             hardware: hardware, environment: environment, providerVersion: "test", profiles: [profile])
         #expect(resolved?.maxConcurrency == 16)
     }
+    for raw in ["native", " OFF ", "0", "balanced", "k8v4", "k8v8", "invalid", ""] {
+        let resolved = ServingPerformanceProfiles.resolve(modelID: profile.modelId,
+            artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
+            hardware: hardware, environment: [EngineV2KVQuantizationPolicy.environmentKey: raw],
+            providerVersion: "test", profiles: [profile])
+        #expect(resolved == (["native", " OFF ", "0"].contains(raw) ? profile : nil))
+    }
+    #expect(ServingPerformanceProfiles.resolve(modelID: profile.modelId,
+        artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
+        hardware: hardware,
+        environment: [EngineV2KVQuantizationPolicy.environmentKey: "native",
+                      "DARKBLOOM_CBV2_FUTURE_TUNING": "0"],
+        providerVersion: "test", profiles: [profile]) == nil)
     #expect(ServingPerformanceProfiles.resolve(modelID: profile.modelId,
         artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
         hardware: hardware, environment: [MixedPrefillPolicy.globalKey: "128"],

@@ -284,6 +284,8 @@ jobs:
           echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
       - name: Test Qwen resources in a relocated app
         run: python3 scripts/test-qwen4-packaged-resources.py
+      - name: Test SwiftPM resource bundle staging
+        run: python3 scripts/test-stage-swiftpm-resource-bundles.py
       - name: Test profile inventory authentication in a terminal
         run: python3 scripts/test-profile-inventory-auth.py
       - name: Prepare pinned public MiMo metadata and original corpus

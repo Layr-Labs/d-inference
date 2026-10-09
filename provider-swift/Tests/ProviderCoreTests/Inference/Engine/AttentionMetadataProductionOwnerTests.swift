@@ -27,7 +27,8 @@ struct AttentionMetadataProductionOwnerTests {
         // model indices into contiguous caches. Do not rebuild a dense bank.
         let prepared = try EngineV2Factory.prepareProductionBackend(
             model: model, kvBytesCapacity: 32 << 20, maxConcurrentRequests: 1,
-            kvBackend: .contiguous, maxContextLength: 64, environment: [:])
+            kvBackend: .contiguous, maxContextLength: 64,
+            environment: [EngineV2KVQuantizationPolicy.environmentKey: "native"])
         let (backend, caches) = try prepared.consume(model: model, maxConcurrentRequests: 1)
         let originalIndices = Array(stride(from: 3, through: 39, by: 4))
         #expect(caches.map(\.layerIndex) == originalIndices)

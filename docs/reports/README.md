@@ -250,3 +250,5 @@ Machine-generated; kept as evidence for the reports above.
 - [Gemma QAT September 10 merge and validation](2026-09-10-gemma-qat-review-sync.md) — review fixes, merged-source tests, new artifact identity and model/HTTP revalidation status.
 
 - [Lossless complete-checkpoint codec measurements](2026-10-09-lossless-checkpoint-codec.md) — Bit-exact native-source LZ4 measurements, buffer refactor and experimental serving/privacy limits.
+
+- [Gemma and GPT-OSS native KV lossless samples](2026-10-09-native-kv-lossless-samples.md) — Actual short native packets, bit-exact codec savings, source identities and bounded CPU reproduction.

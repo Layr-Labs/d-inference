@@ -23,7 +23,12 @@ func (r *Registry) verifiedPairMemberLocked(p *Provider, model string, now time.
 	if p == nil || len(p.ID) == 0 || len(p.ID) > 128 || !utf8.ValidString(p.ID) || r.providers[p.ID] != p || p.registry != r {
 		return empty, ErrVerifiedPairStale
 	}
-	if ok, _ := r.providerRoutingGateReasonAllowPairLockedEx(p, model, RequestTraits{}, false, now, false, false, except, true); !ok {
+	// Membership is an identity and trust decision, not an admission decision.
+	// A control-only member reports "draining" on every heartbeat because it
+	// refuses solo work, and cooldowns, the breaker and ejection record how
+	// requests fared on this machine. Routing a request to the pair honors all
+	// of them; the pair's existence depends on none.
+	if !r.pairMemberLiveLocked(p, except, model, RequestTraits{}, now) {
 		return empty, ErrVerifiedPairUnavailable
 	}
 	a := p.AttestationResult
@@ -51,6 +56,18 @@ func (r *Registry) verifiedPairMemberLocked(p *Provider, model string, now time.
 		ProcessPublicKey: p.PublicKey, ProviderBinaryHash: e.BinaryHash,
 		ProviderMetallibHash: e.MetallibHash, ReleasePolicyGeneration: e.PolicyGeneration,
 	}, nil
+}
+
+// pairMemberLiveLocked is the liveness, catalog and trait check a pair member
+// must pass for model, on its own pair's hold. A pair never relaxes trust,
+// private-only admission or the catalog for its owner. It deliberately leaves
+// out what governs routing a request rather than the pair's existence: the
+// drain mark, which a control-only member carries for as long as it runs, and
+// the request-fault trackers (cooldowns, breaker, ejection). Caller holds r.mu
+// and p.mu.
+func (r *Registry) pairMemberLiveLocked(p *Provider, pair *verifiedPairState, model string, traits RequestTraits, now time.Time) bool {
+	ok, _ := (&ProviderEligibility{registry: r}).livenessAllowPairLocked(p, r.MinTrustLevel, false, now, pair, true)
+	return ok && r.providerServesRoutableModelLocked(p, model, false) && r.providerEligibleForTraitsLocked(p, model, traits)
 }
 
 func freshVerifiedPairTime(observed, now time.Time, limit time.Duration) bool {

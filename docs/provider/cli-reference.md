@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -321,7 +321,16 @@ darkbloom stop --force             # explicit interruption, including stalled wo
 Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
-standalone local mode also waits for active HTTP response bodies. The signal
+standalone local mode also waits for active HTTP response bodies. `SIGHUP`
+enters it too for a provider started by hand (`start --local`, or
+`start --foreground` typed into a terminal), so closing its terminal window
+drains it instead of ending the process at once. `SIGHUP` is not a stop signal
+in two cases: the provider's launchd job does not take it, so it has whatever
+action launchd started the job with, and a start that arrived with `SIGHUP`
+ignored, for example under `nohup`, keeps ignoring it. A provider that
+re-executes itself in place for a self-update carries the same choice into the
+new process (`ProviderStopSignals` in
+`provider-swift/Sources/ProviderCore/Service/ProviderStopSignals.swift`). The signal
 deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Signal-only shutdown disarms current watchdog recovery but preserves configured

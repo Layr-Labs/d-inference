@@ -20,6 +20,15 @@ enum QwenRegisteredContentInventory {
                   layoutInventorySHA256: specification.inventorySHA256)
     }
 
+    /// The inventory of a model that must have one: a rank cannot receive or
+    /// check a stage of a model nobody has inventoried.
+    static func require(_ specification: QwenDenseRegisteredSpecification) throws -> LayerStageTensorContentInventory {
+        guard let inventory = try admit(specification) else {
+            throw ProbeError("Registered model has no pinned content inventory")
+        }
+        return inventory
+    }
+
     static func admit(document: String?, pin: String?,
                       layoutInventorySHA256: String) throws -> LayerStageTensorContentInventory? {
         guard let document, let pin else {

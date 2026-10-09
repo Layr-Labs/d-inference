@@ -38,11 +38,10 @@ public enum QwenResidentStageLoadCheck {
     private static let nativeNames = ["JACCL_RANK", "MLX_RANK", "JACCL_IBV_DEVICES", "MLX_IBV_DEVICES",
         "JACCL_COORDINATOR", "MLX_JACCL_COORDINATOR", "JACCL_RING", "MLX_JACCL_RING"]
 
-    /// `holdSeconds` keeps the loaded stage for that long before releasing it,
-    /// so a second load can be tried on the same Mac while this one is resident.
-    public static func run(modelDirectory: URL, rank: Int, stageCut: Int,
-                           deadlineUptimeNanoseconds: UInt64, holdSeconds: Int = 0) throws -> Receipt {
-        guard (0...240).contains(holdSeconds) else { throw ProbeError("Stage load check holds for 0...240 seconds") }
+    /// The admission this rank's worker would pass on this Mac, with a synthetic
+    /// device matrix and no transport environment.
+    static func admit(modelDirectory: URL, rank: Int, stageCut: Int,
+                      deadlineUptimeNanoseconds: UInt64) throws -> QwenResidentAdmission {
         var environment = ProcessInfo.processInfo.environment
         guard nativeNames.allSatisfy({ environment[$0] == nil }) else {
             throw ProbeError("Stage load check refuses a cluster transport environment; it creates no collective")
@@ -64,7 +63,7 @@ public enum QwenResidentStageLoadCheck {
             })
         let configuration = QwenResidentLoadConfiguration(identity: identity, modelDirectory: modelDirectory,
             rank: rank, stageCut: stageCut, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
-        let admission = try QwenResidentAdmission(configuration: configuration,
+        return try QwenResidentAdmission(configuration: configuration,
             configBytes: configBytes,
             manifestBytes: BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"),
                                                   maximumBytes: 4_194_304),
@@ -72,6 +71,15 @@ public enum QwenResidentStageLoadCheck {
             read: { url, limit in
                 url.path == matrixPath ? matrix : try BoundedProbeInput.data(url, maximumBytes: limit)
             })
+    }
+
+    /// `holdSeconds` keeps the loaded stage for that long before releasing it,
+    /// so a second load can be tried on the same Mac while this one is resident.
+    public static func run(modelDirectory: URL, rank: Int, stageCut: Int,
+                           deadlineUptimeNanoseconds: UInt64, holdSeconds: Int = 0) throws -> Receipt {
+        guard (0...240).contains(holdSeconds) else { throw ProbeError("Stage load check holds for 0...240 seconds") }
+        let admission = try admit(modelDirectory: modelDirectory, rank: rank, stageCut: stageCut,
+                                  deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
         let control = QwenResidentControl(deadline: deadlineUptimeNanoseconds)
         try QwenResidentProcessLease.shared.acquire()
         defer { QwenResidentProcessLease.shared.release() }

@@ -11,8 +11,12 @@ Remote sources with Swift 6 warnings as errors, using at most two compiler jobs.
 It launches local CPU stand-in owners/workers over pipes and local Unix sockets.
 It performs no SSH, network-peer, model, MLX or GPU execution.
 
-Seventeen owner groups run first. The last four cover how an owner ends its
-child and what it leaves behind:
+Eighteen owner groups run first. One of them runs three hundred complete
+sessions, each with its owner started from a dispatch thread as the product
+starts it, and requires the endpoint to report the owner's exit in every one.
+Taking that exit from `Process.waitUntilExit()` lost it in roughly one such
+session in sixty, so a single session cannot show the fault. The last four
+cover how an owner ends its child and what it leaves behind:
 
 - The device journal is written immediately before the child is launched. A
   factory refusal, a child that cannot be run, and a hello that nobody reads

@@ -84,6 +84,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     public let lifetimeDeadline: UInt64
     public let retirement: ClusterWorkerSignalPolicy
     private let process = Process()
+    /// The child's exit as Foundation reports it; see `ClusterProcessExit`.
+    private let childExit = ClusterProcessExit()
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
     private let arrivals = DispatchSemaphore(value: 0)
@@ -158,7 +160,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         try lock.withLock {
             guard !launched else { throw ClusterWorkerOwnerError.invalid("Worker launched twice") }
             launched = true
-            do { try process.run(); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
+            do { try childExit.run(process); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
         DispatchQueue(label: "darkbloom.worker.io.\(rank)").async { self.pump() }
@@ -338,7 +340,13 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             // Charge blocked writes even when POLLOUT never arrives.
             if lock.withLock({ outgoing.first.map { DispatchTime.now().uptimeNanoseconds >= $0.deadline } ?? false }) { fail(.deadline) }
             if !process.isRunning {
-                process.waitUntilExit()
+                // The child is gone; Foundation's exit report follows, usually
+                // within a tenth of a second. Wait for it in bounded steps so
+                // this loop keeps its deadlines even if the report were lost:
+                // waitUntilExit() could sleep here for ever, and the terminal
+                // below, which is what lets the owner clear its journal, would
+                // never be published.
+                guard childExit.wait(untilUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 1_000_000_000) else { continue }
                 if exitObservedAt == nil { exitObservedAt = DispatchTime.now().uptimeNanoseconds }
                 if (stdoutOpen || stderrOpen) && DispatchTime.now().uptimeNanoseconds - exitObservedAt! < 1_000_000_000 { continue }
                 // Child exit is independently observed. Do not wait forever for an

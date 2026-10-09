@@ -33,6 +33,10 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     private var bootstrapBusy = false
     private var nextBootstrapSequence: UInt64 = 0
     private let process = Process()
+    /// The owner's exit as Foundation reports it. The reader waits on this,
+    /// never on `waitUntilExit()`, which can sleep on a dispatch thread long
+    /// after the owner is gone and so withhold the proof of its exit.
+    private let ownerExit = ClusterProcessExit()
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
     private let arrivals = DispatchSemaphore(value: 0)
@@ -147,7 +151,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         let err = diagnostics.fileHandleForReading.fileDescriptor
         guard fcntl(err, F_SETFL, fcntl(err, F_GETFL) | O_NONBLOCK) == 0 else { throw OwnerWire.invalid("Cannot bound SSH diagnostics") }
         nativeEnded.enter(); ownerEnded.enter()
-        do { try process.run() } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
+        do { try ownerExit.run(process) } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
         DispatchQueue(label: "darkbloom.remote-owner.writer").async { self.writeLoop(pipe) }
         DispatchQueue(label: "darkbloom.remote-owner.reader").async { self.readLoop(pipe) }
@@ -271,7 +275,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             }
             let limit = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
+            // The owner has exited or was just sent SIGKILL: its exit report
+            // follows. As before this wait has no deadline of its own.
+            ownerExit.wait()
             lock.withLock { ownerTerminationValue = process.terminationReason == .exit
                 ? .exited(process.terminationStatus) : .signalled(process.terminationStatus) }
             diagnosticCapture.drain(diagnostics.fileHandleForReading.fileDescriptor, until: limit)

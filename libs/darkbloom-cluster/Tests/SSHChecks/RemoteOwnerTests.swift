@@ -21,6 +21,7 @@ func directory() throws -> URL {
         try lease()
         try ssh()
         try normal(owner, worker)
+        try ownerExitIsObservedInEverySession(owner, worker)
         try failure(owner, worker)
         try transportLoss(owner, worker)
         try ownerEOF(owner, worker)
@@ -34,7 +35,7 @@ func directory() throws -> URL {
         try ownerKeepsItsCeilingAfterAReaderError(owner, worker)
         try lifetimeExpiryStillReleases(owner, worker)
         try recovery(worker)
-        print("remote-owner: 17 CPU groups passed")
+        print("remote-owner: 18 CPU groups passed")
     }
     static func codec() throws {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
@@ -263,6 +264,38 @@ func directory() throws -> URL {
             Thread.sleep(forTimeInterval: 0.01)
         }
         try require(size == 0, "Owner journal not released")
+    }
+    /// Once the owner has released its lease and exited, the endpoint must
+    /// report that exit, in every session. It used to take the exit from
+    /// `Process.waitUntilExit()` on its reader's dispatch thread. For an owner
+    /// that was itself started from a dispatch thread, as every product
+    /// caller starts it, that call returned about 70 ms late and in a share of
+    /// sessions slept for seconds or for ever: no exit proof, so a session
+    /// that had been cleaned up completely was reported as not released.
+    /// Started from the main thread the fault does not show at all, and the
+    /// share is small, so one session proves nothing; this many do.
+    static func ownerExitIsObservedInEverySession(_ owner: URL, _ worker: String) throws {
+        let sessions = 300
+        for session in 1...sessions {
+            let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+            let e = try endpointStartedOnADispatchThread(owner, worker, dir, behavior: "normal")
+            _ = try event(e)
+            try e.sendWorkerCommand(.shutdown, requestID: nil, deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+            let observed = e.waitForOwnerReleased(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+            try require(observed && e.ownerTermination == .exited(0),
+                "Session \(session) of \(sessions): owner exit not observed within 5 s (native cleanup \(e.nativeCleanupObserved), lease released \(e.ownerDeviceLeaseReleasedObserved), owner termination \(String(describing: e.ownerTermination)))")
+            try require(journalBytes(dir) == 0, "Session \(session): released owner left a journal")
+        }
+    }
+    final class StartedEndpoint: @unchecked Sendable { var result: Result<ClusterRemoteWorkerEndpoint, any Error>? }
+    static func endpointStartedOnADispatchThread(_ owner: URL, _ worker: String, _ dir: URL, behavior: String) throws -> ClusterRemoteWorkerEndpoint {
+        let started = StartedEndpoint(), done = DispatchSemaphore(value: 0)
+        DispatchQueue(label: "remote-owner-check.start").async {
+            started.result = Result { try endpoint(owner, worker, dir, behavior: behavior) }
+            done.signal()
+        }
+        done.wait()
+        return try started.result!.get()
     }
     static func failure(_ owner: URL, _ worker: String) throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }

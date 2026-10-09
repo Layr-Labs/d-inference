@@ -44,6 +44,8 @@ reviewed; that gate is open.
 
 Pushed: branch `feat/cluster-two-mac-foundation` on `Layr-Labs/d-inference`, draft pull request [1407](https://github.com/Layr-Labs/d-inference/pull/1407), every commit verified. The clone's default push URL stays disabled on purpose; pushes name the destination explicitly. The fork changes are drafts too (table at the end). Nothing is marked ready, nothing has a review request, nothing is merged.
 
+**Two repositories since 2026-10-09.** d-inference #1408 moved all coordinator and backend code to `Layr-Labs/darkbloom-platform`. The coordinator half of this work (the rows above that say Coordinator) is now a draft pull request there, number 6, on branch `feat/cluster-pairs`, from the sibling clone `darkbloom-platform` next to this checkout; it had the repository's refactor pass and a separate independent review, which fixed two defects and left a list of open findings in its description. `763dea5b4` restored `coordinator/` here to master's content, so this branch is provider-side only: `provider-swift/`, `libs/`, the shared wire-contract pages and these handoff files. Coordinator commits before `763dea5b4` remain in this branch's history; do not add new ones. Evidence rows that name coordinator test runs describe that code as it was run here before the move.
+
 ## What only the owner can unblock
 
 Mac B's port has no address. Run `darkbloom cluster` on Mac B and approve the
@@ -82,6 +84,7 @@ provider bytes, so each is a pin decision (D2 in the gap map). All are drafts.
 |---|---|---|
 | mlx | Upstream JACCL fixes (ml-explore/mlx 4443, 4557, 4558), send-frame tail clearing, the progress guard, the advertised GID index, simulated-verbs tests | Draft [Layr-Labs/mlx#33](https://github.com/Layr-Labs/mlx/pull/33), opened 2026-10-08, eleven verified commits. Contains and extends Gaj's draft [Layr-Labs/mlx#26](https://github.com/Layr-Labs/mlx/pull/26). The guard is required for any serving |
 | mlx-c | JACCL bootstrap callback bridge | Gaj's draft [Layr-Labs/mlx-c#14](https://github.com/Layr-Labs/mlx-c/pull/14) (`489e965`, one commit on the pinned `02cf6f4`). Passes a syntax check against the mlx branch above. No caller yet |
+| darkbloom-platform | The coordinator half: member role and acknowledgement, pair lifecycle, formation, owner-scoped routing, owner views | Draft pull request 6 in `Layr-Labs/darkbloom-platform` (internal), 19 verified commits. Off without the operator's catalog. Its description lists what must be decided before the catalog is set anywhere |
 | mlx-swift | Pin mlx and mlx-c to the two rows above and mirror the bridge header | Draft [Layr-Labs/mlx-swift#54](https://github.com/Layr-Labs/mlx-swift/pull/54), opened 2026-10-08 on current main. Contains and extends Gaj's draft [Layr-Labs/mlx-swift#33](https://github.com/Layr-Labs/mlx-swift/pull/33) |
 
 Order: mlx and mlx-c merge, mlx-swift repins to the merged commits, then this

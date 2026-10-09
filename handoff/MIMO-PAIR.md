@@ -1,6 +1,6 @@
 # Registered MiMo V2.6 Flash across two Macs
 
-> Last updated: 2026-10-09 18:05Z (branch `work/mimo`, base `e15f5b891`). Work in progress: the pair has not run.
+> Last updated: 2026-10-09 19:16Z (branch `work/mimo`, base `e15f5b891`). Work in progress: one pair run across the cable has completed (cut 34, short prompt); no repeat, no fault run, no reference yet.
 
 "Mac A" is the M3 Ultra (256 GiB), "Mac B" the M5 Max (128 GiB). Raw logs,
 receipts and gate records are outside the repository in the task's evidence
@@ -14,12 +14,13 @@ layer pipeline neither Mac holds more than about 103 GiB of it.
 
 | Step | State | Evidence (folder `mimo-20261009`) |
 |---|---|---|
-| Admission, ceilings and capability from the real metadata | the eight model-free check runners pass; the runtime unit tests ran once: 127 of 128 passed, and the one failure and one startup-check failure were wrong expectations, corrected and **not re-run** | `unit/pure-3/`, `unit/build5.*` |
-| Stage load and release, rank 1 on Mac B | **passed at cut 40** (26.87 GiB) after four loads the growth guard stopped; **refused at cut 28** by the committed rule when the first pair hold began (72.27 GiB needed, 61.62 free) | `stage-load/B-*` |
-| Stage load and release, rank 0 on Mac A | **not attempted** | |
+| Admission, ceilings and capability from the real metadata | the eight model-free check runners pass on `846d461c8`; runtime unit tests **128 of 128 passed** and startup checks **31 cases passed** on builds 6 and 7 | `unit/pure-4/`, `unit/build6.*`, `unit/build7.*` |
+| Stage load and release, rank 1 on Mac B | **passed at cut 40** (26.87 GiB) after four loads the growth guard stopped; **refused at cut 28** by the committed rule (72.27 GiB needed, 61.62 free); **passed at cut 34** twice (46.56 GiB, builds 6 and 7) | `stage-load/B-*` |
+| Stage load and release, rank 0 on Mac A | **passed at cut 34** twice (109.21 GiB, builds 6 and 7) | `stage-load/A-rank0-cut34-*` |
 | Single-Mac reference | not run; the owner put it after the pair | |
-| Pair across the cable | **not run** | |
+| Pair across the cable | **passed once** at cut 34, pipeline, 27-token prompt, 37 tokens to end of sequence; both ranks' token chains equal; not yet repeated, no reference to compare tokens with; the 4,096-token request was not run (stopped for a restart of both Macs) | `pair/pair-cut34-short-1.*` |
 | One rank ended mid-request | not run | |
+| Worker package XCTest suites | not built, not run (the qualification suite ran 41 tests through its check runner) | `unit/pure-4/qualification.log` |
 
 `STATUS.md` in the evidence folder is the live record: every attempt, the
 binaries on each Mac, what is in flight and the next command.
@@ -166,7 +167,8 @@ not run.
 | `2926d6a57`, `4baffbebb` | wip: stage check with a prefill and decode probe |
 | `80d7edae6` | wip: pair driver, request and tokenizer rows |
 | `f214e9add` | the MiMo section of `DESIGN-resource-gate-v3.md` |
-| `40193382a` | wip: two test expectations corrected |
+| `40193382a` | wip: two test expectations corrected (passed on build 6) |
+| `cddd9fdc2` | pair endpoint takes the model's lifetime bound (MiMo launches were refused) |
 
 ### Shared files other workers also edit
 
@@ -238,6 +240,13 @@ after SIGTERM.
 | When | Rank, cut, Mac | Verify | Load | Probe (512 prefill, 64 decode) | Release |
 |---|---|---|---|---|---|
 | 17:44Z | 1, cut 40, Mac B | 13.6 s | 4.88 s for 26.87 GiB | prefill 2.72 s; decode median 5.19 ms a step (8 layers), first step 231 ms | 920 bytes active, 0 cached, model deallocated, nothing compressed |
+| 18:54Z | 1, cut 34, Mac B (build 6) | 13.5 s | 8.50 s for 46.56 GiB | prefill 0.24 s; decode median 8.39 ms a step (14 layers) | 1,592 bytes active, 0 cached, model deallocated |
+| 18:55Z | 0, cut 34, Mac A (build 6) | 26.6 s | 31.29 s for 109.21 GiB | prefill 4.16 s; decode median 16.15 ms a step (34 layers), first step 376 ms | 3,840 bytes active, 0 cached, model deallocated |
+| 19:11Z | 1, cut 34, Mac B (build 7) | 13.5 s | 8.51 s | prefill 0.23 s; decode median 8.04 ms | 1,592 bytes active, 0 cached |
+| 19:12Z | 0, cut 34, Mac A (build 7) | 26.1 s | 30.73 s | prefill 1.01 s; decode median 16.25 ms | 3,840 bytes active, 0 cached |
+
+Every one of these ran with the committed memory rule recorded and nothing waived,
+residency on, both Macs otherwise quiet (all four lanes held).
 
 The probe drives one stage alone (rank 1 from a constructed residual): it is
 the stage's own cost, not a correctness check. The four earlier loads that the
@@ -245,7 +254,27 @@ guard stopped are in `STATUS.md` and in the gate design.
 
 ## The pair
 
-Not run yet.
+The first run across the cable (2026-10-09 19:13Z, build 7, `pair/pair-cut34-short-1.*`):
+cut 34 from fresh device profiles (Mac A 127.87 GiB admissible, needs 115.24;
+Mac B 59.26, needs 52.58), pipeline mode, prefill schedule one chunk of
+lookahead, committed memory rule enforced on both workers, guarded JACCL over
+RDMA, all four lanes held.
+
+| | |
+|---|---|
+| Request | one user turn, 27 prompt tokens, greedy, up to 64 outputs |
+| Result | completed; 37 tokens, ended on end of sequence; text coherent |
+| Ranks agree | both ranks report the same token chain `05dc5660…` and boundary chain `ae23d6fb…` (the report's own "ranks agree" field says "not recorded" for this model) |
+| Tokens vs a reference | no reference yet |
+| Both ranks ready | 60.5 s after launch (rank 0 verify 26.0 s and load 31.1 s; rank 1 verify 13.5 s and load 8.4 s) |
+| First token | 2.316 s (12 prompt tokens/s at 27 tokens; not a prefill rate worth quoting) |
+| Decode | 21.9 tokens/s; request total 3.98 s |
+| Release | rank 0 3,840 bytes active, rank 1 1,592, 0 cached, wired limit back to 0; both exit status 0; no worker left on either Mac |
+| Wired memory | the driver reports +1.08 GiB on Mac A (other sessions were active there) and +0.02 GiB on Mac B |
+
+The first attempt (18:56Z, build 6) was refused before any worker started:
+the pair endpoint checked a fixed 10...300 s lifetime while the configuration
+admits the model's own 1,800 s. Fixed in `cddd9fdc2`.
 
 ## Single-Mac reference
 
@@ -255,7 +284,7 @@ the owner put it after the pair.
 
 ## What stands between this and serving MiMo on the pair through the product
 
-1. The pair itself has to run and be compared with a single-Mac reference.
+1. The pair has run once; it has to be repeated and compared with a single-Mac reference.
 2. The stages run the product's ordinary-cache text path. The product serves
    MiMo through its continuous-batching adapter with a paged KV pool and the
    MTP assistant; a stage on that adapter needs a residual egress and ingress
@@ -279,9 +308,10 @@ lanes; anything on Mac B needs `lane-b.sh`.
 
 ## Not done
 
-- The two corrected test expectations have not been re-run, and the worker
-  package's XCTest build has not run.
-- Rank 0 has never been loaded; no pair run; no fault run; no reference.
+- The worker package's XCTest build has not run.
+- The pair ran once: no repeat, no 4,096-token request, no second cut, no
+  fault run (one rank ended with SIGTERM), no `stage-sigterm.sh`, no probe
+  without residency, no single-Mac reference.
 - Verifying only the shards a rank reads (each rank still hashes all 53 files).
 - The loader pace that was tried was removed: no dependable effect.
 - Phase split, and the reversed placement that could have one, were not built.

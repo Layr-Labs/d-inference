@@ -44,7 +44,7 @@ Status: **fixed** (commit), **in progress**, **open**, **blocked** (on what).
 | # | Gap | Evidence | Status |
 |---|---|---|---|
 | C1 | The coordinator never sent `cluster_member_accepted`; the provider's negotiation timer then tore the leader down about 10 s after connecting | Real in-process provider session, exact wire bytes | **fixed** `651b08e93`: sent as the last step of registration, only for an accepted member |
-| C2 | `DistributedHTTPResponse.recordTerminal` has no caller, so every streamed completion aborts without a finish frame, usage or `[DONE]` | The caller exists in the research tree (`EngineV2Bridge+Events.swift`) and was dropped in extraction | **in progress** (see F1) |
+| C2 | `DistributedHTTPResponse.recordTerminal` had no caller, so every streamed completion aborted without a finish frame, usage or `[DONE]` | Ported engine and server suites; with the hunk reverted 4 of 10 tests fail | **fixed** `bca3d4c22` (terminal recording), `d8128c80f` (first-token budget, also for non-stream), `d3c68d239` (a refused stream admission answers before headers instead of 200-then-abort) |
 | C3 | Capability reconciliation dropped the registry lock before reading registry-guarded state: a data race on the ordinary single-host path | Reproduced with the race detector | **fixed** `17da399ad` |
 | C4 | A dead follower is waited on forever: remote cleanup completes only on the owner's terminal frame, and reserve and teardown await it unbounded | Integration review, verified by reading | **open** |
 | C5 | The device lease journal is sticky and has no recovery tool: a failed launch, a 500 ms stall at hello, or a lost release handshake blocks every later start until the file is edited by hand | Integration and security reviews, verified by reading | **open**: journal immediately before launch, plus an explicit `cluster recover` |
@@ -56,6 +56,7 @@ Status: **fixed** (commit), **in progress**, **open**, **blocked** (on what).
 | C11 | Quarantined pairs were never released; the machine identity stayed gated until the coordinator restarted | Registry tests on a fake clock | **fixed** `b048897ca`: released once every member has delivered its receipt or left, 40 s after the fixed expiry; a connected member that owes its receipt is never released by time alone |
 | C12 | `Attach` requires TLS on the connection although Caddy terminates it; the load-command guard has no caller; no clock-skew allowance on the 30 s prepare check; `projectFirstToken` returns unbounded | Integration review (latent) | **open** |
 | C13 | No start, stop, join, leave, drain or recover verb; the follower has no live status surface; a quarantined leader is unobservable over HTTP | Integration review | **open**: terminal UI gate |
+| C14 | Still open after the restore: member heartbeats report `draining`; `CoordinatorClient.shutdownAndWait` is absent, so member teardown does not join the transport loop; several early error sites still answer a distributed stream with 200 then an abort (shutting down, duplicate ID, service allowance); the native-pair control is installed before any connection and can only throw (no production caller sets it); coordinator autopilot has no execution-role check and relies on the member reporting not enabled | Swift restore report | **open** |
 
 ## D. Decisions needed
 
@@ -69,7 +70,7 @@ Status: **fixed** (commit), **in progress**, **open**, **blocked** (on what).
 
 | # | Finding | Evidence | Status |
 |---|---|---|---|
-| F1 | The extraction from the research runtime (PR 1226) carried the new files but skipped edits to 14 existing files, and most of the provider tests (27 cluster test files there, 7 here). C2, the unguarded model commands and several member-mode leaks follow from this | `git diff --name-status` of the research PR against its base, compared with this branch against its base | **in progress**: two workers restoring the Go and Swift hunks with the research tests |
+| F1 | The extraction from the research runtime (PR 1226) carried the new files but skipped edits to existing files and most of the provider tests (27 cluster test files there, 7 here). C2, the unguarded model commands and several member-mode leaks follow from this | `git diff --name-status` of the research PR against its base, compared with this branch against its base | **restored**: Go side `4b48612ef`, `45d21f76d`; Swift side `1280540b6`…`6c67c3987` (twelve commits, 21 research test files ported; each fix has a red run with its hunk reverted). Deliberately not restored: the solo provider taking the cluster device gate (it would let a sticky journal block ordinary serving, see C5 and C6), and ending a pair grant on every challenge-evidence clear |
 | F2 | The three research archives (PRs 1227, 1228, 1229; 671 drafts) hold tested or physically exercised drafts for several open items | Read-only survey of each archive | See "Available to lift" below |
 
 ### Available to lift from the research archives

@@ -13,6 +13,12 @@ public enum ClusterDiagnostics {
         await inspect(providerConfiguration: providerConfiguration, doctor: true)
     }
 
+    /// The doctor over a link reading the caller has just taken, so a screen
+    /// that shows both shows one reading.
+    static func doctor(providerConfiguration: URL, localLink: ClusterLinkReadinessReport) async -> ClusterDiagnosticsReport {
+        await inspect(providerConfiguration: providerConfiguration, doctor: true, observedLink: localLink)
+    }
+
     private struct Saved: Sendable {
         let paths: ClusterUserPaths
         let reference: ClusterConfigurationReference?
@@ -21,11 +27,15 @@ public enum ClusterDiagnostics {
         let linkDevice: String?
     }
 
-    private static func inspect(providerConfiguration: URL, doctor: Bool) async -> ClusterDiagnosticsReport {
+    private static func inspect(providerConfiguration: URL, doctor: Bool,
+                                observedLink: ClusterLinkReadinessReport? = nil) async -> ClusterDiagnosticsReport {
         var checks = [ClusterDiagnosticsReport.Check]()
         let operation = doctor ? "doctor" : "status"
         // Only the doctor starts the link tools, so `cluster status` is no slower.
-        let localLink = doctor ? await Task.detached { ClusterLinkReadinessProbe.inspectLocalLink() }.value : nil
+        let localLink: ClusterLinkReadinessReport?
+        if let observedLink { localLink = observedLink } else {
+            localLink = doctor ? await Task.detached { ClusterLinkReadinessProbe.inspectLocalLink() }.value : nil
+        }
         let saved: Saved
         do {
             saved = try await Task.detached {

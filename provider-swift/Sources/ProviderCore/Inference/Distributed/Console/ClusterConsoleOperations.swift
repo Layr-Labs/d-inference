@@ -47,14 +47,14 @@ public struct ClusterConsoleOperations: Sendable {
     public var inspectLink: @Sendable () -> ClusterLinkReadinessReport
     /// `cluster status` alone, while a session is starting, serving or stopping.
     public var observeSession: @Sendable () -> ClusterConsoleSessionObservation
-    /// `cluster link --fix`. Blocks while the person answers the macOS prompt.
-    public var fixLink: @Sendable (_ device: String?) -> ClusterConsoleActionResult
-    /// The same fix up to where the prompt would appear, and no further.
-    public var previewFixLink: @Sendable (_ device: String?) -> ClusterConsoleActionResult
+    /// `cluster link --fix`. Blocks while the person answers the macOS
+    /// prompt; a dry run asks nothing and lists what an approval would run.
+    public var fixLink: @Sendable (ClusterConsoleLinkFix) -> ClusterConsoleActionResult
     /// `cluster recover`.
     public var recoverJournal: @Sendable () -> ClusterConsoleActionResult
-    /// `cluster configure` on the candidate inputs.
-    public var approveSetup: @Sendable (ClusterConsoleCandidate) -> ClusterConsoleActionResult
+    /// `cluster configure` on the candidate inputs, refused unless they are
+    /// still the setup whose canonical digest is `expectedSHA256`.
+    public var approveSetup: @Sendable (ClusterConsoleCandidate, _ expectedSHA256: String) -> ClusterConsoleActionResult
     public var exportDiagnostics: @Sendable (ClusterDiagnosticExport.Input) -> ClusterConsoleActionResult
     /// Starts the session process and reports its output and its end through `events`.
     public var launchSession: @Sendable (_ events: @escaping @Sendable (ClusterConsoleSessionEvent) -> Void) throws -> any ClusterConsoleSessionHandle
@@ -62,14 +62,13 @@ public struct ClusterConsoleOperations: Sendable {
     public init(snapshot: @escaping @Sendable () -> ClusterConsoleSnapshot,
                 inspectLink: @escaping @Sendable () -> ClusterLinkReadinessReport,
                 observeSession: @escaping @Sendable () -> ClusterConsoleSessionObservation,
-                fixLink: @escaping @Sendable (String?) -> ClusterConsoleActionResult,
-                previewFixLink: @escaping @Sendable (String?) -> ClusterConsoleActionResult,
+                fixLink: @escaping @Sendable (ClusterConsoleLinkFix) -> ClusterConsoleActionResult,
                 recoverJournal: @escaping @Sendable () -> ClusterConsoleActionResult,
-                approveSetup: @escaping @Sendable (ClusterConsoleCandidate) -> ClusterConsoleActionResult,
+                approveSetup: @escaping @Sendable (ClusterConsoleCandidate, String) -> ClusterConsoleActionResult,
                 exportDiagnostics: @escaping @Sendable (ClusterDiagnosticExport.Input) -> ClusterConsoleActionResult,
                 launchSession: @escaping @Sendable (@escaping @Sendable (ClusterConsoleSessionEvent) -> Void) throws -> any ClusterConsoleSessionHandle) {
         self.snapshot = snapshot; self.inspectLink = inspectLink; self.observeSession = observeSession
-        self.fixLink = fixLink; self.previewFixLink = previewFixLink; self.recoverJournal = recoverJournal
+        self.fixLink = fixLink; self.recoverJournal = recoverJournal
         self.approveSetup = approveSetup; self.exportDiagnostics = exportDiagnostics; self.launchSession = launchSession
     }
 }

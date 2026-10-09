@@ -20,13 +20,22 @@ public final class ClusterConsoleInstanceLock: @unchecked Sendable {
     private init(descriptor: Int32) { self.descriptor = descriptor }
 
     public static func acquire() throws -> ClusterConsoleInstanceLock {
-        // The per-user directory macOS keeps for this user alone; not an environment variable.
+        try acquire(directory: userTemporaryDirectory())
+    }
+
+    /// The directory macOS keeps for this user alone, by its real path. It is
+    /// not taken from an environment variable.
+    static func userTemporaryDirectory() throws -> URL {
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
         guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, buffer.count) > 0 else {
-            throw ClusterConfigurationError.invalid("Cannot find this user's temporary directory for the console lock")
+            throw ClusterConfigurationError.invalid("Cannot find this user's temporary directory")
         }
-        let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-        return try acquire(directory: URL(fileURLWithPath: path, isDirectory: true))
+        // The real path: the cluster file policy refuses a link in any component.
+        guard let resolved = realpath(buffer, nil) else {
+            throw ClusterConfigurationError.invalid("Cannot resolve this user's temporary directory")
+        }
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
     }
 
     static func acquire(directory: URL) throws -> ClusterConsoleInstanceLock {

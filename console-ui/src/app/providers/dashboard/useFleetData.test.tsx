@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useFleetData, type FleetData } from "./useFleetData";
 import { makeProvider } from "./testFixtures";
 
+const ACCOUNT_A_AUTHORIZATION = "Bearer token-a";
+
 const auth = vi.hoisted(() => ({
   ready: true, authenticated: true,
   unstableGetter: false,
@@ -34,6 +36,62 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("account-scoped fleet loading", () => {
+  it.each(["headers", "body"])("continues visible fleet polls without overlapping pending summary %s", async (pendingPart) => {
+    vi.useFakeTimers();
+    const pendingSummary = deferred<Response>();
+    const pendingBody = deferred<unknown>();
+    let providerLoads = 0;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("summary")) return pendingPart === "headers"
+        ? pendingSummary.promise
+        : Promise.resolve({ ok: true, json: () => pendingBody.promise } as Response);
+      return Promise.resolve(response(fleet(`machine-${++providerLoads}`)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useFleetData());
+    await act(async () => {});
+    expect(result.current.loading).toBe(false);
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.providersResp?.providers[0].id).toBe("machine-1");
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    expect(result.current.providersResp?.providers[0].id).toBe("machine-4");
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("summary"))).toHaveLength(1);
+    expect(result.current.summary).toBeNull();
+    await act(async () => {
+      pendingSummary.resolve(response({ account_id: "account-a" }));
+      pendingBody.resolve({ account_id: "account-a" });
+    });
+    expect(result.current.summary?.account_id).toBe("account-a");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("summary"))).toHaveLength(2);
+  });
+
+  it("aborts pending summary parsing on account change and unmount without accepting stale data", async () => {
+    const oldBody = deferred<unknown>();
+    const newBody = deferred<unknown>();
+    const jsonA = vi.fn(() => oldBody.promise);
+    const jsonB = vi.fn(() => newBody.promise);
+    const fetchMock = vi.fn((url: string, options: RequestInit) => {
+      const first = (options.headers as { Authorization: string }).Authorization === ACCOUNT_A_AUTHORIZATION;
+      if (url.endsWith("summary")) return Promise.resolve({ ok: true, json: first ? jsonA : jsonB } as unknown as Response);
+      return Promise.resolve(response(fleet(first ? "machine-a" : "machine-b")));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, rerender, unmount } = renderHook(() => useFleetData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(jsonA).toHaveBeenCalledOnce();
+    const oldSignal = fetchMock.mock.calls.find(([url]) => url.endsWith("summary"))![1].signal;
+    auth.user = { id: "account-b" }; auth.getAccessToken.mockResolvedValue("token-b"); rerender();
+    await waitFor(() => expect(result.current.providersResp?.providers[0].id).toBe("machine-b"));
+    expect(oldSignal?.aborted).toBe(true);
+    await act(async () => oldBody.resolve({ account_id: "account-a" }));
+    expect(result.current.summary).toBeNull();
+    const newSignal = fetchMock.mock.calls.filter(([url]) => url.endsWith("summary"))[1][1].signal;
+    unmount();
+    expect(newSignal?.aborted).toBe(true);
+    await act(async () => newBody.resolve({ account_id: "account-b" }));
+  });
+
   it("does not restart account loading when the token getter changes every render", async () => {
     auth.unstableGetter = true;
     const pending = deferred<Response>();
@@ -76,7 +134,7 @@ describe("account-scoped fleet loading", () => {
   it("clears fleet and summary on the first account-switch render and loads the new account", async () => {
     const nextFleet = deferred<Response>();
     const fetchMock = vi.fn((url: string, options: RequestInit) => {
-      const first = (options.headers as { Authorization: string }).Authorization === "Bearer token-a";
+      const first = (options.headers as { Authorization: string }).Authorization === ACCOUNT_A_AUTHORIZATION;
       if (url.endsWith("summary")) return Promise.resolve(response({ account_id: first ? "account-a" : "account-b" }));
       return first ? Promise.resolve(response(fleet("machine-a"))) : nextFleet.promise;
     });
@@ -86,8 +144,10 @@ describe("account-scoped fleet loading", () => {
     await waitFor(() => expect(result.current.summary?.account_id).toBe("account-a"));
     renders.length = 0;
     auth.user = { id: "account-b" }; auth.getAccessToken.mockResolvedValue("token-b"); rerender();
+    expect(renders[0]).toMatchObject({ providersResp: null, summary: null, loading: true });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
-    expect(renders.every((data) => data.providersResp === null && data.summary === null && data.loading)).toBe(true);
+    expect(renders.every((data) => data.providersResp === null && data.loading
+      && (data.summary === null || data.summary.account_id === "account-b"))).toBe(true);
     await act(async () => nextFleet.resolve(response(fleet("machine-b"))));
     await waitFor(() => expect(result.current.providersResp?.providers[0].id).toBe("machine-b"));
     expect(result.current.summary?.account_id).toBe("account-b");
@@ -119,7 +179,7 @@ describe("account-scoped fleet loading", () => {
     const oldBody = deferred<ReturnType<typeof fleet>>(); const json = vi.fn(() => oldBody.promise);
     vi.stubGlobal("fetch", vi.fn((url: string, options: RequestInit) => {
       if (url.endsWith("summary")) return summaryFailure();
-      return Promise.resolve((options.headers as { Authorization: string }).Authorization === "Bearer token-a"
+      return Promise.resolve((options.headers as { Authorization: string }).Authorization === ACCOUNT_A_AUTHORIZATION
         ? { ok: true, json } as unknown as Response : response(fleet("machine-b")));
     }));
     const { result, rerender } = renderHook(() => useFleetData());

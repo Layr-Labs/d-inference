@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -3237,6 +3237,17 @@ make ui-build                    # next build
 cd admin-ui && npm test && npm run lint && npm run build
 make landing                    # standalone install, lint, build and HTTP route tests
 ```
+
+The provider dashboard HTTP regression in
+`console-ui/src/app/providers/dashboard/useFleetData.http.test.tsx` starts a
+loopback-only server with synthetic fleet data. It renders `ProviderDashboard`
+with the real fleet hook and native fetch, holding summary headers or the JSON
+body open while verifying that machines load and the Refresh button remains
+usable. Authentication is a test fixture; no coordinator or real account is
+contacted. The companion hook tests exercise visible polling, bounded summary
+requests, account changes and cancellation. Run these two files with
+`npx vitest run --maxWorkers=2 src/app/providers/dashboard/useFleetData.http.test.tsx src/app/providers/dashboard/useFleetData.test.tsx`
+from `console-ui/`; the HTTP cases require permission to listen on `127.0.0.1`.
 
 The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
 lint, the production build (including TypeScript checks), and `npm test`.

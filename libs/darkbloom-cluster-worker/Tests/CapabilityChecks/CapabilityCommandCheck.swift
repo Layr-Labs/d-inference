@@ -40,6 +40,45 @@ import Foundation
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(large)) == large,
                     "The 27B capability does not round-trip within the byte bound")
             }
+            // The registered Gemma 4 26B artifacts: a second adapter, one row per catalog entry.
+            func gemma(_ configuration: String, _ manifest: String) throws -> ClusterRuntimeCapability {
+                try Gemma4ResidentCapabilityMetadata.describe(
+                    configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-\(configuration).configuration.json")),
+                    manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-\(manifest).manifest.json")),
+                    runtimeBinarySHA256: binary)
+            }
+            try checks.yes("registered-gemma4-rows-describe-their-own-adapter-profile-and-seven-plans") {
+                var plans: [[String]] = []
+                for (configuration, manifest, model) in [("gemma4-26b-qat-4bit", "gemma4-26b-qat-4bit", "registered_gemma4_26b_qat_4bit"),
+                    ("gemma4-26b", "gemma4-26b", "registered_gemma4_26b"), ("gemma4-26b", "gemma4-26b-8bit", "registered_gemma4_26b_8bit")] {
+                    let value = try gemma(configuration, manifest)
+                    try capabilityCheck(value.adapterID == ClusterRuntimeAdapter.gemma4LayerStage.rawValue
+                        && value.runtimeModelID == model && value.profile.id == model + "_greedy_generation_v1"
+                        && value.profile.vocabularySize == 262_144 && value.profile.maximumPromptTokens == 8192
+                        && value.arithmeticPolicyID == "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
+                        && value.supportedGenerationModes == [.pipeline]
+                        && value.supportedPrefillSchedules == [.serial, .oneChunkLookahead]
+                        && value.partitions.map { $0.stages[0].sourceLayerEnd } == [6, 8, 10, 12, 15, 18, 24]
+                        && value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 30 },
+                        "The Gemma capability differs from its resident row: \(model)")
+                    try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(value)) == value,
+                        "The Gemma capability does not round-trip within the byte bound")
+                    plans.append(value.partitions.map(\.planSHA256))
+                }
+                // One artifact under two catalog entries plans identically; the other artifact does not.
+                try capabilityCheck(plans[1] == plans[2] && Set(plans[0]).isDisjoint(with: plans[1]),
+                    "Gemma plans do not follow the artifact")
+            }
+            try checks.no("gemma-manifest-of-the-other-artifact") { _ = try gemma("gemma4-26b", "gemma4-26b-qat-4bit") }
+            try checks.no("gemma-configuration-through-the-qwen-adapter") {
+                _ = try QwenResidentCapabilityMetadata.describe(
+                    configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-gemma4-26b.configuration.json")),
+                    manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-gemma4-26b.manifest.json")),
+                    runtimeBinarySHA256: binary)
+            }
+            try checks.no("qwen-configuration-through-the-gemma-adapter") {
+                _ = try Gemma4ResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: binary)
+            }
             try checks.yes("binary-binding-remains-separate-from-model-identities") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
                 try capabilityCheck(value.runtimeBinarySHA256 != golden.runtimeBinarySHA256 && value.partitions == golden.partitions

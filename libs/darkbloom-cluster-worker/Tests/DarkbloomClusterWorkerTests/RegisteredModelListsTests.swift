@@ -14,7 +14,8 @@ import XCTest
 /// tools' usage texts are read from the catalog and are checked as that.
 final class RegisteredModelListsTests: XCTestCase {
     func testEveryRegisteredModelIsInEveryClosedList() throws {
-        let runtime = QwenResidentCapabilityMetadata.registeredModels
+        // Every family's closed rows, the Qwen catalog first.
+        let runtime = RegisteredResidentModels.all
         let identifiers = runtime.map(\.runtimeModelID)
         XCTAssertGreaterThanOrEqual(runtime.count, 3)
         XCTAssertEqual(Set(identifiers).count, identifiers.count, "a runtime model ID is registered twice")
@@ -34,7 +35,7 @@ final class RegisteredModelListsTests: XCTestCase {
         XCTAssertEqual(Set(PromptTokenizer.registeredManifests.map(\.sha256)).count, identifiers.count)
 
         let common = Dictionary(uniqueKeysWithValues: PairConfiguration.arithmeticEnvironment.map { ($0.0, $0.1) })
-        let usage = QwenResidentCapabilityMetadata.registeredCutsUsage
+        let usage = RegisteredResidentModels.registeredCutsUsage
         for model in runtime {
             let name = model.runtimeModelID
             let request = try XCTUnwrap(QualificationRequest.registeredModel(name), "\(name) has no qualification request row")
@@ -74,7 +75,7 @@ final class RegisteredModelListsTests: XCTestCase {
             .deletingLastPathComponent().appendingPathComponent("Sources")
         for path in ["StageLoadCheck/StageLoadCheck.swift", "ReferenceCheck/ReferenceCheck.swift"] {
             let text = try String(contentsOf: sources.appendingPathComponent(path), encoding: .utf8)
-            XCTAssertTrue(text.contains("QwenResidentCapabilityMetadata.registeredCutsUsage"), path)
+            XCTAssertTrue(text.contains("RegisteredResidentModels.registeredCutsUsage"), path)
             XCTAssertNil(text.range(of: #"\d+\|\d+\|\d+"#, options: .regularExpression), "\(path) spells cuts out itself")
         }
     }

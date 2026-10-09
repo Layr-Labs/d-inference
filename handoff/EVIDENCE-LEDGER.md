@@ -186,3 +186,20 @@ and `merged/after-link-durable-20261009T084434Z` in the task's evidence folder.
 | The branch with the gate's second version, stage-transfer slices 3, 4 and 6 and the installed path's mode selection | `895aece69`, then the test-only `12250136a` | Library tests 102 in 14 suites; worker package tests; the full provider suite, native build system: 4,548 tests in 623 suites, failing only master's five environment tests; 18 check runners at `895aece69`, the console's after its source list and fixture were brought up to date in `12250136a` (11,689 expectations), and the worker startup checks 15 of 15 against the worker built at that head. Logs: `merged/after-three-branches-fixed-20261009T142712Z`, `merged/provider-native-after-three-20261009T143239Z` | Three branches met here: two text conflicts and one renamed type were resolved by hand. No pair run |
 | The new `darkbloom` behaves on both Macs without privileges | `85af189f8` build | Mac A: link ready, `cluster --dry-run` opens no prompt. Mac B: link reports the recorded address missing and names the command; `cluster --dry-run` prints fourteen commands and changes nothing | Nothing behind the approval has run |
 
+
+## Registered 27B across both Macs (2026-10-09)
+
+Registered Qwen3.8 27B 4-bit, rank 0 on Mac A (M3 Ultra), rank 1 on Mac B
+(M5 Max), `bin/phase` from `31c268e09` with the nested MLX at the fork head,
+driven by `pair-measure.sh 27b all` (exit 0). Level: model, physical. Run
+folder `pair-20261009T154826Z/27b`. The provider's own `start --distributed`
+path and the coordinator were not involved. Figures: `QWEN27B-PAIR.md`.
+
+| Claim | Evidence | Limits |
+|---|---|---|
+| The 27B generates across both Macs in pipeline, compact pipeline and phase split | Recorded runs at 1,024 and 8,192 prompt tokens: 128 tokens, ranks agree, in each mode | Cut 16 only for the recorded runs |
+| The pair's tokens equal each Mac's single-Mac reference | Twelve comparisons, all `tokensEqualLogitsDiffer`; none `diverged` | Logits differ because the stages run on different chips; the numerics policy for mixed chips is still an open decision |
+| Compact framing changes nothing | Pipeline against compact pipeline `exact` at both sizes | — |
+| The pair reaches the first token sooner than either Mac alone on long prompts | Medians at 8,192 tokens: pair 9.2 s, Mac B alone 13.9 s, Mac A alone 26.7 s; at 4,096: 4.3 s, 6.7 s, 12.9 s | Level with Mac B alone at 1,024 tokens. Mac B's alone figure depends on how warm it is |
+| Decode is not faster on the pair | 24 to 28 tok/s on the pair and on Mac B alone; 29 to 31 on Mac A alone | The mirrored rank order, which would decode on Mac A, was not run |
+| A failed hand-off fails the request and leaves nothing behind | Four fault runs; both ranks exited, the driver counted no process left on either Mac | Faults at 1,024 tokens only |

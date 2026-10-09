@@ -14,12 +14,12 @@ reports are outside the repository in the task's evidence folder
 | Admission, capability, worker arguments | **Done** | Unit level, from the artifact's real `config.json` and `manifest.json` |
 | Per-Mac stage load and release | **Done** | Cuts 12, 16, 20, both ranks, both Macs; equal storage commitments |
 | Single-Mac reference | **Done** | 30, 4,096 and 8,192 prompt tokens on both Macs, cuts 16 and 20 |
-| Two-Mac run | **Not run** | Mac B's Thunderbolt port has no IPv4 address of its own, so JACCL refuses its device. The pair driver's preflight passes; three launches stopped before any model was loaded |
-| Fault with both stages loaded | **Not run** | Needs the two-Mac run |
+| Two-Mac run | **Done 2026-10-09** | All three generation modes across the cable at cut 16, prompts of 1,024, 4,096 and 8,192 tokens; cut sweep 12, 16, 20, 24. See "The pair: run on 2026-10-09" |
+| Fault with both stages loaded | **Done 2026-10-09** | Four hand-off faults at cut 16; each failed its request, no process left on either Mac |
 
-No pair prefill or decode figure exists for the 27B. The single-Mac figures
-below are measured; the pair figures under "What the pair should do" are
-arithmetic from them and are labelled as such.
+The pair figures under "The pair: run on 2026-10-09" are measured. The figures
+under "What the pair should do" are the earlier arithmetic and are kept as the
+prediction they were.
 
 ## Artifact
 
@@ -137,7 +137,80 @@ Mac A at cut 20 is one run; the same request decoded at 28.5–28.7 at cut 16.
   and 2.6–2.7 times at 8,192. Decode is the same on both, 27–30 tok/s; the
   9B's faster decode on Mac B does not carry over.
 
-## The pair: not run, and why
+## The pair: run on 2026-10-09
+
+Rank 0 on Mac A (M3 Ultra, 256 GB), rank 1 on Mac B (M5 Max, 128 GB), one
+Thunderbolt 5 cable, guarded JACCL, `bin/phase` built from `31c268e09` with the
+nested MLX at the fork head, identical on both Macs. Driven by
+`pair-measure.sh 27b all`. Level: model, physical. Run folder
+`pair-20261009T154826Z/27b`. The provider's `start --distributed` path and the
+coordinator were not involved.
+
+Each row is the median of three requests after one warm-up, 128 output tokens.
+Single-Mac rows were measured in the same programme; Mac B's alone figures are
+from the same lane hold as the pair rows beside them.
+
+| Prompt | Configuration | First token | Prefill | Decode | Total |
+|---|---|---|---|---|---|
+| 1,024 | Mac A alone | 3.22 s | 318 tok/s | 31.3 tok/s | 7.28 s |
+| 1,024 | Mac B alone | 1.29 s | 795 tok/s | 28.0 tok/s | 5.81 s |
+| 1,024 | Pair, pipeline | 1.28 s | 799 tok/s | 26.6 tok/s | 6.09 s |
+| 1,024 | Pair, compact pipeline | 1.30 s | 786 tok/s | 26.2 tok/s | 6.29 s |
+| 1,024 | Pair, phase split | 1.32 s | 773 tok/s | 27.5 tok/s | 6.07 s |
+| 4,096 | Mac A alone | 12.93 s | 317 tok/s | 29.4 tok/s | 17.26 s |
+| 4,096 | Mac B alone | 6.72 s | 610 tok/s | 26.1 tok/s | 11.73 s |
+| 4,096 | Pair, pipeline | 4.34 s | 943 tok/s | 26.6 tok/s | 9.19 s |
+| 4,096 | Pair, compact pipeline | 4.16 s | 984 tok/s | 26.9 tok/s | 8.90 s |
+| 4,096 | Pair, phase split | 4.44 s | 922 tok/s | 27.0 tok/s | 9.27 s |
+| 8,192 | Mac A alone | 26.71 s | 307 tok/s | 29.1 tok/s | 31.05 s |
+| 8,192 | Mac B alone | 13.91 s | 589 tok/s | 24.2 tok/s | 19.16 s |
+| 8,192 | Pair, pipeline | 9.23 s | 888 tok/s | 25.5 tok/s | 14.27 s |
+| 8,192 | Pair, compact pipeline | 10.03 s | 817 tok/s | 25.9 tok/s | 14.95 s |
+| 8,192 | Pair, phase split | 10.07 s | 814 tok/s | 26.1 tok/s | 15.06 s |
+
+Cut sweep, pure pipeline with lookahead, median prefill rate:
+
+| Cut | 4,096 tokens | 8,192 tokens |
+|---|---|---|
+| 12 | 835 tok/s | 840 tok/s |
+| 16 | 939 tok/s | 910 tok/s |
+| 20 | 904 tok/s | 901 tok/s |
+| 24 | 759 tok/s | 767 tok/s |
+
+What the run shows:
+
+- The pair is faster to first token than either Mac alone at 4,096 and 8,192
+  prompt tokens, and level with Mac B alone at 1,024.
+- Decode is not faster on the pair. Mac A alone decodes fastest (29 to 31
+  tok/s); the pair and Mac B alone are at 24 to 28.
+- Mac B's rate falls across back-to-back requests (alone at 8,192: 791, 648,
+  589, 521 tok/s). Mac A's does not. Cuts 12 and 16 drift for that reason;
+  cuts 20 and 24, where Mac A is the limiting stage, are flat. The best cut
+  lies between 16 and 20, where the model's cut list has no entry.
+- Mac A is the slower prefill device and the faster decode device. The fixed
+  rank order decodes on Mac B under phase split. The mirrored order (Mac B
+  rank 0 with layers 0 to 47, Mac A rank 1) has not been run.
+- Phase split hand-off: 55 MB in 33 ms at 1,024 tokens, 106 MB in 48 ms at
+  4,096, 173 MB in 74 ms at 8,192, 32 segments each.
+
+Recorded runs (1,024 and 8,192 tokens, all three modes): 128 tokens, ranks
+agree. Against each Mac's own single-Mac reference at cut 16 every comparison is
+`tokensEqualLogitsDiffer`: the two stages run on different chips. Compact
+pipeline against pipeline is `exact` at both sizes. Phase split against
+pipeline is `exact` at 1,024 and `tokensEqualLogitsDiffer` at 8,192. Nothing
+`diverged`.
+
+Hand-off faults at cut 16 (a flipped bit, a hand-off past its limit, the
+adopting rank ended, the sending rank ended): each request failed, both ranks
+exited, and the driver counted no process left on either Mac.
+
+Conditions to read the figures with: the cut 12 and cut 16 blocks of the
+8,192-token sweep overlapped a 19 GB disk copy on Mac A (no GPU work); the
+`modes` step measured cut 16 again in a clean hold. Between timed holds one
+waiting compile was given a turn, so Mac B's starting temperature differs
+between holds.
+
+## The pair before the link was durable (2026-10-08)
 
 `darkbloom cluster link` on Mac B reports `portBridgedWithoutAddress`: the
 active Thunderbolt port is a member of the bridge with no IPv4 address of its

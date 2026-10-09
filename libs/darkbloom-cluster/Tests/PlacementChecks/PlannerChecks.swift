@@ -385,9 +385,13 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
     // Sustained and rested rates can choose different cuts; both are reported.
     let drifting = measured(prefill: 900, decode: 28, sustainedPrefill: 600)
     let pair = [devices[0], try SyntheticMac.idle(128).device("fast", speed: drifting)]
-    let sustained = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: policy)
-    var restedPolicy = policy; restedPolicy.regime = .rested
-    let rested = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: restedPolicy)
+    var sustainedPolicy = policy; sustainedPolicy.regime = .sustained
+    let sustained = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: sustainedPolicy)
+    let rested = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: policy)
+    checks.require("rested rates are the default and the output says which rates the placement is the best for",
+        ClusterPlacementPolicy().regime == .rested && rested.regime == .rested
+            && ClusterPlacementExplanation.describe(rested, devices: pair, layout: big).contains { $0.contains("best for rested rates, the default") }
+            && ClusterPlacementExplanation.describe(sustained, devices: pair, layout: big).contains { $0.contains("best for sustained rates, as asked") })
     checks.require("the rested rates choose cut 16 and the sustained ones a later cut",
         rested.chosen?.cut == 16 && (sustained.chosen?.cut ?? 0) > 16 && sustained.chosenForOtherRegime?.cut == 16)
     checks.require("a device with no sustained figure is predicted from its rested one, and the prediction says so",

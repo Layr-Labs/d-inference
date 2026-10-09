@@ -20,7 +20,7 @@ public enum ClusterPlacementFlow {
         public var speedMeasurements: [URL] = []
         public var promptTokens: Int?
         public var outputTokens: Int?
-        public var regime = ClusterPlacementPolicy.Regime.sustained
+        public var regime = ClusterPlacementPolicy.Regime.rested
         /// A new directory for the two setups and the plan, created owner-only.
         public var output: URL
         public init(pairDescription: URL, capability: URL, capabilitySHA256: String, localMemberID: String,
@@ -46,7 +46,7 @@ public enum ClusterPlacementFlow {
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
-                              regime: ClusterPlacementPolicy.Regime = .sustained) throws
+                              regime: ClusterPlacementPolicy.Regime = .rested) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         guard let local = description.members.first(where: { $0.id == localMemberID }),
               let peer = description.members.first(where: { $0.id != localMemberID }) else {

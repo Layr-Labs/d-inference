@@ -18,7 +18,7 @@ public enum ClusterPlacementTool {
           darkbloom-cluster-plan plan (--model-dir DIR | --layout FILE)
                                       [--local LABEL] --peer LABEL=PROFILE.json [--peer LABEL=PROFILE.json ...]
                                       [--speed MEASUREMENT.json ...] [--index INDEX.json ...] [--link LINK.json]
-                                      [--prompt-tokens N] [--output-tokens N] [--regime sustained|rested]
+                                      [--prompt-tokens N] [--output-tokens N] [--regime rested|sustained (default rested)]
                                       [--modes MODE,MODE] [--alternatives N] [--json]
               How the model is divided between the devices, and why. `--local` samples this Mac
               and names it LABEL; every other device is a profile file made by `device --json`

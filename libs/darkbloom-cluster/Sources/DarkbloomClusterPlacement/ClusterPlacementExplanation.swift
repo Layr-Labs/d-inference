@@ -155,6 +155,9 @@ public enum ClusterPlacementExplanation {
             } else {
                 lines.append("  The speeds are measured on each Mac; the split of time between ranges assumes every layer of one kind costs the same.")
             }
+            lines.append(result.regime == .rested
+                ? "  The placement is the best for rested rates, the default: a Mac's settled rate measured alone understates what it sustains inside a placement, so sustained rates are an option (sustained) and not the basis."
+                : "  The placement is the best for sustained rates, as asked. A Mac's settled rate measured alone understates what it sustains inside a placement, so this can move the cut too far; the default is rested.")
             lines.append("  Link and framing costs: " + link.provenance + ".")
             lines.append("  This is a plan, not an admission. The load gate on each Mac decides when it loads, on what that Mac has then; "
                 + "the plan and the gate use one rule, so a rank that fits here is refused there only if its memory has changed.")

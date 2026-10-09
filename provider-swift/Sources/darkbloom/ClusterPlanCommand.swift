@@ -31,8 +31,8 @@ extension Cluster {
         var promptTokens: Int?
         @Option(name: .customLong("output-tokens"), help: "Output length of the request to optimise; default the model's largest.")
         var outputTokens: Int?
-        @Flag(help: "Optimise the rested rates instead of the sustained ones.")
-        var rested = false
+        @Flag(help: "Optimise each Mac's settled rate instead of its rested one. A settled rate measured alone understates what a Mac sustains inside a placement, so the default is rested.")
+        var sustained = false
         @Option(help: "Absolute path of a directory to create for the two setups.")
         var output: String
 
@@ -49,7 +49,7 @@ extension Cluster {
                 output: URL(fileURLWithPath: output, isDirectory: true))
             inputs.speedMeasurements = speed.map { URL(fileURLWithPath: $0) }
             inputs.promptTokens = promptTokens; inputs.outputTokens = outputTokens
-            inputs.regime = rested ? .rested : .sustained
+            inputs.regime = sustained ? .sustained : .rested
             let outcome = try ClusterPlacementFlow.run(inputs, deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000)
             for line in outcome.lines { print(line) }
             if outcome.setup == nil { throw ExitCode(2) }

@@ -197,9 +197,12 @@ alone, prefill tokens per second at a stated prompt length and decode tokens
 per second, each in two states: **rested** (the first request on an idle Mac)
 and **sustained** (what repeated requests settle at). A range's time is its
 share of the layer cost over that rate. The policy says which state the
-ranking optimises. The default is sustained, because serving is steady state;
-both predictions are always printed, and the plan the other state would have
-chosen is named when it differs.
+ranking optimises. The default is rested until the refinement below exists:
+measured on this pair, a Mac's settled rate taken alone understates what it
+sustains inside a placement by 15 to 22 %, and a plan made from it moves the
+cut too far. Sustained is an option. Both predictions are always printed, the
+plan the other state would have chosen is named when it differs, and the
+output says which state the placement is the best for.
 
 ### The probe, as an interface
 

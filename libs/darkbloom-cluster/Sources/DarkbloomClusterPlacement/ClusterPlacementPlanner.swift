@@ -17,9 +17,12 @@ public struct ClusterPlacementPolicy: Sendable {
     /// The reference request. Nil means the model profile's largest.
     public var promptTokens: Int?
     public var outputTokens: Int?
-    /// Which of a device's two measured rates the ranking uses. Serving is
-    /// steady state, so the default is the settled one.
-    public var regime: Regime = .sustained
+    /// Which of a device's two measured rates the ranking uses. Rested is the
+    /// default until the running pair can refine a plan from its own stage
+    /// times: a device's settled rate alone understates what it sustains
+    /// inside a placement (by 15 to 22 % for one Mac of the pair this was
+    /// measured on), and a plan made from it moves the cut too far.
+    public var regime: Regime = .rested
     /// Nil means every mode and schedule the layout lists.
     public var modes: [ClusterGenerationMode]?
     public var schedules: [ClusterPrefillSchedule]?

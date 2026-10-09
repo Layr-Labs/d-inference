@@ -11,6 +11,7 @@ no submodule pin changes.
 |---|---|
 | `darkbloom-cluster-worker` | One rank of a two-Mac resident session. Launched by `darkbloom cluster worker-owner`, never by hand in serving. |
 | `darkbloom-cluster-collective-check` | Both ranks run it with the same arguments. It initializes the strict JACCL backend and verifies reductions and point-to-point transfers byte for byte. No model, no weights. |
+| `darkbloom-cluster-stage-check` | One Mac, one rank, the real artifact, no collective. Runs the verified loader for that rank's layer range, releases it, and reports memory before, loaded and after. |
 
 `Sources/DarkbloomClusterWorker`: `WorkerMain.swift` is the entry point.
 `Startup/` parses startup and bootstrap arguments; `Capabilities/` serves
@@ -52,6 +53,24 @@ swift build --package-path libs/darkbloom-cluster-worker --build-tests \
 swift test --package-path libs/darkbloom-cluster-worker --skip-build \
   --triple arm64-apple-macosx26.2
 ```
+
+## Per-Mac stage check
+
+Run on each Mac, for each rank it may serve, before any two-Mac attempt. The
+arithmetic environment is the worker's and must be set exactly:
+
+```sh
+env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1 \
+  darkbloom-cluster-stage-check --model-dir /ABS/MODEL --rank 1 --stage-cut 4
+```
+
+It passes the same admission and host resource gates as the worker, hashes the
+artifact, materializes only that rank's stage, then releases it. The JSON
+receipt carries the verified aggregate, the storage commitment (equal on both
+ranks and both Macs for one cut), loaded bytes, load time, and active and cached
+bytes after release. Exit status is 0 only if the model object was released.
+It refuses to run with a cluster transport environment set. It shows nothing
+about membership, transport or generation.
 
 ## Two-rank transport check
 

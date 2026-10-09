@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .executable(name: "darkbloom-cluster-worker", targets: ["DarkbloomClusterWorker"]),
         .executable(name: "darkbloom-cluster-collective-check", targets: ["CollectiveCheck"]),
+        .executable(name: "darkbloom-cluster-stage-check", targets: ["StageLoadCheck"]),
     ],
     dependencies: [
         .package(path: "../darkbloom-cluster"),
@@ -25,6 +26,10 @@ let package = Package(
         .testTarget(name: "DarkbloomClusterWorkerTests", dependencies: [
             "DarkbloomClusterWorker",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+        ]),
+        // One Mac, one rank, real artifact: verified stage load and release.
+        .executableTarget(name: "StageLoadCheck", dependencies: [
+            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),
         // Two-rank transport qualification: real collectives, no model.
         .executableTarget(name: "CollectiveCheck", dependencies: [

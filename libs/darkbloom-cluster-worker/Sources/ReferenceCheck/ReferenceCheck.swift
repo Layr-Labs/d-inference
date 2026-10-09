@@ -155,6 +155,9 @@ import Foundation
                 FileHandle.standardError.write(Data(("darkbloom-cluster-reference: \(result.unownedResidualFrames.count) stage 0 "
                     + "residual(s) would be refused by a pair's sender, first at frame \(result.unownedResidualFrames[0])\n").utf8))
             }
+            // The host memory gate's own record of this run: how many decisions,
+            // the tightest one, and whether any admission needed file cache.
+            summary["resourceAdmission"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.resourceAdmission))
             if let rate = timing.decodeTokensPerSecond { summary["decodeTokensPerSecond"] = rate }
             if let text = report.decodedOutput { summary["decodedOutput"] = text }
             print(String(decoding: try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))

@@ -123,6 +123,8 @@ public enum QwenStagedGenerationReference {
         public let activeBytesAfterRelease: Int
         public let cacheBytesAfterRelease: Int
         public let stageModelsReleased: [Bool]
+        /// What the host memory gate decided during the loads and the request.
+        public let resourceAdmission: QwenDenseStageLoadAdmissionSummary
     }
 
     private static let matrixPath = "/var/empty/darkbloom-staged-reference.matrix.json"
@@ -429,7 +431,7 @@ public enum QwenStagedGenerationReference {
                     prefillNanoseconds: prefill, decodeNanoseconds: decode, requestWallNanoseconds: requestWall,
                     activeBytesBefore: before, activeBytesLoaded: loadedBytes, peakBytes: peak,
                     activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
-                    stageModelsReleased: [retired0 == nil, retired1 == nil])
+                    stageModelsReleased: [retired0 == nil, retired1 == nil], resourceAdmission: .current)
             } catch {
                 var primary: Error = error
                 // Prefer a recorded native fault over a secondary Swift error.

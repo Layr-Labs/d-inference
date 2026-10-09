@@ -206,4 +206,29 @@ struct StageLoadFileCacheAdmissionTests {
                 now: 1_000 + 1_000_000_001)
         }
     }
+
+    @Test func theProcessRecordKeepsTheFirstTheTightestAndWhetherCacheWasNeeded() throws {
+        let record = QwenDenseStageLoadAdmissionRecord()
+        #expect(record.summary().decisions == 0 && record.summary().first == nil)
+        record.note(try Self.decide(Self.observation(freeBytes: 20 * Self.gib), required: 16 * Self.gib))
+        #expect(!record.summary().reclaimableUsedForAdmission)
+        record.note(try Self.decide(Self.observation(), required: 30 * Self.gib))
+        record.note(try Self.decide(Self.observation(freeBytes: 64 * Self.mib), required: 8 * Self.gib))
+        record.note(try Self.decide(Self.observation(fileBackedGiB: 50, anonymousGiB: 57), required: 16 * Self.gib))
+        let summary = record.summary()
+        #expect(summary.policy == QwenDenseStageLoadPolicy.identifier)
+        #expect(summary.decisions == 4 && summary.refusals == 1 && summary.reclaimableUsedForAdmission)
+        #expect(summary.first?.actualFreeBytes == 20 * Self.gib)
+        #expect(summary.tightest?.requiredBytes == 30 * Self.gib)
+        #expect(summary.fewestFreePages?.actualFreeBytes == 64 * Self.mib)
+        #expect(summary.lastRefusal?.admitted == false)
+        // The record encodes with every counter of each decision.
+        let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(summary)) as? [String: Any])
+        let tightest = try #require(object["tightest"] as? [String: Any])
+        for key in ["actualFreeBytes", "countedReclaimableBytes", "fileBackedBytes", "fileCacheReserveBytes",
+                    "anonymousBytes", "inactiveBytes", "pressureLevel", "swapUsedBytes", "compressorBytes",
+                    "reclaimableUsedForAdmission", "requiredBytes", "admissibleBytes"] {
+            #expect(tightest[key] != nil, "missing \(key)")
+        }
+    }
 }

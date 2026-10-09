@@ -25,6 +25,8 @@ public enum QwenResidentStageLoadCheck {
         public let loadSeconds: Double
         /// How long the loaded stage was kept before its release (0 unless asked).
         public let heldSeconds: Double
+        /// What the host memory gate decided during this load.
+        public let resourceAdmission: QwenDenseStageLoadAdmissionSummary
         public let collectiveCreated = false
     }
 
@@ -121,7 +123,8 @@ public enum QwenResidentStageLoadCheck {
                     loadedTensorBytes: receipt.loadedTensorBytes,
                     activeBytesBefore: before, activeBytesLoaded: loadedBytes,
                     activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
-                    modelReleased: retired == nil, loadSeconds: seconds, heldSeconds: holdSeconds == 0 ? 0 : held)
+                    modelReleased: retired == nil, loadSeconds: seconds, heldSeconds: holdSeconds == 0 ? 0 : held,
+                    resourceAdmission: .current)
             } catch {
                 let primary = error
                 stage = nil

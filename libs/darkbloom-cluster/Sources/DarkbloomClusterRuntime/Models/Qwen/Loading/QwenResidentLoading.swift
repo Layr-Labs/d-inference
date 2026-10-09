@@ -41,7 +41,7 @@ private final class QwenResidentLoadGate {
             let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
                 remaining, h, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
             let os = try QwenDenseStageLoadResources.requireInitial()
-            guard os.actualFreeBytes >= required, Memory.memoryLimit >= allocator else {
+            guard try QwenDenseStageLoadResources.admits(os, bytes: required, for: "Resident load"), Memory.memoryLimit >= allocator else {
                 throw ProbeError("Resident load exceeds current actual-free or allocator policy")
             }
         } catch { failed = true; throw error }

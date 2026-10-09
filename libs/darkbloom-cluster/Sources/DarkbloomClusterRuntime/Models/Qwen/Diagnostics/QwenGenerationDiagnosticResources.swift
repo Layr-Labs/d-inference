@@ -57,7 +57,7 @@ final class QwenGenerationDiagnosticResources {
             headroom: QwenDenseStageLoadPolicy.loadingHeadroomBytes)
         let allocator = try budget.requiredAllocatorBytes(active: native.activeBytes, cache: native.cacheBytes,
             headroom: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
-        guard os.actualFreeBytes >= free, native.allocatorLimitBytes >= allocator else {
+        guard try QwenDenseStageLoadResources.admits(os, bytes: free, for: "Generation diagnostics"), native.allocatorLimitBytes >= allocator else {
             throw ProbeError("Generation diagnostics exceed current actual-free or allocator limits")
         }
         observationCount = try QwenLongPrefillCheckedBytes.sum([observationCount, 1])

@@ -39,6 +39,7 @@ bash libs/darkbloom-cluster/Tests/BootstrapChecks/run.sh
 bash libs/darkbloom-cluster/Tests/PreludeChecks/run.sh
 bash libs/darkbloom-cluster/Tests/CheckpointChecks/run.sh
 python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output <new-dir>
+bash libs/darkbloom-cluster/Tests/StageTransferChecks/run.sh
 bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
 bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
 bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh

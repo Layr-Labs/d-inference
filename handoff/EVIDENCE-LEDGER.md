@@ -128,3 +128,13 @@ Thunderbolt cable. Level: physical. No model. "Stock" is the pinned JACCL;
 | Without the guard a dead peer hangs the survivor | stock, alarm only | Rank 0 spun in `jaccl::MeshImpl::all_reduce` → `tbt_poll_cq` at 100% CPU for more than 9 minutes past its 40 s alarm; exited 1 s after SIGTERM | Why the alarm did not fire is not established |
 | The thread deadline ends it | stock, `39c1bb003` | Same fault: rank 0 exits 124 at its 30 s deadline; a rank with no peer exits 124 at 8.8 s of 8 s | — |
 | Nothing is left behind | all | No process on either Mac after any run; wired memory at its earlier level on both (A about 11.0 GiB, B about 5.4 GiB); a clean run passes after the faults | Small buffers only; no model was loaded |
+
+## Suites on the branch merged with master (`eb4e650ec`, master `57fe69d87`)
+
+| Claim | Command | Result | Remaining uncertainty |
+|---|---|---|---|
+| Coordinator suite | `go test ./coordinator/...` | 103 packages ok; the same two toolchain-related packages fail | Not rerun under the pinned Go 1.26.8 |
+| Provider suite | `make provider-test` on the branch, and the same on unmodified master | **Identical failing set**: 75 tests, 148 issues, 56 XCTest errors on both (mostly a missing `pagedattention.metal` test resource and MiMo fixtures). The branch's targets hold 142 more tests than master's (3,727 vs 3,603 and 558 vs 540) and none of the added ones fail | Why this machine's toolchain (Xcode 27.0, Swift 6.4) cannot find that resource is not investigated; CI is the authority |
+| The "541 tests in 84 suites" in the original handoff | — | Matches the size of the second test target on master (540 in 83), so it was one target, not the full suite | — |
+| Documentation checks | `make docs-check`, `docs-impact-check` | One broken link, present on master itself (a report added by #1326); impact check passes | — |
+| Nothing private in the diff | scan of all 47,146 added lines for user paths, host names, private addresses, key material | None; only fixture values | Pattern-based |

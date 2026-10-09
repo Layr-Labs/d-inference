@@ -1,10 +1,46 @@
 import Darwin
 import Foundation
 import DarkbloomClusterPlacement
+import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
+import DarkbloomClusterRemote
 
 extension ClusterPlacementFlow {
-    /// The whole step on this Mac. `deadline` bounds the two child commands.
+    /// The command that asks the other Mac for its profile: OpenSSH with the
+    /// installed session's own pinned options (this member's identity file and
+    /// pinned known-hosts file, no agent, no prompt), running that Mac's plan
+    /// tool, which is installed beside its worker as this Mac's is.
+    static func peerProfileCommand(local: ClusterPairDescription.Member,
+                                   peer: ClusterPairDescription.Member) throws -> ClusterWorkerLaunch {
+        let route = try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
+            knownHostsFile: URL(fileURLWithPath: local.trust.knownHostsFile),
+            identityFile: URL(fileURLWithPath: local.trust.identityFile), installedDarkbloom: peer.ownerExecutable)
+        let tool = URL(fileURLWithPath: peer.workerExecutable).deletingLastPathComponent().appendingPathComponent(toolName)
+        return try route.describeDevice(planTool: tool.path)
+    }
+
+    /// Asks the other Mac for its profile, now. A profile is an observation,
+    /// not an authority: a Mac that overstates its memory gets a plan its own
+    /// load gate then refuses.
+    static func fetchPeerProfile(local: ClusterPairDescription.Member, peer: ClusterPairDescription.Member,
+                                 deadline: UInt64) throws -> ClusterDeviceProfile {
+        let command = try peerProfileCommand(local: local, peer: peer)
+        let data: Data
+        do {
+            data = try DistributedCapabilityProbe.run(executable: command.executable, arguments: command.arguments,
+                deadline: deadline, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes)
+        } catch {
+            throw ClusterConfigurationError.invalid("The other Mac (\(peer.id)) did not give its profile over the pinned SSH route. "
+                + "Either this Mac's identity is not accepted there, its pinned host key differs, or \(toolName) is not installed beside "
+                + "that Mac's worker. Run `\(toolName) device --json` on that Mac and pass the file with --peer-profile instead.")
+        }
+        do { return try ClusterDeviceProfile.decode(data) } catch {
+            throw ClusterConfigurationError.invalid("The other Mac (\(peer.id)) answered over the pinned SSH route with something that is not a device profile; "
+                + "its \(toolName) and this Mac's must be one build.")
+        }
+    }
+
+    /// The whole step on this Mac. `deadline` bounds the child commands.
     public static func run(_ inputs: Inputs, deadline: UInt64) throws -> Outcome {
         let description = try ClusterPairDescription.decode(
             ClusterConfigurationFiles.read(inputs.pairDescription, maximum: ClusterPairDescription.maximumBytes))
@@ -29,8 +65,16 @@ extension ClusterPlacementFlow {
         let layout = try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["layout", "--model-dir", local.modelDirectory, "--json"], deadline: deadline,
             maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes))
-        let peerProfile = try ClusterDeviceProfile.decode(
-            ClusterConfigurationFiles.read(inputs.peerProfile, maximum: ClusterDeviceProfile.maximumEncodedBytes))
+        let peerProfile: ClusterDeviceProfile
+        if let file = inputs.peerProfile {
+            peerProfile = try ClusterDeviceProfile.decode(
+                ClusterConfigurationFiles.read(file, maximum: ClusterDeviceProfile.maximumEncodedBytes))
+        } else {
+            guard let peer = description.members.first(where: { $0.id != inputs.localMemberID }) else {
+                throw ClusterConfigurationError.invalid("The pair description names no other member")
+            }
+            peerProfile = try fetchPeerProfile(local: local, peer: peer, deadline: deadline)
+        }
         let measurements = try inputs.speedMeasurements.map { url -> ClusterSpeedMeasurement in
             let value = try JSONDecoder().decode(ClusterSpeedMeasurement.self, from: ClusterConfigurationFiles.read(url, maximum: 65_536))
             try value.validate()

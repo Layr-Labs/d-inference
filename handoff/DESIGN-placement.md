@@ -645,3 +645,34 @@ refinement above; the status line in the status view.
 
 What was run on the two Macs is in the task's evidence folder
 `placement-20261009`.
+
+### Status, later on 2026-10-09 (supersedes the lines above where they differ)
+
+- **The other Mac's profile is fetched, not passed as a file.** `darkbloom
+  cluster plan` asks the other Mac's plan tool for that Mac's profile over the
+  pinned SSH route the installed session uses
+  (`ClusterSSHConfiguration.describeDevice`: the same options, this member's
+  identity and pinned known-hosts file, the fixed remote command
+  `<worker directory>/darkbloom-cluster-plan device --json`). `--peer-profile`
+  remains for a Mac that cannot reach the other. The command's ArgumentParser
+  shell is compiled with the provider (native build system), and the step was
+  run on the pair it was written on with both Macs' live profiles.
+- **What each Mac holds is in the status views.** `ClusterInstalledHoldings`
+  reads the layout through the plan tool beside this Mac's worker, computes
+  each rank's bytes by the planner's own rule (`ClusterPlacementHoldings`) and
+  gives one line to the console (row `model.holdings`) and to `darkbloom
+  cluster status` (text output; the JSON report's schema is unchanged). This
+  Mac's memory is shown beside its share; the other Mac's is not known to a
+  status view. The tool must be this user's own file that nobody else can
+  write; it is not pinned by a hash in the setup, and a release should pin
+  it. The line from load receipts is not built.
+- **The console lists the guided step** as `model.plan`: exists, not wired
+  (the screen has no key for it).
+- **Not done, and found by the real run:** the installed session is started
+  from the leader over SSH, and the leader is rank 0. On a pair where only
+  one Mac can open a route to the other (the pair this was written on), a
+  placement the other Mac leads cannot be started through the product. Either
+  the choice is restricted to placements a given member leads (a policy field
+  that filters the orders, with its cost printed like the cut list's), or the
+  leader becomes independent of the rank (topology change X1 of the
+  prefill-export design).

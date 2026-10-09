@@ -26,17 +26,36 @@ public struct ClusterSSHConfiguration: Sendable {
                 (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 95].contains($0)
             } && !value.hasPrefix("-")
         }
-        func path(_ value: String) -> Bool {
-            value.hasPrefix("/") && value.utf8.count <= 1024 && value.utf8.allSatisfy {
-                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 47, 95].contains($0)
-            } && !value.split(separator: "/").contains("..")
-        }
+        let path = Self.safePath
         guard label(host), label(user), (1...65_535).contains(port), knownHostsFile.isFileURL, identityFile.isFileURL,
               path(knownHostsFile.path), path(identityFile.path), path(installedDarkbloom) else { throw OwnerWire.invalid("Unsafe SSH configuration") }
         self.host = host; self.user = user; self.port = port; self.knownHostsFile = knownHostsFile
         self.identityFile = identityFile; self.installedDarkbloom = installedDarkbloom
     }
+    /// An absolute path of letters, digits, `-`, `.`, `_` and `/` with no
+    /// `..` component: nothing a remote shell would read as anything else.
+    static func safePath(_ value: String) -> Bool {
+        value.hasPrefix("/") && value.utf8.count <= 1024 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 47, 95].contains($0)
+        } && !value.split(separator: "/").contains("..")
+    }
+
     public func launch() throws -> ClusterWorkerLaunch {
+        try launch(remoteCommand: "exec \(installedDarkbloom) cluster worker-owner --stdio")
+    }
+
+    /// The same pinned route for one metadata-only question to the peer: its
+    /// installed plan tool printing that Mac's device profile. The tool reads
+    /// system counters only; no model is loaded and nothing is started. The
+    /// path is held to the same character rule as the installed owner's, and
+    /// the two arguments are fixed here, so the remote command line carries
+    /// nothing a caller composed.
+    public func describeDevice(planTool: String) throws -> ClusterWorkerLaunch {
+        guard Self.safePath(planTool) else { throw OwnerWire.invalid("Unsafe SSH configuration") }
+        return try launch(remoteCommand: "exec \(planTool) device --json")
+    }
+
+    private func launch(remoteCommand: String) throws -> ClusterWorkerLaunch {
         // Do not read private key bytes. Refuse links/unowned/group writable trust
         // files; configured files remain managed by configure, not this launch.
         for url in [knownHostsFile, identityFile] {
@@ -52,8 +71,7 @@ public struct ClusterSSHConfiguration: Sendable {
             "ConnectTimeout=5", "ServerAliveInterval=5", "ServerAliveCountMax=2", "RequestTTY=no"]
         var args = ["-F", "/dev/null", "-T"]
         for option in options { args += ["-o", option] }
-        args += ["-i", identityFile.path, "-p", String(port), "-l", user, "--", host,
-                 "exec \(installedDarkbloom) cluster worker-owner --stdio"]
+        args += ["-i", identityFile.path, "-p", String(port), "-l", user, "--", host, remoteCommand]
         return .init(executable: URL(fileURLWithPath: "/usr/bin/ssh"), arguments: args,
             environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"])
     }

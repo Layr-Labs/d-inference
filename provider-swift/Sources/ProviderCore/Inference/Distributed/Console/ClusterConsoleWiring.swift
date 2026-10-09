@@ -12,7 +12,7 @@ public enum ClusterConsoleWiring {
         "link.rdma", "link.port", "link.narration", "link.wait", "link.fix", "link.alias", "doctor.checks",
         "installed.worker", "journal.state",
         "pair.saved", "pair.hostkey", "pair.identity", "pair.approval", "pair.approve",
-        "model.admitted", "model.saved", "model.ranks", "model.metadata", "model.files", "model.admission",
+        "model.admitted", "model.saved", "model.ranks", "model.holdings", "model.metadata", "model.files", "model.admission",
         "session.start", "session.stop", "session.process", "session.status", "session.recover",
         "host.local", "export.diagnostics",
     ]
@@ -56,6 +56,8 @@ public enum ClusterConsoleWiring {
               reason: "A worker admits when it loads; it has no admission-only mode."),
         .init(id: "model.servable", title: "Whether a start would serve the saved model on this Mac", exists: true,
               reason: "Only `darkbloom start --local --distributed` applies the model's chip and runtime requirements; its refusal is shown as it prints it."),
+        .init(id: "model.plan", title: "Choose which Mac leads and where the model is cut, from what each Mac detects", exists: true,
+              reason: "`darkbloom cluster plan` does it and writes a setup for each Mac; this screen has no key for it. Open the screen with the setup it wrote for this Mac and approve it with `a`."),
         .init(id: "model.picker", title: "Choose among local models", exists: true,
               reason: "Nothing lists local distributed models; another model is another setup, approved with `a`."),
         .init(id: "session.percent", title: "Load progress as a percentage", exists: false,

@@ -1,5 +1,6 @@
 import Darwin
 import DarkbloomClusterPlacement
+import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 import Foundation
 @testable import InstalledContract
@@ -122,6 +123,41 @@ import Foundation
         refused("a capability record other than the pinned one is refused", because: "digest differs") {
             _ = try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: hash("0"),
                 localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent("out3")), deadline: deadline())
+        }
+        // The other Mac's profile over the pinned route: the command line, without running it.
+        let identity = try write("identity", Data("not a key".utf8)), hosts = try write("known-hosts", Data("not a host key\n".utf8))
+        func routed(peerWorker: String, identityFile: String = identity.path) throws -> ClusterPairDescription {
+            var one = member("mac-one", "192.0.2.1", worker: root.appendingPathComponent("darkbloom-cluster-worker").path)
+            one["trust"] = ["identityFile": identityFile, "knownHostsFile": hosts.path, "knownHostsSHA256": hash("f")]
+            var value = description
+            value["members"] = [one, member("mac-two", "192.0.2.2", worker: peerWorker)]
+            return try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: value))
+        }
+        let route = try routed(peerWorker: "/Users/fixture/bin/darkbloom-cluster-worker")
+        let command = try ClusterPlacementFlow.peerProfileCommand(local: route.members[0], peer: route.members[1])
+        func option(_ value: String) -> Bool {
+            zip(command.arguments, command.arguments.dropFirst()).contains { $0 == "-o" && $1 == value }
+        }
+        require("the other Mac is asked by OpenSSH for its plan tool's device profile and nothing else",
+            command.executable.path == "/usr/bin/ssh" && command.arguments.last == "exec /Users/fixture/bin/darkbloom-cluster-plan device --json"
+                && command.arguments.suffix(3).first == "--" && command.arguments.suffix(2).first == "mac-two.local")
+        require("the route is the installed session's pinned one: this member's identity and known-hosts file, no agent, no prompt",
+            option("BatchMode=yes") && option("StrictHostKeyChecking=yes") && option("UserKnownHostsFile=\(hosts.path)")
+                && option("IdentitiesOnly=yes") && option("IdentityAgent=none") && option("PasswordAuthentication=no")
+                && option("GlobalKnownHostsFile=/dev/null") && command.arguments.prefix(2) == ["-F", "/dev/null"]
+                && zip(command.arguments, command.arguments.dropFirst()).contains { $0 == "-i" && $1 == identity.path }
+                && zip(command.arguments, command.arguments.dropFirst()).contains { $0 == "-l" && $1 == "fixture" })
+        refused("a peer installation path a remote shell could read as more than a path is refused", because: "Unsafe SSH configuration") {
+            let unsafe = try routed(peerWorker: "/Users/fixture/bin; touch x/darkbloom-cluster-worker")
+            _ = try ClusterPlacementFlow.peerProfileCommand(local: unsafe.members[0], peer: unsafe.members[1])
+        }
+        refused("an identity file that is not this user's own regular file is refused before anything connects", because: "Unsafe configured SSH trust file") {
+            let missing = try routed(peerWorker: "/Users/fixture/bin/darkbloom-cluster-worker", identityFile: root.appendingPathComponent("absent").path)
+            _ = try ClusterPlacementFlow.peerProfileCommand(local: missing.members[0], peer: missing.members[1])
+        }
+        refused("without a profile file the step asks the other Mac, and says so when the trust files are not usable", because: "Unsafe configured SSH trust file") {
+            _ = try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
+                localMemberID: "mac-one", output: root.appendingPathComponent("out4")), deadline: deadline())
         }
         guard failures.isEmpty else {
             for failure in failures { FileHandle.standardError.write(Data("FAIL: \(failure)\n".utf8)) }

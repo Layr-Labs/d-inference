@@ -382,6 +382,28 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
     checks.require("one line says which layers and how many GiB each Mac holds while the session is up",
         holding.hasPrefix("While the session is up: slow holds layers 0 to 15: 3.8") && holding.contains(" GiB of weights of its 256.00 GiB; fast holds layers 16 to 63: 10.2")
             && holding.hasSuffix(" GiB of weights of its 128.00 GiB."))
+    // The status view computes the same figure from the layout alone, so it cannot disagree with the plan.
+    if let chosen = result.chosen {
+        let page = devices[0].profile.memory.pageSizeBytes
+        let fromLayout = try ClusterPlacementHoldings.describe(layout: big, labels: chosen.ranks.map(\.device), boundaries: chosen.cuts,
+            mode: chosen.mode, pageSizeBytes: page, physicalMemoryBytes: [devices[0].label: devices[0].profile.physicalMemoryBytes],
+            localLabel: devices[0].label)
+        checks.require("the holdings a status view computes from the layout are the planner's own weights per rank",
+            fromLayout.ranks.map(\.weightsBytes) == chosen.ranks.map(\.weightsBytes)
+                && fromLayout.ranks.map(\.firstLayer) == chosen.ranks.map(\.firstLayer)
+                && fromLayout.line.contains("\(devices[0].label) (this Mac) holds layers") && fromLayout.line.contains("of its 256.00 GiB")
+                && !fromLayout.line.contains("of its 128.00 GiB"))
+        let split = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [16], mode: .phaseSplit,
+            prefillSchedule: .oneChunkLookahead, layout: big, policy: policy)
+        let splitHeld = ClusterPlacementHoldings.weightsBytes(layout: big, boundaries: [16], mode: .phaseSplit, pageSizeBytes: page)
+        let splitLine = try ClusterPlacementHoldings.describe(layout: big, labels: ["a", "b"], boundaries: [16], mode: .phaseSplit,
+            pageSizeBytes: page).line
+        checks.require("under a phase split the last rank's holding is every layer, as the planner counts it",
+            splitHeld == split.ranks.map(\.weightsBytes) && splitHeld[1] > splitHeld[0]
+                && splitLine.contains("b holds layers 16 to 63 and, to decode alone, every earlier layer too"))
+        checks.require("holdings refuse a boundary outside the model",
+            (try? ClusterPlacementHoldings.describe(layout: big, labels: ["a", "b"], boundaries: [64], mode: .pipeline, pageSizeBytes: page)) == nil)
+    }
     // Sustained and rested rates can choose different cuts; both are reported.
     let drifting = measured(prefill: 900, decode: 28, sustainedPrefill: 600)
     let pair = [devices[0], try SyntheticMac.idle(128).device("fast", speed: drifting)]

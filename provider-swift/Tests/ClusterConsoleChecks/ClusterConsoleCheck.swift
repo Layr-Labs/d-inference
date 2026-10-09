@@ -53,6 +53,7 @@ import Darwin
             ("redaction", redaction),
             ("diagnostic export", diagnosticExport),
             ("saved setup, trust and candidate", savedSetup),
+            ("what each Mac holds", holdings),
             ("link fix results and the guided setup's reading", linkFixResults),
             ("recovery results", recoveryResults),
             ("terminal mode", terminalMode),

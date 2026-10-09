@@ -5,18 +5,22 @@ import DarkbloomClusterProtocol
 /// The step of the guided flow that chooses which Mac leads and where the
 /// model is cut. It detects this Mac and reads the artifact through the
 /// installed `darkbloom-cluster-plan` (the worker's sibling, so the gate rule
-/// and the stage plan are the worker's own), takes the other Mac's profile as
-/// that Mac printed it, runs the planner, and writes a setup for each Mac.
+/// and the stage plan are the worker's own), asks the other Mac's plan tool
+/// for that Mac's profile over the pinned SSH route the installed session
+/// uses, runs the planner, and writes a setup for each Mac. One command on
+/// one Mac; a profile file that Mac printed can stand in for the route.
 /// It saves nothing and starts nothing; each Mac approves its own setup.
 public enum ClusterPlacementFlow {
-    public static let toolName = "darkbloom-cluster-plan"
+    public static let toolName = ClusterPlacementInstallation.toolName
 
     public struct Inputs: Sendable {
         public var pairDescription: URL
         public var capability: URL
         public var capabilitySHA256: String
         public var localMemberID: String
-        public var peerProfile: URL
+        /// The other Mac's profile as that Mac printed it. Nil, the default,
+        /// asks that Mac over the pinned SSH route instead.
+        public var peerProfile: URL?
         public var speedMeasurements: [URL] = []
         public var promptTokens: Int?
         public var outputTokens: Int?
@@ -24,7 +28,7 @@ public enum ClusterPlacementFlow {
         /// A new directory for the two setups and the plan, created owner-only.
         public var output: URL
         public init(pairDescription: URL, capability: URL, capabilitySHA256: String, localMemberID: String,
-                    peerProfile: URL, output: URL) {
+                    peerProfile: URL? = nil, output: URL) {
             self.pairDescription = pairDescription; self.capability = capability
             self.capabilitySHA256 = capabilitySHA256; self.localMemberID = localMemberID
             self.peerProfile = peerProfile; self.output = output

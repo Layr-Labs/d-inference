@@ -10,8 +10,12 @@ extension Cluster {
         @Flag(help: "Print saved configuration and explicitly scoped live evidence as JSON.") var json = false
         mutating func run() async throws {
             Darkbloom.ensureLogging()
-            let report = await ClusterDiagnostics.status(providerConfiguration: try diagnosticsPath(configOptions.config))
-            try printDiagnostics(report, json: json)
+            let path = try diagnosticsPath(configOptions.config)
+            let report = await ClusterDiagnostics.status(providerConfiguration: path)
+            // What each Mac holds is the plan's figure from the model's own files; it is printed
+            // with the saved setup, and the JSON report, whose schema is fixed, is left as it is.
+            let holdings = json || report.saved == nil ? nil : ClusterDiagnostics.holdings(providerConfiguration: path)
+            try printDiagnostics(report, json: json, holdings: holdings?.line)
         }
     }
 
@@ -37,7 +41,7 @@ private func diagnosticsPath(_ input: String?) throws -> URL {
     return URL(fileURLWithPath: path)
 }
 
-private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool) throws {
+private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool, holdings: String? = nil) throws {
     if json { try printJSON(report); return }
     print("Saved setup: \(report.configurationState.rawValue)")
     if let saved = report.saved {
@@ -46,6 +50,7 @@ private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool) th
         for peer in saved.peers {
             print("  \(peer.id) rank \(peer.rank) worker supports: \(peer.supportedGenerationModes.map(\.rawValue).joined(separator: ", "))")
         }
+        if let holdings { print(holdings) }
     }
     if let live = report.live {
         print("Live leader: \(live.ready ? "ready" : "not ready") · admission \(live.admissionAvailable ? "available" : "closed") · \(live.hostPhase)")

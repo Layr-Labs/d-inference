@@ -122,12 +122,12 @@ public enum ClusterPlacementExplanation {
     /// is up: which layers and how much, beside the Mac's own size, so that a
     /// small share on a large Mac is not read as nothing running there.
     public static func holdings(_ c: ClusterPlacementCandidate, devices: [ClusterPlacementDevice]) -> String {
-        "While the session is up: " + c.ranks.map { r in
-            let size = devices.first { $0.label == r.device }.map { " of its \(gibText($0.profile.physicalMemoryBytes))" } ?? ""
-            let every = c.mode == .phaseSplit && r.rank == c.ranks.count - 1 && r.rank > 0
-            return "\(r.device) holds layers \(r.firstLayer) to \(r.endLayer - 1)"
-                + (every ? " and, to decode alone, every earlier layer too" : "") + ": \(gibText(r.weightsBytes)) of weights\(size)"
-        }.joined(separator: "; ") + "."
+        ClusterPlacementHoldings(ranks: c.ranks.map { r in
+            .init(rank: r.rank, label: r.device, firstLayer: r.firstLayer, endLayer: r.endLayer,
+                  holdsEveryEarlierLayer: c.mode == .phaseSplit && r.rank == c.ranks.count - 1 && r.rank > 0,
+                  weightsBytes: r.weightsBytes,
+                  physicalMemoryBytes: devices.first { $0.label == r.device }?.profile.physicalMemoryBytes, local: false)
+        }).line
     }
 
     public static func describe(_ result: ClusterPlacementResult, devices: [ClusterPlacementDevice],

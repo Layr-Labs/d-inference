@@ -80,11 +80,15 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         /// What the model's arithmetic contract requires of a rank's
         /// environment beyond `PairConfiguration.arithmeticEnvironment`.
         public let additionalArithmeticEnvironment: [String: String]
+        /// The model's own vocabulary: no prompt or stop ID may reach it.
+        public let vocabularySize: Int
 
         init(modelID: String, profileID: String, supportedCuts: [Int],
-             additionalArithmeticEnvironment: [String: String] = [:]) {
+             additionalArithmeticEnvironment: [String: String] = [:],
+             vocabularySize: Int = QualificationRequest.vocabularySize) {
             self.modelID = modelID; self.profileID = profileID; self.supportedCuts = supportedCuts
             self.additionalArithmeticEnvironment = additionalArithmeticEnvironment
+            self.vocabularySize = vocabularySize
         }
     }
     public static let registeredModels: [RegisteredModel] = [
@@ -94,6 +98,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         .init(modelID: "registered_qwen35_35b_a3b", profileID: "registered_qwen35_35b_a3b_greedy_generation_v1",
               supportedCuts: Array(stride(from: 4, through: 36, by: 4)),
               additionalArithmeticEnvironment: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust"]),
+        .init(modelID: "registered_nemotron35_lightning",
+              profileID: "registered_nemotron35_lightning_greedy_generation_v1",
+              supportedCuts: [7, 9, 11, 14, 16, 18, 21, 23, 25, 28, 30, 32, 35, 37, 39, 41], vocabularySize: 131_072),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }
@@ -145,9 +152,10 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         try require((1...Self.maximumChunkTokens).contains(chunkSize), "chunk size must be 1...512")
         try require((1...Self.maximumOutputTokens).contains(outputCount), "output count must be 1...128")
         try require(promptTokenIDs.count <= Self.maximumContextTokens - outputCount, "prompt plus output exceeds 8320 tokens")
-        try require(promptTokenIDs.allSatisfy { (0..<Self.vocabularySize).contains($0) }, "prompt token outside the vocabulary")
+        let vocabulary = Self.registeredModel(modelID)?.vocabularySize ?? Self.vocabularySize
+        try require(promptTokenIDs.allSatisfy { (0..<vocabulary).contains($0) }, "prompt token outside the vocabulary")
         try require(stopTokenIDs.count <= 256 && stopTokenIDs == Array(Set(stopTokenIDs)).sorted()
-            && stopTokenIDs.allSatisfy { (0..<Self.vocabularySize).contains($0) }, "stop IDs must be sorted, unique and in the vocabulary")
+            && stopTokenIDs.allSatisfy { (0..<vocabulary).contains($0) }, "stop IDs must be sorted, unique and in the vocabulary")
         try require(promptTokenIDsSHA256 == QualificationHash.tokenIDs(promptTokenIDs), "prompt hash differs from the prompt")
         try require(["chatText", "rawText", "synthetic", "tokenIDs"].contains(promptSource.kind), "unknown prompt source")
     }

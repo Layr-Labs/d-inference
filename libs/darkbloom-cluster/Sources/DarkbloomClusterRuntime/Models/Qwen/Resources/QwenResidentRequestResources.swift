@@ -45,7 +45,8 @@ struct QwenResidentRequestAllowance {
         ])
         let tensors = Dictionary(uniqueKeysWithValues: profile.canonicalTensors.map { ($0.name, $0) })
         var fused = [Int](), logical = [Int]()
-        for layer in plan.stages[rank].sourceRange where (layer + 1) % plan.interval != 0 {
+        // A Plan without an interval (Nemotron) has no fused recurrent projections.
+        for layer in plan.stages[rank].sourceRange where plan.interval > 0 && (layer + 1) % plan.interval != 0 {
             for suffix in ["weight", "scales", "biases"] {
                 let parts = try ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"].map { projection in
                     let name = "language_model.model.layers.\(layer).linear_attn.\(projection).\(suffix)"

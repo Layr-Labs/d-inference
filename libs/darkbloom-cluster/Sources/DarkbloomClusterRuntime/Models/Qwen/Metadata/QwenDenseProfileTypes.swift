@@ -27,6 +27,9 @@ enum QwenRegisteredDenseModel: String, Codable, CaseIterable {
     case qwen38TwentySevenB = "registered_qwen38_27b"
     /// Qwen3.5 35B A3B: the same layer kinds with a routed-expert feed-forward.
     case qwen35ThirtyFiveBA3B = "registered_qwen35_35b_a3b"
+    /// Nemotron 3.5 Lightning: Mamba2, mixture-of-experts and attention
+    /// blocks in an explicit pattern. Its metadata is under `Models/Nemotron`.
+    case nemotron35Lightning = "registered_nemotron35_lightning"
 }
 
 /// Caller-supplied metadata, not a trusted descriptor or load permission. The

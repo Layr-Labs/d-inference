@@ -14,10 +14,19 @@ public struct PromptTokenizer: Sendable {
         (registeredManifestSHA256, "registered_qwen35_9b"),
         ("d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc", "registered_qwen38_27b"),
         ("db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff", "registered_qwen35_35b_a3b"),
+        ("7a3486d633ae181dbdf0e955e24e10a143de86cdf1e91cfb3345f7978a0b4e8a", "registered_nemotron35_lightning"),
     ]
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.
     static let assistantSuffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    /// What a registered artifact's own template puts around one user turn
+    /// with thinking disabled. Nemotron's template always opens with a system
+    /// turn, empty when the request has none, and closes thinking at once.
+    static func chatWrapper(modelID: String) -> (prefix: String, suffix: String) {
+        modelID == "registered_nemotron35_lightning"
+            ? ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n<think></think>")
+            : (userPrefix, assistantSuffix)
+    }
 
     public let tokenizerSHA256: String
     /// The registered model whose manifest the tokenizer files were checked against.
@@ -57,7 +66,8 @@ public struct PromptTokenizer: Sendable {
     /// tokens are repeated and cut so the whole prompt has exactly that many
     /// tokens; the chat wrapper around the text is never cut.
     public func encodeChat(userText: String, promptTokenCount: Int?) throws -> (tokenIDs: [Int], source: QualificationPromptSource) {
-        let prefix = encodeRaw(Self.userPrefix), suffix = encodeRaw(Self.assistantSuffix)
+        let wrapper = Self.chatWrapper(modelID: modelID)
+        let prefix = encodeRaw(wrapper.prefix), suffix = encodeRaw(wrapper.suffix)
         var body = encodeRaw(userText)
         guard !body.isEmpty else { throw QualificationError("The prompt text produced no tokens") }
         var matches: Bool?

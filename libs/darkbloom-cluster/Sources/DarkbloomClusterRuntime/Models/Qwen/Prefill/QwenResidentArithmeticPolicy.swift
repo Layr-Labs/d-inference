@@ -14,6 +14,21 @@ enum QwenResidentArithmeticPolicy: Equatable {
     /// The Metal kernels of that route come from the metallib beside the
     /// binary, which both ranks must hold identical.
     case routedExperts
+    /// Nemotron-H: the dense contract's three values and absent names under
+    /// its own name, so a capability or a load agreement of this family is
+    /// never mistaken for a Qwen one. Nothing is added to it, for this reason:
+    /// the expert-tile gather route that `MLX_GATHER_QMM_EXPERT_SLICES`
+    /// selects accepts only 4,096, 8,192 or 16,384 assignments and the Gemma 4
+    /// and Qwen 35B expert shapes (pinned MLX,
+    /// `mlx/backend/common/gemma4_expert_qmm.h`, `classify_gemma4_expert_qmm`,
+    /// lines 108 to 171: the assignment counts at 140, the shapes at 149 to
+    /// 166). Nemotron's 128 experts of 2688 to 1856 and 1856 to 2688 at top 6
+    /// are neither (a 512-token chunk has 3,072 assignments), so its routed
+    /// gathers take the ordinary kernel whatever that variable says. Its blocks use neither `SwitchGLU`
+    /// nor a Qwen4 projection, so the direct-reduction and Qwen4 switches do
+    /// not reach it, and the `DARKBLOOM_NEMOTRON35_MTP_*` switches act only
+    /// on the speculative head, which no stage constructs.
+    case nemotronHybrid
 
     static let expertSlicesName = "MLX_GATHER_QMM_EXPERT_SLICES"
     static let expertSlicesValue = "trust"
@@ -23,6 +38,7 @@ enum QwenResidentArithmeticPolicy: Equatable {
         switch self {
         case .dense: QwenLongPrefillArithmeticEnvironment.contract
         case .routedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
+        case .nemotronHybrid: "nemotron_h_cbv2_query128_bf16_tf32_default_v1"
         }
     }
 
@@ -38,6 +54,10 @@ enum QwenResidentArithmeticPolicy: Equatable {
     }
 
     func admit(_ environment: [String: String]) throws -> QwenLongPrefillArithmeticEnvironment.Receipt {
+        if self == .nemotronHybrid {
+            return try QwenLongPrefillArithmeticEnvironment.admit(environment, contract: contract,
+                additionalValues: [:], additionalAbsentNames: [], additionalBindings: [:])
+        }
         guard self == .routedExperts else { return try QwenLongPrefillArithmeticEnvironment.admit(environment) }
         return try QwenLongPrefillArithmeticEnvironment.admit(environment, contract: contract,
             additionalValues: [Self.expertSlicesName: Self.expertSlicesValue],

@@ -33,7 +33,8 @@ struct QwenDenseRegisteredSpecification {
         self.kvHeads = kvHeads; self.routedExperts = routedExperts
     }
     func expectedGeometry() throws -> QwenLongPrefillBudgetGeometry {
-        try .init(layers: layers, fullAttentionInterval: 4, hiddenSize: hidden, queryHeads: queryHeads,
+        if model == .nemotron35Lightning { return try NemotronRegisteredLightning.expectedStateGeometry() }
+        return try .init(layers: layers, fullAttentionInterval: 4, hiddenSize: hidden, queryHeads: queryHeads,
             kvHeads: kvHeads, headDimension: 256, linearKeyHeads: 16, linearValueHeads: linearValueHeads,
             linearKeyDimension: 128, linearValueDimension: 128, convolutionKernel: 4)
     }
@@ -68,5 +69,18 @@ struct QwenDenseRegisteredSpecification {
             queryHeads: 16, linearValueHeads: 32, namedStateBytes: 558_344_232,
             kvHeads: 2, routedExperts: .init(experts: 256, expertsPerToken: 8,
                                              expertIntermediate: 512, sharedIntermediate: 512)),
+        // Nemotron 3.5 Lightning, catalog `nvidia-nemotron-3.5-lightning`
+        // 2026-09-30-r1. 729 canonical tensors: the 763 stored ones without
+        // the 34 of the artifact's `mtp.` head. Its state geometry is
+        // `NemotronRegisteredLightning`'s; `linearValueHeads` here is the
+        // Mamba head count that geometry uses in the same place.
+        .init(model: .nemotron35Lightning,
+            configurationSHA256: "c75cadc4b4ddff18c8f84d24584092528f9ffc3b723a4bcf29c3c51505dd5643",
+            manifestSHA256: "7a3486d633ae181dbdf0e955e24e10a143de86cdf1e91cfb3345f7978a0b4e8a",
+            artifactSHA256: "366d9285ec367633c25b5c064ad94482e04be043c2a515a16e4fcf12c0a8f85b",
+            inventorySHA256: "0701da0c94e0eacf20249691a387322807f9a6fac72e72fb014fa814a3c31a85",
+            manifestBytes: 19_059_595_830, manifestFileCount: 10, sourceBytes: 18_290_661_248,
+            tensorCount: 729, largestTensorBytes: 319_291_392, layers: 52, hidden: 2688,
+            queryHeads: 32, linearValueHeads: 64, namedStateBytes: 269_866_008, kvHeads: 2),
     ]
 }

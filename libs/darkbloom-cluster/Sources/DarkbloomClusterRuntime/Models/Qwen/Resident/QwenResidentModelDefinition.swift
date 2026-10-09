@@ -27,8 +27,11 @@ struct QwenResidentModelDefinition {
             throw QwenDenseProfileError("Registered model has no specification")
         }
         let geometry = try specification.expectedGeometry()
-        let structural = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
-            fullAttentionInterval: geometry.fullAttentionInterval)
+        // Nemotron's layer kinds follow no interval; its structural cuts are its own.
+        let structural = model == .nemotron35Lightning
+            ? NemotronStageMetadata.structuralCuts(NemotronRegisteredLightning.kinds)
+            : try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
+                fullAttentionInterval: geometry.fullAttentionInterval)
         switch model {
         case .qwen35NineB:
             // The original resident scope, defined where it always was.
@@ -44,11 +47,17 @@ struct QwenResidentModelDefinition {
             // 4, 8, ... 36. As for the 27B, structural and nothing more.
             profileID = "registered_qwen35_35b_a3b_greedy_generation_v1"
             supportedCuts = structural
+        case .nemotron35Lightning:
+            // A closed list of its structural cuts, not all 32 of them: a
+            // capability carries at most sixteen partitions.
+            profileID = NemotronRegisteredLightning.profileID
+            supportedCuts = NemotronRegisteredLightning.supportedCuts
         }
         // Routed experts are token-local, so they change neither the state a
         // mode moves nor its framing; what they need is their own arithmetic
         // contract and the adapter that names it.
-        let arithmetic: QwenResidentArithmeticPolicy = specification.routedExperts == nil ? .dense : .routedExperts
+        let arithmetic: QwenResidentArithmeticPolicy = model == .nemotron35Lightning ? .nemotronHybrid
+            : specification.routedExperts == nil ? .dense : .routedExperts
         let registered = (runtimeModelID: model.rawValue, profileID: profileID)
         guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.rawValue),
               adapter.registeredProfiles.contains(where: { $0 == registered }),
@@ -63,6 +72,11 @@ struct QwenResidentModelDefinition {
         // model that must not run one drops it from its own row here.
         switch model {
         case .qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B:
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
+        case .nemotron35Lightning:
+            // Its state shapes are the ones a hand-off already carries (KV of
+            // an attention block, convolution and SSM state of a Mamba block)
+            // and an expert block has none, so the phase split is admissible.
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
         }
         guard supportedGenerationModes.first == .pipeline,

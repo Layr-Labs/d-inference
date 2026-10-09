@@ -48,6 +48,13 @@ struct QwenResidentResourceCeilings: Equatable {
             maximumManifestPayloadBytes = specification.manifestBytes
             namedStateByteCeiling = 563_806_248
             pinnedMaximumNamedStateBytes = 563_806_248
+        case .nemotron35Lightning:
+            // The registered manifest total (19,059,595,830 bytes) and this
+            // model's own estimate at the largest request: 23 Mamba blocks'
+            // convolution and SSM state and 6 attention blocks' KV.
+            maximumManifestPayloadBytes = specification.manifestBytes
+            namedStateByteCeiling = 271_556_632
+            pinnedMaximumNamedStateBytes = 271_556_632
         }
         maximumNamedStateBytes = try QwenLongPrefillTensorBudget.estimate(
             geometry: specification.expectedGeometry(), maximumTokens: Self.maximumContextTokens,

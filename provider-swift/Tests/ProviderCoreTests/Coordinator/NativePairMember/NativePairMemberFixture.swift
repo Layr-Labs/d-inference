@@ -72,7 +72,8 @@ final class NativePairMemberFixture: @unchecked Sendable {
         return root
     }
 
-    init(lifetimeSeconds: Int64 = 12, preparationSeconds: Int64 = 5, behavior: String = "key-only") throws {
+    init(lifetimeSeconds: Int64 = 12, preparationSeconds: Int64 = 5, behavior: String = "key-only",
+         ownerServesCommittedStart: Bool = true) throws {
         let helperBytes = try Self.helper()
         root = try Self.privateRoot()
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
@@ -128,7 +129,8 @@ final class NativePairMemberFixture: @unchecked Sendable {
             installed.append(try NativePairMemberInstallation(expectedCoordinatorPolicy: p, rank: rank,
                 clusterID: "native-member-cpu-fixture", identity: identity, profile: profile,
                 installedOwner: owner, ownerSHA256: memberHex(native), nativeExecutable: owner, metallib: metallib,
-                resourceLibrary: resource, chip: "Apple M4", leaseDirectory: gate))
+                resourceLibrary: resource, chip: "Apple M4", leaseDirectory: gate,
+                ownerServesCommittedStart: ownerServesCommittedStart))
         }
         installations = installed
     }

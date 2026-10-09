@@ -7,6 +7,15 @@ import DarkbloomClusterRemote
 /// command. Both leader-local and follower owners load their own saved setup.
 /// The parent does not hold this owner's native-device exclusion.
 public enum DistributedInstalledOwner {
+    /// Whether `cluster worker-owner --stdio` can honour a start the
+    /// coordinator committed for one member. Not in this build: the entry
+    /// below serves only the mesh profile of a session the leader launches,
+    /// and the installed worker refuses every owner bootstrap attachment. A
+    /// member therefore declines preparation rather than commit to a start
+    /// whose owner would be refused, which would hold both devices until the
+    /// members disconnect.
+    static let servesCommittedNativeStart = false
+
     public static func serve(reference: ClusterConfigurationReference) throws {
         let prepared = try DistributedInstalledPreparation.prepare(reference: reference,
             paths: ClusterUserPaths(), deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)

@@ -18,6 +18,10 @@ public struct NativePairMemberInstallation: Sendable {
     let artifacts: [URL]
     let chip: String
     let leaseDirectory: URL
+    /// Whether the installed owner can honour a start the coordinator
+    /// committed. When it cannot, the member declines preparation, so nothing
+    /// is ever committed that this Mac could not start and later release.
+    let ownerServesCommittedStart: Bool
 
     public init(expectedCoordinatorPolicy: Data, rank: Int, clusterID: String,
                 identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
@@ -26,14 +30,17 @@ public struct NativePairMemberInstallation: Sendable {
         try self.init(expectedCoordinatorPolicy: expectedCoordinatorPolicy, rank: rank, clusterID: clusterID,
             identity: identity, profile: profile, installedOwner: installedOwner, ownerSHA256: ownerSHA256,
             nativeExecutable: nativeExecutable, metallib: metallib, resourceLibrary: resourceLibrary,
-            chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory)
+            chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory,
+            ownerServesCommittedStart: DistributedInstalledOwner.servesCommittedNativeStart)
     }
     // Same existing canonical-style private directory checks; only fixtures
-    // select a temporary scope. Production uses ClusterUserPaths above.
+    // select a temporary scope and their own owner. Production uses
+    // ClusterUserPaths and the installed owner above.
     init(expectedCoordinatorPolicy: Data, rank: Int, clusterID: String,
          identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
          installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
-         metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL) throws {
+         metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL,
+         ownerServesCommittedStart: Bool = true) throws {
         let policy = try NativePairMemberPolicy(expectedCoordinatorPolicy)
         guard (0...1).contains(rank), identity.peers.count == 2,
               ClusterConfigurationSyntax.hash(ownerSHA256), policy.chips.contains(chip),
@@ -45,6 +52,7 @@ public struct NativePairMemberInstallation: Sendable {
         self.identity = identity; self.profile = profile
         localOwner = try .init(installedDarkbloom: installedOwner); self.ownerSHA256 = ownerSHA256
         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
+        self.ownerServesCommittedStart = ownerServesCommittedStart
     }
     /// The claim this member registers. Its `policySHA256` is the digest of
     /// exactly the policy bytes a prepare frame must carry.

@@ -174,4 +174,36 @@ struct NativePairMemberInvocationTests {
             await peer.close()
         } catch { await peer.close(); throw error }
     }
+
+    /// What a real member does in this build: the installed owner cannot serve
+    /// a committed start, so preparation is declined with a signed cancel and
+    /// the coordinator never commits. Nothing launches and the member stays
+    /// attached and reusable.
+    @Test func memberWhoseOwnerCannotServeACommittedStartDeclinesPreparation() async throws {
+        let fixture = try NativePairMemberFixture(ownerServesCommittedStart: false)
+        let peer = MemberFixturePeer(installation: fixture.installations[0])
+        do {
+            try await peer.connect()
+            let prepare = try fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1)
+            try await peer.mock.pushNativePair(prepare)
+            let cancel = try await peer.wait("native_pair_cancel")
+            #expect(Data(base64Encoded: cancel.payload) == Data([68, 66, 78, 67, 1]))
+            #expect(cancel.epoch == prepare.epoch && cancel.generation == 7 && cancel.sequence == 1)
+            #expect(cancel.memberNonce == peer.nonce)
+            try await memberFixtureWaitUntil { peer.control.status == "idle" }
+            #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_cancel"])
+            #expect(!fixture.nativeStarted[0] && peer.context.isLive)
+            // The uncommitted refusal left no lease journal behind.
+            let gate = try ClusterDeviceExclusion(directoryURL: fixture.directories[0].appendingPathComponent(".darkbloom/cluster-device"))
+            withExtendedLifetime(gate) {}
+            await peer.close()
+        } catch { await peer.close(); throw error }
+    }
+
+    @Test func thisBuildsInstalledOwnerDoesNotServeACommittedStart() {
+        // Flipping this requires an installed owner that serves the member
+        // key profile and a worker that accepts its bootstrap attachment;
+        // until then a production member must decline preparation (above).
+        #expect(DistributedInstalledOwner.servesCommittedNativeStart == false)
+    }
 }

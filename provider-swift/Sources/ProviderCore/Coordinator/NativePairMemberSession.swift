@@ -101,6 +101,9 @@ final class NativePairMemberSession: @unchecked Sendable {
     private func runOwned() {
         var clean = false
         do {
+            // Declined before `prepared`, so the coordinator never commits a
+            // start this Mac's owner would refuse.
+            guard installation.ownerServesCommittedStart else { throw NativePairMemberError.unconfigured }
             let pins = try installation.prepare(start: start, deadline: prepareDeadline)
             condition.lock()
             do { try requireLive(); guard DispatchTime.now().uptimeNanoseconds < prepareDeadline else { throw NativePairMemberError.deadline } }

@@ -148,6 +148,42 @@ final class WorkerTests: XCTestCase {
         XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--rank", "1"], now: 100))
     }
 
+    /// The model ID is a closed choice and the cut must be one of that model's.
+    func testRegistered27BArgumentsAndCrossedModelCuts() throws {
+        let epoch = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        let args = ["--model-dir", "/invented/model", "--rank", "0", "--stage-cut", "16",
+            "--membership-epoch", epoch, "--model-id", "registered_qwen38_27b",
+            "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+            "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+            "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+            "--deadline-uptime-nanoseconds", "300000000100"]
+        for cut in stride(from: 4, through: 60, by: 4) { for rank in [0, 1] {
+            var selected = args; selected[3] = String(rank); selected[5] = String(cut)
+            let value = try WorkerConfiguration(arguments: selected, now: 100)
+            XCTAssertEqual(value.load.rank, rank); XCTAssertEqual(value.load.stageCut, cut)
+            XCTAssertEqual(value.load.identity.modelID, "registered_qwen38_27b")
+            XCTAssertEqual(value.load.allocatorPolicy, .disableFreedBufferCache)
+            XCTAssertEqual(value.load.prefillSchedule, .serial)
+        } }
+        XCTAssertEqual(try WorkerConfiguration(arguments: args + ["--prefill-schedule", "one_chunk_lookahead_v1"], now: 100)
+            .load.prefillSchedule, .oneChunkLookahead)
+        for cut in ["0", "2", "6", "18", "30", "62", "64", "68", "-4", "016", "+16", "16.0"] {
+            var selected = args; selected[5] = cut
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100), "27B cut \(cut)")
+        }
+        // A cut only the 27B has is refused for the 9B, and an ID outside the
+        // closed catalog is refused whatever the cut.
+        for cut in ["20", "32", "60"] {
+            var selected = args; selected[9] = "registered_qwen35_9b"; selected[5] = cut
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100), "9B cut \(cut)")
+        }
+        for model in ["registered_qwen38_27b ", "Registered_Qwen38_27B", "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                      "registered_qwen4", "registered_qwen38_27b_v2", "qwen38_27b"] {
+            var selected = args; selected[9] = model
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100), "model \(model)")
+        }
+    }
+
     func testEvidenceDirectoryIsOptionalAndMustBeNormalized() throws {
         let args = ["--model-dir", "/invented/model", "--rank", "1", "--stage-cut", "4",
             "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",

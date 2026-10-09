@@ -43,14 +43,14 @@ struct WorkerConfiguration {
             return value
         }
         let rank = try integer("--rank"), cut = try integer("--stage-cut")
-        guard (0...1).contains(rank), [4, 8, 12, 16].contains(cut), fields["--model-dir"]!.hasPrefix("/"),
-              fields["--model-id"] == "registered_qwen35_9b",
+        guard (0...1).contains(rank), fields["--model-dir"]!.hasPrefix("/"),
+              QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: fields["--model-id"]!)?.supportedCuts.contains(cut) == true,
               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
               epoch.uuidString.lowercased() == fields["--membership-epoch"],
               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
               String(deadline) == fields["--deadline-uptime-nanoseconds"],
               deadline > now, deadline - now <= 300_000_000_000 else {
-            throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut4|8|12|16 and a <=300-second local lifetime")
+            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a <=300-second local lifetime")
         }
         guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
             throw WorkerFailure.invalid("Unknown worker prefill schedule")

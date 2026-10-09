@@ -72,6 +72,14 @@ final class DistributedRequestState: @unchecked Sendable {
     var completionTokens = 0
     var terminal: CBv2FinishReason?
     var cancelSent = false
+    /// The request is ending with the clean client-stop handshake because its
+    /// consumer went away or the host is stopping. Its deadlines stay armed.
+    var cleanStopPending = false
+    /// A token has arrived since the clean stop was asked for: the stop has
+    /// been answered and only has to finish.
+    var cleanStopAnswered = false
+    /// A failure was delivered to the consumer before retirement.
+    var terminalPublished = false
 
     init(
         request: CBv2Request, lease: any DistributedResidentRequestLease,

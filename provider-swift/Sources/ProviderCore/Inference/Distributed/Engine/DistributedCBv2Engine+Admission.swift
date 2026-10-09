@@ -61,8 +61,9 @@ extension DistributedCBv2Engine {
         }
         var refused = false
         let admittedAt = clock.now()
-        if state.terminal != nil {
-            // Cancellation during reserve is consumed before native start.
+        if state.terminal != nil, !state.cleanStopPending {
+            // A cancellation during reserve that the lease could not take as a
+            // clean stop is consumed before native start.
         } else if lease.identity != identity || lease.requestID != request.id ||
             lease.reservedBytes <= 0 || lease.reservedBytes > capacity {
             stop(state, reason: .error("distributed owner returned an invalid reservation"))
@@ -78,6 +79,10 @@ extension DistributedCBv2Engine {
         } else if let deadline, clock.now() >= deadline {
             stop(state, reason: .terminal(cause: .admissionTimeout, message: "distributed first-token deadline"))
         } else {
+            // Also reached by a request whose consumer went away during
+            // reserve: the owner has no way to give a reservation back, so the
+            // request is started and ends at its first token with the clean
+            // stop, which keeps the pair.
             armDeadline(state)
             do {
                 try lease.start { [weak self, weak state] event in

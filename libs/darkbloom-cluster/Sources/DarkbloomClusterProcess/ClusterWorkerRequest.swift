@@ -13,6 +13,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     private var admitting = true
     private var released = false
     private var cancellation: ClusterWorkerCancellationReason?
+    private var cleanStopRequested = false
     private var byteReservation = 0
     private enum Submission { case none, submitted, admitted, refused }
     private var submissions: [Submission] = [.none, .none]
@@ -114,7 +115,33 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         owner.invalidate()
     }
 
+    /// Ends the request the way a client stop does, without giving up the pair:
+    /// the next committed token is answered with the protocol's clean stop, both
+    /// ranks retire and the pair can take another request. For a consumer that
+    /// went away and for an owner that is stopping. Nothing is fenced and no
+    /// time limit is set here: the request's own deadline still applies, and a
+    /// caller that cannot wait calls `cancel`, which ends the ranks.
+    ///
+    /// A request that has produced no token yet stops at its first one. False
+    /// when the request can no longer stop this way (cancelled, or retired).
+    @discardableResult public func requestCleanStop() -> Bool {
+        lock.withLock {
+            guard cancellation == nil, !retired.isComplete else { return false }
+            cleanStopRequested = true; return true
+        }
+    }
+    /// True once `requestCleanStop` was accepted.
+    public var cleanStopWasRequested: Bool { lock.withLock { cleanStopRequested } }
+    /// True once the ranks were told to start: only then can a token arrive.
+    var isRunning: Bool { lock.withLock { started && cancellation == nil } }
+
     public func waitUntilRetired() async { await retired.value() }
+    /// False when the request has not retired by `deadline`; it keeps running.
+    func waitUntilRetired(until deadline: UInt64) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { continuation.resume(returning: self.retired.wait(until: deadline)) }
+        }
+    }
     public func releaseResources() {
         let release = lock.withLock { () -> Bool in
             guard retired.isComplete && !released else { return false }; released = true; return true
@@ -151,8 +178,12 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                     }
                     count += 1; last = token
                     let emit = lock.withLock { callback }
-                    let keepGoing = emit?(.token(token)) ?? false
+                    // The token is committed on both ranks and is delivered even
+                    // when a clean stop was requested meanwhile; the stop is the
+                    // answer to it.
+                    let wanted = emit?(.token(token)) ?? false
                     if isCancelled { throw ClusterWorkerOwnerError.cancelled }
+                    let keepGoing = wanted && !cleanStopWasRequested
                     cleanStop = !keepGoing
                     try owner.workers[0].sendWorkerCommand(.tokenDecision(ordinal: ordinal, decision: keepGoing ? .proceed : .cleanStop),
                         requestID: requestID, deadline: reservation.deadlineUptimeNanoseconds)

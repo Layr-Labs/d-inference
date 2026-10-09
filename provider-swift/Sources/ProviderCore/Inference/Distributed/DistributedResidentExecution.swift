@@ -106,15 +106,29 @@ public protocol DistributedResidentRequestLease: AnyObject, Sendable {
     /// callback completion into the native session's failed-cancellation path.
     /// The callback serializes one token at a time; start itself must not wait for inference.
     func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws
-    /// Abnormal termination (caller cancellation, deadline, output/peer failure).
+    /// Abnormal termination (deadline, output/peer failure, or a caller whose
+    /// request for a clean stop was refused or did not finish in time).
     /// This is separate from a normal false return from emit.
     func cancel()
+    /// The consumer went away, or the host is stopping: end the request at its
+    /// next committed token with the clean client-stop handshake, so that both
+    /// peers retire and the owner stays usable for the next request. True when
+    /// the lease accepted; retirement then follows without `cancel()`, at the
+    /// first token for a request that has produced none yet. False when this
+    /// lease cannot stop that way, and the caller falls back to `cancel()`.
+    /// Sets no time limit of its own.
+    func requestCleanStop() -> Bool
     /// Return only after both peers acknowledge retirement or are fenced by the
     /// owner. A lost peer, elapsed timer, or sent cancel is not acknowledgement.
     /// This must also work for a reservation cancelled before start().
     func waitUntilRetired() async
     /// Called exactly once after waitUntilRetired, never on a timeout alone.
     func releaseResources()
+}
+
+public extension DistributedResidentRequestLease {
+    /// An owner without a clean stop of its own: every caller stop is `cancel()`.
+    func requestCleanStop() -> Bool { false }
 }
 
 /// Injectable, exclusive resident owner. No live Qwen backend is attached here.

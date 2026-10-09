@@ -140,7 +140,7 @@ final class EndpointBox: @unchecked Sendable {
         let observed=session.diagnosticObservation
         try require(observed.nativeBootstrap == .directNative && !observed.nativeBootstrapOwnerAuthenticated,"status claimed an authenticated bootstrap")
         try require(observed.collectiveProgressLimitMilliseconds==60_000,"status omitted the collective progress limit")
-        try require(session.cooperativeStopAllowanceNanoseconds==75_000_000_000,"stop allowance does not cover the progress limit")
+        try require(session.cooperativeStopAllowanceNanoseconds==85_000_000_000,"stop allowance does not cover the clean-stop wait and the progress limit")
     }
     /// A pin names whatever binary was installed. The installed path also
     /// requires that binary to carry the collective progress guard.
@@ -241,13 +241,14 @@ final class EndpointBox: @unchecked Sendable {
     static func perModelBudgets(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
         typealias Table=DistributedInstalledPairServingTable
         let nine=DistributedInstalledTimeBudgets(startupAllowanceNanoseconds:90_000_000_000,firstTokenBaseMilliseconds:10_000,firstTokenMillisecondsPerPromptToken:1,
-            admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,stopMarginNanoseconds:15_000_000_000)
+            admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,stopMarginNanoseconds:15_000_000_000,
+            cleanStopWaitNanoseconds:10_000_000_000)
         try require(Table.qwen35.pairServing == .open(nine),"the 9B's budgets changed, or the 9B is no longer open")
         try require(prepared.plan.budgets==nine,"the plan did not take its budgets from the selected model's row")
-        try require(nine.pairTiming == .standard,"the 9B's pair timing differs from the process module's standing values")
+        try require(nine.pairTiming == ClusterWorkerPairTiming(admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,cleanStopWaitNanoseconds:10_000_000_000),"the 9B's pair timing differs from its row")
         let (session,_)=try session(f,prepared)
         try require(try session.firstTokenBudgetPolicy() == DistributedFirstTokenBudgetPolicy(baseMilliseconds:10_000,millisecondsPerInputToken:1),"9B first-token budget changed")
-        try require(session.cooperativeStopAllowanceNanoseconds==75_000_000_000,"9B stop allowance changed")
+        try require(session.cooperativeStopAllowanceNanoseconds==85_000_000_000,"9B stop allowance changed")
         // The mode does not enter the budgets: a phase-split setup of the same model gets the same row.
         let split=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-split"),probe:f.probe,owner:f.owner,worker:f.worker,
             generationMode:"phase_split_v1",advertisedModes:allModes).prepare()

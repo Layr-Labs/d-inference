@@ -12,6 +12,7 @@ import Foundation
 // The arithmetic environment must already be set, exactly as for the worker:
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
 // and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust.
+// and for a Gemma artifact MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=trust.
 
 @main enum ReferenceCheck {
     static func main() async {
@@ -36,8 +37,7 @@ import Foundation
                 }
                 // As below: the artifact's configuration selects the registered
                 // model, and the cut must be one of that model's cuts.
-                let served = try QwenResidentCapabilityMetadata.registeredModel(configuration: QualificationFiles.read(
-                    URL(fileURLWithPath: model).appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+                let served = try RegisteredResidentModels.registeredModel(modelDirectory: URL(fileURLWithPath: model))
                 guard served.supportedCuts.contains(cut) else {
                     throw Failure("--stage-cut must be one of " + served.supportedCuts.map(String.init).joined(separator: ", "))
                 }
@@ -76,8 +76,7 @@ import Foundation
             // The artifact's configuration selects the registered model; the
             // request must have been written for that model and the cut must be
             // one of its cuts, before anything is hashed or loaded.
-            let registered = try QwenResidentCapabilityMetadata.registeredModel(
-                configuration: QualificationFiles.read(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+            let registered = try RegisteredResidentModels.registeredModel(modelDirectory: modelDirectory)
             guard request.modelID == registered.runtimeModelID, request.profileID == registered.profileID else {
                 throw Failure("The request is for \(request.modelID); the artifact in --model-dir is \(registered.runtimeModelID)")
             }
@@ -273,7 +272,7 @@ import Foundation
                --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...300]
           CUT is one of the registered model's cuts:
 
-        """ + "    " + QwenResidentCapabilityMetadata.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
+        """ + "    " + RegisteredResidentModels.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
 
     /// One event per line on standard output, written at once.
     static func emit(_ event: [String: Any]) throws {

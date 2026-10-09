@@ -9,6 +9,7 @@ import Foundation
 // The arithmetic environment must already be set, exactly as for the worker:
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
 // and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust.
+// and for a Gemma artifact MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=trust.
 
 @main enum StageLoadCheck {
     static func main() {
@@ -29,12 +30,18 @@ import Foundation
                   let hold = Int(fields["--hold-seconds"] ?? "0"), (0...240).contains(hold), hold < seconds else {
                 throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut CUT [--deadline-seconds 10...300] [--hold-seconds 0...240]\n"
                     + "  CUT is one of the registered model's cuts:\n    "
-                    + QwenResidentCapabilityMetadata.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
+                    + RegisteredResidentModels.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
                     + "  --hold-seconds keeps the loaded stage that long before release (less than the deadline)")
             }
             let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds) * 1_000_000_000
-            let receipt = try QwenResidentStageLoadCheck.run(modelDirectory: URL(fileURLWithPath: path),
-                rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
+            // The artifact's own configuration names the registered family that loads it.
+            let directory = URL(fileURLWithPath: path)
+            let configuration = (try? Data(contentsOf: directory.appendingPathComponent("config.json"))) ?? Data()
+            let receipt = try Gemma4ResidentStageLoadCheck.isRegistered(configuration: configuration)
+                ? Gemma4ResidentStageLoadCheck.run(modelDirectory: directory,
+                    rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
+                : QwenResidentStageLoadCheck.run(modelDirectory: directory,
+                    rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             print(String(decoding: try encoder.encode(receipt), as: UTF8.self))

@@ -48,6 +48,14 @@ task_catalog=(
   Models/Qwen/Resident/QwenResidentModelDefinition
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
+  Models/RegisteredResidentModels
+  Models/Gemma4/Metadata/Gemma4RegisteredSpecification
+  Models/Gemma4/Metadata/Gemma4StageGeometry
+  Models/Gemma4/Metadata/Gemma4LayerStagePlanning
+  Models/Gemma4/Model/Gemma4ArithmeticEnvironment
+  Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition
+  Models/Gemma4/Resident/Gemma4ResidentRegisteredModel
+  Models/Gemma4/Resident/Gemma4ResidentCapabilityMetadata
 )
 task_catalog_paths=()
 for task_source in "${task_catalog[@]}"; do task_catalog_paths+=("$task_runtime/$task_source.swift"); done

@@ -14,10 +14,22 @@ public struct PromptTokenizer: Sendable {
         (registeredManifestSHA256, "registered_qwen35_9b"),
         ("d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc", "registered_qwen38_27b"),
         ("db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff", "registered_qwen35_35b_a3b"),
+        ("c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd", "registered_gemma4_26b_qat_4bit"),
+        ("4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b", "registered_gemma4_26b"),
+        ("4e4e7df6aed1964ce70d9a3334e8114d2a18593a334c2fc3e5f2dce5ae65deed", "registered_gemma4_26b_8bit"),
     ]
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.
     static let assistantSuffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+    /// What a registered model's chat template puts around one user turn, with
+    /// thinking disabled. Gemma's template opens with its start-of-sequence
+    /// token and closes the model turn's empty thought channel.
+    static func chatWrapper(modelID: String) -> (prefix: String, suffix: String) {
+        modelID.hasPrefix("registered_gemma4_")
+            ? ("<bos><|turn>user\n", "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
+            : (userPrefix, assistantSuffix)
+    }
 
     public let tokenizerSHA256: String
     /// The registered model whose manifest the tokenizer files were checked against.
@@ -57,7 +69,8 @@ public struct PromptTokenizer: Sendable {
     /// tokens are repeated and cut so the whole prompt has exactly that many
     /// tokens; the chat wrapper around the text is never cut.
     public func encodeChat(userText: String, promptTokenCount: Int?) throws -> (tokenIDs: [Int], source: QualificationPromptSource) {
-        let prefix = encodeRaw(Self.userPrefix), suffix = encodeRaw(Self.assistantSuffix)
+        let wrapper = Self.chatWrapper(modelID: modelID)
+        let prefix = encodeRaw(wrapper.prefix), suffix = encodeRaw(wrapper.suffix)
         var body = encodeRaw(userText)
         guard !body.isEmpty else { throw QualificationError("The prompt text produced no tokens") }
         var matches: Bool?

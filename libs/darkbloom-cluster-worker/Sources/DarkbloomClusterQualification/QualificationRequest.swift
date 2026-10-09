@@ -80,12 +80,23 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         /// What the model's arithmetic contract requires of a rank's
         /// environment beyond `PairConfiguration.arithmeticEnvironment`.
         public let additionalArithmeticEnvironment: [String: String]
+        /// Token IDs a request for this model may carry: `0..<vocabularySize`.
+        public let vocabularySize: Int
 
         init(modelID: String, profileID: String, supportedCuts: [Int],
-             additionalArithmeticEnvironment: [String: String] = [:]) {
+             additionalArithmeticEnvironment: [String: String] = [:],
+             vocabularySize: Int = QualificationRequest.vocabularySize) {
             self.modelID = modelID; self.profileID = profileID; self.supportedCuts = supportedCuts
             self.additionalArithmeticEnvironment = additionalArithmeticEnvironment
+            self.vocabularySize = vocabularySize
         }
+    }
+    /// The three catalog entries of Gemma 4 26B share one geometry, cut list
+    /// and arithmetic contract (the provider's two serving values).
+    private static func gemma4(_ modelID: String) -> RegisteredModel {
+        .init(modelID: modelID, profileID: modelID + "_greedy_generation_v1", supportedCuts: [6, 8, 10, 12, 15, 18, 24],
+              additionalArithmeticEnvironment: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"],
+              vocabularySize: 262_144)
     }
     public static let registeredModels: [RegisteredModel] = [
         .init(modelID: modelID, profileID: profileID, supportedCuts: supportedCuts),
@@ -94,6 +105,7 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         .init(modelID: "registered_qwen35_35b_a3b", profileID: "registered_qwen35_35b_a3b_greedy_generation_v1",
               supportedCuts: Array(stride(from: 4, through: 36, by: 4)),
               additionalArithmeticEnvironment: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust"]),
+        gemma4("registered_gemma4_26b_qat_4bit"), gemma4("registered_gemma4_26b"), gemma4("registered_gemma4_26b_8bit"),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }
@@ -145,9 +157,10 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         try require((1...Self.maximumChunkTokens).contains(chunkSize), "chunk size must be 1...512")
         try require((1...Self.maximumOutputTokens).contains(outputCount), "output count must be 1...128")
         try require(promptTokenIDs.count <= Self.maximumContextTokens - outputCount, "prompt plus output exceeds 8320 tokens")
-        try require(promptTokenIDs.allSatisfy { (0..<Self.vocabularySize).contains($0) }, "prompt token outside the vocabulary")
+        let vocabulary = Self.registeredModel(modelID)?.vocabularySize ?? Self.vocabularySize
+        try require(promptTokenIDs.allSatisfy { (0..<vocabulary).contains($0) }, "prompt token outside the vocabulary")
         try require(stopTokenIDs.count <= 256 && stopTokenIDs == Array(Set(stopTokenIDs)).sorted()
-            && stopTokenIDs.allSatisfy { (0..<Self.vocabularySize).contains($0) }, "stop IDs must be sorted, unique and in the vocabulary")
+            && stopTokenIDs.allSatisfy { (0..<vocabulary).contains($0) }, "stop IDs must be sorted, unique and in the vocabulary")
         try require(promptTokenIDsSHA256 == QualificationHash.tokenIDs(promptTokenIDs), "prompt hash differs from the prompt")
         try require(["chatText", "rawText", "synthetic", "tokenIDs"].contains(promptSource.kind), "unknown prompt source")
     }

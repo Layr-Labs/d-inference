@@ -53,7 +53,7 @@ struct WorkerConfiguration {
         }
         let rank = try integer("--rank"), cut = try integer("--stage-cut")
         guard (0...1).contains(rank), fields["--model-dir"]!.hasPrefix("/"),
-              QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: fields["--model-id"]!)?.supportedCuts.contains(cut) == true,
+              RegisteredResidentModels.registeredModel(runtimeModelID: fields["--model-id"]!)?.supportedCuts.contains(cut) == true,
               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
               epoch.uuidString.lowercased() == fields["--membership-epoch"],
               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
@@ -68,7 +68,7 @@ struct WorkerConfiguration {
         // unknown or unsupported mode never falls back to the pipeline.
         if let text = fields["--generation-mode"] {
             guard let mode = ClusterGenerationMode(rawValue: text),
-                  QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: fields["--model-id"]!)?
+                  RegisteredResidentModels.registeredModel(runtimeModelID: fields["--model-id"]!)?
                       .supportedGenerationModes.contains(mode) == true else {
                 throw WorkerFailure.invalid("Worker generation mode must be one the registered model lists: "
                     + ClusterGenerationMode.allCases.map(\.rawValue).joined(separator: ", "))

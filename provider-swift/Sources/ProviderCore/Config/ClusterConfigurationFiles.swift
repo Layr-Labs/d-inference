@@ -143,7 +143,7 @@ enum ClusterConfigurationFiles {
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw ClusterConfigurationError.busy }
         defer { _ = flock(fd, LOCK_UN) }
         guard fstat(fd, &value) == 0, !requireEmpty || value.st_size == 0 else {
-            throw ClusterConfigurationError.invalid("Unresolved native ownership journal; explicit recovery required")
+            throw ClusterConfigurationError.invalid("Unresolved native ownership journal; run `darkbloom cluster recover`")
         }
         try parent.check()
         let result = try body()

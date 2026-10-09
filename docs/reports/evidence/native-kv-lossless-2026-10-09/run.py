@@ -246,6 +246,7 @@ def run_compiler(command, timeout, cwd=None):
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # The compiler may exit between the timeout and group termination.
                 pass
             output, errors = process.communicate()
             raise subprocess.TimeoutExpired(command, timeout, output=output, stderr=errors) from error

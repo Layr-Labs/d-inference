@@ -49,8 +49,8 @@
     "BenchNativeKVPackets.swift": "11ab465661a998d9857f5d4bc2eea47525c571e6c996424edfeecf812e896870",
     "main.swift": "21e31f2c092095de78879ada0391c6d6fd6e0e8cca21e934ef57bcaaa43d48c3"
   },
-  "resultsSHA256": "d6fca62b4989df8cdec9b99c984a76e95f4ae66223a74f989af12b85e8f37aed",
-  "runnerSHA256": "f5436548bd04c9c20614861d8daaf7d4397168e6f19bcc0ad0eb02f52f3050c1",
+  "resultsSHA256": "f4ab9a166aa811719829894db0cb0734b707a7c6296aeccd150717a719041405",
+  "runnerSHA256": "7650a2defa9f07b3911aaca17c3464da10adc7774caee61a91c09cbaad34c119",
   "schema": "darkbloom.native-kv-lossless-replay.v1",
   "scope": "All archive members verified, including gamma; only K/V replayed. Fresh CPU timings, no model/GPU run or encrypted SSD qualification.",
   "summarySHA256": "9538a3d4e37b43d6eb1e2d98380fc85f4ad8fdd5afc7f67ef20dfee3a366d6da",

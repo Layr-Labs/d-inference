@@ -16,6 +16,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
   "$R/Support/WorkerJSONScanner.swift" \
   "$R/Support/BoundedProbeInput.swift" \
   "$R/Models/Qwen/Metadata/QwenLayerStageMetadata.swift" \
+  "$R/Models/Qwen/Metadata/QwenRoutedExpertStageMetadata.swift" \
   "$R/Models/Qwen/Metadata/QwenLayerStagePlan.swift" \
   "$R/Models/Qwen/Metadata/QwenDenseProfileTypes.swift" \
   "$R/Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift" \

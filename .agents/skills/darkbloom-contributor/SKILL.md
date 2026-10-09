@@ -9,10 +9,12 @@ Use the repository's instructions as the source of truth:
 
 Keep sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform`
 checkouts. Provider/local native APIs and landing belong here; centralized
-backend, prompt sidecar, console and admin code must never be implemented,
-committed, pushed or uploaded here. Check the remote and intended diff first.
+backend, prompt sidecar, console and admin development belongs to the platform.
+Never implement, commit, push or upload new code for those owners here. The
+existing console snapshot and its build/test/hosting configuration remain;
+retention does not authorize new console development. Check the remote and intended diff first.
 Public golden vectors do not establish private cross-implementation qualification.
-The draft removal does not authorize live trigger, hosting or endpoint changes.
+Source ownership does not authorize live trigger, hosting or endpoint changes.
 
 1. Read `AGENTS.md` and every narrower `AGENTS.md` that applies to files in
    scope.

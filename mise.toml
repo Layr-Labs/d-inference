@@ -1,5 +1,5 @@
 [tools]
-# Landing site (Next.js 16 / React 19).
+# Retained console and landing site (Next.js 16 / React 19).
 node = "22"
 
 # Provider (Swift 6.3, Apple Silicon). The local `libs/mlx-swift` dependency

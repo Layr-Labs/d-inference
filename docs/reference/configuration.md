@@ -2,9 +2,28 @@
 
 > Last updated: 2026-10-09
 
-Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
+Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
-Coordinator and web-application settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
+Coordinator and admin settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
+
+## Console UI
+
+The retained console uses build-time public variables. Rebuild after changing
+them; never place private credentials in `NEXT_PUBLIC_*` values.
+
+| Variable | Default / behavior | Consumer |
+|---|---|---|
+| `NEXT_PUBLIC_COORDINATOR_URL` | `https://api.darkbloom.dev` when missing or empty; server-side upstream for same-origin API routes | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`), `console-ui/src/lib/coordinator-url.ts` |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | Missing or `placeholder` selects mock authentication; configure a real app for a hosted deployment | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` (`IS_PRIVY_CONFIGURED`) |
+| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Built-in measurement ID when missing; empty string disables analytics | `console-ui/src/lib/google-analytics.ts` (`getGoogleAnalyticsMeasurementId`) |
+| `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | Both required to enable Datadog RUM | `console-ui/src/components/DatadogRUM.tsx` |
+| `NEXT_PUBLIC_DD_SITE` | `datadoghq.com` | `console-ui/src/components/DatadogRUM.tsx` |
+| `NEXT_PUBLIC_DD_ENV` | `production` | `console-ui/src/components/DatadogRUM.tsx` |
+| `NEXT_PUBLIC_APP_VERSION` | `dev` | `console-ui/src/components/DatadogRUM.tsx` |
+
+The Settings API-example URL is a display preference, not an upstream routing
+override. Request headers, cookies and browser storage cannot choose the
+server's coordinator origin. See [console architecture](../architecture/components/console-ui.md#coordinator-url-resolution).
 
 ## Runtime metallib snapshots
 

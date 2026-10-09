@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-09
 
-Run isolated Swift, native-resource, public-fixture and landing tests here.
+Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
 Never point tests at production or overwrite a running provider's state.
 
@@ -44,6 +44,13 @@ implementation at explicit revisions and record its native/full-model evidence.
 Public CI must not clone a moving private branch or silently replace failed
 qualification with a hash check. Refresh expected outputs only after review.
 
+The retained console tests still read
+`coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
+`coordinator/tests/protocol/testdata/process_memory_wire.json`. These two JSON
+fixtures are not a retained coordinator implementation or test suite. Preserve
+their bytes and agreement with the provider resource copies when changing the
+wire contract; run each implementation's checks in its owning repository.
+
 MiMo metadata preparation uses `scripts/prepare-mimo-prompt-fixtures.py` and
 provider/native fixture preparation uses `scripts/prepare-mimo-provider-fixtures.py`
 and `scripts/prepare-mimo-audio-fixtures.py`. Use their isolated output directories;
@@ -63,7 +70,8 @@ make docs-check
 
 Docs-impact coverage tests pin provider-sensitive mappings: configuration,
 protocol/public fixtures, privacy, cache storage, native capacity, release/model
-publication and CI. One unrelated doc cannot satisfy every matching rule.
+publication, console source/packaging, shared console fixtures and CI. One
+unrelated doc cannot satisfy every matching rule.
 Historical-link checks retain exact provenance rather than treating all missing
 files as valid. Final full-tree lint needs intended additions/removals staged
 because the checker enumerates tracked files; explicit existing paths can be
@@ -74,6 +82,21 @@ For SSD write endurance, `scripts/test-ssd-write-budget.sh` runs isolated accoun
 checks on macOS. Keep persistent restart, damaged-ledger, clock rollback and
 multi-process cases. Native cache tests must also retain missing/replaced-volume,
 encryption, epoch, owner-only permissions and no-fallback behavior.
+
+## Retained Console
+
+```bash
+make ui-install ui-lint ui-test ui-build
+```
+
+`ui-test` runs Vitest; tests cover route handlers, validation, state and protocol
+fixtures. `ui-lint` checks `src/` with ESLint. The console CI lane and existing
+console-only pre-commit hook remain. `next build` ignores TypeScript errors in
+the retained configuration, so it is not a substitute for lint, Vitest or the
+separate `npm run typecheck` diagnostic in `console-ui/`. Use only isolated
+fixtures and test services, never live accounts or billing credentials. See
+[console architecture](../architecture/components/console-ui.md); new console
+development remains platform-owned.
 
 ## Landing
 

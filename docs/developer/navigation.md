@@ -9,7 +9,9 @@ backend and web-application development belongs to a different repository.
 
 Keep sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform`
 checkouts. Never nest them. Check remotes, branch and the full diff before pushing.
-Backend, Rust sidecar, console and admin code must never be uploaded here.
+New backend, Rust sidecar, console and admin code must never be uploaded here.
+The existing console snapshot and its build/test/hosting configuration remain
+local; this retention does not change the platform's development ownership.
 
 | Concern | Owner |
 |---|---|
@@ -18,6 +20,8 @@ Backend, Rust sidecar, console and admin code must never be uploaded here.
 | Native execution, kernels and model families | `libs/mlx-swift/`, `libs/mlx-swift-lm/`, `libs/mlx/` |
 | Provider and native regression coverage | `provider-swift/Tests/`, SDK test targets |
 | Marketing app, including local API routes | `landing/` |
+| Retained console snapshot and existing tooling | `console-ui/`; [architecture](../architecture/components/console-ui.md), new development owned by the platform |
+| Shared JSON fixtures used by console tests | `coordinator/tests/protocol/testdata/paged_footprint_wire.json`, `coordinator/tests/protocol/testdata/process_memory_wire.json`; no backend implementation |
 | Coordinator, private integration, consumer console and admin | [Platform](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d) |
 | Backend contracts and deployment runbooks | [Platform docs](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs) |
 
@@ -38,7 +42,7 @@ release/model through an external API remains supported; building, testing or
 deploying the backend here does not.
 
 Before removal, local docs mixed provider and backend instructions. After
-removal, native/provider docs stay local and platform details have immutable
+removal, native/provider and retained-console docs stay local and platform details have immutable
 external references. Frozen records are retained unchanged or retired with
 their inbound dependency closure; [historical references](historical-references.md)
 explain their original source.

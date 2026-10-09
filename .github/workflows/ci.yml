@@ -586,3 +586,24 @@ jobs:
             provider-swift/.build
             libs/mlx-swift-lm/.build
           key: spm-v4-blacksmith-macos27-native-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+
+  lint-console:
+    name: Console UI Lint & Build
+    needs: changes
+    if: ${{ needs.changes.outputs.console == 'true' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: console-ui/package-lock.json
+      - name: Install dependencies
+        run: cd console-ui && npm ci
+      - name: Lint
+        run: cd console-ui && npx eslint src/
+      - name: Test
+        run: cd console-ui && npm test
+      - name: Build
+        run: cd console-ui && npm run build

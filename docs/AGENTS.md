@@ -7,8 +7,9 @@ Rules for anyone — human or agent — who reads, writes, or checks a file unde
 a bug in the doc. Read this page before editing docs; read
 [`README.md`](README.md) to find a doc.
 
-Local documentation owns provider/native behavior and the landing site. Backend,
-consumer and admin implementation details belong to the sibling platform. Use
+Local documentation covers provider/native behavior, the landing site and the
+retained console snapshot with its build/test/hosting configuration. New backend,
+console and admin development belongs to the sibling platform. Use
 verified immutable platform links at `48a198c71a2d30feec5597bacf1101120f7f955d`
 for external contracts. Original records absent there remain available in
 d-inference at `4230fa03ddbc84e34e2de150c89431744d6f1c55`; never rewrite their
@@ -175,6 +176,8 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 |---|---|
 | WebSocket message, provider JSON or public protocol fixture | `reference/protocol-messages.md`; coordinate the external platform mirror |
 | Provider telemetry wire type or field | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
+| Retained console source, routes or packaging | `architecture/components/console-ui.md`; configuration and build/test guides where applicable; new development remains platform-owned |
+| Shared console-test protocol JSON fixtures | `developer/test.md`, `reference/protocol-messages.md`; check both console and provider resource readers |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Native inference, memory, admission or resource lifetime | `architecture/inference.md`, `architecture/hardware-support.md`; external capacity compatibility review |
 | Cache evidence, generation fences, restoration or persistence | `architecture/prefix-cache.md`, `reference/ssd-kv-cache.md`; retain protocol/privacy mappings |

@@ -1,0 +1,438 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+button, a, [role="button"], summary { cursor: pointer; }
+
+/* ==================== BRAND FONTS (EigenCloud Brand Book v1.0) ==================== */
+@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Medium.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: 'ABC Repro Mono'; src: url('/fonts/ABCReproMono-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('/fonts/IBMPlexMono-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('/fonts/IBMPlexMono-Medium.ttf') format('truetype'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Louize'; src: url('/fonts/Louize-Regular.otf') format('opentype'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Louize'; src: url('/fonts/Louize-Italic.otf') format('opentype'); font-weight: 400; font-style: italic; font-display: swap; }
+
+/* ─── Light mode (default) — EigenCloud brand palette ─── */
+:root {
+  /* Backgrounds */
+  --bg-primary:     #FAFAFC;
+  --bg-secondary:   #F1F2F6;
+  --bg-tertiary:    #EDEEF3;
+  --bg-elevated:    #E2E4EC;
+  --bg-hover:       #E8EAF1;
+  --bg-white:       #FFFFFF;
+
+  /* Ink / Text */
+  --ink:            #000000;
+  --ink-light:      #595D6E;
+  --ink-faint:      #747887;
+  --text-primary:   #000000;
+  --text-secondary: #595D6E;
+  --text-tertiary:  #747887;
+
+  /* Borders */
+  --border-dim:     #E2E4EC;
+  --border-subtle:  #747887;
+  --border-default: #E2E4EC;
+
+  /* Brand accents — eigen-blue primary */
+  --coral:          #1A0C6D;
+  --coral-light:    rgba(26, 12, 109, 0.06);
+  --teal:           #2D9E7A;
+  --teal-light:     #D1FAE5;
+  --teal-dark:      #1B6B50;
+  --blue:           #95BFFF;
+  --blue-light:     #DBEAFE;
+  --purple:         #7C3AED;
+  --purple-light:   #DDD6FE;
+  --gold:           #D97706;
+  --gold-light:     #FEF3C7;
+  --pink:           #EC4899;
+  --pink-light:     #FCE7F3;
+
+  /* Semantic accents */
+  --accent-brand:       #1A0C6D;
+  --accent-brand-dim:   rgba(26, 12, 109, 0.06);
+  --accent-brand-hover: #130952;
+  --accent-green:       #2D9E7A;
+  --accent-green-dim:   #D1FAE5;
+  --accent-amber:       #D97706;
+  --accent-amber-dim:   #FEF3C7;
+  --accent-red:         #DC2626;
+  --accent-red-dim:     #FEE2E2;
+  --danger:             #DC2626;
+
+  /* Network map (dot-matrix world) — alpha baked per theme for crisp contrast */
+  --map-land-dot:   rgba(26, 12, 109, 0.30);
+  --map-graticule:  rgba(26, 12, 109, 0.07);
+
+  /* Shadows — subtle, professional */
+  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md:      0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.10);
+
+  /* Fonts — EigenCloud Brand Book */
+  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
+  --font-logo: 'Louize', Georgia, serif;
+}
+
+/* ─── Dark mode — Cool professional dark ─── */
+.dark {
+  --bg-primary:     #11121A;
+  --bg-secondary:   #171922;
+  --bg-tertiary:    #1E202D;
+  --bg-elevated:    #292C3B;
+  --bg-hover:       #303446;
+  --bg-white:       #1E202D;
+
+  --ink:            #E8E8EC;
+  --ink-light:      #9CA3AF;
+  --ink-faint:      #9096AA;
+  --text-primary:   #E8E8EC;
+  --text-secondary: #9CA3AF;
+  --text-tertiary:  #9096AA;
+
+  --border-dim:     #292C3B;
+  --border-subtle:  #363648;
+  --border-default: #363648;
+
+  --coral:          #A3ACFF;
+  --coral-light:    rgba(129, 140, 248, 0.10);
+  --teal:           #34D399;
+  --teal-light:     rgba(52, 211, 153, 0.12);
+  --teal-dark:      #6EE7B7;
+  --blue:           #93C5FD;
+  --blue-light:     rgba(147, 197, 253, 0.12);
+  --purple:         #A78BFA;
+  --purple-light:   rgba(167, 139, 250, 0.12);
+  --gold:           #FBBF24;
+  --gold-light:     rgba(251, 191, 36, 0.12);
+  --pink:           #F472B6;
+  --pink-light:     rgba(244, 114, 182, 0.12);
+
+  --accent-brand:       #A3ACFF;
+  --accent-brand-dim:   rgba(129, 140, 248, 0.10);
+  --accent-brand-hover: #6366F1;
+  --accent-green:       #34D399;
+  --accent-green-dim:   rgba(52, 211, 153, 0.12);
+  --accent-amber:       #FBBF24;
+  --accent-amber-dim:   rgba(251, 191, 36, 0.12);
+  --accent-red:         #F87171;
+  --accent-red-dim:     rgba(248, 113, 113, 0.12);
+  --danger:             #F87171;
+
+  /* Network map (dot-matrix world) — brighter indigo reads on the dark ocean */
+  --map-land-dot:   rgba(129, 140, 248, 0.34);
+  --map-graticule:  rgba(129, 140, 248, 0.09);
+
+  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md:      0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.40);
+  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.50);
+}
+
+/* ─── Tailwind theme bridge ─── */
+@theme inline {
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-white: var(--bg-white);
+  --color-border-dim: var(--border-dim);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-default: var(--border-default);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-ink: var(--ink);
+  --color-ink-light: var(--ink-light);
+  --color-ink-faint: var(--ink-faint);
+  --color-coral: var(--coral);
+  --color-coral-light: var(--coral-light);
+  --color-teal: var(--teal);
+  --color-teal-light: var(--teal-light);
+  --color-teal-dark: var(--teal-dark);
+  --color-blue: var(--blue);
+  --color-blue-light: var(--blue-light);
+  --color-purple: var(--purple);
+  --color-purple-light: var(--purple-light);
+  --color-gold: var(--gold);
+  --color-gold-light: var(--gold-light);
+  --color-pink: var(--pink);
+  --color-pink-light: var(--pink-light);
+  --color-accent-brand: var(--accent-brand);
+  --color-accent-brand-dim: var(--accent-brand-dim);
+  --color-accent-brand-hover: var(--accent-brand-hover);
+  --color-accent-green: var(--accent-green);
+  --color-accent-green-dim: var(--accent-green-dim);
+  --color-accent-amber: var(--accent-amber);
+  --color-accent-amber-dim: var(--accent-amber-dim);
+  --color-accent-red: var(--accent-red);
+  --color-accent-red-dim: var(--accent-red-dim);
+  --color-danger: var(--danger);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+  --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
+  --font-logo: 'Louize', Georgia, serif;
+}
+
+/* ─── Scrollbars ─── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+*::-webkit-scrollbar { width: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border-subtle);
+  border-radius: 3px;
+}
+
+/* ─── Base ─── */
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Typography — Brand Book rules ─── */
+/* Headlines: Bold, tracking -2%, leading 100% */
+@layer base {
+h1, h2, h3 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+}
+
+/* ─── Trust badge glow ─── */
+@keyframes trust-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(45, 158, 122, 0.2); }
+  50% { box-shadow: 0 0 14px rgba(45, 158, 122, 0.4); }
+}
+
+.trust-glow-hardware {
+  animation: trust-pulse 3s ease-in-out infinite;
+}
+
+/* ─── Streaming cursor blink ─── */
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.streaming-cursor::after {
+  content: '\25CA';
+  animation: cursor-blink 0.8s steps(1) infinite;
+  color: var(--accent-brand);
+  font-size: 0.85em;
+  margin-left: 1px;
+}
+
+/* ─── Markdown prose ─── */
+.prose pre {
+  background: #000 !important;
+  border: 1px solid var(--border-dim);
+  border-radius: 0 0 10px 10px;
+  padding: 1rem;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: rgba(255,255,255,0.88);
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-tertiary);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  color: var(--accent-brand);
+}
+
+.prose pre code {
+  background: transparent;
+  padding: 0;
+  color: rgba(255,255,255,0.88);
+}
+
+.prose p {
+  margin: 0.5em 0;
+  line-height: 1.7;
+}
+
+.prose ul, .prose ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.prose li {
+  margin: 0.25em 0;
+}
+
+.prose h1, .prose h2, .prose h3 {
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.prose a {
+  color: var(--accent-brand);
+  text-decoration: underline;
+  text-decoration-color: var(--border-subtle);
+  text-underline-offset: 2px;
+}
+
+.prose blockquote {
+  border-left: 2px solid var(--border-subtle);
+  padding-left: 1em;
+  color: var(--text-secondary);
+  margin: 0.5em 0;
+}
+
+.prose table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.prose th, .prose td {
+  border: 1px solid var(--border-dim);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+
+.prose th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+
+/* ─── Animations ─── */
+@keyframes message-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message-animate {
+  animation: message-enter 0.3s ease-out;
+}
+
+@keyframes slide-in {
+  from { transform: translateX(-100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.sidebar-animate {
+  animation: slide-in 0.2s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+@keyframes network-flow-ping {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -180; }
+}
+
+.network-flow-ping {
+  animation-name: network-flow-ping;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .network-flow-ping {
+    animation: none;
+  }
+}
+
+/* ─── Syntax highlighting ─── */
+.hljs {
+  background: transparent !important;
+  color: rgba(255,255,255,0.88) !important;
+}
+
+.hljs-keyword { color: #c4b5fd; }
+.hljs-string { color: #86efac; }
+.hljs-number { color: #93c5fd; }
+.hljs-comment { color: rgba(255,255,255,0.3); font-style: italic; }
+.hljs-function { color: #93c5fd; }
+.hljs-built_in { color: #fbbf24; }
+.hljs-attr { color: #fbbf24; }
+.hljs-title { color: #93c5fd; }
+
+/* ─── Focus ring utility ─── */
+.focus-ring:focus-visible {
+  outline: 2px solid var(--accent-brand);
+  outline-offset: 2px;
+}
+
+/* ─── Code block header ─── */
+.code-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #000;
+  border: 1px solid var(--border-dim);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px 10px 0 0;
+}
+
+.code-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.code-dot-r { background: #FF5F57; }
+.code-dot-y { background: #FEBC2E; }
+.code-dot-g { background: #27C93F; }
+
+/* Shared interaction and layout foundations. */
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+::selection { background: var(--accent-brand-dim); color: var(--text-primary); }
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent-brand);
+  outline-offset: 3px;
+}
+button:disabled { cursor: not-allowed; }
+.skip-link {
+  position: fixed; left: 1rem; top: -5rem; z-index: 100;
+  border-radius: .5rem; padding: .75rem 1rem;
+  background: var(--accent-brand); color: white;
+}
+.skip-link:focus { top: 1rem; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The composer exposes its focus state on the containing surface. */
+.chat-composer-input:focus-visible { outline: none; }

@@ -6,6 +6,7 @@ Provider execution, local security and external contracts. Backend implementatio
 
 - [MLX stack: the three pinned submodules and the metallib](components/mlx-swift.md)
 - [Provider process](components/provider.md)
+- [Retained console snapshot, proxy routes and hosting](components/console-ui.md)
 - [Hardware support and the provider memory model](hardware-support.md)
 - [Provider inference engine](inference.md)
 - [Provider Autopilot](model-autopilot.md)

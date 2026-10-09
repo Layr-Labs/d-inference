@@ -1,0 +1,198 @@
+import {
+  asRecord,
+  asString,
+  asNumber,
+  asBoolean,
+  asStringArray,
+  compactObject,
+} from "@/lib/json";
+
+export interface ServedModel {
+  id: string;
+  providers: number;
+}
+
+export interface CatalogModelSummary {
+  id: string;
+  status: string;
+  displayName?: string;
+  sizeGB?: number;
+  minRAMGB?: number;
+  maxContextLength?: number;
+  maxOutputLength?: number;
+  architecture?: string;
+  family?: string;
+  quantization?: string;
+  capabilities?: string[];
+  // OpenRouter provider schema fields.
+  name?: string;
+  description?: string;
+  supportedFeatures?: string[];
+  inputModalities?: string[];
+  outputModalities?: string[];
+}
+
+export interface CatalogAliasSummary {
+  id: string;
+  displayName?: string;
+  desiredBuild: string;
+  previousBuild?: string;
+  retiredBuilds?: string[];
+  primaryBuild?: string;
+}
+
+export interface CatalogDataSummary {
+  models: CatalogModelSummary[];
+  aliases: CatalogAliasSummary[];
+}
+
+export interface CapacityModelSummary {
+  id: string;
+  ready?: boolean;
+  canAccept?: boolean;
+  routableProviders?: number;
+  warmProviders?: number;
+  runningProviders?: number;
+  coldProviders?: number;
+  activeRequests?: number;
+  queuedRequests?: number;
+  queueLimit?: number;
+  aggregateTPS?: number;
+  estimatedTTFTMS?: number;
+  tokenBudgetRemaining?: number;
+  tokenBudgetTotal?: number;
+}
+
+export type VisibleServedModel<T extends ServedModel> = T & {
+  catalogStatus: string;
+};
+
+export interface ServedModelFilterResult<T extends ServedModel> {
+  visible: VisibleServedModel<T>[];
+  catalogServedCount: number;
+  deprecatedCount: number;
+}
+
+function catalogStatus(model: Record<string, unknown>): string {
+  if (typeof model.status === "string" && model.status.trim()) {
+    return model.status.trim();
+  }
+  const metadata = asRecord(model.metadata);
+  return typeof metadata.status === "string" && metadata.status.trim()
+    ? metadata.status.trim()
+    : "active";
+}
+
+export function catalogDataFromResponse(payload: unknown): CatalogDataSummary {
+  const body = asRecord(payload);
+  let rows: unknown[] = [];
+  if (Array.isArray(body.data)) {
+    rows = body.data;
+  } else if (Array.isArray(body.models)) {
+    rows = body.models;
+  }
+
+  const models = rows
+    .map(asRecord)
+    .filter((model) => typeof model.id === "string" && model.id.trim().length > 0)
+    .map((model) => {
+      const metadata = asRecord(model.metadata);
+      return compactObject({
+        id: model.id as string,
+        status: catalogStatus(model),
+        displayName: asString(model.display_name ?? metadata.display_name),
+        sizeGB: asNumber(model.size_gb ?? metadata.size_gb),
+        minRAMGB: asNumber(model.min_ram_gb ?? metadata.min_ram_gb),
+        maxContextLength: asNumber(model.max_context_length ?? metadata.max_context_length),
+        maxOutputLength: asNumber(model.max_output_length ?? metadata.max_output_length),
+        architecture: asString(model.architecture ?? metadata.architecture),
+        family: asString(model.family ?? metadata.family),
+        quantization: asString(model.quantization ?? metadata.quantization),
+        capabilities: asStringArray(model.capabilities ?? metadata.capabilities),
+        name: asString(model.name ?? model.display_name ?? metadata.display_name),
+        description: asString(model.description ?? metadata.description),
+        supportedFeatures: asStringArray(model.supported_features),
+        inputModalities: asStringArray(model.input_modalities),
+        outputModalities: asStringArray(model.output_modalities),
+      });
+    });
+
+  const aliases = Array.isArray(body.aliases)
+    ? body.aliases
+      .map(asRecord)
+      .filter((alias) => typeof alias.id === "string" && typeof alias.desired_build === "string")
+      .map((alias) => compactObject({
+        id: alias.id as string,
+        displayName: asString(alias.display_name),
+        desiredBuild: alias.desired_build as string,
+        previousBuild: asString(alias.previous_build),
+        retiredBuilds: asStringArray(alias.retired_builds),
+        primaryBuild: asString(alias.primary_build),
+      }))
+    : [];
+
+  return { models, aliases };
+}
+
+export function catalogModelsFromResponse(payload: unknown): CatalogModelSummary[] {
+  return catalogDataFromResponse(payload).models;
+}
+
+export function capacityModelsFromResponse(payload: unknown): CapacityModelSummary[] {
+  const body = asRecord(payload);
+  const rows = Array.isArray(body.models) ? body.models : [];
+
+  return rows
+    .map(asRecord)
+    .filter((model) => typeof model.id === "string" && model.id.trim().length > 0)
+    .map((model) => compactObject({
+      id: model.id as string,
+      ready: asBoolean(model.ready),
+      canAccept: asBoolean(model.can_accept),
+      routableProviders: asNumber(model.routable_providers),
+      warmProviders: asNumber(model.warm_providers),
+      runningProviders: asNumber(model.running_providers),
+      coldProviders: asNumber(model.cold_providers),
+      activeRequests: asNumber(model.active_requests),
+      queuedRequests: asNumber(model.queued_requests),
+      queueLimit: asNumber(model.queue_limit),
+      aggregateTPS: asNumber(model.aggregate_tps),
+      estimatedTTFTMS: asNumber(model.estimated_ttft_ms),
+      tokenBudgetRemaining: asNumber(model.token_budget_remaining),
+      tokenBudgetTotal: asNumber(model.token_budget_total),
+    }));
+}
+
+function isDefaultCatalogStatus(status: string): boolean {
+  const normalized = status.toLowerCase();
+  return normalized !== "deprecated" && normalized !== "retired";
+}
+
+export function filterServedCatalogModels<T extends ServedModel>(
+  models: T[],
+  catalogModels: CatalogModelSummary[],
+  includeDeprecated: boolean,
+): ServedModelFilterResult<T> {
+  const catalogStatusByID = new Map(catalogModels.map((model) => [model.id, model.status]));
+
+  const decorated = models.map((model): VisibleServedModel<T> => ({
+    ...model,
+    catalogStatus: catalogStatusByID.get(model.id) ?? "deprecated",
+  }));
+
+  const catalogServedCount = decorated.filter((model) =>
+    catalogStatusByID.has(model.id) && isDefaultCatalogStatus(model.catalogStatus)
+  ).length;
+  const deprecatedCount = decorated.length - catalogServedCount;
+  const visible = includeDeprecated
+    ? decorated
+    : decorated.filter((model) =>
+      catalogStatusByID.has(model.id) && isDefaultCatalogStatus(model.catalogStatus)
+    );
+
+  return {
+    visible,
+    catalogServedCount,
+    deprecatedCount,
+  };
+}

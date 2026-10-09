@@ -2,8 +2,9 @@
 
 > Last updated: 2026-10-09
 
-This repository documents the Swift provider, local native inference and landing.
-Backend, consumer and admin implementation and operating guides belong to
+This repository documents the Swift provider, local native inference, landing,
+and retained console snapshot. New backend, console and admin development and
+backend operating guides belong to
 [the platform](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs).
 
 ## Operate A Provider
@@ -27,6 +28,7 @@ Backend, consumer and admin implementation and operating guides belong to
 - [Serving-performance qualification](developer/serving-performance-qualification.md)
 - [PR stacks](developer/pull-requests.md) and [threat-review tooling](developer/threat-model-review.md)
 - [Landing application](../landing/README.md)
+- [Retained console architecture and hosting configuration](architecture/components/console-ui.md)
 
 Public golden vectors validate fixed expected behavior. They do not execute the
 private platform implementation or establish live routing, real Apple

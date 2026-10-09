@@ -15,7 +15,7 @@
     },
     {
       "name": "provider telemetry",
-      "source_patterns": ["provider-swift/Sources/ProviderCore/Telemetry/**", "provider-swift/Sources/ProviderCore/Protocol/*Profile*", "provider-swift/Sources/ProviderCore/Protocol/Telemetry*"],
+      "source_patterns": ["provider-swift/Sources/ProviderCore/Telemetry/**", "provider-swift/Sources/ProviderCore/Protocol/*Profile*", "provider-swift/Sources/ProviderCore/Protocol/Telemetry*", "console-ui/src/lib/telemetry-types.ts"],
       "docs_any_of": ["docs/reference/telemetry-schema.md", "docs/architecture/telemetry.md"]
     },
     {
@@ -75,13 +75,23 @@
     },
     {
       "name": "build and test tooling",
-      "source_patterns": ["Makefile", "mise.toml", ".github/workflows/ci.yml", ".github/workflows/component-changes.yml", ".github/actions/provider-ci-build/**", "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py", "scripts/docs-*", "scripts/test-docs-*", "scripts/run-*", "scripts/stage-*", "scripts/fetch-metallib.sh", "scripts/provider-ci-cache.py", "provider-swift/Package.swift", ".gitmodules"],
+      "source_patterns": ["Makefile", "mise.toml", ".githooks/**", ".github/dependabot.yml", ".github/workflows/ci.yml", ".github/workflows/component-changes.yml", ".github/actions/provider-ci-build/**", "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py", "scripts/docs-*", "scripts/test-docs-*", "scripts/run-*", "scripts/stage-*", "scripts/fetch-metallib.sh", "scripts/provider-ci-cache.py", "provider-swift/Package.swift", ".gitmodules"],
       "docs_any_of": ["docs/developer/build.md", "docs/developer/test.md"]
     },
     {
       "name": "landing",
       "source_patterns": ["landing/src/**", "landing/package*.json", "landing/next.config.*", "landing/vercel.json", ".github/workflows/landing.yml"],
       "docs_any_of": ["landing/README.md", "docs/developer/build.md", "docs/developer/test.md"]
+    },
+    {
+      "name": "retained console",
+      "source_patterns": ["console-ui/src/**", "console-ui/package*.json", "console-ui/next.config.*", "console-ui/tsconfig.json", "console-ui/vercel.json"],
+      "docs_any_of": ["docs/architecture/components/console-ui.md", "docs/reference/configuration.md"]
+    },
+    {
+      "name": "console protocol fixtures",
+      "source_patterns": ["coordinator/tests/protocol/testdata/paged_footprint_wire.json", "coordinator/tests/protocol/testdata/process_memory_wire.json"],
+      "docs_any_of": ["docs/developer/test.md", "docs/reference/protocol-messages.md"]
     },
     {
       "name": "repository ownership",

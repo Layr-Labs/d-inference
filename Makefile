@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help provider-build provider-test provider \
         benchmark-gemma-contbatch benchmark-wrapper-test \
+        ui-install ui-build ui-lint ui-test ui \
         landing-install landing-build landing-lint landing-test landing \
         docs-check docs-impact-check docs-stamp test build all clean
 
@@ -34,6 +35,22 @@ benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weig
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
+# ---- Retained Console UI (Next.js 16) --------------------------------------
+
+ui-install: ## npm install for console-ui
+	cd console-ui && npm install
+
+ui-build: ## next build for console-ui
+	cd console-ui && npm run build
+
+ui-lint: ## eslint check for console-ui sources
+	cd console-ui && npx eslint src/
+
+ui-test: ## vitest for console-ui
+	cd console-ui && npm test
+
+ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build retained console-ui
+
 # ---- Marketing site (Next.js 16) ------------------------------------------
 
 landing-install: ## npm ci for landing
@@ -63,12 +80,13 @@ docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target 
 
 # ---- Aggregates ----------------------------------------------------------
 
-test: provider-test landing-test benchmark-wrapper-test docs-check ## Run provider and landing tests + docs lint
+test: provider-test ui-test landing-test benchmark-wrapper-test docs-check ## Run provider, retained console and landing tests + docs lint
 
-build: provider-build landing-build ## Build provider and landing
+build: provider-build ui-build landing-build ## Build provider, retained console and landing
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -rf provider-swift/.build
+	rm -rf console-ui/.next console-ui/node_modules
 	rm -rf landing/.next landing/node_modules

@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-09
 
-Exact public wire shapes, manifests and local configuration.
+Exact public wire shapes, manifests and provider/retained-console configuration.
 
 - [App Attest shadow protocol, machine inventory, and evidence](app-attest-shadow.md)
 - [Configuration reference](configuration.md)

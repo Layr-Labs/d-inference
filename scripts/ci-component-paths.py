@@ -10,13 +10,13 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider",)
+COMPONENTS = ("provider", "console")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
-    "provider-swift/**", "libs/**", ".github/actions/provider-ci-build/**",
+    "provider-swift/**", "libs/**", "fixtures/**", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -31,7 +31,11 @@ PROVIDER = (
     "scripts/test-profile-inventory-auth.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
 )
-SHARED = ("fixtures/**",)
+CONSOLE = (
+    "console-ui/**", ".githooks/**",
+    "coordinator/tests/protocol/testdata/paged_footprint_wire.json",
+    "coordinator/tests/protocol/testdata/process_memory_wire.json",
+)
 
 
 def matches(path, patterns):
@@ -48,8 +52,9 @@ def classify(paths):
         if matches(path, COMMON):
             return dict.fromkeys(COMPONENTS, True)
         ci = path == ".github/workflows/ci.yml"
-        provider = matches(path, PROVIDER + SHARED)
+        provider = matches(path, PROVIDER)
         selected["provider"] |= ci or provider
+        selected["console"] |= ci or matches(path, CONSOLE)
     return selected
 
 

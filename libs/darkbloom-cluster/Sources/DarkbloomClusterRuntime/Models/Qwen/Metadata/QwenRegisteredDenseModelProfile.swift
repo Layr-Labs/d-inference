@@ -55,7 +55,7 @@ struct QwenRegisteredDenseModelProfile {
               try QwenLongPrefillCheckedBytes.sum(declared.files.map(\.size_bytes)) == spec.manifestBytes,
               declared.files.first(where: { $0.path == "config.json" })?.sha256 == configurationSHA,
               let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
-              root["model_type"] as? String == "qwen3_5", let text = root["text_config"] as? [String: Any] else {
+              root["model_type"] as? String == spec.rootModelType, let text = root["text_config"] as? [String: Any] else {
             throw QwenDenseProfileError("Pinned registered manifest/configuration semantics differ")
         }
         try QwenStageMetadata.validate(text: text, root: root, nested: true)
@@ -67,7 +67,8 @@ struct QwenRegisteredDenseModelProfile {
             linearKeyDimension: n("linear_key_head_dim"), linearValueDimension: n("linear_value_head_dim"),
             convolutionKernel: n("linear_conv_kernel_dim"))
         guard geometry == (try spec.expectedGeometry()), try n("vocab_size") == 248_320,
-              try n("max_position_embeddings") >= 8193 else {
+              try n("max_position_embeddings") >= 8193,
+              try QwenRoutedExpertStageMetadata.geometry(text: text, root: root, nested: true) == spec.routedExperts else {
             throw QwenDenseProfileError("Registered geometry differs from independently pinned expectations")
         }
         for tensor in canonicalTensors { try tensor.validate() }

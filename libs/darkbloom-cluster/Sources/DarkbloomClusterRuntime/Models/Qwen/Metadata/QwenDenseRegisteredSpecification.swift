@@ -11,22 +11,30 @@ struct QwenDenseRegisteredSpecification {
     let contentInventorySHA256: String?
     let manifestBytes: Int, manifestFileCount: Int, sourceBytes: Int, tensorCount: Int, largestTensorBytes: Int
     let layers: Int, hidden: Int, queryHeads: Int, linearValueHeads: Int, namedStateBytes: Int
+    /// Key/value heads of a full-attention layer.
+    let kvHeads: Int
+    /// The routed-expert feed-forward of every layer, or nil for a dense one.
+    let routedExperts: QwenRoutedExpertGeometry?
+    /// The `model_type` the artifact's configuration must declare.
+    var rootModelType: String { routedExperts == nil ? "qwen3_5" : QwenRoutedExpertStageMetadata.rootModelType }
 
     private init(model: QwenRegisteredDenseModel, configurationSHA256: String, manifestSHA256: String,
                  contentInventorySHA256: String? = nil,
                  artifactSHA256: String, inventorySHA256: String, manifestBytes: Int, manifestFileCount: Int,
                  sourceBytes: Int, tensorCount: Int, largestTensorBytes: Int, layers: Int, hidden: Int,
-                 queryHeads: Int, linearValueHeads: Int, namedStateBytes: Int) {
+                 queryHeads: Int, linearValueHeads: Int, namedStateBytes: Int,
+                 kvHeads: Int = 4, routedExperts: QwenRoutedExpertGeometry? = nil) {
         self.model = model; self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
         self.artifactSHA256 = artifactSHA256; self.inventorySHA256 = inventorySHA256; self.manifestBytes = manifestBytes
         self.contentInventorySHA256 = contentInventorySHA256
         self.manifestFileCount = manifestFileCount; self.sourceBytes = sourceBytes; self.tensorCount = tensorCount
         self.largestTensorBytes = largestTensorBytes; self.layers = layers; self.hidden = hidden
         self.queryHeads = queryHeads; self.linearValueHeads = linearValueHeads; self.namedStateBytes = namedStateBytes
+        self.kvHeads = kvHeads; self.routedExperts = routedExperts
     }
     func expectedGeometry() throws -> QwenLongPrefillBudgetGeometry {
         try .init(layers: layers, fullAttentionInterval: 4, hiddenSize: hidden, queryHeads: queryHeads,
-            kvHeads: 4, headDimension: 256, linearKeyHeads: 16, linearValueHeads: linearValueHeads,
+            kvHeads: kvHeads, headDimension: 256, linearKeyHeads: 16, linearValueHeads: linearValueHeads,
             linearKeyDimension: 128, linearValueDimension: 128, convolutionKernel: 4)
     }
     static let all: [Self] = [
@@ -47,5 +55,18 @@ struct QwenDenseRegisteredSpecification {
             manifestBytes: 16_320_415_757, manifestFileCount: 14, sourceBytes: 15_132_802_048,
             tensorCount: 1847, largestTensorBytes: 635_699_200, layers: 64, hidden: 5120,
             queryHeads: 24, linearValueHeads: 48, namedStateBytes: 1_599_082_560),
+        // Qwen3.5 35B A3B, catalog `qwen3.5-35b-a3b` 2026-08-25-r1. 1,637
+        // canonical text tensors: 1,757 stored ones, with each layer's routed
+        // gate and up halves counted as the one fused tensor they load as.
+        .init(model: .qwen35ThirtyFiveBA3B,
+            configurationSHA256: "58a2b700bbe36066bc3e8bac65341a7f886c8dbe4db510553150004cfb0294f7",
+            manifestSHA256: "db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff",
+            artifactSHA256: "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+            inventorySHA256: "6d40ee61eead498b1b5863a3c975a0b57a7e2e03a59cfe287f88818acdfd54d9",
+            manifestBytes: 20_893_747_852, manifestFileCount: 14, sourceBytes: 19_498_262_656,
+            tensorCount: 1637, largestTensorBytes: 268_435_456, layers: 40, hidden: 2048,
+            queryHeads: 16, linearValueHeads: 32, namedStateBytes: 558_344_232,
+            kvHeads: 2, routedExperts: .init(experts: 256, expertsPerToken: 8,
+                                             expertIntermediate: 512, sharedIntermediate: 512)),
     ]
 }

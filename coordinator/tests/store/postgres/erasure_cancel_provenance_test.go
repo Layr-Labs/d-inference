@@ -53,14 +53,14 @@ func TestErasureCancelOfConfirmBeforeProvenanceRestoresNoCredential(t *testing.T
 	if _, err := s.CancelAccountErasure(ctx, a.AccountID, "admin_key", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	for name, raw := range map[string]string{"key live at the confirm": a.RawKey, "key revoked before the erasure": oldKey} {
-		if k, err := s.AuthenticateKey(raw); err == nil {
-			t.Fatalf("%s authenticates after cancel: %+v", name, k)
+	for _, c := range []struct{ name, raw string }{{"API key revoked before the erasure", oldKey}, {"API key live at the confirm", a.RawKey}} {
+		if k, err := s.AuthenticateKey(c.raw); err == nil {
+			t.Errorf("%s authenticates after cancel: %s", c.name, k.ID)
 		}
 	}
-	for name, raw := range map[string]string{"token live at the confirm": a.ProviderToken, "token revoked before the erasure": oldToken} {
-		if pt, err := s.GetProviderToken(raw); err == nil {
-			t.Fatalf("%s is valid after cancel: %+v", name, pt)
+	for _, c := range []struct{ name, raw string }{{"provider token revoked before the erasure", oldToken}, {"provider token live at the confirm", a.ProviderToken}} {
+		if _, err := s.GetProviderToken(c.raw); err == nil {
+			t.Errorf("%s is valid after cancel", c.name)
 		}
 	}
 	if _, err := s.GetUserByAccountID(a.AccountID); err != nil {

@@ -6,17 +6,32 @@ import Darwin
 final class DistributedStartSignals: @unchecked Sendable {
     private let lock = NSLock()
     private var sources: [DispatchSourceSignal] = []
-    // SIG_DFL is represented by a null function pointer on Darwin.
-    private var previous: [(Int32, sig_t?)] = []
+    private var previous: [SavedDisposition] = []
     private var action: (@Sendable () -> Void)?
     private var terminated = false
     private var closed = false
 
     private enum SetupError: Error { case registrationTimedOut }
 
+    /// What a signal did before this object ignored it: handler, flags and
+    /// blocked signals, as `sigaction` reports them, so `close()` puts back
+    /// exactly that. The handler is not kept as a Swift function pointer:
+    /// `SIG_IGN` is the address 1, which Swift also uses for `nil` in an
+    /// optional pair that holds one, so a loop over such pairs ends at the
+    /// first ignored signal and restores nothing after it.
+    private struct SavedDisposition {
+        let number: Int32
+        var action: sigaction
+    }
+
     init() throws {
         for number in [SIGTERM, SIGINT] {
-            previous.append((number, signal(number, SIG_IGN)))
+            var ignore = sigaction()
+            ignore.__sigaction_u.__sa_handler = SIG_IGN
+            var earlier = sigaction()
+            if sigaction(number, &ignore, &earlier) == 0 {
+                previous.append(SavedDisposition(number: number, action: earlier))
+            }
             let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
             let registered = DispatchSemaphore(value: 0)
             source.setRegistrationHandler { registered.signal() }
@@ -48,7 +63,7 @@ final class DistributedStartSignals: @unchecked Sendable {
     }
 
     func close() {
-        let values = lock.withLock { () -> ([DispatchSourceSignal], [(Int32, sig_t?)]) in
+        let values = lock.withLock { () -> ([DispatchSourceSignal], [SavedDisposition]) in
             guard !closed else { return ([], []) }
             closed = true; action = nil
             let result = (sources, previous)
@@ -56,7 +71,7 @@ final class DistributedStartSignals: @unchecked Sendable {
             return result
         }
         values.0.forEach { $0.cancel() }
-        for (number, handler) in values.1 { signal(number, handler) }
+        for var saved in values.1 { sigaction(saved.number, &saved.action, nil) }
     }
 
     deinit { close() }

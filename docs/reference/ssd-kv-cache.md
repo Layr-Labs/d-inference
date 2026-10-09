@@ -56,6 +56,11 @@ each physical write; a budget refusal removes the atomic temporary file and
 publishes no checkpoint. Already issued writes remain charged. Decoded staging
 and native memory admission continue to use full tensor sizes.
 
+[Short native-packet measurements](../reports/2026-10-09-native-kv-lossless-samples.md)
+saved 13.01% for Gemma 4 and 7.73% for GPT-OSS 20B, restoring every byte exactly.
+Those 32/33-token samples exclude encrypted file overhead and do not establish
+long-context, active-memory or packed INT4 savings.
+
 Encoded lengths depend on tensor contents and remain visible to a disk
 observer. This experimental length signal is separate from the existing
 cache-hit timing risk; see [the privacy model](../architecture/security/encryption.md#provider-cache-storage).

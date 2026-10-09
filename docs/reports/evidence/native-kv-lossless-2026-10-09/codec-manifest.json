@@ -1,0 +1,14 @@
+{
+  "binarySHA256": "34bfa8279cd1010c2e1c443882cd94971a645af62fc69e99b608c444082b1a29",
+  "binaryScope": "Apple Swift6.4 -O, exact production codec, error-enum shim only",
+  "codecSourceSHA256": "6bf3651d010bb5ac0c1886673f97a85580fcd35c6d6e816d40234ebcff501a98",
+  "driverSHA256": "569666c189d1b13238731eb4c7aead5d70aece636215ae677bdd8dd2e0225c8f",
+  "inputArchiveSHA256": "8d10972e4c00da8de70871250ecf5c62732e2afd5b86dbdeadc52366d443bb36",
+  "measurementScope": "32token public artificial native prefill plus one genuine decode; five bit-exact repetitions per packet; no encrypted file/disk/decode latency or packed INT4 qualification",
+  "probePackageDiffSHA256": "ec7fd303b511a6aed88c6a0b57462b462f6e2eef65a2b59ecf4301264cc9dd0c",
+  "probeSDKBase": "b40f465e9d9a3bccd5760e95858a2cc8f013acd7",
+  "probeSources": {
+    "BenchNativeKVPackets.swift": "11ab465661a998d9857f5d4bc2eea47525c571e6c996424edfeecf812e896870",
+    "main.swift": "21e31f2c092095de78879ada0391c6d6fd6e0e8cca21e934ef57bcaaa43d48c3"
+  }
+}

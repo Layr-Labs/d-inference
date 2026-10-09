@@ -1,0 +1,1186 @@
+[
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      0.00013875,
+      0.000114209,
+      0.000116,
+      0.000115958,
+      0.000113458
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000251,
+      0.000218083,
+      0.000209417,
+      0.000204833,
+      0.000206625
+    ],
+    "encodedFrameBytes": 113502,
+    "input": "prefill-L0-K.bin",
+    "inputSHA256": "dd2df63d7cfdd4423645f548eb6b0590cb5d08af036a6d4e019da993a172173f",
+    "layer": 0,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 131072,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.1340484619140625,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      32,
+      256
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      0.000128917,
+      0.000115833,
+      0.000113709,
+      0.000113833,
+      0.00011425
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000221708,
+      0.000217417,
+      0.000207,
+      0.00020375,
+      0.000203292
+    ],
+    "encodedFrameBytes": 113311,
+    "input": "prefill-L0-V.bin",
+    "inputSHA256": "c954784fb0984aa1b847f35679859f79ea67019b20f1eec8f97017568ded1035",
+    "layer": 0,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 131072,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.13550567626953125,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      32,
+      256
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.0625e-05,
+      5.9875e-05,
+      6.1083e-05,
+      5.8041e-05,
+      5.8709e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.0001275,
+      0.000111375,
+      0.000106084,
+      0.000102375,
+      0.000101625
+    ],
+    "encodedFrameBytes": 56981,
+    "input": "prefill-L5-K.bin",
+    "inputSHA256": "893922e60a0c2cebce06b9f9c9c95eee277d1e5f0e2c4241a291656476dae02a",
+    "layer": 5,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.1305389404296875,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      9.0625e-05,
+      5.9709e-05,
+      5.9666e-05,
+      5.9958e-05,
+      5.9667e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000125333,
+      0.000113125,
+      0.000103584,
+      0.000103333,
+      0.000101583
+    ],
+    "encodedFrameBytes": 56973,
+    "input": "prefill-L5-V.bin",
+    "inputSHA256": "4be3811b35485bd857aa5add6eafddb29aa6071de1c904bc4f640a7ac74eb5ba",
+    "layer": 5,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.1306610107421875,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      9.0583e-05,
+      6e-05,
+      5.9416e-05,
+      5.9375e-05,
+      5.9416e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.00013475,
+      0.000118,
+      0.000107917,
+      0.000104084,
+      0.000101792
+    ],
+    "encodedFrameBytes": 57183,
+    "input": "prefill-L11-K.bin",
+    "inputSHA256": "946398ee05f11049fbab062d99d48666e91df298650093420ca9ce8981b21cdc",
+    "layer": 11,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.1274566650390625,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.1333e-05,
+      6.0583e-05,
+      6.25e-05,
+      5.9083e-05,
+      5.8875e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000126875,
+      0.000119333,
+      0.000106709,
+      0.000102917,
+      0.000101042
+    ],
+    "encodedFrameBytes": 57205,
+    "input": "prefill-L11-V.bin",
+    "inputSHA256": "3cdd05f9fad4dffe970db1af2d99645c3288d1bed34a56b188e937af11fd84b3",
+    "layer": 11,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.1271209716796875,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      7.8917e-05,
+      5.95e-05,
+      5.9334e-05,
+      5.9417e-05,
+      6.1667e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000126125,
+      0.000109625,
+      0.00010525,
+      0.000104375,
+      0.000110083
+    ],
+    "encodedFrameBytes": 57247,
+    "input": "prefill-L17-K.bin",
+    "inputSHA256": "45698c5969297f26dcae87738839d765406531f671714f6be9c1cc604a68acdf",
+    "layer": 17,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.1264801025390625,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.425e-05,
+      6.7417e-05,
+      6.0292e-05,
+      5.7792e-05,
+      5.8042e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000123125,
+      0.00012425,
+      0.0001075,
+      0.000103541,
+      0.00010125
+    ],
+    "encodedFrameBytes": 57202,
+    "input": "prefill-L17-V.bin",
+    "inputSHA256": "5c91c29ea148a87190dbfae6b22baf5d181dd103b09795c2da18ea9a91bae670",
+    "layer": 17,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.127166748046875,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.25e-05,
+      5.8792e-05,
+      5.9458e-05,
+      5.9584e-05,
+      5.9417e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000126875,
+      0.000107917,
+      0.000104417,
+      0.000103166,
+      0.000103708
+    ],
+    "encodedFrameBytes": 57099,
+    "input": "prefill-L23-K.bin",
+    "inputSHA256": "e356f926a36e64ca5579409ebfbd7ba25545787c4fc9fe33a8780bee598305df",
+    "layer": 23,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.1287384033203125,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.1209e-05,
+      5.9833e-05,
+      5.9833e-05,
+      5.9208e-05,
+      6.0041e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000132541,
+      0.000116292,
+      0.000111041,
+      0.00010675,
+      0.0001075
+    ],
+    "encodedFrameBytes": 57113,
+    "input": "prefill-L23-V.bin",
+    "inputSHA256": "9ad17b4d3c05842b8ba70df0bfce5f403eae6d12489b22d8712592bf9e933593",
+    "layer": 23,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.1285247802734375,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.5875e-05,
+      6.0667e-05,
+      5.8792e-05,
+      5.9084e-05,
+      5.9375e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000134416,
+      0.000113708,
+      0.000108083,
+      0.000104583,
+      0.000102416
+    ],
+    "encodedFrameBytes": 57013,
+    "input": "prefill-L29-K.bin",
+    "inputSHA256": "c973b10e29cbac4d9df219e7b530ce4c60bfa3f6b796de78797bade2c68c9e73",
+    "layer": 29,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.1300506591796875,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      9.0458e-05,
+      5.3375e-05,
+      5.8125e-05,
+      5.7e-05,
+      5.5916e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000134625,
+      0.000117625,
+      0.000103167,
+      0.000100708,
+      0.000100334
+    ],
+    "encodedFrameBytes": 57035,
+    "input": "prefill-L29-V.bin",
+    "inputSHA256": "9daa0fa35a23842f4413120f8803725007fda5419e44b7f1468470ba42b96775",
+    "layer": 29,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.1297149658203125,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      32,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      0.000148584,
+      0.000120084,
+      0.00012,
+      0.000119792,
+      0.000120208
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000267417,
+      0.00023025,
+      0.000234209,
+      0.000220042,
+      0.000208458
+    ],
+    "encodedFrameBytes": 117050,
+    "input": "decode-L0-K.bin",
+    "inputSHA256": "5ac345458570401f9128c4c1f938459ec1df72a0b26e017458ac8508d4851b8e",
+    "layer": 0,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 135168,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.13404060132575757,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      33,
+      256
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      0.000144542,
+      0.000120834,
+      0.000120042,
+      0.000118375,
+      0.000120125
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.00024925,
+      0.000236834,
+      0.000220667,
+      0.000212792,
+      0.000214542
+    ],
+    "encodedFrameBytes": 116928,
+    "input": "decode-L0-V.bin",
+    "inputSHA256": "416ea658bf98d31d85bc023740200cb63dd283564dec678e03c9f216076e1aed",
+    "layer": 0,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 135168,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.13494318181818177,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      33,
+      256
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.5667e-05,
+      6.0167e-05,
+      6.0625e-05,
+      6.1792e-05,
+      6.0333e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000130125,
+      0.000112041,
+      0.000107209,
+      0.000108292,
+      0.000106125
+    ],
+    "encodedFrameBytes": 58806,
+    "input": "decode-L5-K.bin",
+    "inputSHA256": "bd2fa64baf6ffc54a13aade0cf9f8cdc1028277edd11c5a4e4d85c2243647fb8",
+    "layer": 5,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.1298828125,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.4459e-05,
+      6.6375e-05,
+      6.3584e-05,
+      6.3125e-05,
+      6.325e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000131417,
+      0.000112042,
+      0.000111125,
+      0.000108667,
+      0.000108208
+    ],
+    "encodedFrameBytes": 58828,
+    "input": "decode-L5-V.bin",
+    "inputSHA256": "d27f3b0cc7e6f2e0d737913f64edc82169fb46f34da2ca163ada67d48953e1c6",
+    "layer": 5,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.12955729166666663,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      9.6708e-05,
+      6.5708e-05,
+      6.3875e-05,
+      6.2708e-05,
+      6.3666e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.00014325,
+      0.000129,
+      0.000114709,
+      0.000110916,
+      0.0001085
+    ],
+    "encodedFrameBytes": 59037,
+    "input": "decode-L11-K.bin",
+    "inputSHA256": "076d31374d03d1e6040597a279d38bbcec7907c7787fd8eac086fba3a92d2638",
+    "layer": 11,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.12646484375,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      9.2292e-05,
+      6.225e-05,
+      6.1917e-05,
+      6.1167e-05,
+      6.2333e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000131459,
+      0.00011725,
+      0.000109583,
+      0.000104708,
+      0.000105458
+    ],
+    "encodedFrameBytes": 59009,
+    "input": "decode-L11-V.bin",
+    "inputSHA256": "593c674513f8bd4200dc96c25a3f03f42d59989c500862949e681d81da4d1a27",
+    "layer": 11,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.1268791429924242,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.5167e-05,
+      7.3083e-05,
+      6.55e-05,
+      6.7375e-05,
+      6.1958e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000134125,
+      0.000122208,
+      0.00013325,
+      0.000123625,
+      0.000109583
+    ],
+    "encodedFrameBytes": 59061,
+    "input": "decode-L17-K.bin",
+    "inputSHA256": "5817d1aaf8fa67c08eb447d339bf85f18e32a6846efd1a0e9f6894cdde20f7b6",
+    "layer": 17,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.12610973011363635,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.6291e-05,
+      6.3167e-05,
+      6.35e-05,
+      6.2875e-05,
+      6.3125e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000131458,
+      0.000115375,
+      0.00010825,
+      0.000109167,
+      0.000112334
+    ],
+    "encodedFrameBytes": 59014,
+    "input": "decode-L17-V.bin",
+    "inputSHA256": "90632c6ab153dac58c6c41b744761c8c569030aa143a1efcb57e94212d84a9f7",
+    "layer": 17,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.1268051609848485,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      9.7208e-05,
+      6.3e-05,
+      6.3333e-05,
+      6.2583e-05,
+      6.2333e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000139541,
+      0.000112083,
+      0.000109292,
+      0.000106291,
+      0.000105834
+    ],
+    "encodedFrameBytes": 58924,
+    "input": "decode-L23-K.bin",
+    "inputSHA256": "626e2b248fe54a1951f7c39f9d04ac7793974c844f0503edf0b3cab27c9af726",
+    "layer": 23,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.12813683712121215,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.875e-05,
+      6.3292e-05,
+      6.6541e-05,
+      6.2416e-05,
+      6.375e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000132083,
+      0.000110708,
+      0.000109667,
+      0.000113834,
+      0.000106458
+    ],
+    "encodedFrameBytes": 58953,
+    "input": "decode-L23-V.bin",
+    "inputSHA256": "0a6c6a50b431d1786919d88d578c71a052833853de49e90af1016b7e50b4a22b",
+    "layer": 23,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.1277077414772727,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.2375e-05,
+      8.8667e-05,
+      6.65e-05,
+      5.5e-05,
+      5.9917e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000132542,
+      0.000129541,
+      0.000116916,
+      9.7459e-05,
+      9.3166e-05
+    ],
+    "encodedFrameBytes": 58851,
+    "input": "decode-L29-K.bin",
+    "inputSHA256": "8a77c3b7d0191cb6fb00193ef505b6636c11501ca6114d7ccb56d530deb785b9",
+    "layer": 29,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.12921697443181823,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.2042e-05,
+      6.8875e-05,
+      6.0542e-05,
+      5.975e-05,
+      5.9917e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      0.000139042,
+      0.000119833,
+      0.000115375,
+      0.00010375,
+      0.000102208
+    ],
+    "encodedFrameBytes": 58852,
+    "input": "decode-L29-V.bin",
+    "inputSHA256": "610a3bbafb7dddf8f52420f567a3f018473fc448f3efa83e03a9636a00e69190",
+    "layer": 29,
+    "model": "gemma",
+    "modelAggregateSHA256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.12920217803030298,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      2,
+      33,
+      512
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      5.1667e-05,
+      3.125e-05,
+      3.1208e-05,
+      3.1333e-05,
+      3.1833e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      7.0166e-05,
+      5.5541e-05,
+      4.9958e-05,
+      4.9083e-05,
+      5.0292e-05
+    ],
+    "encodedFrameBytes": 29152,
+    "input": "prefill-L0-K.bin",
+    "inputSHA256": "6f858816a88da3838aa95197c56e7b952eb38ee1a53cef44e9557ebf63993562",
+    "layer": 0,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 32768,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.1103515625,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      32,
+      64
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      5.7833e-05,
+      3.1333e-05,
+      3.2416e-05,
+      3.1833e-05,
+      3.1959e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      6.8709e-05,
+      5.7292e-05,
+      5.2167e-05,
+      5.0958e-05,
+      5.1958e-05
+    ],
+    "encodedFrameBytes": 28851,
+    "input": "prefill-L0-V.bin",
+    "inputSHA256": "0c79ad23f61872caffcb42a66d532cdf059f4f3f88b23185071d933109a0c2ab",
+    "layer": 0,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 32768,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.119537353515625,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      32,
+      64
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      7.4584e-05,
+      5.3834e-05,
+      5.2666e-05,
+      5.35e-05,
+      5.2792e-05
+    ],
+    "dtype": "float32",
+    "elementBytes": 4,
+    "encodeSeconds": [
+      0.000102708,
+      9.1542e-05,
+      8.8125e-05,
+      8.1458e-05,
+      8.2042e-05
+    ],
+    "encodedFrameBytes": 61790,
+    "input": "prefill-L1-K.bin",
+    "inputSHA256": "56b07289a966bd97d30dfbbca59ba2a181eccfc33fb6a50426ab7aaea8e4ddb5",
+    "layer": 1,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "keys",
+    "savingFraction": 0.057159423828125,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      32,
+      64
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      7.0708e-05,
+      5.1333e-05,
+      5.1417e-05,
+      5.125e-05,
+      5.4125e-05
+    ],
+    "dtype": "float32",
+    "elementBytes": 4,
+    "encodeSeconds": [
+      0.000100958,
+      8.5375e-05,
+      8.0708e-05,
+      8.1417e-05,
+      8.0125e-05
+    ],
+    "encodedFrameBytes": 61619,
+    "input": "prefill-L1-V.bin",
+    "inputSHA256": "627eead1f60a6520161d270221bca6279c33f4f78318757f6f11c53ead56a807",
+    "layer": 1,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 65536,
+    "phase": "prefill",
+    "role": "values",
+    "savingFraction": 0.0597686767578125,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      32,
+      64
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      5.5041e-05,
+      3.7791e-05,
+      3.7334e-05,
+      3.3625e-05,
+      3.2041e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      7.3209e-05,
+      5.625e-05,
+      5.25e-05,
+      5.1042e-05,
+      5.3917e-05
+    ],
+    "encodedFrameBytes": 30059,
+    "input": "decode-L0-K.bin",
+    "inputSHA256": "54f354e125356bc80d8ac79a1f74b1cc6dc39d1129638b6f3cebd0b6b26afd5d",
+    "layer": 0,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 33792,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.11046993371212122,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      33,
+      64
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      5.0583e-05,
+      3.2834e-05,
+      3.1958e-05,
+      3.225e-05,
+      3.2e-05
+    ],
+    "dtype": "bfloat16",
+    "elementBytes": 2,
+    "encodeSeconds": [
+      7.05e-05,
+      6.1584e-05,
+      5.6e-05,
+      5.2833e-05,
+      5.1667e-05
+    ],
+    "encodedFrameBytes": 29713,
+    "input": "decode-L0-V.bin",
+    "inputSHA256": "52caa96cd0befaa1f1bc309250cdd584cce557359c6ac10e9485e50cc5698607",
+    "layer": 0,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 33792,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.12070904356060608,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      33,
+      64
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      8.075e-05,
+      5.5292e-05,
+      5.475e-05,
+      5.4375e-05,
+      5.5291e-05
+    ],
+    "dtype": "float32",
+    "elementBytes": 4,
+    "encodeSeconds": [
+      0.000107166,
+      9.475e-05,
+      8.5167e-05,
+      8.4166e-05,
+      8.4208e-05
+    ],
+    "encodedFrameBytes": 63729,
+    "input": "decode-L1-K.bin",
+    "inputSHA256": "16c2d6033e09c56e0efd64d2d38ac3b3fced640a6282057894349a5cc7776605",
+    "layer": 1,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "keys",
+    "savingFraction": 0.05704012784090906,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      33,
+      64
+    ]
+  },
+  {
+    "bitExact": true,
+    "decodeSeconds": [
+      7.6792e-05,
+      5.6416e-05,
+      5.6958e-05,
+      5.5916e-05,
+      5.825e-05
+    ],
+    "dtype": "float32",
+    "elementBytes": 4,
+    "encodeSeconds": [
+      0.000114541,
+      8.9625e-05,
+      8.7417e-05,
+      8.6833e-05,
+      8.75e-05
+    ],
+    "encodedFrameBytes": 63585,
+    "input": "decode-L1-V.bin",
+    "inputSHA256": "da167b29fe36c1eed4b54cc0985282099ba0cb67be56d7b9375d726649b03906",
+    "layer": 1,
+    "model": "gpt",
+    "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "nativeBytes": 67584,
+    "phase": "decode",
+    "role": "values",
+    "savingFraction": 0.05917080965909094,
+    "schema": "darkbloom.production-lossless-codec-benchmark.v1",
+    "scope": "actual production codec source compiled -O; verified public artificial Gemma/GPT native packet at32/33 tokens; no encryption, disk IO, device readback or whole-model performance claim",
+    "shape": [
+      1,
+      8,
+      33,
+      64
+    ]
+  }
+]

@@ -676,3 +676,5 @@ What was run on the two Macs is in the task's evidence folder
   that filters the orders, with its cost printed like the cut list's), or the
   leader becomes independent of the rank (topology change X1 of the
   prefill-export design).
+
+Mirrored 27B measured (2026-10-09, 18:46Z to 19:11Z, modes step only, cut 48, Mac B rank 0): the second Mac accepts the incoming connection to its rank 0 worker. Phase split: first token 4.20 s at 4,096 and 10.37 s at 8,192 (predicted 4.18 and 8.50), decode 23 to 24 tok/s (predicted 29 to 30). Pipeline in this order: first token 4.08 and 8.64 s, but decode 11.4 tok/s at every length, against 25 to 28 in the normal order; not explained. The first launch (1,024 tokens, phase split) did not become ready within 150 s; the later five did in 16 to 29 s. Token agreement (`record`) and cut 40 not run. The time model needs a per-step term for the relay and for the mirrored pipeline before it can rank orders against each other.

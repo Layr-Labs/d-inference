@@ -53,8 +53,29 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
 
+    @Flag(help: "Register a foreground control-only cluster member; requires a saved cluster and never serves solo inference.")
+    var clusterMember = false
+
     @Flag(help: "Use the saved distributed cluster for local serving and register its leader as a control-only member (requires --local).")
     var distributed = false
+
+    /// Both cluster modes are control-only: they take the saved cluster's
+    /// model and lifecycle, so every solo serving option is refused at parse.
+    mutating func validate() throws {
+        let soloOverrides = !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil
+        if clusterMember {
+            guard !distributed, !local, !localEndpoint, !soloOverrides else {
+                throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
+            }
+        }
+        guard distributed else { return }
+        guard local, !foreground, !localEndpoint else {
+            throw ValidationError("Distributed startup requires --local; its coordinator connection is control-only.")
+        }
+        guard !soloOverrides else {
+            throw ValidationError("Distributed startup uses the saved cluster model and lifecycle; solo model and idle overrides are unavailable.")
+        }
+    }
 
     /// Only the process actually owned by launchd ignores stale baked argv.
     /// A manually launched foreground command retains explicit --model priority.
@@ -90,13 +111,16 @@ struct Start: AsyncParsableCommand {
             printError("--local and --local-endpoint are mutually exclusive: use --local for a coordinator-less local server, or --local-endpoint to serve a local endpoint alongside the coordinator.")
             throw ExitCode.failure
         }
+        // Control-only cluster modes leave before the solo runtime is
+        // prepared: no model scan, Metal probe or serving-mode selection.
+        // The native owner child, not this process, holds the device.
+        if clusterMember {
+            try await runClusterMember()
+            return
+        }
         if distributed {
-            guard local else {
-                throw ValidationError("Distributed startup requires --local; its coordinator connection is control-only.")
-            }
-            guard model.isEmpty, !all, idleTimeout == nil else {
-                throw ValidationError("Distributed startup uses the saved cluster model and lifecycle; solo model and idle overrides are unavailable.")
-            }
+            try await runLocalDistributed()
+            return
         }
 
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
@@ -181,9 +205,7 @@ struct Start: AsyncParsableCommand {
             printError("warning: \(message)")
         }
 
-        if local && distributed {
-            try await runLocalDistributed()
-        } else if local {
+        if local {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,

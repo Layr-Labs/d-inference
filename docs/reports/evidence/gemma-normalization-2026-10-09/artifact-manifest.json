@@ -226,5 +226,9 @@
   "L128-B1-R0-native.md": {
     "bytes": 3916,
     "sha256": "34468d423cdb2c1f07c346fe7fd2ebebc7c4eb9dfc64d1453489b72968446102"
+  },
+  "normalization-candidate.patch.gz": {
+    "bytes": 5442,
+    "sha256": "32aef8d082d7f8baebd68f4bce0f2bd4dc4455585df7f332f3918e107121d087"
   }
 }

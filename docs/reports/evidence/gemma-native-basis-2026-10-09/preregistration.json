@@ -1,0 +1,18 @@
+{
+  "scope": "experimental raw-native Gemma global checkpoint basis; MiMo excluded",
+  "model_aggregate_sha256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+  "owners": [5, 11, 17, 23, 29],
+  "eligible_dtype": "BF16 K, V and loaded Gamma; head dimension512; owning full attention",
+  "stored_scalars_per_token": {"V": 512, "retained_K": 128},
+  "retained_K_bands": [[0, 64], [256, 320]],
+  "encode_gate": "validate every unrotated native K word against exactly rounded BF16 V*Gamma; mismatch falls back to original native payload",
+  "import_authority": "same validated manifest layer/shape/model identity, sequential native K append followed by sequential native V append; no random destination writes",
+  "reader_design": "independently referenced V source plus rotated-K source; reread V when importing its own tensor",
+  "restore_raw_scalar_traffic": {"native": 1024, "basis": 1152, "ratio": 1.125},
+  "bundled_alternative_traffic_ratio": 1.25,
+  "host_charge_bound_bytes": 20971520,
+  "implementation_goal": "bounded tiles and strict paired source authority; no held entire V history",
+  "qualification": ["all public native packets reconstruct byte-identically", "native complete codec streaming export/import and continuation", "mismatched Gamma/model/dtype/shape fail closed", "tile/data lifetime and reservations cleaned on all failures", "native-vs-basis encrypted read bytes and restore time measured"],
+  "claims_excluded": ["serving default", "live attention reader", "INT4 or Hadamard composition", "uncharged whole-cache payloads"],
+  "horizon_followup": "separate preregistration and maxSequenceLength/MTP trace before production changes"
+}

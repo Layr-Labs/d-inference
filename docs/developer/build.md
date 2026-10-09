@@ -1104,7 +1104,8 @@ receipt revision stated in the [normalization report](../reports/2026-10-09-gemm
 Use the documented [local-MLX package edit](test.md#finding-provider-tests)
 against the same parent-pinned MLX source and stage its source-matched metallib.
 Archive the executable, runtime resource bundles and `build-receipt.json` before
-applying the portable candidate patch in another isolated checkout. The candidate
+applying the portable candidate patch in another isolated checkout. The gzip archive
+preserves the original unified-diff name and bytes; decompress it before `git apply`. The candidate
 is an experiment image; keep the serving SDK on its native revision.
 
 ```bash

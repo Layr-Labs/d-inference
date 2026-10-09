@@ -1,0 +1,8 @@
+{
+  "archive": "normalization-candidate.patch.gz",
+  "archive_bytes": 5442,
+  "archive_sha256": "32aef8d082d7f8baebd68f4bce0f2bd4dc4455585df7f332f3918e107121d087",
+  "original_name": "normalization-candidate.patch",
+  "original_bytes": 18741,
+  "original_sha256": "f7d1d0cb3cc33bd4f1fdc5b71bcad944b1e0e8bd31b7d0755a30af7807061083"
+}

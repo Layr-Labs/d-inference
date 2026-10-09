@@ -1,0 +1,1884 @@
+{
+  "claim" : "actual native raw-basis states only; no storage omission or INT4 composition",
+  "config" : {
+    "architectures" : [
+      "Gemma4ForConditionalGeneration"
+    ],
+    "audio_config" : null,
+    "audio_token_id" : 258881,
+    "boa_token_id" : 256000,
+    "boi_token_id" : 255999,
+    "dtype" : "bfloat16",
+    "eoa_token_id" : 258883,
+    "eoa_token_index" : 258883,
+    "eoi_token_id" : 258882,
+    "eos_token_id" : [
+      1,
+      106,
+      50
+    ],
+    "image_token_id" : 258880,
+    "initializer_range" : 0.02,
+    "model_type" : "gemma4",
+    "quantization" : {
+      "bits" : 4,
+      "group_size" : 64,
+      "language_model.model.layers.0.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "mode" : "affine"
+    },
+    "quantization_config" : {
+      "bits" : 4,
+      "group_size" : 64,
+      "language_model.model.layers.0.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.router.proj" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "mode" : "affine"
+    },
+    "text_config" : {
+      "attention_bias" : false,
+      "attention_dropout" : 0,
+      "attention_k_eq_v" : true,
+      "bos_token_id" : 2,
+      "dtype" : "bfloat16",
+      "enable_moe_block" : true,
+      "eos_token_id" : 1,
+      "final_logit_softcapping" : 30,
+      "global_head_dim" : 512,
+      "head_dim" : 256,
+      "hidden_activation" : "gelu_pytorch_tanh",
+      "hidden_size" : 2816,
+      "hidden_size_per_layer_input" : 0,
+      "initializer_range" : 0.02,
+      "intermediate_size" : 2112,
+      "layer_types" : [
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention"
+      ],
+      "max_position_embeddings" : 262144,
+      "model_type" : "gemma4_text",
+      "moe_intermediate_size" : 704,
+      "num_attention_heads" : 16,
+      "num_experts" : 128,
+      "num_global_key_value_heads" : 2,
+      "num_hidden_layers" : 30,
+      "num_key_value_heads" : 8,
+      "num_kv_shared_layers" : 0,
+      "pad_token_id" : 0,
+      "rms_norm_eps" : 9.9999999999999995e-07,
+      "rope_parameters" : {
+        "full_attention" : {
+          "partial_rotary_factor" : 0.25,
+          "rope_theta" : 1000000,
+          "rope_type" : "proportional"
+        },
+        "sliding_attention" : {
+          "rope_theta" : 10000,
+          "rope_type" : "default"
+        }
+      },
+      "sliding_window" : 1024,
+      "tie_word_embeddings" : true,
+      "top_k_experts" : 8,
+      "use_bidirectional_attention" : "vision",
+      "use_cache" : true,
+      "use_double_wide_mlp" : false,
+      "vocab_size" : 262144,
+      "vocab_size_per_layer_input" : 262144
+    },
+    "tie_word_embeddings" : true,
+    "transformers_version" : "5.6.2",
+    "video_token_id" : 258884,
+    "vision_config" : {
+      "_name_or_path" : "",
+      "architectures" : null,
+      "attention_bias" : false,
+      "attention_dropout" : 0,
+      "chunk_size_feed_forward" : 0,
+      "default_output_length" : 280,
+      "dtype" : "bfloat16",
+      "global_head_dim" : 72,
+      "head_dim" : 72,
+      "hidden_activation" : "gelu_pytorch_tanh",
+      "hidden_size" : 1152,
+      "id2label" : {
+        "0" : "LABEL_0",
+        "1" : "LABEL_1"
+      },
+      "initializer_range" : 0.02,
+      "intermediate_size" : 4304,
+      "is_encoder_decoder" : false,
+      "label2id" : {
+        "LABEL_0" : 0,
+        "LABEL_1" : 1
+      },
+      "max_position_embeddings" : 131072,
+      "model_type" : "gemma4_vision",
+      "num_attention_heads" : 16,
+      "num_hidden_layers" : 27,
+      "num_key_value_heads" : 16,
+      "output_attentions" : false,
+      "output_hidden_states" : false,
+      "patch_size" : 16,
+      "pooling_kernel_size" : 3,
+      "position_embedding_size" : 10240,
+      "problem_type" : null,
+      "return_dict" : true,
+      "rms_norm_eps" : 9.9999999999999995e-07,
+      "rope_parameters" : {
+        "rope_theta" : 100,
+        "rope_type" : "default"
+      },
+      "standardize" : true,
+      "use_clipped_linears" : false
+    },
+    "vision_soft_tokens_per_image" : 280
+  },
+  "config_sha256" : "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa",
+  "consumed_token_ids" : [
+    9345,
+    39823,
+    8108,
+    13248,
+    37075,
+    32716,
+    25693,
+    2422,
+    30754,
+    32593,
+    38852,
+    45036,
+    10759,
+    48000,
+    20699,
+    24215,
+    26779,
+    13732,
+    3414,
+    45822,
+    23333,
+    30742,
+    48100,
+    19524,
+    35053,
+    19305,
+    5128,
+    6268,
+    5259,
+    11638,
+    46236,
+    36332,
+    100
+  ],
+  "copied_native_payload_bytes" : 1868800,
+  "host_payload_bound_bytes" : 4194304,
+  "input_seed" : "FACE",
+  "model_aggregate_sha256" : "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+  "model_path" : "\/Users\/gaj\/.cache\/huggingface\/hub\/models--gemma-4-26b-qat-4bit\/snapshots\/local",
+  "model_type" : "gemma4",
+  "positions" : [
+    32,
+    33
+  ],
+  "prefill_token_ids" : [
+    9345,
+    39823,
+    8108,
+    13248,
+    37075,
+    32716,
+    25693,
+    2422,
+    30754,
+    32593,
+    38852,
+    45036,
+    10759,
+    48000,
+    20699,
+    24215,
+    26779,
+    13732,
+    3414,
+    45822,
+    23333,
+    30742,
+    48100,
+    19524,
+    35053,
+    19305,
+    5128,
+    6268,
+    5259,
+    11638,
+    46236,
+    36332
+  ],
+  "records" : [
+    {
+      "bytes" : 131072,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L0-K.bin",
+      "layer" : 0,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "keys",
+      "sha256" : "dd2df63d7cfdd4423645f548eb6b0590cb5d08af036a6d4e019da993a172173f",
+      "shape" : [
+        1,
+        8,
+        32,
+        256
+      ]
+    },
+    {
+      "bytes" : 131072,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L0-V.bin",
+      "layer" : 0,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "values",
+      "sha256" : "c954784fb0984aa1b847f35679859f79ea67019b20f1eec8f97017568ded1035",
+      "shape" : [
+        1,
+        8,
+        32,
+        256
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L5-K.bin",
+      "layer" : 5,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "keys",
+      "sha256" : "893922e60a0c2cebce06b9f9c9c95eee277d1e5f0e2c4241a291656476dae02a",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L5-V.bin",
+      "layer" : 5,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "values",
+      "sha256" : "4be3811b35485bd857aa5add6eafddb29aa6071de1c904bc4f640a7ac74eb5ba",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 1024,
+      "dtype" : "bfloat16",
+      "file" : "L5-Gamma.bin",
+      "layer" : 5,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "gamma",
+      "sha256" : "eba8fbb183b3b06b203ba93d21b3120f141b90f185755b550835573960c47f3f",
+      "shape" : [
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L11-K.bin",
+      "layer" : 11,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "keys",
+      "sha256" : "946398ee05f11049fbab062d99d48666e91df298650093420ca9ce8981b21cdc",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L11-V.bin",
+      "layer" : 11,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "values",
+      "sha256" : "3cdd05f9fad4dffe970db1af2d99645c3288d1bed34a56b188e937af11fd84b3",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 1024,
+      "dtype" : "bfloat16",
+      "file" : "L11-Gamma.bin",
+      "layer" : 11,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "gamma",
+      "sha256" : "406c29349252f80d0bc1fe264f573f9544c9064101d14ae08fd5c665a7e30f89",
+      "shape" : [
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L17-K.bin",
+      "layer" : 17,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "keys",
+      "sha256" : "45698c5969297f26dcae87738839d765406531f671714f6be9c1cc604a68acdf",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L17-V.bin",
+      "layer" : 17,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "values",
+      "sha256" : "5c91c29ea148a87190dbfae6b22baf5d181dd103b09795c2da18ea9a91bae670",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 1024,
+      "dtype" : "bfloat16",
+      "file" : "L17-Gamma.bin",
+      "layer" : 17,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "gamma",
+      "sha256" : "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd",
+      "shape" : [
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L23-K.bin",
+      "layer" : 23,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "keys",
+      "sha256" : "e356f926a36e64ca5579409ebfbd7ba25545787c4fc9fe33a8780bee598305df",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L23-V.bin",
+      "layer" : 23,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "values",
+      "sha256" : "9ad17b4d3c05842b8ba70df0bfce5f403eae6d12489b22d8712592bf9e933593",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 1024,
+      "dtype" : "bfloat16",
+      "file" : "L23-Gamma.bin",
+      "layer" : 23,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "gamma",
+      "sha256" : "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd",
+      "shape" : [
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L29-K.bin",
+      "layer" : 29,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "keys",
+      "sha256" : "c973b10e29cbac4d9df219e7b530ce4c60bfa3f6b796de78797bade2c68c9e73",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 65536,
+      "dtype" : "bfloat16",
+      "file" : "prefill-L29-V.bin",
+      "layer" : 29,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "values",
+      "sha256" : "9daa0fa35a23842f4413120f8803725007fda5419e44b7f1468470ba42b96775",
+      "shape" : [
+        1,
+        2,
+        32,
+        512
+      ]
+    },
+    {
+      "bytes" : 1024,
+      "dtype" : "bfloat16",
+      "file" : "L29-Gamma.bin",
+      "layer" : 29,
+      "phase" : "prefill",
+      "position" : 32,
+      "role" : "gamma",
+      "sha256" : "6f4fe1277551d71b7aeaaca8c1cd4f9b3cf1312ea5dca30cf17c5ec3ee82b85c",
+      "shape" : [
+        512
+      ]
+    },
+    {
+      "bytes" : 135168,
+      "dtype" : "bfloat16",
+      "file" : "decode-L0-K.bin",
+      "layer" : 0,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "keys",
+      "sha256" : "5ac345458570401f9128c4c1f938459ec1df72a0b26e017458ac8508d4851b8e",
+      "shape" : [
+        1,
+        8,
+        33,
+        256
+      ]
+    },
+    {
+      "bytes" : 135168,
+      "dtype" : "bfloat16",
+      "file" : "decode-L0-V.bin",
+      "layer" : 0,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "values",
+      "sha256" : "416ea658bf98d31d85bc023740200cb63dd283564dec678e03c9f216076e1aed",
+      "shape" : [
+        1,
+        8,
+        33,
+        256
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L5-K.bin",
+      "layer" : 5,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "keys",
+      "sha256" : "bd2fa64baf6ffc54a13aade0cf9f8cdc1028277edd11c5a4e4d85c2243647fb8",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L5-V.bin",
+      "layer" : 5,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "values",
+      "sha256" : "d27f3b0cc7e6f2e0d737913f64edc82169fb46f34da2ca163ada67d48953e1c6",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L11-K.bin",
+      "layer" : 11,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "keys",
+      "sha256" : "076d31374d03d1e6040597a279d38bbcec7907c7787fd8eac086fba3a92d2638",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L11-V.bin",
+      "layer" : 11,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "values",
+      "sha256" : "593c674513f8bd4200dc96c25a3f03f42d59989c500862949e681d81da4d1a27",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L17-K.bin",
+      "layer" : 17,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "keys",
+      "sha256" : "5817d1aaf8fa67c08eb447d339bf85f18e32a6846efd1a0e9f6894cdde20f7b6",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L17-V.bin",
+      "layer" : 17,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "values",
+      "sha256" : "90632c6ab153dac58c6c41b744761c8c569030aa143a1efcb57e94212d84a9f7",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L23-K.bin",
+      "layer" : 23,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "keys",
+      "sha256" : "626e2b248fe54a1951f7c39f9d04ac7793974c844f0503edf0b3cab27c9af726",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L23-V.bin",
+      "layer" : 23,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "values",
+      "sha256" : "0a6c6a50b431d1786919d88d578c71a052833853de49e90af1016b7e50b4a22b",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L29-K.bin",
+      "layer" : 29,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "keys",
+      "sha256" : "8a77c3b7d0191cb6fb00193ef505b6636c11501ca6114d7ccb56d530deb785b9",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    },
+    {
+      "bytes" : 67584,
+      "dtype" : "bfloat16",
+      "file" : "decode-L29-V.bin",
+      "layer" : 29,
+      "phase" : "decode",
+      "position" : 33,
+      "role" : "values",
+      "sha256" : "610a3bbafb7dddf8f52420f567a3f018473fc448f3efa83e03a9636a00e69190",
+      "shape" : [
+        1,
+        2,
+        33,
+        512
+      ]
+    }
+  ],
+  "relations" : [
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.5.self_attn.k_norm.weight",
+      "gamma_sha256" : "eba8fbb183b3b06b203ba93d21b3120f141b90f185755b550835573960c47f3f",
+      "keys_dtype" : "bfloat16",
+      "layer" : 5,
+      "phase" : "prefill",
+      "position" : 32,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.11.self_attn.k_norm.weight",
+      "gamma_sha256" : "406c29349252f80d0bc1fe264f573f9544c9064101d14ae08fd5c665a7e30f89",
+      "keys_dtype" : "bfloat16",
+      "layer" : 11,
+      "phase" : "prefill",
+      "position" : 32,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.17.self_attn.k_norm.weight",
+      "gamma_sha256" : "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd",
+      "keys_dtype" : "bfloat16",
+      "layer" : 17,
+      "phase" : "prefill",
+      "position" : 32,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.23.self_attn.k_norm.weight",
+      "gamma_sha256" : "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd",
+      "keys_dtype" : "bfloat16",
+      "layer" : 23,
+      "phase" : "prefill",
+      "position" : 32,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.29.self_attn.k_norm.weight",
+      "gamma_sha256" : "6f4fe1277551d71b7aeaaca8c1cd4f9b3cf1312ea5dca30cf17c5ec3ee82b85c",
+      "keys_dtype" : "bfloat16",
+      "layer" : 29,
+      "phase" : "prefill",
+      "position" : 32,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.5.self_attn.k_norm.weight",
+      "gamma_sha256" : "eba8fbb183b3b06b203ba93d21b3120f141b90f185755b550835573960c47f3f",
+      "keys_dtype" : "bfloat16",
+      "layer" : 5,
+      "phase" : "decode",
+      "position" : 33,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.11.self_attn.k_norm.weight",
+      "gamma_sha256" : "406c29349252f80d0bc1fe264f573f9544c9064101d14ae08fd5c665a7e30f89",
+      "keys_dtype" : "bfloat16",
+      "layer" : 11,
+      "phase" : "decode",
+      "position" : 33,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.17.self_attn.k_norm.weight",
+      "gamma_sha256" : "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd",
+      "keys_dtype" : "bfloat16",
+      "layer" : 17,
+      "phase" : "decode",
+      "position" : 33,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.23.self_attn.k_norm.weight",
+      "gamma_sha256" : "877fac8bbeaa7ef6295a97f45e27384347039e9c354ae6dd2e199c5ea3a675cd",
+      "keys_dtype" : "bfloat16",
+      "layer" : 23,
+      "phase" : "decode",
+      "position" : 33,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    },
+    {
+      "dtype_match" : true,
+      "gamma_dtype" : "bfloat16",
+      "gamma_name" : "model.layers.29.self_attn.k_norm.weight",
+      "gamma_sha256" : "6f4fe1277551d71b7aeaaca8c1cd4f9b3cf1312ea5dca30cf17c5ec3ee82b85c",
+      "keys_dtype" : "bfloat16",
+      "layer" : 29,
+      "phase" : "decode",
+      "position" : 33,
+      "retained_rotated_bands" : [
+        [
+          0,
+          64
+        ],
+        [
+          256,
+          320
+        ]
+      ],
+      "unrotated_columns" : 384,
+      "unrotated_native_bit_identity" : true,
+      "values_dtype" : "bfloat16"
+    }
+  ],
+  "sdk_revision" : "b40f465-dirty"
+}

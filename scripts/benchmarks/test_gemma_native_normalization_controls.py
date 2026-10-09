@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import gzip
 import importlib.util
 import json
 from pathlib import Path
@@ -29,6 +30,8 @@ def evidence_bytes(name):
     path = EVIDENCE / name
     if path.is_file():
         return path.read_bytes()
+    if name.endswith('.patch'):
+        return gzip.decompress((EVIDENCE / (name + '.gz')).read_bytes())
     if name.endswith('.md'):
         with zipfile.ZipFile(EVIDENCE / 'raw-cell-reports.zip') as archive:
             return archive.read(name)

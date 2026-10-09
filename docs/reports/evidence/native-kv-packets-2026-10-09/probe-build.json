@@ -1,0 +1,10 @@
+{
+  "sdk_model_revision": "b40f465e9d9a3bccd5760e95858a2cc8f013acd7",
+  "probe_source_sha256": "11ab465661a998d9857f5d4bc2eea47525c571e6c996424edfeecf812e896870",
+  "model_source_sha256": "bf04df8668622c4e164208e5ade09f087113961461e700dd5215b121f55bbef8",
+  "binary_sha256": "befe6afe1348a6d4d3b3b0da79ca64a93838f4ef130a98167033a8bae46d1054",
+  "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+  "native_normalizer": true,
+  "public_inputs_only": true,
+  "timing_claim": false
+}

@@ -35,7 +35,7 @@ bit-identical to the normalized V multiplied by the learned K weight. Mixed
 dtypes retain the original weighted RMS operator so its promotion is unchanged.
 
 The experimental Swift helper and both model entry points used this relation.
-The [portable candidate patch](evidence/gemma-normalization-2026-10-09/normalization-candidate.patch)
+The [portable candidate patch](evidence/gemma-normalization-2026-10-09/normalization-candidate.patch.gz)
 preserves `gemma4NormalizeSharedProjection` and its `Gemma4Attention` callers;
 the serving SDK retains the original native normalizer.
 Regression fixtures compare it with the native weighted and unweighted operators

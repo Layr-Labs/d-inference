@@ -332,7 +332,7 @@ func buildCoordinatorDoctorChecks(
     let base = coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url)
     var checks: [DoctorCheck] = []
     let now = Date().timeIntervalSince1970
-    let authorization = DaemonStateFile.read()?.currentProviderAuthorization(
+    let authorization = DaemonStateFile.read()?.displayedProviderAuthorization(
         coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
     let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 

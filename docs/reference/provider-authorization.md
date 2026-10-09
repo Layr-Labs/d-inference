@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-09
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -81,6 +81,8 @@ The additive `trust_status.authorization` object is coordinator-to-provider only
 | `session_id`, `machine_id` | Current connection and verified canonical machine; never caller-selected authorization |
 
 `darkbloom status` and `darkbloom doctor` distinguish App Attest authorization from legacy verification. `darkbloom unenroll` offers full exit or App Attest migration. The migration option and direct `--keep-serving` shortcut require macOS 27 or later and a fresh running-provider snapshot, matching coordinator and process identity, and an unexpired removal-ready authorization. Both the state-file write and receipt of the coordinator decision must be at most `snapshotMaxAge = 10` seconds old (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`, `currentStatus`); periodic local writes cannot refresh an old removal decision. It preserves account/config/key data and opens System Settings only after identifying the exact Darkbloom enrollment. It never removes a company profile or the app's embedded signing profile. Full exit stops the provider service before offering profile removal and optional cleanup. Enter/EOF cancels; noninteractive use requires an explicit mode flag. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
+
+`darkbloom status` and `darkbloom doctor` apply the same snapshot, process, coordinator, `online` and protocol checks, but keep showing an App Attest authorization until its `expires_at` when the latest renewal arrived more than `snapshotMaxAge` ago (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`, `displayedStatus`). The coordinator sends a renewal after each successful `authorization.RefreshInterval` refresh and bounds the lease by `RevocationFreshness = 30 * time.Second` (`coordinator/internal/appattest/authorization/controller.go`), so one delayed renewal does not end the grant. `none` and `legacy` decisions still need a renewal inside `snapshotMaxAge`.
 
 ## Owner dashboard and upgrade guidance
 

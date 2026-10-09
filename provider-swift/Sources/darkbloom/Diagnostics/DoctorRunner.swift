@@ -17,7 +17,7 @@ enum DoctorRunner {
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
-        let authorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let authorization = state?.displayedProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
         let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
         // ---- Attestation key (read-only daemon state) ----

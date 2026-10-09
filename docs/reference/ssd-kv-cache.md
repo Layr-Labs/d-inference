@@ -170,6 +170,24 @@ Validation artifacts, source scopes and model-measurement limits are linked from
 [the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).
 Earlier resident-cache measurements do not establish SSD latency or restart reuse.
 
+### Storage geometry measurement
+
+The opt-in CPU fixture measures serialized encrypted storage, without loading
+model weights or generating tokens. It compares independent files with shared
+pages using the cached Gemma/GPT-OSS configuration-derived attention map.
+
+| Field | Contract | Code |
+|---|---|---|
+| Activation | `DARKBLOOM_RUN_STORAGE_GEOMETRY=1`; the ordinary suite skips the GiB-scale probe | `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDCheckpointStorageGeometryTests.swift` (`productionGeometry`) |
+| Inputs | Three increasing 1,024-aligned positions; `DARKBLOOM_STORAGE_POSITIONS` defaults to `1024,16384,32768`. Cached configuration bytes are recorded by SHA-256 | `SSDCheckpointStorageGeometryTests.swift` (`GeometryFixture`) |
+| Output | `DARKBLOOM_STORAGE_GEOMETRY_OUTPUT` optionally writes JSON at an absolute path; reports retained unique inode bytes, newly written bytes, donation authentication reads and deepest complete restore reads | `SSDCheckpointStorageGeometryTests.swift` (`Measurement`) |
+| Limits | Zero-valued native-shaped tensors exercise byte accounting through length-neutral DBK3 encryption. Gemma uses BF16; GPT-OSS uses an explicitly declared uniform FP32 scenario. This is not a compressibility, runtime-dtype, quality or whole-model performance measurement | `SSDCheckpointStorageGeometryTests.swift` (`Report`) |
+
+After the source-matched test build, run from `provider-swift/` with
+`DARKBLOOM_RUN_STORAGE_GEOMETRY=1 swift test --skip-build --filter SSDCheckpointStorageGeometryTests`.
+The local machine must be idle during the probe; its CPU/SSD traffic can perturb
+concurrent inference measurements.
+
 ### Bounded shorter complete-checkpoint fallback
 
 These rules apply to complete AR and native-block imports, not attention-block

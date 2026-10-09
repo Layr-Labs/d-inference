@@ -138,3 +138,23 @@ Thunderbolt cable. Level: physical. No model. "Stock" is the pinned JACCL;
 | The "541 tests in 84 suites" in the original handoff | — | Matches the size of the second test target on master (540 in 83), so it was one target, not the full suite | — |
 | Documentation checks | `make docs-check`, `docs-impact-check` | One broken link, present on master itself (a report added by #1326); impact check passes | — |
 | Nothing private in the diff | scan of all 47,146 added lines for user paths, host names, private addresses, key material | None; only fixture values | Pattern-based |
+
+## Real model across both Macs (2026-10-08 night)
+
+Registered Qwen3.5 9B 4-bit, rank 0 on Mac A (M3 Ultra), rank 1 on Mac B
+(M5 Max), guarded JACCL (`aec94c2b`), progress limit 60 s, driven by
+`darkbloom-cluster-pair-check` (`31c7e975f`…`ec9789424`). Level: model,
+physical. Run folder `g2-pair-20261009T032724Z`. The provider's own
+`start --distributed` path and the coordinator were not involved.
+
+| Claim | Result | Remaining uncertainty |
+|---|---|---|
+| A two-rank generation completes | Nine recorded requests, 30 to 8,192 prompt tokens, cut 4 and cut 16, 16 to 128 outputs, serial and lookahead prefill: all completed; ready in 6.3–7.3 s; shutdown acknowledged; both workers exit 0; no worker left on either Mac | Rank 0 on Mac B not run |
+| It needed a runtime fix | Before `95782b0c8` a pair failed after one decoded token (rank 0's residual was still held by Metal completion handlers when the sender required sole ownership; about every second decode frame). After: completes | The fix is one GPU stream synchronization per frame on rank 0; wants a second reader |
+| Tokens against a single-Mac reference | Short prompts: all tokens equal on every comparison. Long prompts: where they differ, the first difference is at a tie or within 4 ulp between the top two logits. No comparison is bit-exact across chips; none is a plain divergence | One case (4,096 tokens, cut 4, against Mac B alone) sits exactly on the 4-ulp threshold |
+| The difference is the chips, not the link | Mac A alone and Mac B alone already differ from each other in the same way; on one Mac every cut gives exact results; the pair is exact run to run and across prefill schedules | — |
+| Prefill speed, 8,192-token prompt | Mac A alone 971–973 tok/s; Mac B alone 2,554–2,788; pair cut 4: 2,160; pair cut 4 with lookahead: 3,069; pair cut 16: 1,379 | Pair figures are on the driver clock and include control and transport; single-Mac figures are summed frame times |
+| Decode speed | Mac A alone 60–65 tok/s; Mac B alone 77–81; pair 59–63 | Same caveat |
+| A dead rank with the model loaded does not strand memory | Rank 1 ended with SIGTERM mid-decode at 8,192 tokens: rank 0 reported the JACCL error at its 60 s limit and exited 1 by itself, never signalled; no process on either Mac; wired memory A 12.69 → 12.26 GiB and B 5.66 → 6.14 GiB a few minutes later (B's baseline wandered 5.4–6.1 all session); the next run was exact against the run before the fault | A fault in rank 0, or during prefill, not tried. The survivor waits the whole limit because no cancel is sent (gap B1) |
+| Single-Mac reference is deterministic and releases | Repeat runs exact; 5.04 GB active loaded; 4 KB active and 0 cached after release | — |
+| Checks on the merged branch | `QualificationChecks` 33 tests; library 22 tests in 5 suites; worker tests pass | — |

@@ -103,6 +103,20 @@ A layer pipeline across two Macs prefills faster and decodes slower than one
 Mac that can hold the model. Its value is models that do not fit on one Mac,
 and long prompts.
 
+## G. Performance, keepwarm and tensor parallel
+
+Requirement (2026-10-08): very good performance, keepwarm ported from the
+owner's ThunderMLX and oMLX work, and both pipeline and tensor parallel
+supported. What those sources and the research archives actually measured
+sets the expectations below; nothing here has been measured on this pair yet.
+
+| # | Item | What the sources show | Plan and status |
+|---|---|---|---|
+| G1 | Pipeline speed | A two-Mac layer pipeline prefills faster and decodes slower than one Mac that holds the model (two M4 Pros, Qwen3.5 9B: prefill 814 vs 440 tok/s, decode 24.7 vs 37.7). Swift decode makes 11 transfers per token plus a pipe round trip to the owner | **open**: measure this pair first. Then: one control frame per step instead of length-then-body (research draft, physical), lookahead as the default prefill schedule (+16% measured in research), larger chunks than 512 (needs the 16 MiB receive cap raised and a same-chunk reference) |
+| G2 | Keepwarm | Owner's measurements: single-Mac first token 1.8 s → about 1.45 s median (noisy) with a 120 GB model; a cold link ping about 0.7 s → 1–8 ms at a one-second cadence. Nothing isolates a per-token or link-idle effect for a pair. His own decision record keeps it off by default | **open**. Rule from his work: keepwarm must share the generation executor; a second thread issuing collectives corrupted or deadlocked the next request. Tier 1: a Metal-only pulse on the worker's single executor between commands (never touches the collective), default off, yields to a reserve. Tier 2, only if measurement shows a link-idle penalty: an owner-sequenced ping to both ranks with no reservation outstanding. Ship only if an OFF→ON→OFF run at 0/1/2/5/15/60 s gaps shows the OFF curve rising with the gap |
+| G3 | Tensor parallel | Owner's Python TP2 (MLX-LM `shard()`): attention by head and MLP by column, two all-reduces per layer, embeddings, norms and head replicated, full checkpoint local on both Macs. Measured on this same pair: DS4 29–31 tok/s decode, Qwen3-30B 56.8 tok/s decode and 1,534 tok/s prefill; **no single-Mac figure is recorded for any of them**. Not bit-identical to one host (partials are rounded, then summed). The Swift runtime has no sharded layers | **open**. Arithmetic for Qwen3.5 9B on this link: 64 collectives per token at 50–150 µs each is 3–10 ms per token, against perhaps 15 ms on one Mac, so decode lands between 0.7× and 1.3× of one Mac; prefill 1.5–1.8× is plausible. Slices: (0) bf16 `[1,1,4096]` all-sum equality and latency on the link, plus the GPU→reduce→GPU cost, before any model code; (1) MLP-only TP against one-host logits; (2) full TP2 with per-layer residual hashes equal across ranks; (3) speed against each Mac alone. Risks: different chips (the M3 Ultra has native BF16; the M5 is unchecked), equal shards run at the slower chip, any one-sided exit strands the peer in a reduction |
+| G4 | Decode faster than one Mac | In every source, decode gains came from speculation (MTP: DS4 29–31 → 78–80 tok/s) and batching, not from the second Mac. A phase split (pair for prefill, one Mac for decode, KV handed over at about 7 GB/s) measured 991 tok/s prefill and 29.6 tok/s decode on a 27B | **open**: for a model that fits on one Mac, phase split is the candidate that keeps pair prefill without the pipeline's decode penalty. It needs state transfer between ranks |
+
 ## E. Documents that are out of date
 
 - `libs/darkbloom-cluster/README.md` says Transport, Generation and the Qwen

@@ -48,14 +48,15 @@ final class GPTOSSLayerStageSession {
               modelParameterLayout(stage.model) == receipt.parameterLayoutSHA256,
               stage.model.trainableParameters().flattened().isEmpty,
               (stage.head != nil) == (stage.stageIndex == 1),
-              stage.activationDType == .bfloat16,
+              stage.activationDType == .bfloat16, stage.residualDType == .float32,
+              String(describing: stage.residualDType) == GPTOSSRegisteredSpecification.residualDType,
               String(describing: stage.activationDType) == receipt.embeddingActivationDType else {
             throw ProbeError("GPT-OSS stage model identity, native dtype or frozen ownership differs")
         }
         let spec = plan.specification
         guard request.profile.hiddenSize == spec.hidden, request.profile.vocabularySize == stage.vocabularySize,
               stage.vocabularySize == spec.vocabulary,
-              request.profile.activationDType == receipt.embeddingActivationDType,
+              request.profile.activationDType == String(describing: stage.residualDType),
               request.maximumTokens <= spec.maximumPositions else {
             throw ProbeError("Generation profile differs from the actual loaded GPT-OSS stage geometry/dtype")
         }
@@ -77,7 +78,7 @@ final class GPTOSSLayerStageSession {
             sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
             constructionConfigurationSHA256: receipt.constructionConfigurationSHA256,
             planFingerprint: plan.fingerprint, stageFingerprint: descriptor.fingerprint,
-            activationDType: receipt.embeddingActivationDType)
+            activationDType: String(describing: stage.residualDType))
     }
 
     func prefillChunk(_ tokens: [Int], offset: Int, final: Bool, incoming: QwenLayerStageBoundary? = nil,
@@ -121,8 +122,9 @@ final class GPTOSSLayerStageSession {
                 let residual = stage.model.model(input, cache: caches)
                 eval([residual] + roots()); try checked()
                 try requireFrontier(after: schedule.committedTokens + count)
-                guard residual.shape == [1, count, hiddenSize], residual.dtype == stage.activationDType else {
-                    throw ProbeError("GPT-OSS stage output differs from the native residual contract")
+                guard residual.shape == [1, count, hiddenSize], residual.dtype == stage.residualDType else {
+                    throw ProbeError("GPT-OSS stage output differs from the native residual contract: "
+                        + "\(residual.shape) \(residual.dtype), expected \([1, count, hiddenSize]) \(stage.residualDType)")
                 }
                 try schedule.commit(frame)
                 // eval returns at the output event, which can precede the Metal
@@ -156,9 +158,9 @@ final class GPTOSSLayerStageSession {
             }
             eval([output] + roots()); try checked()
             try requireFrontier(after: schedule.committedTokens + count)
-            guard output.shape == [1, wantsLogits ? stage.vocabularySize : 1],
-                  [DType.float16, .bfloat16, .float32].contains(output.dtype) else {
-                throw ProbeError("GPT-OSS stage output differs from the native logit contract")
+            guard output.shape == [1, wantsLogits ? stage.vocabularySize : 1], output.dtype == stage.residualDType else {
+                throw ProbeError("GPT-OSS stage output differs from the native logit contract: "
+                    + "\(output.shape) \(output.dtype), expected \([1, wantsLogits ? stage.vocabularySize : 1]) \(stage.residualDType)")
             }
             try schedule.commit(frame)
             return wantsLogits ? .logits(output) : .evaluationHandle(output)
@@ -186,7 +188,7 @@ final class GPTOSSLayerStageSession {
               incoming.tokenIDsSHA256 == QwenLayerStageBoundary.tokenHash(tokens) else {
             throw ProbeError("Stage boundary request/model/producer/token/frontier identity differs")
         }
-        try incoming.validateOwnedArray(tokens: tokens.count, hidden: hiddenSize, dtype: stage.activationDType)
+        try incoming.validateOwnedArray(tokens: tokens.count, hidden: hiddenSize, dtype: stage.residualDType)
     }
 
     /// Digests of this stage's committed attention state, keyed by the model's

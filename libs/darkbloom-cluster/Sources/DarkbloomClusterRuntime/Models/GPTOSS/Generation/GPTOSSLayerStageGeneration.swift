@@ -178,13 +178,13 @@ private func requireGPTOSSGenerationSource(loaded: LoadedGPTOSSLayerStage, plan:
           // The hand-off cannot carry a sliding-window layer's rows.
           agreement.phaseSplit == nil,
           agreement.request.profile.vocabularySize == loaded.vocabularySize,
-          agreement.request.profile.activationDType == String(describing: loaded.activationDType) else {
+          agreement.request.profile.activationDType == String(describing: loaded.residualDType) else {
         throw ProbeError("Generation actual loaded GPT-OSS stage/source/rank differs from agreement")
     }
     // The transport's own limit, before readiness or request-state construction.
     _ = try CollectivePointToPointShape(
         shape: [1, min(agreement.request.chunkSize, agreement.request.promptCount), agreement.request.profile.hiddenSize],
-        dtype: loaded.activationDType, maximumBytes: CollectivePointToPointShape.hardByteLimit)
+        dtype: loaded.residualDType, maximumBytes: CollectivePointToPointShape.hardByteLimit)
 }
 
 private func runGPTOSSGenerationFrame(session: GPTOSSLayerStageSession, control: QwenLayerStageGenerationControl,

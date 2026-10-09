@@ -5,7 +5,7 @@ import Foundation
 /// a whole-process peak and grants nothing.
 ///
 /// A full-attention layer keeps keys and values `[1, heads, tokens, width]` in
-/// the activation dtype; the class's growing cache extends them in steps of
+/// the residual dtype (float32); the class's growing cache extends them in steps of
 /// 256 tokens (a prompt chunk extends by the chunk rounded up to a step) and
 /// holds the old and the new buffer while it does. A sliding-window layer
 /// keeps at most the window plus the chunk just appended, the same way. There
@@ -14,7 +14,7 @@ import Foundation
 /// transient a forward is known to build: one full-attention layer's score
 /// matrix for a chunk against the whole history, in float32.
 struct GPTOSSRequestStateBudget: Encodable, Equatable {
-    static let activationBytes = 2, growthStep = 256
+    static let activationBytes = 4, growthStep = 256
     let fullAttentionLayers: Int, slidingLayers: Int
     let fullAttentionStateBytes: Int, slidingStateBytes: Int
     let boundaryBytes: Int, rowBytes: Int, workspaceBytes: Int

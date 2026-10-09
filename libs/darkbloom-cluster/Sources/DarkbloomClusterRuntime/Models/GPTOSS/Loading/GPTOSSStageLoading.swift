@@ -13,7 +13,10 @@ struct LoadedGPTOSSLayerStage {
     let plan: GPTOSSLayerStagePlan
     let stageIndex: Int
     let receipt: QwenLayerStageLoadReceipt
+    /// The dtype the artifact's floating tensors are stored and held in.
     let activationDType: DType
+    /// The dtype of the residual this stage exports or accepts, and of its logits.
+    let residualDType: DType
     let vocabularySize: Int
 
     var layerCount: Int { plan.stages[stageIndex].layers.count }
@@ -222,6 +225,6 @@ private func materializeGPTOSSStage(source: GPTOSSResidentSource, stageIndex: In
         storageCommitment: commitment, storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)),
         selectedPayloadReadAccounting: readAccounting)
     return LoadedGPTOSSLayerStage(model: model, head: head, plan: source.plan, stageIndex: stageIndex,
-        receipt: receipt, activationDType: source.activationDType,
+        receipt: receipt, activationDType: source.activationDType, residualDType: .float32,
         vocabularySize: source.specification.vocabulary)
 }

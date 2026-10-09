@@ -57,7 +57,7 @@ func prepareGPTOSSResidentSource(directory: URL, configuration: Data, manifest: 
     }
     // The stream's dtype is the one the embedding dequantizes into.
     guard let scales = descriptors[GPTOSSLayerStagePlan.embedding + ".scales"], scales.dtype == .bfloat16,
-          String(describing: scales.dtype) == GPTOSSRegisteredSpecification.activationDType else {
+          String(describing: scales.dtype) == GPTOSSRegisteredSpecification.storedActivationDType else {
         throw ProbeError("GPT-OSS source is not native BF16")
     }
     let mappings = try plan.parameters()

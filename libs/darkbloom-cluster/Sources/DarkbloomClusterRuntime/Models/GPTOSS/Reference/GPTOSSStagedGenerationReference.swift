@@ -187,7 +187,7 @@ public enum GPTOSSStagedGenerationReference {
                         // Rank 0's sender applies this check to the residual as
                         // produced, before it sends it. Recorded, not enforced: the
                         // copy below gives stage 1 an owned array either way.
-                        let senderDType = stages[0].activationDType
+                        let senderDType = stages[0].residualDType
                         func senderAccepts() -> Bool {
                             (try? produced.validateOwnedArray(tokens: frame.tokenCount,
                                 hidden: request.profile.hiddenSize, dtype: senderDType)) != nil

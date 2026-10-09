@@ -45,7 +45,15 @@ struct GPTOSSRegisteredSpecification {
     static let maximumRequests = 16
     static let maximumPromptTokens = 8192, maximumChunkTokens = 512
     static let maximumOutputTokens = 128, maximumContextTokens = 8320
-    static let activationDType = "bfloat16"
+    /// The dtype the artifact stores its floating tensors in, and the one the
+    /// token embedding dequantizes into.
+    static let storedActivationDType = "bfloat16"
+    /// The dtype of the residual that crosses a cut and of the logits. The
+    /// product class's gated expert activation clips against float32
+    /// constants, which promotes the stream: from the first routed block on,
+    /// every residual, attention state and logits row is float32. A stage
+    /// reproduces the class's arithmetic, so it declares what the class does.
+    static let residualDType = "float32"
     static let slidingAttention = "sliding_attention", fullAttention = "full_attention"
 
     static let all: [Self] = [
@@ -124,7 +132,7 @@ struct GPTOSSRegisteredSpecification {
 
     func profile() throws -> QwenLayerStageGenerationProfile {
         try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
-            activationDType: Self.activationDType, maximumPromptTokens: Self.maximumPromptTokens,
+            activationDType: Self.residualDType, maximumPromptTokens: Self.maximumPromptTokens,
             maximumChunkTokens: Self.maximumChunkTokens, maximumOutputTokens: Self.maximumOutputTokens,
             maximumContextTokens: Self.maximumContextTokens)
     }

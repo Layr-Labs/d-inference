@@ -225,7 +225,8 @@ public struct PairDriver: Sendable {
                         artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
                         workerSHA256: workerSHA256)),
                     expectedIdentity: workerIdentity, rank: rank, profile: capability.profile,
-                    executionPlanSHA256: partition.planSHA256, lifetimeSeconds: c.lifetimeSeconds)
+                    executionPlanSHA256: partition.planSHA256, lifetimeSeconds: c.lifetimeSeconds,
+                    maximumLifetimeSeconds: c.request.maximumLifetimeSeconds)
             }
         } catch { return finish("refused", "cannot prepare the workers: \(error)") }
         let begun = DispatchTime.now().uptimeNanoseconds

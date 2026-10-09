@@ -47,6 +47,7 @@ directory, label, key file and calibration file.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -62,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import loadgen  # noqa: E402
 import redact  # noqa: E402
 
+BINARY_SHA256 = {}
 TOKEN = re.compile(r"dk-local-[A-Za-z0-9_\-]+")
 LITERALS = redact.local_literals()
 
@@ -243,6 +245,10 @@ def run_session(arguments, session, note):
     name = session["name"]
     record = {"session": name, "started_utc": utc(), "model": arguments.model, "runs": [], "failures": [],
               "load_average_start": list(os.getloadavg()),
+              "binary_sha256": BINARY_SHA256.get(str(arguments.binary)) or BINARY_SHA256.setdefault(
+                  str(arguments.binary), hashlib.sha256(arguments.binary.read_bytes()).hexdigest()),
+              "binary_layout": ("app bundle (flat resource bundles under Contents/Resources)"
+                                if ".app/Contents/MacOS" in str(arguments.binary) else "binary beside SwiftPM bundles"),
               "lanes_held": os.environ.get("WITH_LANE_HELD")}
     record["leftover_before"] = leftover_processes(arguments.binary)
     if record["leftover_before"]:
@@ -282,6 +288,17 @@ def run_session(arguments, session, note):
             except OSError as error:
                 status, text = None, str(error)
             (out / f"{name}.server{path.replace('/', '-')}.txt").write_text(f"HTTP {status}\n{clean(text)}\n")
+            if path == "/metrics":
+                # What the server says it is running, at load: the proof of which path was measured.
+                posture = {}
+                for key, pattern in (("kv_backend", r'kv_backend_info\{[^}]*backend="([^"]+)"'),
+                                     ("mtp_enabled", r"mtp_enabled\{[^}]*\} (\d)"),
+                                     ("mtp_active", r"mtp_active\{[^}]*\} (\d)"),
+                                     ("mtp_inactive_reason", r'mtp_inactive_reason\{[^}]*reason="([^"]+)"'),
+                                     ("prefix_cache", r'prefix_cache_status\{[^}]*state="([^"]+)"')):
+                    match = re.search(pattern, text or "")
+                    posture[key] = match.group(1) if match else None
+                record["server_posture_at_load"] = posture
         record["memory_loaded"] = memory_snapshot(server.process.pid)
         for run in session.get("runs", []):
             label = run["label"]
@@ -361,6 +378,8 @@ def main():
     parser.add_argument("--start-seconds", type=float, default=600.0)
     parser.add_argument("--stop-seconds", type=float, default=300.0)
     parser.add_argument("--settle-seconds", type=float, default=5.0)
+    parser.add_argument("--rest-seconds", type=float, default=0.0,
+                        help="idle time before each session after the first (the Mac cools; nothing runs)")
     parser.add_argument("--pressure-guard-swap-mb", type=float,
                         help="stop the server if memory pressure leaves normal or swap grows by more than this")
     arguments = parser.parse_args()
@@ -372,7 +391,7 @@ def main():
         print(f"[{utc()}] {clean(message)}", file=sys.stderr, flush=True)
 
     plan = json.loads(arguments.plan.read_text())
-    failures = 0
+    failures = ran = 0
     for session in plan["sessions"]:
         if arguments.only and session["name"] not in arguments.only:
             continue
@@ -380,6 +399,10 @@ def main():
         if report_path.exists():
             note(f"{session['name']}: report exists, skipping (reports are never overwritten)")
             continue
+        if arguments.rest_seconds and ran:
+            note(f"resting {arguments.rest_seconds:.0f}s before {session['name']}")
+            time.sleep(arguments.rest_seconds)
+        ran += 1
         note(f"{session['name']}: starting")
         record = run_session(arguments, session, note)
         report_path.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")

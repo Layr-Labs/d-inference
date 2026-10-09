@@ -73,13 +73,13 @@ struct QwenResidentRequestAllowance {
         }
         try QwenResidentResourceEnvironment.require()
         let os = try QwenDenseStageLoadResources.requireInitial()
-        let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
             try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         guard try QwenDenseStageLoadResources.admits(os, bytes: free, for: "Resident request"), Memory.memoryLimit >= allocator else {
-            throw ProbeError("Resident request exceeds live actual-free or allocator policy")
+            throw ProbeError("Resident request exceeds the allocator limit")
         }
     }
 }

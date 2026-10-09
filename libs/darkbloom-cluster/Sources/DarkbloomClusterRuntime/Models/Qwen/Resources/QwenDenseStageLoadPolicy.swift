@@ -69,18 +69,6 @@ struct QwenDenseStageLoadNativeObservation: Encodable {
     let activeBytes: Int, cacheBytes: Int, peakBytes: Int, allocatorLimitBytes: Int
 }
 
-struct QwenDenseStageLoadResourceDecision: Encodable {
-    let policy = QwenDenseStageLoadPolicy.identifier
-    let ordinal: Int, remainingAllocationBytes: Int
-    let requiredAdmissibleBytes: Int, requiredAllocatorBytes: Int
-    let os: QwenDenseStageLoadOSObservation
-    let native: QwenDenseStageLoadNativeObservation
-    let admission: QwenDenseStageLoadAdmission
-    let reclaimableUsedForAdmission: Bool
-    let wholeProcessMemorySafetyEstablished = false
-    let reserveTermsAreOperationalPolicy = true, forwardExecutionAuthorized = false
-}
-
 /// Pure decision checks. A passing caller-fabricated observation is not a grant;
 /// only the private native gate samples current resources and permits reads.
 ///
@@ -97,9 +85,6 @@ enum QwenDenseStageLoadPolicy {
     static let gib = 1_073_741_824
     /// Floor on admissible memory for any decision.
     static let minimumAdmissibleBytes = 6 * gib
-    /// The same floor under the name its three callers use. Since version 3 it
-    /// is a floor on admissible memory, not on free pages.
-    static let minimumActualFreeBytes = minimumAdmissibleBytes
     /// Floor on pages that are free right now, about the kernel's reserved
     /// pool. The kernel runs loads from cache at 0.1 GiB free, so this is a
     /// tripwire for a kernel that is not keeping up, not a budget.
@@ -198,30 +183,6 @@ enum QwenDenseStageLoadPolicy {
     static func gibText(_ bytes: Int) -> String {
         let whole = bytes / gib, hundredths = (bytes % gib) * 100 / gib
         return "\(whole).\(hundredths < 10 ? "0" : "")\(hundredths) GiB"
-    }
-
-    static func evaluate(budget: QwenDenseStageLoadBudget, ordinal: Int,
-        os: QwenDenseStageLoadOSObservation, native: QwenDenseStageLoadNativeObservation, now: UInt64
-    ) throws -> QwenDenseStageLoadResourceDecision {
-        try requireInitial(os, now: now)
-        guard [native.activeBytes, native.cacheBytes, native.peakBytes].allSatisfy({ $0 >= 0 }),
-              native.allocatorLimitBytes > 0, native.peakBytes >= native.activeBytes else {
-            throw ProbeError("Invalid native allocator observation")
-        }
-        let remaining = try budget.remainingAllocationBytes(after: ordinal)
-        let host = ordinal == budget.active.count ? 0 : budget.largestHostTensorBytes
-        let sum = QwenLongPrefillCheckedBytes.sum
-        let scratch = ordinal == budget.active.count ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
-        let required = max(minimumAdmissibleBytes, try sum([remaining, host, host, scratch, loadingHeadroomBytes]))
-        let allocatorRequired = try sum([native.activeBytes, native.cacheBytes,
-            remaining, host, allocatorHeadroomBytes])
-        let admission = try requireAdmissible(os, requiredBytes: required, purpose: "Selected-stage loading", now: now)
-        guard native.allocatorLimitBytes >= allocatorRequired else {
-            throw ProbeError("Selected-stage loading exceeds the allocator limit")
-        }
-        return .init(ordinal: ordinal, remainingAllocationBytes: remaining,
-            requiredAdmissibleBytes: required, requiredAllocatorBytes: allocatorRequired, os: os, native: native,
-            admission: admission, reclaimableUsedForAdmission: admission.reclaimableUsedForAdmission)
     }
 
     private static func validateOS(_ os: QwenDenseStageLoadOSObservation, now: UInt64) throws {

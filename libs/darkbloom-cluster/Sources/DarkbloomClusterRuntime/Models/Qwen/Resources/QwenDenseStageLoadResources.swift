@@ -46,6 +46,8 @@ enum QwenDenseStageLoadResources {
         let freeBytes = try QwenLongPrefillCheckedBytes.product([free, page])
         let reclaimablePages = try QwenLongPrefillCheckedBytes.sum([free, inactive, speculative])
         let reclaimable = try QwenLongPrefillCheckedBytes.product([reclaimablePages, page])
+        // Every read is done before the completion time is taken.
+        let kernelMinimum = kernelFileCacheMinimumPages()
         return .init(startedNanoseconds: start, completedNanoseconds: DispatchTime.now().uptimeNanoseconds,
             timestampUTC: ResourceObservationTimestamp.utc(), physicalMemoryBytes: Int(physical),
             pageSizeBytes: page, kernelFreePages: rawFree, freePages: free, inactivePages: inactive,
@@ -54,7 +56,7 @@ enum QwenDenseStageLoadResources {
             activePages: Int(statistics.active_count), fileBackedPages: Int(statistics.external_page_count),
             anonymousPages: Int(statistics.internal_page_count), wiredPages: Int(statistics.wire_count),
             purgeablePages: Int(statistics.purgeable_count), compressorPages: Int(statistics.compressor_page_count),
-            kernelFileCacheMinimumPages: kernelFileCacheMinimumPages())
+            kernelFileCacheMinimumPages: kernelMinimum)
     }
 
     /// `vm.vm_page_filecache_min`, in pages. The kernel recomputes it only when

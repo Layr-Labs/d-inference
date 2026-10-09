@@ -36,13 +36,13 @@ private final class QwenResidentLoadGate: QwenLayerStageGate {
             let remaining = try QwenLongPrefillCheckedBytes.sum(Array(bounds.dropFirst(next)) + [inert])
             let h = next < active.count ? host : 0
             let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
-            let required = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+            let required = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
                 try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
             let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
                 remaining, h, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
             let os = try QwenDenseStageLoadResources.requireInitial()
             guard try QwenDenseStageLoadResources.admits(os, bytes: required, for: "Resident load"), Memory.memoryLimit >= allocator else {
-                throw ProbeError("Resident load exceeds current actual-free or allocator policy")
+                throw ProbeError("Resident load exceeds the allocator limit")
             }
         } catch { failed = true; throw error }
     }

@@ -184,6 +184,11 @@ connection, first.
 | `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
 | `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
 
+An attested registration is encoded by the raw-attestation encoder, not the
+Codable one. Both write the three member fields, and only for the member role
+(`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
+`encodeRegisterPreservingRawAttestation`).
+
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
 no inference work while recovery is pending. The provider's normal reconnect

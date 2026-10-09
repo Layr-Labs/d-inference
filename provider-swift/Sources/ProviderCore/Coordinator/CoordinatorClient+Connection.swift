@@ -212,7 +212,9 @@ extension CoordinatorClient {
             chunkWriter.write(frames)
         }
 
-        eventContinuation?.yield(.connected)
+        // A member connection is announced only by its nonce-bound acceptance
+        // (CoordinatorClient+Inbound), never by the registration send.
+        if config.executionRole == .solo { eventContinuation?.yield(.connected) }
 
         try await sessionLoop(
             connection: connection,

@@ -193,7 +193,8 @@ extension ProviderLoop {
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
             idleUnloadMins: loopConfig.config.backend.idleTimeoutMins,
-            autopilotInventory: loopConfig.autopilotInventory
+            autopilotInventory: loopConfig.autopilotInventory,
+            executionRole: loopConfig.executionRole
         )
 
         // A termination received during the APNs/startup awaits can already

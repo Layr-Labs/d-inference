@@ -2,6 +2,10 @@ import Foundation
 import MLXLMCommon
 
 extension SSDHybridCheckpointStore {
+    private struct WriteAdmissionFailure: Error {
+        let outcome: PrefixCacheDonationOutcome
+    }
+
     final class WriteJob: @unchecked Sendable {
         let source: CBv2CompleteCheckpointExport
         private var envelope: SSDHybridCheckpointEnvelope?
@@ -165,7 +169,17 @@ extension SSDHybridCheckpointStore {
             // Novel writes use a 90% sub-budget, leaving capacity for known
             // repeat demand. Durable duplicates consume no write budget. The
             // writer rechecks after queueing, since this admission is advisory.
-            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: demand.repeated)) {
+            // Compression size is known only after bounded encoding. Its
+            // worker charges each actual encrypted write before issuing it.
+            let advisoryBytes: Int
+            do {
+                advisoryBytes = config.losslessCompression
+                    ? try SSDBlockStore.minimumEncodedByteCount(metadata: envelope.metadata(
+                        tag: tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout,
+                        chunkCodec: SSDLosslessChunkCodec.identity))
+                    : envelope.plaintextBytes
+            } catch { return .refused(.incompleteLayerState) }
+            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: advisoryBytes, repeated: demand.repeated)) {
                 return .refused(refusal)
             }
         }
@@ -234,7 +248,8 @@ extension SSDHybridCheckpointStore {
         guard hasSafeRoot else { result.outcome = .unsafeCacheRoot; return }
         guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
         let metadata = envelope.metadata(
-            tag: job.tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout)
+            tag: job.tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout,
+            chunkCodec: config.losslessCompression ? SSDLosslessChunkCodec.identity : nil)
         var authenticatingExistingFile = false
         do {
             let alreadyDurable = index.contains(tag16: short)
@@ -250,18 +265,32 @@ extension SSDHybridCheckpointStore {
             } else {
                 if let space = SSDPrefixCache.volumeSpace(at: config.root) {
                     let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
-                    guard space.free >= floor, space.free - floor >= envelope.plaintextBytes else {
+                    let required = config.losslessCompression
+                        ? try SSDBlockStore.minimumEncodedByteCount(metadata: metadata) : envelope.plaintextBytes
+                    guard space.free >= floor, space.free - floor >= required else {
                         result.outcome = .diskSpaceInsufficient; return
                     }
                 }
                 let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: metadata)
-                if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: budgetBytes, repeated: job.repeated)) {
+                if !config.losslessCompression,
+                    let refusal = Self.writeRefusal(rateLimiter.consume(bytes: budgetBytes, repeated: job.repeated)) {
                     result.outcome = refusal; return
                 }
                 let written = try SSDBlockStore.writeStreaming(
                     to: url, metadata: metadata, kekKey: kekKey,
                     maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
                     strictFsync: config.strictFsync,
+                    elementBytes: { index in
+                        guard index > 0 else { return 1 }
+                        let dtype = job.source.manifest.tensors[envelope.segments[index - 1].tensor].dtype
+                        switch dtype {
+                        case .bfloat16, .float16: return 2
+                        case .float32, .int32: return 4
+                        default: return 1
+                        }
+                    }, beforeBytesWrite: { bytes in
+                        try self.admitStreamedWrite(bytes: bytes, job: job)
+                    },
                     chunk: { index in
                         try self.checkWrite(job)
                         if index == 0 { return envelope.manifestBytes }
@@ -320,6 +349,8 @@ extension SSDHybridCheckpointStore {
                 result.outcome = .cacheClosed
             } else if !epochMatches(job.epoch) {
                 result.outcome = .cacheEpochChanged
+            } else if let failure = error as? WriteAdmissionFailure {
+                result.outcome = failure.outcome
             } else if authenticatingExistingFile && !(error is CancellationError) {
                 // An advertised file failed reauthentication. Revoke its
                 // evidence before removal, exactly as the lookup path does.
@@ -335,6 +366,22 @@ extension SSDHybridCheckpointStore {
                 // failure is not corruption. A later donation may retry
                 // after the condition clears.
             }
+        }
+    }
+
+    private func admitStreamedWrite(bytes: Int, job: WriteJob) throws {
+        try checkWrite(job)
+        // Raw files paid their complete known size before the stream began.
+        // Compressed files pay their actual encrypted size segment by segment.
+        guard config.losslessCompression else { return }
+        if let space = SSDPrefixCache.volumeSpace(at: config.root) {
+            let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
+            guard space.free >= floor, space.free - floor >= bytes else {
+                throw WriteAdmissionFailure(outcome: .diskSpaceInsufficient)
+            }
+        }
+        if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: bytes, repeated: job.repeated)) {
+            throw WriteAdmissionFailure(outcome: refusal)
         }
     }
 

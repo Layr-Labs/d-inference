@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -247,3 +247,5 @@ Machine-generated; kept as evidence for the reports above.
 - [Gemma MTP review fixes](2026-09-08-gemma-mtp-review-fixes.md) — reproduced request-ID reuse and verification-shape findings, generation isolation fixes and regression evidence.
 
 - [Gemma QAT September 10 merge and validation](2026-09-10-gemma-qat-review-sync.md) — review fixes, merged-source tests, new artifact identity and model/HTTP revalidation status.
+
+- [Lossless complete-checkpoint codec measurements](2026-10-09-lossless-checkpoint-codec.md) — Bit-exact native-source LZ4 measurements, buffer refactor and experimental serving/privacy limits.

@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -1229,3 +1229,13 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 - [`../reference/configuration.md`](../reference/configuration.md#routing-admission-and-ttft) — the `EIGENINFERENCE_CACHE_ROUTING_*` variables and `EIGENINFERENCE_CACHE_MASTER_KEY`.
 - [`../operations/cache-routing-rollout.md`](../operations/cache-routing-rollout.md) — turning routing on in production, widening the activation bounds, rolling back.
 - [`../design/prefix-cache-and-cached-routing.md`](../design/prefix-cache-and-cached-routing.md), [`../reports/2026-07-19-frozen-full-prefix-cache-proof.md`](../reports/2026-07-19-frozen-full-prefix-cache-proof.md) — the analyses that led to this design.
+
+### Lossless checkpoint encoding
+
+The optional lossless SSD encoding preserves checkpoint identity, exact tensor
+bytes and readiness evidence. It does not increase native serving capacity or
+authorize compressed-size admission credits. A partial or refused encoded
+write produces no ready endpoint. The store authenticates and restores complete
+native state before issuing existing evidence. See the
+[SSD cache reference](../reference/ssd-kv-cache.md#dbk3-file-format) for codec
+framing and physical write charging.

@@ -45,7 +45,8 @@ struct SSDHybridCheckpointEnvelope {
 
     func metadata(
         tag: Data, identity: CBv2CompleteCheckpointIdentity, createdAt: Int64,
-        backendLayout: String = CBv2CompleteCheckpointManifest.layout
+        backendLayout: String = CBv2CompleteCheckpointManifest.layout,
+        chunkCodec: String? = nil
     ) -> SSDBlockMetadata {
         let sizes = [manifestBytes.count] + segments.map(\.bytes)
         return SSDBlockMetadata(
@@ -54,7 +55,7 @@ struct SSDHybridCheckpointEnvelope {
             layerCount: 1,
             chunks: sizes.enumerated().map {
                 .init(layerIndex: 0, tensor: $0.offset, shape: [$0.element], dtype: "uint8")
-            }, chunkPlaintextSizes: sizes, createdAt: createdAt)
+            }, chunkPlaintextSizes: sizes, createdAt: createdAt, chunkCodec: chunkCodec)
     }
 
     func matches(
@@ -62,7 +63,8 @@ struct SSDHybridCheckpointEnvelope {
         backendLayout: String = CBv2CompleteCheckpointManifest.layout
     ) -> Bool {
         metadata == self.metadata(
-            tag: tag, identity: identity, createdAt: metadata.createdAt, backendLayout: backendLayout)
+            tag: tag, identity: identity, createdAt: metadata.createdAt, backendLayout: backendLayout,
+            chunkCodec: metadata.chunkCodec)
     }
 
     static func decodeManifest(_ bytes: Data) throws -> CBv2CompleteCheckpointManifest {

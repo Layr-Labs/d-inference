@@ -2011,6 +2011,12 @@ threats:
            model binding / timestamps. A disk observer (NOT a co-tenant — see T-028
            for the in-memory variant) can hash a guessed prefix and test it against
            on-disk filenames/metadata to confirm a known prefix was cached.
+      The optional default-off DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION=lz4
+      codec additionally exposes content-dependent ciphertext lengths to a disk
+      observer. The codec and native allocation bounds are authenticated; exact
+      tensor bytes are restored and byte-plane widths remain encrypted. This
+      additional length signal is not covered by earlier SEC-035 timing-risk
+      approvals and has not been approved as a production default. MiMo is excluded.
       As of 2026-06, the cache is ON BY DEFAULT (operator decision); it was
       previously opt-in. Default-on makes this channel the baseline exposure for
       every provider unless explicitly disabled.

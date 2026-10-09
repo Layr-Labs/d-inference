@@ -9,7 +9,6 @@ for thread_key in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'VECLIB_MAXIMUM_TH
     os.environ[thread_key] = '1'
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import platform
 from pathlib import Path

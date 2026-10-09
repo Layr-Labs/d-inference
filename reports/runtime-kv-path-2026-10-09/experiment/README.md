@@ -58,3 +58,5 @@ python3 reports/runtime-kv-path-2026-10-09/experiment/run_rotated_packet.py --pa
 ```
 
 Dependencies: NumPy and SciPy; runtime version and source hashes are bound in JSON. Numerical tests use small synthetic arrays only as correctness tests. The reported distortion uses the real archived model packet. CPU encode/decode times are single observations with BLAS thread controls set to1; they are not provider TTFT or throughput measurements. No native compressed cache allocation, paging, cancellation, cache identity/adoption or SSD writes are implemented by this experiment.
+
+The measured `results.json` and its `experimentSourcesSHA256` receipts retain the historical implementation at [commit `8606b9b`](https://github.com/Layr-Labs/d-inference/tree/8606b9bd3839de89e919c1e3150ee7a0468a9bb0/reports/runtime-kv-path-2026-10-09/experiment). Subsequent cleanup removes only unused imports (`Path`, `struct`, and `hashlib`) from the three prototype scripts. Their current source hashes therefore differ; the numerical recipe, measured results and historical receipts remain unchanged. Use that commit to reproduce the recorded source identity.

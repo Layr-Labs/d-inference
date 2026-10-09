@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import math
-import struct
 import numpy as np
 from scipy.special import ndtr, ndtri
 

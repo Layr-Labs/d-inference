@@ -143,25 +143,29 @@ extension SSDHybridCheckpointStore {
                 let value = values[manifest.position] else { return .refused(.incompleteLayerState) }
             digest = value
         } else {
-            let chain = hashes(tokens: tokens, scope: cacheSalt ?? "")
+            guard let chain = donationHashes(tokens: tokens, scope: cacheSalt ?? "",
+                                              checkpointPosition: manifest.position)
+            else { return .refused(.noCompleteBlock) }
             let offset = manifest.position / PrefixCachePolicy.blockSize - 1
             guard chain.indices.contains(offset) else { return .refused(.noCompleteBlock) }
             digest = chain[offset]
         }
         let tag = lookupKeys.checkpointTag(chainHash: digest, cacheSalt: cacheSalt ?? "")
         let short = Data(tag.prefix(16))
-        let repeated = writeDemand.observe(short, now: config.nowSeconds())
+        let localRepeat = writeDemand.observe(short, now: config.nowSeconds())
+        let demand = donationWritePolicy(requestID: requestID, localRepeat: localRepeat,
+                                        checkpointPosition: manifest.position)
         if !index.contains(tag16: short) {
             // Demand gate first: a fleet-novel checkpoint is skipped before any
             // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
             // The tag was recorded above, so a local second sighting qualifies.
-            if let refusal = demandRefusal(requestID: requestID, localRepeat: repeated) {
+            if let refusal = demand.refusal {
                 return .refused(refusal)
             }
             // Novel writes use a 90% sub-budget, leaving capacity for known
             // repeat demand. Durable duplicates consume no write budget. The
             // writer rechecks after queueing, since this admission is advisory.
-            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
+            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: demand.repeated)) {
                 return .refused(refusal)
             }
         }
@@ -179,7 +183,7 @@ extension SSDHybridCheckpointStore {
             return proof.files[short]
         }
         return .ready(WriteJob(
-            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: repeated,
+            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: demand.repeated,
             authenticatedFile: alreadyAuthenticated, settlement: settlement,
             hostReservation: hostReservation, stats: statsBox, completion: completion))
     }
@@ -197,21 +201,32 @@ extension SSDHybridCheckpointStore {
         var outcome: PrefixCacheDonationOutcome = .writeFailed
     }
 
-    func write(_ job: WriteJob) {
+    func write(_ job: WriteJob) async {
         // Export readSegment can perform device materialization/readback on
         // this background worker, independently of the original request.
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity?.finish() }
         let started = ContinuousClock.now
         var result = WriteResult()
-        performWrite(job, result: &result)
+        let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: Data(job.tag.prefix(16)).hexString)
+        let access = fileCoordinator.makeAccess(to: url)
+        do {
+            try await access.acquire()
+            // Early exits also release. performWrite releases before budget
+            // maintenance so self-eviction still works and lock order is safe.
+            defer { access.release() }
+            performWrite(job, access: access, result: &result)
+        } catch {
+            result.outcome = .cacheClosed
+        }
         statsBox.update { $0.writeMilliseconds += Self.milliseconds(since: started) }
         // The helper has dropped metadata, plaintext, ciphertext and returned
         // native Data. finish then drops the queued envelope before host refund.
         settle(job, positions: result.positions, outcome: result.outcome)
     }
 
-    private func performWrite(_ job: WriteJob, result: inout WriteResult) {
+    private func performWrite(_ job: WriteJob, access: SSDCheckpointFileCoordinator.Access,
+                              result: inout WriteResult) {
         guard let envelope = job.readEnvelope() else { result.outcome = .cacheClosed; return }
         let short = Data(job.tag.prefix(16))
         let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: short.hexString)
@@ -255,6 +270,7 @@ extension SSDHybridCheckpointStore {
                         return try job.source.readSegment(
                             tensorIndex: segment.tensor, byteOffset: segment.offset, maximumBytes: segment.bytes)
                     })
+                lock.withLock { beforeWriteIndexForTesting }?(url, false)
                 guard !isClosed else { result.outcome = .cacheClosed; return }
                 guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
                 #if DEBUG
@@ -275,17 +291,22 @@ extension SSDHybridCheckpointStore {
                 guard indexed else { result.outcome = .cacheEntryEvicted; return }
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
             }
+            if alreadyDurable { lock.withLock { beforeWriteIndexForTesting }?(url, true) }
+            // The durable file and its index entry now form one committed
+            // entry. Retirement may remove both, including this new victim.
+            access.release()
             config.maintainWholeRoot()
             _ = diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
-            if !isClosed, epochMatches(job.epoch), index.contains(tag16: short) {
+            let durable = index.contains(tag16: short)
+                && SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular
+            if !isClosed, epochMatches(job.epoch), durable {
                 result.positions = [job.source.manifest.position]
                 result.outcome = alreadyDurable ? .alreadyDurable : .donated
             } else if isClosed {
                 result.outcome = .cacheClosed
-            } else if !index.contains(tag16: short) {
-                // Maintenance removed this endpoint after it was written. The
-                // epoch is unchanged, so report the removal itself; the failed
-                // gate above already withheld its ready endpoint.
+            } else if !durable {
+                // Routine retirement can remove this endpoint without changing
+                // the identity of other checkpoints. Never publish the victim.
                 result.outcome = .cacheEntryEvicted
             } else if !epochMatches(job.epoch) {
                 result.outcome = .cacheEpochChanged

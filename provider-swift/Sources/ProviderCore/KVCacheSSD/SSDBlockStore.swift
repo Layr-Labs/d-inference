@@ -419,10 +419,11 @@ enum SSDBlockStore {
 
     static func readHeader(
         from handle: FileHandle, maximumMetadataBytes: Int = maxHeaderFieldBytes,
-        maximumWrappedDEKBytes: Int = maxHeaderFieldBytes
+        maximumWrappedDEKBytes: Int = maxHeaderFieldBytes,
+        beforeRead: ((Int) throws -> Void)? = nil
     ) throws -> ParsedHeader {
         try handle.seek(toOffset: 0)
-        let prefix = try readExactly(24, from: handle, what: "header prefix")
+        let prefix = try readExactly(24, from: handle, what: "header prefix", beforeRead: beforeRead)
         guard Array(prefix.prefix(4)) == magic else {
             throw SSDBlockStoreError.malformedHeader("magic mismatch")
         }
@@ -438,13 +439,13 @@ enum SSDBlockStore {
         guard wrappedLen >= 0, wrappedLen <= min(maxHeaderFieldBytes, maximumWrappedDEKBytes) else {
             throw SSDBlockStoreError.malformedHeader("wrapped DEK length \(wrappedLen) out of bounds")
         }
-        let wrappedDEK = try readExactly(wrappedLen, from: handle, what: "wrapped DEK")
-        let metadataLenBytes = try readExactly(4, from: handle, what: "metadata length")
+        let wrappedDEK = try readExactly(wrappedLen, from: handle, what: "wrapped DEK", beforeRead: beforeRead)
+        let metadataLenBytes = try readExactly(4, from: handle, what: "metadata length", beforeRead: beforeRead)
         let metadataLen = Int(readUInt32LE(metadataLenBytes, at: 0))
         guard metadataLen >= 0, metadataLen <= min(maxHeaderFieldBytes, maximumMetadataBytes) else {
             throw SSDBlockStoreError.malformedHeader("metadata length \(metadataLen) out of bounds")
         }
-        let metadataBytes = try readExactly(metadataLen, from: handle, what: "metadata")
+        let metadataBytes = try readExactly(metadataLen, from: handle, what: "metadata", beforeRead: beforeRead)
         let metadata: SSDBlockMetadata
         do {
             metadata = try JSONDecoder().decode(SSDBlockMetadata.self, from: metadataBytes)
@@ -459,11 +460,14 @@ enum SSDBlockStore {
             metadata: metadata, bodyOffset: UInt64(24 + wrappedLen + 4 + metadataLen))
     }
 
-    static func readExactly(_ count: Int, from handle: FileHandle, what: String) throws -> Data {
+    static func readExactly(_ count: Int, from handle: FileHandle, what: String,
+                            beforeRead: ((Int) throws -> Void)? = nil) throws -> Data {
         guard count > 0 else { return Data() }
+        try beforeRead?(count)
         var out = Data()
         out.reserveCapacity(count)
         while out.count < count {
+            try beforeRead?(0)
             let chunk: Data?
             do {
                 chunk = try handle.read(upToCount: count - out.count)

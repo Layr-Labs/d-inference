@@ -57,6 +57,9 @@ type ServerConfig struct {
 	// emails. Empty disables the first-content SLA for all accounts.
 	FirstContentSLAAccounts []string
 	BaseRewards             BaseRewardsConfig
+	// AutopilotRewardsEnabled controls payments only. Consent history is always
+	// captured; the independent durable pool remains unfunded until set by admin.
+	AutopilotRewardsEnabled bool
 	// MediaFetch is the remote media resolution config (mediafetch package).
 	// nil means "read it from the environment in NewServer", which keeps the
 	// bare ServerConfig{} literals used by tests working unchanged. main.go
@@ -106,6 +109,7 @@ func ReadServerConfig() ServerConfig {
 			MinUptimeFrac:  env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_MIN_UPTIME", 0.90),
 			AccountCapFrac: env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_ACCOUNT_CAP", 0), // 0 = per-machine (no per-account cap)
 		},
+		AutopilotRewardsEnabled: env.EnvBool(env.EnvPrefix+"_AUTOPILOT_REWARDS", false),
 	}
 }
 

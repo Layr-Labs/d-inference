@@ -1,0 +1,32 @@
+{
+  "scope": "Failed preparation attempt; no model inference result or paired-policy gain. Executed original1024 diagnostic/V2 tooling retained unchanged.",
+  "model": "google/gemma-4-26b-a4b-it",
+  "startedUTC": "2026-10-04T03:49:59.947209+00:00",
+  "endedUTC": "2026-10-04T03:50:02.433373+00:00",
+  "elapsedSeconds": 2.4861130409990437,
+  "status": "preparation_failed",
+  "matrixStatus": "failed_or_incomplete",
+  "modelResultPresent": false,
+  "failure": "The strict zero-observed-descendant rule rejected the fixture hardware detector\u2019s direct canonical system_profiler child before model hashing/loading and inference rows.",
+  "sourceAndImageBindingsUnchanged": true,
+  "directChildReaped": true,
+  "allTrackedOwnedProcessesQuiescent": true,
+  "observedDescendantCount": 1,
+  "observedChildExecutable": "/usr/sbin/system_profiler",
+  "observedChildName": "system_profiler",
+  "directOwnedParentCandidateMatched": true,
+  "sourceDeclaredArguments": [
+    "SPDisplaysDataType",
+    "-json"
+  ],
+  "dynamicArgumentsInspected": false,
+  "ancestryLimitation": "Observed owned PPID/birth agreement; no kernel parent-birth attestation or OS sandbox.",
+  "replacement": "A separately versioned source-bound0-or1 hardware-probe supervision policy is prepared; no fixture/serving or hardware gate is relaxed.",
+  "replacementExecuted": false,
+  "publicInputDigests": {
+    "start.json": "57679c480ec483a9fdeacef5b0ecc9e3efe44f37c189d6608a9ae61bc0ba8c57",
+    "matrix.json": "1d67e1707d1c7c587e902db538a49b0941c592ad5604dd4a4a83ed894faf9c4f",
+    "arms/gemma-adjacent-block-0-current-stripe1024.json": "3feb8baf0302cc19b79b360c6af1463615cd5e9ada33160d6304eefd3f26604d",
+    "logs/gemma-adjacent-block-0-current-stripe1024.log": "aebfafc591940777cc8421e7a3ab1dac1094c07ca0a6c172e07cb7aca5cbc77c"
+  }
+}

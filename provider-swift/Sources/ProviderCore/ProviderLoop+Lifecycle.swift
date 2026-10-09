@@ -79,8 +79,17 @@ extension ProviderLoop {
         }
 
         // A non-forced timeout must not truncate accepted native requests.
-        let nativeOwnersDrained = request.force || lifecycleRemaining == 0
+        var nativeOwnersDrained = request.force || lifecycleRemaining == 0
             ? await drainNativeMiMoOwners() : false
+        // After served requests, the first attempt to retire an idle owner only
+        // starts joining their finished consumers; a later attempt completes
+        // it. With nothing left in flight, retry within the graceful deadline
+        // rather than reporting a timeout.
+        while !request.force, !nativeOwnersDrained, lifecycleRemaining == 0,
+              !Task.isCancelled, ContinuousClock.now < finishDeadline {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            nativeOwnersDrained = await drainNativeMiMoOwners()
+        }
 
         // Do not claim success just because the engine finished: the FIFO
         // coordinator acknowledgement follows all terminal/usage messages.

@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -85,8 +85,9 @@ identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
 
-Sidecar timeout, crash, malformed output, unavailable artifacts, and dynamic-time
-templates return a non-participating plan. Ordinary inference continues subject
+Sidecar timeout, crash, malformed output, unavailable artifacts, and unsupported
+clock use in templates return a non-participating plan. Supported request-owned
+dates remain eligible (`validate_template_source`, `coordinator/promptsidecar/src/render.rs`). Ordinary inference continues subject
 to its existing admission and remaining request budget.
 Requests carrying media (`HasMedia`) never produce a participating plan.
 
@@ -127,7 +128,21 @@ model and its exact contract: unrelated pending or failed artifacts do not close
 an acknowledged healthy member. Current catalog/child/verified-set identity
 and actual runtime readiness still gate participation; see
 [per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
+Negotiated preload transport uncertainty preserves only current incumbent
+acknowledgements. After a validated partial report, a failed readiness probe
+cannot admit newcomers or retain explicit failures; see
+[continuity during retry](prompt-contract-sidecar.md#negotiated-continuity-during-preload-retry).
 See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
+
+Current tokenizer acknowledgement and current routing participation are distinct.
+The API uses the Registry's read-only canonical pre-activation classification
+without consuming sampling, QPS or counters. It preserves existing `off` and
+`ineligible` outcomes only after confirming native acknowledgement; stopped,
+stale or never-acknowledged contracts remain `preload_not_ready`. A fresh check
+before commitment handles policy drift conservatively, and the actual Registry
+plan revalidates authority before consuming activation once
+(`CachePlanRejection`, `coordinator/registry/cache_plan_preflight.go`;
+`CachePlanner.commitCachePlanning`, `coordinator/internal/inference/routeplan/cache_preload_selection.go`).
 
 An optional exact-artifact list runs before the cohort, QPS gate and sidecar
 plan. `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` matches the resolved model
@@ -143,6 +158,13 @@ and the coordinator log names each live tuple once, so the missing entry is
 reported instead of appearing only as a model whose hits stopped
 (`ArtifactAllowlist.StaleFor`; `coordinator/api/inference/exact_cache_allowlist_staleness.go`,
 `missingAllowlistEntries`).
+
+An authenticated eligible request can record bounded demand for its exact resolved
+artifact tuple before tokenizer readiness, without waiting for tokenizer preload
+or changing its original deadline. Overflow selection retains the full verified
+catalog and never raises the sidecar's configured capacity. See the canonical
+[tokenizer preload policy](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
+Advisory public provider availability is neither cache ownership nor authorization.
 
 Without authenticated scope, `RemotePrefixCacheContext.cacheEnabled` is false
 and the provider forwards `prefixCacheEnabled=false` to the engine. This gates
@@ -373,6 +395,16 @@ block size, layout epoch or key fingerprint drift), so `epoch_change` means a
 whole-root rebuild, not capacity pressure. Providers older than this change
 still rotate on eviction.
 
+Before retiring an owned SSD entry, `SSDCacheEpochStore` rereads the durable
+epoch record. Failed parent-directory opens and file-status probes refuse the
+operation without disowning the store; the next pass retries the same record.
+Successfully observed missing, non-regular, malformed, oversized or replaced
+records still revoke ownership. `SSDNoFollowIO.checkedRegularFileStatus` keeps
+lookup failures separate from observed invalid entries, while ordinary active
+file lookups remain conservative. The connected retirement fixture checks the
+original provider/model capability in both the eviction-observing snapshot and
+the refreshed snapshot before reporting epoch preservation.
+
 Because a provider that removes one file keeps its epoch, the coordinator
 learns of the removal from the next lookup: a miss at the attempted boundaries
 (`miss_invalidation`), or a valid hit below a boundary recorded for that
@@ -387,6 +419,25 @@ or hit re-teaches them. Neither path fences the provider or moves its sequence
 watermark. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
+
+The file and its in-memory index commit are coordinated through
+`SSDCheckpointFileCoordinator` in
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift`.
+Complete-checkpoint `performWrite` and attention `SSDWriteBehind.consume` hold
+cancellable per-file access through durable rename (or duplicate authentication)
+and index insertion. They release it before whole-root/disk-budget maintenance,
+so a committed new file can still be evicted under pressure. Startup scans use
+the same file-access boundary for index insertion. Under its epoch barrier,
+`SSDOwnedEntryRetirement.remove` uses nonblocking `tryAcquire` and skips busy
+files rather than waiting for a writer that may need the epoch lock. Unrelated
+victims remain eligible. Complete-checkpoint donation and `publishReady` also
+require a regular no-follow file before announcing a new anchor
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`).
+This prevents owned retirement from deleting a renamed-but-not-yet-indexed
+checkpoint without reintroducing generation-wide invalidation for routine LRU.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Routing uses in-memory attempt and holder maps;
@@ -421,6 +472,21 @@ minutes is accepted and logged as a warning at startup, because providers keep
 their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### SSD reconciliation and native retry authority
+
+Missing-file reconciliation rechecks the pathname while holding the index
+publication barrier and exact-file lease. Busy writers defer reconciliation; a
+same-tag replacement remains indexed and reusable. Budget enforcement rechecks
+usage after stale accounting disappears before choosing another physical victim.
+Accounting-only cleanup does not increment physical eviction counters.
+
+AR allocation-time capacity refusal stays cold because the pinned SDK can queue
+native retirement without exposing a completion receipt. Host refund does not
+authorize another import. Native-block refusals and pre-allocation provider
+budget refusals retain their existing bounded shorter-checkpoint behavior.
+
+See [bounded shorter complete-checkpoint fallback](../reference/ssd-kv-cache.md#bounded-shorter-complete-checkpoint-fallback) for retry authority and remaining-budget rules.
 
 ### Attempt-record memory accounting
 
@@ -624,6 +690,29 @@ visits its ordinary candidate pool once. Epoch, connection pointer, capability
 and proof quarantine remain required; capability revisions are rechecked at
 selection and reservation. A miss, a shorter hit or an epoch rotation removes only that
 provider's evidence from the common bucket.
+
+After the ordinary holder proof, expiry and recompute checks,
+`Tracker.MatchBoundaries` retains the deepest representative of each query-local
+compatibility group (`coordinator/internal/registry/cachetracker/matching.go`,
+`coordinator/internal/registry/cachetracker/match_groups.go`,
+`cacheMatchCompatibilityEqual`, `cacheMatchGroups.retain`). Groups distinguish
+the connection pointer, model, epoch, tier, bound measurement capability and
+whether an SSD stage cost is usable at the captured query timestamp. A deeper
+stale or uncreditable record therefore cannot hide a shorter current endpoint.
+Uncreditable representatives still count toward `MatchingHolders`; the current
+capability and quarantine checks determine `ValidHolders` as before.
+
+The optimization tracks at most `cacheMatchMaxTrackedProviders = 256` providers
+and `cacheMatchMaxGroupsPerProvider = 8` groups for any one provider. Exceeding
+either scratch budget disables grouping for the rest of that query and appends
+every remaining validated match in the original order. It neither discards
+tracker evidence nor changes provider admission. Cold queries allocate no group
+map, and dense compatible queries avoid copying the same provider identity at
+every boundary. Complete hint maps and opportunity counters are checked against
+the original materialization path in `coordinator/tests/registry/cache_match_reference_test.go`
+and `coordinator/tests/registry/cache_match_groups_test.go`; dense, sparse, cold and
+compatibility-churn workloads live in `coordinator/tests/registry/cache_match_benchmark_test.go`
+(`BenchmarkCacheMatchMaterialization`).
 
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,
 and time-to-first-token gates remain mandatory

@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -83,7 +83,21 @@ sequenceDiagram
 | 4. Settle | `coordinator/api/inference/provider_inference.go` `HandleCompleteAt` → `store.FinalizeConsumerCharge` | Validate the provider's cache report (`validCacheUsage`; a malformed one is cleared so it cannot lower the bill), resolve the price, and compute `totalCost` with cached prompt tokens at the cache-read rate (`billableUsage`, `Rates.Cost` / `CostWithMinimum`); an owned machine serving its owner's request settles free. The reservation finalization gate selects settlement or refund. `FinalizeConsumerCharge` atomically adjusts the consumer balance, records the collected amount, and credits any referral reward. Overage is capped at the reservation amount and falls back to the reservation if funds cannot cover it. Underage refunds the excess. Service holds and direct charges pass no already-debited reservation; insufficient funds collect zero. A duplicate job returns its saved result; conflicting inputs fail. |
 | 5. Record usage | `coordinator/api/inference/completion_accounting.go` `completionAccounting` (called from `HandleCompleteAt`) | In-memory `payments.Ledger.RecordUsage` always (bounded recent history, lazily allocated to the [usage history limit](../reference/pricing-model.md#constants)); a persistent `usage` row (`store.RecordUsage`) unless the request was free self-route. Both carry `cached_tokens` so a cache hit's cost can be reconciled against the published rates; a model-token promotion records `0`, because that path bills cached tokens at the input rate. |
 | 6. Pay out | `HandleCompleteAt` | Normally use the collected amount returned by settlement for fee and provider-payout arithmetic. If an unreserved, non-service request not marked free self-route is uncollected, retain the quoted cost and platform-covered payout (`coordinator/api/inference/consumer_settlement.go`, `settleCompletedConsumer`, `platformCovered` / `settledCost`). Uncollected service requests and requests that lose free-self-route eligibility instead have zero cost and payout; no uncollected charge earns a referral reward. `feePercent` is the consumer override, else the global default (invariant 4). `CreditProviderAccount` credits `totalCost − platformFee` to a linked provider account as withdrawable earnings; `Credit("platform", …)` credits the full platform fee. The referral reward is already credited by settlement and reduces neither amount. |
-| 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
+| 7. Abort / disconnect | `coordinator/api/inference/consumer.go` `refundReservedBalance`; `coordinator/api/inference/settlement.go` `holdForSettlement`, `claimSettlement` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `DefaultTerminalSettleGrace` (30 seconds) so a late terminal settles it; otherwise it is refunded. |
+
+First-content admission qualifies exact prompt counts against the selected
+renderer and keeps the original ingress anchor
+(`coordinator/api/inference/first_content_prompt_deadline.go`,
+`Owner.PromptWorkDeadlineForRequest`). These counts adjust the deadline token
+term; monetary reservation still uses the conservative billing inputs above.
+An expired request follows the same refund or terminal-settlement ownership
+path (`coordinator/api/inference/consumer.go`, `refundReservedBalance`;
+`coordinator/api/inference/settlement.go`, `holdForSettlement`,
+`claimSettlement`). A routing cache hint does not earn a cache-read discount:
+settlement uses the provider's
+validated cached-token report (`coordinator/api/inference/provider_inference.go`,
+`HandleCompleteAt`). See [first-content routing](first-content-routing.md) for
+candidate clocks and retry behavior.
 
 ### Rejected Stripe withdrawal refunds
 
@@ -142,6 +156,7 @@ and which balance column moves:
 | `admin_credit` | `HandleAdminCredit` → `handleAdminBalanceAdjustment` → `store.Credit` | `balance` |
 | `admin_reward` | `HandleAdminReward` → `handleAdminBalanceAdjustment` → `CreditWithdrawable` | both |
 | `provider_floor_draw` | `coordinator/store/postgres/floor_draw_batch.go` `SettleProviderFloorDrawBatch` → `settleProviderFloorDraw` (`coordinator/store/postgres/base_rewards.go`) | both |
+| `autopilot_floor_topup` | `coordinator/store/postgres/autopilot_rewards_settlement.go` (`SettleAutopilotRewardDay`, `creditAutopilotReward`) | both; one synthetic `base_reward` earning already counts the credit in earnings summaries |
 | `migration` | `coordinator/store/postgres/` `MigrateAccountBalance` (balance moved between account identities) | both |
 | `erasure_forfeit` | `ScrubAccount` → `forfeitBalance` (`coordinator/store/postgres/erasure.go`); one entry for the whole balance, see [account erasure](account-erasure.md#the-scrub-transaction) | both set to 0 |
 | `deposit`, `withdrawal` | declared for legacy (pre-Stripe) deposit and on-chain withdrawal paths; no current handler writes them | — |
@@ -213,14 +228,15 @@ New Connect onboarding and transfers are disabled by `EIGENINFERENCE_STRIPE_GLOB
 |---|---|---|
 | Onboard | `coordinator/api/billing/payouts/connect_onboarding.go` `HandleStripeOnboard` (Privy only) | Creates or reuses an Express account (`coordinator/billing/stripe_connect.go` `CreateExpressAccount`) with the service agreement chosen by `coordinator/billing/stripe_regions.go` `RequiredServiceAgreement` (`full` or `recipient`), returns a hosted onboarding link (`CreateAccountLink`). Local status ∈ {`""`, `pending`, `ready`, `restricted`, `rejected`} is mirrored from `account.updated`. |
 | Status | `HandleStripeStatus` | Returns `status`, `destination_type`, `destination_last4`, `instant_eligible`, `min_withdraw_micro_usd`, `instant_fee_bps`, `instant_fee_min_usd`; `?refresh=1` re-syncs from Stripe. |
-| Withdraw | `coordinator/api/billing/payouts/stripe_withdraw.go` `HandleStripeWithdraw` (Privy only, status `ready`) | Body `{amount_usd, method: standard \| instant}`. Pre-validates the account with Stripe (gone → unlink + 409 `stripe_account_gone`; agreement mismatch → 409 `stripe_account_recreate_required`; payouts disabled → 403 `not_onboarded`; a `manual` payout schedule is healed to automatic). `gross ≥ MinWithdrawMicroUSD`; `fee = FeeForMethodMicroUSD` (`0` for standard; the instant fee is the [withdrawal-fee formula](../reference/pricing-model.md#formulas) over `InstantFeeBps` / `InstantFeeMinMicroUSD`, values under [Constants](../reference/pricing-model.md#constants)); `net = gross − fee` must round to ≥ 1 cent. One store transaction debits both columns (`stripe_payout`, reference `stripe_withdraw:<id>`) and inserts the `pending` row **before** any Stripe call. Then `transfers.create` for `net` cents with idempotency key `wd-tr-<id>` (`retryAmbiguousStripe`). First-attempt definitive failure → persist `StripeConfirmedRejectionPrefix`, then atomically refund gross and set the refund flag with `RefundRejectedStripeWithdrawal`. Failed refund transactions remain recoverable. A later rejection after an ambiguous attempt does not authorize a refund. Ambiguous (no answer) → row stays `pending`, **no refund**, 502. Success → `transferred`. |
+| Withdraw | `coordinator/api/billing/payouts/stripe_withdraw.go` `HandleStripeWithdraw` (Privy only, status `ready`) | Body `{amount_usd, method: standard \| instant}`. Pre-validates the account with Stripe (gone → unlink + 409 `stripe_account_gone`; agreement mismatch → 409 `stripe_account_recreate_required`; payouts disabled → 403 `not_onboarded`; a `manual` payout schedule is healed to automatic). `gross ≥ MinWithdrawMicroUSD`; `fee = FeeForMethodMicroUSD` (`0` for standard; the instant fee is the [withdrawal-fee formula](../reference/pricing-model.md#formulas) over `InstantFeeBps` / `InstantFeeMinMicroUSD`, values under [Constants](../reference/pricing-model.md#constants)); `net = gross − fee` must round to ≥ 1 cent. One store transaction debits both columns (`stripe_payout`, reference `stripe_withdraw:<id>`) and inserts the `pending` row **before** any Stripe call. Then `transfers.create` for `net` cents with idempotency key `wd-tr-<id>` (`retryAmbiguousStripe`). A structured first-attempt `balance_insufficient` rejection → `queued`, with the debit reserved. Other first-attempt definitive failures → persist `StripeConfirmedRejectionPrefix`, then atomically refund gross and set the refund flag with `RefundRejectedStripeWithdrawal`. Failed refund transactions remain recoverable. A later rejection after an ambiguous attempt does not authorize a refund. Ambiguous (no answer) → row stays `pending`, **no refund**, 502. Success → `transferred`. |
 | Deliver | `HandleStripeWithdraw`, Stripe schedule | Standard: nothing more; Stripe's automatic daily payout sweeps the connected balance to the bank in local currency. Instant: `payouts.create` (`wd-po-<id>`) to the debit card; a definitive failure refunds only the instant fee (`stripe_withdraw_fee:<id>`) and the sweep delivers via the standard rail; an ambiguous failure refunds nothing (202). |
 | Webhooks | `coordinator/api/billing/payouts/stripe_payouts_webhooks.go` `HandleStripeConnectWebhook` (no auth, `VerifyConnectWebhookSignature`) | See the Connect webhook table under Failure modes. |
-| Reconcile | `coordinator/api/billing/payouts/stripe_reconcile.go` `StartStripePayoutReconciler` | Every `stripeReconcileInterval` (first pass 1 min after boot), inspects up to `stripeReconcileBatch` rows, heals `manual` payout schedules, and alerts on rows non-terminal for more than `stripeStuckThreshold` (values under [Constants](../reference/pricing-model.md#constants)). A separate minute ticker retries confirmed rejected-transfer refunds atomically; unverified historical failures require operator review. |
+| Reconcile | `coordinator/api/billing/payouts/stripe_reconcile.go` `StartStripePayoutReconciler` | Every `stripeReconcileInterval` (first pass 1 min after boot), inspects up to `stripeReconcileBatch` rows, heals `manual` payout schedules, and alerts on rows non-terminal for more than `stripeStuckThreshold` (values under [Constants](../reference/pricing-model.md#constants)). A separate minute ticker dispatches up to 200 queued withdrawals through durable claims and retries confirmed rejected-transfer refunds atomically; unverified historical failures require operator review. |
 | Self-service | `HandleStripeDashboardLink` (`POST /v1/billing/stripe/dashboard`, Privy + financial limiter), `HandleStripeUnlink` (`DELETE /v1/billing/stripe/account`), `HandleStripeWithdrawals` (`GET /v1/billing/stripe/withdrawals`) | Express dashboard login link; unlink; withdrawal history. |
 
-Withdrawal row state machine: `pending → transferred → paid | failed`
-(`HandleStripeWithdraw` comment block). There is no coordinator-side payout
+Withdrawal row states: `queued`, `pending`, `transferred`, `paid`, `failed`.
+The funded path is `pending → transferred → paid | failed`; a funding rejection
+adds `pending → queued → pending` before retry (`HandleStripeWithdraw`). There is no coordinator-side payout
 schedule or threshold beyond `MinWithdrawMicroUSD`.
 
 ### International bank withdrawals
@@ -244,13 +260,21 @@ The existing UI sends the user to Stripe to enter their own details and preserve
 their login, earnings, and combined withdrawal history. The operator does not
 complete recipient forms (`console-ui/src/components/payouts/StripePayoutsCard.tsx`).
 
-`HandleGlobalPayoutQuote` (`coordinator/api/billing/payouts/global_payouts_withdraw.go`) verifies recipient and bank eligibility and stores an immutable request plus local-currency estimate without moving earnings. Confirming first reads `AvailableUSD` from the exact financial account and checks principal plus rounded-up USD fee estimates (`coordinator/billing/globalpayouts/funding.go`, `RequiredFundingCents`). Insufficient or unreadable funding returns before debit. This check does not reserve Stripe funds; a later send rejection still follows the atomic refund path. Confirming the quote then calls `BeginGlobalPayout` (`coordinator/store/postgres/global_payouts.go`), which locks the payout and recipient, guards both balance columns, and records the debit in one transaction. Connect withdrawals contend on the same balance row.
+`HandleGlobalPayoutQuote` (`coordinator/api/billing/payouts/global_payouts_withdraw.go`) verifies recipient and bank eligibility and stores the USD amount, bank destination and local-currency estimate without moving earnings. Confirmation calls `BeginGlobalPayout` (`coordinator/store/postgres/global_payouts.go`), which locks the payout and recipient, guards both balance columns, and records the debit in one transaction. Connect withdrawals contend on the same balance row. Before a first send, the reconciler checks the exact financial account's available USD against principal plus rounded-up fee estimates (`coordinator/billing/globalpayouts/funding.go`, `RequiredFundingCents`). Low funding persists `queued` with reason `awaiting_funding`; the user's earnings stay reserved and repeated confirmations retain the same withdrawal. A failed balance read preserves the reservation without claiming that funding is low.
 
-`syncGlobalPayout` (`coordinator/api/billing/payouts/global_payouts_reconcile.go`) uses a persistent idempotency key and reconciles current Stripe state after webhook notifications. Leases bound concurrent sends. Ambiguous results retain the debit; repeated confirmations retain the original identity even after unlinking. A definitive rejection of the first send is recorded with `RecordGlobalPayoutRejection` before the refund transaction; subsequent workers apply that saved rejection without another send if the refund write fails. A bank return refunds once in the same transaction as its state change. Known external payments continue to reconcile against their immutable source even when the configured funding account changes. Old unsubmitted quotes are invalidated before debit; a confirmed intent with no previous dispatch is refunded if its funding source changed. Ambiguous attempts retain their debit. After twelve hours without an external ID, `GlobalPayout.RequiresManualReconciliation` excludes the marked payout from automatic scans and claims while retaining its debit and history. The UI labels `posted` as sent, not paid. The [rollout runbook](../operations/global-payouts.md) defines live validation and rollback obligations.
+`syncGlobalPayout` (`coordinator/api/billing/payouts/global_payouts_reconcile.go`) uses a persistent idempotency key and reconciles current Stripe state after webhook notifications. Leases bound concurrent sends. Ambiguous results retain the debit; repeated confirmations retain the original identity even after unlinking. A definitive low-funding rejection queues the unsent withdrawal. Other definitive rejections of the first send are recorded with `RecordGlobalPayoutRejection` before the refund transaction; subsequent workers apply that saved rejection without another send if the refund write fails. A bank return refunds once in the same transaction as its state change. Known external payments continue to reconcile against their immutable source even when the configured funding account changes. Old unsubmitted quotes are invalidated before debit; a confirmed intent with no previous dispatch is refunded if its funding source changed. Ambiguous attempts retain their debit. After twelve hours from the dispatch start without an external ID, `GlobalPayout.RequiresManualReconciliation` excludes the marked payout from automatic scans and claims while retaining its debit and history. The UI labels `posted` as sent, not paid. The [rollout runbook](../operations/global-payouts.md) defines live validation and rollback obligations.
+
+A queued withdrawal remains durable across restarts and waits without consuming the dispatch retry horizon. Global Payouts refreshes an expired exchange quote before sending the same USD principal to the same saved bank; the refreshed quote must satisfy destination and amount limits. Funding is compared with the refreshed fees, so a lower current fee can release the queue. Unsent pending withdrawals carry no bank-arrival ETA. The confirmation panel discloses this change to the estimate. The persisted request becomes fixed once a send can have occurred. Confirmed low-funding rejections advance a durable idempotency generation; ambiguous sends reuse their original request and key. Queued withdrawals count as open money movements and prevent account erasure from discarding their destinations. After sending, `GlobalPayout.ReconciliationWindowStart` uses dispatch time for posted readback and erasure protection, so the queue wait does not shorten the [return window](../reference/pricing-model.md#global-payouts-withdrawals); historical rows fall back to confirmation time (`coordinator/store/global_payouts.go`). Code: `coordinator/internal/billing/payoutrecovery/global_payouts_queue.go` (`prepareGlobalFunding`), `coordinator/api/billing/payouts/stripe_withdrawal_queue.go` (`ProcessStripeWithdrawalQueue`), `coordinator/store/stripe_withdrawal_queue.go` (`StripeWithdrawalQueueStore`).
 
 `useStripeWithdrawal` (`console-ui/src/components/payouts/useStripeWithdrawal.ts`) saves the confirmation identity in account-scoped browser storage before sending it. Global Payouts status loading restores that identity before enabling another withdrawal; Connect status and submission do not read this storage. Recovery remains available after remounts, zero remaining balance, or paused admissions. Storage failures stop Global Payouts submission; credentials and full bank details are not stored.
 
 Recipient limits are stored in API minor units and shown before review. USD destination bounds are checked before requesting a quote; foreign-currency bounds are checked against Stripe's credited quote amount and its amount-limit errors. A USD input is never compared directly with a foreign-currency floor (`coordinator/billing/globalpayouts/recipient_limits.go`, `Country.Limits`).
+
+Queued destinations are revalidated before Connect dispatch. A definitively removed destination refunds its unsent reservation; a manual payout schedule is repaired before the transfer. Temporary account lookup, readiness or schedule-repair failures retain the queue and defer eligibility for five minutes without consuming a send attempt (`coordinator/api/billing/payouts/stripe_withdrawal_queue.go`, `ProcessStripeWithdrawalQueue`). Deferral advances the last-check ordering so unavailable destinations do not monopolize the bounded batch. A removed destination is rejected atomically while still queued, before a send claim; transient rejection-write failures leave it unsent for retry, and durable proof permits the existing exactly-once refund recovery (`coordinator/store/stripe_withdrawal_queue.go`, `RejectQueuedStripeWithdrawal`).
+
+Connect stuck-withdrawal selection uses `StripeWithdrawal.ReconciliationStartedAt`: pending dispatch time with historical creation-time fallback, or the last update for transferred rows. Age filtering and ordering precede the batch cap; automatic-sweep candidates likewise use update time and ID so recently dispatched old queue records cannot hide settled transfers (`coordinator/store/stripe_withdrawal_types.go`, `ReconciliationStartedAt`; `coordinator/store/postgres/stripe_withdrawals.go`, `ListStripeWithdrawalsByStatus`, `ListStripeWithdrawalsForStripeAccount`).
+
+If the Connect queue write fails, the withdrawal remains reserved as `pending` with `funding_queue_persistence_failed` and Billing shows **Needs review**; the response does not promise an automatic funding retry (`coordinator/api/billing/payouts/stripe_dispatch.go`, `dispatchStripeWithdrawal`).
 
 ### Consumer referral
 
@@ -402,6 +426,171 @@ The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max Mac
 Studio. The M5 Ultra Studio identifier remains excluded because Apple's model
 pages also assign it to the lower-memory M5 Pro mini; see the
 [identifier table](../provider/hardware-requirements.md#new-2026-desktop-identifiers).
+
+### Autopilot rewards
+
+The saved-opt-in daily floor is independent of ordinary base-reward allocation
+and of the live residency controller. Its formulas, eligibility, pool rules and
+receipt statuses have one home in the
+[Autopilot rewards reference](../reference/pricing-model.md#autopilot-rewards).
+`coordinator/payments/autopilotrewards/engine.go` (`Engine.SettleClosedDays`,
+`Run`) consumes durable enrollment cursors, not the currently connected fleet.
+The worker clamps its eligible-day range at the shared program end; both stores
+also reject later days through `floorpolicy.ValidateDay`. This ends new accrual,
+not payment of already-earned pending days. Opt-in dates and one-time baselines
+do not extend the program (`coordinator/internal/payments/floorpolicy/math.go`,
+`EndsAt`; see the [final-day contract](../reference/pricing-model.md#autopilot-rewards)).
+
+```mermaid
+flowchart TD
+  A["Authenticated saved-consent declaration"] --> B["RecordAutopilotConsent: persist original receive time"]
+  B --> W["Worker or enrollment listing"]
+  W --> C{"Verified canonical machine and account?"}
+  C -->|"not yet"| D["Retain raw journal; await inventory binding"]
+  D --> W
+  C -->|"yes"| E{"First-ever history known?"}
+  E -->|"no"| F["Hold baseline unknown; preserve anchor"]
+  E -->|"yes"| Q{"Enough personal earnings history?"}
+  Q -->|"yes"| G["Freeze personal baseline once"]
+  Q -->|"no"| R{"Comparable mature cohort exists?"}
+  R -->|"yes"| G2["Freeze cohort baseline once"]
+  R -->|"no"| F
+  F -->|"Verified admin import"| G
+  G --> M{"SettleClosedDays: history conflict?"}
+  G2 --> M
+  M -->|"yes"| N["Hold machine; preserve frozen baseline"]
+  M -->|"no"| H["Next closed UTC day before shared end"]
+  H --> I{"SettleAutopilotRewardDay: saved consent,<br/>captured qualification and daily uptime?"}
+  I -->|"opted out / ineligible"| L0["Final unpaid receipt; advance day"]
+  I -->|"eligible"| I2["Read daily actual income snapshot"]
+  I2 --> J{"Full shortfall funded?"}
+  J -->|"no"| K["Pending pool_exhausted; retry and recompute"]
+  K --> I
+  J -->|"yes, or no payment due"| L["Atomic final receipt and any credit; advance day"]
+```
+
+#### First-ever history
+
+Older software did not store the first opt-in time. A deployment, reconnect or
+machine `first_seen` is not evidence of that time. New authenticated socket
+declarations carry no trusted client historical timestamp. The coordinator
+stamps receive time before decoding or authentication, journals accepted
+authenticated declarations, and later materializes enrollment under verified
+machine/account ownership. A successful journal write can leave a durable raw
+declaration without a machine binding, frozen baseline or payment
+(`coordinator/api/provider/autopilot_rewards.go`, `autopilotRewardCapture`;
+`coordinator/store/postgres/autopilot_rewards_consent.go`, `RecordAutopilotConsent`).
+
+Automatic freezing requires tracked history from the machine's first observation.
+A machine seen before `tracking_started_at`, a gap before its first supported
+declaration, an earlier unsupported declaration, or an unresolved earlier positive
+session on the authenticated account keeps history unknown. Unsupported state
+is not evidence of an explicit historical opt-out. An old unbound session that
+never obtains a trusted machine mapping cannot be safely assigned to a reconnect;
+the store holds history rather than guessing. The history checks are in
+`coordinator/store/postgres/autopilot_rewards.go` (`autopilotRewardTrackingComplete`)
+and the corresponding memory implementation.
+
+Known first-ever consent and complete personal earnings history are separate
+conditions. A newly observed machine may have a known opt-in anchor and too
+little personal history for its baseline. The store then selects comparable
+mature canonical machines under the
+[cohort rules](../reference/pricing-model.md#autopilot-rewards), excluding the
+enrollee's aliases and deduplicating peers. It freezes the resulting mean once;
+turning Autopilot off/on or later accumulating personal history does not replace
+that cohort baseline. Missing comparable evidence leaves history pending rather
+than a fabricated zero (`coordinator/store/postgres/autopilot_rewards_cohort.go`,
+`autopilotRewardBaseline`; `coordinator/store/memory/autopilot_rewards_cohort.go`,
+`autopilotRewardBaselineLocked`). Cohort fallback does not
+establish an unknown first-ever opt-in or bypass the creation-history proof.
+
+`RestoreAutopilotBaseline` accepts the true first-ever instant, its preceding
+inference total and evidence identifying both sources. This is a privileged
+attestation of history, not automatic verification of the supplied evidence.
+It fills only a missing baseline; it does not create old consent events, move
+the first tracked positive day backward or rewrite a frozen value. The explicit
+[`baseline_source`](../reference/api-contracts.md#autopilot-reward-administration)
+distinguishes personal and cohort automatic freezes from an evidenced import
+independently of the evidence string. Follow the
+[backfill runbook](../operations/autopilot-rewards.md), not an inferred launch date.
+
+Earlier positive evidence from another session is retained even if a later
+declaration has already arrived. Automatic baselines recheck the same creation-history
+proof when late identity binding or merges reveal older unsupported history or
+an ancestor predating tracking. An evidenced import does not conflict merely
+because that pretracking or unsupported history exists, but contradictory earlier
+positive history conflicts with either source, including an unknown-baseline
+ancestor's earlier positive observation. In either conflict, the enrollment
+projects `history_conflict=true` while retaining its frozen amounts and anchor.
+The worker defers that machine, not the rest of the fleet;
+the store holds its unfinalized days as `history_required`, even if it has since
+opted out. Finalized receipts remain final. Ordinary baseline import still rejects
+a frozen value; resolving the conflict requires separately approved reconciliation,
+not an automatic correction or another import (`ensureAutopilotRewardEnrollment`,
+`readAutopilotRewardEnrollment`,
+`coordinator/store/postgres/autopilot_rewards.go`; `Engine.SettleClosedDays`).
+
+#### Capture failure boundary
+
+Socket capture records only the authenticated declaration through
+`store.AutopilotConsentJournal`. A successful unbound write does not occupy the
+retry queue. Baseline materialization belongs to worker/listing paths and uses
+set-based PostgreSQL peer queries; it cannot consume the socket's short journal
+budget. Existing explicit `ObserveAutopilotConsent` store callers still request
+immediate materialization (`coordinator/store/earnings_floor.go`,
+`coordinator/store/postgres/autopilot_rewards_cohort_peers.go`).
+
+PostgreSQL serializes each raw journal session separately and takes the inventory
+barrier in shared mode, so unrelated providers do not serialize their heartbeats
+behind one exclusive lock. Raw capture binds only its own session's rows;
+ancestry-wide binding and reward materialization retain the exclusive barrier.
+Account admission and erasure checks still precede these locks
+(`coordinator/store/postgres/autopilot_rewards_consent.go`,
+`beginAutopilotConsentWrite`; [storage locking](storage.md#autopilot-reward-persistence)).
+
+Only committed raw declarations survive socket or coordinator-process loss.
+`autopilotRewardCapture` uses a bounded in-memory retry queue, not a durable spool.
+A journal outage that outlasts the connection and its final bounded retry can
+therefore lose uncommitted declarations. The session owner marks the connection
+offline before that retry; it neither delays the recorded disconnect nor invents
+an opt-out (`coordinator/api/provider/session.go`, `providerReadLoop`). Do not infer
+continuous history from a receive timestamp, pending-write log or later reconnect.
+
+#### Settlement ownership
+
+The store selects the last durable declaration strictly before each UTC close
+and requires saved opt-in plus the qualification captured with that declaration;
+it does not skip a later nonqualifying declaration to reuse an earlier one.
+Qualification evaluates the lease interval at the original server receive time,
+retains current revocation/binding/privacy checks, and uses accepted downloaded catalog inventory,
+under the [daily policy](../reference/pricing-model.md#autopilot-rewards).
+The machine's daily uptime comes from the union of attributable provider sessions,
+with heartbeat and disconnect boundaries clipped to that UTC day. Aliases and
+overlapping sessions cannot inflate uptime. Opted-out and ineligible days finalize
+without payment or pool spending, then advance the cursor.
+
+Today's live readiness, OS, model list, pause or shadow mode does not replace
+yesterday's captured qualification and online history. Legacy qualification rows
+remain unqualified. The [wire declaration](../reference/protocol-messages.md#model_autopilot-state)
+separates saved consent from scheduling participation. Sequential daily receipts
+preserve each day's result; retries never replace a prior day with today's income.
+The calculation reads a committed earnings snapshot, not a quiescence barrier
+against later backdated inference rows.
+
+Both backends commit the spendable and withdrawable credit, dedicated ledger
+entry, one non-inference earning, summary, pool spending and receipt atomically.
+Canonical identity merges cannot create a second finalized machine/day payment.
+Account-erasure admission fences precede spending. The
+[storage contract](storage.md#autopilot-reward-persistence) owns the locking,
+deduplication and archive limitations; the new ledger type is deliberately absent
+from `RewardLedgerTypes` because the synthetic earning counts the money once.
+
+The worker is wired by `coordinator/app/services.go` and started by
+`coordinator/app/lifecycle.go` only under the
+[payment flag](../reference/configuration.md#billing-stripe-and-base-rewards).
+Consent tracking continues independently. Logs contain aggregate processing,
+pending and failure counts, not identifiers, evidence or store error strings.
+Neither the admin reward APIs nor this worker activates a live Autopilot cohort.
 
 ## Invariants
 
@@ -620,7 +809,7 @@ help (`coordinator/api/billing/payouts/stripe_payouts_webhooks.go`).
 |---|---|---|
 | Settled cost above the reservation | Overage debited as `charge` `overage:<request_id>`, clamped to `reserved` (a provider can never bill more than `2 × reserved`); a failed overage debit settles at `totalCost = reserved` | `billing.cost_clamped`, `billing.overage_charged`, `billing.overage_micro_usd` |
 | Completion reports zero completion tokens | Direct consumers still settle at `minimumChargeMicroUSD`; service accounts settle at `0`; the warning text "billed $0" is accurate only for the latter | `billing.zero_usage_complete` |
-| Consumer disconnects after the first streamed chunk | `holdForSettlement` parks the billing record for `defaultTerminalSettleGrace = 30 * time.Second`; a provider terminal inside the grace settles the delivered tokens, otherwise `refundReservedBalance("no_terminal_after_cancel:<id>")` | `routing.client_gone` |
+| Consumer disconnects after the first streamed chunk | `holdForSettlement` parks the billing record for `DefaultTerminalSettleGrace` (`settlement.DefaultGrace = 30 * time.Second`); a provider terminal inside the grace settles the delivered tokens, otherwise `refundReservedBalance("no_terminal_after_cancel:<id>")` | `routing.client_gone` |
 | Provider error, timeout, or dispatch failure before a terminal | `refundReservedBalance` refunds the whole reservation (`reservation_refund:<id>`) or releases the service hold | `billing.reservation_refunds`, `billing.reservation_releases` |
 | Failover after a provider-price top-up | `refundProviderExtra` refunds only the surcharge (`reservation_extra_refund:<id>`) and resets `ReservedMicroUSD` to the base so it cannot refund twice | `billing.reservation_extra_refunds` |
 | Late terminal after finalization | Skipped: no debit, refund, payout, or usage row | log `skipping completion billing for already-finalized reservation` |
@@ -660,7 +849,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 |---|---|---|
 | Prices and cost | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion`, `DefaultCacheReadDiscountPercent`, `DefaultCacheReadPrice`, `minimumChargeMicroUSD`, `platformFeePercent`, `Rates`, `Usage`, `RatesFor`, `DefaultRates`, `Rates.Cost`, `Rates.CostWithMinimum`, `CacheReadDiscount`, `resolveFeePercent`, `PlatformFeeWithPercent`, `ProviderPayoutWithPercent`, `FormatPerTokenUSD`, `FormatPerMillionUSD`); `coordinator/api/modelprice/price.go`, `coordinator/api/modelprice/price.go`, `coordinator/api/types/types.go` (`modelprice.Input`, `ModelPriceQuote`, `RatesQuote`); `coordinator/internal/inference/cacheusage/cache_usage.go` (`billableUsage`); `coordinator/api/types/types.go` (`ModelPriceQuote`, `PricingResponse`, `PriceUpdateResponse`); `coordinator/store/postgres/` (`model_prices`, `GetModelPrice`, `SetModelPrice`) | `GET /v1/pricing`, `PUT /v1/pricing`, `DELETE /v1/pricing`, `PUT /v1/admin/pricing`, `POST /v1/admin/models/register` |
 | Reservation | `coordinator/api/inference/inference_balance.go` (`reserveInferenceBalance`, `topUpReservationForInlinedMedia`); `coordinator/api/inference/consumer.go` (`reservationCost`, `providerReservationCost`, `reserveAdditionalForProvider`, `explicitMaxTokens`, `ensureMaxTokensBound`, `defaultMaxOutputTokens`); `coordinator/api/inference/reservations.go` (`serviceReservationManager`, `useServiceReservation`) | — |
-| Settlement | `coordinator/api/inference/provider_inference.go` (`HandleCompleteAt`); `coordinator/api/inference/consumer.go` (`refundReservedBalance`, `refundProviderExtra`); `coordinator/api/inference/settlement.go` (`settlementHolder`, `holdForSettlement`, `defaultTerminalSettleGrace`); `coordinator/registry/pending_request.go` (`PendingRequest.FinalizeReservation`, `MarkReservationFinalized`); `coordinator/payments/payments.go` (`Ledger.Charge`, `Ledger.RecordUsage`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
+| Settlement | `coordinator/api/inference/provider_inference.go` (`HandleCompleteAt`); `coordinator/api/inference/consumer.go` (`refundReservedBalance`, `refundProviderExtra`); `coordinator/api/inference/settlement.go` (`holdForSettlement`, `claimSettlement`, `DefaultTerminalSettleGrace`); `coordinator/internal/inference/settlement/controller.go` (`Controller`, `DefaultGrace`); `coordinator/registry/pending_request.go` (`PendingRequest.FinalizeReservation`, `MarkReservationFinalized`); `coordinator/payments/payments.go` (`Ledger.Charge`, `Ledger.RecordUsage`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
 | Ledger and balances | `coordinator/store/interface.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres/` (`balances`, `ledger_entries`, `provider_earnings`, `creditTx`, `creditWithdrawableTx`, `CreditWithdrawableOnce`, `Debit`, `CreditProviderAccount`, `idx_provider_earnings_job`) | `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`); `coordinator/api/billing/checkout.go`, `coordinator/api/billing/methods.go`, `coordinator/api/billing/checkout.go`, `coordinator/api/billing/methods.go`, `coordinator/api/billing/wallet.go` (`HandleStripeCreateSession`, `HandleStripeSessionStatus`, `HandleWalletBalance`, `HandleBillingMethods`); `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Stripe response projection | `coordinator/billing/stripe_connect.go` (`parsePayout`, `parseAccount`) | Payout creation and reconciliation share the same decoded fields and parse errors. Account responses select the first currency-default destination, falling back to the first destination. |

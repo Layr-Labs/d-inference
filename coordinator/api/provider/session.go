@@ -25,6 +25,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 	var terminalWork session.CompletionBarrier
 	var drainAcks session.DrainAcker
 	var appAttestShadow *attestservice.Session
+	var autopilotRewards *autopilotRewardCapture
 	tracker := trust.NewChallengeTracker()
 	var schedulerSEKey string
 	var schedulerGeneration uint64
@@ -58,6 +59,9 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 		// than at the last periodic coverage pass.
 		s.trust.StopTrustCoverageForProvider(providerID)
 		s.trust.StopCodeAttestCoverageForProvider(providerID)
+		// Retry received declarations after marking the connection offline;
+		// never synthesize opt-out or delay the observed disconnect timestamp.
+		autopilotRewards.flush(context.WithoutCancel(ctx), nil)
 		// The reader can exit while an off-loop completion is still pricing
 		// or settling a parked request. Include those workers in the handler
 		// join before final shutdown accounting flushes. No new terminal can
@@ -156,6 +160,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			return
 		}
 
+		serverReceivedAt := time.Now().UTC()
 		var msg protocol.ProviderMessage
 		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
 		// validation pass; per-token chunk frames take a hand-written decoder.
@@ -431,6 +436,11 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 
 			appAttestShadow = s.trust.StartAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+			autopilotRewards = s.newAutopilotRewardCapture(providerID, authenticatedAccountID)
+			if !autopilotRewards.observe(loopCtx, provider, serverReceivedAt) {
+				_ = conn.Close(websocket.StatusTryAgainLater, "autopilot consent tracking unavailable")
+				return
+			}
 
 			if s.nativePairs != nil && regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
 				var attachErr error
@@ -542,6 +552,10 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			}
 			if s.heartbeat.Apply(providerID, provider, hbMsg) {
 				s.inventory.Heartbeat(loopCtx, provider)
+				if !autopilotRewards.observe(loopCtx, provider, serverReceivedAt) {
+					_ = conn.Close(websocket.StatusTryAgainLater, "autopilot consent tracking unavailable")
+					return
+				}
 			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
@@ -665,6 +679,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.trust.HandleAttestationResponse(providerID, provider, respMsg, tracker)
+			autopilotRewards.flush(loopCtx, nil)
 
 		case protocol.TypeCodeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.CodeAttestationResponseMessage)
@@ -672,6 +687,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 			// connection even if the push round-trip outlived the pushing
 			// goroutine or the original connection (reconnect).
 			s.trust.HandleCodeAttestationResponse(providerID, provider, respMsg)
+			autopilotRewards.flush(loopCtx, nil)
 
 		case protocol.TypeModelAutopilotStatus:
 			statusMsg := msg.Payload.(*protocol.ModelAutopilotStatusMessage)

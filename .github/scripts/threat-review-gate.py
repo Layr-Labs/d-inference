@@ -7,6 +7,7 @@ import sys
 
 from threat_review.client import GitHub
 from threat_review.merge_policy import clean, manual_override
+from threat_review.membership import active_member
 from threat_review.runner import same_revision, verify_diff
 
 
@@ -45,7 +46,10 @@ def main():
            for f in github.files(pull["changed_files"])):
         print("Review-control changes require an independent manual security override.")
         return 1
-    print("Complete current-revision scan has no medium/high findings; normal CI requirements still apply.")
+    if not active_member(pull.get("user"), env.get("THREAT_REVIEW_MEMBERSHIP_TOKEN")):
+        print("Automatic clearance is limited to active Layr-Labs organization members; independent human review required.")
+        return 1
+    print("Active Layr-Labs member and complete current-revision scan have been verified; normal CI requirements still apply.")
     return 0
 
 

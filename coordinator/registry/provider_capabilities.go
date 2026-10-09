@@ -275,14 +275,21 @@ func effectiveRequiredProviderCapabilities(modelID string, configured []string) 
 // before prefetch/desired commands, where the target build may not be on disk
 // yet. Caller holds r.mu and p.mu.
 func (r *Registry) providerMeetsModelRequirementsLocked(p *Provider, modelID string) bool {
+	appAttest := false
+	if p.runtimeCapabilitiesFromAppAttest || modelID == Qwen38NAXModelID {
+		appAttest = r.providerHasAppAttestAuthorizationLocked(p, time.Now())
+	}
+	return r.providerMeetsModelRequirementsWithAppAttestLocked(p, modelID, appAttest)
+}
+
+func (r *Registry) providerMeetsModelRequirementsWithAppAttestLocked(p *Provider, modelID string, appAttest bool) bool {
 	capabilities := p.RuntimeCapabilities
-	if p.runtimeCapabilitiesFromAppAttest && !r.providerHasAppAttestAuthorizationLocked(p, time.Now()) {
+	if p.runtimeCapabilitiesFromAppAttest && !appAttest {
 		capabilities = nil
 	}
 	if modelID == Qwen38NAXModelID {
 		// The protected build is never exposed while Apple hardware trust, APNs
 		// code identity, signed capability binding, or runtime approval is pending.
-		appAttest := r.providerHasAppAttestAuthorizationLocked(p, time.Now())
 		legacy := p.Attested && p.TrustLevel == TrustHardware && p.CodeAttested
 		if (!appAttest && !legacy) || p.appAttestSecurityDenied ||
 			p.AttestationResult == nil || !p.AttestationResult.Valid ||

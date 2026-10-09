@@ -1,6 +1,6 @@
 # Schema lifecycle
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 Explanation of how the coordinator's Postgres schema changes: numbered goose
 migrations that run inside `NewPostgres` before the coordinator serves, the
@@ -91,6 +91,12 @@ Legend: blue = step, amber = decision, green = success, red = exit 1.
 | 24 | `indexMigrations` | Builds `idx_users_privy_deleted` concurrently for pending-erasure login checks. |
 | 25 | `coordinator/store/postgres/schema/migrations/00025_erasure_refuse_credits.sql` | Creates refused-credit audit records, including a reference hash for once-credit identity, and balance/ledger triggers in one transaction. |
 | 26 | `coordinator/store/postgres/schema/migrations/00026_erasure_outbox_stripe_job.sql` | One transaction: adds the Stripe redaction-job fields and independent `lease_generation BIGINT NOT NULL DEFAULT 0` to `erasure_outbox`. Constant defaults change only the catalog; `ALTER TABLE` takes a brief exclusive table lock. |
+| 27 | `coordinator/store/postgres/schema/migrations/00027_withdrawal_funding_queue.sql` | One transaction: adds Connect transfer generation, dispatch count, start time and lease columns with constant defaults and `IF NOT EXISTS`, preserving existing definitions and queued data during schema adoption or replay. The alterations take a brief exclusive table lock under the existing migration timeouts. |
+| 28 | `indexMigrations` in `coordinator/store/postgres/migration_indexes.go` | Builds the additional queued Global Payouts reconciliation index with `CREATE INDEX CONCURRENTLY`; checks validity and readiness before recording the version. |
+| 29 | `coordinator/store/postgres/schema/migrations/00029_machine_autopilot.sql` | One transaction: adds constant-default machine desired-mode/revision columns and guarded `NOT VALID` checks. The brief exclusive DDL lock does not include a historical-row validation scan. Existing values survive schema adoption and replay. |
+| 30 | `coordinator/store/postgres/schema/migrations/00030_machine_autopilot_validate.sql` | A separate transaction validates the machine mode and nonnegative revision checks with PostgreSQL's validation lock, permitting ordinary writes while scanning. The version is recorded only after both checks validate. |
+| 31 | `coordinator/store/postgres/schema/migrations/00031_autopilot_rewards.sql` | One transaction creates the separate reward pool, enrollments, raw consent journal and daily settlements with constraints and ordinary indexes on the new tables. Seeds the zero-cap singleton and tracking start once, without rewriting base rewards or inventing historical opt-ins. |
+| 32 | `coordinator/store/postgres/schema/migrations/00032_autopilot_reward_eligibility.sql` | One transaction adds `qualified BOOLEAN NOT NULL DEFAULT false` and bounded receipt-time chip/memory fields to reward declarations and extends baseline-source and receipt-status checks for `cohort` and `ineligible`. Preserves frozen baselines, money and receipts; older declarations remain unqualified. |
 
 Versions 2 to 5 are Go migrations, listed in `goMigrations`. They preserve the
 startup steps that ran after the old DDL loop, with concurrent builds now using
@@ -105,6 +111,21 @@ unapplied version below the highest applied one
 (`missing (out-of-order) migration`).
 
 ### Migration kinds
+
+Version 31 is additive: it changes no existing base-reward table or balances.
+Its foreign keys retain original machine/enrollment references without cascade
+deletion. Financial deduplication and consent evidence must survive rollback;
+disabling the payment worker does not remove them. Existing copy-only archives
+do not cover the new tables. See the
+[reward persistence contract](storage.md#autopilot-reward-persistence) and
+[reward rollback procedure](../operations/autopilot-rewards.md#rollback).
+
+Version 32 alters only the reward tables. Constant-default qualification and hardware columns add a
+brief exclusive table lock without rewriting old rows; replacing and validating
+the source/status checks can scan existing reward rows under the transaction's
+DDL locks. The migration does not derive old qualification from current provider
+state. Rollback must preserve the captured qualification/hardware, cohort source and final unpaid
+receipts: older writers that omit qualification cannot reconstruct lost history.
 
 | Kind | How goose runs it | Why it exists | Example |
 |---|---|---|---|

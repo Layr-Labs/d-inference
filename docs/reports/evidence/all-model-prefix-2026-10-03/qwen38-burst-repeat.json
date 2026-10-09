@@ -1,0 +1,538 @@
+{
+  "public_model": "qwen/qwen3.8-27b",
+  "catalog_model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+  "window": {
+    "start_utc": "2026-10-03T21:18:39.385274+00:00",
+    "end_utc": "2026-10-03T21:19:13.895418+00:00"
+  },
+  "baseline_revision": "48d2be458b3ce511a2a9006238b923295c9c6718",
+  "current_revision": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33",
+  "source_benchmark_sha256": "7e6c6308a9165d545066a2958b33ea9f6c15e6344538be2151fbbbaf7a09b42d",
+  "binary_sha256": {
+    "baseline": "fccccf2e594e765336039012a7149aa9634e21b51115c52676b9f61c5ca680af",
+    "candidate": "4e152c65cf0fcf7883ca3a4d1ea2d6935fedb127ef8ad9920535b17fb189e1f8"
+  },
+  "binary_hashes_verified_before_and_after": true,
+  "fresh_processes": 8,
+  "counterbalanced_pairs": 4,
+  "failures": 0,
+  "scalar_measured_calls": 6400,
+  "burst_measured_plan_calls": 16384,
+  "batch_width": 16,
+  "burst_batches_per_process": 128,
+  "aggregation": "Mean or median of four per-run quantiles; not pooled percentiles. No CPU affinity control. Context switches/RSS are whole-process counts, not burst-specific.",
+  "fixture_contract_caveat": "Four verified current prompt-role source files; local aggregate all-zero. Serving aggregate separately recorded; no weights needed.",
+  "comparisons": [
+    {
+      "case": "short",
+      "parity": true,
+      "metrics": {
+        "p50_us": {
+          "baseline_run_quantiles": [
+            111,
+            109,
+            114,
+            106
+          ],
+          "current_run_quantiles": [
+            51,
+            52,
+            53,
+            46
+          ],
+          "baseline_mean_run_quantile": 110,
+          "current_mean_run_quantile": 50.5,
+          "change_percent_of_means": -54.090909090909086,
+          "baseline_median_run_quantile": 110.0,
+          "current_median_run_quantile": 51.5
+        },
+        "p95_us": {
+          "baseline_run_quantiles": [
+            147,
+            118,
+            157,
+            116
+          ],
+          "current_run_quantiles": [
+            55,
+            56,
+            77,
+            54
+          ],
+          "baseline_mean_run_quantile": 134.5,
+          "current_mean_run_quantile": 60.5,
+          "change_percent_of_means": -55.01858736059479,
+          "baseline_median_run_quantile": 132.5,
+          "current_median_run_quantile": 55.5
+        },
+        "p99_us": {
+          "baseline_run_quantiles": [
+            265,
+            150,
+            198,
+            152
+          ],
+          "current_run_quantiles": [
+            92,
+            65,
+            103,
+            67
+          ],
+          "baseline_mean_run_quantile": 191.25,
+          "current_mean_run_quantile": 81.75,
+          "change_percent_of_means": -57.25490196078431,
+          "baseline_median_run_quantile": 175.0,
+          "current_median_run_quantile": 79.5
+        },
+        "allocations_per_plan": {
+          "baseline_run_quantiles": [
+            1933,
+            1933,
+            1933,
+            1933
+          ],
+          "current_run_quantiles": [
+            930,
+            930,
+            930,
+            930
+          ],
+          "baseline_mean_run_quantile": 1933,
+          "current_mean_run_quantile": 930,
+          "change_percent_of_means": -51.88825659596482,
+          "baseline_median_run_quantile": 1933.0,
+          "current_median_run_quantile": 930.0
+        },
+        "allocated_bytes_per_plan": {
+          "baseline_run_quantiles": [
+            269807,
+            269807,
+            269807,
+            269807
+          ],
+          "current_run_quantiles": [
+            125102,
+            125102,
+            125102,
+            125102
+          ],
+          "baseline_mean_run_quantile": 269807,
+          "current_mean_run_quantile": 125102,
+          "change_percent_of_means": -53.63278195154314,
+          "baseline_median_run_quantile": 269807.0,
+          "current_median_run_quantile": 125102.0
+        }
+      },
+      "prompt_tokens": 38
+    },
+    {
+      "case": "tools",
+      "parity": true,
+      "metrics": {
+        "p50_us": {
+          "baseline_run_quantiles": [
+            775,
+            765,
+            812,
+            750
+          ],
+          "current_run_quantiles": [
+            683,
+            686,
+            716,
+            666
+          ],
+          "baseline_mean_run_quantile": 775.5,
+          "current_mean_run_quantile": 687.75,
+          "change_percent_of_means": -11.315280464216638,
+          "baseline_median_run_quantile": 770.0,
+          "current_median_run_quantile": 684.5
+        },
+        "p95_us": {
+          "baseline_run_quantiles": [
+            830,
+            800,
+            927,
+            775
+          ],
+          "current_run_quantiles": [
+            707,
+            718,
+            803,
+            699
+          ],
+          "baseline_mean_run_quantile": 833,
+          "current_mean_run_quantile": 731.75,
+          "change_percent_of_means": -12.154861944777906,
+          "baseline_median_run_quantile": 815.0,
+          "current_median_run_quantile": 712.5
+        },
+        "p99_us": {
+          "baseline_run_quantiles": [
+            925,
+            924,
+            999,
+            800
+          ],
+          "current_run_quantiles": [
+            821,
+            817,
+            875,
+            729
+          ],
+          "baseline_mean_run_quantile": 912,
+          "current_mean_run_quantile": 810.5,
+          "change_percent_of_means": -11.129385964912286,
+          "baseline_median_run_quantile": 924.5,
+          "current_median_run_quantile": 819.0
+        },
+        "allocations_per_plan": {
+          "baseline_run_quantiles": [
+            23134,
+            23134,
+            23134,
+            23134
+          ],
+          "current_run_quantiles": [
+            21193,
+            21193,
+            21193,
+            21193
+          ],
+          "baseline_mean_run_quantile": 23134,
+          "current_mean_run_quantile": 21193,
+          "change_percent_of_means": -8.390248119650733,
+          "baseline_median_run_quantile": 23134.0,
+          "current_median_run_quantile": 21193.0
+        },
+        "allocated_bytes_per_plan": {
+          "baseline_run_quantiles": [
+            3162355,
+            3162355,
+            3162355,
+            3162355
+          ],
+          "current_run_quantiles": [
+            2933400,
+            2933400,
+            2933400,
+            2933400
+          ],
+          "baseline_mean_run_quantile": 3162355,
+          "current_mean_run_quantile": 2933400,
+          "change_percent_of_means": -7.2400157477575995,
+          "baseline_median_run_quantile": 3162355.0,
+          "current_median_run_quantile": 2933400.0
+        }
+      },
+      "prompt_tokens": 1217
+    },
+    {
+      "case": "long",
+      "parity": true,
+      "metrics": {
+        "p50_us": {
+          "baseline_run_quantiles": [
+            3766,
+            3710,
+            3733,
+            3626
+          ],
+          "current_run_quantiles": [
+            3584,
+            3619,
+            3548,
+            3523
+          ],
+          "baseline_mean_run_quantile": 3708.75,
+          "current_mean_run_quantile": 3568.5,
+          "change_percent_of_means": -3.7815975733063723,
+          "baseline_median_run_quantile": 3721.5,
+          "current_median_run_quantile": 3566.0
+        },
+        "p95_us": {
+          "baseline_run_quantiles": [
+            3846,
+            3803,
+            4048,
+            3772
+          ],
+          "current_run_quantiles": [
+            3662,
+            3727,
+            3964,
+            3596
+          ],
+          "baseline_mean_run_quantile": 3867.25,
+          "current_mean_run_quantile": 3737.25,
+          "change_percent_of_means": -3.3615618333441066,
+          "baseline_median_run_quantile": 3824.5,
+          "current_median_run_quantile": 3694.5
+        },
+        "p99_us": {
+          "baseline_run_quantiles": [
+            3923,
+            3946,
+            4254,
+            4005
+          ],
+          "current_run_quantiles": [
+            3803,
+            3881,
+            4115,
+            3643
+          ],
+          "baseline_mean_run_quantile": 4032,
+          "current_mean_run_quantile": 3860.5,
+          "change_percent_of_means": -4.253472222222221,
+          "baseline_median_run_quantile": 3975.5,
+          "current_median_run_quantile": 3842.0
+        },
+        "allocations_per_plan": {
+          "baseline_run_quantiles": [
+            114269,
+            114269,
+            114269,
+            114269
+          ],
+          "current_run_quantiles": [
+            113266,
+            113266,
+            113266,
+            113266
+          ],
+          "baseline_mean_run_quantile": 114269,
+          "current_mean_run_quantile": 113266,
+          "change_percent_of_means": -0.8777533714305674,
+          "baseline_median_run_quantile": 114269.0,
+          "current_median_run_quantile": 113266.0
+        },
+        "allocated_bytes_per_plan": {
+          "baseline_run_quantiles": [
+            20092591,
+            20092591,
+            20092591,
+            20092591
+          ],
+          "current_run_quantiles": [
+            19837726,
+            19837726,
+            19837726,
+            19837726
+          ],
+          "baseline_mean_run_quantile": 20092591,
+          "current_mean_run_quantile": 19837726,
+          "change_percent_of_means": -1.2684526351031566,
+          "baseline_median_run_quantile": 20092591.0,
+          "current_median_run_quantile": 19837726.0
+        }
+      },
+      "prompt_tokens": 6668
+    },
+    {
+      "case": "wide",
+      "parity": true,
+      "metrics": {
+        "p50_us": {
+          "baseline_run_quantiles": [
+            30278,
+            30116,
+            29896,
+            29702
+          ],
+          "current_run_quantiles": [
+            29218,
+            29740,
+            29437,
+            29293
+          ],
+          "baseline_mean_run_quantile": 29998,
+          "current_mean_run_quantile": 29422,
+          "change_percent_of_means": -1.9201280085339056,
+          "baseline_median_run_quantile": 30006.0,
+          "current_median_run_quantile": 29365.0
+        },
+        "p95_us": {
+          "baseline_run_quantiles": [
+            30647,
+            31059,
+            30419,
+            30364
+          ],
+          "current_run_quantiles": [
+            29914,
+            32864,
+            29776,
+            29791
+          ],
+          "baseline_mean_run_quantile": 30622.25,
+          "current_mean_run_quantile": 30586.25,
+          "change_percent_of_means": -0.11756157695793634,
+          "baseline_median_run_quantile": 30533.0,
+          "current_median_run_quantile": 29852.5
+        },
+        "p99_us": {
+          "baseline_run_quantiles": [
+            30824,
+            31810,
+            30798,
+            30495
+          ],
+          "current_run_quantiles": [
+            31030,
+            34568,
+            30430,
+            30051
+          ],
+          "baseline_mean_run_quantile": 30981.75,
+          "current_mean_run_quantile": 31519.75,
+          "change_percent_of_means": 1.7365061689543104,
+          "baseline_median_run_quantile": 30811.0,
+          "current_median_run_quantile": 30730.0
+        },
+        "allocations_per_plan": {
+          "baseline_run_quantiles": [
+            903146,
+            903146,
+            903146,
+            903146
+          ],
+          "current_run_quantiles": [
+            902143,
+            902143,
+            902143,
+            902143
+          ],
+          "baseline_mean_run_quantile": 903146,
+          "current_mean_run_quantile": 902143,
+          "change_percent_of_means": -0.11105624118359358,
+          "baseline_median_run_quantile": 903146.0,
+          "current_median_run_quantile": 902143.0
+        },
+        "allocated_bytes_per_plan": {
+          "baseline_run_quantiles": [
+            159423741,
+            159423741,
+            159423741,
+            159423741
+          ],
+          "current_run_quantiles": [
+            158394732,
+            158394732,
+            158394732,
+            158394732
+          ],
+          "baseline_mean_run_quantile": 159423741,
+          "current_mean_run_quantile": 158394732,
+          "change_percent_of_means": -0.6454553089429771,
+          "baseline_median_run_quantile": 159423741.0,
+          "current_median_run_quantile": 158394732.0
+        }
+      },
+      "prompt_tokens": 53260
+    },
+    {
+      "case": "burst",
+      "parity": true,
+      "metrics": {
+        "p50_us": {
+          "baseline_run_quantiles": [
+            1102,
+            1129,
+            1123,
+            1165
+          ],
+          "current_run_quantiles": [
+            992,
+            1026,
+            1007,
+            1030
+          ],
+          "baseline_mean_run_quantile": 1129.75,
+          "current_mean_run_quantile": 1013.75,
+          "change_percent_of_means": -10.267758353618062,
+          "baseline_median_run_quantile": 1126.0,
+          "current_median_run_quantile": 1016.5
+        },
+        "p95_us": {
+          "baseline_run_quantiles": [
+            5794,
+            5941,
+            5598,
+            5770
+          ],
+          "current_run_quantiles": [
+            5644,
+            5902,
+            5741,
+            5881
+          ],
+          "baseline_mean_run_quantile": 5775.75,
+          "current_mean_run_quantile": 5792,
+          "change_percent_of_means": 0.2813487425875394,
+          "baseline_median_run_quantile": 5782.0,
+          "current_median_run_quantile": 5811.0
+        },
+        "p99_us": {
+          "baseline_run_quantiles": [
+            7065,
+            7338,
+            6562,
+            6860
+          ],
+          "current_run_quantiles": [
+            6279,
+            6759,
+            6539,
+            7577
+          ],
+          "baseline_mean_run_quantile": 6956.25,
+          "current_mean_run_quantile": 6788.5,
+          "change_percent_of_means": -2.4115004492363035,
+          "baseline_median_run_quantile": 6962.5,
+          "current_median_run_quantile": 6649.0
+        },
+        "batch_p50_us": {
+          "baseline_run_quantiles": [
+            5747,
+            5641,
+            5547,
+            5817
+          ],
+          "current_run_quantiles": [
+            5482,
+            5859,
+            5749,
+            5836
+          ],
+          "baseline_mean_run_quantile": 5688,
+          "current_mean_run_quantile": 5731.5,
+          "change_percent_of_means": 0.7647679324894519,
+          "baseline_median_run_quantile": 5694.0,
+          "current_median_run_quantile": 5792.5
+        },
+        "batch_p95_us": {
+          "baseline_run_quantiles": [
+            7622,
+            7515,
+            6687,
+            7254
+          ],
+          "current_run_quantiles": [
+            6773,
+            7098,
+            6677,
+            7934
+          ],
+          "baseline_mean_run_quantile": 7269.5,
+          "current_mean_run_quantile": 7120.5,
+          "change_percent_of_means": -2.0496595364192904,
+          "baseline_median_run_quantile": 7384.5,
+          "current_median_run_quantile": 6935.5
+        }
+      }
+    }
+  ],
+  "new_paid_calls": 0,
+  "production_mutations": 0
+}

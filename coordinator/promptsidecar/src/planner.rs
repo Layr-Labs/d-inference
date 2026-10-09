@@ -1,6 +1,6 @@
 use crate::api::{BlockBoundary, PlanRequest, PlanResponse};
 use crate::artifact_cache::{CacheAccess, SingleflightLru};
-use crate::artifacts::{self, LoadedArtifacts};
+use crate::artifacts;
 use crate::contract::BLOCK_SIZE;
 use crate::endpoint;
 use crate::hash;
@@ -16,16 +16,20 @@ use thiserror::Error;
 use tokenizers::Tokenizer;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
+mod contract_loading;
 mod preloading;
 mod readiness;
 #[cfg(test)]
 mod readiness_tests;
+#[cfg(test)]
+mod retention_tests;
+use contract_loading::LoadedContract;
 use readiness::ReadinessGate;
 
 #[derive(Clone)]
 pub struct Planner {
     artifact_root: Arc<PathBuf>,
-    cache: Arc<SingleflightLru<LoadedArtifacts, artifacts::ArtifactError>>,
+    cache: Arc<SingleflightLru<LoadedContract, artifacts::ArtifactError>>,
     tokenizers: Arc<SingleflightLru<Tokenizer, artifacts::ArtifactError>>,
     permits: Arc<Semaphore>,
     preload_lock: Arc<Mutex<()>>,
@@ -33,12 +37,17 @@ pub struct Planner {
     #[cfg(test)]
     test_hooks: Arc<readiness_tests::Hooks>,
     metrics: Arc<Metrics>,
+    continuity: Arc<std::sync::atomic::AtomicBool>,
     max_concurrency: u32,
     max_tokens: usize,
 }
 
 struct Planned {
     response: PlanResponse,
+    fixture: Option<FixtureDiagnostics>,
+}
+
+struct FixtureDiagnostics {
     token_ids: Vec<u32>,
     template_input: Value,
     provider_body: Value,
@@ -109,6 +118,7 @@ impl Planner {
             #[cfg(test)]
             test_hooks: Arc::new(readiness_tests::Hooks::default()),
             metrics: Arc::new(Metrics::default()),
+            continuity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             max_concurrency: max_concurrency_u32,
             max_tokens,
         }
@@ -146,23 +156,28 @@ impl Planner {
     }
 
     pub async fn plan(&self, request: PlanRequest) -> Result<PlanResponse, PlanError> {
-        Ok(self.plan_with_tokens(request).await?.response)
+        Ok(self.plan_internal(request, false).await?.response)
     }
 
     pub async fn fixture_plan(
         &self,
         request: PlanRequest,
     ) -> Result<(PlanResponse, Vec<u32>, Value, Value), PlanError> {
-        let planned = self.plan_with_tokens(request).await?;
+        let planned = self.plan_internal(request, true).await?;
+        let fixture = planned.fixture.ok_or(PlanError::Worker)?;
         Ok((
             planned.response,
-            planned.token_ids,
-            planned.template_input,
-            planned.provider_body,
+            fixture.token_ids,
+            fixture.template_input,
+            fixture.provider_body,
         ))
     }
 
-    async fn plan_with_tokens(&self, request: PlanRequest) -> Result<Planned, PlanError> {
+    async fn plan_internal(
+        &self,
+        request: PlanRequest,
+        include_fixture: bool,
+    ) -> Result<Planned, PlanError> {
         let started = Instant::now();
         self.metrics.plan_started();
         if !self.readiness.allows(&request.prompt_contract_id) {
@@ -191,12 +206,26 @@ impl Planner {
             self.metrics.plan_not_ready(started.elapsed());
             return Err(PlanError::NotReady);
         }
+        // Membership check and resident ownership are one admission action.
+        // No removed contract can start a lazy reload after v2 revokes it.
+        let resident = match self.readiness.admit(&request.prompt_contract_id, || {
+            self.cache.resident(&request.prompt_contract_id)
+        }) {
+            Ok(value) => value,
+            Err(()) => {
+                self.metrics.plan_not_ready(started.elapsed());
+                return Err(PlanError::NotReady);
+            }
+        };
         let planner = self.clone();
-        let result =
-            match tokio::task::spawn_blocking(move || planner.plan_sync(request, permit)).await {
-                Ok(result) => result,
-                Err(_) => Err(PlanError::Worker),
-            };
+        let result = match tokio::task::spawn_blocking(move || {
+            planner.plan_sync(request, permit, resident, include_fixture)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(PlanError::Worker),
+        };
         // Record completion only after the blocking task rejoins this request
         // future. If the HTTP deadline drops the future, the server records the
         // timeout and the detached worker cannot double-classify the request.
@@ -214,6 +243,8 @@ impl Planner {
         &self,
         request: PlanRequest,
         _permit: OwnedSemaphorePermit,
+        resident: Option<Arc<LoadedContract>>,
+        include_fixture: bool,
     ) -> Result<Planned, PlanError> {
         // Reject known key, number and argument-shape bridge ambiguities
         // before lowering or normalization can discard the input evidence;
@@ -222,7 +253,13 @@ impl Planner {
         #[cfg(test)]
         self.test_hooks
             .before_plan_load(&request.prompt_contract_id);
-        let (contract, _) = self.load_contract(&request.prompt_contract_id)?;
+        let loaded = if let Some(contract) = resident {
+            self.metrics.warm_load();
+            contract
+        } else {
+            self.load_contract(&request.prompt_contract_id)?.0
+        };
+        let contract = &loaded.artifacts;
         let model_type = contract
             .model_config
             .get("model_type")
@@ -234,22 +271,25 @@ impl Planner {
             .map_err(PlanError::Render)?;
         let lowered =
             endpoint::lower(request.endpoint, request.body).map_err(|_| PlanError::Endpoint)?;
-        let provider_body = Value::Object(lowered.clone());
+        let provider_body = include_fixture.then(|| Value::Object(lowered.clone()));
         let normalized =
             normalize::normalize(lowered, model_type).map_err(|_| PlanError::Normalize)?;
-        let prompt = render::render(&contract, &normalized).map_err(PlanError::Render)?;
+        let prompt = loaded
+            .templates
+            .render(contract, &normalized)
+            .map_err(PlanError::Render)?;
         let encoding = contract
             .tokenizer
             .encode(prompt, false)
             .map_err(|_| PlanError::Tokenize)?;
-        let token_ids = encoding.get_ids().to_vec();
+        let token_ids = encoding.get_ids();
         if token_ids.len() > self.max_tokens {
             return Err(PlanError::TooManyTokens);
         }
         let mut hashes = hash::chain_hashes(
             request.prompt_contract_id.as_bytes(),
             request.scope_id.as_bytes(),
-            &token_ids,
+            token_ids,
             BLOCK_SIZE as usize,
         )
         .map_err(|_| PlanError::BlockHash)?;
@@ -263,7 +303,7 @@ impl Planner {
             })
             .collect::<Vec<_>>();
         let last_complete_block_hash =
-            hash::last_token_hash(&token_ids, &hashes, BLOCK_SIZE as usize).map(hex::encode);
+            hash::last_token_hash(token_ids, &hashes, BLOCK_SIZE as usize).map(hex::encode);
 
         let prompt_token_count =
             u32::try_from(token_ids.len()).map_err(|_| PlanError::TooManyTokens)?;
@@ -274,35 +314,11 @@ impl Planner {
                 block_boundaries,
                 last_complete_block_hash,
             },
-            token_ids,
-            template_input: normalized.body,
-            provider_body,
+            fixture: provider_body.map(|provider_body| FixtureDiagnostics {
+                token_ids: token_ids.to_vec(),
+                template_input: normalized.fixture_body(),
+                provider_body,
+            }),
         })
-    }
-
-    fn load_contract(
-        &self,
-        contract_id: &str,
-    ) -> Result<(Arc<LoadedArtifacts>, CacheAccess), PlanError> {
-        let metrics = self.metrics.clone();
-        let root = self.artifact_root.clone();
-        let loaded = self.cache.get_or_load(contract_id, || {
-            let started = Instant::now();
-            let result = artifacts::load(&root, contract_id, &self.tokenizers);
-            metrics.cold_load_finished(started.elapsed(), result.is_ok());
-            result
-        });
-        match loaded {
-            Ok((contract, CacheAccess::Warm)) => {
-                self.metrics.warm_load();
-                Ok((contract, CacheAccess::Warm))
-            }
-            Ok((contract, CacheAccess::Waited)) => {
-                self.metrics.load_wait();
-                Ok((contract, CacheAccess::Waited))
-            }
-            Ok((contract, CacheAccess::Cold)) => Ok((contract, CacheAccess::Cold)),
-            Err(_) => Err(PlanError::Contract),
-        }
     }
 }

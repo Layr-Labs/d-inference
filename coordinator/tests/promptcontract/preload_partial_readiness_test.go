@@ -52,7 +52,7 @@ func TestPreloadHealthyContractSurvivesUnrelatedProvisioning(t *testing.T) {
 			}
 			provisioner := catalog.New()
 			provisioner.Replace([]catalog.Status{
-				{ModelID: "model-a", ArtifactReady: true, PromptContractID: contractA}, unavailable,
+				{ModelID: "model-a", ArtifactReady: true, PromptContractID: contractA, ModelAggregateSHA256: strings.Repeat("e", 64)}, unavailable,
 			})
 			supervisor := &preloadChildFixture{status: preload.ChildStatus{
 				Running: true, Ready: true, ChildGeneration: 1,
@@ -93,8 +93,8 @@ func TestPreloadPartialSuccessPreservesOnlyCurrentVerifiedContract(t *testing.T)
 	defer client.Close()
 	provisioner := catalog.New()
 	provisioner.Replace([]catalog.Status{
-		{ModelID: "model-a", ArtifactReady: true, PromptContractID: contractA},
-		{ModelID: "model-b", ArtifactReady: true, PromptContractID: contractB},
+		{ModelID: "model-a", ArtifactReady: true, PromptContractID: contractA, ModelAggregateSHA256: strings.Repeat("e", 64)},
+		{ModelID: "model-b", ArtifactReady: true, PromptContractID: contractB, ModelAggregateSHA256: strings.Repeat("e", 64)},
 	})
 	supervisor := &preloadChildFixture{status: preload.ChildStatus{
 		Running: true, Ready: true, ChildGeneration: 1,
@@ -113,7 +113,7 @@ func TestPreloadPartialSuccessPreservesOnlyCurrentVerifiedContract(t *testing.T)
 	}
 	// These are retained safety controls, not claims of newly broken behavior.
 	// The next catalog generation retains model-b's verified artifact only.
-	provisioner.Replace([]catalog.Status{{ModelID: "model-b", ArtifactReady: true, PromptContractID: contractB}})
+	provisioner.Replace([]catalog.Status{{ModelID: "model-b", ArtifactReady: true, PromptContractID: contractB, ModelAggregateSHA256: strings.Repeat("e", 64)}})
 	if controller.ReadyFor(contractA) {
 		t.Error("catalog removal did not immediately revoke A")
 	}

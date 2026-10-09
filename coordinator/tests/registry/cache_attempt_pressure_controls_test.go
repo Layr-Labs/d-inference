@@ -3,12 +3,15 @@ package registry_test
 import (
 	"fmt"
 	"math/rand"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheactivation"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cacheindex"
+	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachepeer"
 	"github.com/eigeninference/d-inference/coordinator/internal/registry/cachetracker"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -104,8 +107,13 @@ func TestCacheAttemptPressureWorkBoundAndTerminalIdempotence(t *testing.T) {
 }
 
 func TestCacheAttemptPressureReclaimedLateReadyCannotRecreateHolder(t *testing.T) {
-	r, p, cap := budgetLifecycleRegistry(t)
-	plan := func() production.CachePlan { return r.plans.bind(exactTestPlan(exactTestAnchor(16, "c"))) }
+	var query production.CacheHintQuery
+	r, p, cap := budgetLifecycleRegistry(t, func(_ *budgetLifecycleFixture, deps *production.CacheDependencies) {
+		deps.HintQueries = func(actual production.CacheHintQuery) production.CacheHintQuerier { query = actual; return actual }
+	})
+	plan := func() production.CachePlan {
+		return r.plans.bind(exactTestPlan(exactTestAnchor(8, "b"), exactTestAnchor(16, "c")))
+	}
 	// The retired attempt's charge is read on a first generation; the control
 	// runs on a replacement whose ledger holds it or the candidate, not both.
 	measured, _ := checkpointPricingAttempt(t, r.Registry, p, cap, "dead", plan(), 1)
@@ -120,14 +128,38 @@ func TestCacheAttemptPressureReclaimedLateReadyCannotRecreateHolder(t *testing.T
 	}
 	retired, ready := checkpointPricingAttempt(t, r.Registry, p, cap, "dead", plan(), 1)
 	tr := r.tracker()
+	ready.ReadyAnchors = retired.CachePlan.Boundaries
+	if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
+		t.Fatal("live receipt did not publish checkpoint holders")
+	}
+	f := &cacheMatchFixture{r: r.Registry, tracker: tr.core, config: tr.config, query: query,
+		plan: retired.CachePlan, now: r.clock.Now(), revisions: map[string]*cachepeer.Revision{p.ID: r.revision},
+		key: cacheactivation.HMACBytes([]byte("0123456789abcdef0123456789abcdef"), []byte("darkbloom/cache-routing/route/v3"))}
+	assertCacheMatchParity(t, f)
+	before, _ := f.hints()
+	if len(f.referenceMatches()) != 2 || len(f.matches()) != 1 || before[p.ID].CachedTokens != exactTestAnchor(16, "c").TokenCount {
+		t.Fatal("receipt-backed grouping did not retain the deepest checkpoint")
+	}
 	r.MarkCacheAttemptTerminal(retired)
 	inserted := tr.core.StoreAttemptLocked("next", a)
 	reclaimed := tr.core.AttemptLifecycle().GraceReclaimed
 	if !inserted || reclaimed != 1 {
 		t.Fatal("terminal evidence was not reclaimed")
 	}
+	assertCacheMatchParity(t, f)
+	if after, _ := f.hints(); !reflect.DeepEqual(after, before) {
+		t.Fatal("terminal metadata reclamation changed established holder evidence")
+	}
+	for _, anchor := range f.plan.Boundaries {
+		tr.core.RemoveHolderLocked(cachetracker.CacheTierBoundaryKey(f.key, f.plan, anchor, "ssd"), p.ID, cachetracker.RemovalCapacityEviction)
+	}
+	ready.CacheSeq++
 	if r.ApplyPrefixCacheReadyV2(p.ID, ready) {
 		t.Fatal("reclaimed nonce recreated cache authority")
+	}
+	assertCacheMatchParity(t, f)
+	if hints, _ := f.hints(); len(hints) != 0 {
+		t.Fatal("advancing late READY recreated a removed grouped holder")
 	}
 	if _, _, err := budgetLifecycleInvariant(tr.config); err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 
 	memoryhistory "github.com/eigeninference/d-inference/coordinator/internal/store/memoryhistory"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/earningsfloor"
 
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
@@ -20,15 +21,19 @@ var _ store.Store = (*MemoryStore)(nil)
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
-	now                       func() time.Time
-	history                   *memoryhistory.State
-	smallModelsInterest       map[string]store.SmallModelsInterest
-	autopilotRecords          map[string]store.AutopilotRecord
-	modelTokenProviderCarries map[string]int64
-	modelTokenPromotions      map[string]store.ModelTokenPromotion
-	modelTokenGrants          map[string]map[string]store.ModelTokenGrant
-	modelTokenReservations    map[string]store.ModelTokenReservation
-	consumerSettlements       map[string]consumersettlement.Record
+	now                        func() time.Time
+	history                    *memoryhistory.State
+	smallModelsInterest        map[string]store.SmallModelsInterest
+	autopilotRecords           map[string]store.AutopilotRecord
+	autopilotRewardEnrollments map[string]earningsfloor.Enrollment
+	autopilotRewardConsents    map[string]autopilotRewardConsentHistory
+	autopilotRewardReceipts    map[autopilotRewardDay]earningsfloor.Settlement
+	autopilotRewardPool        earningsfloor.Pool
+	modelTokenProviderCarries  map[string]int64
+	modelTokenPromotions       map[string]store.ModelTokenPromotion
+	modelTokenGrants           map[string]map[string]store.ModelTokenGrant
+	modelTokenReservations     map[string]store.ModelTokenReservation
+	consumerSettlements        map[string]consumersettlement.Record
 
 	mu           sync.RWMutex
 	epochLocks   epochlocks.Owner
@@ -173,6 +178,10 @@ func NewMemory(scfg store.Config) *MemoryStore {
 		now:                           now,
 		history:                       memoryhistory.New(),
 		smallModelsInterest:           make(map[string]store.SmallModelsInterest),
+		autopilotRewardEnrollments:    make(map[string]earningsfloor.Enrollment),
+		autopilotRewardConsents:       make(map[string]autopilotRewardConsentHistory),
+		autopilotRewardReceipts:       make(map[autopilotRewardDay]earningsfloor.Settlement),
+		autopilotRewardPool:           earningsfloor.Pool{TrackingStartedAt: now().UTC().Truncate(time.Microsecond)},
 		modelDemandStartedAt:          time.Now().UTC(),
 		erasureSEOwners:               make(map[string]map[string]bool),
 		erasureRequests:               make(map[string]*memoryErasureRequest),

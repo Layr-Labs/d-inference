@@ -1,0 +1,47 @@
+{
+  "status": "lexical_source_and_isolated_inventory_qualified",
+  "baselineSDKHead": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+  "correctedSDKHead": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+  "onlyChangedSwiftPath": "Libraries/MLXLMCommon/Evaluate.swift",
+  "scope": "Single DocC-link comment correction only; compatible parent A5 pin unchanged. Runtime evidence is separate.",
+  "tokenProof": {
+    "baselineRevision": "aec06021913fff97d86c8d71889b9e9c3c4516a9",
+    "candidateRevision": "working-tree-one-documentation-link",
+    "fileCount": 1,
+    "files": [
+      {
+        "afterSHA256": "e2ad92674d6a83b7ad828620ced66b8674cc5cac18ecc0eea60fe4f475e414fb",
+        "beforeSHA256": "9efd67d7cb4cd12641c24f8908968c057dd3f3aef60b86e7a139472519cfc671",
+        "nonTriviaTokenKindAndTextEqual": true,
+        "path": "Libraries/MLXLMCommon/Evaluate.swift",
+        "tokenCountAfter": 7795,
+        "tokenCountBefore": 7795
+      }
+    ],
+    "method": "SwiftParser Parser.parse; sourceAccurate tokens; exact tokenKind description and text; trivia omitted; malformed parses rejected",
+    "sourceOnlyScope": "Lexical non-trivia equality for the explicitly listed Swift sources. No compilation/runtime equivalence or unchanged-byte claim for edited files is inferred.",
+    "status": "pass"
+  },
+  "tokenProofSHA256": "b91b9db43503a78f0be91d3ce25264bfa5e4ea021b7f9eb1afd35254e002d3ae",
+  "beforeAfterDigestsIndependentlyMatchCommittedGitBlobs": true,
+  "isolatedSourceAudit": {
+    "startedUTC": "2026-10-04T02:12:55.356059+00:00",
+    "endedUTC": "2026-10-04T02:12:58.067228+00:00",
+    "SDKHead": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+    "freshMain": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+    "formatterVersion": "6.3.0",
+    "changedSwiftPaths": 39,
+    "everyCurrentCommittedSourceAlreadyFormatted": true,
+    "everyIsolatedProjectionIdempotent": true,
+    "sourceUnchanged": true,
+    "noSwiftCompilationTestsOrGPU": true,
+    "forkChecksPassed": 2,
+    "changedAndDescribedPaths": 1494,
+    "inventoryGlobs": 169,
+    "receiptSHA256": "23fbaca274fd7d18f27a5ac4e2c5c7407529eff56ee7ab5ef1bff40bb7652e06"
+  },
+  "limits": [
+    "Source-accurate non-trivia token equality is lexical, not arbitrary runtime or trivia semantic equivalence.",
+    "Historical B5 exact fresh-main raw-source checks are not transferred to comment-edited later cuts."
+  ]
+}

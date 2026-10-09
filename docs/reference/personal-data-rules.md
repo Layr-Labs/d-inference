@@ -1,6 +1,6 @@
 # Personal-data rules
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Reference for account erasure: every personal column the scrub changes and
 how, the data it keeps and why, the erasure tables, and the constants. How the
@@ -262,10 +262,14 @@ first.
 | `erasureLogTag` | `"erasure_log:true"` | `coordinator/api/accounts/erasure/outbox.go` | Datadog tag of the erasure record |
 
 Open withdrawals (`CountOpenStripeWithdrawals`, `CountOpenGlobalPayouts`):
-a Stripe withdrawal in `pending` or `transferred`, `paid` within the bounce
+a Stripe withdrawal in `queued`, `pending`, or `transferred`, `paid` within the bounce
 window, or `failed` and waiting for a confirmed-rejection refund
-(`StripeConfirmedRejectionPrefix`); a Global Payout in `pending` or
-`processing`, or `posted` within `GlobalPayoutReconcileWindow`.
+(`StripeConfirmedRejectionPrefix`); a Global Payout in `queued`, `pending`, or
+`processing`, or `posted` within `GlobalPayoutReconcileWindow`. Posted protection
+uses the [post-dispatch return window](pricing-model.md#global-payouts-withdrawals),
+so time spent queued does not shorten it. Code:
+`coordinator/store/postgres/queries/erasure.sql` (`CountOpenStripeWithdrawals`,
+`CountOpenGlobalPayouts`).
 
 ## Related
 

@@ -152,13 +152,21 @@ func TestNonStreamingResponseLimitDispatchWiring(t *testing.T) {
 		srv, _, _ := billingTestServer(t)
 		exclusions := dispatch.NewExclusions()
 		called := false
+		received := time.Now().Add(-time.Second)
 		srv.NewDispatcher().NewPlan(nil).Dispatch(dispatch.Input{
 			Request: httptest.NewRequest("POST", "/", nil), Model: "test-model", Body: []byte(`{}`), Stream: stream,
 			Exclusions: exclusions, Forecast: firstcontent.NewForecast(estimate.NewContextCalibration(), exclusions.Exclude),
+			Timing: &registry.RequestTiming{ReceivedAt: received}, Deadline: 20 * time.Second, FallbackDeadline: 20 * time.Second,
+			DeadlineForWork: func(string, *protocol.PromptWork) time.Duration { return 10 * time.Second },
 		}, func(pr *registry.PendingRequest, _ []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
 			called = true
 			if (pr.NonStreamingResponseBudget == nil) != stream {
 				t.Errorf("stream=%v: budget not installed correctly before reservation", stream)
+			}
+			if !pr.FirstContentFallbackDeadline.Equal(received.Add(20*time.Second)) ||
+				!pr.FirstContentQualifiedDeadline.Equal(received.Add(10*time.Second)) ||
+				!pr.FirstContentDeadline.Equal(pr.FirstContentFallbackDeadline) {
+				t.Error("response budget setup lost ingress-anchored renderer deadlines before reservation")
 			}
 			return nil, registry.RoutingDecision{}, nil
 		}, false)

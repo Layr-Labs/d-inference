@@ -137,6 +137,16 @@ var memoryErasureRules = map[string]memoryRule{
 				}
 			}
 		}
+		if apply {
+			for _, id := range k.ProviderIDs {
+				delete(s.history.ProviderUptimePruned, id)
+			}
+			for id, missing := range s.history.ProviderUptimePruned {
+				if missing.AccountID == k.AccountID {
+					delete(s.history.ProviderUptimePruned, id)
+				}
+			}
+		}
 		if apply && s.machineInventory != nil {
 			// Memory keeps the verified serial on the observation itself;
 			// Postgres never stores it (json:"-").

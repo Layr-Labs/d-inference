@@ -59,6 +59,7 @@ public actor EngineV2BenchmarkSession {
     private var nextReceipt: UInt64 = 1
     private var active: [CBv2RequestID: CBv2RequestID] = [:]
     private var closed = false
+    private var checkpointDrainInProgress = false
     private let nativeMiMoOwnership: MiMoV26BenchmarkOwnership?
     private var nativeLifecycleClosed = false
     private var nativeRetirements: [CBv2RequestID: CBv2RequestRetirement] = [:]
@@ -121,6 +122,7 @@ public actor EngineV2BenchmarkSession {
     /// relay task. Call complete(receiptID:) after fully draining that stream.
     public func submit(_ input: CBv2Request) async throws -> Submission {
         guard !closed else { throw Failure.closed }
+        guard !checkpointDrainInProgress else { throw Failure.requestAlreadyActive }
         try nativeMiMoOwnership?.transaction.requireServingWorkAllowed()
         guard !active.values.contains(input.id) else { throw Failure.requestAlreadyActive }
         guard nextReceipt < UInt64.max else { throw Failure.receiptIDsExhausted }
@@ -132,6 +134,8 @@ public actor EngineV2BenchmarkSession {
         var request = input
         request.prefixCacheReceiptID = receiptID
         do {
+            Self.registerDonationDemand(for: request, receiptID: receiptID,
+                store: bundle.bridge.ssdHybridCheckpointStore)
             var stage: SSDPrefixCacheStageResult?
             if input.prefixCacheEnabled, input.multimodal == nil, input.positionState == nil {
                 if let store = bundle.bridge.ssdHybridCheckpointStore {
@@ -196,11 +200,48 @@ public actor EngineV2BenchmarkSession {
         }
     }
 
+    /// Offline quiescence barrier after the caller has drained its receipt
+    /// and observed engine idle. Join this slot's actual COMPLETE writer and
+    /// staging refunds without closing the reusable store. This is write
+    /// completion only: a store configured without fsync makes no durability
+    /// claim. Keep this outside terminal and receipt-completion timing.
+    public func drainCheckpointWrites() async throws {
+        guard !closed else { throw Failure.closed }
+        guard active.isEmpty, !checkpointDrainInProgress else { throw Failure.requestAlreadyActive }
+        try nativeMiMoOwnership?.transaction.requireServingWorkAllowed()
+        guard let store = bundle.bridge.ssdHybridCheckpointStore else {
+            throw Failure.unexpectedEngine
+        }
+        guard !store.isClosed else { throw Failure.closed }
+        checkpointDrainInProgress = true
+        defer { checkpointDrainInProgress = false }
+        await store.waitForWritesForTesting()
+        await store.activity.waitUntilDrained()
+        guard !closed, !store.isClosed else { throw Failure.closed }
+        try nativeMiMoOwnership?.transaction.requireServingWorkAllowed()
+    }
+
     private func retireStage(_ receiptID: CBv2RequestID) async {
         await bundle.bridge.ssdHybridCheckpointStore?.abandonStaging(requestID: receiptID)
+        bundle.bridge.ssdHybridCheckpointStore?.discardDonationDemand(requestID: receiptID)
         bundle.bridge.ssdHybridCheckpointStore?.discardReadyReceipt(requestID: receiptID)
         await bundle.bridge.ssdPrefixCache?.abandonStaging(requestID: receiptID)
         bundle.bridge.ssdPrefixCache?.discardReadyReceipt(requestID: receiptID)
+    }
+
+    /// The benchmark's request hint describes the same scoped repeat demand
+    /// as the production bridge. Register it under this submission's receipt,
+    /// not its reusable sampling ID; nil keeps legacy admission, while zero
+    /// explicitly marks a fleet-novel request. This text-only benchmark seam
+    /// does not qualify out-of-band media checkpoints.
+    nonisolated static func registerDonationDemand(
+        for request: CBv2Request, receiptID: CBv2RequestID,
+        store: SSDHybridCheckpointStore?
+    ) {
+        guard request.prefixCacheEnabled, request.multimodal == nil,
+            request.positionState == nil, let scope = request.cacheSalt, !scope.isEmpty,
+            let repeated = request.prefixCheckpointTargetTokens else { return }
+        store?.registerDonationDemand(.init(repeatedPrefixTokens: repeated), requestID: receiptID)
     }
 
     public func shutdown() async {

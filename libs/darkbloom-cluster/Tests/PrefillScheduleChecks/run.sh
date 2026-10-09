@@ -24,9 +24,34 @@ xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloom
 xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterBootstrap \
   -emit-module-path "$task_build/DarkbloomClusterBootstrap.swiftmodule" \
   "$task_package"/Sources/DarkbloomClusterBootstrap/*.swift -o "$task_build/libDarkbloomClusterBootstrap.dylib"
+# The worker configuration checks its model ID and cut against the closed
+# catalog, so the stand-in runtime carries that catalog's actual pure source
+# closure (the one the capability checks compile); no MLX/Cmlx, no model.
+task_catalog=(
+  Support/WorkerJSONScanner
+  Support/BoundedProbeInput
+  Models/Qwen/Metadata/QwenLayerStageMetadata
+  Models/Qwen/Metadata/QwenLayerStagePlan
+  Models/Qwen/Resources/QwenLongPrefillTensorBudget
+  Models/Qwen/Metadata/QwenDenseProfileTypes
+  Models/Qwen/Metadata/QwenDenseRegisteredSpecification
+  Models/Qwen/Generation/QwenLayerStageGenerationRequest
+  Models/Qwen/Generation/QwenLayerStageFrame
+  Models/Qwen/Generation/QwenLayerStageWireIdentity
+  Support/ClusterRuntimeError
+  Support/CanonicalJSON
+  Support/ClusterMetadataHashing
+  Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment
+  Models/Qwen/Loading/QwenLayerStageCandidates
+  Models/Qwen/Resident/QwenResidentModelDefinition
+  Models/Qwen/Resident/QwenResidentAdapterDefinition
+  Models/Qwen/Resident/QwenResidentCapabilityMetadata
+)
+task_catalog_paths=()
+for task_source in "${task_catalog[@]}"; do task_catalog_paths+=("$task_runtime/$task_source.swift"); done
 xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterRuntime \
   -emit-module-path "$task_build/DarkbloomClusterRuntime.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
-  "$task_bootstrap_tests/LoadConfiguration.swift" -o "$task_build/libDarkbloomClusterRuntime.dylib"
+  "$task_bootstrap_tests/LoadConfiguration.swift" "${task_catalog_paths[@]}" -o "$task_build/libDarkbloomClusterRuntime.dylib"
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" \
   -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap \
   "$task_worker/Startup/WorkerConfiguration.swift" "$task_worker/Startup/WorkerBootstrapConfiguration.swift" \

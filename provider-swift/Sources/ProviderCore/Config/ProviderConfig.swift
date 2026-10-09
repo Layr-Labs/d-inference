@@ -483,6 +483,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
+    public var cache: CacheSettings
 
     public init(
         provider: ProviderSettings,
@@ -490,6 +491,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
+        cache: CacheSettings = CacheSettings(),
         cluster: ClusterConfigurationReference? = nil
     ) {
         self.provider = provider
@@ -497,6 +499,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.coordinator = coordinator
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
+        self.cache = cache
         self.cluster = cluster
     }
 
@@ -506,6 +509,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case coordinator
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
+        case cache
         case cluster
     }
 
@@ -518,6 +522,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.gemmaOptimizations = try container.decodeIfPresent(
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
+        self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
+        try self.cache.validate()
         self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
     }
 

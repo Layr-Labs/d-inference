@@ -141,6 +141,7 @@ struct Start: AsyncParsableCommand {
         }
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        try CacheStorage.configure(snapshot.config.cache)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         scheduleEdit?.draft.apply(to: &effectiveConfig)

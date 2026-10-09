@@ -94,6 +94,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     }
 
     init(prepared: DistributedInstalledPreparation, endpointFactory: @escaping EndpointFactory = DistributedInstalledSession.installedEndpoint) throws {
+        try prepared.plan.configuration.requireOrdinarySessionRoute()
         self.endpointFactory = endpointFactory
         self.prepared = prepared; configuration = prepared.plan.configuration; capability = prepared.plan.capability
         diagnosticBinding = try ClusterStatusBinding(configuration: configuration, capability: capability)

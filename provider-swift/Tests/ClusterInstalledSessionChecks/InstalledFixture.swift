@@ -13,7 +13,8 @@ struct InstalledFixture: Sendable {
     func prepare() throws -> DistributedInstalledPreparation {
         try .prepare(reference: reference, paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
     }
-    static func make(root: URL, probe: URL, owner: URL, worker: URL, lifetimeSeconds: Int = 10) throws -> Self {
+    /// `pairing` saves the setup with a coordinator pair approval that matches its own pins.
+    static func make(root: URL, probe: URL, owner: URL, worker: URL, lifetimeSeconds: Int = 10, pairing: Bool = false) throws -> Self {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let model = root.appendingPathComponent("model", isDirectory: true)
         try FileManager.default.createDirectory(at: model, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -52,11 +53,21 @@ struct InstalledFixture: Sendable {
              "ownerExecutable":owner.path,"workerExecutable":probe.path,"modelDirectory":model.path,
              "runtimeBinarySHA256":binary,"jacclDevice":"rdma_en\(rank)"]
         }
-        let object:[String:Any]=["schema":ClusterConfiguration.schemaName,"clusterID":"installed-fixture","memberID":"peer-0","role":"leader",
+        var object:[String:Any]=["schema":ClusterConfiguration.schemaName,"clusterID":"installed-fixture","memberID":"peer-0","role":"leader",
             "publicModelID":"fixture/public-model","capabilitySHA256":capHash,"selectedPlanSHA256":pin("f"),"chunkTokens":2,"requestTimeoutSeconds":lifetimeSeconds,
             "peers":[peer(0),peer(1)],"coordinator":["address":"192.168.2.1","port":12345],
             "trust":["identityFile":key.path,"knownHostsFile":hosts.path,"knownHostsSHA256":hash(known)],
             "tokenizerFiles":named.filter{$0.1 != "config"}.map{["path":$0.0,"sha256":hash($0.2),"purpose":$0.1 == "template" ? "chatTemplate":"tokenizer"]}]
+        if pairing {
+            let approval:[String:Any]=["id":"installed-fixture-approval","model":"fixture/public-model","generation":1,
+                "plan_sha256":pin("f"),"artifact_sha256":artifact,"native_runtime_sha256":binary,"metallib_sha256":pin("6"),
+                "resource_library_sha256":pin("7"),"capability_sha256":capHash,"resource_policy_sha256":pin("8"),"profile_sha256":pin("e"),
+                "schedule":1,"maximum_transport_frame":131112,"maximum_plaintext":131072,"maximum_records":1024,
+                "maximum_cumulative_plaintext":16777216,"allowed_chips":["Apple M4"],"not_after":"2033-05-18T03:33:20Z"]
+            object["nativeMember"]=["schema":ClusterNativeMemberAttachment.schemaName,"ownerSHA256":hash(try Data(contentsOf:owner)),
+                "metallibPath":root.appendingPathComponent("mlx.metallib").path,
+                "resourceLibraryPath":root.appendingPathComponent("resource.metallib").path,"approval":approval] as [String:Any]
+        }
         let input=root.appendingPathComponent("input.json"),capInput=root.appendingPathComponent("capability.json")
         try bytes(object).write(to:input);try capBytes.write(to:capInput)
         let configuration=try ClusterConfigurationCodec.decode(bytes(object),capability:cap,capabilitySHA256:capHash)

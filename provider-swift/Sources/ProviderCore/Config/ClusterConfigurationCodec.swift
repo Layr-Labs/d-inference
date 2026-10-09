@@ -37,6 +37,13 @@ public enum ClusterConfigurationCodec {
             }
             expected.insert("prefillSchedule")
         }
+        if let attachment = object["nativeMember"] {
+            guard let fields = attachment as? [String: Any] else {
+                throw ClusterConfigurationError.invalid("Native member attachment must be a non-null object")
+            }
+            try ClusterNativeMemberAttachment.validateObject(fields)
+            expected.insert("nativeMember")
+        }
         try keys(object, expected)
         guard let peers = object["peers"] as? [[String: Any]], peers.count == 2,
               let coordinator = object["coordinator"] as? [String: Any],

@@ -26,6 +26,8 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
   "$task_config/ClusterConfiguration.swift" "$task_config/ClusterConfigurationCodec.swift" \
+  "$task_config/ClusterNativeMemberAttachment.swift" "$task_config/ClusterPairApproval.swift" \
+  "$task_provider/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift" \
   "$task_config/ClusterConfigurationStore.swift" "$task_fixtures/ConfigurationCheck.swift" \
   -o "$task_build/configuration-check"
 "$task_build/configuration-check"

@@ -22,6 +22,9 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     public let coordinator: Coordinator
     public let trust: Trust
     public let tokenizerFiles: [TokenizerFile]
+    /// Present only on a Mac set up to be paired by the coordinator. Omission
+    /// preserves an existing setup and its saved bytes; null is rejected.
+    public private(set) var nativeMember: ClusterNativeMemberAttachment?
 
     public enum Role: String, Codable, Sendable { case leader, follower }
     public struct Peer: Codable, Sendable, Equatable {
@@ -53,6 +56,14 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     }
 
     public var localRank: Int { role == .leader ? 0 : 1 }
+
+    /// A setup saved for coordinator pairing never runs the session this Mac
+    /// launches itself over SSH: the two would contend for the same device.
+    func requireOrdinarySessionRoute() throws {
+        guard nativeMember == nil else {
+            throw ClusterConfigurationError.invalid("This setup is saved for coordinator pairing (nativeMember); run `darkbloom start --cluster-member`, or save a setup without it for a local distributed session")
+        }
+    }
 
     func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
         func require(_ value: Bool, _ message: String) throws {
@@ -92,5 +103,6 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         for file in tokenizerFiles {
             try require(ClusterConfigurationSyntax.relativePath(file.path) && ClusterConfigurationSyntax.hash(file.sha256), "Invalid tokenizer/template file pin")
         }
+        try nativeMember?.validate(configuration: self, capability: capability)
     }
 }

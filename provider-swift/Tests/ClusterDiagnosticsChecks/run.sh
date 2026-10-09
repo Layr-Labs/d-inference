@@ -44,6 +44,9 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
+  "$task_sources/Config/ClusterNativeMemberAttachment.swift" \
+  "$task_sources/Config/ClusterPairApproval.swift" \
+  "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \

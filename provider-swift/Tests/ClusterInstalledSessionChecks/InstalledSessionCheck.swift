@@ -33,6 +33,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(try prepared.model.stopTokenIDs(tokenizerEOS:9)==[7,9],"loaded tokenizer EOS union differs")
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
+        try pairedSetupRefusesLocalSession(fixture)
         try fileAndProbeChecks(fixture,prepared)
         try await normalAndDrain(fixture,prepared)
         try await exhausted(fixture,prepared)
@@ -44,6 +45,17 @@ final class EndpointBox: @unchecked Sendable {
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
         return try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:object),capability:f.capability,capabilitySHA256:f.configuration.capabilitySHA256)
+    }
+    /// A setup saved for coordinator pairing loads and validates, and the
+    /// session this Mac would launch itself refuses it before any owner starts.
+    static func pairedSetupRefusesLocalSession(_ f:InstalledFixture) throws {
+        let root=f.root.deletingLastPathComponent().appendingPathComponent("installed-check-"+UUID().uuidString)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let paired=try InstalledFixture.make(root:root,probe:f.probe,owner:f.owner,worker:f.worker,pairing:true)
+        try require(paired.configuration.nativeMember != nil,"paired fixture lost its attachment")
+        let prepared=try paired.prepare()
+        try rejected{_ = try DistributedInstalledSession(prepared:prepared)}
+        _ = try DistributedInstalledSession(prepared:try f.prepare())
     }
     static func metadataChecks(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
         for change in [0,1,2] {

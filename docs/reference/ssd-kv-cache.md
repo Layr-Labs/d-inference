@@ -142,8 +142,15 @@ and MTP codec. No public header field exposes those token boundaries
 
 | Contract | Bound / behavior | Code |
 |---|---|---|
-| Encrypted manifest | `maximumEncodedBytes = 1 << 20`; validated before allocation | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointContract.swift` |
+| Encrypted native manifest | `maximumEncodedBytes = 1 << 20`; validated before allocation | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointContract.swift` |
 | Tensor segment | `maximumSegmentBytes = 4 << 20`; logical segments stream through authenticated DBK3 chunks | `CompleteCheckpointContract.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore+Streaming.swift` |
+| Historical page graph | `maximumManifestBytes = 2 << 20`, `maximumPages = 8192`; canonical encrypted complete manifest plus ordered page IDs, digests and logical offsets. Unsupported/bounded-out graphs retain independent full files; MiMo is excluded | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDSharedCheckpointPages.swift` (`Envelope`, `eligible`) |
+| Page geometry | Per-head KV pages at `strideTokens = 1024`, each no larger than `maximumSegmentBytes`; absolute token ranges prevent non-overlapping windows from sharing | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointPageGeometry.swift` (`pages`) |
+| Page paths and lifetime | `<modelRoot>/<fanout>/<tag>.pages/<pageFanout>/<pageID>.dbk3`; immutable encrypted objects linked once into every owning endpoint. No parent dependency chain; deleting an endpoint's links leaves other endpoints intact | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointPageFiles.swift` |
+| Page identity | Execution/scope/artifact/runtime/layout/coordinate/native-byte-digest address under derived `K_lookup` with the `dbkv3-complete-checkpoint-page-v1` domain; no cross-execution sharing. Ordered references and native state stay encrypted. Every final page, including a reused destination link, is authenticated and rechecked before publication; every adopted page is authenticated before import completion | `SSDLookupKeys.swift` (`checkpointPageTag`), `SSDSharedCheckpointPages.swift` (`write`, `read`) |
+| Shared accounting | Index and routing estimates count complete logical read bytes; disk enforcement counts unique inode bytes. Daily writes charge encoded new files, and links do not charge repeated payload bytes | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointPageAccounting.swift`, `SSDWholeRootMaintainer.swift`, `SSDHybridCheckpointStore+Write.swift` |
+| Shared lossless streams | Opt-in codec applies to native page payloads and encrypted reference manifests. Native widths 2/4 use byte-plane framing; other widths use raw planes. Actual encoded write fragments are charged once; authenticated links remain uncharged | `SSDSharedCheckpointPages.swift` (`write`), `SSDBlockStore+Streaming.swift` (`beforeBytesWrite`) |
+| Shared utility denominator | Unique manifest bytes plus cached inode bytes whose final retained link belongs to this endpoint. Recompute after each retirement; unloaded roots retain LRU | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointPageAccounting.swift` (`marginalReclaimableBytes`), `SSDWholeRootMaintainer.swift` |
 | Initial read admission | Metadata-only candidate match precedes any file read. Shared mode reserves `ioScratchBytes = 20 << 20` once in the provider ledger; its native IO lease does not duplicate that charge. Contiguous compatibility keeps its existing two-ledger path | `SSDHybridCheckpointStore+Read.swift` (`stage`), `EngineV2+CompleteCheckpoint.swift` (`reserveCompleteCheckpointReadScratch`) |
 | Import admission | Authenticate manifest → allocation-free import plan → native per-buffer destination, scratch and metadata admission → bounded whole-file read. Shared native ownership is separate from provider host IO | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `CompleteCheckpointImportPlan.swift` (`allocate`) |
 | Idle state | Metadata index only; no resident tensor bank or persistent slot carve | `SSDHybridCheckpointStore.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`isMemoryEnabled`) |
@@ -169,6 +176,24 @@ attention snapshots and their optional unused window sidecar remain separate.
 Validation artifacts, source scopes and model-measurement limits are linked from
 [the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).
 Earlier resident-cache measurements do not establish SSD latency or restart reuse.
+
+### Storage geometry measurement
+
+The opt-in CPU fixture measures serialized encrypted storage, without loading
+model weights or generating tokens. It compares independent files with shared
+pages using the cached Gemma/GPT-OSS configuration-derived attention map.
+
+| Field | Contract | Code |
+|---|---|---|
+| Activation | `DARKBLOOM_RUN_STORAGE_GEOMETRY=1`; the ordinary suite skips the GiB-scale probe | `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDCheckpointStorageGeometryTests.swift` (`productionGeometry`) |
+| Inputs | Three increasing 1,024-aligned positions; `DARKBLOOM_STORAGE_POSITIONS` defaults to `1024,16384,32768`. Cached configuration bytes are recorded by SHA-256 | `SSDCheckpointStorageGeometryTests.swift` (`GeometryFixture`) |
+| Output | `DARKBLOOM_STORAGE_GEOMETRY_OUTPUT` optionally writes JSON at an absolute path; reports retained unique inode bytes, newly written bytes, donation authentication reads and deepest complete restore reads | `SSDCheckpointStorageGeometryTests.swift` (`Measurement`) |
+| Limits | Zero-valued native-shaped tensors exercise byte accounting through length-neutral DBK3 encryption. Gemma uses BF16; GPT-OSS uses an explicitly declared uniform FP32 scenario. This is not a compressibility, runtime-dtype, quality or whole-model performance measurement | `SSDCheckpointStorageGeometryTests.swift` (`Report`) |
+
+After the source-matched test build, run from `provider-swift/` with
+`DARKBLOOM_RUN_STORAGE_GEOMETRY=1 swift test --skip-build --filter SSDCheckpointStorageGeometryTests`.
+The local machine must be idle during the probe; its CPU/SSD traffic can perturb
+concurrent inference measurements.
 
 ### Bounded shorter complete-checkpoint fallback
 
@@ -273,7 +298,7 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | Rule | Constant | Code |
 |---|---|---|
 | Disk budget | Default `max(1, volumeFree / 2)`, with no fixed ceiling, re-evaluated during enforcement across all models. Unknown free space uses `fallbackSSDDiskBudgetBytes = 20 * 1_073_741_824` (20 GiB); a valid positive environment override wins verbatim. The separate low-disk write stop still applies. | `PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
-| Eviction order | LRU by last hit across the whole `kv3/` root; eviction is `unlink` + index removal | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` |
+| Eviction order | Default LRU by last hit across `kv3/`; opted-in complete stores rank measured benefit per marginal reclaimable encoded byte. Unloaded roots retain LRU. Retirement unlinks the endpoint and its page links, then reconciles the index; shared bytes count once per inode | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` |
 | Maintenance sweep | `SSDWholeRootMaintainer`, `intervalSeconds = 60`: TTL expiry, budget eviction, crash-temp cleanup | `SSDPrefixCacheFactory.swift` (`startWholeRootMaintenance`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift` |
 | TTL | `defaultTTLSeconds = 1800`, `maxTTLSeconds = 1800`, sliding on hit. Raising either needs the sign-off recorded in `docs/threat-model.yaml` (T-041, SEC-035) | `SSDPrefixCachePolicy.swift` |
 | Daily write cap | `defaultMaxWriteBytesPerDay = 750 * 1_000_000_000` | `SSDPrefixCachePolicy.swift` |

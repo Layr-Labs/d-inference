@@ -26,6 +26,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         let bytes: Int
         let modifiedAt: Int64
         let metadataReadable: Bool
+        let pageFiles: [SSDCheckpointPageFiles.File]
     }
 
     private struct OwnedTempFile {
@@ -37,6 +38,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
     private struct OwnedContents {
         var blocks: [OwnedFile] = []
         var tempFiles: [OwnedTempFile] = []
+        var orphanPages: [SSDCheckpointPageFiles.File] = []
     }
 
     private let maintenanceLock = NSLock()
@@ -81,6 +83,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
     ) -> Result {
         maintenanceLock.withLock {
             var result = Result()
+            cleanPageOrphans(under: root)
             let contents = ownedContents(under: root)
             var tempBytes = 0
             for file in contents.tempFiles {
@@ -111,11 +114,15 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         continue
                     }
                     let mutation = {
-                        for file in group where
-                            SSDBlockStore.removeItemIfSafe(at: file.url, under: root)
-                        {
-                            removed.insert(file.url.standardizedFileURL.path)
+                        for file in group {
+                            guard let access = SSDCheckpointFileCoordinator.shared.tryAcquire(to: file.url) else { continue }
+                            defer { access.release() }
+                            if SSDBlockStore.removeItemIfSafe(at: file.url, under: root) {
+                                SSDCheckpointPageFiles.remove(for: file.url)
+                                removed.insert(file.url.standardizedFileURL.path)
+                            }
                         }
+                        SSDCheckpointPageFiles.removeOrphans(under: modelRoot)
                     }
                     let completed = SSDCacheEpochStore.performUnloadedDestructiveChange(
                             root: modelRoot, mutation)
@@ -138,35 +145,59 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 }
             }
 
-            var total = files.reduce(tempBytes) { $0 + $1.bytes }
+            func physicalBytes(_ entries: [OwnedFile]) -> Int {
+                var pages: [String: Int] = [:]
+                var bytes = tempBytes
+                for page in contents.orphanPages {
+                    pages[page.physicalIdentity] = max(pages[page.physicalIdentity] ?? 0, page.bytes)
+                }
+                for file in entries {
+                    bytes = SSDCheckpointPageFiles.saturatingAdd(bytes, file.bytes)
+                    for page in file.pageFiles {
+                        pages[page.physicalIdentity] = max(pages[page.physicalIdentity] ?? 0, page.bytes)
+                    }
+                }
+                return pages.values.reduce(bytes, SSDCheckpointPageFiles.saturatingAdd)
+            }
+            var total = physicalBytes(files)
             let limit = max(0, budgetBytes)
+            var retentionPriorities: [String: SSDEvictionPriority] = [:]
+            func priority(_ file: OwnedFile) -> SSDEvictionPriority {
+                let measured = retentionPriorities[file.url.standardizedFileURL.path]
+                return .init(probationary: measured?.probationary ?? false,
+                    savedMillisPerByte: measured?.savedMillisPerByte ?? 0,
+                    lastAccess: file.modifiedAt, tieBreak: file.url.path)
+            }
+
             var attempted = Set<String>()
             while total > limit {
+                // Each successful retirement can make another endpoint's
+                // shared pages uniquely reclaimable. Reprice active owners.
+                retentionPriorities.removeAll(keepingCapacity: true)
+                if SSDDiskBudget.shared.hasActiveUtilityRetentionStore {
+                    for group in Dictionary(grouping: files, by: { $0.modelRoot }).values {
+                        guard let modelRoot = group.first?.modelRoot else { continue }
+                        retentionPriorities.merge(SSDDiskBudget.shared.retentionPriorities(
+                            root: modelRoot, urls: group.map(\.url), now: nowSeconds), uniquingKeysWith: { _, new in new })
+                    }
+                }
                 let candidates = files.filter {
                     !attempted.contains($0.url.standardizedFileURL.path)
                 }.sorted {
-                    if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt < $1.modifiedAt }
-                    return $0.url.path < $1.url.path
+                    if retentionPriorities.isEmpty {
+                        if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt < $1.modifiedAt }
+                        return $0.url.path < $1.url.path
+                    }
+                    return priority($0) < priority($1)
                 }
                 guard !candidates.isEmpty else { break }
-                var planned: [OwnedFile] = []
-                var projected = total
-                for file in candidates where projected > limit {
-                    planned.append(file)
-                    projected = max(0, projected - file.bytes)
-                    attempted.insert(file.url.standardizedFileURL.path)
-                }
+                let planned = [candidates[0]]
+                attempted.insert(candidates[0].url.standardizedFileURL.path)
                 let removed = removeOwned(planned)
                 guard !removed.isEmpty else { continue }
-                let freed = files.reduce(0) { bytes, file in
-                    removed.contains(file.url.standardizedFileURL.path)
-                        ? bytes + file.bytes : bytes
-                }
                 result.budgetEvicted += removed.count
-                total = max(0, total - freed)
-                files.removeAll {
-                    removed.contains($0.url.standardizedFileURL.path)
-                }
+                files.removeAll { removed.contains($0.url.standardizedFileURL.path) }
+                total = physicalBytes(files)
             }
             result.bytesAfter = total
             statsLock.withLock {
@@ -191,6 +222,20 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             return values
         }
         for task in tasks { task.cancel() }
+    }
+
+    private func cleanPageOrphans(under root: URL) {
+        guard SSDBlockStore.isSafeMaintenanceRoot(root),
+            let models = try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
+        for model in models where SSDBlockStore.isLowerHex(model.lastPathComponent, count: 12) {
+            guard SSDBlockStore.isRealDirectory(model), SSDBlockStore.pathResolvesToItself(model),
+                SSDCheckpointPageFiles.hasOrphans(under: model) else { continue }
+            let mutation = { SSDCheckpointPageFiles.removeOrphans(under: model) }
+            if SSDDiskBudget.shared.performActiveDestructiveChange(root: model, mutation) == nil {
+                _ = SSDCacheEpochStore.performUnloadedDestructiveChange(root: model, mutation)
+            }
+        }
     }
 
     private func ownedContents(under root: URL) -> OwnedContents {
@@ -226,6 +271,16 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         options: [.skipsHiddenFiles])
                 else { continue }
                 for url in entries {
+                    if url.pathExtension == SSDCheckpointPageFiles.directoryExtension {
+                        let stem = url.deletingPathExtension().lastPathComponent
+                        if SSDBlockStore.isLowerHex(stem, count: 32), stem.hasPrefix(fanout.lastPathComponent) {
+                            let checkpoint = SSDBlockStore.fileURL(root: modelDir, tag16Hex: stem)
+                            if SSDBlockStore.indexedBlockFileStatus(at: checkpoint, under: modelDir) != .regular {
+                                contents.orphanPages.append(contentsOf: SSDCheckpointPageFiles.files(for: checkpoint))
+                            }
+                        }
+                        continue
+                    }
                     guard let values = try? url.resourceValues(forKeys: keys),
                         values.isRegularFile == true, values.isSymbolicLink != true
                     else { continue }
@@ -252,7 +307,8 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         modifiedAt: Int64(values.contentModificationDate?.timeIntervalSince1970 ?? 0),
                         metadataReadable: (try? SSDBlockStore.readMetadataOnly(
                             from: url, maximumMetadataBytes: 1 << 20,
-                            maximumWrappedDEKBytes: 60)) != nil))
+                            maximumWrappedDEKBytes: 60)) != nil,
+                        pageFiles: SSDCheckpointPageFiles.files(for: url)))
                 }
             }
         }

@@ -1493,6 +1493,13 @@ the saved plist and does not import newly exported shell variables; stop and
 start with the intended environment to update them. See the
 [SSD cache limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
+The opt-in `DARKBLOOM_PREFIX_CACHE_SSD_UTILITY_RETENTION=1` changes complete
+checkpoint capacity eviction for non-MiMo models. It is also forwarded when
+installing the provider LaunchAgent; stop and start with the intended environment
+to update the saved plist. Defaults, qualification limits and failure behavior
+are in the [configuration reference](../reference/configuration.md#ssd-prefix-cache)
+and [retention mechanism](../architecture/prefix-cache.md#measured-complete-checkpoint-retention).
+
 `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` and `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`
 control the explicitly opted-in recurrent checkpoint bank in foreground/local processes; they are
 not forwarded into the LaunchAgent. Their defaults and budget semantics are

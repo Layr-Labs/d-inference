@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -419,6 +419,47 @@ model family does not bypass that gate
 (`provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift`,
 `compute(modelDirectory:)`).
 
+### Measured complete-checkpoint retention
+
+`DARKBLOOM_PREFIX_CACHE_SSD_UTILITY_RETENTION=1` enables an experimental eviction
+order for complete checkpoints except MiMo. It changes capacity victims in both
+`SSDDiskBudget.enforce` and active-store whole-root sweeping; all other cache
+paths retain LRU. It does not change tensors, admission, encryption, cache scope,
+READY evidence, sliding TTL, disk caps or write limits.
+
+The bridge captures a fresh isolated cold-prefill rate in the request's prompt
+size domain before engine submission. Its synchronous `onPrefillCompleted`
+callback credits a checkpoint only after `.hit` from the `.snapshot` tier,
+with the exact staged saved-token count. Staging alone, resident hits,
+nonpositive estimated benefit, missing rate evidence, failed adoption and
+abandoned requests earn no credit. A once-only receipt binds the authenticated
+stage, epoch and indexed file generation; close, replacement and reused request
+IDs cannot credit a successor (`SSDCheckpointRetentionReceipt`,
+`SSDHybridCheckpointStore.makeRetentionReceipt`, `EngineV2Bridge.submit`).
+
+Each index entry holds the decayed sum of observed successful reuse benefit:
+`max(0, saved_tokens / cold_prefill_tokens_per_second - actual_stage_seconds)`.
+Capacity eviction removes the lowest sum per reclaimable encoded byte, with LRU and
+opaque tag order as ties. The sum has a five-minute half-life; it is empirical
+utility, not a hit-probability estimate. New uncredited files receive 30 seconds
+of probation so prior hits do not immediately exclude new demand. Probation
+starts at file creation and cannot be refreshed by failed staging. TTL expiry
+always runs first. Metadata is bounded by the existing index, kept only in RAM,
+and discarded on replacement, removal, restart or unload
+(`SSDCheckpointRetentionValue`, `SSDBlockIndex.retentionEntries`).
+
+An independent `.dbk3` file's denominator is its encoded size. Logical restore
+bytes are not an eviction savings estimate for shared pages: their denominator is the
+checkpoint's marginal reclaimable bytes: its unique manifest and pages whose
+last retained endpoint link would retire. `SSDCheckpointPageAccounting` reads
+cached inode reference counts without filesystem work on the ranking path.
+Removing a sibling changes marginal ownership, so active-store and whole-root
+selection reprice after each retirement. Unloaded roots have no retained utility
+history and use LRU.
+The policy stays off by default pending measured demand traces and contention
+qualification. A synthetic encrypted-I/O fixture verifies useful old-prefix
+retention against LRU under the same cap; it is not a fleet hit-rate result.
+
 ### Streamed complete checkpoints
 
 Active-store capacity/TTL retirement removes only its selected owned files and
@@ -444,8 +485,60 @@ validates the durable record without rotating it.
 See [routing evidence lifecycle](cache-aware-routing.md) and
 [eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
-A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
-one per file. A remote donor writes them only on evidence of demand: the
+A natural `stop`/`length` donor exports its actual complete prompt checkpoints.
+Historical-attention endpoints (Gemma 4, GPT-OSS) use an encrypted complete
+manifest with links to immutable encrypted KV pages. Each endpoint owns its
+links under `<tag>.pages/`, so retiring an older checkpoint does not invalidate
+its descendants. Other complete layouts, MiMo, missing submission identities,
+and page graphs exceeding the bounded envelope keep the independent full-file
+representation (`SSDSharedCheckpointPages.eligible`). Both representations
+restore the same complete native state.
+
+`SSDCheckpointPageGeometry.pages` splits each KV head independently at
+1,024-token boundaries. Extending `[1, H, T, D]` changes the flattened stride
+between heads; head-local pages preserve the common full-attention prefix for
+all heads. Page IDs bind a random store execution namespace, the submission
+receipt, authenticated scope, verified storage identity, tensor/absolute-token
+coordinate, and a digest of the incoming native bytes. Page names use the
+existing derived `K_lookup` with a separate page domain; they do not use the
+wrapping KEK directly. Sharing never combines
+independent executions. The final destination of every reused link is fully
+authenticated; source-path replacement cannot substitute a different page.
+Newly encoded pages are authenticated too, and all page file identities are
+rechecked around manifest publication. Windows share only equal absolute token ranges
+and equal bytes: Gemma's 1,024-token windows and GPT-OSS's 128-token windows at
+checkpoints 1,024 tokens apart do not overlap.
+
+With `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION=lz4`, page payloads and reference
+manifests use the authenticated lossless frame codec. KV byte planes use their
+native element width; opaque/unsupported widths use raw byte planes. Each
+actual new encrypted header and chunk is charged before its write, while an
+authenticated link charges no repeated payload. Raw and framed graphs restore
+through the same bounded native manifest and page hash checks
+(`SSDSharedCheckpointPages.write`, `SSDSharedCheckpointPages.read`).
+
+The encrypted endpoint binds every ordered page ID, digest, tensor offset and
+length. Staging authenticates that endpoint and every referenced page, checks
+that the files stayed unchanged throughout the transfer, and finishes only
+after the ordinary native importer accepts all state. Missing, corrupted,
+reordered or incomplete pages produce a cold miss. There are no parent chains.
+The filesystem's hard-link count supplies durable page lifetime; endpoint TTL
+and LRU remove only that endpoint's links. Restart scans recover logical read
+cost separately from unique physical inode bytes; orphan page directories from
+interrupted writes retire under the ordinary generation/entry barriers
+(`SSDCheckpointPageFiles`, `SSDCheckpointPageAccounting`).
+The [storage privacy boundary](security/encryption.md#provider-cache-storage)
+includes observable page-link equality.
+
+Sharing reduces disk retention and new bytes written; native source readback,
+hashing, authenticated-page checks and full native restore remain necessary.
+It does not reduce the active sequence's KV memory. Each endpoint retains its
+complete window. Its ideal full-attention disk footprint is the union of the
+captured prefixes rather than their sum; actual savings include page framing,
+manifest overhead and independently retained windows. The writer keeps the
+existing queue, host-memory, daily-write, disk-space and generation gates.
+
+A remote donor writes them only on evidence of demand: the
 coordinator's `cache_repeated_prefix_tokens` at or above the effective-token
 floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
 `skipped_novel` without touching disk. Older coordinators and local serving

@@ -10,6 +10,9 @@ extension SSDHybridCheckpointStore {
         let incoming = job.source.manifest
         var metadata: SSDBlockMetadata?
         var storedEnvelope: SSDHybridCheckpointEnvelope?
+        var sharedEnvelope: SSDSharedCheckpointPages.Envelope?
+        var sharedBytes: Data?
+        var sharedHeader = false
         statsBox.update { $0.filesRead += 1 }
         try SSDBlockStore.readStreaming(
             from: url, kekKey: kekKey,
@@ -26,12 +29,22 @@ extension SSDHybridCheckpointStore {
                         identity: self.identity, backendLayout: self.config.backendLayout),
                     header.blockSize == PrefixCachePolicy.blockSize,
                     let firstSize = header.chunkPlaintextSizes.first,
-                    firstSize > 0, firstSize <= CBv2CompleteCheckpointManifest.maximumEncodedBytes
+                    firstSize > 0, firstSize <= (header.windowKind == SSDCheckpointPageFiles.manifestKind
+                        ? SSDSharedCheckpointPages.maximumManifestBytes : CBv2CompleteCheckpointManifest.maximumEncodedBytes)
                 else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
                 metadata = header
+                sharedHeader = header.windowKind == SSDCheckpointPageFiles.manifestKind
             }, consumeChunk: { index, bytes in
                 if index == 0 {
-                    let stored = try SSDHybridCheckpointEnvelope.decodeManifest(bytes)
+                    let stored: CBv2CompleteCheckpointManifest
+                    if sharedHeader {
+                        let envelope = try SSDSharedCheckpointPages.Envelope.decode(bytes)
+                        sharedEnvelope = envelope
+                        sharedBytes = bytes
+                        stored = envelope.manifest
+                    } else {
+                        stored = try SSDHybridCheckpointEnvelope.decodeManifest(bytes)
+                    }
                     guard stored.identity == incoming.identity,
                         stored.backendLayout == incoming.backendLayout,
                         stored.position == incoming.position,
@@ -42,6 +55,14 @@ extension SSDHybridCheckpointStore {
                         stored.attentionLayers == incoming.attentionLayers,
                         let metadata
                     else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
+                    if sharedHeader {
+                        guard metadata == SSDSharedCheckpointPages.manifestMetadata(bytes: bytes.count,
+                            tag: job.tag, identity: self.identity, layout: self.config.backendLayout,
+                            createdAt: metadata.createdAt, chunkCodec: metadata.chunkCodec) else {
+                            throw CBv2CompleteCheckpointError.incompatibleCheckpoint
+                        }
+                        return
+                    }
                     let envelope = try SSDHybridCheckpointEnvelope(
                         manifest: stored, maximumPlaintextBytes: self.config.maxReadBytes)
                     guard bytes == envelope.manifestBytes,
@@ -58,7 +79,15 @@ extension SSDHybridCheckpointStore {
             })
         // readStreaming authenticates every declared segment and requires EOF;
         // an authenticated manifest alone is not durable checkpoint evidence.
-        guard storedEnvelope != nil else { throw CBv2CompleteCheckpointError.incompleteTransfer }
+        if let sharedEnvelope, let sharedBytes {
+            try SSDSharedCheckpointPages.read(envelope: sharedEnvelope, encoded: sharedBytes,
+                checkpoint: url, tag: job.tag, key: kekKey, maximumPlaintextBytes: config.maxReadBytes,
+                check: { try self.checkWrite(job) }, countRead: { count in
+                    self.statsBox.update { $0.bytesRead += count; $0.donationReadBytes += count }
+                }, consume: { _, _ in })
+        } else if storedEnvelope == nil {
+            throw CBv2CompleteCheckpointError.incompleteTransfer
+        }
         try checkWrite(job)
     }
 }

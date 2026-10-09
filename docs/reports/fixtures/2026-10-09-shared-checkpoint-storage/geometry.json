@@ -1,0 +1,86 @@
+[
+  {
+    "baseline" : {
+      "bytesWritten" : 1656950649,
+      "deepestRestoreReadBytes" : 881033356,
+      "donationReadBytes" : 0,
+      "endpointLogicalBytes" : [
+        230704804,
+        545325147,
+        880920698
+      ],
+      "endpointTensorBytes" : [
+        230686720,
+        545259520,
+        880803840
+      ],
+      "retainedBytes" : 1656950649
+    },
+    "configSHA256" : "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa",
+    "dtypeScenario" : "BF16 throughout, matching cached Gemma config; synthetic values",
+    "modelID" : "gemma-4-26b-qat-4bit",
+    "positions" : [
+      1024,
+      16384,
+      32768
+    ],
+    "shared" : {
+      "bytesWritten" : 1301904242,
+      "deepestRestoreReadBytes" : 882014912,
+      "donationReadBytes" : 1658038240,
+      "endpointLogicalBytes" : [
+        231027441,
+        545877105,
+        881716816
+      ],
+      "endpointTensorBytes" : [
+        230686720,
+        545259520,
+        880803840
+      ],
+      "retainedBytes" : 1301904242
+    }
+  },
+  {
+    "baseline" : {
+      "bytesWritten" : 2485344236,
+      "deepestRestoreReadBytes" : 1617161874,
+      "donationReadBytes" : 0,
+      "endpointLogicalBytes" : [
+        56637913,
+        811669210,
+        1617037113
+      ],
+      "endpointTensorBytes" : [
+        56623104,
+        811597824,
+        1616904192
+      ],
+      "retainedBytes" : 2485344236
+    },
+    "configSHA256" : "d1c1f73bf62116ed0bb37c068af80534543cd1de9b61d609fc01bf70920e842d",
+    "dtypeScenario" : "uniform FP32 storage scenario; not a fresh runtime dtype measurement",
+    "modelID" : "gpt-oss-20b",
+    "positions" : [
+      1024,
+      16384,
+      32768
+    ],
+    "shared" : {
+      "bytesWritten" : 1635528887,
+      "deepestRestoreReadBytes" : 1623273006,
+      "donationReadBytes" : 2491014528,
+      "endpointLogicalBytes" : [
+        56932714,
+        814202422,
+        1621957527
+      ],
+      "endpointTensorBytes" : [
+        56623104,
+        811597824,
+        1616904192
+      ],
+      "retainedBytes" : 1635528887
+    }
+  }
+]

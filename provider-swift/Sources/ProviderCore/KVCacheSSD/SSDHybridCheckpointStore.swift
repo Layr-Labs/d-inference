@@ -27,6 +27,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         // Monotonic, stage-local deadline clock. Default preserves first-attempt
         // timing; injected clocks keep retry boundary tests deterministic.
         var stageNow: @Sendable () -> ContinuousClock.Instant = { .now }
+        var utilityRetentionEnabled = false
     }
 
     public let identity: CBv2CompleteCheckpointIdentity
@@ -37,6 +38,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     let kvBudget: GlobalKVCacheBudget?
     let diskBudget: SSDDiskBudget
     let rateLimiter: SSDWriteRateLimiter
+    let sharedPages = SSDSharedCheckpointPages()
+    let sharedPageAccounting = SSDCheckpointPageAccounting()
     let writeDemand: SSDCheckpointDemand
     /// Coordinator repeat-demand hints for in-flight receipts; see
     /// `SSDHybridCheckpointStore+DemandAdmission.swift`.
@@ -65,7 +68,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var reading: [CBv2RequestID: SSDCheckpointFileCoordinator.Access] = [:]
     var writing: Set<Data> = []
     var readyReceipts: [CBv2RequestID: ReadyReceipt] = [:]
-    var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
+    var authenticatedReceipts: [CBv2RequestID: (
+        epoch: String?, files: [Data: SSDAuthenticatedFileIdentity], retentionID: UUID, generation: UUID
+    )] = [:]
     var pipeline: BoundedSingleConsumerPipeline<WriteJob>!
 
     // Pauses the real durable writer at the rename/duplicate-validation boundary.
@@ -234,7 +239,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         var result = statsBox.snapshot()
         let usage = index.usageSnapshot()
         result.entries = usage.entries
-        result.bytesOnDisk = usage.bytes
+        result.bytesOnDisk = sharedPageAccounting.diskBytes(indexedBytes: usage.bytes)
         return result
     }
 

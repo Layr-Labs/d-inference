@@ -37,6 +37,10 @@ public struct SSDHybridCheckpointStats: Sendable {
     public var writeMilliseconds = 0.0
     /// Cumulative pre-submit stage wall time, including refused attempts.
     public var stageMilliseconds = 0.0
+    /// Qualified successful snapshot adoptions credited by the optional policy.
+    /// Local diagnostics only; these fields are not added to heartbeat schemas.
+    public var retentionAdoptions = 0
+    public var retentionSavedMillis = 0.0
 }
 
 final class SSDHybridCheckpointStatsBox: @unchecked Sendable {

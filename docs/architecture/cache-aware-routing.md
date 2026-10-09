@@ -1069,7 +1069,14 @@ Providers advertise SSD capability only after scan readiness under the
 complete-checkpoint contract (`SSDHybridCheckpointStore+Maintenance.swift`,
 `ready_boundary_mode="checkpoint"`). Actual checkpoint anchors are emitted only
 after durable commit and donor/export retirement, and only when the coordinator
-echoes that mode. Resident
+echoes that mode. Historical complete checkpoints may share immutable encrypted
+pages within one submission execution. Each endpoint owns all of its links;
+removing another endpoint cannot weaken READY. A stage authenticates the complete
+reference graph before native finish. The holder's stage estimate uses all logical
+read bytes, while local disk enforcement counts unique physical page inodes.
+A missing or corrupted page invalidates only that endpoint through the existing
+cold-miss path (`SSDSharedCheckpointPages`, `SSDCheckpointPageAccounting`).
+Resident
 capability is advertised only for an actually constructed hybrid checkpoint
 bank with verified model identity and prompt contract; local paged L1 currently
 has no publication callback and does not advertise resident routing evidence.
@@ -1239,3 +1246,20 @@ write produces no ready endpoint. The store authenticates and restores complete
 native state before issuing existing evidence. See the
 [SSD cache reference](../reference/ssd-kv-cache.md#dbk3-file-format) for codec
 framing and physical write charging.
+
+Provider-local complete-checkpoint capacity eviction has an independent,
+opt-in [measured retention policy](prefix-cache.md#measured-complete-checkpoint-retention).
+Its volatile utility scores do not enter holder proofs, routing discounts or
+heartbeat schemas. An evicted holder still produces the ordinary miss path.
+
+
+### Native storage composition boundary
+
+Shared native historical checkpoints can use the optional lossless stream codec
+and measured retention together. Logical transfer/native admission remains
+separate from unique retained and marginal reclaimable disk bytes. Actual
+framed writes are charged once; linked payloads are uncharged. Complete graph
+and indexed-generation validation still precede adoption benefit credit.
+The affine INT4 opaque-role checkpoint layout does not provide authenticated
+stable token-page topology to this sharing layer, so native sharing receipts
+cannot establish combined INT4 deduplication savings.

@@ -19,15 +19,7 @@ enum ContentInventoryCommand {
     /// Returns the exit status: 0 when the artifact reproduces the registered
     /// pin or the model has none yet, 3 when it differs from the pin.
     static func run(_ arguments: [String]) throws -> Int32 {
-        var fields: [String: String] = [:]
-        guard arguments.count % 2 == 0 else { throw StageLoadCheck.Failure("Expected --name value pairs") }
-        for index in stride(from: 0, to: arguments.count, by: 2) {
-            guard ["--model-dir", "--output", "--swift-output", "--deadline-seconds"].contains(arguments[index]),
-                  fields[arguments[index]] == nil else {
-                throw StageLoadCheck.Failure("Unknown or repeated argument \(arguments[index])")
-            }
-            fields[arguments[index]] = arguments[index + 1]
-        }
+        let fields = try StageCheckArguments.parse(arguments, allowed: ["--model-dir", "--output", "--swift-output", "--deadline-seconds"])
         guard let model = fields["--model-dir"], model.hasPrefix("/"),
               let output = fields["--output"], output.hasPrefix("/"),
               fields["--swift-output"]?.hasPrefix("/") ?? true,

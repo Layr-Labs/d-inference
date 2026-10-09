@@ -12,20 +12,15 @@ import Foundation
 @main enum StageLoadCheck {
     static func main() {
         do {
-            // A leading `content-inventory` selects that mode: no rank, no cut, no model.
+            // A leading mode name selects that mode; the stage load check itself has none.
             if CommandLine.arguments.dropFirst().first == ContentInventoryCommand.name {
                 Darwin.exit(try ContentInventoryCommand.run(Array(CommandLine.arguments.dropFirst(2))))
             }
-            var fields: [String: String] = [:]
-            let arguments = Array(CommandLine.arguments.dropFirst())
-            guard arguments.count % 2 == 0 else { throw Failure("Expected --name value pairs") }
-            for index in stride(from: 0, to: arguments.count, by: 2) {
-                guard ["--model-dir", "--rank", "--stage-cut", "--deadline-seconds", "--hold-seconds"].contains(arguments[index]),
-                      fields[arguments[index]] == nil else {
-                    throw Failure("Unknown or repeated argument \(arguments[index])")
-                }
-                fields[arguments[index]] = arguments[index + 1]
+            if CommandLine.arguments.dropFirst().first == TransferCommand.name {
+                Darwin.exit(try TransferCommand.run(Array(CommandLine.arguments.dropFirst(2))))
             }
+            let fields = try StageCheckArguments.parse(Array(CommandLine.arguments.dropFirst()),
+                allowed: ["--model-dir", "--rank", "--stage-cut", "--deadline-seconds", "--hold-seconds"])
             guard let path = fields["--model-dir"], path.hasPrefix("/"),
                   let rank = fields["--rank"].flatMap(Int.init), (0...1).contains(rank),
                   let cut = fields["--stage-cut"].flatMap(Int.init),

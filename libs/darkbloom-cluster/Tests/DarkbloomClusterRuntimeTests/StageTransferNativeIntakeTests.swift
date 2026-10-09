@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import MLX
+import MLXNN
 import Testing
 @testable import DarkbloomClusterRuntime
 
@@ -292,5 +293,15 @@ struct StageTransferNativeIntakeTests {
         // The local source reads when it is asked, so it leaves the gate object itself alone.
         #expect(asked == ["model.embed.weight", "model.embed.weight"] && gate.asked.isEmpty && gate.observed == 0)
         try payload.finish()
+    }
+
+    @Test func theParameterDigestCoversNamesShapesAndBytes() throws {
+        let weight = MLXArray((0..<8).map { Float($0) }, [2, 4]), bias = MLXArray([Float(1), 2])
+        let same = qwenStageParameterDigest(Linear(weight: weight, bias: bias))
+        #expect(same == qwenStageParameterDigest(Linear(weight: MLXArray((0..<8).map { Float($0) }, [2, 4]), bias: MLXArray([Float(1), 2]))))
+        #expect(same != qwenStageParameterDigest(Linear(weight: weight, bias: MLXArray([Float(1), 3]))))
+        #expect(same != qwenStageParameterDigest(Linear(weight: weight.reshaped([4, 2]), bias: bias)))
+        #expect(same != qwenStageParameterDigest(Linear(weight: weight, bias: nil)))
+        #expect(same.count == 64)
     }
 }

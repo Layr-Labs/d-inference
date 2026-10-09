@@ -4310,7 +4310,9 @@ After the optimized provider is packaged with its resources, run
 (the child validates retained latches that MLX reads at its first Metal touch,
 so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
-`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
+`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. The first line is
+`build-environment-runtime-smoke: <prod|dev> coordinator=<url> cdn=<url>`. The release workflow
+requires `<prod|dev>` to match the release environment. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches
 a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.

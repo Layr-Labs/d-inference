@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — provider build environment
+
+- A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.
+- The LaunchAgent now forwards `DARKBLOOM_R2_CDN_URL` to the daemon. `darkbloom doctor` prints the build environment, the coordinator and the model CDN. `runtime-smoke` prints a `build-environment-runtime-smoke` line first.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.
@@ -252,6 +257,7 @@ separate approvals; see the [candidate rollout checks](docs/operations/provider-
 
 ## Unreleased — DevNet
 
+- The dev coordinator host is now `api.dev.darkbloom.dev`. The old dev host `api.dev.darkbloom.xyz` is retired. The provider does not accept an MDM server on `darkbloom.xyz` as a Darkbloom MDM server, and `deploy/provider-fleet/update-fleet.sh dev` uses the new host.
 - An installer served by a coordinator other than production (for example dev) now writes that coordinator's `[coordinator] url` into `~/.config/darkbloom/provider.toml` and keeps the file's other settings, so `darkbloom start`, `login`, `update`, the LaunchAgent and the watchdog connect to it instead of production. The production installer removes that `url` line (and creates no file), so a Mac bound to dev returns to the production default. A running provider changes coordinator at its next `darkbloom start`.
 - Add `coordinator/cmd/devnet-seed`, which fills an empty dev database with fake accounts, API keys, provider sessions, usage, ledger entries and balances. It refuses a database whose `users` table has rows.
 - The dev VM boot path now sets `EIGENINFERENCE_IPAPI_KEY`, as `deploy/gcp/refresh-env.sh` already did.

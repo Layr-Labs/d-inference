@@ -16,6 +16,7 @@ struct BenchmarkOptions: Sendable {
     let concurrency: Int
     let kvBudgetBytes: Int
     let nativeKVProbeOnly: Bool
+    let promptAuditOnly: Bool
     let productionKVGrant: Bool
     let assistantDirectory: URL?
     let gemmaMTPVerification: String?
@@ -33,6 +34,7 @@ struct BenchmarkOptions: Sendable {
         var mtpAcceptance = "exact"
         var kvBudgetGiB = 16
         var nativeKVProbeOnly = false
+        var promptAuditOnly = false
         var productionKVGrant = false
         var assistantDirectory: URL?
         var gemmaMTPVerification: String?
@@ -49,8 +51,9 @@ struct BenchmarkOptions: Sendable {
         var index = positional.count
         while index < arguments.count {
             let flag = arguments[index]
-            if ["--native-kv-probe-only", "--production-kv-grant"].contains(flag), seen.insert(flag).inserted {
+            if ["--native-kv-probe-only", "--prompt-audit-only", "--production-kv-grant"].contains(flag), seen.insert(flag).inserted {
                 if flag == "--native-kv-probe-only" { nativeKVProbeOnly = true }
+                else if flag == "--prompt-audit-only" { promptAuditOnly = true }
                 else { productionKVGrant = true }
                 index += 1
                 continue
@@ -120,7 +123,7 @@ struct BenchmarkOptions: Sendable {
             arguments.count < 9 || ["persistent-key", "ephemeral-key"].contains(arguments[8])
         else {
             throw RadixBenchmark.Failure.message(
-                "usage: radix-engine MODEL_DIRECTORY HTTP_REPORT_JSON OUTPUT_JSON cache-on|cache-off [mtp-on|mtp-off] [auto|paged|contiguous] [ssd|resident] [persistent-key|ephemeral-key] [--mtp-acceptance exact|typical] [--concurrency 1|2|4] [--kv-budget-gib 1...128 | --production-kv-grant] [--assistant-directory DIRECTORY] [--expected-model-sha256 SHA256] [--native-kv-probe-only] [--persistent-test-namespace UUID --persistent-test-access-group GROUP] [--generation-comparison-policy strict|record]")
+                "usage: radix-engine MODEL_DIRECTORY HTTP_REPORT_JSON OUTPUT_JSON cache-on|cache-off [mtp-on|mtp-off] [auto|paged|contiguous] [ssd|resident] [persistent-key|ephemeral-key] [--mtp-acceptance exact|typical] [--concurrency 1|2|4] [--kv-budget-gib 1...128 | --production-kv-grant] [--assistant-directory DIRECTORY] [--expected-model-sha256 SHA256] [--native-kv-probe-only | --prompt-audit-only] [--persistent-test-namespace UUID --persistent-test-access-group GROUP] [--generation-comparison-policy strict|record]")
         }
         modelDirectory = URL(fileURLWithPath: arguments[1])
         inputURL = URL(fileURLWithPath: arguments[2])
@@ -140,6 +143,10 @@ struct BenchmarkOptions: Sendable {
         self.concurrency = concurrency
         kvBudgetBytes = kvBudgetGiB * 1_073_741_824
         self.nativeKVProbeOnly = nativeKVProbeOnly
+        self.promptAuditOnly = promptAuditOnly
+        guard !promptAuditOnly || (!nativeKVProbeOnly && !mtpEnabled && concurrency == 1 && !cacheEnabled) else {
+            throw RadixBenchmark.Failure.message("prompt audit requires a singleton cache-off/MTP-off input and excludes native KV probes")
+        }
         self.productionKVGrant = productionKVGrant
         guard !productionKVGrant || (cacheMode == "ssd" && !nativeKVProbeOnly && !seen.contains("--kv-budget-gib")) else {
             throw RadixBenchmark.Failure.message("production grant requires the serving SSD path and excludes explicit KV/probe-only options")

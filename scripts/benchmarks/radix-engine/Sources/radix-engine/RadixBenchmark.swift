@@ -41,6 +41,7 @@ struct Input: Sendable {
     let maxTokens: Int
     var promptRenderDate: String? = nil
     var sampling = CBv2SamplingParams(temperature: 0)
+    var instructionPrefixTokens: Int? = nil
 }
 
 // Model ownership moves out of ModelContainer once; one engine serves
@@ -80,6 +81,14 @@ enum RadixBenchmark {
         guard let modelID = report.rows.first?.request.model,
               report.rows.allSatisfy({ $0.request.model == modelID }),
               !report.rows.isEmpty else { throw Failure.message("invalid/empty report") }
+        if options.promptAuditOnly {
+            #if RADIX_CANDIDATE
+            try await BenchmarkPromptAudit.run(options: options, report: report, inputSHA256: inputSHA256)
+            return
+            #else
+            throw Failure.message("native prompt auditing requires the candidate artifact")
+            #endif
+        }
         if options.nativeKVProbeOnly {
             #if RADIX_CANDIDATE
             try await BenchmarkNativeKVProbe.run(options: options, modelID: modelID)

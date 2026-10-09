@@ -249,6 +249,9 @@ The [revision runbook](../operations/model-revisions.md) describes its invocatio
 The optional selective-KV experiment uses the ordinary provider build and the
 same pinned SDK/metallib. No alternate binary or dependency set is needed; see
 [the selective-KV validation commands](test.md#selective-kv-working-set-checks).
+The separate instruction-prefix candidate adds `radix-engine --prompt-audit-only`
+to render and inspect native headers on CPU without loading weights or binding
+Metal. GPU evaluation uses the same source-matched normal build afterward.
 
 ## Bedrock review workflow
 

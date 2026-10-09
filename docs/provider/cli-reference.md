@@ -472,6 +472,11 @@ history. It disables prefix reuse, retains conservative admission and is refused
 by serving construction. The ordinary token-score JSON includes the mode and
 logical compaction counters; these are not physical memory measurements or
 quality certification. Unset the variable for the native dense control.
+The separate `instruction-half` value permits only GPT-OSS benchmarks and
+protects the first 128 tokens under the same restrictions. Its report also
+records `selectiveKVProtectedPrefixTokens`; the radix generation harness first
+verifies that the actual structured header fits the fixed protected prefix.
+See the [preregistered qualification](../reports/2026-10-09-instruction-prefix-retention.md).
 
 ### `darkbloom update`
 

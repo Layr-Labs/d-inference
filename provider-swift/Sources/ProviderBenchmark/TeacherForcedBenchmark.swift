@@ -37,6 +37,7 @@ public enum TeacherForcedBenchmark {
         let resolvedBackend: String
         /// Explicitly distinguish lossy working-set experiments from dense controls.
         let selectiveKVMode: String
+        let selectiveKVProtectedPrefixTokens: Int?
         let selectiveKVStatistics: CBv2SelectiveKVStatistics?
         let peakMLXMemoryBytes: Int
         let finalMemory: ProcessMemoryTelemetry?
@@ -158,7 +159,10 @@ public enum TeacherForcedBenchmark {
                 verifiedModelAggregateSHA256: verified, executableSHA256: executable,
                 metallibSHA256: metallib, modelDirectory: modelDirectory.path,
                 resolvedBackend: session.backend,
-                selectiveKVMode: engine.selectiveKVStatistics() == nil ? "0" : "half",
+                selectiveKVMode: engine.selectiveKVPolicy().map {
+                    $0.protectedPrefixTokens == 0 ? "half" : "instruction-half"
+                } ?? "0",
+                selectiveKVProtectedPrefixTokens: engine.selectiveKVPolicy()?.protectedPrefixTokens,
                 selectiveKVStatistics: engine.selectiveKVStatistics(),
                 peakMLXMemoryBytes: Memory.peakMemory, finalMemory: await session.memorySnapshot(),
                 kvCapacityBytes: cache.engineKVCapacityBytes,

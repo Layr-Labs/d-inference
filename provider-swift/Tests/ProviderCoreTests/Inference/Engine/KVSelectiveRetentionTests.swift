@@ -233,6 +233,15 @@ struct KVSelectiveRetentionTests {
         let policy = try EngineV2Factory.selectiveKVPolicy(model: model, purpose: .benchmark,
                                                           backend: .contiguous, environment: environment)
         #expect(policy?.olderHistoryFraction == 0.5)
+        #expect(policy?.protectedPrefixTokens == 0)
+        let candidate = try EngineV2Factory.selectiveKVPolicy(model: model, purpose: .benchmark,
+            backend: .contiguous, environment: [EngineV2Factory.selectiveKVEnvKey: "instruction-half"])
+        #expect(candidate?.protectedPrefixTokens == 128)
+        #expect(candidate?.anchorTokens == 4 && candidate?.recentTokens == 512)
+        #expect(throws: (any Error).self) {
+            try EngineV2Factory.selectiveKVPolicy(model: model, purpose: .serving,
+                backend: .contiguous, environment: [EngineV2Factory.selectiveKVEnvKey: "instruction-half"])
+        }
         #expect(throws: (any Error).self) {
             try EngineV2Factory.selectiveKVPolicy(model: model, purpose: .serving,
                                                   backend: .contiguous, environment: environment)

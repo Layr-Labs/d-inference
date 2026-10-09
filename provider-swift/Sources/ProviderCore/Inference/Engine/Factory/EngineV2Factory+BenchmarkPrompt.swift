@@ -8,6 +8,9 @@ extension EngineV2Factory {
         public let tokens: [Int]
         public let renderDate: String
         public let sampling: CBv2SamplingParams
+        /// Verified header boundary before the first user content, when the
+        /// model's normalized template provides a supported structural audit.
+        public let instructionPrefixTokens: Int?
     }
 
     /// Preserve request-owned date and the HTTP body's production normalization.
@@ -40,10 +43,15 @@ extension EngineV2Factory {
         guard sampling.temperature == 0 || !prepared.requiresToolCall else {
             throw BenchmarkPromptError.outputControlsRequireHTTP
         }
-        let tokens = try ProviderPromptContractPipeline.tokenize(
-            prepared: prepared, request: request, tokenizer: tokenizer,
+        let normalized = try ProviderPromptContractPipeline.normalizedInput(
+            prepared: prepared, request: request,
             modelType: modelType, templateControls: controls)
-        return BenchmarkPrompt(tokens: tokens, renderDate: controls.promptDate!.value, sampling: sampling)
+        let tokens = try tokenizer.applyChatTemplate(messages: normalized.messages,
+            tools: normalized.tools, additionalContext: normalized.additionalContext)
+        let prefix = BenchmarkInstructionPrefix.count(input: normalized, fullTokens: tokens,
+            tokenizer: tokenizer, modelType: modelType)
+        return BenchmarkPrompt(tokens: tokens, renderDate: controls.promptDate!.value,
+                               sampling: sampling, instructionPrefixTokens: prefix)
     }
 
     @_spi(Benchmarking)

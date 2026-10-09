@@ -105,6 +105,7 @@ extension RadixBenchmark {
             : await BenchmarkMetrics.snapshot(loaded)
         var row: [String: Any] = ["id": input.name, "kind": input.kind, "scope": scope, "outcome": outcome,
                 "prompt_render_date": input.promptRenderDate as Any? ?? NSNull(),
+                "instruction_prefix_tokens": input.instructionPrefixTokens as Any? ?? NSNull(),
                 "sampling": BenchmarkSampling.record(input.sampling),
                 "prompt_token_ids": input.tokens, "token_ids": tokens,
                 "text": loaded.tokenizer.decode(tokenIds: tokens), "finish": finish,

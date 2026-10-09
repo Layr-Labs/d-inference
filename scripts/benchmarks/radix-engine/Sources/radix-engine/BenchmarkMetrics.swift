@@ -136,8 +136,11 @@ enum BenchmarkMetrics {
         }
         #if RADIX_CANDIDATE
         if let stats = engine.selectiveKVStatistics() {
+            let protectedPrefix = engine.selectiveKVPolicy()?.protectedPrefixTokens ?? 0
             result["selective_kv"] = [
-                "mode": "half", "sequence_layers": stats.sequenceLayers,
+                "mode": protectedPrefix == 0 ? "half" : "instruction-half",
+                "protected_prefix_tokens": protectedPrefix,
+                "sequence_layers": stats.sequenceLayers,
                 "pruning_events": stats.pruningEvents,
                 "token_entries_removed": stats.tokenEntriesRemoved,
                 "last_prune_source_storage_bytes": stats.lastPruneSourceStorageBytes,

@@ -33,6 +33,7 @@ task_catalog=(
   Models/Qwen/Metadata/QwenLayerStageMetadata
   Models/Qwen/Metadata/QwenRoutedExpertStageMetadata
   Models/Qwen/Metadata/QwenLayerStagePlan
+  Models/Qwen/Prism/QwenPrismStageConfiguration
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
   Models/Qwen/Metadata/QwenDenseProfileTypes
   Models/Qwen/Metadata/QwenDenseRegisteredSpecification

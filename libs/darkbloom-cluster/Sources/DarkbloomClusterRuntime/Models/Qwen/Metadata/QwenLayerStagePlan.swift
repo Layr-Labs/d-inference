@@ -50,13 +50,16 @@ struct QwenLayerStagePlan {
     private let namespace: String
     private let quantizablePaths: Set<String>
     private let requiredParameterNames: Set<String>
+    /// Modules whose transform signs a Prism pack stores beside them; empty
+    /// for every other configuration.
+    private let signedPaths: Set<String>
 
     init(configuration: Data, ranges: [Range<Int>], activeMTP: Bool = false) throws {
         guard !activeMTP, configuration.count <= 1_048_576,
             var root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any]
         else { throw ProbeError("Layer stages require bounded configuration and disabled active MTP") }
         let nested = root["text_config"] != nil
-        let wrappers = QwenRoutedExpertStageMetadata.wrapperModelTypes
+        let wrappers = QwenRoutedExpertStageMetadata.wrapperModelTypes + [QwenPrismStageConfiguration.rootModelType]
         guard let type = root["model_type"] as? String,
             (wrappers + ["qwen3_5_text"]).contains(type), !nested || wrappers.contains(type),
             !nested || root["text_config"] is [String: Any] else {
@@ -83,9 +86,12 @@ struct QwenLayerStagePlan {
         let namespace = wrappers.contains(type) ? "language_model." : ""
         // A routed-expert Plan is the routed-expert adapter's, and says so.
         let routed = type == QwenRoutedExpertStageMetadata.rootModelType
+        // A Prism pack's own declaration, or nil. Its Plans say whose they are too.
+        let prism = try QwenPrismStageConfiguration.admit(root: root, nested: nested)
         let inventory = QwenStageMetadata.moduleInventory(namespace: namespace, layerTypes: expectedTypes, text: text)
         let policy = try QwenStageMetadata.policy(root: root, modules: inventory.modules,
             inputWidths: inventory.inputWidths, namespace: namespace)
+        try prism?.requireModules(quantizable: Set(inventory.inputWidths.keys), namespace: namespace)
         let embedding = namespace + "model.embed_tokens"
         let norm = namespace + "model.norm", head = namespace + "lm_head"
         // Setting zero removes attachment regardless of the process-global MTP flag.
@@ -125,9 +131,11 @@ struct QwenLayerStagePlan {
             var stageRoot = root
             if nested { stageRoot["text_config"] = stageText } else { stageRoot = stageText }
             for key in policy.containerKeys { stageRoot[key] = mappedPolicy }
+            if let prism { stageRoot = prism.stageRoot(stageRoot, range: range, index: index) }
             let data = try QwenStageMetadata.json(stageRoot)
             let identity: [String: Any] = [
-                "adapter": routed ? QwenRoutedExpertStageMetadata.stageAdapter : "qwen35-dense-layer-stage-v1",
+                "adapter": prism != nil ? QwenPrismStageConfiguration.stageAdapter
+                    : routed ? QwenRoutedExpertStageMetadata.stageAdapter : "qwen35-dense-layer-stage-v1",
                 "sourceConfigurationSHA256": sha256(configuration), "stage": index,
                 "sourceLayerStart": range.lowerBound, "sourceLayerEnd": range.upperBound,
                 "constructionConfigurationSHA256": sha256(data), "activeModuleRoots": active.sorted(),
@@ -141,9 +149,14 @@ struct QwenLayerStagePlan {
         self.originalConfiguration = configuration
         self.layers = layers; self.interval = interval; self.stages = stages
         self.namespace = namespace
-        self.quantizablePaths = Set(inventory.inputWidths.keys); self.requiredParameterNames = inventory.required
+        let signed = prism?.packedPaths(namespace: namespace) ?? []
+        self.signedPaths = signed
+        // Only what a Prism pack declares packed may carry scales and biases.
+        self.quantizablePaths = prism == nil ? Set(inventory.inputWidths.keys) : signed
+        self.requiredParameterNames = inventory.required
         self.fingerprint = sha256(try QwenStageMetadata.json([
-            "adapter": routed ? QwenRoutedExpertStageMetadata.planAdapter : "qwen35-dense-two-layer-stages-v1",
+            "adapter": prism != nil ? QwenPrismStageConfiguration.planAdapter
+                : routed ? QwenRoutedExpertStageMetadata.planAdapter : "qwen35-dense-two-layer-stages-v1",
             "sourceConfigurationSHA256": sha256(configuration),
             "stages": stages.map(\.fingerprint)]))
     }
@@ -154,6 +167,11 @@ struct QwenLayerStagePlan {
     func parameter(canonicalSourceName name: String) throws -> Parameter? {
         if QwenStageMetadata.excluded(name, namespace: namespace) { return nil }
         let pieces = name.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        // A Prism pack stores each packed module's transform signs beside it.
+        // They are transform metadata the loader checks against the artifact's
+        // own transform file; they are never a parameter of any stage.
+        if pieces.last == QwenPrismStageConfiguration.signsSuffix,
+            signedPaths.contains(pieces.dropLast().joined(separator: ".")) { return nil }
         guard let suffix = pieces.last, !pieces.contains(""),
             requiredParameterNames.contains(name)
                 || (["scales", "biases"].contains(suffix)

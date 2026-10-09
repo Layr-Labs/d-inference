@@ -11,6 +11,16 @@ struct QwenStageSourceTensor: Codable {
     let sourceDType: String
     let loadedDType: String
     let byteCount: Int
+    /// Where the second stored half of a tensor composed of two is. Absent,
+    /// and absent from the encoded record, for a tensor stored as one.
+    var secondPart: QwenStageSourcePart? = nil
+}
+
+/// One further stored tensor a canonical tensor is composed from.
+struct QwenStageSourcePart: Codable {
+    let canonicalPartName: String
+    let file: String
+    let offset: Int
 }
 
 struct QwenStageActiveTensor: Codable {

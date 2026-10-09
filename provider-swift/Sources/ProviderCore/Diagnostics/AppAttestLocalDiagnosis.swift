@@ -76,8 +76,8 @@ public enum AppAttestLocalDiagnosis {
         }
         if let until = key.generationBlockedUntil, until > now {
             return Diagnostic(section: .appAttest, name: "app attest key", level: .warn,
-                              message: "no usable key; a replacement can be generated in \(duration(until - now)) (Apple key-generation cooldown).",
-                              fix: "no action needed; the coordinator retries automatically. Do not delete Keychain items.")
+                              message: "no usable key; the local key-generation safeguard clears in \(duration(until - now)); the coordinator may retry later.",
+                              fix: "the coordinator schedules retries automatically. Do not delete Keychain items.")
         }
         return Diagnostic(section: .appAttest, name: "app attest key", level: .pass,
                           message: "no key yet; one is generated on the next coordinator App Attest exchange.")

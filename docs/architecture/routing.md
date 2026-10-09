@@ -1227,8 +1227,27 @@ configures one, the pair selector
 (`coordinator/registry/native_pair_formation.go`, `RunFormation`) forms a pair
 from two attached members of one account that registered the same cluster,
 the same approved policy and the two ranks, and forms the next session when
-one ends. A formed pair is not yet a routing candidate: members stay excluded
-by `member_only`, and no request is dispatched to a pair.
+one ends.
+
+The same configuration makes a pair a routing candidate, for one audience
+only. A request that is authenticated as the account owning both members and
+scoped to that account's own machines (self-route or prefer-owner) reaches the
+pair through its leader's connection; `routingLocked` then evaluates the
+leader on the pair's own hold, with none of the owner relaxations. For every
+other request both members stay `member_only`, so the pair is neither a
+candidate nor a capacity rejection. Two more gate reasons, both counted as
+transient capacity, cover a pair the request may use but cannot use yet:
+`pair_not_ready` (`GatePairNotReady`: preparing, exchanging keys, loading or
+rotating) and `pair_lifetime` (`GatePairLifetime`: less of the pair's fixed
+300-second lifetime remains than the request is estimated to need). The
+reservation commit binds the attempt to the exact pair, the handoff
+authorization re-checks it, and when the pair ends its reserved requests get
+the health-neutral `provider_restart` terminal
+(`coordinator/registry/pair_routing.go`). The follower is never a candidate.
+Neither member is counted in public model availability, provider counts,
+fleet capacity signals, base rewards or the warm pool, and neither is sent a
+capacity probe; the conditions are tabulated in
+[serving a pair](../reference/cluster-control-protocol.md#serving-a-pair).
 
 ## Related
 

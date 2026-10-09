@@ -276,6 +276,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/summary` | `HandleMySummary` (`coordinator/api/accounts/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `HandleMyProviders` (`coordinator/api/accounts/providers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `HandleMySelfRouteModels` (`coordinator/api/accounts/self_route.go`) | `user` | — | Models the account's own machines can serve |
+| GET | `/v1/me/cluster-pairs` | `HandleMyClusterPairs` (`coordinator/api/accounts/cluster_pairs.go`) | `user` | — | The account's two-Mac clusters and where each stands; see [owner cluster views](#owner-cluster-views) |
 | DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine; requires the [soft-delete mutation gate](soft-delete.md#writers-of-deleted_at). After authentication, record existence and ownership checks, a disabled gate returns 503 `soft_delete_mutations_disabled` without mutation |
 | GET | `/v1/pricing` | `HandleGetPricing` (`coordinator/api/billing/pricing.go`) | `—` | — | Public price table, `types.PricingResponse` `{prices: [{model, input_price, output_price, cache_read_price, input_usd, output_usd, cache_read_usd}], fallback_input_price, fallback_output_price, fallback_cache_read_price, fallback_*_usd}`; `cache_read_price` is the effective rate (derived when the row sets none); see [`pricing-model.md`](pricing-model.md) |
 | PUT | `/v1/pricing` | `HandleSetPricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelprice.Input`, `coordinator/api/modelprice/price.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
@@ -1704,4 +1705,40 @@ Its production counterpart is the pair selector, started by
 not reachable over HTTP either: it pairs two attached member connections of one
 account from what they registered. `Server.ClusterPairs`
 (`registry.NativePairView`) is the in-process listing of registered clusters
-and their state; no route serves it yet.
+and their state; the owner reads its own part of it through the views below.
+
+## Owner cluster views
+
+Both views require a Privy session and report only the caller's account.
+Following the dashboard's rule, neither returns a device serial number or any
+other device identity; a member is named by the `id` of its
+`GET /v1/me/providers` row.
+
+`GET /v1/me/cluster-pairs` (`coordinator/api/accounts/cluster_pairs.go`,
+`HandleMyClusterPairs`; shapes in
+`coordinator/internal/api/accounts/fleetview/cluster_pairs.go`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `enabled` | bool | False while the coordinator has no cluster pair configuration; `pairs` is then empty |
+| `request_scope` | string | `owner_account`: a pair serves only requests from the account that owns both members, sent with `X-Darkbloom-Route: self` or `prefer`, or with a self-route-only key |
+| `lifetime_seconds` | integer | Fixed lifetime of one pair session (300); a cluster re-forms after each |
+| `pairs[].cluster_id`, `policy_sha256` | string | What both members registered |
+| `pairs[].approval_id`, `model` | string | The operator approval that matches the registered policy and the model it serves; omitted while none matches |
+| `pairs[].state` | string | `waiting` (no session), `preparing` (devices held, members preparing), `active` (owners authorized to start) or `reforming` (the last session ended and the next starts when both devices are released) |
+| `pairs[].waiting` | string | Why a waiting or re-forming cluster has no session: `peer_absent`, `no_approval`, `device_held`, `not_eligible`, `retry_backoff` (the last preparation failed) or `member_declined` (a member answered the last preparation by declining it; the provider build on that Mac cannot serve a pair yet); omitted otherwise |
+| `pairs[].serving_ready` | bool | True while a request from this account would be handed to the leader now |
+| `pairs[].epoch`, `prepare_before`, `expires_at` | string, RFC 3339 times | The current session; omitted when there is none |
+| `pairs[].remaining_lifetime_seconds` | integer | Time left in the current session, `0` without one |
+| `pairs[].reform_expected_at` | RFC 3339 time | While `reforming`: the coordinator's estimate of when the next session starts, five seconds after the last one stopped. It is in the past when a member is late reporting cleanup. Serving resumes after the next session's preparation, key exchange and model load |
+| `pairs[].failures`, `declines`, `retry_at` | integer, integer, RFC 3339 time | Consecutive preparations that failed, consecutive preparations a member declined, and the earliest next attempt after either |
+| `pairs[].members` | array of 2 | Leader then follower: `rank`, `role` (`leader` or `follower`), `attached`, and for an attached member `provider_id`, `chip_name`, `memory_gb` |
+
+`GET /v1/me/providers` adds two fields to each machine row
+(`coordinator/internal/api/accounts/fleetview/provider_types.go`,
+`Provider` / `ProviderCluster`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `execution_role` | string | `solo` or `cluster_member` for the machine's current connection; omitted while it is not connected |
+| `cluster` | object | Present for a connected member that registered a cluster: `cluster_id`, `rank`, `role`, `policy_sha256`, and, when the coordinator lists a pair for that cluster, `pair_state`, `waiting`, `serving_ready` and `peer_provider_id` |

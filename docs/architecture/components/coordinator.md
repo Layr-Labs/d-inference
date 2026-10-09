@@ -427,4 +427,11 @@ member needs to attach. `coordinator/registry/native_pair_formation.go` owns
 the pair selector, the production caller of `Reserve`, started by
 `app.startBackgroundLoops` through `Server.StartClusterPairFormation`;
 `native_pair_view.go` owns the listing of registered clusters.
+`coordinator/registry/pair_routing.go` owns everything that lets a request
+reach a pair: the owner-account restriction, the serving and lifetime gates,
+the binding of an attempt to its pair, the failover of a pair's requests when
+it ends, and the rule that a member connection is never counted as a public
+provider. `coordinator/api/accounts/cluster_pairs.go` and
+`coordinator/internal/api/accounts/fleetview/cluster_pairs.go` own the
+owner's views of its clusters.
 See [cluster-control-protocol.md](../../reference/cluster-control-protocol.md).

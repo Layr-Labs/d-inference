@@ -151,7 +151,7 @@ instead of disabling or widening the feature.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_CLUSTER_PAIR_CATALOG` | absolute path to a JSON approval file | unset (off) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/native_pair.go` (`clusterPairCatalog`); `coordinator/registry/native_pair_catalog_file.go` (`ParseNativeRuntimeCatalog`) | The operator's reviewed native-runtime approvals. Enables member attachment and native-pair control, and starts the pair selector (`StartClusterPairFormation`). Only this file can approve a runtime; no provider message can add or change an entry. |
+| `EIGENINFERENCE_CLUSTER_PAIR_CATALOG` | absolute path to a JSON approval file | unset (off) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/native_pair.go` (`clusterPairCatalog`); `coordinator/registry/native_pair_catalog_file.go` (`ParseNativeRuntimeCatalog`) | The operator's reviewed native-runtime approvals. Enables member attachment and native-pair control, starts the pair selector (`StartClusterPairFormation`), and lets a serving pair take its owner's own requests (`Registry.EnableClusterPairRouting`; see [serving a pair](cluster-control-protocol.md#serving-a-pair)). Only this file can approve a runtime; no provider message can add or change an entry. |
 | `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES` | comma-separated IP addresses or CIDR prefixes | unset (trust none) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/provider/member_transport.go` (`ParseTrustedTLSProxies`, `memberTransport`) | Addresses of the operator's TLS-terminating reverse proxy. Requires the catalog. A prefix that would trust every peer (`/0`) and a hostname are refused. See the trade-off below. |
 
 The approval file has schema `darkbloom_cluster_pair_catalog_v1` and an
@@ -167,8 +167,19 @@ fields, trailing data and out-of-bounds values are errors.
 | `schedule` | integer | `1` or `2` |
 | `maximum_plaintext`, `maximum_transport_frame` | integer | plaintext 1 to 16 MiB; frame at least plaintext + 40 |
 | `maximum_records`, `maximum_cumulative_plaintext` | integer | 1 to 1,048,576 records; 1 byte to 4 GiB |
-| `allowed_chips` | list of strings | 1–16 chip names, sorted, unique |
-| `not_after` | RFC 3339 time | approval expiry; a pair is formed only while a full session fits before it |
+| `allowed_chips` | list of strings | 1–16 chip names, sorted by byte, unique. Each is compared byte for byte with a member's registered `hardware.chip_name` (for example `Apple M4 Max`), so it must be that exact string; only printable ASCII is accepted |
+| `not_after` | RFC 3339 instant | approval expiry; a pair is formed only while a full session fits before it. The only accepted form is `YYYY-MM-DDTHH:MM:SS`, an optional fraction of one to nine digits, then `Z` or `±HH:MM`, naming an instant after 1970 that fits in 64-bit nanoseconds |
+
+The file is read as strictly as the provider reads the same entry in its own
+setup, so an entry one side accepts is never refused, or read differently, by
+the other: field names must be spelled exactly and appear once (Go's usual
+case-insensitive matching is not applied), and the `not_after` and
+`allowed_chips` rules above are the provider's
+(`coordinator/registry/native_pair_catalog_file.go`,
+`ParseNativeRuntimeCatalog`; `provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift`).
+Three entries with fixed digests are pinned in both test suites
+(`coordinator/tests/registry/native_pair_catalog_golden_test.go` and the
+provider's `ClusterPairApprovalTests`), so neither encoder can change alone.
 
 Each entry's canonical bytes are what a member compares with its installed
 policy, and their SHA-256 is the `policy_sha256` it registers

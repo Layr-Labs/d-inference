@@ -1,7 +1,9 @@
 // Package clustermember is a fake control-only cluster member for external
 // tests. It speaks the real provider protocol over a real WebSocket: it
-// registers in the member role with a cluster membership, sends heartbeats and
-// exchanges Secure-Enclave-style signed native-pair control frames.
+// registers in the member role with a cluster membership, sends heartbeats,
+// exchanges Secure-Enclave-style signed native-pair control frames and, as a
+// pair's leader, answers an ordinary inference request encrypted to its
+// registered key.
 //
 // It does not obtain trust the way a real Mac does. GrantPairTrust fabricates
 // the hardware, code and release evidence through the registry's public
@@ -25,8 +27,10 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"golang.org/x/crypto/nacl/box"
 	"nhooyr.io/websocket"
 )
 
@@ -58,6 +62,7 @@ type Member struct {
 	Nonce   string
 	// ProcessKey is the registered X25519 public key (base64).
 	ProcessKey string
+	process    e2e.SessionKeys
 	se         *ecdsa.PrivateKey
 	sent       uint64
 }
@@ -65,30 +70,46 @@ type Member struct {
 // Dial opens the provider socket and registers as a cluster member.
 func Dial(t testing.TB, ctx context.Context, options Options) *Member {
 	t.Helper()
+	m := New(t, options)
+	m.Connect(t, ctx)
+	return m
+}
+
+// New creates a member with its keys and nonce but no connection yet, for a
+// test that must know the member's identity before it registers.
+func New(t testing.TB, options Options) *Member {
+	t.Helper()
 	se, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nonce, process := make([]byte, 32), make([]byte, 32)
+	nonce := make([]byte, 32)
 	if _, err = rand.Read(nonce); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = rand.Read(process); err != nil {
+	public, private, err := box.GenerateKey(rand.Reader)
+	if err != nil {
 		t.Fatal(err)
 	}
-	m := &Member{Options: options, Nonce: hex.EncodeToString(nonce),
-		ProcessKey: base64.StdEncoding.EncodeToString(process), se: se}
+	return &Member{Options: options, Nonce: hex.EncodeToString(nonce),
+		ProcessKey: base64.StdEncoding.EncodeToString(public[:]),
+		process:    e2e.SessionKeys{PublicKey: *public, PrivateKey: *private}, se: se}
+}
+
+// Connect opens the provider socket and sends the member registration.
+func (m *Member) Connect(t testing.TB, ctx context.Context) {
+	t.Helper()
 	var dial *websocket.DialOptions
-	if options.HTTPClient != nil || options.Header != nil {
-		dial = &websocket.DialOptions{HTTPClient: options.HTTPClient, HTTPHeader: options.Header}
+	if m.Options.HTTPClient != nil || m.Options.Header != nil {
+		dial = &websocket.DialOptions{HTTPClient: m.Options.HTTPClient, HTTPHeader: m.Options.Header}
 	}
-	m.Conn, _, err = websocket.Dial(ctx, "ws"+strings.TrimPrefix(options.ServerURL, "http")+"/ws/provider", dial)
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(m.Options.ServerURL, "http")+"/ws/provider", dial)
 	if err != nil {
 		t.Fatalf("member websocket dial: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Conn.CloseNow() })
+	m.Conn = conn
+	t.Cleanup(func() { _ = conn.CloseNow() })
 	m.write(t, ctx, m.Registration())
-	return m
 }
 
 // Registration is the member-role register frame this member sends.
@@ -124,15 +145,115 @@ func (m *Member) write(t testing.TB, ctx context.Context, frame any) {
 	}
 }
 
-// Heartbeat reports an idle member holding no model: the empty authoritative
-// capacity a control-only member publishes.
+// Heartbeat reports a member holding no model, as the provider's control-only
+// mode does: the empty authoritative capacity, and status "draining" because
+// the member refuses solo work for as long as it runs.
 func (m *Member) Heartbeat(t testing.TB, ctx context.Context) {
 	t.Helper()
 	m.write(t, ctx, protocol.HeartbeatMessage{
-		Type: protocol.TypeHeartbeat, Status: "idle",
+		Type: protocol.TypeHeartbeat, Status: protocol.HeartbeatStatusDraining,
 		SystemMetrics:   protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"},
 		BackendCapacity: &protocol.BackendCapacity{TotalMemoryGB: 64, Slots: []protocol.BackendSlotCapacity{}},
 	})
+}
+
+// HeartbeatServing is the heartbeat a leader sends once both ranks are ready:
+// it no longer reports draining, and it publishes exactly one loaded slot for
+// the pair model with a concurrency of one.
+func (m *Member) HeartbeatServing(t testing.TB, ctx context.Context) {
+	t.Helper()
+	m.write(t, ctx, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		SystemMetrics: protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"},
+		BackendCapacity: &protocol.BackendCapacity{TotalMemoryGB: 64, Slots: []protocol.BackendSlotCapacity{
+			{Model: m.Options.Model, State: "idle", MaxConcurrency: 1}}},
+	})
+}
+
+// ReadInferenceRequest skips other frames and returns the next ordinary
+// inference request, with its body decrypted with this member's process key.
+func (m *Member) ReadInferenceRequest(t testing.TB, ctx context.Context) (protocol.InferenceRequestMessage, []byte) {
+	t.Helper()
+	for {
+		frame, ok := m.Next(ctx)
+		if !ok {
+			t.Fatal("member socket ended before an inference request")
+		}
+		if frame.Type != protocol.TypeInferenceRequest {
+			continue
+		}
+		var request protocol.InferenceRequestMessage
+		if err := json.Unmarshal(frame.Data, &request); err != nil || request.EncryptedBody == nil {
+			t.Fatalf("coordinator sent a malformed inference request: %v", err)
+		}
+		body, err := e2e.DecryptWithPrivateKey(&e2e.EncryptedPayload{
+			EphemeralPublicKey: request.EncryptedBody.EphemeralPublicKey,
+			Ciphertext:         request.EncryptedBody.Ciphertext}, m.process.PrivateKey)
+		if err != nil {
+			t.Fatalf("inference request is not encrypted to this member's registered key: %v", err)
+		}
+		return request, body
+	}
+}
+
+// AnswerInference answers a request as the leader's provider does: one
+// encrypted content chunk, then the completion with its usage.
+func (m *Member) AnswerInference(t testing.TB, ctx context.Context, request protocol.InferenceRequestMessage, content string, usage protocol.UsageInfo) {
+	t.Helper()
+	coordinator, err := e2e.ParsePublicKey(request.EncryptedBody.EphemeralPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, err := json.Marshal(map[string]any{"id": "chatcmpl-pair", "choices": []any{
+		map[string]any{"delta": map[string]string{"content": content}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk, err := e2e.Encrypt([]byte("data: "+string(delta)+"\n\n"), coordinator, &m.process)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.write(t, ctx, protocol.InferenceResponseChunkMessage{Type: protocol.TypeInferenceResponseChunk,
+		RequestID: request.RequestID, EncryptedData: &protocol.EncryptedPayload{
+			EphemeralPublicKey: chunk.EphemeralPublicKey, Ciphertext: chunk.Ciphertext}})
+	m.write(t, ctx, protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete,
+		RequestID: request.RequestID, Usage: usage})
+}
+
+// EstablishPair plays both members through the control exchange the
+// coordinator starts for them: preparation, owner start, the public key
+// hellos and both key confirmations. members is in rank order. It returns
+// each rank's prepare frame and canonical start.
+func EstablishPair(t testing.TB, ctx context.Context, members [2]*Member) (prepares [2]protocol.NativePairMessage, starts [2][]byte) {
+	t.Helper()
+	for rank, m := range members {
+		prepares[rank] = m.ReadNativePair(t, ctx, protocol.TypeNativePairPrepare)
+		_, starts[rank] = PreparePayload(t, prepares[rank])
+	}
+	for rank, m := range members {
+		m.SendNativePair(t, ctx, protocol.TypeNativePairPrepared, prepares[rank], starts[rank])
+	}
+	for _, m := range members {
+		m.ReadNativePair(t, ctx, protocol.TypeNativePairOwnerStart)
+	}
+	for rank, m := range members {
+		key := make([]byte, 32)
+		key[0] = byte(rank + 1)
+		m.SendNativePair(t, ctx, protocol.TypeNativePairHello, prepares[rank],
+			append(append([]byte("DBNH\x01"), starts[rank]...), key...))
+	}
+	for _, m := range members {
+		m.ReadNativePair(t, ctx, protocol.TypeNativePairBinding)
+	}
+	for rank, m := range members {
+		confirmation := make([]byte, 32)
+		confirmation[0] = byte(rank + 7)
+		m.SendNativePair(t, ctx, protocol.TypeNativePairConfirmation, prepares[rank], confirmation)
+	}
+	for _, m := range members {
+		m.ReadNativePair(t, ctx, protocol.TypeNativePairPeerConfirmation)
+	}
+	return prepares, starts
 }
 
 // SEPublicKey is the member's signing key as an attestation reports it.
@@ -252,6 +373,15 @@ func ReleaseReceipt(start []byte) []byte {
 // registry must use ReleasePolicyGeneration.
 func GrantPairTrust(t testing.TB, p *registry.Provider, m *Member) {
 	t.Helper()
+	if !TryGrantPairTrust(p, m) {
+		t.Fatal("fabricated release evidence refused")
+	}
+}
+
+// TryGrantPairTrust is GrantPairTrust for a connection whose registration may
+// still be in progress: it reports false while the registry refuses the
+// fabricated release evidence, and may be called again.
+func TryGrantPairTrust(p *registry.Provider, m *Member) bool {
 	p.CompleteProviderStateRestore()
 	p.Mu().Lock()
 	p.Attested = true
@@ -269,11 +399,9 @@ func GrantPairTrust(t testing.TB, p *registry.Provider, m *Member) {
 	se := m.SEPublicKey()
 	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, PublicKey: se,
 		EncryptionPublicKey: m.ProcessKey, SerialNumber: m.Options.Serial, SecureEnclaveAvailable: true})
-	if !p.GrantApplicationEvidenceIfNotUntrusted(registry.ApplicationEvidence{SEPublicKey: se, Serial: m.Options.Serial,
+	return p.GrantApplicationEvidenceIfNotUntrusted(registry.ApplicationEvidence{SEPublicKey: se, Serial: m.Options.Serial,
 		ProcessPublicKey: m.ProcessKey, BinaryHash: strings.Repeat("a", 64), MetallibHash: strings.Repeat("b", 64),
-		Backend: registry.BackendMLXSwift, Version: "0.9.2", PolicyGeneration: ReleasePolicyGeneration, VerifiedAt: time.Now()}) {
-		t.Fatal("fabricated release evidence refused")
-	}
+		Backend: registry.BackendMLXSwift, Version: "0.9.2", PolicyGeneration: ReleasePolicyGeneration, VerifiedAt: time.Now()})
 }
 
 // AwaitRegistration reads until the coordinator either acknowledges this

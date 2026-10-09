@@ -40,6 +40,16 @@ func (s *Server) StartClusterPairFormation(ctx context.Context) {
 // It is empty when pair control is not configured.
 func (s *Server) ClusterPairs() []registry.NativePairView { return s.nativePairs.Pairs() }
 
+// ownerClusterPairs is what the account-scoped views list: the clusters, and
+// whether the operator configured cluster pairs. Without that opt-in nothing
+// is listed, even when a catalog was supplied directly.
+func (s *Server) ownerClusterPairs() ([]registry.NativePairView, bool) {
+	if s.nativePairs == nil || !s.clusterPairFormation {
+		return nil, false
+	}
+	return s.nativePairs.Pairs(), true
+}
+
 // clusterPairCatalog resolves the approval catalog: an explicit one wins, else
 // the operator's file. Startup validation (ServerConfig.CheckClusterPairs) has
 // already accepted that file, so a failure here means it changed underneath

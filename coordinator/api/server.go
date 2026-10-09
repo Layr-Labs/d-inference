@@ -216,6 +216,10 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 	}}, trustapi.Config{AppAttest: cfg.AppAttestShadow, MDMScheduler: cfg.MDMScheduler, MinProviderVersion: cfg.MinProviderVersion, DurableTrustReuse: cfg.DurableTrustReuse, TrustReuseJournalPath: cfg.TrustReuseJournalPath})
 	s.nativePairs = registry.NewNativePairCoordinator(reg, clusterPairCatalog(cfg, logger))
 	s.clusterPairFormation = cfg.ClusterPairs.Enabled()
+	if s.nativePairs != nil && s.clusterPairFormation {
+		// The same operator opt-in that forms pairs lets a request reach one.
+		reg.EnableClusterPairRouting()
+	}
 	s.providers = providerapi.New(providerapi.Dependencies{Registry: reg, Store: st, Trust: s.trust, Releases: s.releases, Catalog: s.catalog, Geo: s.geoResolver, Observation: s.observation, Logger: logger,
 		Inference:   providerapi.InferenceEvents{Chunk: s.inference.HandleChunk, Accepted: s.inference.HandleInferenceAccepted, CompleteAt: s.inference.HandleCompleteAt, Error: s.inference.HandleInferenceError},
 		NativePairs: s.nativePairs, TrustedTLSProxies: clusterPairTrustedTLSProxies(cfg, logger)})
@@ -226,6 +230,7 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		MinProviderVersion:         strings.TrimSpace(cfg.MinProviderVersion),
 		SelfRouteModelEntries:      s.catalog.SelfRouteModelEntries,
 		SoftDeleteMutationsEnabled: cfg.SoftDeleteMutationsEnabled,
+		ClusterPairs:               s.ownerClusterPairs,
 	})
 	s.erasure = erasureapi.New(erasureapi.Dependencies{
 		Store: st, Access: s.access, Logger: logger, MaxBodyBytes: maxControlPlaneBodyBytes,

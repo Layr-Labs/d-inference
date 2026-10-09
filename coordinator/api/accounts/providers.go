@@ -23,6 +23,9 @@ func (s *Owner) HandleMyProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.attachStoredReputations(r.Context(), fleet)
+	if views, _ := s.listClusterPairs(); len(views) > 0 {
+		fleetview.AttachClusterPairs(fleet, views, user.AccountID)
+	}
 
 	resp := fleetview.ProvidersResponse{
 		Providers:             fleet,

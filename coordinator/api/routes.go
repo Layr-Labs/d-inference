@@ -109,6 +109,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/me/summary", s.access.RequirePrivyAuth(s.accounts.HandleMySummary))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.access.RequirePrivyAuth(s.accounts.HandleMySelfRouteModels))
+	// The owner's two-Mac clusters: formation state, serving readiness, members.
+	s.mux.HandleFunc("GET /v1/me/cluster-pairs", s.access.RequirePrivyAuth(s.accounts.HandleMyClusterPairs))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
 	s.mux.HandleFunc("DELETE /v1/me/providers/{id}", s.access.RequirePrivyAuth(s.access.RateLimitFinancial(s.accounts.HandleDeleteMyProvider)))
 

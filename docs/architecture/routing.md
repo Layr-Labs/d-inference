@@ -1157,7 +1157,16 @@ its original connection is gone, the hold is released 40 seconds after the
 fixed membership expiry. A member that is still connected and owes its
 observation is never released by time alone
 (`releaseAbandonedQuarantineLocked`,
-`coordinator/registry/verified_pair_lifecycle.go`). The public control shapes live in
+`coordinator/registry/verified_pair_lifecycle.go`). Member connections and
+pair-held devices are also never told to start model work: `load_model`,
+`prefetch_model` and a nonempty `desired_models` are refused for them, a
+pair is not reserved while such a command is being written
+(`beginVerifiedPairAwareModelCommand`,
+`coordinator/registry/verified_pair_commands.go`), and a member is offered
+no desired models in the first place, so catalog publication stays
+deliverable to it (`DesiredModelsForProvider`,
+`coordinator/registry/model_commands.go`). The empty `desired_models`
+revoke still passes. The public control shapes live in
 [cluster-control-protocol.md](../reference/cluster-control-protocol.md);
 the catalog stays empty, so the lifecycle is inert until an explicitly
 approved native runtime catalog is configured.

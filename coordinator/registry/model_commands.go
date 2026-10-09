@@ -31,6 +31,11 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf(
 			"provider %q does not satisfy requirements for model %q", providerID, modelID)
 	}
+	done, err := r.beginVerifiedPairAwareModelCommand(p, true)
+	if err != nil {
+		return err
+	}
+	defer done()
 	if r.loadModelSender != nil {
 		if err := r.loadModelSender(providerID, modelID); err != nil {
 			return err
@@ -84,6 +89,11 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		return fmt.Errorf(
 			"provider %q does not satisfy requirements for model %q", providerID, modelID)
 	}
+	done, err := r.beginVerifiedPairAwareModelCommand(p, true)
+	if err != nil {
+		return err
+	}
+	defer done()
 	if r.prefetchModelSender != nil {
 		return r.prefetchModelSender(providerID, modelID, priority)
 	}
@@ -154,6 +164,13 @@ func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredMode
 		entries = r.DesiredModelsForProvider(providerID)
 	}
 	originallyNonEmpty := len(entries) > 0
+	// A nonempty set starts model work: it is refused for a member connection
+	// or pair-held device, and holds off a pair reservation until it is written.
+	done, err := r.beginVerifiedPairAwareModelCommand(p, originallyNonEmpty)
+	if err != nil {
+		return err
+	}
+	defer done()
 
 	r.mu.RLock()
 	current, ok := r.providers[providerID]
@@ -250,7 +267,9 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		return nil
 	}
 	p.mu.Lock()
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+	// A control-only member holds a cluster inventory, never ordinary model
+	// work; offering it none keeps catalog publication deliverable to it.
+	if p.Status == StatusOffline || p.Status == StatusUntrusted || !p.executionRolePermitsLocked(false) {
 		p.mu.Unlock()
 		return []protocol.DesiredModelEntry{}
 	}

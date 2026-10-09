@@ -1119,13 +1119,16 @@ paused residency. Only a matching live lease can transfer residency ownership.
 Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 `backend == "mlx-swift"`; the provider replies with `load_model_status`.
 Active or explicitly paused Autopilot providers block this legacy residency path and use explicit
-`model_autopilot` commands instead.
+`model_autopilot` commands instead. Never sent to a `cluster_member` connection
+or to a device held by a verified pair (`beginVerifiedPairAwareModelCommand`,
+`coordinator/registry/verified_pair_commands.go`).
 
 ### `prefetch_model`
 
 Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
 (`int`, opt, advisory). Download + verify only, no GPU load; the provider
-replies with `prefetch_model_status` and then `models_update`.
+replies with `prefetch_model_status` and then `models_update`. Refused for a
+`cluster_member` connection or a pair-held device, like `load_model`.
 
 ### `desired_models`
 
@@ -1144,7 +1147,9 @@ backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
-Both announce completed updates through `models_update`. Source:
+Both announce completed updates through `models_update`. A `cluster_member`
+connection is offered no entries and receives only the empty set; a nonempty set
+is refused for a member connection or a pair-held device. Source:
 `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 See [revision lifecycle](../architecture/model-revisions.md).
 

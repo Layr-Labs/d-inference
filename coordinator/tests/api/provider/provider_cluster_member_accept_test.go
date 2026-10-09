@@ -38,6 +38,7 @@ type clusterMemberAcceptedWire struct {
 }
 
 type clusterMemberSession struct {
+	owner    *Owner
 	registry *registry.Registry
 	conn     *websocket.Conn
 }
@@ -73,7 +74,7 @@ func dialProviderSession(t *testing.T, ctx context.Context, nativePairs func(*re
 		t.Fatalf("websocket dial: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	return clusterMemberSession{registry: reg, conn: conn}
+	return clusterMemberSession{owner: owner, registry: reg, conn: conn}
 }
 
 func approvedNativePairs(t *testing.T) func(*registry.Registry) *registry.NativePairCoordinator {

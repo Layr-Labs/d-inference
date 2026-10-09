@@ -14,7 +14,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	production "github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -57,18 +56,8 @@ func committedPairFixture(t *testing.T, r *production.Registry) (*production.Ver
 func soloGateOnPairDevice(t *testing.T, r *production.Registry, serial string) string {
 	t.Helper()
 	id := "solo-" + serial
-	msg := testRegisterMessage()
-	msg.Models = []protocol.ModelInfo{{ID: nativePairFixtureModel, ModelType: "chat", Quantization: "4bit"}}
-	msg.DecodeTPS = 90
-	solo := r.Register(id, nil, msg)
+	solo := soloPairDevice(t, r, id, serial)
 	defer r.Disconnect(id)
-	trustPairDevice(t, solo, serial, pairDeviceSEKey(serial), &protocol.BackendCapacity{
-		TotalMemoryGB: 64,
-		Slots:         []protocol.BackendSlotCapacity{{Model: nativePairFixtureModel, State: "running"}},
-	})
-	solo.Mu().Lock()
-	solo.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"}
-	solo.Mu().Unlock()
 
 	reason := ""
 	for _, row := range r.FleetSample(time.Now()) {

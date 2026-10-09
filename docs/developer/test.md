@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -2024,6 +2024,40 @@ model filters, template variants, render bounds and release of compiled programs
 when their bounded contract owner retires. Production and fixture projections
 must retain identical exact count and block-chain results.
 
+
+### Selective KV working-set checks
+
+After building provider tests and staging their source-matched metallib, run
+`swift test --skip-build --no-parallel --filter KVSelectiveRetentionTests
+--skip allocatorReleasesDenseBackingAfterSparseCompaction` from `provider-swift`.
+Run `../scripts/run-nested-suite.sh allocatorReleasesDenseBackingAfterSparseCompaction
+--no-parallel` separately. The full provider runner isolates that allocator
+assertion automatically. The tiny native fixtures check chronological compaction,
+absolute offsets, protected bands, dense-control GQA/sinks parity, batched row
+independence, speculative rejection and unchanged sliding-window ownership.
+They do not qualify full-model retention quality.
+
+Use `darkbloom benchmark --teacher-forced-input <fixture.json> --model <id>
+--kv-backend contiguous` for pinned native controls, then repeat with
+`DARKBLOOM_CBV2_SELECTIVE_KV=half`. Keep the exact input tokens, model aggregate,
+binary and metallib identical; verify nonzero pruning counters for the candidate
+and inspect NLL/top-1 deltas. Include more than one continuation token after a
+prompt of at least 4,096 tokens so compaction actually executes. The report's
+logical source/retained byte counters are not physical allocator observations.
+`scripts/benchmarks/prepare_selective_kv_cases.py` creates deterministic
+4K/32K retrieval-depth, reasoning, code, tool and long-decode cases using a local
+Transformers tokenizer, without downloading weights. Pass `--model-id`,
+`--model-directory` and `--output-directory`. Its token counts are estimates;
+retain the native `radix-engine` report's actual prompt IDs and runtime identity.
+The long-decode controls use 768 tokens; other cases use 256, matched in both arms.
+
+Run `python3 scripts/benchmarks/compare_selective_kv.py dense.json selective.json`
+to compare matching source/token identities, require executed pruning, and print
+NLL/top-1, allocator-peak and logical-storage deltas without issuing a quality
+verdict. Its CPU checks run with
+`python3 -m unittest discover -s scripts/benchmarks -p test_compare_selective_kv.py`.
+Real generation, tool/retrieval quality, memory peaks and latency are separate
+gates before enabling serving.
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
 

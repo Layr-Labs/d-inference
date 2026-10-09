@@ -81,6 +81,7 @@ class NativeGPUTestRouting(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([row['filter'] for row in calls], [
             'general', *CPU_CHECKPOINT, 'emptyNativePoolTeardownUsesActualRetiredAdapter',
+            'allocatorReleasesDenseBackingAfterSparseCompaction',
             'processLedgerCannotCombineOldUsageWithNewMaterializationCredit',
             'defaultApplyProjectsSettings', 'stageDelta', 'SpecDecHuggingFaceTests',
             'acceptedThenExpired', MEMORY])
@@ -106,7 +107,7 @@ class NativeGPUTestRouting(unittest.TestCase):
         profiles = self.work / 'profiles'
         result, calls = self.run_script('run-provider-tests.sh', PROVIDER_COVERAGE_DIR=str(profiles))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(calls), 11)
         self.assertEqual({row['profile'] for row in calls}, {f'{profiles}/%p-%m.profraw'})
         # swift test --enable-code-coverage would delete earlier profiles.
         self.assertTrue(all('--enable-code-coverage' not in row['args'] for row in calls))
@@ -124,7 +125,7 @@ class NativeGPUTestRouting(unittest.TestCase):
     def test_general_failure_does_not_silence_provider_isolated_gates(self):
         result, calls = self.run_script('run-provider-tests.sh', FAKE_SWIFT_FAIL='general')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(calls), 11)
         self.assertEqual(calls[-1]['filter'], MEMORY)
 
     def test_cpu_checkpoint_gates_reject_failure_empty_and_skips_without_hiding_later_gates(self):
@@ -138,7 +139,7 @@ class NativeGPUTestRouting(unittest.TestCase):
                 with self.subTest(selected=selected, changes=changes):
                     result, calls = self.run_script('run-provider-tests.sh', **changes)
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(len(calls), 10)
+                    self.assertEqual(len(calls), 11)
                     self.assertEqual(calls[-1]['filter'], MEMORY)
                     self.assertEqual(sum(row['filter'] == selected for row in calls), 1)
 

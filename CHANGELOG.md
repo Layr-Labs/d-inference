@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — selective KV benchmark working sets
+
+- Add an opt-in Gemma 4 and GPT-OSS benchmark experiment that preserves dense prefill, configured sliding windows, original RoPE positions and speculative rollback while retaining half of older full-attention history by attention mass and coverage. Keep serving disabled, exact prefix reuse fenced, and admission conservative pending model-quality and physical-memory qualification.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

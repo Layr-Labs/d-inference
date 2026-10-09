@@ -125,6 +125,7 @@ enum RadixBenchmark {
             "cancelled": ["outcome": "not_run"], "recovered": ["outcome": "not_run"],
             "sampling_scope": "Candidate rows use the production request sampling translator; historical baseline remains greedy. Native events do not exercise HTTP tool constraints or output shaping. Seeds also depend on request ID and step index.",
             "decode_tps_definition": "Tokens emitted after the first nonempty delta divided by first-to-last nonempty delta seconds; zero when no later timed delta. First-delta tokens are excluded.",
+            "decode_memory_scope": "MLX allocator observations after delivered token events at bounded thresholds. No device synchronization; cumulative peak includes prefill. Samples can miss between-event transients and are not per-KV ownership receipts.",
             "timing_scope": "Cold-path delta includes historical capture; terminal_tail_s includes final donation. Existing capacity step totals are cumulative, not isolated capture timers. Request elapsed/cleanup and batch elapsed exclude idle observation; its elapsed_s is reported in metrics.idle_observation.",
             "unavailable_metrics": ["historical_capture_count", "historical_capture_retirement_ms",
                                     "historical_capture_successor_pause_ms"],

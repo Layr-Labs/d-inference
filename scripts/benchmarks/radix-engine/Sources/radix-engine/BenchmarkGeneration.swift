@@ -53,6 +53,11 @@ extension RadixBenchmark {
         var firstDeltaTokenCount = 0
         var last: UInt64?
         var chunks: [[String: Any]] = []
+        // Bounded observations distinguish live decode allocations from the
+        // global peak (usually dense prefill). They do not synchronize MLX or
+        // claim to capture a transient between delivered token events.
+        var decodeMemorySamples: [[String: Any]] = []
+        let memorySampleThresholds = [1, 8, 32, 128, 256, 512]
         var terminal: CBv2Usage?
         var finish = "unterminated"
         var cancelled = false
@@ -68,6 +73,15 @@ extension RadixBenchmark {
                 last = now
                 tokens += emitted
                 chunks.append(["elapsed_s": seconds(now - start), "tokens": emitted])
+                if decodeMemorySamples.count < memorySampleThresholds.count,
+                   tokens.count >= memorySampleThresholds[decodeMemorySamples.count] {
+                    let memory = BenchmarkMetrics.mlxMemory()
+                    decodeMemorySamples.append([
+                        "completion_tokens": tokens.count, "elapsed_s": seconds(now - start),
+                        "active_bytes": memory.active, "cache_bytes": memory.cached,
+                        "cumulative_peak_bytes": memory.peak,
+                    ])
+                }
                 if let cancelAfter, tokens.count >= cancelAfter, !cancelled {
                     cancelled = true
                     loaded.engine.cancel(requestID)
@@ -95,6 +109,7 @@ extension RadixBenchmark {
                 "prompt_token_ids": input.tokens, "token_ids": tokens,
                 "text": loaded.tokenizer.decode(tokenIds: tokens), "finish": finish,
                 "cancel_requested": cancelled, "chunks": chunks,
+                "decode_memory_samples": decodeMemorySamples,
                 "ttft_s": first.map { seconds($0 - start) } as Any? ?? NSNull(),
                 "elapsed_s": seconds(ended - start),
                 "terminal_tail_s": last.map { seconds(ended - $0) } as Any? ?? NSNull(),

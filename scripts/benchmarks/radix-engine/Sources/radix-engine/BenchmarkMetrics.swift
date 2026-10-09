@@ -1,6 +1,6 @@
 import Foundation
 import MLX
-import MLXLMCommon
+@_spi(Diagnostics) import MLXLMCommon
 #if RADIX_CANDIDATE
 @_spi(Benchmarking) import ProviderCore
 #endif
@@ -135,6 +135,15 @@ enum BenchmarkMetrics {
             result["mtp"] = mtpRecord(mtp)
         }
         #if RADIX_CANDIDATE
+        if let stats = engine.selectiveKVStatistics() {
+            result["selective_kv"] = [
+                "mode": "half", "sequence_layers": stats.sequenceLayers,
+                "pruning_events": stats.pruningEvents,
+                "token_entries_removed": stats.tokenEntriesRemoved,
+                "last_prune_source_storage_bytes": stats.lastPruneSourceStorageBytes,
+                "last_prune_retained_storage_bytes": stats.lastPruneRetainedStorageBytes,
+            ] as [String: Any]
+        }
         if let stats = engine.hybridPrefixCache?.stats {
             result["hybrid_cache"] = [
                 "resident_bytes": stats.residentBytes, "staged_bytes": stats.stagedBytes,

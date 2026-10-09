@@ -1,0 +1,697 @@
+{
+  "scope": "Paired native contiguous gpt-oss-20b generated outputs; benchmark only, cache and MTP off.",
+  "grading_scope": "Final-message exact needle/integer answers, or native function name plus parsed JSON arguments. One complete outer JSON fence may be unwrapped. Reasoning-only answers do not pass. Long lists report ordered completed-item prefixes at the fixed cap, not completed 2000-item tasks. No HTTP output shaping is exercised.",
+  "provenance": {
+    "parent_revision": "393aa0007d6140077c2be7aec6727f33212d6811",
+    "sdk_revision": "46477f018f204f4f689b4e4348ea637096194256",
+    "mlx_swift_revision": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+    "mlx_revision": "cb77239be31b1df7f5db895226af55c39fc4f093",
+    "swift": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)\nTarget: arm64-apple-macosx27.0.0",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+    "build_configuration": "Debug",
+    "scope": "frozen generated-output radix binary; earlier teacher-forced pilot binary separately hashed"
+  },
+  "artifacts": [
+    {
+      "file": "2026-10-09-gpt-oss-selective-generation-native.json.gz",
+      "raw_sha256": "6880907e875ba44ed409e73e8db2dbee224f0cd247810a5820ef0db687fde26a",
+      "gzip_sha256": "1e8558c2bdadfbe7f796504503da4ba7348c1983a1769103aa3272f14b477436",
+      "raw_bytes": 15089061,
+      "gzip_bytes": 786583
+    },
+    {
+      "file": "2026-10-09-gpt-oss-selective-generation-half.json.gz",
+      "raw_sha256": "f68bdbc428daa165a6cb72d6785651f4a7725ee8936999a98b712d1433d86065",
+      "gzip_sha256": "e2007a2c9647d8b73178fb59b6e04aa4cdfa0b65f175cb79e4c2b48cf78ed5f1",
+      "raw_bytes": 15673201,
+      "gzip_bytes": 816173
+    }
+  ],
+  "measurement": {
+    "model": "gpt-oss-20b",
+    "runtime_identity": {
+      "binary_sha256": "76c2db5cc2ebfde4f92c718c79591e11de1c293938fb42f187bfb25da3fcaf10",
+      "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+      "normalization": "darkbloom-request-normalization-v8",
+      "renderer": "swift-jinja-request-date-compatible-v4",
+      "tokenizer": "huggingface-tokenizer-json-v1"
+    },
+    "model_hash": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "input_sha256": "77472b47dc9544e69ca140406eadc878b9c1fd3cda5919c07ad520b73b016c70",
+    "kv_budget_bytes": 107860842572,
+    "dense_status": "completed",
+    "half_status": "completed",
+    "dense_cancellation": "observed",
+    "half_cancellation": "observed",
+    "rows": [
+      {
+        "id": "4k-needle-10",
+        "prompt_tokens": 4590,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 59,
+          "ttft_s": 3.586633417,
+          "decode_tps": 34.61461106605243
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 58,
+          "ttft_s": 4.558626584,
+          "decode_tps": 32.627828102863525
+        },
+        "tokens_equal": false,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5806851011143211,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 12500334477,
+            "half_active_bytes": 12481855733,
+            "active_bytes_delta": -18478744
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 12500334473,
+            "half_active_bytes": 12400460749,
+            "active_bytes_delta": -99873724
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 12500334473,
+            "half_active_bytes": 12400460745,
+            "active_bytes_delta": -99873728
+          }
+        ]
+      },
+      {
+        "id": "4k-needle-50",
+        "prompt_tokens": 4590,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 59,
+          "ttft_s": 3.310100458,
+          "decode_tps": 32.357253824113315
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 59,
+          "ttft_s": 3.152312667,
+          "decode_tps": 32.89416783568569
+        },
+        "tokens_equal": true,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5806851011143211,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 12500334477,
+            "half_active_bytes": 12400460749,
+            "active_bytes_delta": -99873728
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 12500334473,
+            "half_active_bytes": 12400460749,
+            "active_bytes_delta": -99873724
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 12500334473,
+            "half_active_bytes": 12400460745,
+            "active_bytes_delta": -99873728
+          }
+        ]
+      },
+      {
+        "id": "4k-needle-90",
+        "prompt_tokens": 4591,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 59,
+          "ttft_s": 3.501831333,
+          "decode_tps": 34.100842364299595
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 58,
+          "ttft_s": 3.145131167,
+          "decode_tps": 34.01656397792086
+        },
+        "tokens_equal": false,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5807716113059624,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 12500334541,
+            "half_active_bytes": 12400460813,
+            "active_bytes_delta": -99873728
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 12500334537,
+            "half_active_bytes": 12400460809,
+            "active_bytes_delta": -99873728
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 12500334537,
+            "half_active_bytes": 12400460809,
+            "active_bytes_delta": -99873728
+          }
+        ]
+      },
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4602,
+        "dense": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "completion_tokens": 164,
+          "ttft_s": 3.564969791,
+          "decode_tps": 33.325895770320116
+        },
+        "half": {
+          "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+          "oracle_pass": false,
+          "completion_tokens": 256,
+          "ttft_s": 3.148335833,
+          "decode_tps": 32.527045107213496
+        },
+        "tokens_equal": false,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5784273363524084,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 12501120973,
+            "half_active_bytes": 12400460877,
+            "active_bytes_delta": -100660096
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 12501120969,
+            "half_active_bytes": 12400460873,
+            "active_bytes_delta": -100660096
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 12501120969,
+            "half_active_bytes": 12402704765,
+            "active_bytes_delta": -98416204
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 12501120969,
+            "half_active_bytes": 12400460885,
+            "active_bytes_delta": -100660084
+          }
+        ]
+      },
+      {
+        "id": "4k-code-50",
+        "prompt_tokens": 4590,
+        "dense": {
+          "final_text": "47",
+          "oracle_pass": true,
+          "completion_tokens": 253,
+          "ttft_s": 3.447845,
+          "decode_tps": 34.040593832842596
+        },
+        "half": {
+          "final_text": "47",
+          "oracle_pass": true,
+          "completion_tokens": 253,
+          "ttft_s": 3.130572833,
+          "decode_tps": 34.13250249577772
+        },
+        "tokens_equal": true,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5806851011143211,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 12500334541,
+            "half_active_bytes": 12400460877,
+            "active_bytes_delta": -99873664
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 12500334537,
+            "half_active_bytes": 12400460873,
+            "active_bytes_delta": -99873664
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 12500334541,
+            "half_active_bytes": 12403074217,
+            "active_bytes_delta": -97260324
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 12500334537,
+            "half_active_bytes": 12400460873,
+            "active_bytes_delta": -99873664
+          }
+        ]
+      },
+      {
+        "id": "4k-tool_json-50",
+        "prompt_tokens": 4589,
+        "dense": {
+          "final_text": "{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Bern\",\"units\":\"celsius\"}}",
+          "native_call_name": null,
+          "oracle_pass": true,
+          "completion_tokens": 118,
+          "ttft_s": 3.32983125,
+          "decode_tps": 32.58048246170881
+        },
+        "half": {
+          "final_text": "{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Bern\",\"units\":\"celsius\"}}",
+          "native_call_name": null,
+          "oracle_pass": true,
+          "completion_tokens": 136,
+          "ttft_s": 3.136223291,
+          "decode_tps": 33.42052824244827
+        },
+        "tokens_equal": false,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5805985552115583,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 12500334541,
+            "half_active_bytes": 12400460941,
+            "active_bytes_delta": -99873600
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 12500334537,
+            "half_active_bytes": 12400460937,
+            "active_bytes_delta": -99873600
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 12500334537,
+            "half_active_bytes": 12400460937,
+            "active_bytes_delta": -99873600
+          }
+        ]
+      },
+      {
+        "id": "4k-long_decode-50",
+        "prompt_tokens": 4724,
+        "dense": {
+          "completed_numbered_items": 160,
+          "numbered_prefix_valid": true,
+          "oracle_pass": null,
+          "completion_tokens": 768,
+          "ttft_s": 3.538127958,
+          "decode_tps": 31.340796563120033
+        },
+        "half": {
+          "completed_numbered_items": 168,
+          "numbered_prefix_valid": true,
+          "oracle_pass": null,
+          "completion_tokens": 768,
+          "ttft_s": 3.32569875,
+          "decode_tps": 32.45861097299421
+        },
+        "tokens_equal": false,
+        "pruning_events": 36,
+        "last_prune_logical_ratio": 1.0427236315086783,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 12507019277,
+            "half_active_bytes": 12403213453,
+            "active_bytes_delta": -103805824
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 12507019273,
+            "half_active_bytes": 12403213449,
+            "active_bytes_delta": -103805824
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 12507019273,
+            "half_active_bytes": 12403213449,
+            "active_bytes_delta": -103805824
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 12507019273,
+            "half_active_bytes": 12405826793,
+            "active_bytes_delta": -101192480
+          },
+          {
+            "completion_tokens": 256,
+            "dense_active_bytes": 12507019277,
+            "half_active_bytes": 12405826789,
+            "active_bytes_delta": -101192488
+          },
+          {
+            "completion_tokens": 512,
+            "dense_active_bytes": 12532185101,
+            "half_active_bytes": 12409504909,
+            "active_bytes_delta": -122680192
+          }
+        ]
+      },
+      {
+        "id": "32k-needle-10",
+        "prompt_tokens": 32766,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 57,
+          "ttft_s": 35.992177833,
+          "decode_tps": 30.3251026948637
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 57,
+          "ttft_s": 32.70797,
+          "decode_tps": 30.70195426847968
+        },
+        "tokens_equal": true,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5115983283871358,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 13896743173,
+            "half_active_bytes": 13426133609,
+            "active_bytes_delta": -470609564
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 13885241353,
+            "half_active_bytes": 13092521097,
+            "active_bytes_delta": -792720256
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 13894006077,
+            "half_active_bytes": 13092521097,
+            "active_bytes_delta": -801484980
+          }
+        ]
+      },
+      {
+        "id": "32k-needle-50",
+        "prompt_tokens": 32766,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 56,
+          "ttft_s": 39.995112417,
+          "decode_tps": 29.743927760518133
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 56,
+          "ttft_s": 34.521124,
+          "decode_tps": 31.257359243316166
+        },
+        "tokens_equal": true,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5115983283871358,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 13901112777,
+            "half_active_bytes": 13258156357,
+            "active_bytes_delta": -642956420
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 13885241289,
+            "half_active_bytes": 13092521097,
+            "active_bytes_delta": -792720192
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 13885241289,
+            "half_active_bytes": 13092521097,
+            "active_bytes_delta": -792720192
+          }
+        ]
+      },
+      {
+        "id": "32k-needle-90",
+        "prompt_tokens": 32766,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 53,
+          "ttft_s": 42.3676125,
+          "decode_tps": 19.03373998605245
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 53,
+          "ttft_s": 34.068749291,
+          "decode_tps": 29.48567971799946
+        },
+        "tokens_equal": true,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5115983283871358,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 13895387301,
+            "half_active_bytes": 13249767685,
+            "active_bytes_delta": -645619616
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 13885241353,
+            "half_active_bytes": 13092521033,
+            "active_bytes_delta": -792720320
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 13885241353,
+            "half_active_bytes": 13096925565,
+            "active_bytes_delta": -788315788
+          }
+        ]
+      },
+      {
+        "id": "32k-reasoning-50",
+        "prompt_tokens": 32757,
+        "dense": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "completion_tokens": 234,
+          "ttft_s": 41.556009459,
+          "decode_tps": 27.40700153023405
+        },
+        "half": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "completion_tokens": 249,
+          "ttft_s": 36.1355005,
+          "decode_tps": 30.442134098552025
+        },
+        "tokens_equal": false,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5114651803834853,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14025250921,
+            "half_active_bytes": 13402195561,
+            "active_bytes_delta": -623055360
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 13885208589,
+            "half_active_bytes": 13092422729,
+            "active_bytes_delta": -792785860
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 13885208585,
+            "half_active_bytes": 13092422729,
+            "active_bytes_delta": -792785856
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 13885208585,
+            "half_active_bytes": 13092422729,
+            "active_bytes_delta": -792785856
+          }
+        ]
+      },
+      {
+        "id": "32k-code-50",
+        "prompt_tokens": 32766,
+        "dense": {
+          "final_text": "47",
+          "oracle_pass": true,
+          "completion_tokens": 255,
+          "ttft_s": 38.581583625,
+          "decode_tps": 31.333889859403353
+        },
+        "half": {
+          "final_text": "47",
+          "oracle_pass": true,
+          "completion_tokens": 256,
+          "ttft_s": 33.756572125,
+          "decode_tps": 28.338315627998067
+        },
+        "tokens_equal": false,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5115983283871358,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 13896742981,
+            "half_active_bytes": 13258156293,
+            "active_bytes_delta": -638586688
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 13885241165,
+            "half_active_bytes": 13092521033,
+            "active_bytes_delta": -792720132
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 13894005885,
+            "half_active_bytes": 13092521033,
+            "active_bytes_delta": -801484852
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 13885241165,
+            "half_active_bytes": 13092521037,
+            "active_bytes_delta": -792720128
+          }
+        ]
+      },
+      {
+        "id": "32k-tool_json-50",
+        "prompt_tokens": 32766,
+        "dense": {
+          "final_text": "{\"city\":\"Bern\",\"units\":\"celsius\"}",
+          "native_call_name": "get_weather",
+          "oracle_pass": true,
+          "completion_tokens": 192,
+          "ttft_s": 36.70540125,
+          "decode_tps": 29.191853532263437
+        },
+        "half": {
+          "final_text": "{\"city\":\"Bern\",\"units\":\"celsius\"}",
+          "native_call_name": "get_weather",
+          "oracle_pass": true,
+          "completion_tokens": 192,
+          "ttft_s": 38.087173875,
+          "decode_tps": 19.819624725010566
+        },
+        "tokens_equal": true,
+        "pruning_events": 12,
+        "last_prune_logical_ratio": 0.5115983283871358,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 13896743045,
+            "half_active_bytes": 13249767169,
+            "active_bytes_delta": -646975876
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 13885241229,
+            "half_active_bytes": 13096925565,
+            "active_bytes_delta": -788315664
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 13885241225,
+            "half_active_bytes": 13097198865,
+            "active_bytes_delta": -788042360
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 13894005949,
+            "half_active_bytes": 13092521033,
+            "active_bytes_delta": -801484916
+          }
+        ]
+      },
+      {
+        "id": "32k-long_decode-50",
+        "prompt_tokens": 32879,
+        "dense": {
+          "completed_numbered_items": 123,
+          "numbered_prefix_valid": true,
+          "oracle_pass": null,
+          "completion_tokens": 768,
+          "ttft_s": 35.30920975,
+          "decode_tps": 28.486024395138337
+        },
+        "half": {
+          "completed_numbered_items": 167,
+          "numbered_prefix_valid": true,
+          "oracle_pass": null,
+          "completion_tokens": 768,
+          "ttft_s": 33.093418417,
+          "decode_tps": 30.08795780050926
+        },
+        "tokens_equal": false,
+        "pruning_events": 36,
+        "last_prune_logical_ratio": 1.0074910750863229,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 13890746317,
+            "half_active_bytes": 13261858961,
+            "active_bytes_delta": -628887356
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 13890746313,
+            "half_active_bytes": 13095666633,
+            "active_bytes_delta": -795079680
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 13890746313,
+            "half_active_bytes": 13100071165,
+            "active_bytes_delta": -790675148
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 13890746313,
+            "half_active_bytes": 13095666637,
+            "active_bytes_delta": -795079676
+          },
+          {
+            "completion_tokens": 256,
+            "dense_active_bytes": 13890746317,
+            "half_active_bytes": 13095666637,
+            "active_bytes_delta": -795079680
+          },
+          {
+            "completion_tokens": 512,
+            "dense_active_bytes": 13915912141,
+            "half_active_bytes": 13106362625,
+            "active_bytes_delta": -809549516
+          }
+        ]
+      }
+    ]
+  }
+}

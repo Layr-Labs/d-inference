@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -863,7 +863,18 @@ uploads, catalog changes, signing or production promotion.
 | `DARKBLOOM_MAX_IMAGES_PER_REQUEST`, `DARKBLOOM_MAX_VIDEOS_PER_REQUEST` | integers | `16`, `8` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Attachment count caps. |
 | `DARKBLOOM_MAX_REQUEST_VIDEO_FRAME_MEGAPIXELS` | megapixels | `384` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-request decoded video-frame pixel cap. |
 
-### Model verification I/O
+### Selective KV benchmark experiment
+
+| Variable | Default | Accepted value and scope | Consumer |
+|---|---|---|---|
+| `DARKBLOOM_CBV2_SELECTIVE_KV` | Unset (dense) | `half`: loaded Gemma 4 or GPT-OSS, singleton benchmark construction, MTP off, explicit `--kv-backend contiguous` only. Empty or `0` also disables it. Other values or serving use are rejected. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SelectiveKV.swift`, `selectiveKVPolicy` |
+
+The [selective working-set experiment](../architecture/inference.md#selective-full-attention-working-set-experiment)
+retains the native dtype and full configured sliding windows. It does not change
+memory caps, activation reserves, catalog context limits or request admission.
+All prefix-reuse paths are disabled for this lossy experiment.
+
+## Model verification I/O
 
 The default reusable-buffer reader and bounded parallel hashing change full-file
 reading and scheduling, not the verified

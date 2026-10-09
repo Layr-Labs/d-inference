@@ -28,6 +28,7 @@ extension EngineV2Factory {
         /// enables the scheduler even when the SSD snapshot L2 is absent.
         let residentPrefixCacheEnabled: Bool
         let hybridPrefixCache: CBv2HybridPrefixCacheConfig?
+        let selectiveRetentionEnabled: Bool
 
         private let lock = NSLock()
         private let modelIdentity: ObjectIdentifier
@@ -68,6 +69,8 @@ extension EngineV2Factory {
             self.pagedPoolConfig = (backend as? PagedKVBackend)?.pool.config
             self.residentPrefixCacheEnabled = residentPrefixCacheEnabled
             self.hybridPrefixCache = hybridPrefixCache
+            self.selectiveRetentionEnabled =
+                (backend as? CBv2ContiguousKVBackend)?.config.selectiveRetention != nil
         }
 
         func consume(
@@ -120,6 +123,12 @@ extension EngineV2Factory {
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
+        }
+        let selectiveRetention = try selectiveKVPolicy(model: model, purpose: constructionPurpose,
+            backend: kvBackend, environment: environment)
+        guard selectiveRetention == nil || maxConcurrentRequests == 1 else {
+            throw CBv2KVError.backendIneligible(
+                reason: "selective KV benchmarks require one concurrent request")
         }
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
         try configureNativeQwen4Batching(model: model, environment: environment)
@@ -209,7 +218,8 @@ extension EngineV2Factory {
                 configuredHybridCache = nil
             }
             let backend = CBv2ContiguousKVBackend(
-                config: CBv2ContiguousBackendConfig(bytesCapacity: contiguousCapacity))
+                config: CBv2ContiguousBackendConfig(bytesCapacity: contiguousCapacity,
+                    selectiveRetention: selectiveRetention))
             let caches = try adapter.newCaches { index, kind in
                 CBv2LayerCache(layerIndex: index, kind: kind)
             }

@@ -1,0 +1,553 @@
+{
+  "scope": "Paired native contiguous gemma-4-26b-qat-4bit generated outputs; benchmark only, cache and MTP off.",
+  "grading_scope": "Final-message exact needle/integer answers, or native function name plus parsed JSON arguments. One complete outer JSON fence may be unwrapped. Reasoning-only answers do not pass. Long lists report ordered completed-item prefixes at the fixed cap, not completed 2000-item tasks. No HTTP output shaping is exercised.",
+  "provenance": {
+    "parent_revision": "393aa0007d6140077c2be7aec6727f33212d6811",
+    "sdk_revision": "46477f018f204f4f689b4e4348ea637096194256",
+    "mlx_swift_revision": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+    "mlx_revision": "cb77239be31b1df7f5db895226af55c39fc4f093",
+    "swift": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)\nTarget: arm64-apple-macosx27.0.0",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+    "build_configuration": "Debug",
+    "scope": "frozen generated-output radix binary; earlier teacher-forced pilot binary separately hashed"
+  },
+  "artifacts": [
+    {
+      "file": "2026-10-09-gemma-selective-generation-native.json.gz",
+      "raw_sha256": "b392aca3b4f2b2c46e760b0715ef1fd40b49c985745cd5d5367cced7cbdc96b7",
+      "gzip_sha256": "1d9843f58f9d007b6c026aaa6194975e18103475f667e9caf79c31169e5a0b75",
+      "raw_bytes": 9164209,
+      "gzip_bytes": 364391
+    },
+    {
+      "file": "2026-10-09-gemma-selective-generation-half.json.gz",
+      "raw_sha256": "26c4cf3ae194244db623ba66daf6cf2a850f09bd6be25918e60555f5e5fc2174",
+      "gzip_sha256": "30590ca37d487acfb12b3ac7e354d9e8eb5fae4c5ee8c052985f6156ddce7fbc",
+      "raw_bytes": 9177292,
+      "gzip_bytes": 368336
+    }
+  ],
+  "measurement": {
+    "model": "gemma-4-26b-qat-4bit",
+    "runtime_identity": {
+      "binary_sha256": "76c2db5cc2ebfde4f92c718c79591e11de1c293938fb42f187bfb25da3fcaf10",
+      "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+      "normalization": "darkbloom-request-normalization-v8",
+      "renderer": "swift-jinja-request-date-compatible-v4",
+      "tokenizer": "huggingface-tokenizer-json-v1"
+    },
+    "model_hash": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+    "input_sha256": "9c3e2462a73a369c96481b860249350e629fa322ec146b8718baa5877b54948f",
+    "kv_budget_bytes": 102180864048,
+    "dense_status": "completed",
+    "half_status": "completed",
+    "dense_cancellation": "observed",
+    "half_cancellation": "observed",
+    "rows": [
+      {
+        "id": "4k-needle-10",
+        "prompt_tokens": 4586,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 3.117019084,
+          "decode_tps": 19.805507595340014
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 3.404920416,
+          "decode_tps": 21.86136793412403
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5803387030152829,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14780376425,
+            "half_active_bytes": 14738795037,
+            "active_bytes_delta": -41581388
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 14780376425,
+            "half_active_bytes": 14758183077,
+            "active_bytes_delta": -22193348
+          }
+        ]
+      },
+      {
+        "id": "4k-needle-50",
+        "prompt_tokens": 4585,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 2.904777833,
+          "decode_tps": 19.289215394437324
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 3.257431875,
+          "decode_tps": 9.705583993502072
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5802520140466846,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14780376425,
+            "half_active_bytes": 14737103297,
+            "active_bytes_delta": -43273128
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 14780376425,
+            "half_active_bytes": 14738795037,
+            "active_bytes_delta": -41581388
+          }
+        ]
+      },
+      {
+        "id": "4k-needle-90",
+        "prompt_tokens": 4585,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 3.002033458,
+          "decode_tps": 19.87631960128103
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 3.276926041,
+          "decode_tps": 19.309747743551842
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5802520140466846,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14780308573,
+            "half_active_bytes": 14738795033,
+            "active_bytes_delta": -41513540
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 14780376425,
+            "half_active_bytes": 14738795037,
+            "active_bytes_delta": -41581388
+          }
+        ]
+      },
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4600,
+        "dense": {
+          "final_text": "132",
+          "oracle_pass": false,
+          "completion_tokens": 4,
+          "ttft_s": 3.087295708,
+          "decode_tps": 18.28284474970024
+        },
+        "half": {
+          "final_text": "132",
+          "oracle_pass": false,
+          "completion_tokens": 4,
+          "ttft_s": 3.297780125,
+          "decode_tps": 9.718939070114653
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5782537067545305,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14780556645,
+            "half_active_bytes": 14737103329,
+            "active_bytes_delta": -43453316
+          }
+        ]
+      },
+      {
+        "id": "4k-code-50",
+        "prompt_tokens": 4604,
+        "dense": {
+          "final_text": "51",
+          "oracle_pass": false,
+          "completion_tokens": 3,
+          "ttft_s": 3.204312958,
+          "decode_tps": 17.598778644762053
+        },
+        "half": {
+          "final_text": "51",
+          "oracle_pass": false,
+          "completion_tokens": 3,
+          "ttft_s": 3.463074125,
+          "decode_tps": 9.254255449062931
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5786008230452675,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14780704105,
+            "half_active_bytes": 14737103333,
+            "active_bytes_delta": -43600772
+          }
+        ]
+      },
+      {
+        "id": "4k-tool_json-50",
+        "prompt_tokens": 4594,
+        "dense": {
+          "final_text": "```json\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Bern\", \"units\": \"celsius\"}}\n```",
+          "native_call_name": null,
+          "oracle_pass": true,
+          "completion_tokens": 30,
+          "ttft_s": 3.392344333,
+          "decode_tps": 16.295300440747194
+        },
+        "half": {
+          "final_text": "```json\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Bern\", \"units\": \"celsius\"}}\n```",
+          "native_call_name": null,
+          "oracle_pass": true,
+          "completion_tokens": 30,
+          "ttft_s": 3.557365083,
+          "decode_tps": 13.347645482747089
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5810309278350515,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14780488859,
+            "half_active_bytes": 14737267153,
+            "active_bytes_delta": -43221706
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 14780471945,
+            "half_active_bytes": 14738958873,
+            "active_bytes_delta": -41513072
+          }
+        ]
+      },
+      {
+        "id": "4k-long_decode-50",
+        "prompt_tokens": 4728,
+        "dense": {
+          "completed_numbered_items": 11,
+          "numbered_prefix_valid": false,
+          "oracle_pass": null,
+          "completion_tokens": 59,
+          "ttft_s": 2.9748135,
+          "decode_tps": 17.431185913341498
+        },
+        "half": {
+          "completed_numbered_items": 11,
+          "numbered_prefix_valid": false,
+          "oracle_pass": null,
+          "completion_tokens": 59,
+          "ttft_s": 3.128937583,
+          "decode_tps": 18.29529464938254
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5762439807383628,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 14783196153,
+            "half_active_bytes": 14739941965,
+            "active_bytes_delta": -43254188
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 14783196529,
+            "half_active_bytes": 14739941965,
+            "active_bytes_delta": -43254564
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 14783196149,
+            "half_active_bytes": 14739941961,
+            "active_bytes_delta": -43254188
+          }
+        ]
+      },
+      {
+        "id": "32k-needle-10",
+        "prompt_tokens": 32743,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 28.945168584,
+          "decode_tps": 16.4198845975325
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 26.812684583,
+          "decode_tps": 17.14039452290936
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.511742780084245,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 15356844681,
+            "half_active_bytes": 15026955261,
+            "active_bytes_delta": -329889420
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 15356963785,
+            "half_active_bytes": 15026989613,
+            "active_bytes_delta": -329974172
+          }
+        ]
+      },
+      {
+        "id": "32k-needle-50",
+        "prompt_tokens": 32742,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 29.070487292,
+          "decode_tps": 14.787441086280182
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 27.9326755,
+          "decode_tps": 17.38679743074996
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5117279835141524,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 15355271665,
+            "half_active_bytes": 15026955213,
+            "active_bytes_delta": -328316452
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 15356850317,
+            "half_active_bytes": 15026876477,
+            "active_bytes_delta": -329973840
+          }
+        ]
+      },
+      {
+        "id": "32k-needle-90",
+        "prompt_tokens": 32742,
+        "dense": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 28.021286916,
+          "decode_tps": 16.042990631179954
+        },
+        "half": {
+          "final_text": "violet-orbit-739",
+          "oracle_pass": true,
+          "completion_tokens": 8,
+          "ttft_s": 30.982505,
+          "decode_tps": 13.289142706620805
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5117279835141524,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 15356844733,
+            "half_active_bytes": 15026870893,
+            "active_bytes_delta": -329973840
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 15356963833,
+            "half_active_bytes": 15026989613,
+            "active_bytes_delta": -329974220
+          }
+        ]
+      },
+      {
+        "id": "32k-reasoning-50",
+        "prompt_tokens": 32760,
+        "dense": {
+          "final_text": "135",
+          "oracle_pass": false,
+          "completion_tokens": 4,
+          "ttft_s": 28.627170916,
+          "decode_tps": 13.751556361040237
+        },
+        "half": {
+          "final_text": "135",
+          "oracle_pass": false,
+          "completion_tokens": 4,
+          "ttft_s": 34.654804458,
+          "decode_tps": 3.7819428375879798
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5115095711170342,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 15355615777,
+            "half_active_bytes": 15027604629,
+            "active_bytes_delta": -328011148
+          }
+        ]
+      },
+      {
+        "id": "32k-code-50",
+        "prompt_tokens": 32760,
+        "dense": {
+          "final_text": "51",
+          "oracle_pass": false,
+          "completion_tokens": 3,
+          "ttft_s": 28.604266083,
+          "decode_tps": 15.578123600524663
+        },
+        "half": {
+          "final_text": "51",
+          "oracle_pass": false,
+          "completion_tokens": 3,
+          "ttft_s": 35.13102375,
+          "decode_tps": 14.238000001808226
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.5115095711170342,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 15355615777,
+            "half_active_bytes": 15026955209,
+            "active_bytes_delta": -328660568
+          }
+        ]
+      },
+      {
+        "id": "32k-tool_json-50",
+        "prompt_tokens": 32748,
+        "dense": {
+          "final_text": "```json\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Bern\", \"units\": \"celsius\"}}\n```",
+          "native_call_name": null,
+          "oracle_pass": true,
+          "completion_tokens": 30,
+          "ttft_s": 28.76052675,
+          "decode_tps": 15.469825605055219
+        },
+        "half": {
+          "final_text": "```json\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Bern\", \"units\": \"celsius\"}}\n```",
+          "native_call_name": null,
+          "oracle_pass": true,
+          "completion_tokens": 30,
+          "ttft_s": 42.414238166,
+          "decode_tps": 6.585603377097412
+        },
+        "tokens_equal": true,
+        "pruning_events": 5,
+        "last_prune_logical_ratio": 0.511816749484911,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 15355550273,
+            "half_active_bytes": 15299932631,
+            "active_bytes_delta": -55617642
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 15357128893,
+            "half_active_bytes": 15027153401,
+            "active_bytes_delta": -329975492
+          }
+        ]
+      },
+      {
+        "id": "32k-long_decode-50",
+        "prompt_tokens": 32889,
+        "dense": {
+          "completed_numbered_items": 146,
+          "numbered_prefix_valid": true,
+          "oracle_pass": null,
+          "completion_tokens": 768,
+          "ttft_s": 26.802802083,
+          "decode_tps": 14.59393680146764
+        },
+        "half": {
+          "completed_numbered_items": 146,
+          "numbered_prefix_valid": true,
+          "oracle_pass": null,
+          "completion_tokens": 768,
+          "ttft_s": 34.714788583,
+          "decode_tps": 15.169801439455567
+        },
+        "tokens_equal": true,
+        "pruning_events": 15,
+        "last_prune_logical_ratio": 1.0074937064574674,
+        "memory": [
+          {
+            "completion_tokens": 1,
+            "dense_active_bytes": 15358384673,
+            "half_active_bytes": 15028429773,
+            "active_bytes_delta": -329954900
+          },
+          {
+            "completion_tokens": 8,
+            "dense_active_bytes": 15358384721,
+            "half_active_bytes": 15026772497,
+            "active_bytes_delta": -331612224
+          },
+          {
+            "completion_tokens": 32,
+            "dense_active_bytes": 15360076741,
+            "half_active_bytes": 15029151743,
+            "active_bytes_delta": -330924998
+          },
+          {
+            "completion_tokens": 128,
+            "dense_active_bytes": 15359957645,
+            "half_active_bytes": 15029151743,
+            "active_bytes_delta": -330805902
+          },
+          {
+            "completion_tokens": 256,
+            "dense_active_bytes": 15361205301,
+            "half_active_bytes": 15029168127,
+            "active_bytes_delta": -332037174
+          },
+          {
+            "completion_tokens": 512,
+            "dense_active_bytes": 15370562505,
+            "half_active_bytes": 15031789563,
+            "active_bytes_delta": -338772942
+          }
+        ]
+      }
+    ]
+  }
+}

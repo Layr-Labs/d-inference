@@ -8,6 +8,8 @@ extension SSDHybridCheckpointStore {
 
     final class WriteJob: @unchecked Sendable {
         let source: CBv2CompleteCheckpointExport
+        let requestID: CBv2RequestID?
+        let sharedCheckpoint: Bool
         private var envelope: SSDHybridCheckpointEnvelope?
         private let hostReservation: ProcessHostBufferReservation?
         private let stats: SSDHybridCheckpointStatsBox
@@ -19,12 +21,15 @@ extension SSDHybridCheckpointStore {
         private let lock = NSLock()
         private var completion: (@Sendable ([Int]) -> Void)?
 
-        init(source: CBv2CompleteCheckpointExport, envelope: SSDHybridCheckpointEnvelope,
+        init(source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?, sharedCheckpoint: Bool,
+             envelope: SSDHybridCheckpointEnvelope,
              tag: Data, epoch: String?, repeated: Bool, authenticatedFile: SSDAuthenticatedFileIdentity?,
              settlement: PrefixCacheDonationSettlement,
              hostReservation: ProcessHostBufferReservation?, stats: SSDHybridCheckpointStatsBox,
              completion: @escaping @Sendable ([Int]) -> Void) {
             self.source = source
+            self.requestID = requestID
+            self.sharedCheckpoint = sharedCheckpoint
             self.envelope = envelope
             self.hostReservation = hostReservation
             self.stats = stats
@@ -159,6 +164,8 @@ extension SSDHybridCheckpointStore {
         let localRepeat = writeDemand.observe(short, now: config.nowSeconds())
         let demand = donationWritePolicy(requestID: requestID, localRepeat: localRepeat,
                                         checkpointPosition: manifest.position)
+        let sharedCheckpoint = SSDSharedCheckpointPages.eligible(modelID: config.modelId,
+            manifest: manifest, requestID: requestID, maximumPlaintextBytes: config.maxReadBytes)
         if !index.contains(tag16: short) {
             // Demand gate first: a fleet-novel checkpoint is skipped before any
             // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
@@ -173,11 +180,11 @@ extension SSDHybridCheckpointStore {
             // worker charges each actual encrypted write before issuing it.
             let advisoryBytes: Int
             do {
-                advisoryBytes = config.losslessCompression
+                advisoryBytes = sharedCheckpoint ? 1 : (config.losslessCompression
                     ? try SSDBlockStore.minimumEncodedByteCount(metadata: envelope.metadata(
                         tag: tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout,
                         chunkCodec: SSDLosslessChunkCodec.identity))
-                    : envelope.plaintextBytes
+                    : envelope.plaintextBytes)
             } catch { return .refused(.incompleteLayerState) }
             if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: advisoryBytes, repeated: demand.repeated)) {
                 return .refused(refusal)
@@ -197,7 +204,8 @@ extension SSDHybridCheckpointStore {
             return proof.files[short]
         }
         return .ready(WriteJob(
-            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: demand.repeated,
+            source: source, requestID: requestID, sharedCheckpoint: sharedCheckpoint,
+            envelope: envelope, tag: tag, epoch: epoch, repeated: demand.repeated,
             authenticatedFile: alreadyAuthenticated, settlement: settlement,
             hostReservation: hostReservation, stats: statsBox, completion: completion))
     }
@@ -208,6 +216,10 @@ extension SSDHybridCheckpointStore {
         case .rateLimited: .writeRateLimited
         case .priorityLimited: .writePriorityLimited
         }
+    }
+
+    private struct SharedPageWriteRefusal: Error {
+        let outcome: PrefixCacheDonationOutcome
     }
 
     private struct WriteResult {
@@ -253,7 +265,10 @@ extension SSDHybridCheckpointStore {
         var authenticatingExistingFile = false
         do {
             let alreadyDurable = index.contains(tag16: short)
-            if alreadyDurable, job.authenticatedFile?.matches(url: url) == true {
+            if alreadyDurable,
+                (config.backendLayout != CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                    || config.modelId.lowercased().contains("mimo")),
+                job.authenticatedFile?.matches(url: url) == true {
                 // This submission already authenticated all bytes during its
                 // stage. Identity and epoch remain unchanged; no second read.
             } else if alreadyDurable {
@@ -271,34 +286,52 @@ extension SSDHybridCheckpointStore {
                         result.outcome = .diskSpaceInsufficient; return
                     }
                 }
-                let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: metadata)
-                if !config.losslessCompression,
-                    let refusal = Self.writeRefusal(rateLimiter.consume(bytes: budgetBytes, repeated: job.repeated)) {
-                    result.outcome = refusal; return
+                let written: Int
+                let physicalWritten: Int
+                if job.sharedCheckpoint, let requestID = job.requestID {
+                    let result = try sharedPages.write(source: job.source, requestID: requestID,
+                        checkpoint: url, tag: job.tag, key: kekKey, strictFsync: config.strictFsync,
+                        createdAt: config.nowSeconds(), maximumPlaintextBytes: config.maxReadBytes,
+                        check: { try self.checkWrite(job) }, charge: { bytes in
+                            if let refusal = Self.writeRefusal(self.rateLimiter.consume(bytes: bytes, repeated: job.repeated)) {
+                                throw SharedPageWriteRefusal(outcome: refusal)
+                            }
+                        }, countRead: { count in
+                            self.statsBox.update { $0.bytesRead += count; $0.donationReadBytes += count }
+                        })
+                    written = result.logicalBytes
+                    physicalWritten = result.physicalBytesWritten
+                } else {
+                    let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: metadata)
+                    if !config.losslessCompression,
+                        let refusal = Self.writeRefusal(rateLimiter.consume(bytes: budgetBytes, repeated: job.repeated)) {
+                        result.outcome = refusal; return
+                    }
+                    written = try SSDBlockStore.writeStreaming(
+                        to: url, metadata: metadata, kekKey: kekKey,
+                        maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
+                        strictFsync: config.strictFsync,
+                        elementBytes: { index in
+                            guard index > 0 else { return 1 }
+                            let dtype = job.source.manifest.tensors[envelope.segments[index - 1].tensor].dtype
+                            switch dtype {
+                            case .bfloat16, .float16: return 2
+                            case .float32, .int32: return 4
+                            default: return 1
+                            }
+                        }, beforeBytesWrite: { bytes in
+                            try self.admitStreamedWrite(bytes: bytes, job: job)
+                        },
+                        chunk: { index in
+                            try self.checkWrite(job)
+                            if index == 0 { return envelope.manifestBytes }
+                            let segment = envelope.segments[index - 1]
+                            self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, segment.bytes) }
+                            return try job.source.readSegment(
+                                tensorIndex: segment.tensor, byteOffset: segment.offset, maximumBytes: segment.bytes)
+                        })
+                    physicalWritten = written
                 }
-                let written = try SSDBlockStore.writeStreaming(
-                    to: url, metadata: metadata, kekKey: kekKey,
-                    maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-                    strictFsync: config.strictFsync,
-                    elementBytes: { index in
-                        guard index > 0 else { return 1 }
-                        let dtype = job.source.manifest.tensors[envelope.segments[index - 1].tensor].dtype
-                        switch dtype {
-                        case .bfloat16, .float16: return 2
-                        case .float32, .int32: return 4
-                        default: return 1
-                        }
-                    }, beforeBytesWrite: { bytes in
-                        try self.admitStreamedWrite(bytes: bytes, job: job)
-                    },
-                    chunk: { index in
-                        try self.checkWrite(job)
-                        if index == 0 { return envelope.manifestBytes }
-                        let segment = envelope.segments[index - 1]
-                        self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, segment.bytes) }
-                        return try job.source.readSegment(
-                            tensorIndex: segment.tensor, byteOffset: segment.offset, maximumBytes: segment.bytes)
-                    })
                 lock.withLock { beforeWriteIndexForTesting }?(url, false)
                 guard !isClosed else { result.outcome = .cacheClosed; return }
                 guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
@@ -314,11 +347,14 @@ extension SSDHybridCheckpointStore {
                     guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular else {
                         return false
                     }
+                    if SSDBlockStore.isRealDirectory(SSDCheckpointPageFiles.directory(for: url)) {
+                        sharedPageAccounting.register(checkpoint: url)
+                    }
                     index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
                     return true
                 }
                 guard indexed else { result.outcome = .cacheEntryEvicted; return }
-                statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
+                statsBox.update { $0.filesWritten += 1; $0.bytesWritten += physicalWritten }
             }
             if alreadyDurable { lock.withLock { beforeWriteIndexForTesting }?(url, true) }
             // The durable file and its index entry now form one committed
@@ -345,7 +381,9 @@ extension SSDHybridCheckpointStore {
                 result.outcome = .writeFailed
             }
         } catch {
-            if isClosed {
+            if let refusal = error as? SharedPageWriteRefusal {
+                result.outcome = refusal.outcome
+            } else if isClosed {
                 result.outcome = .cacheClosed
             } else if !epochMatches(job.epoch) {
                 result.outcome = .cacheEpochChanged

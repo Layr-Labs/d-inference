@@ -41,7 +41,9 @@ extension SSDHybridCheckpointStore {
                 metadata.layoutEpoch == SSDHybridCheckpointEnvelope.layoutEpoch(
                     identity: self.identity, backendLayout: self.config.backendLayout),
                 metadata.blockSize == PrefixCachePolicy.blockSize,
-                (metadata.chunkPlaintextSizes.first ?? Int.max) <= CBv2CompleteCheckpointManifest.maximumEncodedBytes
+                (metadata.chunkPlaintextSizes.first ?? Int.max) <=
+                    (metadata.windowKind == SSDCheckpointPageFiles.manifestKind
+                        ? SSDSharedCheckpointPages.maximumManifestBytes : CBv2CompleteCheckpointManifest.maximumEncodedBytes)
             else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
         }
         do {
@@ -123,6 +125,9 @@ extension SSDHybridCheckpointStore {
         var importer: SSDCheckpointImport?
         defer { importer?.close() }
         var manifest: CBv2CompleteCheckpointManifest?
+        var sharedEnvelope: SSDSharedCheckpointPages.Envelope?
+        var sharedBytes: Data?
+        var sharedHeader = false
         statsBox.update { $0.filesRead += 1 }
         do {
             try SSDBlockStore.readStreaming(
@@ -131,9 +136,19 @@ extension SSDHybridCheckpointStore {
                 maximumPlaintextBytes: config.maxReadBytes,
                 maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60,
                 checkCancellation: check, beforeRead: budget.beforeRead, onBytesRead: countRead,
-                validateMetadata: validate, consumeChunk: { index, data in
+                validateMetadata: { metadata in
+                    try validate(metadata)
+                    sharedHeader = metadata.windowKind == SSDCheckpointPageFiles.manifestKind
+                }, consumeChunk: { index, data in
                     guard index == 0 else { throw CBv2CompleteCheckpointError.invalidManifest }
-                    manifest = try SSDHybridCheckpointEnvelope.decodeManifest(data)
+                    if sharedHeader {
+                        let envelope = try SSDSharedCheckpointPages.Envelope.decode(data)
+                        sharedEnvelope = envelope
+                        sharedBytes = data
+                        manifest = envelope.manifest
+                    } else {
+                        manifest = try SSDHybridCheckpointEnvelope.decodeManifest(data)
+                    }
                     throw ReadControl.manifestRead
                 })
         } catch ReadControl.manifestRead { }
@@ -141,7 +156,6 @@ extension SSDHybridCheckpointStore {
             manifest.backendLayout == config.backendLayout,
             manifest.cacheSalt == request.checkpointCacheSalt, request.promptTokens.starts(with: manifest.prefixTokens)
         else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-        let envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
         let plan: SSDCheckpointImportPlan
         do { plan = try makeImportPlan(manifest) }
         catch CBv2KVError.capacityExhausted { throw ReadControl.retryableCapacity }
@@ -177,28 +191,42 @@ extension SSDHybridCheckpointStore {
                                         at: url, under: config.root)
         var authenticatedFile: SSDAuthenticatedFileIdentity?
         statsBox.update { $0.filesRead += 1 }
-        try SSDBlockStore.readStreaming(
-            from: url, kekKey: kekKey,
-            maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-            maximumPlaintextBytes: config.maxReadBytes,
-            maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60, requireEOF: true,
-            checkCancellation: check, beforeRead: budget.beforeRead, onBytesRead: countRead,
-            onAuthenticatedFile: { authenticatedFile = $0 },
-            validateMetadata: { metadata in
-                try validate(metadata)
-                guard envelope.matches(metadata, tag: candidate.tag, identity: self.identity,
-                                      backendLayout: self.config.backendLayout) else {
-                    throw CBv2CompleteCheckpointError.incompatibleCheckpoint
-                }
-            }, consumeChunk: { index, data in
-                if index == 0 {
-                    guard data == envelope.manifestBytes else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-                } else {
-                    let segment = envelope.segments[index - 1]
+        if let sharedEnvelope, let sharedBytes {
+            try SSDSharedCheckpointPages.read(envelope: sharedEnvelope, encoded: sharedBytes,
+                checkpoint: url, tag: candidate.tag, key: kekKey,
+                maximumPlaintextBytes: config.maxReadBytes, check: check,
+                beforeRead: budget.beforeRead, countRead: countRead,
+                onAuthenticatedFile: { authenticatedFile = $0 }, consume: { page, data in
                     self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, data.count) }
-                    try filling.appendSegment(tensorIndex: segment.tensor, byteOffset: segment.offset, data: data)
-                }
-            })
+                    try filling.appendSegment(tensorIndex: page.tensor, byteOffset: page.offset, data: data)
+                })
+        } else {
+            // Shared graphs already carry the native manifest. Encode the
+            // independent envelope only when that representation is read.
+            let envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
+            try SSDBlockStore.readStreaming(
+                from: url, kekKey: kekKey,
+                maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
+                maximumPlaintextBytes: config.maxReadBytes,
+                maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60, requireEOF: true,
+                checkCancellation: check, beforeRead: budget.beforeRead, onBytesRead: countRead,
+                onAuthenticatedFile: { authenticatedFile = $0 },
+                validateMetadata: { metadata in
+                    try validate(metadata)
+                    guard envelope.matches(metadata, tag: candidate.tag, identity: self.identity,
+                                          backendLayout: self.config.backendLayout) else {
+                        throw CBv2CompleteCheckpointError.incompatibleCheckpoint
+                    }
+                }, consumeChunk: { index, data in
+                    if index == 0 {
+                        guard data == envelope.manifestBytes else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
+                    } else {
+                        let segment = envelope.segments[index - 1]
+                        self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, data.count) }
+                        try filling.appendSegment(tensorIndex: segment.tensor, byteOffset: segment.offset, data: data)
+                    }
+                })
+        }
         try check()
         guard let authenticatedFile, authenticatedFile.matches(url: url) else {
             throw SSDAuthenticatedFileChange.changedDuringRead

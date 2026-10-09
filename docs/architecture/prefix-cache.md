@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -444,8 +444,52 @@ validates the durable record without rotating it.
 See [routing evidence lifecycle](cache-aware-routing.md) and
 [eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
-A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
-one per file. A remote donor writes them only on evidence of demand: the
+A natural `stop`/`length` donor exports its actual complete prompt checkpoints.
+Historical-attention endpoints (Gemma 4, GPT-OSS) use an encrypted complete
+manifest with links to immutable encrypted KV pages. Each endpoint owns its
+links under `<tag>.pages/`, so retiring an older checkpoint does not invalidate
+its descendants. Other complete layouts, MiMo, missing submission identities,
+and page graphs exceeding the bounded envelope keep the independent full-file
+representation (`SSDSharedCheckpointPages.eligible`). Both representations
+restore the same complete native state.
+
+`SSDCheckpointPageGeometry.pages` splits each KV head independently at
+1,024-token boundaries. Extending `[1, H, T, D]` changes the flattened stride
+between heads; head-local pages preserve the common full-attention prefix for
+all heads. Page IDs bind a random store execution namespace, the submission
+receipt, authenticated scope, verified storage identity, tensor/absolute-token
+coordinate, and a digest of the incoming native bytes. Page names use the
+existing derived `K_lookup` with a separate page domain; they do not use the
+wrapping KEK directly. Sharing never combines
+independent executions. The final destination of every reused link is fully
+authenticated; source-path replacement cannot substitute a different page.
+Newly encoded pages are authenticated too, and all page file identities are
+rechecked around manifest publication. Windows share only equal absolute token ranges
+and equal bytes: Gemma's 1,024-token windows and GPT-OSS's 128-token windows at
+checkpoints 1,024 tokens apart do not overlap.
+
+The encrypted endpoint binds every ordered page ID, digest, tensor offset and
+length. Staging authenticates that endpoint and every referenced page, checks
+that the files stayed unchanged throughout the transfer, and finishes only
+after the ordinary native importer accepts all state. Missing, corrupted,
+reordered or incomplete pages produce a cold miss. There are no parent chains.
+The filesystem's hard-link count supplies durable page lifetime; endpoint TTL
+and LRU remove only that endpoint's links. Restart scans recover logical read
+cost separately from unique physical inode bytes; orphan page directories from
+interrupted writes retire under the ordinary generation/entry barriers
+(`SSDCheckpointPageFiles`, `SSDCheckpointPageAccounting`).
+The [storage privacy boundary](security/encryption.md#provider-cache-storage)
+includes observable page-link equality.
+
+Sharing reduces disk retention and new bytes written; native source readback,
+hashing, authenticated-page checks and full native restore remain necessary.
+It does not reduce the active sequence's KV memory. Each endpoint retains its
+complete window. Its ideal full-attention disk footprint is the union of the
+captured prefixes rather than their sum; actual savings include page framing,
+manifest overhead and independently retained windows. The writer keeps the
+existing queue, host-memory, daily-write, disk-space and generation gates.
+
+A remote donor writes them only on evidence of demand: the
 coordinator's `cache_repeated_prefix_tokens` at or above the effective-token
 floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
 `skipped_novel` without touching disk. Older coordinators and local serving

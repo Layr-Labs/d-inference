@@ -79,6 +79,13 @@ struct SSDLookupKeys: Sendable {
             domain: Data("dbkv3-complete-checkpoint-v1".utf8))
     }
 
+    /// The execution-scoped address already binds all page coordinates and
+    /// native bytes. Keep naming on K_lookup and away from the wrapping KEK.
+    func checkpointPageTag(address: Data, cacheSalt: String) -> Data {
+        tag(chainHash: address, cacheSalt: cacheSalt,
+            domain: Data("dbkv3-complete-checkpoint-page-v1".utf8))
+    }
+
     private func tag(chainHash: Data, cacheSalt: String, domain: Data) -> Data {
         var message = Data()
         message.append(domain)

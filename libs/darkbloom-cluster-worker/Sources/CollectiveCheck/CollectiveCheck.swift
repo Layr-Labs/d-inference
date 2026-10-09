@@ -15,7 +15,8 @@ import MLX
 // that separately (interface byte counters, loaded images, stack samples).
 //
 // A blocked native collective cannot be interrupted from inside the process,
-// so a fixed SIGALRM deadline ends the run. It holds no model memory.
+// so a fixed deadline ends the run from a separate thread (`ProcessDeadline`).
+// It holds no model memory.
 
 struct CheckFailure: Error, CustomStringConvertible {
     let description: String
@@ -98,6 +99,21 @@ struct Report: Encodable {
     var passed = false
 }
 
+/// Whether this process's SIGALRM handler and real-time timer survived native
+/// initialization: the RDMA libraries are loaded by then.
+func alarmState() -> String {
+    var action = sigaction()
+    sigaction(SIGALRM, nil, &action)
+    var timer = itimerval()
+    getitimer(ITIMER_REAL, &timer)
+    let handler = unsafeBitCast(action.__sigaction_u.__sa_handler, to: Int.self)
+    let disposition = handler == 0 ? "default" : handler == 1 ? "ignored" : "handler installed"
+    var blocked = sigset_t()
+    pthread_sigmask(SIG_BLOCK, nil, &blocked)
+    return "after init: SIGALRM \(disposition), real timer \(timer.it_value.tv_sec) s remaining, "
+        + "blocked on this thread: \(sigismember(&blocked, SIGALRM) == 1)"
+}
+
 func uptime() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
 
 func note(_ rank: Int?, _ message: String) {
@@ -163,8 +179,13 @@ struct RawGroup {
         do {
             let options = try Options(arguments: Array(CommandLine.arguments.dropFirst()))
             signal(SIGPIPE, SIG_IGN)
+            // Both are armed: the thread is the one that is relied on. The
+            // alarm stays so its state after native initialization can be reported.
             signal(SIGALRM) { _ in Darwin._exit(124) }
             alarm(UInt32(options.deadlineSeconds))
+            try ProcessDeadline.arm(
+                uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+                    + UInt64(options.deadlineSeconds) * 1_000_000_000, status: 124)
             let report = try Device.withDefaultDevice(.cpu) {
                 try options.mode == .raw ? raw(options) : wrapper(options)
             }
@@ -200,6 +221,7 @@ struct RawGroup {
             var report = Report(mode: options.mode.rawValue, rank: rank, worldSize: size,
                                 initSeconds: uptime() - started)
             note(rank, "initialized in \(String(format: "%.3f", report.initSeconds)) s; world size \(size)")
+            note(rank, alarmState())
 
             // Rank handshake, then the workload itself: a launch with different
             // arguments on the two Macs must stop here on both.

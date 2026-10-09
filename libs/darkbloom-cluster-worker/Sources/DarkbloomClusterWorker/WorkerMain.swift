@@ -1,3 +1,4 @@
+import DarkbloomClusterRuntime
 import Darwin
 import Foundation
 
@@ -21,6 +22,9 @@ import Foundation
             let remaining = deadline - beforeAlarm
             guard remaining <= 300_000_000_000 else { throw WorkerFailure.invalid("Worker startup lifetime exceeds its bound") }
             alarm(UInt32((remaining + 999_999_999) / 1_000_000_000))
+            // The alarm did not end a rank spinning in the RDMA completion poll
+            // on real hardware; this thread is the last resort that is relied on.
+            try ProcessDeadline.arm(uptimeNanoseconds: deadline, status: 124)
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
             try pipes.check()
             let runtime = try NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap)

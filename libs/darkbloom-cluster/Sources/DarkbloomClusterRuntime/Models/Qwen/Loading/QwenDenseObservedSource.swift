@@ -53,7 +53,11 @@ enum QwenDenseObservedSourceValidation {
               identity.aggregateSHA256 == profile.artifactAggregateSHA256,
               identity.configurationSHA256 == profile.configurationSHA256,
               identity.verifiedManifestSHA256 == profile.manifestSHA256,
-              identity.retainedSourceCount == profile.canonicalTensors.count,
+              // Stored tensors the sanitizer kept: one per canonical tensor,
+              // two for each fused routed bank.
+              identity.retainedSourceCount == profile.canonicalTensors.reduce(0, {
+                  $0 + QwenRoutedExpertStageMetadata.sourcePartCount(canonicalName: $1.name)
+              }),
               identity.bf16ConversionEnabled == profile.requiredBF16ConversionPolicy else {
             throw ProbeError("Observed registered source identity, retained count, Plan or role differs")
         }

@@ -23,6 +23,8 @@ public enum QwenResidentStageLoadCheck {
         public let cacheBytesAfterRelease: Int
         public let modelReleased: Bool
         public let loadSeconds: Double
+        /// How long the loaded stage was kept before its release (0 unless asked).
+        public let heldSeconds: Double
         public let collectiveCreated = false
     }
 
@@ -34,8 +36,11 @@ public enum QwenResidentStageLoadCheck {
     private static let nativeNames = ["JACCL_RANK", "MLX_RANK", "JACCL_IBV_DEVICES", "MLX_IBV_DEVICES",
         "JACCL_COORDINATOR", "MLX_JACCL_COORDINATOR", "JACCL_RING", "MLX_JACCL_RING"]
 
+    /// `holdSeconds` keeps the loaded stage for that long before releasing it,
+    /// so a second load can be tried on the same Mac while this one is resident.
     public static func run(modelDirectory: URL, rank: Int, stageCut: Int,
-                           deadlineUptimeNanoseconds: UInt64) throws -> Receipt {
+                           deadlineUptimeNanoseconds: UInt64, holdSeconds: Int = 0) throws -> Receipt {
+        guard (0...240).contains(holdSeconds) else { throw ProbeError("Stage load check holds for 0...240 seconds") }
         var environment = ProcessInfo.processInfo.environment
         guard nativeNames.allSatisfy({ environment[$0] == nil }) else {
             throw ProbeError("Stage load check refuses a cluster transport environment; it creates no collective")
@@ -95,6 +100,13 @@ public enum QwenResidentStageLoadCheck {
                 guard let receipt = stage?.loaded.receipt, let layers = stage?.loaded.layerCount else {
                     throw ProbeError("Stage loader returned no stage")
                 }
+                let holdStarted = DispatchTime.now().uptimeNanoseconds
+                let holdUntil = holdStarted + UInt64(holdSeconds) * 1_000_000_000
+                while DispatchTime.now().uptimeNanoseconds < holdUntil {
+                    try checked()
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                let held = Double(DispatchTime.now().uptimeNanoseconds - holdStarted) / 1e9
                 // Release in the order the resident runtime uses: drop the
                 // stage, drain both streams, then return cached buffers.
                 stage = nil
@@ -109,7 +121,7 @@ public enum QwenResidentStageLoadCheck {
                     loadedTensorBytes: receipt.loadedTensorBytes,
                     activeBytesBefore: before, activeBytesLoaded: loadedBytes,
                     activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
-                    modelReleased: retired == nil, loadSeconds: seconds)
+                    modelReleased: retired == nil, loadSeconds: seconds, heldSeconds: holdSeconds == 0 ? 0 : held)
             } catch {
                 let primary = error
                 stage = nil

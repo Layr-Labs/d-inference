@@ -20,7 +20,7 @@ import Foundation
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard arguments.count % 2 == 0 else { throw Failure("Expected --name value pairs") }
             for index in stride(from: 0, to: arguments.count, by: 2) {
-                guard ["--model-dir", "--rank", "--stage-cut", "--deadline-seconds"].contains(arguments[index]),
+                guard ["--model-dir", "--rank", "--stage-cut", "--deadline-seconds", "--hold-seconds"].contains(arguments[index]),
                       fields[arguments[index]] == nil else {
                     throw Failure("Unknown or repeated argument \(arguments[index])")
                 }
@@ -29,13 +29,15 @@ import Foundation
             guard let path = fields["--model-dir"], path.hasPrefix("/"),
                   let rank = fields["--rank"].flatMap(Int.init), (0...1).contains(rank),
                   let cut = fields["--stage-cut"].flatMap(Int.init),
-                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds) else {
-                throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut CUT [--deadline-seconds 10...300]\n"
-                    + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B")
+                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds),
+                  let hold = Int(fields["--hold-seconds"] ?? "0"), (0...240).contains(hold), hold < seconds else {
+                throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut CUT [--deadline-seconds 10...300] [--hold-seconds 0...240]\n"
+                    + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B\n"
+                    + "  --hold-seconds keeps the loaded stage that long before release (less than the deadline)")
             }
             let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds) * 1_000_000_000
             let receipt = try QwenResidentStageLoadCheck.run(modelDirectory: URL(fileURLWithPath: path),
-                rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline)
+                rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             print(String(decoding: try encoder.encode(receipt), as: UTF8.self))

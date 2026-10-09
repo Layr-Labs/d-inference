@@ -217,9 +217,13 @@ final class MemberFixturePeer: @unchecked Sendable {
         }
         if !installProductionGate { context = try await client.attachFixtureControl(control) }
     }
+    /// Waits for the member to send `type`. A timeout names what the member
+    /// did instead: a `quarantined` control that sent no release never
+    /// observed its owner process exit, whatever the owner itself did.
     func wait(_ type: String) async throws -> NativePairMessage {
-        let snapshot = try #require(try await mock.waitForSnapshot(timeout: .seconds(8)) { $0.nativePairs.contains { $0.type == type } })
-        let message = try #require(snapshot.nativePairs.first { $0.type == type })
+        let snapshot = try await mock.waitForSnapshot(timeout: .seconds(8)) { $0.nativePairs.contains { $0.type == type } }
+        let message = try #require(snapshot?.nativePairs.first { $0.type == type },
+            "no \(type) within 8 s; member control is \(control.status), frames sent: \(mock.snapshot().nativePairs.map(\.type))")
         try signer.verify(message); return message
     }
     func close() async { if let client { await client.shutdown() }; await mock.shutdown() }

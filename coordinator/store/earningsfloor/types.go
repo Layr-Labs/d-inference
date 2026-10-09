@@ -23,8 +23,15 @@ type Consent struct {
 	// Unsupported declarations stop eligibility but do not prove that a
 	// machine had never opted in before it started reporting saved consent.
 	Supported bool
+	// Qualified records trusted macOS and downloaded-model eligibility at At.
+	// It is independent of saved consent and never creates a new baseline.
+	Qualified bool
 	OptedIn   bool
 	At        time.Time
+	// Receipt-time hardware preserves the first opt-in's cohort even when
+	// verified inventory binding happens after that registration is accepted.
+	Chip     string
+	MemoryGB float64
 }
 
 type Enrollment struct {
@@ -65,17 +72,19 @@ type Pool struct {
 
 const (
 	TrackedBaseline  = "tracked"
+	CohortBaseline   = "cohort"
 	VerifiedBaseline = "verified_history"
 
 	Paid            = "paid"
 	Zero            = "zero"
 	OptedOut        = "opted_out"
+	Ineligible      = "ineligible"
 	PoolExhausted   = "pool_exhausted"
 	HistoryRequired = "history_required"
 )
 
 // A pending pool-exhausted receipt is retried without advancing NextDay. Paid,
-// zero and opted-out days are final, including across canonical identity merges.
+// zero, opted-out and ineligible days are final across canonical identity merges.
 type Settlement struct {
 	MachineID         string    `json:"machine_id"`
 	AccountID         string    `json:"account_id"`

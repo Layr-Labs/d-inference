@@ -56,6 +56,9 @@ func (e *Engine) SettleClosedDays(ctx context.Context) (Result, error) {
 		return result, errors.New("Autopilot reward store unavailable")
 	}
 	closedBefore := floorpolicy.Day(e.now())
+	if end := floorpolicy.EndsAt(); closedBefore.After(end) {
+		closedBefore = end
+	}
 	var firstErr error
 	for after := ""; ; {
 		if err := ctx.Err(); err != nil {
@@ -90,7 +93,7 @@ func (e *Engine) SettleClosedDays(ctx context.Context) (Result, error) {
 					result.PoolPending++
 				case earningsfloor.HistoryRequired:
 					result.HistoryPending++
-				case earningsfloor.Paid, earningsfloor.Zero, earningsfloor.OptedOut:
+				case earningsfloor.Paid, earningsfloor.Zero, earningsfloor.OptedOut, earningsfloor.Ineligible:
 					result.ProcessedDays++
 					day = day.AddDate(0, 0, 1)
 					continue

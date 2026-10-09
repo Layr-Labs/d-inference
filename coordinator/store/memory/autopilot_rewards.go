@@ -13,6 +13,7 @@ import (
 )
 
 var _ store.AutopilotRewardsStore = (*MemoryStore)(nil)
+var _ store.AutopilotConsentJournal = (*MemoryStore)(nil)
 
 func (s *MemoryStore) AutopilotRewardPool(ctx context.Context) (earningsfloor.Pool, error) {
 	s.mu.RLock()

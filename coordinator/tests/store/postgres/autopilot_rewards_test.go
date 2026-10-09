@@ -21,13 +21,18 @@ type autopilotRewardsFixture struct {
 
 func newAutopilotRewardsFixture(t *testing.T) *autopilotRewardsFixture {
 	t.Helper()
-	f := &autopilotRewardsFixture{now: time.Now().UTC().Add(40 * 24 * time.Hour)}
+	trackingStart := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	f := &autopilotRewardsFixture{now: trackingStart.Add(40 * 24 * time.Hour)}
 	var err error
 	f.postgresFixture, err = openPostgresFixture(t.Context(), store.Config{DatabaseURL: newThrowawayTestDatabase(t), Now: func() time.Time { return f.now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(f.Close)
+	// Pin the campaign clock rather than aging these tests past its cutoff.
+	if _, err := f.pool.Exec(t.Context(), `UPDATE autopilot_reward_pool SET tracking_started_at=$1`, trackingStart); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := f.AutopilotRewardPool(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -61,17 +66,21 @@ func (f *autopilotRewardsFixture) enroll(t *testing.T, account, session string, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.OpenProviderSession(ctx, session, "", account); err != nil {
+	before := f.now
+	f.now = f.firstSeen
+	err = f.OpenProviderSession(ctx, session, "", account)
+	f.now = before
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.TouchProviderSession(ctx, session, "", account, "key:"+session, f.firstSeen); err != nil {
+	if err := f.TouchProviderSession(ctx, session, "", account, "key:"+session, f.now); err != nil {
 		t.Fatal(err)
 	}
 	if empty, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: session, AccountID: account, Supported: true, At: f.firstSeen}); err != nil || empty.MachineID != "" {
 		t.Fatalf("explicit initial off: %+v %v", empty, err)
 	}
 	f.earning(t, account, session, "baseline:"+session, "inference", sum, first.Add(-24*time.Hour))
-	enrollment, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: session, AccountID: account, Supported: true, OptedIn: true, At: first})
+	enrollment, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: session, AccountID: account, Supported: true, Qualified: true, OptedIn: true, At: first})
 	if err != nil || enrollment.MachineID != identity.ID || !enrollment.BaselineKnown || enrollment.SevenDayEarningsMicroUSD != sum {
 		t.Fatalf("enroll: %+v %v", enrollment, err)
 	}
@@ -84,7 +93,7 @@ func TestAutopilotRewardsUnboundDeclarationSurvivesReopenAndOfflineBinding(t *te
 	first := f.firstSeen.Add(12 * time.Hour)
 	f.earning(t, "owner", "original", "baseline", "inference", 70, first.Add(-time.Hour))
 	for _, declaration := range []earningsfloor.Consent{
-		{SessionID: "original", AccountID: "owner", Supported: true, OptedIn: true, At: first},
+		{SessionID: "original", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: first},
 		{SessionID: "original", AccountID: "owner", Supported: true, At: first.Add(time.Hour)},
 	} {
 		if _, err := f.ObserveAutopilotConsent(ctx, declaration); !errors.Is(err, earningsfloor.ErrIdentity) {
@@ -101,6 +110,15 @@ func TestAutopilotRewardsUnboundDeclarationSurvivesReopenAndOfflineBinding(t *te
 		t.Fatalf("offline materialization: %+v %v", rows, err)
 	}
 	got := rows[0]
+	if !got.BaselineKnown {
+		if !got.FirstObservedAt.Equal(first) {
+			t.Fatalf("lost original unbound opt-in: %+v", got)
+		}
+		got, err = f.RestoreAutopilotBaseline(ctx, earningsfloor.Baseline{MachineID: identity.ID, FirstOptInAt: first, SevenDayEarningsMicroUSD: 70, Evidence: "verified original unbound declaration and earnings"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	if got.MachineID != identity.ID || !got.BaselineKnown || got.FirstOptInAt == nil || !got.FirstOptInAt.Equal(first) || !got.FirstObservedAt.Equal(first) || got.SevenDayEarningsMicroUSD != 70 || got.DailyFloorMicroUSD != 11 || got.OptedIn {
 		t.Fatalf("lost original declaration or false transition: %+v", got)
 	}
@@ -108,7 +126,7 @@ func TestAutopilotRewardsUnboundDeclarationSurvivesReopenAndOfflineBinding(t *te
 	if _, err := f.ObserveMachine(ctx, store.MachineObservation{SessionID: "reconnected", AccountID: "owner", SEKey: "stable", At: first.Add(24 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	got, err = f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "reconnected", AccountID: "owner", Supported: true, OptedIn: true, At: first.Add(24 * time.Hour)})
+	got, err = f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "reconnected", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: first.Add(24 * time.Hour)})
 	if err != nil || !got.FirstOptInAt.Equal(first) || got.DailyFloorMicroUSD != 11 {
 		t.Fatalf("reconnect re-anchored baseline: %+v %v", got, err)
 	}

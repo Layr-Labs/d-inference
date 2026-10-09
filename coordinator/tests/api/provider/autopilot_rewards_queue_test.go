@@ -49,8 +49,8 @@ func TestAutopilotConsentCaptureStorageFailurePreservesFIFOAndDeadline(t *testin
 	f.sync(t)
 	elapsed := time.Since(started)
 	calls = f.store.snapshot()
-	if len(calls) != 5 || !errors.Is(calls[3].err, earningsfloor.ErrIdentity) || !errors.Is(calls[4].err, context.DeadlineExceeded) {
-		t.Fatalf("identity did not continue to the later bounded journal write: %+v", calls)
+	if len(calls) != 5 || calls[3].err != nil || !errors.Is(calls[4].err, context.DeadlineExceeded) {
+		t.Fatalf("successful unbound journal did not continue to the later bounded write: %+v", calls)
 	}
 	if calls[3].deadline.IsZero() || !calls[3].deadline.Equal(calls[4].deadline) || calls[4].deadline.Sub(started) > 1100*time.Millisecond || elapsed > 2*time.Second {
 		t.Fatalf("flush did not share one one-second deadline: first=%v last=%v elapsed=%v", calls[3].deadline, calls[4].deadline, elapsed)
@@ -63,8 +63,8 @@ func TestAutopilotConsentCaptureStorageFailurePreservesFIFOAndDeadline(t *testin
 	f.write(t, map[string]any{"type": protocol.TypeCodeAttestationResponse})
 	f.sync(t)
 	retried := f.store.snapshot()
-	if len(retried) != 7 || retried[5].err != nil || retried[6].err != nil || retried[5].consent != first || retried[6].consent != calls[4].consent {
-		t.Fatalf("failed journal operations did not recover in FIFO order: %+v", retried)
+	if len(retried) != 6 || retried[5].err != nil || retried[5].consent != calls[4].consent {
+		t.Fatalf("successful head was replayed or failed tail did not recover: %+v", retried)
 	}
 	rows := f.enrollments(t)
 	if len(rows) != 1 || rows[0].OptedIn || !rows[0].FirstObservedAt.Equal(first.At.Truncate(time.Microsecond)) {
@@ -80,7 +80,8 @@ func TestAutopilotConsentCapturePartialSuccessPreservesSeparatedDuplicates(t *te
 	f.heartbeat(t, savedConsent(false), 1)
 
 	// Bind between the first retry and the opt-out, then fail the later opt-in.
-	// The two unresolved positives must remain distinct after the opt-out leaves.
+	// The durable first positive and pending later positive must remain
+	// distinct after the intervening opt-out commits.
 	f.store.failBeforeConsent(func(ctx context.Context, declaration earningsfloor.Consent) error {
 		if declaration == first {
 			return nil
@@ -95,28 +96,28 @@ func TestAutopilotConsentCapturePartialSuccessPreservesSeparatedDuplicates(t *te
 	})
 	f.heartbeat(t, savedConsent(true), 2)
 	calls := f.store.snapshot()
-	if len(calls) != 5 || calls[2].consent != first || !errors.Is(calls[2].err, earningsfloor.ErrIdentity) || calls[3].err != nil || calls[3].consent.OptedIn || !errors.Is(calls[4].err, io.ErrUnexpectedEOF) {
-		t.Fatalf("did not exercise identity failure, successful opt-out, then storage failure: %+v", calls)
+	if len(calls) != 5 || calls[2].consent != first || calls[2].err != nil || calls[3].err != nil || calls[3].consent.OptedIn || !errors.Is(calls[4].err, io.ErrUnexpectedEOF) {
+		t.Fatalf("did not exercise successful first positive/opt-out then storage failure: %+v", calls)
 	}
 	last := calls[4].consent
 	if !last.OptedIn || !last.At.After(calls[3].consent.At) || !calls[3].consent.At.After(first.At) {
 		t.Fatalf("queued transitions lost their original receive order: %+v", calls)
 	}
 
-	// A later failed head leaves the older equal tail unattempted, not redundant.
-	// Only this fresh duplicate may be coalesced with that tail.
+	// Only the failed later positive remains queued; a fresh equal heartbeat
+	// may coalesce with it, but cannot replay the durable earlier transitions.
 	f.store.failBeforeConsent(func(context.Context, earningsfloor.Consent) error { return io.ErrUnexpectedEOF })
 	f.heartbeat(t, savedConsent(true), 3)
 	calls = f.store.snapshot()
-	if len(calls) != 6 || calls[5].consent != first || !errors.Is(calls[5].err, io.ErrUnexpectedEOF) {
-		t.Fatalf("storage failure did not stop retrying at the original head: %+v", calls)
+	if len(calls) != 6 || calls[5].consent != last || !errors.Is(calls[5].err, io.ErrUnexpectedEOF) {
+		t.Fatalf("storage failure replayed a successful transition or changed the failed head: %+v", calls)
 	}
 	f.store.failBeforeConsent(nil)
 	f.write(t, map[string]any{"type": protocol.TypeCodeAttestationResponse})
 	f.sync(t)
 	calls = f.store.snapshot()
-	if len(calls) != 8 || calls[6].err != nil || calls[7].err != nil || calls[6].consent != first || calls[7].consent != last {
-		t.Fatalf("partial success coalesced distinct original opt-ins: %+v", calls)
+	if len(calls) != 7 || calls[6].err != nil || calls[6].consent != last {
+		t.Fatalf("partial success lost the original later opt-in or replayed durable history: %+v", calls)
 	}
 	rows := f.enrollments(t)
 	if len(rows) != 1 || !rows[0].OptedIn || !rows[0].FirstObservedAt.Equal(first.At.Truncate(time.Microsecond)) || !rows[0].ObservedAt.Equal(last.At.Truncate(time.Microsecond)) {
@@ -124,43 +125,55 @@ func TestAutopilotConsentCapturePartialSuccessPreservesSeparatedDuplicates(t *te
 	}
 }
 
-func TestAutopilotConsentCaptureQueueOverflowDisconnects(t *testing.T) {
-	for _, unavailable := range []bool{false, true} {
-		name := "unbound_identity"
-		if unavailable {
-			name = "journal_unavailable"
+func TestAutopilotConsentCaptureUnboundJournalDoesNotFillRetryQueue(t *testing.T) {
+	f := newConsentSocket(t, nil)
+	f.register(t, savedConsent(true))
+	for i := 1; i <= 512; i++ {
+		f.heartbeat(t, savedConsent(i%2 == 0), uint64(i))
+	}
+	calls := f.store.snapshot()
+	if len(calls) != 513 {
+		t.Fatalf("unbound successful journal did not drain each declaration: %d", len(calls))
+	}
+	for _, call := range calls {
+		if call.err != nil {
+			t.Fatalf("unbound journal write failed: %+v", call)
 		}
-		t.Run(name, func(t *testing.T) {
-			f := newConsentSocket(t, nil)
-			if unavailable {
-				f.store.failBeforeConsent(func(context.Context, earningsfloor.Consent) error { return io.ErrUnexpectedEOF })
-			}
-			f.register(t, savedConsent(true))
-			for i := 1; i < 256; i++ {
-				f.heartbeat(t, savedConsent(i%2 == 0), uint64(i))
-			}
-			// A duplicate at the bound adds no pending transition and is safe.
-			f.heartbeat(t, savedConsent(false), 256)
-			f.write(t, protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, ModelAutopilot: savedConsent(true)})
-			select {
-			case err := <-f.closed:
-				if websocket.CloseStatus(err) != websocket.StatusTryAgainLater {
-					t.Fatalf("overflow did not fail explicitly with retryable disconnect: %v", err)
-				}
-			case <-f.ctx.Done():
-				t.Fatal("overflow silently dropped consent or grew the queue")
-			}
-			seen := make(map[time.Time]bool)
-			for _, call := range f.store.snapshot() {
-				seen[call.consent.At] = true
-			}
-			want := 257 // 256 transitions plus the fresh duplicate watermark.
-			if unavailable {
-				want = 1 // Failed head prevents later attempts, not later queuing.
-			}
-			if len(seen) != want {
-				t.Fatalf("queue bound or adjacent dedup changed: attempted distinct timestamps=%d want=%d", len(seen), want)
-			}
-		})
+	}
+	select {
+	case err := <-f.closed:
+		t.Fatalf("successful unbound journal exhausted retry queue: %v", err)
+	default:
+	}
+	if rows := f.enrollments(t); len(rows) != 0 {
+		t.Fatalf("unbound journal fabricated enrollment: %+v", rows)
+	}
+}
+
+func TestAutopilotConsentCaptureQueueOverflowDisconnects(t *testing.T) {
+	f := newConsentSocket(t, nil)
+	f.store.failBeforeConsent(func(context.Context, earningsfloor.Consent) error { return io.ErrUnexpectedEOF })
+	f.register(t, savedConsent(true))
+	for i := 1; i < 256; i++ {
+		f.heartbeat(t, savedConsent(i%2 == 0), uint64(i))
+	}
+	// A duplicate at the bound adds no pending transition and is safe.
+	f.heartbeat(t, savedConsent(false), 256)
+	f.write(t, protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, ModelAutopilot: savedConsent(true)})
+	select {
+	case err := <-f.closed:
+		if websocket.CloseStatus(err) != websocket.StatusTryAgainLater {
+			t.Fatalf("overflow did not fail explicitly with retryable disconnect: %v", err)
+		}
+	case <-f.ctx.Done():
+		t.Fatal("overflow silently dropped consent or grew the queue")
+	}
+	seen := make(map[time.Time]bool)
+	for _, call := range f.store.snapshot() {
+		seen[call.consent.At] = true
+	}
+	want := 1 // Failed head prevents later attempts, not later queuing.
+	if len(seen) != want {
+		t.Fatalf("queue bound or adjacent dedup changed: attempted distinct timestamps=%d want=%d", len(seen), want)
 	}
 }

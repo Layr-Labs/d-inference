@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -9,7 +9,7 @@ Run from the repository root with the pinned Go toolchain and an isolated local
 
 ```bash
 go test -race ./coordinator/tests/payments/autopilotrewards -count=1
-go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|Migration|Migrate' -count=1
+go test -race ./coordinator/tests/store/contracts ./coordinator/tests/store/postgres -run 'AutopilotRewards|AutopilotConsent|Migration|Migrate' -count=1
 go test -race ./coordinator/tests/api/provider ./coordinator/tests/api/operations/contracts ./coordinator/tests/api ./coordinator/tests/registry -run 'AutopilotReward|AutopilotConsent' -count=1
 go test ./coordinator/tests/protocol -run Autopilot -count=1
 ```
@@ -21,9 +21,11 @@ isolate databases and coordinate the local server's connection budget.
 | Boundary | Regression owner |
 |---|---|
 | Once-rounded floor, UTC day guards and independent-day worker catch-up | `coordinator/tests/payments/autopilotrewards/engine_test.go` |
+| Shared final day for early/late joiners, post-cutoff rejection and earlier pending-payment retries; fixture clocks remain inside the fixed campaign | `coordinator/tests/payments/autopilotrewards/engine_test.go`; `coordinator/tests/store/contracts/autopilot_rewards_cutoff_test.go` |
 | Exact first-ever window, sponsored inference, whole first partial day, immutable baseline, history gaps, canonical aliases, per-day consent, pool retry and single-count earnings | `coordinator/tests/store/contracts/` (`autopilot_rewards_test.go`, `autopilot_rewards_history_test.go`, `autopilot_rewards_identity_test.go`) |
 | Delayed cross-session consent and frozen-history conflicts without rewriting finalized receipts | `coordinator/tests/store/contracts/autopilot_rewards_history_test.go` (`TestAutopilotRewardsDelayedSessionConsentPreservesFirstOptIn`, `TestAutopilotRewardsLateEarlierConsentFlagsFrozenHistory`) |
 | Migration/schema equivalence, restart persistence, concurrent cap/deduplication and rollback of all financial writes | `coordinator/tests/store/postgres/` (`autopilot_rewards_migration_test.go`, `autopilot_rewards_test.go`, `autopilot_rewards_atomicity_test.go`) |
+| Concurrent independent consent journals, exclusive inventory exclusion, per-session ownership and session-local binding | `coordinator/tests/store/postgres/autopilot_consent_concurrency_test.go` |
 | Authenticated original receive time, pre-binding journal, accepted heartbeat state, daily checkpoints and bounded failed-write queue | `coordinator/tests/api/provider/autopilot_rewards_test.go`, `autopilot_rewards_queue_test.go` in the same directory; `coordinator/tests/registry/autopilot_reward_snapshot_test.go` |
 | Admin auth, exact money JSON, immutable backfill and independently default-off config | `coordinator/tests/api/operations/contracts/autopilot_rewards_test.go`; `coordinator/tests/api/autopilot_rewards_config_test.go` |
 
@@ -2071,7 +2073,15 @@ MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
   MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE=testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim \
   DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
   ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
+  DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
+  ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
 ```
+
+The lifecycle drain gate serves one request through the real native owner, then
+requires the graceful drain that `darkbloom restart` and `darkbloom stop` publish
+to report `drained` within its deadline
+(`provider-swift/Tests/ProviderCoreTests/ProviderLoop/MiMo/ProviderLoopNativeMiMoLifetimeTests.swift`).
 
 Reserve the native lane before these commands. The retained-fault selector must
 run alone and preserve its actual native owner until process exit. CI runs these
@@ -4300,7 +4310,9 @@ After the optimized provider is packaged with its resources, run
 (the child validates retained latches that MLX reads at its first Metal touch,
 so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
-`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
+`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. The first line is
+`build-environment-runtime-smoke: <prod|dev> coordinator=<url> cdn=<url>`. The release workflow
+requires `<prod|dev>` to match the release environment. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches
 a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
@@ -4421,6 +4433,12 @@ regressions also run in the coordinator/provider unit and race suites. Real
 production improvement remains a separate measured rollout result.
 
 ## Advisory threat-model review checks
+
+The conditional gate uses a separate organization-membership read token.
+`python3 .github/scripts/test-threat-bedrock.py` checks active member identity,
+outsiders, bots, pending membership, repeat lookups and the independent human
+review path. The budget suite checks that local validator reasons remain visible
+without exposing raw provider output. See [review configuration](threat-model-review.md).
 
 The threat-review preflight checks the configured OpenRouter budget mode and
 remaining normal-attempt capacity as well as writer access and funding. Offline

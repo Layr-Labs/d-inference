@@ -21,9 +21,39 @@ import Testing
     @Test func darkbloomDevServerIsOurs() {
         let out = """
         MDM enrollment: Yes (User Approved)
-        MDM server: https://api.dev.darkbloom.xyz/mdm/connect
+        MDM server: https://api.dev.darkbloom.dev/mdm/connect
         """
         #expect(parseMDMEnrollmentStatus(out).isDarkbloom)
+    }
+
+    /// The retired dev domain darkbloom.xyz is not ours: no host on it is a
+    /// Darkbloom MDM server.
+    @Test func retiredDevDomainIsForeign() {
+        for url in ["https://api.dev.darkbloom.xyz/mdm/connect", "https://mdm.darkbloom.xyz/mdm/connect"] {
+            let out = """
+            MDM enrollment: Yes (User Approved)
+            MDM server: \(url)
+            """
+            #expect(parseMDMEnrollmentStatus(out) == .enrolledOtherMDM(serverURL: url))
+        }
+    }
+
+    @Test func configuredRetiredDevHostRemainsForeign() {
+        let serverURL = "https://api.dev.darkbloom.xyz/mdm/connect"
+        let output = """
+        MDM enrollment: Yes (User Approved)
+        MDM server: \(serverURL)
+        """
+        let runner = SecurityCommandRunner { path, arguments in
+            #expect(path == "/usr/bin/profiles")
+            #expect(arguments == ["status", "-type", "enrollment"])
+            return SecurityCommandResult(terminationStatus: 0, stdout: output)
+        }
+
+        #expect(checkMDMEnrollment(
+            coordinatorURL: "wss://api.dev.darkbloom.xyz/ws/provider",
+            runner: runner
+        ) == .enrolledOtherMDM(serverURL: serverURL))
     }
 
     @Test func coordinatorHostFromConfigIsAccepted() {

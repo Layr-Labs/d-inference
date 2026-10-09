@@ -29,8 +29,9 @@ public enum MDMEnrollmentState: Equatable, Sendable {
 /// coordinator (prod + dev). The enrollment profile's ServerURL is built from
 /// the coordinator base URL (coordinator/api/enroll.go), so the host of the
 /// configured coordinator is also accepted via `expectedHosts`.
-let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.xyz", ".darkbloom.ai"]
-let darkbloomMDMHosts = ["api.darkbloom.dev", "api.dev.darkbloom.xyz"]
+let darkbloomMDMHostSuffixes = [".darkbloom.dev", ".darkbloom.ai"]
+let darkbloomMDMHosts = ["api.darkbloom.dev", "api.dev.darkbloom.dev"]
+let retiredDarkbloomMDMHosts = ["api.dev.darkbloom.xyz"]
 
 private let logger = Logger(label: "darkbloom.MDMEnrollment")
 
@@ -75,6 +76,12 @@ public func parseMDMEnrollmentStatus(
         // resurrect the old skip-enrollment bug, so report it as foreign and let
         // the operator inspect System Settings.
         return .enrolledOtherMDM(serverURL: serverURL ?? "<unknown>")
+    }
+
+    // A stale coordinator config must not re-authorize a retired host through
+    // expectedHosts after its DNS or infrastructure is no longer ours.
+    if retiredDarkbloomMDMHosts.contains(host) {
+        return .enrolledOtherMDM(serverURL: serverURL)
     }
 
     let ours = darkbloomMDMHosts.contains(host)

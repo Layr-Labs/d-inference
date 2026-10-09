@@ -45,6 +45,76 @@ func TestAutopilotRewardDayUsesUTCAndRejectsOpenDays(t *testing.T) {
 	}
 }
 
+func TestAutopilotRewardCutoffIncludesNovember7Only(t *testing.T) {
+	end := time.Date(2026, time.November, 8, 0, 0, 0, 0, time.UTC)
+	lastDay := end.AddDate(0, 0, -1)
+	if err := floorpolicy.ValidateDay(lastDay, end); err != nil {
+		t.Fatalf("November 7 must settle at midnight November 8: %v", err)
+	}
+	if err := floorpolicy.ValidateDay(lastDay, end.AddDate(0, 0, 20)); err != nil {
+		t.Fatalf("late settlement of an eligible day must remain allowed: %v", err)
+	}
+	for _, day := range []time.Time{end, end.AddDate(0, 0, 1), end.In(time.FixedZone("west", -7*3600))} {
+		if err := floorpolicy.ValidateDay(day, end.AddDate(0, 0, 20)); err == nil {
+			t.Fatalf("expired UTC day accepted: %s", day)
+		}
+	}
+}
+
+func TestAutopilotRewardWorkerUsesSharedEndForLateEnrollment(t *testing.T) {
+	st, engine, _, now := rewardWorkerFixture(t, true)
+	end := time.Date(2026, time.November, 8, 0, 0, 0, 0, time.UTC)
+	*now = end.Add(-12 * time.Hour)
+	late, err := st.ObserveMachine(t.Context(), store.MachineObservation{
+		SessionID: "late-session", AccountID: "late-owner", SEKey: "late-key",
+		At: now.AddDate(0, 0, -10), Source: "live_registration",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedNow := *now
+	*now = floorpolicy.Day(*now)
+	if err := st.OpenProviderSession(t.Context(), "late-session", "", "late-owner"); err != nil {
+		t.Fatal(err)
+	}
+	*now = savedNow
+	if err := st.TouchProviderSession(t.Context(), "late-session", "", "late-owner", "late-key", end); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{
+		SessionID: "late-session", AccountID: "late-owner", Supported: true, Qualified: true, OptedIn: true, At: *now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RestoreAutopilotBaseline(t.Context(), earningsfloor.Baseline{
+		MachineID: late.ID, FirstOptInAt: *now, SevenDayEarningsMicroUSD: 70_000_000, Evidence: "verified late enrollment history",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetAutopilotRewardPoolCap(t.Context(), 1_000_000_000); err != nil {
+		t.Fatal(err)
+	}
+	*now = end.Add(-time.Nanosecond)
+	before, err := engine.SettleClosedDays(t.Context())
+	if err != nil || before.ProcessedDays != 29 || st.GetBalance("late-owner") != 0 {
+		t.Fatalf("an open November 7 was settled: %+v %v", before, err)
+	}
+	*now = end
+	last, err := engine.SettleClosedDays(t.Context())
+	if err != nil || last.ProcessedDays != 2 || last.More || st.GetBalance("worker-account") != 330_000_000 || st.GetBalance("late-owner") != 11_000_000 {
+		t.Fatalf("early and late enrollees did not share final day: %+v %v", last, err)
+	}
+	*now = end.AddDate(0, 0, 20)
+	after, err := engine.SettleClosedDays(t.Context())
+	if err != nil || after.ProcessedDays != 0 || after.More || after.PoolPending != 0 || after.HistoryPending != 0 {
+		t.Fatalf("worker continued beyond shared end: %+v %v", after, err)
+	}
+	pool, err := st.AutopilotRewardPool(t.Context())
+	if err != nil || pool.SpentMicroUSD != 341_000_000 {
+		t.Fatalf("post-cutoff money changed: %+v %v", pool, err)
+	}
+}
+
 func rewardWorkerFixture(t *testing.T, restore bool) (*memory.MemoryStore, *autopilotrewards.Engine, string, *time.Time) {
 	t.Helper()
 	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
@@ -57,9 +127,15 @@ func rewardWorkerFixture(t *testing.T, restore bool) (*memory.MemoryStore, *auto
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := st.OpenProviderSession(t.Context(), "worker-session", "", "worker-account"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchProviderSession(t.Context(), "worker-session", "", "worker-account", "worker-key", time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
 	now = now.AddDate(0, 0, 8)
 	if _, err := st.ObserveAutopilotConsent(context.Background(), earningsfloor.Consent{
-		SessionID: "worker-session", AccountID: "worker-account", Supported: true, OptedIn: true, At: now,
+		SessionID: "worker-session", AccountID: "worker-account", Supported: true, Qualified: true, OptedIn: true, At: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +226,7 @@ func TestAutopilotRewardWorkerWithholdsConflictedFrozenHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.ObserveAutopilotConsent(context.Background(), earningsfloor.Consent{
-		SessionID: "earlier-session", AccountID: "worker-account", Supported: true, OptedIn: true, At: now.AddDate(0, 0, -3),
+		SessionID: "earlier-session", AccountID: "worker-account", Supported: true, Qualified: true, OptedIn: true, At: now.AddDate(0, 0, -3),
 	}); err != nil {
 		t.Fatal(err)
 	}

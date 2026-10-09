@@ -199,6 +199,7 @@ extension ProviderLoop {
         modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
+        guard !isClusterMember else { throw ClusterMemberControlError.incompatibleConfiguration }
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }

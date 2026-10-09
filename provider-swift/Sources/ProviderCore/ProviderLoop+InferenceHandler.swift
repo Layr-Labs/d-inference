@@ -192,6 +192,7 @@ extension ProviderLoop {
         promptWork: PromptWork? = nil,
         send: SendHandle
     ) async {
+        if isClusterMember { rejectClusterMemberInference(requestId, send: send); return }
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
         }

@@ -134,6 +134,7 @@ Green: done.
    | `rows[]` | Rows each rule will change |
    | `stripe_objects[]` | The Express accounts, Global Payouts recipients and Checkout Sessions the outbox will delete (step 6) |
    | `retained[]` | Rows kept because another account shares a machine or key |
+   | `mdm_devices[]` | The Macs to remove from MicroMDM after the scrub (`serial`, `udid`); see [MicroMDM device cleanup](#micromdm-device-cleanup). Not stored |
 
    Keep `confirm_token`. It expires after 15 minutes (`erasureConfirmTTL`)
    and is bound to this wallet list: to change the list, plan again.
@@ -151,10 +152,11 @@ Green: done.
    The coordinator soft deletes the user and its providers, revokes the API
    keys and provider tokens, and disconnects the account's providers. A
    provider that reconnects comes back unlinked. A Privy login of the account
-   gets 403 `account_pending_deletion`. `reason` is kept: write the ticket
-   number, not personal data. For a provider account, do step 1 of
-   [MicroMDM device cleanup](#micromdm-device-cleanup) now: the scrub deletes
-   the serials and UDIDs. With `force`, do it before this step. Errors are listed in
+   gets 403 `account_pending_deletion`, and keeps getting it after the scrub
+   until the `privy_user` row is `done`. `reason` is kept: write the ticket
+   number, not personal data. For a provider account, keep `mdm_devices[]` of
+   the plan for [MicroMDM device cleanup](#micromdm-device-cleanup): the scrub
+   deletes the serials and UDIDs. Errors are listed in
    [erasure confirm](../reference/api-contracts.md#erasure-confirm).
 
 4. Wait for the grace period. The default is 30 days
@@ -198,7 +200,7 @@ Green: done.
    | `checkout_sessions` | Redacts up to 10 sessions with a Stripe Redaction Job; `has_stripe_job` is true while the job runs |
    | `erasure_log` | Sends one Datadog event with tag `erasure_log:true` (request ID, account ID, `erased_at`) |
    | `resend_contact` | Moves the row to `manual_action`, even in mock billing mode; requires [Resend contact cleanup](#resend-contact-cleanup), not automated deletion |
-   | `privy_user` | Deletes the Privy user (`DELETE https://auth.privy.io/api/v1/users/<did>`); a 404 also counts as done. Mock billing mode does not skip it |
+   | `privy_user` | Deletes the Privy user (`DELETE https://auth.privy.io/api/v1/users/<did>`); a 404 also counts as done. Mock billing mode does not skip it. If a live account holds the Privy user, it does not delete it and moves the row to `manual_action`. Until the row is `done`, a Privy login with the ID gets 403 `account_pending_deletion` and makes no account |
 
    | `outbox[].state` | Meaning |
    |---|---|
@@ -244,7 +246,8 @@ Green: done.
      A -- "has been ... since,<br/>still too recent" --> E["D. Job stuck or past 105 days"]:::hand
      A -- "retries exhausted" --> F["E. Retries exhausted"]:::act
      A -- "anything else" --> G["F. Other refusal"]:::hand
-     B & C & D & E & F & G --> R["Re-queue (step 3)<br/>or close by hand (step 4)"]:::act
+     A -- "a live account holds" --> H["G. Privy user of a live account"]:::hand
+     B & C & D & E & F & G & H --> R["Re-queue (step 3)<br/>or close by hand (step 4)"]:::act
    ```
 
    | Reason | `last_error` | What to do |
@@ -254,6 +257,7 @@ Green: done.
    | C. Sessions of the old account | `Checkout Session not found with the current Stripe key; it may belong to the earlier Stripe account. Redact it by hand` | The `cs_…` IDs in `external_id` were made on the Stripe account used before the [Stripe migration](stripe-migration.md). Redact them with that account (its dashboard or a Redaction Job made with its key), then close the row by hand. If that account is no longer reachable, record that in the ticket and close the row |
    | D. Job stuck or past the deadline | `redaction job prj_… has been <status> since <time>` (31 days in one status), or `still too recent to redact 2520h0m0s after the scrub: …` | Look up `stripe_job_id` in Stripe. A job that ended `succeeded`: close the row by hand. A job still running: cancel it in Stripe or ask Stripe support, then re-queue (a new job is made). Sessions still too recent: wait until they pass 90 days, then re-queue |
    | E. Retries exhausted | `retries exhausted after 8 attempts: <cause>` | Read the cause. `Stripe Connect is not configured`, `Stripe Global Payouts is not configured`, `Stripe Checkout is not configured`, `Privy is not configured` or `privy: app_secret required for REST API calls`: the coordinator lacks that key; set it through the [deploy runbook](coordinator-deploy.md) (approval required), then re-queue. `privy: delete user returned status <code>`: a 401 or 403 means a wrong app ID or secret; fix it, then re-queue. A network error, 5xx or Datadog error: check the Stripe, Privy or Datadog status page, then re-queue. To delete a Privy user by hand, use the Privy dashboard with the `external_id`, then close the row by hand |
+   | G. Privy user of a live account | `a live account holds this Privy user; the worker did not delete it` (`privy_user`) | A live account has the Privy user ID in `external_id`. Only a coordinator without the login fence can make one after the scrub. Find it: `SELECT account_id, created_at FROM users WHERE privy_user_id = '<external_id>' AND deleted_at IS NULL`. Do not delete the Privy user while that account is live: it is the account's login. Ask the person whether the new account must also be erased. If yes, erase it with this runbook; its own `privy_user` row deletes the Privy user. Then close this row by hand. If no, record the decision in the ticket and close this row by hand |
    | F. Other refusal | Any other Stripe 4xx, `redaction job prj_… was canceled`, `redaction job prj_… failed without validation errors`, or a validation code such as `locked_by_other_job` | For `stripe_account` permission errors, `account_invalid`, or ambiguous 404 responses without `resource_missing`, use the retained `external_id` to verify the owning Stripe platform and restore access before re-queuing; those errors do not prove the account was deleted. For other causes, fix the cause in Stripe (for example wait for or cancel the other job), then re-queue; or verify deletion in the Stripe dashboard and close the row by hand |
 
 3. Re-queue a row so the worker tries again (with approval). This also starts
@@ -318,33 +322,24 @@ immediately; the durable cleanup row is created at scrub, not at confirmation.
 ### MicroMDM device cleanup
 
 MicroMDM removal is not automated. The scrub deletes the serial numbers and
-UDIDs from the coordinator database, so collect them during the grace period.
+UDIDs from the coordinator database, so keep the device list of the plan.
 
-1. Before the scrub, in an approved private database session, list the
-   account's serials and UDIDs. Leave out a device that another account also
-   uses; the plan's `retained[]` shows shared machines and keys:
-
-   ```sql
-   \set acct '<account_id>'
-   SELECT DISTINCT serial_number FROM (
-     SELECT serial_number FROM providers WHERE account_id = :'acct'
-     UNION SELECT serial_number FROM provider_sessions WHERE account_id = :'acct'
-   ) s
-   WHERE serial_number <> ''
-     AND NOT EXISTS (SELECT 1 FROM providers o WHERE o.serial_number = s.serial_number AND o.account_id <> :'acct')
-     AND NOT EXISTS (SELECT 1 FROM provider_sessions o WHERE o.serial_number = s.serial_number AND o.account_id <> :'acct');
-
-   SELECT DISTINCT udid FROM (
-     SELECT se_pubkey, mda_udid AS udid FROM provider_trust_reuse
-     UNION SELECT se_pubkey, udid FROM provider_verification_jobs
-   ) u
-   WHERE udid <> ''
-     AND se_pubkey IN (SELECT se_public_key FROM providers WHERE account_id = :'acct')
-     AND NOT EXISTS (SELECT 1 FROM providers o WHERE o.se_public_key = u.se_pubkey AND o.account_id <> :'acct');
-   ```
-
-   Keep the lists only in a restricted record. Never put them in the request
-   reason, logs or an ordinary ticket.
+1. Before the confirm, read `mdm_devices[]` in the plan answer of step 2. Each
+   entry is one Mac, with `serial`, `udid` or both. The plan builds the list
+   with the ownership rules of the scrub: the account's current Secure Enclave
+   keys, its historical keys (`legacy_se` aliases and `erasure_se_owners`),
+   and its provider and session serials. It leaves out a Mac that another
+   account can still use: a shared key or machine (also counted in
+   `retained[]`), or a serial that a provider or session of another account
+   that is not erased reports. The list is not stored. Keep it only in a
+   restricted record until the removal in step 2. Never put it in the request
+   reason, logs or an ordinary ticket. To list the devices again, run the
+   plan again before the confirm.
+   Before step 2, compare `request.summary.applied.retained[]` in the status
+   with `request.summary.planned.retained[]`. If the scrub kept more shared
+   rows than the plan counted, another account started to use a Mac during the
+   grace period. Do not remove a device yet. Ask an engineer to find that Mac,
+   and remove only the other Macs.
 2. After the scrub, with approval, remove the devices with `mdmctl`
    (MicroMDM v1.13.1, `coordinator/Dockerfile.base`):
 
@@ -542,11 +537,21 @@ curl -sS -X POST "$COORD/v1/admin/accounts/$ACCOUNT/erasure/cancel" \
 ```
 
 The user and its provider rows are live again, and `request.state` is
-`canceled`. The API keys and provider tokens that the confirm revoked work
-again. Keys and tokens that were revoked before the confirm stay revoked; the
-key list shows them again as disabled. The handler clears the API key cache.
-A 409 `erasure_conflict` means `scrub_after` has passed or the request was
-never confirmed.
+`canceled`. An API key or provider token works again only if it was live at
+the confirm and nothing revoked it during the grace period. These stay revoked
+and do not show in the key list:
+
+- Keys and tokens that were revoked before the confirm.
+- Keys and tokens revoked during the grace period. To keep a leaked key
+  revoked after a cancel, revoke it (`DELETE /v1/auth/keys` with the raw key)
+  before you cancel.
+- All keys and tokens of a request that a coordinator before schema version
+  34 confirmed (`credential_provenance` 0 in `erasure_requests`). Nothing
+  records which of them were live. Tell the account owner to make new keys and
+  to log in again on each provider Mac.
+
+The handler clears the API key cache. A 409 `erasure_conflict` means
+`scrub_after` has passed or the request was never confirmed.
 
 After the scrub there is no rollback. The data is gone from the live
 database by design. Do not restore a backup to undo an erasure.

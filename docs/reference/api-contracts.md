@@ -278,7 +278,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/self-route-models` | `HandleMySelfRouteModels` (`coordinator/api/accounts/self_route.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `HandleDeleteMyProvider` (`coordinator/api/accounts/delete_provider.go`) | `user` | `fin` | Unlink a machine; requires the [soft-delete mutation gate](soft-delete.md#writers-of-deleted_at). After authentication, record existence and ownership checks, a disabled gate returns 503 `soft_delete_mutations_disabled` without mutation |
 | GET | `/v1/pricing` | `HandleGetPricing` (`coordinator/api/billing/pricing.go`) | `—` | — | Public price table, `types.PricingResponse` `{prices: [{model, input_price, output_price, cache_read_price, input_usd, output_usd, cache_read_usd}], fallback_input_price, fallback_output_price, fallback_cache_read_price, fallback_*_usd}`; `cache_read_price` is the effective rate (derived when the row sets none); see [`pricing-model.md`](pricing-model.md) |
-| PUT | `/v1/pricing` | `HandleSetPricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelprice.Input`, `coordinator/api/modelprice/price.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
+| PUT | `/v1/pricing` | `HandleSetPricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelprice.Input`, `coordinator/api/modelprice/price.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse`. 409 `account_deleted` for an account in erasure ([erasure effects](#erasure-effects-on-other-routes)) |
 | DELETE | `/v1/pricing` | `HandleDeletePricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Revert to defaults |
 
 All six `/v1/me/*` routes are wrapped in `RequirePrivyAuth`, so they are Privy-JWT only.
@@ -538,7 +538,7 @@ grace period or expiry; frozen membership remains a separate prerequisite.
 | POST | `/v1/admin/accounts/{account_id}/erasure/plan` | `HandlePlan` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Dry run plus a 15-minute confirm token; changes no account data. [Erasure plan](#erasure-plan) |
 | POST | `/v1/admin/accounts/{account_id}/erasure` | `HandleRequest` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Soft delete, revoke keys and provider tokens, disconnect providers; `force` scrubs at once. [Erasure confirm](#erasure-confirm) |
 | GET | `/v1/admin/accounts/{account_id}/erasure` | `HandleStatus` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Newest request, its outbox rows and refused credits. [Erasure status](#erasure-status) |
-| POST | `/v1/admin/accounts/{account_id}/erasure/cancel` | `HandleCancel` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Grace period only; restores the keys and tokens the confirm revoked. [Erasure cancel](#erasure-cancel) |
+| POST | `/v1/admin/accounts/{account_id}/erasure/cancel` | `HandleCancel` (`coordinator/api/accounts/erasure/handlers.go`) | `admin` | Grace period only; restores the keys and tokens that were live at the confirm and that nothing revoked later. [Erasure cancel](#erasure-cancel) |
 | PUT | `/v1/admin/users/platform-fee` | `HandleAdminSetUserPlatformFee` (`coordinator/api/accounts/admin_users.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
 | POST | `/v1/admin/models/register` | `HandleRegisterModel` (`coordinator/api/catalog/model_registry_handlers.go`) | `publishing` | Publish a model build; optional `cache_read_price` beside `input_price`/`output_price` (`modelprice.Input`); the response (`registerModelResponse`) quotes the effective platform rates |
 | POST | `/v1/admin/models/` | `HandleAdminModelRegistryAction` (`coordinator/api/catalog/registry_actions.go`) | `publishing` | Registry actions selected by path suffix, including `publish-revision` (version plus optional pinned `hugging_face_artifact`) and `retire-revision` (version); publication returns 503 if its committed promotion has not reached live policy or desired-state delivery to a provider fails; [revision contracts](model-registry-format.md#admin-actions) |
@@ -822,11 +822,11 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `WithCode` in `coo
 | Status | `type` values | Raised by |
 |---|---|---|
 | 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error`, `email_mismatch`, `wallet_mismatch` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
-| 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`RequireAuth`, `RequirePrivyAuth`), no account user (`RequirePrivyUser`), release key |
+| 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`RequireAuth`, `RequirePrivyAuth`), a Privy token of a user that Privy no longer has (`auth.ErrPrivyUserNotFound`), no account user (`RequirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference/inference_balance.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed`, `account_pending_deletion`, `invalid_confirm_token` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/inference/key_policy.go`); Privy login of an account that waits for erasure (`writePrivyUserError`, `coordinator/api/access/auth.go`); wrong or expired erasure confirm token |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
-| 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required`, `open_withdrawal`, `erasure_conflict` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state; account erasure with a withdrawal in flight or in the wrong state |
+| 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required`, `open_withdrawal`, `erasure_conflict`, `account_deleted` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state; account erasure with a withdrawal in flight or in the wrong state; a Checkout, log upload or price write of an account in erasure |
 | 410 | `expired_token`, `expired_code` | expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
 | 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`Admission.Run`) |
@@ -1132,6 +1132,7 @@ Response 200 (`erasurePlanResponse`, embeds `store.ErasurePlan`):
 | `account_id` | string | The account |
 | `email` | string | The account email, for the admin to check; not stored |
 | `stripe_objects` | array of `{target, id}` | Every Express account, Global Payouts recipient and Checkout Session the account used; not stored |
+| `mdm_devices` | array of `{serial, udid}` (each omitted when empty) | The Macs to remove from MicroMDM by hand after the scrub, from the scrub's ownership rules; a Mac that another account can still use is left out (`erasure.Keys.MDMDevices`). Always an array; not stored |
 | `wallets` | array of [`ErasureWalletCount`](#erasure-shapes) | Rows that hold each named address; empty when none was named (`[]` from Postgres, `null` from the memory store) |
 | `rows`, `retained`, `stripe_object_counts`, `balance_micro_usd`, `withdrawable_micro_usd`, `open_withdrawals` | [`ErasureCounts`](#erasure-shapes) fields | What the scrub would change now |
 | `request_id` | string | The `planned` request |
@@ -1161,6 +1162,7 @@ Authorization: Bearer admin-key
   "account_id": "acct-erase-http",
   "email": "person@example.com",
   "stripe_objects": [],
+  "mdm_devices": [],
   "wallets": null,
   "rows": [
     {"rule": "users", "table": "users", "columns": ["email", "privy_user_id", "stripe_account_id", "stripe_account_status", "stripe_account_country", "stripe_destination_type", "stripe_destination_last4"], "action": "update", "rows": 1},
@@ -1337,12 +1339,14 @@ Response 200: `{"request": ErasureRequest}` in `canceled`, with
 | 404 | `not_found` | No user, or no `planned` or `pending` request (also after the scrub) |
 | 409 | `erasure_conflict` | The open request is `planned`, or `scrub_after` has passed |
 
-Side effects: `deleted_at` cleared on the user and on the providers, API keys
-and provider tokens that the confirm stamped; the request's wallet list and
-`wallet_hash` cleared; the API key cache cleared (`InvalidateAllAPIKeyCache`);
-log `account erasure canceled`. API keys and provider tokens that the confirm
-revoked work again. Ones revoked before the confirm stay revoked and are
-listed again as disabled
+Side effects: `deleted_at` cleared on the user and on the providers that the
+confirm stamped; the request's wallet list and `wallet_hash` cleared; the API
+key cache cleared (`InvalidateAllAPIKeyCache`); log `account erasure
+canceled`. An API key or provider token works again only if the confirm
+recorded it as live and nothing revoked it during the grace period. Ones
+revoked before the confirm or during the grace period stay revoked and are
+not listed. A request that a coordinator before schema version 34 confirmed
+restores no API key and no provider token
 ([soft delete](soft-delete.md#writers-of-deleted_at)).
 
 ### Erasure shapes
@@ -1389,12 +1393,19 @@ All in `coordinator/store/erasure_types.go`. Times are RFC 3339. Fields marked
   `account_pending_deletion` with message `this account is scheduled for
   deletion; contact support to cancel` instead of creating a second account
   (`auth.ErrAccountPendingDeletion`; `writePrivyUserError`,
-  `coordinator/api/access/auth.go`). After the scrub
-  the stored Privy ID is random, and the same login creates a new, empty
-  account.
+  `coordinator/api/access/auth.go`). After the scrub the login answers the
+  same 403 until the `privy_user` outbox row is `done`, and makes no account
+  (`store.ErrErasurePrivyUserPending`). After the Privy deletion, a Privy
+  token issued before it answers 401 `authentication_error` with message
+  `the Privy user does not exist` (`auth.ErrPrivyUserNotFound`): Privy answers
+  404 for the user, and no account is made.
 - The account's API keys answer 401 `authentication_error` from the confirm
-  on. A cancel makes the keys that the confirm revoked work again; keys
-  revoked before the confirm stay revoked.
+  on. A cancel makes the keys work again that were live at the confirm and
+  that nothing revoked during the grace period.
+- `PUT /v1/pricing`: a request that authenticated before the confirm and
+  writes after it answers 409 `account_deleted` with message `Pricing is
+  unavailable for a deleted account` (`store.ErrErasureConflict`,
+  `HandleSetPricing`).
 - `POST /v1/billing/stripe/webhook`: a `checkout.session.completed` event for
   an erased account's session, or a replay for a session the scrub cleared,
   answers 200 and credits nothing (`store.ErrCheckoutErased`).

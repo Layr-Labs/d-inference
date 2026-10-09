@@ -294,6 +294,12 @@ the image by these rules:
    `unknown outbox target privy_user`, or, in mock billing mode, marks it
    `done` without a Privy call (`deliverOutbox` at
    [5036c940](https://github.com/Layr-Labs/d-inference/blob/5036c940/coordinator/api/accounts/erasure/outbox.go)).
+   A fallback built before version 34 ignores `erasure_revoked_credentials`
+   and `credential_provenance`. A request that it confirms gets provenance 0,
+   so a cancel after the roll forward restores no credential. Its key revoke
+   does not delete the list row of a request confirmed by a newer image, so
+   a cancel after the roll forward restores that key: revoke such a key again
+   after the roll forward, before the cancel.
    `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false` only blocks new HTTP
    confirmations and provider removals; pending scrub/outbox work continues.
    It neither clears prior tombstones nor relaxes these fallback requirements.

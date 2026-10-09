@@ -89,6 +89,12 @@ Notes:
   matches the prefix, so refund recovery (`ListStripeRefundsToRecover`,
   `StripeRefundRecoverable`, `RefundRejectedStripeWithdrawal`) does not select
   a scrubbed row.
+- Rules 24 and 38 also hold after the scrub. `RecordRejection` writes
+  asynchronously; for an erased consumer it writes the row without
+  `requested_model`, `resolved_model` and `params`, under the shared privacy
+  fence (`coordinator/store/postgres/rejections.go`). `SetModelPrice` refuses
+  the account from the confirm on with `ErrErasureConflict`
+  (`lockAccountAdmission`, `coordinator/store/postgres/model_prices.go`).
 - `MemoryStore` maps every rule name to a function in `memoryErasureRules`
   (`coordinator/store/memory/erasure_rules.go`). It has no App Attest receipt
   tables, no revocation reason, and no `payments` or `provider_payouts` tables,
@@ -115,7 +121,7 @@ The scrub keeps these on purpose. The marker tests allow only
 | Trust-reuse, verification, code-attestation and push-budget rows of a Secure Enclave key another account's provider has; their trust-reuse cache entries and MDM jobs | They belong to the other account too | `retainedSharedSEKey` |
 | App Attest receipts, receipt blobs and receipt jobs of a key another account's session used | They belong to the other account too | `retainedSharedAppAttestKey` |
 | `erasure_se_owners`: domain-separated SE-key digests and account IDs | Retained pseudonymous ownership rejects delayed trust/job/proof writes after aliases are deleted; these hashes are not anonymous | `RetainErasureSEOwners`, `checkPersonalSEOwner` |
-| `erasure_requests`: state, actor, reason, row counts, times | The record that the erasure happened; no email, token, wallet address or wallet hash after the scrub | `MarkErasureErased` |
+| `erasure_requests`: state, actor, reason, row counts, times, `credential_provenance` | The record that the erasure happened; no email, token, wallet address or wallet hash after the scrub | `MarkErasureErased` |
 | `erasure_refused_credits` | Credits refused after the erasure, kept for review; IDs, amounts and cleaned references only | `00025_erasure_refuse_credits.sql` |
 | `erasure_outbox.external_id` | The Stripe ID, normalized Resend contact email or original Privy user ID needed for external cleanup; cleared only after verified completion. A `manual_action` row retains it until an operator clears it | `Keys.OutboxRows`; `erasureMarkerAllowList`; `SaveErasureOutboxResult` |
 | The Datadog `erasure_log` record | Request ID, account ID and `erased_at`: the list to replay after a restore | `writeErasureLog` |
@@ -140,7 +146,7 @@ The plan and the applied summary list the three shared kinds in `retained`
 | `checkout_sessions` | Batch of up to `ErasureCheckoutBatch` (10) Checkout Session IDs from `billing_sessions.external_id` (`payment_method = 'stripe'`) | comma-separated `cs_…` IDs | `POST /v1/privacy/redaction_jobs` (`validation_behavior=fix`, `objects[checkout_sessions][]`, `Idempotency-Key: erasure-redaction-<row id>-<generation>`); `GET /v1/privacy/redaction_jobs/{id}`; `POST /v1/privacy/redaction_jobs/{id}/run`; `GET /v1/privacy/redaction_jobs/{id}/validation_errors?limit=100`; `GET /v1/checkout/sessions/{id}` when a batch must be split (Checkout key; `coordinator/billing/stripe_redaction.go`) |
 | `erasure_log` | Erasure (always one) | `''` | Datadog Logs API, one unbatched event (`DD_API_KEY`; `datadog.Client.SendLog`) |
 | `resend_contact` | Account with a nonblank email at scrub, regardless of current provider status or known export history | Trimmed, lowercased email captured before the users rule clears it | No automated deletion; worker moves it to `manual_action`, even in mock billing mode. An operator removes the contact, segment memberships and scheduled-broadcast exposure |
-| `privy_user` | Account with a non-empty `users.privy_user_id` at scrub | The original Privy user ID (DID), captured by `collectErasureKeys` (memory: `collectErasureKeysLocked`) before the users rule replaces it | `DELETE https://auth.privy.io/api/v1/users/<did>`, Basic auth with the app ID and app secret (`EIGENINFERENCE_PRIVY_APP_ID`, `EIGENINFERENCE_PRIVY_APP_SECRET`) and the `privy-app-id` header (`auth.PrivyAuth.DeleteUser`, `coordinator/auth/privy_delete_user.go`). 204 or 404 is `done`; any other status or a transport error retries, and the eighth failure moves the row to `manual_action`. Without Privy the row retries with `Privy is not configured`. Mock billing mode does not skip it. The error text never holds the DID |
+| `privy_user` | Account with a non-empty `users.privy_user_id` at scrub | The original Privy user ID (DID), captured by `collectErasureKeys` (memory: `collectErasureKeysLocked`) before the users rule replaces it | `DELETE https://auth.privy.io/api/v1/users/<did>`, Basic auth with the app ID and app secret (`EIGENINFERENCE_PRIVY_APP_ID`, `EIGENINFERENCE_PRIVY_APP_SECRET`) and the `privy-app-id` header (`auth.PrivyAuth.DeleteUser`, `coordinator/auth/privy_delete_user.go`). 204 or 404 is `done`; any other status or a transport error retries, and the eighth failure moves the row to `manual_action`. Without Privy the row retries with `Privy is not configured`. Mock billing mode does not skip it. The error text never holds the DID. Before the call the worker checks, under the lock that `CreateUser` takes, that no live account holds the DID (`PrivyUserLive`); if one does, the row moves to `manual_action` with no call. While the row is not `done`, `CreateUser` refuses the DID (`ErrErasurePrivyUserPending`) |
 
 A split adds a `checkout_sessions` row in `manual_action` with the sessions
 Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
@@ -171,11 +177,31 @@ Stripe cannot find (`InsertManualErasureOutbox`, `attempts` 1).
 | `last_error` | `TEXT` | Last scrub failure; cleared when erased |
 | `created_at` | `TIMESTAMPTZ` | Insert time |
 
+| `credential_provenance` | `SMALLINT NOT NULL DEFAULT 0` | From migration 34. 1 (`erasure.CredentialProvenanceListed`): the confirm listed in `erasure_revoked_credentials` the credentials it revoked. 0: the request was confirmed before migration 34; a cancel restores no API key or provider token |
+
 Indexes: `erasure_requests_open` (unique `account_id` where `state` is
 `planned` or `pending`), `erasure_requests_account` (`account_id`,
 `created_at DESC`), `erasure_requests_due` (`scrub_after` where `pending`),
 `erasure_requests_erased` (`account_id` where `erased`, read by the
 triggers).
+
+### `erasure_revoked_credentials`
+
+`coordinator/store/postgres/schema/migrations/00034_erasure_revoked_credentials.sql`.
+The API keys and provider tokens that a confirm changed from live to revoked.
+A cancel restores only these. The rows hold only hashes of the credentials,
+and the scrub and the cancel delete them.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `request_id` | `TEXT NOT NULL` FK `erasure_requests(id)` | The request whose confirm revoked the credential |
+| `kind` | `TEXT NOT NULL` | `api_key` or `provider_token` (`CHECK`) |
+| `credential_id` | `TEXT NOT NULL` | `api_keys.key_hash` or `provider_tokens.token_hash` |
+
+Primary key `(request_id, kind, credential_id)`; index
+`erasure_revoked_credentials_credential` (`kind`, `credential_id`), read by
+`DeactivateAPIKeyByHash` and `RevokeProviderToken`, which delete the row of a
+credential revoked during the grace period.
 
 ### `erasure_se_owners`
 
@@ -249,7 +275,7 @@ first.
 | Version | Index | Used by |
 |---|---|---|
 | 23 | `idx_billing_sessions_referral_code` on `billing_sessions (referral_code) WHERE referral_code <> ''` | Rule 26 |
-| 24 | `idx_users_privy_deleted` on `users (privy_user_id) WHERE deleted_at IS NOT NULL` | `PrivyUserPendingErasure` |
+| 24 | `idx_users_privy_deleted` on `users (privy_user_id) WHERE deleted_at IS NOT NULL` | `PrivyUserPendingErasure`, `CreateUser` (`PrivyUserInErasure`) |
 
 ## Configuration and constants
 

@@ -42,7 +42,18 @@ extension ClusterConsoleCheck {
 
         // Sequences the screen has no use for are consumed whole.
         expectEqual(keys([[escape] + bytes("[1;5C")]), [.unknown], "a modified arrow is one unknown key")
-        expectEqual(keys([[escape] + bytes("[200~"), bytes("x")]), [.unknown, .character("x")], "bracketed paste start, then text")
+        // A paste is dropped whole: nothing in it is a key, however it is cut into reads.
+        let paste = [escape] + bytes("[200~today say quit\u{03}") + [escape] + bytes("[201~")
+        expectEqual(keys([paste + bytes("r")]), [.unknown, .character("r")], "a paste is one unknown key, and typing continues after it")
+        expectEqual(keys(paste.map { [$0] } + [bytes("r")]), [.unknown, .character("r")], "a paste arriving one byte at a time")
+        expectEqual(keys([[escape] + bytes("[200~ay"), bytes("sy"), [escape], bytes("[20"), bytes("1~"), bytes("q")]),
+            [.unknown, .character("q")], "the end of a paste split across reads")
+        var pasting = ClusterConsoleKeyDecoder()
+        expectEqual(pasting.feed([escape] + bytes("[200~") + [UInt8](repeating: UInt8(ascii: "y"), count: 100_000)), [], "a long paste yields nothing while it lasts")
+        expect(!pasting.hasPending, "an open paste is not an unfinished key sequence")
+        expectEqual(pasting.flush(), [], "and a pause inside it yields nothing")
+        expectEqual(pasting.feed(bytes("yyyy") + [escape] + bytes("[201~")) + pasting.feed(bytes("?")), [.unknown, .character("?")],
+            "it ends only with its marker")
         expectEqual(keys([[escape] + bytes("[<0;10;20M")]), [.unknown], "a mouse report is one unknown key")
         expectEqual(keys([[escape] + bytes("x")]), [.unknown], "an Alt chord is one unknown key")
         expectEqual(keys([[0x00, 0x01, 0x1A, 0x1F]]), [.unknown, .unknown, .unknown, .unknown], "other control bytes are unknown")

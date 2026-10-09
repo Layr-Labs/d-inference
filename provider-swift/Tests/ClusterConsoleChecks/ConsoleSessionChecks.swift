@@ -64,18 +64,39 @@ extension ClusterConsoleCheck {
         expect(killed.wait { $0.ending != nil } && killed.ending == .ended(description: "was ended by signal 15", clean: false),
             "a signalled end names the signal: \(String(describing: killed.ending))")
 
-        // Long lines are cut, and control bytes travel as text for the renderer to neutralize.
+        // A long line arrives whole, in pieces of a bounded size; control bytes travel as text for the renderer to neutralize.
         let long = Events()
-        _ = try shell("printf '%05000d\\n' 7; printf 'a\\033[2Jb\\r\\n'", long)
+        let limit = ClusterConsoleSessionProcess.maximumLineBytes
+        _ = try shell("printf '%05000d\\n' 7; printf '%0\(limit)d\\n' 8; printf 'a\\033[2Jb\\r\\n'", long)
         expect(long.wait { $0.ending != nil }, "ended")
-        expect(long.output.first?.utf8.count == ClusterConsoleSessionProcess.maximumLineBytes, "a very long line is cut: \(long.output.first?.utf8.count ?? -1)")
-        expectEqual(long.output.last, "a\u{1B}[2Jb", "carriage returns are dropped; other bytes are kept for the renderer")
+        expectEqual(long.output.map(\.utf8.count), [limit, limit, 5000 - 2 * limit, limit, 6], "a very long line is reported in pieces, and none of it is lost")
+        expect(long.output.prefix(3).joined().hasSuffix("0007") && long.output.dropFirst(3).first?.hasSuffix("0008") == true, "the pieces are the line, in order")
+        expectEqual(long.output.last, "a\u{1B}[2Jb", "a line ending is not part of the line; other bytes are kept for the renderer")
+        // Progress rewritten in place arrives as lines, and empty lines stay empty lines.
+        let progress = Events()
+        _ = try shell("printf 'loading 1 of 3\\rloading 2 of 3\\rloading 3 of 3\\n'; printf 'first\\n\\nthird\\n'; printf 'crlf\\r\\n\\r\\nend\\r\\n'", progress)
+        expect(progress.wait { $0.ending != nil }, "ended")
+        expectEqual(progress.output, ["loading 1 of 3", "loading 2 of 3", "loading 3 of 3", "first", "", "third", "crlf", "", "end"],
+            "a carriage return ends a line; a pair ends one line, not two")
+
+        // The child is started the same whatever the console has done to its own signals: every signal
+        // at its default, in a session of its own, so a hangup of the console's terminal does not reach it.
+        var ignore = sigaction(), earlier = sigaction()
+        ignore.__sigaction_u.__sa_handler = SIG_IGN
+        sigaction(SIGHUP, &ignore, &earlier)
+        let detached = Events()
+        _ = try shell("trap 'echo trapped' HUP; kill -HUP $$; echo after; [ \"$(ps -o pgid= -p $$ | tr -d ' ')\" = \"$$\" ] && echo own-group; "
+            + "case \"$(ps -o tty= -p $$ | tr -d ' ')\" in '??'|'-'|'') echo no-terminal;; esac; echo \"term=$TERM color=$NO_COLOR\"; [ -e /dev/fd/3 ] || echo no-other-descriptor", detached)
+        expect(detached.wait { $0.ending != nil }, "ended")
+        sigaction(SIGHUP, &earlier, nil)
+        expectEqual(detached.output, ["trapped", "after", "own-group", "no-terminal", "term=dumb color=1", "no-other-descriptor"],
+            "the child handles a hangup itself, leads its own session without a controlling terminal, is asked for plain text, and holds no descriptor of the console's")
 
         // Something that cannot be started is an error, not a session.
         var refusal = ""
         do { _ = try ClusterConsoleSessionProcess.start(.init(executable: URL(fileURLWithPath: "/nonexistent/darkbloom"), arguments: []), events: { _ in }) }
         catch { refusal = String(describing: error) }
-        expect(!refusal.isEmpty, "a missing executable throws")
+        expect(refusal.hasPrefix("The session process could not be started: ") && refusal.contains("errno 2"), "a missing executable throws, with the reason: \(refusal)")
 
         // Through the loop: a failed start is shown with its error and nothing is left running.
         let operations = ScriptedOperations([ConsoleFixtures.snapshot(saved: ConsoleFixtures.savedSetup())])
@@ -85,7 +106,7 @@ extension ClusterConsoleCheck {
         let run = try ConsoleRun(operations)
         expect(run.terminal.wait { $0.contains("Cluster fixture-cluster") }, "drawn")
         run.terminal.send("s")
-        expect(run.terminal.wait { $0.contains("Start the distributed session? Both Macs load the model.") }, "start asks first")
+        expect(run.terminal.wait { $0.contains("y: start the session; both Macs load the model. Any other key cancels.") }, "start asks first")
         expectEqual(operations.count("launchSession"), 0, "nothing is launched by the question")
         run.terminal.send("y")
         expect(run.terminal.wait { $0.contains("06:00:00 Start session") && $0.contains("The session process started from this screen could not be started.") },
@@ -119,9 +140,11 @@ extension ClusterConsoleCheck {
             }
         }
         let run = try ConsoleRun(operations, columns: 132, rows: 90)
-        let pty = run.terminal, before = pty.mode
+        let pty = run.terminal, before = run.initialMode
         expect(pty.wait { $0.contains("No session was started from this screen.") }, "drawn with no session")
-        pty.send("s"); pty.send("y")
+        pty.send("s")
+        expect(pty.wait { $0.contains("y: start the session") }, "start asks first")
+        pty.send("y")
         expect(pty.wait(20) { $0.contains("started from this screen, is running") }, "the session process is running")
         expect(pty.wait(20) { $0.contains("both ranks ready") }, "the process's own output is shown: \(pty.screen.suffix(20))")
         // Readiness is the leader's report of both ranks, not the passage of time.
@@ -131,6 +154,9 @@ extension ClusterConsoleCheck {
         expect(serving.contains("Rank 0, peer-0: localPipes; native ready;") && serving.contains("Rank 1, peer-1: authenticatedSSH; native ready;"),
             "each rank's readiness comes from its worker")
         expect(serving.contains("admissions remaining 16"), "admissions come from the session")
+        expect(serving.contains("Rank 0, peer-0: admitted and loaded, by the leader's status;")
+            && serving.contains("Rank 1, peer-1: admitted and loaded, by the leader's status;"),
+            "per-rank admission is what each worker reported, read from the leader's status: \(pty.screen.filter { $0.contains("Rank") })")
 
         // A second start while it runs is refused; quitting asks first.
         pty.send("s")
@@ -169,9 +195,13 @@ extension ClusterConsoleCheck {
         again.launch = { events in try ClusterConsoleSessionProcess.start(.init(executable: standIn, arguments: secondArguments), events: events) }
         let leaving = try ConsoleRun(again, columns: 132, rows: 60)
         expect(leaving.terminal.wait { $0.contains("No session was started") }, "drawn")
-        leaving.terminal.send("sy")
+        leaving.terminal.send("s")
+        expect(leaving.terminal.wait { $0.contains("y: start the session") }, "start asks first")
+        leaving.terminal.send("y")
         expect(leaving.terminal.wait(20) { $0.contains("both ranks ready") }, "second session ready")
-        leaving.terminal.send("qq")
+        leaving.terminal.send("q")
+        expect(leaving.terminal.wait { $0.contains("Press q again to stop it") }, "q asks before stopping the session")
+        leaving.terminal.send("q")
         guard case .success(let closed)? = leaving.end(within: 30) else { return expect(false, "q q did not stop the session and close") }
         expectEqual(closed, .init(code: 0, farewell: []), "the screen closed once the session had ended")
         expect((try? String(contentsOf: secondStatus, encoding: .utf8))?.contains("\"hostPhase\":\"stopped\"") == true,

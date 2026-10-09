@@ -53,7 +53,7 @@ import Darwin
             ("redaction", redaction),
             ("diagnostic export", diagnosticExport),
             ("saved setup, trust and candidate", savedSetup),
-            ("link fix dry run and alias record", linkFixPreview),
+            ("link fix results and the guided setup's reading", linkFixResults),
             ("recovery results", recoveryResults),
             ("terminal mode", terminalMode),
             ("run loop on a pseudo-terminal", runLoopOnPseudoTerminal),

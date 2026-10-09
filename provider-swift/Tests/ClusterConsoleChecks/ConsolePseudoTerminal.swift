@@ -14,12 +14,17 @@ final class PseudoTerminal: @unchecked Sendable {
     private var stopReading = false
     private let readerStopped = DispatchSemaphore(value: 0)
 
-    init(columns: Int, rows: Int) throws {
+    /// `reads: false` is a terminal that has stopped taking output: nothing drains what the console writes.
+    init(columns: Int, rows: Int, reads: Bool = true) throws {
         var primary: Int32 = -1, secondary: Int32 = -1
         var window = winsize(ws_row: UInt16(rows), ws_col: UInt16(columns), ws_xpixel: 0, ws_ypixel: 0)
         guard openpty(&primary, &secondary, nil, nil, &window) == 0 else { throw ClusterConfigurationError.invalid("openpty failed") }
         master = primary; slave = secondary
         _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
+        guard reads else {
+            readerStopped.signal()
+            return
+        }
         let reader = primary
         // The reader never blocks inside `read`, so the master can be closed
         // from another thread without closing a descriptor under a sleeper.
@@ -104,15 +109,18 @@ final class PseudoTerminal: @unchecked Sendable {
 final class ConsoleRun: @unchecked Sendable {
     let terminal: PseudoTerminal
     let operations: ScriptedOperations
+    /// The terminal's mode before the console touched it: what must be back when it is done.
+    let initialMode: termios
     private let finished = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var outcome: Result<ClusterConsoleExit, Error>?
 
     init(_ operations: ScriptedOperations, columns: Int = 132, rows: Int = 100,
-         options: ClusterConsoleState.Options = .init(onboarding: false), candidate: ClusterConsoleCandidate? = nil,
+         options: ClusterConsoleState.Options = .init(onboarding: false, questionDwellMilliseconds: 0), candidate: ClusterConsoleCandidate? = nil,
          handlesSignals: Bool = false, output: PseudoTerminal? = nil) throws {
         self.operations = operations
         terminal = try PseudoTerminal(columns: columns, rows: rows)
+        initialMode = terminal.mode
         let configuration = ClusterConsoleRunLoop.Configuration(options: options, candidate: candidate, color: true,
             darkbloomVersion: "0.0.0-check", pollMilliseconds: 40, escapeMilliseconds: 250, handlesSignals: handlesSignals,
             clock: { "06:00:00" })
@@ -146,4 +154,30 @@ extension ClusterConsoleCheck {
     }
 
     static let enterScreen = "\u{1B}[?1049h", leaveScreen = "\u{1B}[?1049l"
+
+    /// As `sameMode`, for a mode put back at once on a terminal that had
+    /// stopped reading: the kernel then marks input as pending, and nothing else differs.
+    static func sameModeApartFromPendingInput(_ a: termios, _ b: termios) -> Bool {
+        var a = a, b = b
+        a.c_lflag &= ~tcflag_t(PENDIN); b.c_lflag &= ~tcflag_t(PENDIN)
+        return sameMode(a, b)
+    }
+}
+
+/// A scripted session whose events the check sends itself.
+final class ScriptedSessionLaunch: @unchecked Sendable {
+    let session: ScriptedSession
+    private let lock = NSLock()
+    private var report: (@Sendable (ClusterConsoleSessionEvent) -> Void)?
+
+    init(processIdentifier: Int32) { session = ScriptedSession(processIdentifier: processIdentifier) }
+
+    /// Installed as the operations' launch: hands back the session and keeps the way to report on it.
+    func launch(_ events: @escaping @Sendable (ClusterConsoleSessionEvent) -> Void) -> any ClusterConsoleSessionHandle {
+        lock.withLock { report = events }
+        return session
+    }
+
+    /// The session process reports something, as its reader thread would.
+    func send(_ event: ClusterConsoleSessionEvent) { lock.withLock { report }?(event) }
 }

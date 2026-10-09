@@ -23,6 +23,9 @@ public struct QualificationIdentity: Codable, Equatable, Sendable {
     public var stageSHA256: [String]?
     public var storageCommitmentSHA256: String?
     public var arithmeticSHA256: String?
+    /// How the ranks divided the request. It decides which rank computes a
+    /// frame, not what is computed, so it is recorded and not compared.
+    public var generationMode: String?
 
     public init(request: QualificationRequest, stageCut: Int, prefillSchedule: String,
                 artifactSHA256: String, configurationSHA256: String, planSHA256: String) {
@@ -256,6 +259,36 @@ public struct ReferenceSenderCheck: Codable, Equatable, Sendable {
     }
 }
 
+/// A reference run that moved stage 0's request state across an in-process
+/// boundary through the phase-split hand-off code before decoding.
+public struct ReferenceHandoff: Codable, Equatable, Sendable {
+    public var entries: Int
+    public var segments: Int
+    public var logicalBytes: Int
+    public var headerBytes: Int
+    public var stateSHA256: String
+    public var seconds: Double
+    /// Snapshot and digests; segments moved and digested on arrival; adoption,
+    /// read-back and the producer's retirement. They add up to `seconds`.
+    public var exportSeconds: Double
+    public var transferSeconds: Double
+    public var adoptionSeconds: Double
+    public var producerStateRetired: Bool
+    public var activeBytesBefore: Int
+    public var activeBytesAfter: Int
+
+    public init(entries: Int, segments: Int, logicalBytes: Int, headerBytes: Int, stateSHA256: String,
+                seconds: Double, exportSeconds: Double, transferSeconds: Double, adoptionSeconds: Double,
+                producerStateRetired: Bool, activeBytesBefore: Int, activeBytesAfter: Int) {
+        self.entries = entries; self.segments = segments; self.logicalBytes = logicalBytes
+        self.headerBytes = headerBytes; self.stateSHA256 = stateSHA256; self.seconds = seconds
+        self.exportSeconds = exportSeconds; self.transferSeconds = transferSeconds
+        self.adoptionSeconds = adoptionSeconds
+        self.producerStateRetired = producerStateRetired
+        self.activeBytesBefore = activeBytesBefore; self.activeBytesAfter = activeBytesAfter
+    }
+}
+
 public struct ReferenceReport: Codable, Equatable, Sendable {
     public static let currentSchema = "darkbloom_cluster_reference_report_v1"
     public var schema: String
@@ -271,16 +304,18 @@ public struct ReferenceReport: Codable, Equatable, Sendable {
     public var promptSource: QualificationPromptSource
     public var decodedOutput: String?
     public var senderCheck: ReferenceSenderCheck?
+    public var handoff: ReferenceHandoff?
 
     public init(identity: QualificationIdentity, evidence: QualificationEvidence, host: QualificationHost,
                 binarySHA256: String?, metallibSHA256: String?, timing: ReferenceTiming, memory: ReferenceMemory,
-                promptSource: QualificationPromptSource, decodedOutput: String?, senderCheck: ReferenceSenderCheck? = nil) {
+                promptSource: QualificationPromptSource, decodedOutput: String?, senderCheck: ReferenceSenderCheck? = nil,
+                handoff: ReferenceHandoff? = nil) {
         schema = Self.currentSchema; kind = "singleHostStagedReference"
         createdUTC = QualificationReportFiles.timestamp()
         self.identity = identity; self.evidence = evidence; self.host = host
         self.binarySHA256 = binarySHA256; self.metallibSHA256 = metallibSHA256
         self.timing = timing; self.memory = memory; self.promptSource = promptSource; self.decodedOutput = decodedOutput
-        self.senderCheck = senderCheck
+        self.senderCheck = senderCheck; self.handoff = handoff
     }
 }
 
@@ -317,8 +352,39 @@ public struct PairRankReport: Codable, Equatable, Sendable {
     public var evidenceCollected = false
     public var evidenceSelectedTokenIDs: [Int]?
     public var diagnostics: String?
+    /// Lines the runtime wrote for its launcher: load, hand-off and release
+    /// sizes and durations of this rank. Sizes are MLX's own byte counts.
+    public var runtimeLines: [String]?
 
     public init(role: String, rank: Int) { self.role = role; self.rank = rank }
+}
+
+/// One request of a pair run on the driver's clock: from the start command to
+/// rank 0's committed-token events and the finished event.
+public struct PairRepetitionTiming: Codable, Equatable, Sendable {
+    public var requestID: String
+    public var admissionSeconds: Double
+    public var firstTokenSeconds: Double
+    public var prefillTokensPerSecond: Double
+    public var decodeSeconds: Double
+    public var decodeTokensPerSecond: Double?
+    public var totalSeconds: Double
+    /// The gap between the first and the second token event. In a phase-split
+    /// request it contains the hand-off.
+    public var secondTokenGapSeconds: Double?
+    public var tokens: Int
+    public var selectedTokenIDsSHA256: String
+    public var finishReason: String
+
+    public init(requestID: String, admissionSeconds: Double, firstTokenSeconds: Double, prefillTokensPerSecond: Double,
+                decodeSeconds: Double, decodeTokensPerSecond: Double?, totalSeconds: Double,
+                secondTokenGapSeconds: Double?, tokens: Int, selectedTokenIDsSHA256: String, finishReason: String) {
+        self.requestID = requestID; self.admissionSeconds = admissionSeconds
+        self.firstTokenSeconds = firstTokenSeconds; self.prefillTokensPerSecond = prefillTokensPerSecond
+        self.decodeSeconds = decodeSeconds; self.decodeTokensPerSecond = decodeTokensPerSecond
+        self.totalSeconds = totalSeconds; self.secondTokenGapSeconds = secondTokenGapSeconds
+        self.tokens = tokens; self.selectedTokenIDsSHA256 = selectedTokenIDsSHA256; self.finishReason = finishReason
+    }
 }
 
 public struct PairTiming: Codable, Equatable, Sendable {
@@ -329,6 +395,10 @@ public struct PairTiming: Codable, Equatable, Sendable {
     public var decodeSeconds: Double?
     public var decodeTokensPerSecond: Double?
     public var shutdownSeconds: Double?
+    /// Start command to the finished event, for the first request.
+    public var totalSeconds: Double?
+    /// Every request of the run in order; the fields above describe the first.
+    public var repetitions: [PairRepetitionTiming]?
     public var note: String
 
     public init(note: String) { self.note = note }
@@ -357,12 +427,20 @@ public struct PairReport: Codable, Equatable, Sendable {
     public var timing: PairTiming
     public var promptSource: QualificationPromptSource
     public var decodedOutput: String?
+    /// `pipeline_v1` or `phase_split_v1`; absent in reports written before the mode existed.
+    public var generationMode: String?
+    /// Whether every request of a repeated run selected the same tokens.
+    public var repetitionsAgreeOnTokens: Bool?
+    /// `jaccl`, or `local-socket-test` when both ranks ran on one Mac over a
+    /// loopback socket: a correctness run, not RDMA, and not a pair timing.
+    public var workerTransport: String?
 
     public init(outcome: String, failure: String?, identity: QualificationIdentity?, evidence: QualificationEvidence?,
                 ranks: [PairRankReport], workerHashesIdentical: Bool?, metallibHashesIdentical: Bool?, recording: Bool,
                 ranksAgreeOnTokens: Bool?, bothExitsObserved: Bool, noWorkerProcessLeft: Bool?,
                 progressTimeoutMilliseconds: Int?, timing: PairTiming, promptSource: QualificationPromptSource,
-                decodedOutput: String?) {
+                decodedOutput: String?, generationMode: String? = nil, repetitionsAgreeOnTokens: Bool? = nil,
+                workerTransport: String? = nil) {
         schema = Self.currentSchema; kind = "twoRankPair"; createdUTC = QualificationReportFiles.timestamp()
         self.outcome = outcome; self.failure = failure; self.identity = identity; self.evidence = evidence
         self.ranks = ranks; self.workerHashesIdentical = workerHashesIdentical
@@ -370,6 +448,8 @@ public struct PairReport: Codable, Equatable, Sendable {
         self.ranksAgreeOnTokens = ranksAgreeOnTokens; self.bothExitsObserved = bothExitsObserved
         self.noWorkerProcessLeft = noWorkerProcessLeft; self.progressTimeoutMilliseconds = progressTimeoutMilliseconds
         self.timing = timing; self.promptSource = promptSource; self.decodedOutput = decodedOutput
+        self.generationMode = generationMode; self.repetitionsAgreeOnTokens = repetitionsAgreeOnTokens
+        self.workerTransport = workerTransport
     }
 }
 

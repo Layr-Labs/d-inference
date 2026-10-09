@@ -22,6 +22,19 @@ public struct PairConfiguration: Sendable {
     public static let arithmeticEnvironment = [
         ("DARKBLOOM_CBV2_ATTN_QUERY_BLOCK", "128"), ("DARKBLOOM_BF16_WEIGHTS", "1"), ("MLX_ENABLE_TF32", "1"),
     ]
+    public static let pipelineMode = "pipeline_v1"
+    public static let phaseSplitMode = "phase_split_v1"
+    /// The pipeline with four transfers per decode step instead of eleven.
+    public static let pipelineCompactDecodeMode = "pipeline_compact_decode_v1"
+    /// The name the runtime reads its declared generation mode from.
+    public static let generationModeEnvironment = "DARKBLOOM_CLUSTER_GENERATION_MODE"
+    public static let maximumRepetitions = 8
+    /// The name a recording worker reads a qualification fault from.
+    public static let faultEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"
+    public static let jacclTransport = "jaccl"
+    public static let localSocketTransport = "local-socket-test"
+    /// The name the runtime reads a declared qualification transport from.
+    public static let workerTransportEnvironment = "DARKBLOOM_CLUSTER_TRANSPORT"
 
     public var request: QualificationRequest
     public var stageCut: Int
@@ -47,6 +60,21 @@ public struct PairConfiguration: Sendable {
     /// Inspect both sides and stop: hashes, running workers, runtime
     /// description and the selected cut. Nothing is launched or written.
     public var preflightOnly: Bool
+    /// `pipeline_v1`, or `phase_split_v1`: pair prefill, then rank 0 hands its
+    /// request state to rank 1, which decodes alone. Declared to both workers.
+    public var generationMode: String
+    /// Requests run one after another in the same loaded session, each with
+    /// its own request ID. The first is the warm-up of a timing run.
+    public var repetitions: Int
+    /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
+    /// socket. That is a correctness run of the two-rank runtime, never an
+    /// RDMA result, and its timings are not pair timings.
+    public var workerTransport: String
+    /// A fault one rank's recording worker is asked to commit during the
+    /// hand-off (`handoff_corrupt_segment=N` on rank 0,
+    /// `handoff_stall_after_segment=N:MILLISECONDS` on rank 1). Qualification only.
+    public var faultRank: Int?
+    public var faultValue: String?
     public var membershipEpoch: UUID
     /// Strings that must never appear in a report (destination, addresses, names).
     public var sensitive: [String]
@@ -56,6 +84,8 @@ public struct PairConfiguration: Sendable {
                 recording: Bool = true, lifetimeSeconds: Int = 240, startupSeconds: Int = 120,
                 requestSeconds: Int = 100, rankOneDelaySeconds: Double = 2, progressTimeoutMilliseconds: Int? = nil,
                 requireProgressGuard: Bool = true, keepRunFiles: Bool = false, preflightOnly: Bool = false,
+                generationMode: String = PairConfiguration.pipelineMode, repetitions: Int = 1,
+                workerTransport: String = PairConfiguration.jacclTransport,
                 membershipEpoch: UUID = UUID(), sensitive: [String] = []) throws {
         self.request = request; self.stageCut = stageCut; self.local = local; self.remote = remote
         self.remoteTransport = remoteTransport; self.coordinator = coordinator
@@ -65,6 +95,8 @@ public struct PairConfiguration: Sendable {
         self.progressTimeoutMilliseconds = progressTimeoutMilliseconds
         self.requireProgressGuard = requireProgressGuard; self.keepRunFiles = keepRunFiles
         self.preflightOnly = preflightOnly
+        self.generationMode = generationMode; self.repetitions = repetitions
+        self.workerTransport = workerTransport
         self.membershipEpoch = membershipEpoch; self.sensitive = sensitive
         try validate()
     }
@@ -138,6 +170,20 @@ public struct PairConfiguration: Sendable {
         }
         try require(Self.isCoordinator(coordinator), "coordinator must be IPV4:PORT with a unicast address")
         try require(["serial_v1", "one_chunk_lookahead_v1"].contains(prefillSchedule), "unknown prefill schedule")
+        try require([Self.pipelineMode, Self.pipelineCompactDecodeMode, Self.phaseSplitMode].contains(generationMode),
+            "unknown generation mode")
+        try require((1...Self.maximumRepetitions).contains(repetitions), "repetitions must be 1...8")
+        try require(repetitions == 1 || !recording, "a recording run takes one request; repeat with --evidence none")
+        try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
+        try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
+            "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")
+        try require((faultRank == nil) == (faultValue == nil), "a fault needs both its rank and its value")
+        if let faultRank, let faultValue {
+            try require((0...1).contains(faultRank) && recording && generationMode == Self.phaseSplitMode
+                && (1...96).contains(faultValue.utf8.count)
+                && faultValue.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [58, 61, 95].contains($0) },
+                "a fault is a recording phase-split run's input: RANK and name=value of lowercase letters, digits, '_', ':'")
+        }
         try require((10...300).contains(lifetimeSeconds), "lifetime must be 10...300 seconds")
         try require((2...lifetimeSeconds).contains(startupSeconds), "startup timeout must be 2 seconds up to the lifetime")
         try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
@@ -248,6 +294,16 @@ public struct PairConfiguration: Sendable {
             + [("JACCL_RANK", String(rank)), ("JACCL_COORDINATOR", coordinator)]
         if let progressTimeoutMilliseconds {
             environment.append(("JACCL_PROGRESS_TIMEOUT_MS", String(progressTimeoutMilliseconds)))
+        }
+        // The pipeline's launch is unchanged; any other mode is declared to both ranks.
+        if generationMode != Self.pipelineMode {
+            environment.append((Self.generationModeEnvironment, generationMode))
+        }
+        if workerTransport != Self.jacclTransport {
+            environment.append((Self.workerTransportEnvironment, workerTransport))
+        }
+        if faultRank == rank, let faultValue {
+            environment.append((Self.faultEnvironment, faultValue))
         }
         var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
             "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,

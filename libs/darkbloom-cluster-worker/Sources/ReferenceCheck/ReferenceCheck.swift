@@ -17,7 +17,8 @@ import Foundation
         do {
             var fields: [String: String] = [:]
             let arguments = Array(CommandLine.arguments.dropFirst())
-            let names = ["--model-dir", "--request", "--stage-cut", "--report", "--deadline-seconds"]
+            let names = ["--model-dir", "--request", "--stage-cut", "--report", "--deadline-seconds",
+                         "--handoff", "--handoff-segment-bytes", "--handoff-corrupt-segment", "--serve"]
             guard arguments.count % 2 == 0 else { throw Failure(usage) }
             for index in stride(from: 0, to: arguments.count, by: 2) {
                 guard names.contains(arguments[index]), fields[arguments[index]] == nil else {
@@ -25,11 +26,45 @@ import Foundation
                 }
                 fields[arguments[index]] = arguments[index + 1]
             }
+            if fields["--serve"] != nil {
+                guard fields["--serve"] == "yes", fields["--request"] == nil, fields["--report"] == nil,
+                      fields["--handoff"] == nil, let model = fields["--model-dir"], model.hasPrefix("/"),
+                      let cut = fields["--stage-cut"].flatMap(Int.init),
+                      let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds) else {
+                    throw Failure(usage)
+                }
+                // As below: the artifact's configuration selects the registered
+                // model, and the cut must be one of that model's cuts.
+                let served = try QwenResidentCapabilityMetadata.registeredModel(configuration: QualificationFiles.read(
+                    URL(fileURLWithPath: model).appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+                guard served.supportedCuts.contains(cut) else {
+                    throw Failure("--stage-cut must be one of " + served.supportedCuts.map(String.init).joined(separator: ", "))
+                }
+                try serve(modelDirectory: URL(fileURLWithPath: model), cut: cut, seconds: seconds)
+            }
             guard let model = fields["--model-dir"], model.hasPrefix("/"),
                   let requestPath = fields["--request"], let reportPath = fields["--report"],
                   let cut = fields["--stage-cut"].flatMap(Int.init),
-                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds) else {
+                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds),
+                  ["in-process", nil].contains(fields["--handoff"]) else {
                 throw Failure(usage)
+            }
+            var handoff: QwenStagedGenerationReference.Handoff?
+            if fields["--handoff"] != nil {
+                var value = QwenStagedGenerationReference.Handoff()
+                if let text = fields["--handoff-segment-bytes"] {
+                    guard let bytes = Int(text), (4096...(16 * 1024 * 1024)).contains(bytes) else {
+                        throw Failure("--handoff-segment-bytes must be 4096...16777216")
+                    }
+                    value.maximumSegmentBytes = bytes
+                }
+                if let text = fields["--handoff-corrupt-segment"] {
+                    guard let index = Int(text), index >= 0 else { throw Failure("--handoff-corrupt-segment must be a segment index") }
+                    value.corruptSegment = index
+                }
+                handoff = value
+            } else if fields["--handoff-segment-bytes"] != nil || fields["--handoff-corrupt-segment"] != nil {
+                throw Failure("Hand-off options need --handoff in-process")
             }
             let request = try QualificationRequest.read(URL(fileURLWithPath: requestPath))
             let reportURL = URL(fileURLWithPath: reportPath)
@@ -55,11 +90,36 @@ import Foundation
             signal(SIGALRM) { _ in Darwin._exit(124) }
             alarm(UInt32(seconds + 5))
             try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
-            let result = try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
-                request: .init(requestID: request.requestUUID, promptTokenIDs: request.promptTokenIDs,
-                    stopTokenIDs: request.stopTokenIDs, chunkSize: request.chunkSize, outputCount: request.outputCount),
-                deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000)
+            let result: QwenStagedGenerationReference.Result
+            do {
+                result = try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
+                    request: .init(requestID: request.requestUUID, promptTokenIDs: request.promptTokenIDs,
+                        stopTokenIDs: request.stopTokenIDs, chunkSize: request.chunkSize, outputCount: request.outputCount),
+                    deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000, handoff: handoff)
+            } catch let refusal as QwenStagedGenerationReference.HandoffRefusal {
+                // The outcome a fault run asks for: the adopting side refused
+                // the state, and nothing was left allocated afterwards.
+                alarm(0)
+                let released = refusal.requestStatesRetired && refusal.stageModelsReleased.allSatisfy { $0 }
+                let summary: [String: Any] = [
+                    "schema": "darkbloom_cluster_reference_handoff_refusal_v1", "handoffRefused": true,
+                    "injectedFault": handoff?.corruptSegment.map { "bit flipped in segment \($0)" } ?? "none",
+                    "reason": refusal.reason, "stageCut": cut, "promptTokens": request.promptTokenIDs.count,
+                    "requestStatesRetired": refusal.requestStatesRetired,
+                    "stageModelsReleased": refusal.stageModelsReleased.allSatisfy { $0 },
+                    "activeBytesAfterRelease": refusal.activeBytesAfterRelease,
+                    "cacheBytesAfterRelease": refusal.cacheBytesAfterRelease,
+                ]
+                var data = try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes])
+                data.append(10)
+                try QualificationFiles.writeNew(data, to: reportURL)
+                print(String(decoding: data, as: UTF8.self), terminator: "")
+                Darwin.exit(handoff?.corruptSegment != nil && released ? 0 : 2)
+            }
             alarm(0)
+            if handoff?.corruptSegment != nil {
+                throw Failure("A corrupted hand-off segment was adopted without refusal")
+            }
             let total = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
 
             var identity = QualificationIdentity(request: request, stageCut: cut, prefillSchedule: "serial_v1",
@@ -136,7 +196,16 @@ import Foundation
                           allocatedBytes: $0.allocatedBytes, allocationBound: $0.allocationBound, dataOffset: $0.dataOffset,
                           dataElements: $0.dataElements, elementCount: $0.elementCount, isUnique: $0.isUnique,
                           isRowContiguous: $0.isRowContiguous, ownedAfterGPUSynchronize: $0.ownedAfterGPUSynchronize)
-                }))
+                }),
+                handoff: result.handoff.map {
+                    .init(entries: $0.entries, segments: $0.segments, logicalBytes: $0.logicalBytes,
+                          headerBytes: $0.headerBytes, stateSHA256: $0.stateSHA256, seconds: Double($0.nanoseconds) / 1e9,
+                          exportSeconds: Double($0.exportNanoseconds) / 1e9,
+                          transferSeconds: Double($0.transferNanoseconds) / 1e9,
+                          adoptionSeconds: Double($0.adoptionNanoseconds) / 1e9,
+                          producerStateRetired: $0.producerStateRetired, activeBytesBefore: $0.activeBytesBefore,
+                          activeBytesAfter: $0.activeBytesAfter)
+                })
             try QualificationFiles.writeNew(QualificationReportFiles.encode(report), to: reportURL)
 
             let released = result.stageModelsReleased.allSatisfy { $0 }
@@ -159,6 +228,15 @@ import Foundation
             // the tightest one, and whether any admission needed file cache.
             summary["resourceAdmission"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.resourceAdmission))
             if let rate = timing.decodeTokensPerSecond { summary["decodeTokensPerSecond"] = rate }
+            if let handoff = result.handoff {
+                summary["handoffEntries"] = handoff.entries; summary["handoffSegments"] = handoff.segments
+                summary["handoffLogicalBytes"] = handoff.logicalBytes
+                summary["handoffSeconds"] = Double(handoff.nanoseconds) / 1e9
+                summary["handoffExportSeconds"] = Double(handoff.exportNanoseconds) / 1e9
+                summary["handoffTransferSeconds"] = Double(handoff.transferNanoseconds) / 1e9
+                summary["handoffAdoptionSeconds"] = Double(handoff.adoptionNanoseconds) / 1e9
+                summary["handoffProducerStateRetired"] = handoff.producerStateRetired
+            }
             if let text = report.decodedOutput { summary["decodedOutput"] = text }
             print(String(decoding: try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))
             Darwin.exit(released ? 0 : 2)
@@ -168,8 +246,80 @@ import Foundation
         }
     }
 
-    static let usage = "usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]\n"
-        + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B"
+    static let usage = """
+        usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]
+                 [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]]
+               --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...300]
+          CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B
+        """
+
+    /// One event per line on standard output, written at once.
+    static func emit(_ event: [String: Any]) throws {
+        var data = try JSONSerialization.data(withJSONObject: event, options: [.sortedKeys, .withoutEscapingSlashes])
+        data.append(10)
+        try FileHandle.standardOutput.write(contentsOf: data)
+    }
+
+    struct ServeCommand: Decodable {
+        let command: String
+        let requestID: String?
+        let promptTokenIDs: [Int]?
+        let stopTokenIDs: [Int]?
+        let chunkSize: Int?
+        let outputCount: Int?
+    }
+
+    /// `--serve yes`: both stages loaded once, then one request per `run` line
+    /// on standard input, each selected token reported as it is chosen. For a
+    /// driver that times one Mac alone on its own clock, as it times a pair.
+    /// Standard input ending, or a `shutdown` line, releases and exits.
+    static func serve(modelDirectory: URL, cut: Int, seconds: Int) throws -> Never {
+        let started = DispatchTime.now().uptimeNanoseconds
+        signal(SIGPIPE, SIG_IGN)
+        signal(SIGALRM) { _ in Darwin._exit(124) }
+        alarm(UInt32(seconds + 5))
+        try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
+        let release = try QwenStagedGenerationReference.serve(modelDirectory: modelDirectory, stageCut: cut,
+            deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000,
+            ready: {
+                try emit(["event": "ready", "stageLoadSeconds": $0.stageLoadSeconds,
+                          "activeBytesBefore": $0.activeBytesBefore, "activeBytesLoaded": $0.activeBytesLoaded])
+            },
+            next: {
+                // `prepare` carries the request and is answered; `start` then
+                // begins it. A pair is driven the same way: the prompt travels
+                // with the reservation, and the clock starts at the start command.
+                guard let line = readLine(strippingNewline: true), !line.isEmpty else { return nil }
+                let command = try JSONDecoder().decode(ServeCommand.self, from: Data(line.utf8))
+                if command.command == "shutdown" { return nil }
+                guard command.command == "prepare", let text = command.requestID, let id = UUID(uuidString: text),
+                      let prompt = command.promptTokenIDs, let chunk = command.chunkSize, let count = command.outputCount else {
+                    throw Failure("Unknown or incomplete serve command")
+                }
+                try emit(["event": "prepared", "requestID": text])
+                guard let next = readLine(strippingNewline: true),
+                      let start = try? JSONDecoder().decode(ServeCommand.self, from: Data(next.utf8)),
+                      start.command == "start", start.requestID == text else {
+                    throw Failure("A prepared request must be followed by its start command")
+                }
+                return QwenStagedGenerationReference.Request(requestID: id, promptTokenIDs: prompt,
+                    stopTokenIDs: command.stopTokenIDs ?? [], chunkSize: chunk, outputCount: count)
+            },
+            token: { try emit(["event": "token", "ordinal": $0, "tokenID": $1]) },
+            finished: {
+                try emit(["event": "finished", "reason": $0.finishReason, "tokens": $0.selectedTokenIDs.count,
+                          "firstTokenNanoseconds": $0.firstTokenNanoseconds, "lastTokenNanoseconds": $0.lastTokenNanoseconds,
+                          "retiredNanoseconds": $0.retiredNanoseconds, "residualCopies": $0.residualCopies,
+                          "activeBytesDuringRequest": $0.activeBytesDuringRequest,
+                          "activeBytesAfterRetirement": $0.activeBytesAfterRetirement])
+            })
+        alarm(0)
+        let released = release.stageModelsReleased.allSatisfy { $0 }
+        try emit(["event": "released", "requests": release.requests, "stageModelsReleased": released,
+                  "activeBytesAfterRelease": release.activeBytesAfterRelease,
+                  "cacheBytesAfterRelease": release.cacheBytesAfterRelease, "peakBytes": release.peakBytes])
+        Darwin.exit(released ? 0 : 2)
+    }
 
     struct Failure: Error, CustomStringConvertible {
         let description: String

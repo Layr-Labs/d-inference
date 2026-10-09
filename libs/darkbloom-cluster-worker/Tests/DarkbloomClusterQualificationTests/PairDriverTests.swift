@@ -434,4 +434,200 @@ final class PairDriverTests: XCTestCase {
             XCTAssertNil(PairLaunchPreamble(line: bad), bad)
         }
     }
+
+    func testPhaseSplitModeIsDeclaredToBothWorkers() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2, recording: false)
+        configuration.generationMode = PairConfiguration.phaseSplitMode
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.generationMode, "phase_split_v1")
+        XCTAssertEqual(report.identity?.generationMode, "phase_split_v1")
+        // Both ranks, or the runtime's load agreement would stop them; the
+        // pipeline's launch carries no such name (asserted exactly above).
+        for rank in 0...1 {
+            let observed = try sides.observed(configuration, rank)
+            XCTAssertEqual((observed["environment"] as? [String: String])?["DARKBLOOM_CLUSTER_GENERATION_MODE"], "phase_split_v1")
+        }
+        assertEndedByItself(report, sides, configuration)
+        configuration.generationMode = "phase_split"
+        XCTAssertThrowsError(try configuration.validate())
+    }
+
+    func testQualificationSwitchesReachOnlyTheRankTheyAreMeantFor() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2)
+        configuration.coordinator = "127.0.0.1:47011"
+        configuration.generationMode = PairConfiguration.phaseSplitMode
+        configuration.workerTransport = PairConfiguration.localSocketTransport
+        configuration.faultRank = 0; configuration.faultValue = "handoff_corrupt_segment=3"
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.workerTransport, "local-socket-test")
+        // A loopback run says in its own timing note that it is not a pair timing.
+        XCTAssertTrue(report.timing.note.contains("not RDMA"))
+        for rank in 0...1 {
+            let environment = try XCTUnwrap(try sides.observed(configuration, rank)["environment"] as? [String: String])
+            XCTAssertEqual(environment["DARKBLOOM_CLUSTER_TRANSPORT"], "local-socket-test")
+            XCTAssertEqual(environment["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"], rank == 0 ? "handoff_corrupt_segment=3" : nil)
+        }
+        assertEndedByItself(report, sides, configuration)
+        // A loopback socket is this Mac only; a fault is a recording phase-split input.
+        var invalid = configuration
+        invalid.coordinator = Sides.coordinator
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.generationMode = PairConfiguration.pipelineMode
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.recording = false
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.faultValue = "handoff_corrupt_segment=3; id"
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.faultRank = nil
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.workerTransport = "tcp"
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
+    func testRepeatedRequestsRunInOneLoadedSession() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 4, recording: false)
+        configuration.repetitions = 3
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        let timings = try XCTUnwrap(report.timing.repetitions)
+        XCTAssertEqual(timings.count, 3)
+        // Each request has an ID of its own; the first is the request file's.
+        XCTAssertEqual(Set(timings.map(\.requestID)).count, 3)
+        XCTAssertEqual(timings[0].requestID, configuration.request.requestID)
+        XCTAssertEqual(timings.map(\.tokens), [4, 4, 4])
+        XCTAssertEqual(Set(timings.map(\.selectedTokenIDsSHA256)), [QualificationHash.tokenIDs([100, 101, 102, 103])])
+        XCTAssertEqual(report.repetitionsAgreeOnTokens, true)
+        for timing in timings {
+            XCTAssertGreaterThan(timing.firstTokenSeconds, 0)
+            XCTAssertGreaterThanOrEqual(timing.totalSeconds, timing.firstTokenSeconds + timing.decodeSeconds)
+            XCTAssertNotNil(timing.secondTokenGapSeconds); XCTAssertEqual(timing.finishReason, "length")
+        }
+        // The summary fields describe the first request.
+        XCTAssertEqual(report.timing.firstTokenSeconds, timings[0].firstTokenSeconds)
+        XCTAssertEqual(report.timing.totalSeconds, timings[0].totalSeconds)
+        // One launch per rank served all three: admitted three times, shut down once.
+        for rank in report.ranks {
+            XCTAssertEqual(rank.events.filter { $0 == "admitted" }.count, 3)
+            XCTAssertEqual(rank.events.filter { $0 == "retired:clean" }.count, 3)
+            XCTAssertEqual(rank.events.first, "ready"); XCTAssertEqual(rank.events.last, "shutdownComplete")
+        }
+        XCTAssertTrue(report.ranks[0].events.contains("committedToken x12"))
+        assertEndedByItself(report, sides, configuration)
+        // A recording run keeps one request.
+        var recording = try sides.configuration()
+        recording.repetitions = 2
+        XCTAssertThrowsError(try recording.validate())
+        recording.repetitions = 9; recording.recording = false
+        XCTAssertThrowsError(try recording.validate())
+    }
+
+    func testOnlyTheRuntimesOwnLinesAreKeptVerbatim() {
+        let lines = PairDriver.runtimeLines("""
+            darkbloom-pair-launch-v1 pid=1 uptime=1 deadline=2
+            darkbloom-resident-load-v1 rank=1 mode=phase_split_v1 active_before=0 cache_before=0 active_loaded=5038047774 cache_loaded=0 stages=2
+            darkbloom-phase-split-v1 rank=1 request=6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11 handoff=1 entries=18 bytes=80507332
+            darkbloom-phase-split-v1 rank=1 connect to host 10.0.0.2: refused
+            darkbloom-cluster-worker: something else
+            darkbloom-resident-release-v1 rank=1 active=4024 cache=0
+            """)
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertTrue(lines[0].hasPrefix("darkbloom-resident-load-v1 ") && lines[0].hasSuffix("stages=2"))
+        XCTAssertTrue(lines[1].contains("bytes=80507332"))
+        XCTAssertEqual(lines[2], "darkbloom-resident-release-v1 rank=1 active=4024 cache=0")
+        // A line that carries anything but lowercase names, digits and '=' is free text, and is redacted elsewhere.
+        XCTAssertFalse(lines.contains { $0.contains("10.0.0.2") })
+    }
+
+    /// A shell script stands in for `darkbloom-cluster-reference --serve yes`:
+    /// it speaks the same line protocol and records how it was started.
+    func testSoloDriverTimesOneMacAloneOnTheDriverClock() throws {
+        let files = FileManager.default
+        for remote in [false, true] {
+            let root = files.temporaryDirectory.appendingPathComponent("solo-check-\(UUID().uuidString.lowercased())")
+            try files.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? files.removeItem(at: root) }
+            let service = root.appendingPathComponent("darkbloom-cluster-reference")
+            try Data(#"""
+                #!/bin/sh
+                D=$(/usr/bin/dirname "$0")
+                printf '%s\n' "$@" > "$D/arguments.txt"
+                /usr/bin/env > "$D/environment.txt"
+                printf '{"event":"ready","stageLoadSeconds":[0.25,0.5],"activeBytesBefore":0,"activeBytesLoaded":1000}\n'
+                while IFS= read -r line; do
+                  case "$line" in
+                    *'"command":"shutdown"'*)
+                      printf '{"event":"released","requests":2,"stageModelsReleased":true,"activeBytesAfterRelease":0,"cacheBytesAfterRelease":0,"peakBytes":2000}\n'
+                      exit 0;;
+                    *'"command":"prepare"'*)
+                      id=$(printf '%s' "$line" | /usr/bin/sed -E 's/.*"requestID":"([^"]*)".*/\1/')
+                      printf '{"event":"prepared","requestID":"%s"}\n' "$id";;
+                    *'"command":"start"'*)
+                      printf '{"event":"token","ordinal":0,"tokenID":7}\n'
+                      printf '{"event":"token","ordinal":1,"tokenID":8}\n'
+                      printf '{"event":"finished","reason":"length","tokens":2,"firstTokenNanoseconds":1000000,"lastTokenNanoseconds":2000000,"retiredNanoseconds":3000000,"residualCopies":0,"activeBytesDuringRequest":1100,"activeBytesAfterRetirement":1000}\n';;
+                  esac
+                done
+                exit 1
+
+                """#.split(separator: "\n", omittingEmptySubsequences: false).map { $0.drop(while: { $0 == " " }) }.joined(separator: "\n").utf8)
+                .write(to: service)
+            try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: service.path)
+            try Data("metallib".utf8).write(to: root.appendingPathComponent("mlx.metallib"))
+            let request = try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...40), chunkSize: 16,
+                outputCount: 2, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "test"))
+            let configuration = try SoloConfiguration(request: request, stageCut: 8, modelDirectory: root.path,
+                servicePath: service.path, transport: ["/bin/sh", "-c"], remote: remote, repetitions: 2,
+                lifetimeSeconds: 30, startupSeconds: 10, requestSeconds: 10, role: "single host test",
+                sensitive: ["operator@peer-mac.example"])
+            let report = SoloDriver(configuration: configuration).run()
+            XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+            XCTAssertEqual(report.role, "single host test"); XCTAssertEqual(report.remote, remote)
+            XCTAssertEqual(report.stageLoadSeconds, [0.25, 0.5]); XCTAssertEqual(report.activeBytesLoaded, 1000)
+            XCTAssertEqual(report.repetitions.count, 2)
+            XCTAssertEqual(report.repetitions[0].requestID, request.requestID)
+            XCTAssertNotEqual(report.repetitions[1].requestID, request.requestID)
+            for timing in report.repetitions {
+                XCTAssertEqual(timing.tokens, 2); XCTAssertEqual(timing.finishReason, "length")
+                XCTAssertEqual(timing.selectedTokenIDsSHA256, QualificationHash.tokenIDs([7, 8]))
+                // The driver's own clock, and the service's for comparison.
+                XCTAssertGreaterThan(timing.firstTokenSeconds, 0)
+                XCTAssertGreaterThanOrEqual(timing.totalSeconds, timing.firstTokenSeconds)
+                XCTAssertEqual(timing.serviceFirstTokenSeconds, 0.001); XCTAssertEqual(timing.serviceRetiredSeconds, 0.003)
+                XCTAssertEqual(timing.activeBytesAfterRetirement, 1000)
+            }
+            XCTAssertEqual(report.repetitionsAgreeOnTokens, true); XCTAssertEqual(report.selectedTokenIDs, [7, 8])
+            XCTAssertEqual(report.stageModelsReleased, true); XCTAssertEqual(report.activeBytesAfterRelease, 0)
+            XCTAssertEqual(report.exitStatus, 0); XCTAssertNil(report.exitSignal)
+            XCTAssertEqual(report.signalsSentByDriver, 0); XCTAssertEqual(report.serviceProcessesLeft, 0)
+            XCTAssertNotNil(report.serviceSHA256); XCTAssertNotNil(report.wiredBytesBefore)
+            // Started with the worker's arithmetic environment and nothing inherited.
+            let arguments = try String(contentsOf: root.appendingPathComponent("arguments.txt"), encoding: .utf8)
+            XCTAssertEqual(arguments.split(separator: "\n").map(String.init),
+                ["--model-dir", root.path, "--stage-cut", "8", "--serve", "yes", "--deadline-seconds", "30"])
+            let environment = try String(contentsOf: root.appendingPathComponent("environment.txt"), encoding: .utf8)
+            for name in ["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128", "DARKBLOOM_BF16_WEIGHTS=1", "MLX_ENABLE_TF32=1"] {
+                XCTAssertTrue(environment.contains(name), name)
+            }
+            XCTAssertFalse(environment.contains("HOME=")); XCTAssertFalse(environment.contains("JACCL_"))
+            let text = String(decoding: try QualificationReportFiles.encode(report), as: UTF8.self)
+            for secret in [NSUserName(), root.path, "peer-mac", "operator@"] { XCTAssertFalse(text.contains(secret), secret) }
+        }
+        // A service that is not there fails before anything is launched.
+        let missing = try SoloConfiguration(request: try QualificationRequest(requestID: UUID(), promptTokenIDs: [1, 2],
+                chunkSize: 2, outputCount: 1, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "test")),
+            stageCut: 8, modelDirectory: "/var/empty/model", servicePath: "/var/empty/darkbloom-cluster-reference",
+            transport: ["/bin/sh", "-c"], remote: false, lifetimeSeconds: 10, startupSeconds: 2, requestSeconds: 5)
+        let failed = SoloDriver(configuration: missing).run()
+        XCTAssertEqual(failed.outcome, "failed"); XCTAssertNil(failed.readySeconds)
+        XCTAssertThrowsError(try SoloConfiguration(request: missing.request, stageCut: 5, modelDirectory: "/m", servicePath: "/s",
+            transport: ["/bin/sh", "-c"], remote: false))
+    }
 }

@@ -6,6 +6,7 @@ import Foundation
 // Two-Mac qualification, without MLX in this process:
 //   request  write a qualification request from fixed text or fixed token IDs
 //   run      run that request on rank 0 (this Mac) and rank 1 (the second Mac)
+//   solo     run that request on one Mac alone, timed on this driver's clock
 //   compare  compare a reference report with a pair report (or two reports)
 
 @main enum PairCheck {
@@ -26,9 +27,16 @@ import Foundation
               --local-model-dir /ABS/MODEL --remote-model-dir /ABS/MODEL
               --local-rdma-device NAME --remote-rdma-device NAME --coordinator RANK0_LINK_IPV4:PORT
               [--evidence final-row|none] [--prefill-schedule serial_v1|one_chunk_lookahead_v1]
+              [--mode pipeline|pipeline-compact|phase-split] [--repetitions 1...8 (with --evidence none)]
+              [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
+              [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
               [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N] [--rank1-delay-seconds N]
               [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
+          darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut 4|8|12|16 --report NEW-REPORT.json
+              --service /ABS/darkbloom-cluster-reference --model-dir /ABS/MODEL
+              [--remote-ssh DESTINATION [--ssh-option Key=Value]...] [--role LABEL] [--repetitions 1...8]
+              [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N]
           darkbloom-cluster-pair-check compare --reference REPORT.json --candidate REPORT.json
               [--near-tie-ulps N] [--allow-cut-difference yes] [--allow-schedule-difference yes]
               [--json yes] [--require VERDICT[,VERDICT]] [--model-dir /ABS/MODEL]
@@ -54,6 +62,7 @@ import Foundation
             switch arguments.first {
             case "request": try await request(Array(arguments.dropFirst()))
             case "run": try await run(Array(arguments.dropFirst()))
+            case "solo": try solo(Array(arguments.dropFirst()))
             case "compare": try await compare(Array(arguments.dropFirst()))
             default: throw Failure(usage)
             }
@@ -142,7 +151,7 @@ import Foundation
             "--local-rdma-device", "--remote-rdma-device", "--coordinator", "--evidence", "--prefill-schedule",
             "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
-            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files"]
+            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -174,7 +183,12 @@ import Foundation
         }
         let lifetime = try integer(fields, "--lifetime-seconds") ?? 240
         let delay = fields["--rank1-delay-seconds"]?.first.flatMap(Double.init) ?? 2
-        let configuration = try PairConfiguration(request: request, stageCut: cut,
+        let modes = ["pipeline": PairConfiguration.pipelineMode, "phase-split": PairConfiguration.phaseSplitMode,
+                     "pipeline-compact": PairConfiguration.pipelineCompactDecodeMode]
+        guard let mode = modes[fields["--mode"]?.first ?? "pipeline"] else {
+            throw Failure("--mode must be pipeline, pipeline-compact or phase-split")
+        }
+        var configuration = try PairConfiguration(request: request, stageCut: cut,
             local: .init(modelDirectory: try required("--local-model-dir"), workerPath: try required("--local-worker"),
                          rdmaDevice: try required("--local-rdma-device"), scratchDirectory: fields["--local-scratch-dir"]?.first ?? "/tmp"),
             remote: .init(modelDirectory: try required("--remote-model-dir"), workerPath: try required("--remote-worker"),
@@ -186,7 +200,19 @@ import Foundation
             progressTimeoutMilliseconds: try integer(fields, "--progress-timeout-ms") ?? 60_000,
             requireProgressGuard: fields["--allow-unguarded-jaccl"]?.first != "yes",
             keepRunFiles: fields["--keep-run-files"]?.first == "yes",
-            preflightOnly: fields["--preflight-only"]?.first == "yes", sensitive: sensitive)
+            preflightOnly: fields["--preflight-only"]?.first == "yes", generationMode: mode,
+            repetitions: try integer(fields, "--repetitions") ?? 1,
+            workerTransport: fields["--transport"]?.first ?? PairConfiguration.jacclTransport, sensitive: sensitive)
+        if let fault = fields["--fault"]?.first {
+            let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, let rank = Int(parts[0]) else { throw Failure("--fault takes RANK:name=value") }
+            configuration.faultRank = rank; configuration.faultValue = String(parts[1])
+            try configuration.validate()
+        }
+        // A loopback socket needs both ranks on this Mac.
+        guard configuration.workerTransport == PairConfiguration.jacclTransport || fields["--remote-command-prefix"] != nil else {
+            throw Failure("--transport local-socket-test needs --remote-command-prefix (both ranks on this Mac)")
+        }
         // Last resort for the driver itself: inspections, the workers' whole
         // lifetime, their exit, and collection, with room to spare.
         try QualificationDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
@@ -208,9 +234,66 @@ import Foundation
             lines.append("tokens: \(evidence.selectedTokenIDs.count) (\(evidence.finishReason)); ranks agree: \(report.ranksAgreeOnTokens.map { "\($0)" } ?? "not recorded")")
         }
         if let text = report.decodedOutput, !text.isEmpty { lines.append("decoded output: \(text)") }
+        for (index, timing) in (report.timing.repetitions ?? []).enumerated() {
+            lines.append(String(format: "request %d: first token %.3f s (%.0f prompt tok/s), decode %.1f tok/s, total %.3f s",
+                index + 1, timing.firstTokenSeconds, timing.prefillTokensPerSecond,
+                timing.decodeTokensPerSecond ?? 0, timing.totalSeconds))
+        }
+        if let agree = report.repetitionsAgreeOnTokens { lines.append("repeated requests select the same tokens: \(agree)") }
+        for rank in report.ranks { for line in rank.runtimeLines ?? [] { lines.append("\(rank.role): \(line)") } }
         lines.append("report: \(reportURL.lastPathComponent)")
         print(lines.joined(separator: "\n"))
         Darwin.exit(report.outcome == (configuration.preflightOnly ? "preflight" : "completed") ? 0 : 2)
+    }
+
+    static func solo(_ arguments: [String]) throws {
+        let fields = try parse(arguments, allowed: ["--request", "--stage-cut", "--report", "--service", "--model-dir",
+            "--remote-ssh", "--ssh-option", "--role", "--repetitions", "--lifetime-seconds", "--startup-seconds",
+            "--request-seconds"], repeated: ["--ssh-option"])
+        func required(_ name: String) throws -> String {
+            guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
+            return value
+        }
+        let request = try QualificationRequest.read(URL(fileURLWithPath: try required("--request")))
+        let reportURL = URL(fileURLWithPath: try required("--report"))
+        guard !FileManager.default.fileExists(atPath: reportURL.path) else {
+            throw Failure("Report \(reportURL.lastPathComponent) already exists; a report is never overwritten")
+        }
+        guard let cut = try integer(fields, "--stage-cut") else { throw Failure("Missing --stage-cut\n" + usage) }
+        var transport = ["/bin/sh", "-c"], sensitive: [String] = []
+        if let destination = fields["--remote-ssh"]?.first {
+            transport = try PairConfiguration.sshTransport(destination: destination, options: fields["--ssh-option"] ?? [])
+            sensitive = [destination] + (fields["--ssh-option"] ?? []).compactMap { option -> String? in
+                guard let value = option.split(separator: "=", maxSplits: 1).last.map(String.init), value.count >= 3,
+                      Int(value) == nil, !["yes", "none", "accept-new"].contains(value) else { return nil }
+                return value
+            }
+        }
+        let lifetime = try integer(fields, "--lifetime-seconds") ?? 240
+        let remote = fields["--remote-ssh"] != nil
+        let configuration = try SoloConfiguration(request: request, stageCut: cut,
+            modelDirectory: try required("--model-dir"), servicePath: try required("--service"),
+            transport: transport, remote: remote, repetitions: try integer(fields, "--repetitions") ?? 1,
+            lifetimeSeconds: lifetime, startupSeconds: try integer(fields, "--startup-seconds") ?? min(120, lifetime),
+            requestSeconds: try integer(fields, "--request-seconds") ?? min(100, lifetime),
+            role: fields["--role"]?.first ?? (remote ? "single host remote" : "single host local"), sensitive: sensitive)
+        try QualificationDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+            + UInt64(lifetime + 180) * 1_000_000_000, status: 124)
+        var driver = SoloDriver(configuration: configuration)
+        driver.log = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
+        let report = driver.run()
+        try QualificationFiles.writeNew(QualificationReportFiles.encode(report), to: reportURL)
+        var lines = ["outcome: \(report.outcome)" + (report.failure.map { " (\($0))" } ?? ""),
+                     "\(report.role): \(report.chip ?? "unknown chip"), exit \(report.exitStatus.map { "status \($0)" } ?? report.exitSignal.map { "signal \($0)" } ?? "not observed"), service processes left \(report.serviceProcessesLeft.map(String.init) ?? "unknown")"]
+        for (index, timing) in report.repetitions.enumerated() {
+            lines.append(String(format: "request %d: first token %.3f s (%.0f prompt tok/s), decode %.1f tok/s, total %.3f s",
+                index + 1, timing.firstTokenSeconds, timing.prefillTokensPerSecond,
+                timing.decodeTokensPerSecond ?? 0, timing.totalSeconds))
+        }
+        if let agree = report.repetitionsAgreeOnTokens { lines.append("repeated requests select the same tokens: \(agree)") }
+        lines.append("report: \(reportURL.lastPathComponent)")
+        print(lines.joined(separator: "\n"))
+        Darwin.exit(report.outcome == "completed" ? 0 : 2)
     }
 
     static func compare(_ arguments: [String]) async throws {

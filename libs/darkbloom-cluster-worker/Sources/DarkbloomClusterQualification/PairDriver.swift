@@ -33,6 +33,7 @@ public struct PairDriver: Sendable {
         private let done = DispatchSemaphore(value: 0)
         private var tokens: [Int] = [], stamps: [UInt64] = []
         private var finish: String?, failure: String?
+        private var concluded: UInt64?
         private let first: @Sendable () -> Void
         init(first: @escaping @Sendable () -> Void) { self.first = first }
         func record(_ event: ClusterWorkerRequestEvent) -> Bool {
@@ -42,13 +43,24 @@ public struct PairDriver: Sendable {
                 tokens.append(id); stamps.append(DispatchTime.now().uptimeNanoseconds)
                 if tokens.count == 1 { first() }
                 return true
-            case .finished(let reason): finish = reason.rawValue; done.signal(); return false
+            case .finished(let reason):
+                finish = reason.rawValue; concluded = DispatchTime.now().uptimeNanoseconds; done.signal(); return false
             case .failed(let message): failure = message; done.signal(); return false
             }
         }
         func wait(until deadline: UInt64) -> Bool { done.wait(timeout: .init(uptimeNanoseconds: deadline)) == .success }
-        var snapshot: (tokens: [Int], stamps: [UInt64], finish: String?, failure: String?) {
-            lock.lock(); defer { lock.unlock() }; return (tokens, stamps, finish, failure)
+        var snapshot: (tokens: [Int], stamps: [UInt64], finish: String?, failure: String?, concluded: UInt64?) {
+            lock.lock(); defer { lock.unlock() }; return (tokens, stamps, finish, failure, concluded)
+        }
+    }
+
+    /// Lines the runtime writes for its launcher. They carry a rank, a request
+    /// ID, byte counts and durations, and nothing else.
+    static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 "]
+    static func runtimeLines(_ diagnostics: String) -> [String] {
+        diagnostics.split(separator: "\n").map(String.init).filter { line in
+            runtimeLinePrefixes.contains { line.hasPrefix($0) }
+                && line.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [32, 45, 61, 95].contains($0) }
         }
     }
 
@@ -58,10 +70,13 @@ public struct PairDriver: Sendable {
         var ranks = (0...1).map { PairRankReport(role: PairConfiguration.roles[$0], rank: $0) }
         var timing = PairTiming(note: "Driver clock, from the start command to rank 0's committed-token events; "
             + "includes control and transport. A recording worker also captures the final row and state digests, "
-            + "so these are not serving timings.")
+            + "so these are not serving timings."
+            + (c.workerTransport == PairConfiguration.jacclTransport ? ""
+                : " Both ranks ran on one Mac over a loopback socket: not RDMA and not a pair timing."))
         var identity: QualificationIdentity?
         var hashesEqual: Bool?, metallibEqual: Bool?
         var endpoints: [PairWorkerEndpoint] = []
+        var repetitionsAgree: Bool?
 
         func finish(_ outcome: String, _ failure: String?, evidence: QualificationEvidence? = nil,
                     ranksAgree: Bool? = nil) -> PairReport {
@@ -89,7 +104,12 @@ public struct PairDriver: Sendable {
                     if termination.signalled { ranks[rank].exitSignal = termination.status }
                     else { ranks[rank].exitStatus = termination.status }
                 }
-                let tail = redact(endpoint.diagnosticTail)
+                let lines = Self.runtimeLines(endpoint.diagnosticTail)
+                if !lines.isEmpty { ranks[rank].runtimeLines = lines }
+                // The runtime's own lines are kept above; the rest is redacted free text.
+                let other = endpoint.diagnosticTail.split(separator: "\n").map(String.init)
+                    .filter { !lines.contains($0) }.joined(separator: "\n")
+                let tail = redact(other)
                 if !tail.isEmpty { ranks[rank].diagnostics = String(tail.suffix(2000)) }
             }
             // Count workers from this path on each side, whatever happened above.
@@ -117,7 +137,9 @@ public struct PairDriver: Sendable {
                 bothExitsObserved: launched.allSatisfy { $0.termination != nil },
                 noWorkerProcessLeft: left[0].flatMap { a in left[1].map { a == 0 && $0 == 0 } },
                 progressTimeoutMilliseconds: c.progressTimeoutMilliseconds, timing: timing,
-                promptSource: c.request.promptSource, decodedOutput: stream.flatMap { decode?($0) })
+                promptSource: c.request.promptSource, decodedOutput: stream.flatMap { decode?($0) },
+                generationMode: c.generationMode, repetitionsAgreeOnTokens: repetitionsAgree,
+                workerTransport: c.workerTransport)
         }
 
         // 1. Both sides, before anything is launched.
@@ -179,6 +201,7 @@ public struct PairDriver: Sendable {
         identity = QualificationIdentity(request: c.request, stageCut: c.stageCut, prefillSchedule: c.prefillSchedule,
             artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
             planSHA256: partition.planSHA256)
+        identity?.generationMode = c.generationMode
         identity?.profileFingerprint = capability.profileFingerprint
         identity?.stageSHA256 = partition.stages.map(\.stagePlanSHA256)
         identity?.arithmeticSHA256 = capability.arithmeticPolicySHA256
@@ -231,70 +254,105 @@ public struct PairDriver: Sendable {
         let pair: ClusterWorkerPair
         do {
             pair = try ClusterWorkerPair(workers: endpoints,
-                startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, maximumRequests: 1)
+                startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, maximumRequests: c.repetitions)
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
         log("pair-check: both ranks ready after \(String(format: "%.1f", timing.startupSeconds!)) s")
 
-        // 5. Reserve on both ranks.
-        let now = DispatchTime.now().uptimeNanoseconds
+        // 5 and 6. Reserve on both ranks, start, and let rank 0's committed
+        // tokens continue; once per repetition, in the same loaded session.
         let lifetimeEnd = pair.localLifetimeDeadlineUptimeNanoseconds
-        guard lifetimeEnd > now + 8_000_000_000 else {
-            return finish("failed", "the workers' lifetime was used up before the request could start")
-        }
-        let requestDeadline = min(now + UInt64(c.requestSeconds) * 1_000_000_000, lifetimeEnd - 3_000_000_000)
-        guard let capacity = pair.readiness?.requestCapacityBytes else {
-            return finish("failed", "the pair stopped being ready before the reservation")
-        }
-        let lease: ClusterWorkerRequest
-        do {
-            lease = try pair.reserve(requestID: c.request.requestUUID, reservation: .init(profileID: c.request.profileID,
-                promptTokenIDs: c.request.promptTokenIDs, stopTokenIDs: c.request.stopTokenIDs,
-                outputCount: c.request.outputCount, chunkSize: c.request.chunkSize,
-                deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity))
-        } catch {
-            if let rank = (0...1).first(where: { endpoints[$0].refusal != nil }) {
-                return finish("refused", "\(ranks[rank].role) refused the reservation (\(endpoints[rank].refusal!))")
-            }
-            return finish("failed", "reservation failed: \(error)")
-        }
-        timing.admissionSeconds = Double(DispatchTime.now().uptimeNanoseconds - now) / 1e9
-
-        // 6. Start; rank 0's committed tokens arrive here and are allowed to continue.
-        let started = DispatchTime.now().uptimeNanoseconds
         let announce = self.log
-        let collector = Collector {
-            announce("pair-check: first committed token after \(String(format: "%.2f", Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9)) s")
-        }
-        do { try lease.start { collector.record($0) } }
-        catch { return finish("failed", "start failed: \(error)") }
-        let concluded = collector.wait(until: requestDeadline + 5_000_000_000)
-        let result = collector.snapshot
-        if let first = result.stamps.first, let last = result.stamps.last {
-            timing.firstTokenSeconds = Double(first - started) / 1e9
-            timing.prefillTokensPerSecond = Double(c.request.promptTokenIDs.count) / timing.firstTokenSeconds!
-            timing.decodeSeconds = Double(last - first) / 1e9
-            if result.tokens.count > 1, last > first {
-                timing.decodeTokensPerSecond = Double(result.tokens.count - 1) / timing.decodeSeconds!
+        var lease: ClusterWorkerRequest!
+        var result: (tokens: [Int], stamps: [UInt64], finish: String?, failure: String?, concluded: UInt64?) = ([], [], nil, nil, nil)
+        var reason = ""
+        var repetitions: [PairRepetitionTiming] = []
+        var firstTokens: [Int] = []
+        for repetition in 0..<c.repetitions {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard lifetimeEnd > now + 8_000_000_000 else {
+                return finish("failed", "the workers' lifetime was used up before request \(repetition + 1) could start")
+            }
+            let requestDeadline = min(now + UInt64(c.requestSeconds) * 1_000_000_000, lifetimeEnd - 3_000_000_000)
+            guard let capacity = pair.readiness?.requestCapacityBytes else {
+                return finish("failed", "the pair stopped being ready before the reservation")
+            }
+            // The first request carries the request file's ID, which names the
+            // recorded evidence. A repeated request needs an ID of its own.
+            let requestID = repetition == 0 ? c.request.requestUUID : UUID()
+            do {
+                lease = try pair.reserve(requestID: requestID, reservation: .init(profileID: c.request.profileID,
+                    promptTokenIDs: c.request.promptTokenIDs, stopTokenIDs: c.request.stopTokenIDs,
+                    outputCount: c.request.outputCount, chunkSize: c.request.chunkSize,
+                    deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity))
+            } catch {
+                if let rank = (0...1).first(where: { endpoints[$0].refusal != nil }) {
+                    return finish("refused", "\(ranks[rank].role) refused the reservation (\(endpoints[rank].refusal!))")
+                }
+                return finish("failed", "reservation failed: \(error)")
+            }
+            let admission = Double(DispatchTime.now().uptimeNanoseconds - now) / 1e9
+
+            let started = DispatchTime.now().uptimeNanoseconds
+            let collector = Collector {
+                announce("pair-check: first committed token after \(String(format: "%.2f", Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9)) s")
+            }
+            do { try lease.start { collector.record($0) } }
+            catch { return finish("failed", "start failed: \(error)") }
+            let concluded = collector.wait(until: requestDeadline + 5_000_000_000)
+            result = collector.snapshot
+            var measured: PairRepetitionTiming?
+            if let first = result.stamps.first, let last = result.stamps.last {
+                let firstToken = Double(first - started) / 1e9, decode = Double(last - first) / 1e9
+                measured = .init(requestID: requestID.uuidString.lowercased(), admissionSeconds: admission,
+                    firstTokenSeconds: firstToken,
+                    prefillTokensPerSecond: Double(c.request.promptTokenIDs.count) / firstToken, decodeSeconds: decode,
+                    decodeTokensPerSecond: result.tokens.count > 1 && last > first ? Double(result.tokens.count - 1) / decode : nil,
+                    totalSeconds: Double((result.concluded ?? last) - started) / 1e9,
+                    secondTokenGapSeconds: result.stamps.count > 1 ? Double(result.stamps[1] - first) / 1e9 : nil,
+                    tokens: result.tokens.count, selectedTokenIDsSHA256: QualificationHash.tokenIDs(result.tokens),
+                    finishReason: result.finish ?? "none")
+                if repetition == 0 {
+                    timing.admissionSeconds = admission
+                    timing.firstTokenSeconds = firstToken
+                    timing.prefillTokensPerSecond = measured?.prefillTokensPerSecond
+                    timing.decodeSeconds = decode
+                    timing.decodeTokensPerSecond = measured?.decodeTokensPerSecond
+                    timing.totalSeconds = measured?.totalSeconds
+                }
+            }
+            guard concluded, let finished = result.finish else {
+                lease.cancel(reason: concluded ? .runtimeError : .deadline)
+                // Name a rank whose process is already gone; the other is still
+                // on its own way out and is reported with its exit status below.
+                let gone = (0...1).compactMap { rank in
+                    endpoints[rank].termination.map { "\(ranks[rank].role) ended with \($0.signalled ? "signal" : "status") \($0.status) during the request" }
+                }
+                return finish("failed", (result.failure ?? "the request did not finish before its deadline")
+                    + " after \(result.tokens.count) committed token(s)" + (gone.isEmpty ? "" : "; " + gone.joined(separator: "; ")))
+            }
+            reason = finished
+            if let measured { repetitions.append(measured) }
+            timing.repetitions = repetitions
+            if repetition == 0 { firstTokens = result.tokens }
+            repetitionsAgree = (repetitionsAgree ?? true) && result.tokens == firstTokens
+            log("pair-check: request \(repetition + 1) of \(c.repetitions) finished (\(reason)) with \(result.tokens.count) tokens")
+            if repetition + 1 < c.repetitions {
+                // The next reservation needs this one retired and released.
+                let limit = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+                while !lease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }
+                guard lease.isRetired else { return finish("failed", "request \(repetition + 1) did not retire") }
+                lease.releaseResources()
             }
         }
-        guard concluded, let reason = result.finish else {
-            lease.cancel(reason: concluded ? .runtimeError : .deadline)
-            // Name a rank whose process is already gone; the other is still
-            // on its own way out and is reported with its exit status below.
-            let gone = (0...1).compactMap { rank in
-                endpoints[rank].termination.map { "\(ranks[rank].role) ended with \($0.signalled ? "signal" : "status") \($0.status) during the request" }
-            }
-            return finish("failed", (result.failure ?? "the request did not finish before its deadline")
-                + " after \(result.tokens.count) committed token(s)" + (gone.isEmpty ? "" : "; " + gone.joined(separator: "; ")))
-        }
-        log("pair-check: request finished (\(reason)) with \(result.tokens.count) tokens")
+        if c.repetitions == 1 { repetitionsAgree = nil }
+        let finalLease = lease!
 
         // 7. Clean shutdown: command, acknowledgement, process exit.
         let shutdownStarted = DispatchTime.now().uptimeNanoseconds
         Task.detached {
-            await lease.waitUntilRetired()
-            lease.releaseResources()
+            await finalLease.waitUntilRetired()
+            finalLease.releaseResources()
             await pair.shutdown()
         }
         let exitLimit = lifetimeEnd + 20_000_000_000

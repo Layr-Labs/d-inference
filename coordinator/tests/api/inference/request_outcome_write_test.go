@@ -107,7 +107,7 @@ func TestRequestOutcomeSealedWriteFailure(t *testing.T) {
 						w.WriteHeader(200)
 						frame := []byte(contentChunkSSE("m", "answer"))
 						n, err := w.Write(frame)
-						observation.MarkContentWrite(w, true, n, len(frame), err)
+						observation.MarkSSEContentWrite(w, frame, n, len(frame), err)
 						observation.NewRelayStamps(rp).Done()
 					} else {
 						observation.WriteNonStreamBody(w, rp, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "answer"}}}})
@@ -155,7 +155,7 @@ func TestRequestOutcomeContentSuccessSurvivesLaterWriteFailure(t *testing.T) {
 				w.WriteHeader(200)
 				frame := []byte(contentChunkSSE("m", "answer"))
 				n, err := w.Write(frame)
-				observation.MarkContentWrite(w, true, n, len(frame), err)
+				observation.MarkSSEContentWrite(w, frame, n, len(frame), err)
 				w.Write([]byte("data: [DONE]\n\n"))
 				observation.NewRelayStamps(rp).Done()
 				ap.CompleteTerminal()

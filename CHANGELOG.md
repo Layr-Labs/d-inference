@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — coordinator streaming latency
+
+- Reuse each sealed request's NaCl Box shared key across its response events, keeping fresh per-event nonces and the existing wire format.
+- Stop decoding generated-content evidence after the first successful delivery. Continue tracking write failures and terminal events throughout plain and sealed streams.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

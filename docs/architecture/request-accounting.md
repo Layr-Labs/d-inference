@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-08
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -63,6 +63,14 @@ The request sink has 4,096 queued snapshots, one worker, batches of up to 128, a
 | `provider_outcome` | The selected winner's existing terminal evidence: `completed`, `error`, `not_dispatched`, `no_terminal`, or `unknown`. `unknown` means a matched completion was received but arbitration retained no authoritative outcome (for example a discarded empty speculative loser with detailed profiling off). When no winner exists, inspect individual attempt outcomes. |
 | `response_progress` | `no_content_observed`, `content_observed`, or `provider_completed`; receipt-only records begin `unknown`. This dimension is provider progress, not client delivery. |
 | Attempt dispatch | `write_submitted` records writer submission; `write_completed` records successful completion of the socket-write call; `provider_accepted` records the existing acknowledgment. An interrupted write has ambiguous provider receipt. No field proves engine admission. |
+
+Generated-content classification stops once `content_write_completed` is true.
+`MarkJSONContentWrite` and `MarkSSEContentWrite` in
+`coordinator/api/observation/request_outcome_egress.go` check for a successful
+outer write before parsing and retain only the request's existing boolean
+evidence. Plaintext buffering skips classification; sealed transport observes
+the actual ciphertext write. Terminal conflicts and write errors are still
+observed on every write, including after the first delivered content.
 
 The summary `termination` follows deterministic precedence: unfinished handler → `in_progress`; inconsistent evidence → `unknown`; observed departure → `client_departure`; write/sealing error → `interrupted_response`; provider completed plus a `completed` response terminal, complete local egress and 2xx → `completed`; HTTP error → `rejected`; observed content, provider error, a known handler panic, or an incomplete/error response terminal without complete response → `interrupted_response`; otherwise → `unknown`. Underlying dimensions remain available.
 

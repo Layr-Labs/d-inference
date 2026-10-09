@@ -40,7 +40,7 @@ func awaitRequestOutcomes(t *testing.T, s store.RequestOutcomeStore, n int) []st
 const senderTestMnemonic = "praise warfare warrior rebuild raven garlic kite blast crew impulse pencil hidden"
 
 // sealRequest constructs a consumer-side NaCl envelope, not coordinator logic.
-func sealRequest(t *testing.T, plaintext []byte, coordPub [32]byte, kid string) ([]byte, *[32]byte, *[32]byte) {
+func sealRequest(t testing.TB, plaintext []byte, coordPub [32]byte, kid string) ([]byte, *[32]byte, *[32]byte) {
 	t.Helper()
 	ephemPub, ephemPriv, err := box.GenerateKey(rand.Reader)
 	if err != nil {

@@ -13,7 +13,7 @@ func (e *completionsStreamEmitter) emit(value any) {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "data: %s\n\n", encoded)
-	observation.MarkContentWrite(e.w, observation.GeneratedContentJSON(encoded), n, len(encoded)+8, werr)
+	observation.MarkJSONContentWrite(e.w, encoded, n, len(encoded)+8, werr)
 	observation.MarkResponseTerminalWrite(e.w, observation.ResponseEventTerminals(encoded), n, len(encoded)+8, werr)
 	if n != len(encoded)+8 {
 		e.stamps.WriteErr()
@@ -29,7 +29,7 @@ func (e *messagesStreamEmitter) emit(eventType string, fields map[string]any) {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded)
-	observation.MarkContentWrite(e.w, observation.GeneratedContentJSON(encoded), n, len(eventType)+len(encoded)+16, werr)
+	observation.MarkJSONContentWrite(e.w, encoded, n, len(eventType)+len(encoded)+16, werr)
 	observation.MarkResponseTerminalWrite(e.w, observation.ResponseEventTerminals(encoded), n, len(eventType)+len(encoded)+16, werr)
 	if n != len(eventType)+len(encoded)+16 {
 		e.stamps.WriteErr()
@@ -48,7 +48,7 @@ func (e *ResponsesStreamEmitter) emit(eventType string, fields map[string]any) {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data)
-	observation.MarkContentWrite(e.w, observation.GeneratedContentJSON(data), n, len(eventType)+len(data)+16, werr)
+	observation.MarkJSONContentWrite(e.w, data, n, len(eventType)+len(data)+16, werr)
 	observation.MarkResponseTerminalWrite(e.w, observation.ResponseEventTerminals(data), n, len(eventType)+len(data)+16, werr)
 	if n != len(eventType)+len(data)+16 {
 		e.stamps.WriteErr()

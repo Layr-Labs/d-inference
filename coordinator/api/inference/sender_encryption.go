@@ -154,7 +154,11 @@ func (s *Owner) SealedTransport(next http.HandlerFunc) http.HandlerFunc {
 		copy(nonce[:], ct2[:24])
 
 		coordPriv := s.coordinatorKey.PrivateKey
-		plaintext, ok := box.Open(nil, ct2[24:], &nonce, &ephemPub, &coordPriv)
+		// Both directions use the same NaCl Box key agreement. Keep it local to
+		// this request rather than repeating X25519 for every response event.
+		var sharedKey [32]byte
+		box.Precompute(&sharedKey, &ephemPub, &coordPriv)
+		plaintext, ok := box.OpenAfterPrecomputation(nil, ct2[24:], &nonce, &sharedKey)
 		if !ok {
 			httpx.
 				// Authenticated decryption failed — wrong key or tampered ciphertext.
@@ -175,7 +179,7 @@ func (s *Owner) SealedTransport(next http.HandlerFunc) http.HandlerFunc {
 		r2.Header.Del("Content-Length")
 
 		observation.StampSealedOpen(r2, len(raw))
-		sw := newSealingResponseWriter(w, &coordPriv, &ephemPub, s.coordinatorKey.KID)
+		sw := newSealingResponseWriter(w, sharedKey, s.coordinatorKey.KID)
 		defer sw.finish()
 		next(sw, r2)
 	}
@@ -196,8 +200,7 @@ type sealingResponseWriter struct {
 	inner   http.ResponseWriter
 	flusher http.Flusher
 
-	coordPriv *[32]byte
-	clientPub *[32]byte
+	sharedKey [32]byte
 	kid       string
 
 	mode        sealMode
@@ -215,13 +218,12 @@ const (
 	sealModeSSE
 )
 
-func newSealingResponseWriter(w http.ResponseWriter, coordPriv, clientPub *[32]byte, kid string) *sealingResponseWriter {
+func newSealingResponseWriter(w http.ResponseWriter, sharedKey [32]byte, kid string) *sealingResponseWriter {
 	flusher, _ := w.(http.Flusher)
 	return &sealingResponseWriter{
 		inner:      w,
 		flusher:    flusher,
-		coordPriv:  coordPriv,
-		clientPub:  clientPub,
+		sharedKey:  sharedKey,
 		kid:        kid,
 		statusCode: http.StatusOK,
 	}
@@ -315,14 +317,14 @@ func (w *sealingResponseWriter) flushCompleteEvents() {
 		// ever does, we can't safely emit anything to a sealed stream — a
 		// plaintext error frame would mis-frame the client's parser. Drop the
 		// event and let the client time out / abort.
-		sealed, err := sealBytes(event, w.clientPub, w.coordPriv)
+		sealed, err := w.sealBytes(event)
 		if err != nil {
 			observation.MarkEgressError(w.inner)
 			continue
 		}
 		encoded := base64.StdEncoding.EncodeToString(sealed)
 		n, writeErr := fmt.Fprintf(w.inner, "data: %s\n\n", encoded)
-		observation.MarkContentWrite(w.inner, observation.GeneratedContentSSE(event), n, len(encoded)+8, writeErr)
+		observation.MarkSSEContentWrite(w.inner, event, n, len(encoded)+8, writeErr)
 		observation.MarkResponseTerminalWrite(w.inner, observation.ResponseStreamTerminals(event), n, len(encoded)+8, writeErr)
 	}
 }
@@ -335,27 +337,26 @@ func (w *sealingResponseWriter) finish() {
 		// (rare — most servers terminate with `data: [DONE]\n\n`), seal and
 		// emit it now to avoid losing data.
 		if w.sseScratch.Len() > 0 {
-			content := observation.GeneratedContentSSE(w.sseScratch.Bytes())
 			terminals := observation.ResponseStreamTerminals(w.sseScratch.Bytes())
-			sealed, err := sealBytes(w.sseScratch.Bytes(), w.clientPub, w.coordPriv)
+			sealed, err := w.sealBytes(w.sseScratch.Bytes())
 			if err != nil {
 				observation.MarkEgressError(w.inner)
 			}
-			w.sseScratch.Reset()
 			if err == nil {
 				encoded := base64.StdEncoding.EncodeToString(sealed)
 				n, writeErr := fmt.Fprintf(w.inner, "data: %s\n\n", encoded)
-				observation.MarkContentWrite(w.inner, content, n, len(encoded)+8, writeErr)
+				observation.MarkSSEContentWrite(w.inner, w.sseScratch.Bytes(), n, len(encoded)+8, writeErr)
 				observation.MarkResponseTerminalWrite(w.inner, terminals, n, len(encoded)+8, writeErr)
 				if w.flusher != nil {
 					w.flusher.Flush()
 				}
 			}
+			w.sseScratch.Reset()
 		}
 		return
 
 	case sealModeBuffered:
-		sealed, err := sealBytes(w.bodyBuf.Bytes(), w.clientPub, w.coordPriv)
+		sealed, err := w.sealBytes(w.bodyBuf.Bytes())
 		if err != nil {
 			observation.MarkEgressError(w.inner)
 			// Best-effort error reply; we already promised the client a sealed
@@ -373,7 +374,7 @@ func (w *sealingResponseWriter) finish() {
 		w.inner.Header().Set("X-Eigen-Sealed-Kid", w.kid)
 		w.inner.WriteHeader(w.statusCode)
 		n, writeErr := w.inner.Write(envelope)
-		observation.MarkContentWrite(w.inner, observation.GeneratedContentJSON(w.bodyBuf.Bytes()), n, len(envelope), writeErr)
+		observation.MarkJSONContentWrite(w.inner, w.bodyBuf.Bytes(), n, len(envelope), writeErr)
 		observation.MarkResponseTerminalWrite(w.inner, observation.ResponseBodyTerminals(w.bodyBuf.Bytes()), n, len(envelope), writeErr)
 		return
 	}
@@ -382,12 +383,12 @@ func (w *sealingResponseWriter) finish() {
 // sealBytes NaCl-Box-seals plaintext with a fresh nonce and returns
 // nonce||ciphertext (the format consumed by the e2e package and the
 // console-ui tweetnacl helper).
-func sealBytes(plaintext []byte, recipientPub, senderPriv *[32]byte) ([]byte, error) {
+func (w *sealingResponseWriter) sealBytes(plaintext []byte) ([]byte, error) {
 	var nonce [24]byte
 	if _, err := io.ReadFull(randReader, nonce[:]); err != nil {
 		return nil, fmt.Errorf("nonce: %w", err)
 	}
-	out := box.Seal(nonce[:], plaintext, &nonce, recipientPub, senderPriv)
+	out := box.SealAfterPrecomputation(nonce[:], plaintext, &nonce, &w.sharedKey)
 	return out, nil
 }
 

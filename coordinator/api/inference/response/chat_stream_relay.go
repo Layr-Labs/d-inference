@@ -127,9 +127,8 @@ func (rl *ChatStreamRelay) Flush() {
 	}
 	frames := rl.frames
 	size := rl.buf.Len()
-	content := observation.GeneratedContentSSE(rl.buf.Bytes())
 	n, err := rl.w.Write(rl.buf.Bytes())
-	observation.MarkContentWrite(rl.w, content, n, size, err)
+	observation.MarkSSEContentWrite(rl.w, rl.buf.Bytes(), n, size, err)
 	observation.MarkResponseTerminalWrite(rl.w, observation.ResponseStreamTerminals(rl.buf.Bytes()), n, size, err)
 	if n != size {
 		rl.stamps.WriteErr()

@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -304,6 +304,13 @@ and the `inference.timing.*` histograms are built from the same
 [`system-profiler.md`](system-profiler.md); the outcome vocabularies behind
 `inference.request_outcome` and `inference.error` in
 [`request-outcome-observability.md`](request-outcome-observability.md).
+
+Generated-content delivery evidence is latched after the first accepted content
+write, avoiding repeated JSON decoding for subsequent tokens. Failed writes and
+plaintext buffers do not establish delivery; terminal and error observation
+continues for the entire stream. See [request accounting](request-accounting.md)
+and `coordinator/api/observation/request_outcome_egress.go`
+(`MarkJSONContentWrite`, `MarkSSEContentWrite`).
 
 ## Invariants
 

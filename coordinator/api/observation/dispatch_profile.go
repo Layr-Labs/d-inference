@@ -94,7 +94,7 @@ func WriteNonStreamBody(w http.ResponseWriter, rp *registry.RequestProfile, v an
 		rp.Stamp(&rp.HeadersWrittenUS)
 	}
 	n, err := w.Write(body)
-	MarkContentWrite(w, GeneratedContentJSON(body), n, len(body), err)
+	MarkJSONContentWrite(w, body, n, len(body), err)
 	if rp == nil {
 		return
 	}

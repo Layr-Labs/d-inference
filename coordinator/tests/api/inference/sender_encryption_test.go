@@ -99,3 +99,59 @@ func TestSealedTransport_SSE(t *testing.T) {
 		}
 	}
 }
+
+// Reusing the request's key agreement must not reuse nonces or leak the key
+// across consumers. Include a final partial event to exercise finish as well
+// as the normal blank-line-delimited path.
+func TestSealedTransportRequestKeyIsolation(t *testing.T) {
+	key, err := e2e.DeriveCoordinatorKey(senderTestMnemonic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &inference.Owner{}
+	srv.SetCoordinatorKey(key)
+	const event = `data: {"choices":[{"delta":{"content":"same text"}}]}`
+	handler := srv.SealedTransport(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, event+"\n\n"+event+"\n\n"+event)
+	})
+	var clients []*[32]byte
+	var ciphertexts [][]byte
+	nonces := make(map[[24]byte]bool)
+	for i := 0; i < 2; i++ {
+		envelope, _, private := sealRequest(t, []byte(`{"stream":true}`), key.PublicKey, key.KID)
+		clients = append(clients, private)
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(envelope))
+		r.Header.Set("Content-Type", SealedContentType)
+		w := httptest.NewRecorder()
+		handler(w, r)
+		parts := bytes.Split(bytes.TrimSpace(w.Body.Bytes()), []byte("\n\n"))
+		if len(parts) != 3 {
+			t.Fatalf("request %d: got %d events, want 3", i, len(parts))
+		}
+		for _, part := range parts {
+			ciphertext, err := base64.StdEncoding.DecodeString(string(bytes.TrimPrefix(part, []byte("data: "))))
+			if err != nil || len(ciphertext) < 24+box.Overhead {
+				t.Fatalf("invalid sealed event: %v", err)
+			}
+			var nonce [24]byte
+			copy(nonce[:], ciphertext[:24])
+			if nonces[nonce] {
+				t.Fatal("nonce reused across sealed events")
+			}
+			nonces[nonce] = true
+			plaintext, ok := box.Open(nil, ciphertext[24:], &nonce, &key.PublicKey, private)
+			if !ok || string(plaintext) != event {
+				t.Fatalf("request %d: original NaCl Box client could not decode event", i)
+			}
+			ciphertexts = append(ciphertexts, ciphertext)
+		}
+	}
+	for i, ciphertext := range ciphertexts {
+		var nonce [24]byte
+		copy(nonce[:], ciphertext[:24])
+		if _, ok := box.Open(nil, ciphertext[24:], &nonce, &key.PublicKey, clients[1-i/3]); ok {
+			t.Fatal("another consumer decrypted the response")
+		}
+	}
+}

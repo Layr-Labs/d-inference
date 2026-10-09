@@ -65,14 +65,35 @@ func outcomeForWriter(w http.ResponseWriter) *requestOutcome {
 	}
 	return nil
 }
-func MarkContentWrite(w http.ResponseWriter, content bool, n, expected int, err error) {
-	if !content || err != nil || n != expected {
+
+// MarkJSONContentWrite classifies generated content only until its first
+// successful delivery. Terminal and write-error evidence is tracked separately
+// for every write, including writes after content has been confirmed.
+func MarkJSONContentWrite(w http.ResponseWriter, data []byte, n, expected int, err error) {
+	markGeneratedContentWrite(w, data, n, expected, err, GeneratedContentJSON)
+}
+
+// MarkSSEContentWrite is the SSE counterpart of MarkJSONContentWrite. A sealing
+// writer must call it for the accepted ciphertext write, using the plaintext
+// event for classification; buffering plaintext alone is not delivery.
+func MarkSSEContentWrite(w http.ResponseWriter, data []byte, n, expected int, err error) {
+	markGeneratedContentWrite(w, data, n, expected, err, GeneratedContentSSE)
+}
+
+func markGeneratedContentWrite(w http.ResponseWriter, data []byte, n, expected int, err error, content func([]byte) bool) {
+	if err != nil || n != expected {
 		return
 	}
 	if _, sealed := w.(interface{ BuffersPlaintext() }); sealed {
 		return
 	}
 	if o := outcomeForWriter(w); o != nil {
+		o.mu.Lock()
+		completed := o.record.ContentWriteCompleted
+		o.mu.Unlock()
+		if completed || !content(data) {
+			return
+		}
 		o.mu.Lock()
 		o.record.ContentWriteCompleted = true
 		o.mu.Unlock()

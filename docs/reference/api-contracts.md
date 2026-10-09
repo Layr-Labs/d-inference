@@ -982,7 +982,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/internal/
 5. **Termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
 6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit a first-content deadline bounds the silence only for accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` (a miss is answered with 429 + `Retry-After`, see the status table). Other accounts have no first-content timeout and remain subject to client cancellation and provider-disconnect cleanup; after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
 7. **Chat errors after commit** are one terminal `data: {"error": {...}}` event, without `[DONE]`; optional authoritative metadata precedes it.
-8. **Sealed mode** seals each SSE event individually (see below).
+8. **Sealed mode** seals each SSE event individually (see below). The coordinator reuses the request-local NaCl Box shared key and generates a fresh random nonce per event (`SealedTransport`, `sealingResponseWriter.sealBytes`, `coordinator/api/inference/sender_encryption.go`). Successful content-delivery evidence is recorded once per request; later writes retain full error and terminal tracking (`MarkSSEContentWrite`, `coordinator/api/observation/request_outcome_egress.go`).
 
 ## Limits and validation
 

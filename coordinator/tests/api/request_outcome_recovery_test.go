@@ -149,7 +149,7 @@ func TestRequestOutcomeRecoveryDoesNotInventSSETerminal(t *testing.T) {
 					if content {
 						frame := []byte(contentChunkSSE("m", "answer"))
 						n, err := w.Write(frame)
-						observation.MarkContentWrite(w, true, n, len(frame), err)
+						observation.MarkSSEContentWrite(w, frame, n, len(frame), err)
 					}
 					w.(http.Flusher).Flush()
 					panic("panic after content")

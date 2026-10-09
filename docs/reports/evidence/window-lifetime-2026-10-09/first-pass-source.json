@@ -1,0 +1,41 @@
+{
+  "archive": {
+    "bytes": 5863,
+    "logical_member_name": "first-pass-source.patch",
+    "member_bytes": 24062,
+    "member_sha256": "5464ff9f96c3edec05f745183b5057b35a5874e0981406cafee60d685c896ce4",
+    "path": "first-pass-source.patch.gz",
+    "reproduced_sdk_review_tree": "9e2607f7a007c27b9387e160a21231f55b61ad8e",
+    "sha256": "7aafabb749d348b7e6de7c9026f8680f346e3b007e4422b1d4ab497b1dc73b0d"
+  },
+  "files": {
+    "Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift": {
+      "bytes": 23132,
+      "sha256": "e1326e759776fd1a2ff93e254312f09f9750b927abce493ab29274a67613c247"
+    },
+    "Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift": {
+      "bytes": 28817,
+      "sha256": "e70693f7aac8042643c6c9769aa92ae9611c2879efeded42c3f134c6722e43f9"
+    },
+    "Package.swift": {
+      "bytes": 14040,
+      "sha256": "829aa4805274542547ce3f5cb3bbb7a78730be3b0937096e5b5c40a8dca3e5c7"
+    },
+    "Sources/BenchCBv2Core/BenchWindowLifetime.swift": {
+      "bytes": 8041,
+      "sha256": "0d21013e4821e7388ac91167db6a09a8bd9c77f4b8186e17c0422628d70f0b86"
+    },
+    "Sources/BenchWindowLifetime/main.swift": {
+      "bytes": 109,
+      "sha256": "97c2d86684f3cf7a3a8913de4d8f24b8839d9c3dedcd83007c33dc5eee7453f7"
+    },
+    "Tests/MLXLMTests/Kernel/Cache/CBv2WindowLifetimeBackingTests.swift": {
+      "bytes": 8628,
+      "sha256": "5fb7ea7c013acdea2a82aba4801f83ac1f8d1744e414220fea9df47ef78fd4ca"
+    }
+  },
+  "patch_sha256": "5464ff9f96c3edec05f745183b5057b35a5874e0981406cafee60d685c896ce4",
+  "scope": "SDK working version preserved before the behavior-preserving refactor; original measured artifacts remain governed by artifact-manifest.json",
+  "sdk_review_base": "c1a9af29e2c14fedf48b5ad106a1617bacf73d69",
+  "sdk_review_tree": "9e2607f7a007c27b9387e160a21231f55b61ad8e"
+}

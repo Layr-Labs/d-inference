@@ -2438,7 +2438,7 @@ done
 After the nested SDK build and source-matched metallib staging above, run:
 
 ```bash
-../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests' --no-parallel
+../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests|CBv2WindowLifetimeBackingTests|BenchWindowLifetimeConfigurationTests' --no-parallel
 ```
 
 The Provider SDK Tests CI gate covers dense allocation receipts, absolute
@@ -2449,8 +2449,28 @@ logits and KV snapshots. The storage suite lives under
 fixtures live under `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Cache`.
 The provider factory test (`EngineV2KVBackendGateTests`,
 `contiguousElasticWindowsRequireLoadedFamily`) checks the loaded-family gate.
-These fixtures preserve native arithmetic; they do not qualify another cache
-format or establish full-model performance.
+`CBv2WindowLifetimeBackingTests` also checks actual dense buffer allocations at
+512+32/64 tokens, non-power-of-two replay remapping, underestimated hints,
+staged MTP commit/cancellation and unchanged conservative reservations. These
+fixtures preserve native arithmetic; they do not qualify another cache format
+or establish full-model performance.
+Real capability-derived tail and frozen-prefix plans retain the full dependency
+window and its reservation. The complete-codec fixture also exports a hinted
+800-slot backing at a 768-token checkpoint, imports the established full ring, and continues beyond the
+source hint with exact native bytes.
+`BenchWindowLifetimeConfigurationTests` is a pure Swift unit suite that checks
+the control's family gate and rejects non-object configuration before loading
+any model.
+
+For an actual-artifact control, build the SDK `BenchWindowLifetime` product
+against that same local MLX source and run `BenchWindowLifetime MODEL 32 OUTPUT.json`
+or `BenchWindowLifetime MODEL 64 OUTPUT.json`. It compares parent elastic rows
+with hinted rows using identical native model arithmetic, checks every logit
+and final K/V bit, and records actual generated counts, finish reason, offsets
+and tensor extents. It uses a public synthetic 512-token prompt; it is a
+qualification executable, not a timing benchmark. Serialize model runs with
+other GPU workloads. The [dated horizon report](../reports/2026-10-09-window-lifetime-backing.md)
+keeps the controls separate from synthetic allocator receipts.
 
 For a standalone local SDK build against the provider's pinned MLX checkout,
 use `swift package edit mlx-swift --path /absolute/path/to/libs/mlx-swift`

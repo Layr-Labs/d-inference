@@ -92,7 +92,7 @@ SDK_COMMANDS = {
     "Run nested KV-sharing contiguous/paged parity tests":
         "../../scripts/run-nested-suite.sh CBv2KVSharingParityTests",
     "Verify elastic contiguous window backing":
-        "../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests' --no-parallel",
+        "../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests|CBv2WindowLifetimeBackingTests|BenchWindowLifetimeConfigurationTests' --no-parallel",
 }
 SDK_ONBOARDING_SUITES = (
     "SSMDecodeBoundsTests", "NemotronHTests",

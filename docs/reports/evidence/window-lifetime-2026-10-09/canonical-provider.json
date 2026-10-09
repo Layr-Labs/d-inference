@@ -1,0 +1,95 @@
+{
+  "archive": {
+    "archive_bytes": 1179427,
+    "archive_sha256": "c7281041a58b7caac41ac8be1499731360d9e6d6fe17070795ad7160e4e95865",
+    "logical_member_name": "canonical-provider.log",
+    "member_bytes": 12993836,
+    "member_sha256": "12b84e2338c1ba45debb4acfd4bad0c362557fc02cac80c1a1671b52122b606c",
+    "path": "canonical-provider.log.gz"
+  },
+  "canonical_build_seconds": [
+    3.44,
+    2.36
+  ],
+  "canonical_command": [
+    "python3",
+    "scripts/run-provider-test-watchdog.py",
+    "--output-dir",
+    "/tmp/kv-window-horizon-canonical",
+    "--diagnostic-after-seconds",
+    "480",
+    "--timeout-seconds",
+    "900",
+    "--",
+    "make",
+    "provider"
+  ],
+  "claim": "failed full component gate retained; no assertion/resource/admission workaround or model rerun",
+  "contiguous_loaded_family_gate": "passed",
+  "environment": {
+    "MIMO_PROMPT_ARTIFACT_DIRECTORY": "/tmp/kv-selective-fixtures/mimo-prompt",
+    "MIMO_PROMPT_REFERENCE_VECTORS": "fixtures/prompt-contract/mimo-v26-additional20.json",
+    "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS": "1",
+    "MIMO_V26_SERIAL_LOAD_FIXTURES": "/tmp/kv-selective-fixtures/mimo-provider",
+    "MIMO_V26_WIRED_METADATA_FIXTURE": "/tmp/kv-selective-fixtures/mimo-provider/tiny-bf16"
+  },
+  "general_suite": {
+    "issues": 139,
+    "outcome": "failed",
+    "seconds": 255.072,
+    "suites": 476,
+    "tests": 3625
+  },
+  "isolated_failure_mechanisms": {
+    "emptyNativePoolTeardownUsesActualRetiredAdapter": "missing SwiftPM resource pagedattention.metal",
+    "evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure": "missing SwiftPM resource pagedattention.metal"
+  },
+  "known_failure_mechanisms": [
+    "missing SwiftPM resource pagedattention.metal and downstream backend expectations",
+    "SelfUpdater signed extracted child packaging fixture"
+  ],
+  "lease": "window-lifetime-canonical-provider explicitly released after watchdog returned and all owned processes reaped",
+  "prebuild_command": [
+    "/usr/bin/swift",
+    "build",
+    "-j",
+    "4",
+    "--build-tests"
+  ],
+  "prebuild_seconds": 280.17,
+  "provider_changes": "SDK pin, CI selector, documentation and immutable evidence; no provider serving source edits",
+  "provider_parent_revision": "ccaad5a46a9c0cec6119014f275cc5630e7f17e8",
+  "public_corpus_sha256": "66e6a49a23509fbc99e5389fa4687f2b6175f96d05d7a8be0f323bf4986049bb",
+  "public_fixture_sha256": {
+    "chat_template.jinja": "853650bee57bf95020373e4c928bd5a4b41b9915adf964a77711d2b49a291887",
+    "config.json": "61bea4a0f7a0dd8969f8cae528761e26b697dd12ff63e98804c3f0945492e621",
+    "tokenizer.json": "ff15eb925890d6b71b5160de4b846fbd13178438ab463b38ecc953e8cd1dcb3e",
+    "tokenizer_config.json": "413a7845f52943ccf4de0e5c838414507d16c44dbf573da9e20bc8902b384d06"
+  },
+  "sdk_revision": "d6ac48230ae5b9e7031b6ca4d05f2e0139419401",
+  "test_summaries": [
+    "\u2714 Test run with 24 tests in 9 suites passed after 0.166 seconds.",
+    "\u2718 Test run with 3625 tests in 476 suites failed after 255.072 seconds with 139 issues.",
+    "\u2714 Test run with 38 tests in 4 suites passed after 0.056 seconds.",
+    "\u2714 Test run with 50 tests in 10 suites passed after 10.169 seconds.",
+    "\u2714 Test run with 10 tests in 1 suite passed after 0.033 seconds.",
+    "\u2714 Test run with 9 tests in 1 suite passed after 0.019 seconds.",
+    "\u2714 Test run with 64 tests in 4 suites passed after 0.009 seconds.",
+    "\u2714 Test run with 547 tests in 84 suites passed after 67.090 seconds.",
+    "\u2714 Test run with 2 tests in 1 suite passed after 0.947 seconds.",
+    "\u2714 Test run with 2 tests in 1 suite passed after 1.079 seconds.",
+    "\u2718 Test run with 1 test in 1 suite failed after 0.639 seconds with 1 issue.",
+    "\u2714 Test run with 1 test in 0 suites passed after 0.058 seconds.",
+    "\u2714 Test run with 1 test in 1 suite passed after 0.128 seconds.",
+    "\u2714 Test run with 1 test in 1 suite passed after 0.179 seconds.",
+    "\u2714 Test run with 7 tests in 1 suite passed after 3.353 seconds.",
+    "\u2714 Test run with 1 test in 1 suite passed after 2.108 seconds.",
+    "\u2718 Test run with 1 test in 1 suite failed after 0.582 seconds with 1 issue."
+  ],
+  "watchdog_result": {
+    "elapsed_seconds": 498.57,
+    "exit_code": 2,
+    "interrupted": [],
+    "timed_out": false
+  }
+}

@@ -42,6 +42,16 @@ SSD snapshots survive beyond a request without retaining their KV in resident me
 
 Fresh contiguous Gemma 4 text/VLM and GPT-OSS rows grow sliding-window tensor
 backing geometrically with retained tokens, up to the model's unchanged window.
+For fresh/replayed rows, the existing absolute request `maxLength` also caps
+geometric slack at `min(window, maxLength - initialOffset)`. This is a growth
+hint: confirmed writes beyond the declared horizon restore the semantic-window
+ceiling, and pending speculative writes neither reject nor permanently enlarge
+the live ring. The hint never changes retention, request clocks or conservative
+reservations (`CBv2WindowedSequenceKV.init`, `ensureCapacity`;
+`CBv2ContiguousKVBackend.makeSequenceState`).
+Current prefix replay plans already cover at least the full sliding dependency
+window, so their remaining horizon does not reduce that ring's allocation.
+Short fresh requests receive the bounded allocation benefit.
 For a nonzero replay origin, slots are indexed by the absolute position modulo
 the allocated capacity; growth remaps the retained native K/V bits before any
 new write. Multi-token attention and sharing layers retain their pre-eviction

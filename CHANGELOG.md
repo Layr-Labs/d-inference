@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — bounded sliding-window allocation slack
+
+- Bound fresh Gemma 4 and GPT-OSS contiguous sliding-window geometric backing by the existing request horizon. An underestimated hint falls back to the model's full window without losing native K/V or rejecting valid writes. Preserve full-window reservations, imported checkpoint rings, speculative rollback and MiMo allocation behavior.
+
 ## Unreleased — complete model benchmark receipts
 
 - Preserve full generated token IDs, finish reasons and token counts in benchmark cell JSON for reviewing model arithmetic experiments.

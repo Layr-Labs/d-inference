@@ -1143,7 +1143,9 @@ for sampling scope, regression filters and diagnostic restrictions.
 Elastic-window SDK tests compile against the same pinned local MLX source as
 the provider. The temporary standalone SwiftPM binding and exact test selection
 are documented in [the elastic window test procedure](test.md#elastic-contiguous-window-tests).
-Stage the authoritative metallib after the SDK test build; staging it while
+The same source binding builds the `BenchWindowLifetime` actual-artifact control
+for request-horizon allocation hints. Stage the authoritative metallib after
+the SDK test build; staging it while
 Xcode is signing the test bundles can invalidate that build.
 
 ### Qwen packaged resource regression

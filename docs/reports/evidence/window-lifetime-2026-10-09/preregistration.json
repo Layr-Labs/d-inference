@@ -1,0 +1,72 @@
+{
+  "scope": "exact fresh elastic-window allocation ceiling; semantic retention unchanged",
+  "parent": "receipt-only Gemma evidence stack, original normalization",
+  "horizon": "maximumSequenceLength minus initial replay offset, capped by semantic window",
+  "consumer_trace": [
+    "EngineLoopV2.ensureKVState and prefix adoption pass promptTokens.count + max(maxTokens,1)",
+    "FullSequenceKV already treats this value as its append bound",
+    "MTP finalize rolls back rejected writes before committing confirmed storage"
+  ],
+  "qualified_models": [
+    "Gemma4TextModel",
+    "MLXVLM.Gemma4",
+    "GPTOSSModel"
+  ],
+  "allocation_rule": "geometric growth stops at the request-lifetime ceiling; fresh prefixes use their absolute replay origin",
+  "unexpected_overrun": "fall back to the original full-window growth ceiling and preserve native bits; conservative reservations remain sufficient",
+  "speculation": "no physical growth during staged verification; ceiling applies only to accepted writes after rollback",
+  "imports": "complete historical imports retain their original full-window ring",
+  "unchanged": [
+    "semantic windows",
+    "attention math",
+    "dtypes",
+    "MiMo allocations",
+    "admission reservations",
+    "TTL and cache caps",
+    "OS and activation safeguards"
+  ],
+  "tests": [
+    "dense physical allocation at a non-power-of-two lifetime",
+    "all native bits/offsets versus parent through growth and decode",
+    "nonzero replay origin",
+    "accepted-only MTP growth and full cancellation",
+    "overrun fallback preserves retention",
+    "default and imported rows keep allocation behavior",
+    "actual Gemma/GPT continuation controls"
+  ],
+  "receipt_cell": {
+    "Gemma_window": 1024,
+    "lifetime": 544,
+    "original_slots": 1024,
+    "new_slots": 544,
+    "layers": 25,
+    "heads": 8,
+    "dimension": 256,
+    "element_bytes": 2,
+    "original_native_tensor_bytes": 209715200,
+    "new_native_tensor_bytes": 111411200
+  },
+  "claim_limit": "actual live tensor backing only; no increased admission capacity or full-model TPS claim",
+  "representative_shapes": [
+    {
+      "prompt": 512,
+      "maximum_completion": 32,
+      "horizon": 544
+    },
+    {
+      "prompt": 512,
+      "maximum_completion": 64,
+      "horizon": 576
+    },
+    {
+      "prompt": 32,
+      "maximum_completion": 512,
+      "horizon": 544
+    }
+  ],
+  "overspec_cases": [
+    "pending speculative writes may exceed hint without rejection or physical growth",
+    "accepted overrun switches growth ceiling to semantic window",
+    "nonzero replay origin is subtracted exactly"
+  ]
+}

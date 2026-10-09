@@ -1,0 +1,20 @@
+{
+  "artifact_identity": "Same unchanged local artifacts as the production-hasher manifests in ../native-kv-packets-2026-10-09. No model payload changes between probes.",
+  "binary_sha256": "b19416e5bea6525a05d3219e9e0b85ea364fa6161bef104bb1d1a12e34a9d4e1",
+  "driver_sha256": "90d9b8e8949730ea9bc0136cc4a3f8a1e86d0ac2692f35bc424e236a3c5ae3b7",
+  "invocations": [
+    "BenchWindowLifetime /Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local 32 controls/gemma-32.json",
+    "BenchWindowLifetime /Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local 64 controls/gemma-64.json",
+    "BenchWindowLifetime /Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local 32 controls/gpt-32.json",
+    "BenchWindowLifetime /Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local 64 controls/gpt-64.json"
+  ],
+  "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+  "mlx_core_revision": "cb77239be31b1df7f5db895226af55c39fc4f093",
+  "mlx_swift_revision": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+  "model_arithmetic_source_sha256": {
+    "gemma": "bf04df8668622c4e164208e5ade09f087113961461e700dd5215b121f55bbef8",
+    "gpt": "da2b38cc1a198d9dd4bed94d0285fe22d1fca89f5b9fdff1fd909cd75af5dc88"
+  },
+  "sdk_build_parent": "45fedc12e55075072faa16871992119ad5e77c27",
+  "source_dirty": true
+}

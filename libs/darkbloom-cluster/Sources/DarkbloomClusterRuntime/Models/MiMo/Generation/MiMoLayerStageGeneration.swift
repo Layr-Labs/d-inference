@@ -9,6 +9,8 @@ struct MiMoRequestEvidence: Encodable, Equatable {
     let boundaryChainSHA256: String
     /// Rank 1 only: SHA-256 of the logits row the last token was selected from.
     let lastRowSHA256: String?
+    /// Rank 1, when step evidence was asked for: one record per selected token.
+    var steps: [MiMoStepEvidence] = []
 }
 
 /// Runs one request on an already exclusively owned, admitted resident MiMo
@@ -22,7 +24,7 @@ struct MiMoRequestEvidence: Encodable, Equatable {
 /// error this retires local state and throws; the owner must fence the peer
 /// out of band before it claims retirement or releases anything.
 func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-    agreement: QwenLayerStageGenerationAgreement, collective: Collective,
+    agreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
     try MLX.withError { nativeError in
@@ -37,7 +39,8 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
             var session: MiMoLayerStageSession?
             do {
-                let owned = try MiMoLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
+                let owned = try MiMoLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request,
+                                                      recordsSteps: recordsSteps)
                 session = owned
                 var selectedTokens = [Int]()
                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
@@ -91,7 +94,8 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                 }
                 try checked()
                 let evidence = MiMoRequestEvidence(rank: collective.rank,
-                    boundaryChainSHA256: owned.boundaryChainSHA256, lastRowSHA256: owned.lastRowSHA256)
+                    boundaryChainSHA256: owned.boundaryChainSHA256, lastRowSHA256: owned.lastRowSHA256,
+                    steps: owned.steps)
                 try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
                 guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
                 try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)

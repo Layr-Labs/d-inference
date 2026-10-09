@@ -43,6 +43,8 @@ public struct PairConfiguration: Sendable {
     public static let memoryGateEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE"
     /// Qualification only, MiMo: run without the stage's standing residency.
     public static let stageResidencyEnvironment = "DARKBLOOM_CLUSTER_MIMO_STAGE_RESIDENCY"
+    /// Qualification only, MiMo: rank 1 writes one step line per selected token.
+    public static let mimoStepEvidenceEnvironment = "DARKBLOOM_CLUSTER_MIMO_STEP_EVIDENCE"
 
     public var request: QualificationRequest
     public var stageCut: Int
@@ -93,6 +95,8 @@ public struct PairConfiguration: Sendable {
     public var memoryGateMode: String?
     /// Both workers run without the stage's standing residency (MiMo only).
     public var withoutStageResidency = false
+    /// Both workers get the MiMo step-evidence switch; rank 1 writes the lines.
+    public var mimoStepEvidence = false
     public var membershipEpoch: UUID
     /// Strings that must never appear in a report (destination, addresses, names).
     public var sensitive: [String]
@@ -326,6 +330,7 @@ public struct PairConfiguration: Sendable {
         }
         if let memoryGateMode { environment.append((Self.memoryGateEnvironment, memoryGateMode)) }
         if withoutStageResidency { environment.append((Self.stageResidencyEnvironment, "off")) }
+        if mimoStepEvidence { environment.append((Self.mimoStepEvidenceEnvironment, "on")) }
         var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
             "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,
             "--artifact-sha256", artifactSHA256, "--configuration-sha256", configurationSHA256,
@@ -337,7 +342,8 @@ public struct PairConfiguration: Sendable {
         // A worker refuses a qualification switch in its environment unless it
         // was started with this flag. Both ranks get it when either has one,
         // so the two launches differ only where the run says they do.
-        if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency {
+        if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency
+            || mimoStepEvidence {
             arguments += [Self.qualificationSwitchesArgument, "yes"]
         }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")

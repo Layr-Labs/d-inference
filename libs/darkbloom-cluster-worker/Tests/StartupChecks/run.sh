@@ -44,6 +44,7 @@ check() {
 }
 transport=DARKBLOOM_CLUSTER_TRANSPORT; fault=DARKBLOOM_CLUSTER_QUALIFICATION_FAULT; retired=DARKBLOOM_CLUSTER_GENERATION_MODE
 gate=DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE; residency=DARKBLOOM_CLUSTER_MIMO_STAGE_RESIDENCY
+steps=DARKBLOOM_CLUSTER_MIMO_STEP_EVIDENCE
 # With no switch the worker gets as far as the missing model: the baseline every refusal is told apart from.
 check baseline-stops-at-the-missing-model 1 "" "qualification switch" --
 check transport-switch-refused-without-the-flag 1 "$transport is a qualification switch" "" "$transport=local-socket-test" --
@@ -101,6 +102,9 @@ mimo mimo-compact-mode-reaches-the-model 1 "" "generation mode must be" -- --gen
 mimo mimo-has-no-recording-runtime 1 "Only the dense adapter has a recording runtime" "" -- --evidence-directory "$work/evidence"
 mimo mimo-residency-switch-refused-without-the-flag 1 "$residency is a qualification switch" "" "$residency=off" --
 mimo mimo-residency-switch-passes-the-gate-with-the-flag 1 "" "qualification switch" "$residency=off" -- --qualification-switches yes
+mimo mimo-step-evidence-switch-refused-without-the-flag 1 "$steps is a qualification switch" "" "$steps=on" --
+mimo mimo-step-evidence-switch-passes-the-gate-with-the-flag 1 "" "qualification switch" "$steps=on" -- --qualification-switches yes
+mimo mimo-step-evidence-takes-only-on 1 "$steps takes only the value on" "" "$steps=yes" -- --qualification-switches yes
 mimo mimo-memory-gate-switch-refused-without-the-flag 1 "$gate is a qualification switch" "" "$gate=measure" --
 # Its own session bound: longer than the dense rows' 300 s, and not unbounded.
 MIMO_LIFETIME=1800 mimo mimo-lifetime-of-its-row-is-accepted 1 "" "local lifetime" --

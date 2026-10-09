@@ -22,7 +22,7 @@ public enum MiMoStagedReference {
     }
 
     public struct Result: Encodable, Sendable {
-        public let schema = "mimo_staged_reference_v1"
+        public let schema = "mimo_staged_reference_v2"
         public let runtimeModelID: String
         public let stageCut: Int
         public let requestID: String
@@ -32,6 +32,9 @@ public enum MiMoStagedReference {
         /// The chain over every residual that crossed the cut, as both stages computed it.
         public let boundaryChainSHA256: String
         public let lastRowSHA256: String?
+        /// One record per selected token, from stage 1: the residual that
+        /// entered the frame, the row's digest and its highest candidates.
+        public let steps: [MiMoStepEvidence]
         public let verifiedAggregateSHA256: String
         public let planSHA256: String
         public let storageCommitmentSHA256: String
@@ -108,11 +111,11 @@ public enum MiMoStagedReference {
                 let active = Memory.snapshot().activeMemory
                 var tokens: [Int] = [], reason = QwenLayerStageGenerationFinishReason.length
                 var prefill = 0.0, decode = 0.0
-                var chain = "", row: String?
+                var chain = "", row: String?, steps: [MiMoStepEvidence] = []
                 let begun = DispatchTime.now().uptimeNanoseconds
                 try autoreleasepool {
                     let sessions = try stages.map {
-                        try MiMoLayerStageSession(stage: $0, plan: plan, generationRequest: request)
+                        try MiMoLayerStageSession(stage: $0, plan: plan, generationRequest: request, recordsSteps: true)
                     }
                     func frame(_ index: Int) throws -> MLXArray? {
                         let frame = try request.frame(sequence: index)
@@ -148,7 +151,7 @@ public enum MiMoStagedReference {
                     guard sessions[0].boundaryChainSHA256 == sessions[1].boundaryChainSHA256 else {
                         throw ProbeError("The two MiMo stages saw different residuals")
                     }
-                    chain = sessions[0].boundaryChainSHA256; row = sessions[1].lastRowSHA256
+                    chain = sessions[0].boundaryChainSHA256; row = sessions[1].lastRowSHA256; steps = sessions[1].steps
                     for session in sessions {
                         try session.finishGeneration(reason, selectedTokenCount: tokens.count, lastTokenID: lastToken)
                     }
@@ -168,7 +171,7 @@ public enum MiMoStagedReference {
                 return Result(runtimeModelID: specification.model.rawValue, stageCut: stageCut,
                     requestID: request.requestID.uuidString.lowercased(), promptTokens: request.promptCount,
                     selectedTokenIDs: tokens, finishReason: reason.rawValue, boundaryChainSHA256: chain,
-                    lastRowSHA256: row, verifiedAggregateSHA256: aggregate, planSHA256: plan.fingerprint,
+                    lastRowSHA256: row, steps: steps, verifiedAggregateSHA256: aggregate, planSHA256: plan.fingerprint,
                     storageCommitmentSHA256: commitment, loadedTensorBytes: loadedBytes, residency: keepsResidency,
                     wiredLimitBytes: limit, loadSeconds: loadSeconds, prefillSeconds: prefill, decodeSeconds: decode,
                     requestSeconds: requestSeconds, activeBytesLoaded: active, peakBytes: peak,

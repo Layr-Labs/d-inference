@@ -30,11 +30,15 @@ final class MiMoLayerStageSession {
     private(set) var boundaryChainSHA256: String
     /// Stage 1: SHA-256 of the last logits row a token was selected from.
     private(set) var lastRowSHA256: String?
+    /// Stage 1, when asked: one record per logits row, in order. Read from the
+    /// bytes the row digest already copies; no extra native work.
+    let recordsSteps: Bool
+    private(set) var steps: [MiMoStepEvidence] = []
 
     var committedTokens: Int { schedule.committedTokens }
 
     init(stage: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-         generationRequest request: QwenLayerStageGenerationRequest) throws {
+         generationRequest request: QwenLayerStageGenerationRequest, recordsSteps: Bool = false) throws {
         guard plan.stages.count == 2, plan.stages.indices.contains(stage.stageIndex),
               stage.plan.fingerprint == plan.fingerprint else {
             throw ProbeError("MiMo stage session received a different source plan")
@@ -60,6 +64,7 @@ final class MiMoLayerStageSession {
             throw ProbeError("Generation profile differs from the actual loaded MiMo stage geometry/dtype")
         }
         self.stage = stage; self.request = request; hiddenSize = hidden
+        self.recordsSteps = recordsSteps && stage.stageIndex == 1
         producerStageFingerprint = plan.stages[0].fingerprint
         caches = stage.model.newCache()
         schedule = QwenLayerStageGenerationSchedule(request: request)
@@ -159,7 +164,15 @@ final class MiMoLayerStageSession {
             chain(incoming!.payloadSHA256)
             if wantsLogits {
                 Stream.gpu.synchronize(); try checked()
-                lastRowSHA256 = sha256(output.asData().data); try checked()
+                let bytes = output.asData().data
+                let digest = sha256(bytes)
+                lastRowSHA256 = digest; try checked()
+                if recordsSteps {
+                    let dtype = String(describing: output.dtype)
+                    steps.append(.init(ordinal: steps.count, boundarySHA256: incoming!.payloadSHA256,
+                        rowSHA256: digest, rowDType: dtype,
+                        top: try MiMoStepEvidence.candidates(rowBytes: bytes, dtype: dtype)))
+                }
                 return .logits(output)
             }
             return .evaluationHandle(output)

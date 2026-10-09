@@ -16,6 +16,12 @@ public final class MiMoResidentRuntime {
     /// to measure what it buys. Refused unless the process was started with
     /// the explicit qualification flag; both ranks must agree on it.
     public static let residencyEnvironmentName = MiMoStageResidency.environmentName
+    /// Qualification only, `on`: rank 1 writes one `darkbloom-mimo-step-v1`
+    /// line per selected token (the residual's and the row's digests and the
+    /// row's highest candidates). It changes no arithmetic and no decision, so
+    /// it is not part of the load agreement. Refused without the explicit
+    /// qualification flag.
+    public static let stepEvidenceEnvironmentName = "DARKBLOOM_CLUSTER_MIMO_STEP_EVIDENCE"
 
     let admission: MiMoResidentAdmission
     let control: QwenResidentControl
@@ -30,6 +36,7 @@ public final class MiMoResidentRuntime {
     private var residency: MiMoStageResidency?
     private var reservation: Reservation?
     private var processLeaseOwned = true
+    private var recordsSteps = false
 
     private struct Reservation {
         let request: QwenLayerStageGenerationRequest
@@ -64,6 +71,7 @@ public final class MiMoResidentRuntime {
         try qualification.admit(environment: environment)
         var transport = ClusterTransport.jaccl
         var keepsResidency = true
+        var recordsSteps = false
         if qualification.permitted {
             transport = try ClusterTransport.admit(environment: environment)
             if let mode = try QwenDenseStageLoadMeasurement.requested(environment: environment) {
@@ -73,8 +81,12 @@ public final class MiMoResidentRuntime {
                 guard value == "off" else { throw ProbeError("\(residencyEnvironmentName) takes only the value off") }
                 keepsResidency = false
             }
-        } else if environment[residencyEnvironmentName] != nil {
-            throw ProbeError("\(residencyEnvironmentName) is a qualification switch and this process was not started with "
+            if let value = environment[stepEvidenceEnvironmentName] {
+                guard value == "on" else { throw ProbeError("\(stepEvidenceEnvironmentName) takes only the value on") }
+                recordsSteps = true
+            }
+        } else if let name = [residencyEnvironmentName, stepEvidenceEnvironmentName].first(where: { environment[$0] != nil }) {
+            throw ProbeError("\(name) is a qualification switch and this process was not started with "
                 + "\(QwenResidentQualificationSwitches.permittingArgument) yes; it is refused, not ignored")
         }
         // Recording alone changes no decision, so it is not part of what the ranks agree.
@@ -192,8 +204,10 @@ public final class MiMoResidentRuntime {
             }
             let lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: MiMoRegisteredSpecification.maximumRequests)
             try control.loaded()
-            return .init(admission: admission, control: control, collective: collective, stage: stage!,
-                residency: residency, capacity: capacity, lifecycle: lifecycle, generationMode: mode)
+            let runtime = MiMoResidentRuntime(admission: admission, control: control, collective: collective,
+                stage: stage!, residency: residency, capacity: capacity, lifecycle: lifecycle, generationMode: mode)
+            runtime.recordsSteps = recordsSteps
+            return runtime
         } catch {
             let primary = error; control.fail()
             do {
@@ -288,7 +302,7 @@ public final class MiMoResidentRuntime {
         let started = DispatchTime.now().uptimeNanoseconds
         var firstToken: UInt64?
         let (result, evidence) = try runMiMoLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
-            agreement: agreement, collective: collective, onCommittedToken: { token in
+            agreement: agreement, collective: collective, recordsSteps: recordsSteps, onCommittedToken: { token in
                 let current = ordinal; ordinal += 1
                 if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
                 return try onCommittedToken(current, token, reserved.request.promptCount + current)
@@ -312,6 +326,7 @@ public final class MiMoResidentRuntime {
             "ms=\((finished - started) / 1_000_000)", "first_token_ms=\(firstTokenMilliseconds)",
             "active=\(peak.activeMemory)", "peak=\(peak.peakMemory)",
         ]
+        for step in evidence.steps { log(step.line(rank: collective.rank)) }
         log(requestFields.joined(separator: " "))
         return QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
             selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,

@@ -37,6 +37,7 @@ import Foundation
               [--memory-gate record|measure (qualification: record every host memory gate decision; measure also
                                              leaves a refusal for admissible memory alone unenforced)]
               [--stage-residency off (qualification, MiMo: no standing wired residency)]
+              [--mimo-step-evidence on (qualification, MiMo: rank 1 reports each selected row's digests and top logits)]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
           darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --service /ABS/darkbloom-cluster-reference --model-dir /ABS/MODEL
@@ -157,7 +158,7 @@ import Foundation
             "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
-            "--memory-gate", "--stage-residency"]
+            "--memory-gate", "--stage-residency", "--mimo-step-evidence"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -226,6 +227,13 @@ import Foundation
         if let residency = fields["--stage-residency"]?.first {
             guard residency == "off" else { throw Failure("--stage-residency takes only the value off") }
             configuration.withoutStageResidency = true
+        }
+        if let steps = fields["--mimo-step-evidence"]?.first {
+            guard steps == "on" else { throw Failure("--mimo-step-evidence takes only the value on") }
+            guard configuration.request.modelID == "registered_mimo_v26_flash_mopd" else {
+                throw Failure("--mimo-step-evidence is for the MiMo row only")
+            }
+            configuration.mimoStepEvidence = true
         }
         // A loopback socket needs both ranks on this Mac.
         guard configuration.workerTransport == PairConfiguration.jacclTransport || fields["--remote-command-prefix"] != nil else {

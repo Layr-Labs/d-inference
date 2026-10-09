@@ -259,12 +259,29 @@ let package = Package(
             path: "Tests/GPTOSSOptimizationTests"
         ),
 
+        // Test-only stand-in for an installed owner and its native child, run
+        // by the native-pair member control tests over the real owner pipe and
+        // key prelude. CPU only: no model, mesh or GPU. Not a product, so no
+        // release build ships it.
+        .executableTarget(
+            name: "cluster-member-fixture-child",
+            dependencies: [
+                .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
+            ],
+            path: "Tests/ClusterMemberFixtureChild"
+        ),
+
         .testTarget(
             name: "ProviderCoreTests",
             dependencies: [
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                "cluster-member-fixture-child",
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),

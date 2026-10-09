@@ -1,0 +1,65 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/.codex/worktrees/kv-window-horizon/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Elastic window complete checkpoint round trip" started.
+◇ Test shortAndWrappedRowsRestoreNativeBitsAndContinueExactly() started.
+✔ Test shortAndWrappedRowsRestoreNativeBitsAndContinueExactly() passed after 0.071 seconds.
+◇ Test hintedNonPowerOfTwoBackingRestoresFullRingAndAcceptsOverrun() started.
+✔ Test hintedNonPowerOfTwoBackingRestoresFullRingAndAcceptsOverrun() passed after 0.048 seconds.
+✔ Suite "Elastic window complete checkpoint round trip" passed after 0.120 seconds.
+◇ Suite "Gemma and GPTOSS elastic-window model parity" started.
+◇ Test gemmaBF16AcrossGrowthWrapAndDecode() started.
+✔ Test gemmaBF16AcrossGrowthWrapAndDecode() passed after 0.128 seconds.
+◇ Test gptOSSWithTrainedSinksAcrossGrowthWrapAndDecode() started.
+✔ Test gptOSSWithTrainedSinksAcrossGrowthWrapAndDecode() passed after 0.246 seconds.
+◇ Test gemmaSharedLayersBorrowExactGrowthAndPreEvictionViews() started.
+✔ Test gemmaSharedLayersBorrowExactGrowthAndPreEvictionViews() passed after 0.141 seconds.
+✔ Suite "Gemma and GPTOSS elastic-window model parity" passed after 0.517 seconds.
+◇ Suite KernelTests started.
+◇ Suite "CBv2 elastic sliding-window storage" started.
+◇ Test shortGemmaRowsOwnOnlyPopulatedCapacity() started.
+✔ Test shortGemmaRowsOwnOnlyPopulatedCapacity() passed after 0.060 seconds.
+◇ Test growthRemapsAbsoluteSlotsWithoutDiscardingHistory() started.
+✔ Test growthRemapsAbsoluteSlotsWithoutDiscardingHistory() passed after 0.046 seconds.
+◇ Test oversizedChunkReturnsPreEvictionHistoryAndKeepsRecentTail() started.
+✔ Test oversizedChunkReturnsPreEvictionHistoryAndKeepsRecentTail() passed after 0.002 seconds.
+◇ Test speculativeGrowthChargesOnlyConfirmedStorage() started.
+✔ Test speculativeGrowthChargesOnlyConfirmedStorage() passed after 0.001 seconds.
+◇ Test rollbackBeforeWindowFillAndFreshReplayRemainExact() started.
+✔ Test rollbackBeforeWindowFillAndFreshReplayRemainExact() passed after 0.001 seconds.
+◇ Test defaultPreservesFullRingForUnqualifiedModels() started.
+✔ Test defaultPreservesFullRingForUnqualifiedModels() passed after 0.001 seconds.
+✔ Suite "CBv2 elastic sliding-window storage" passed after 0.113 seconds.
+◇ Suite "Window request-lifetime backing hints" started.
+◇ Test boundedHorizonClampsOnlyGeometricSlack() started.
+✔ Test boundedHorizonClampsOnlyGeometricSlack() passed after 0.478 seconds.
+◇ Test backendPassesHorizonWithoutReducingConservativeReservation() started.
+✔ Test backendPassesHorizonWithoutReducingConservativeReservation() passed after 0.007 seconds.
+◇ Test replayOriginRemapsNonPowerOfTwoCapacityExactly() started.
+✔ Test replayOriginRemapsNonPowerOfTwoCapacityExactly() passed after 0.013 seconds.
+◇ Test plannedPrefixReplayKeepsItsFullWindowReservation() started.
+✔ Test plannedPrefixReplayKeepsItsFullWindowReservation() passed after 0.033 seconds.
+◇ Test underestimatedHintPreservesValidWritesAndWindowRetention() started.
+✔ Test underestimatedHintPreservesValidWritesAndWindowRetention() passed after 0.005 seconds.
+◇ Test pendingOverspeculationDoesNotGrowUntilConfirmed() started.
+✔ Test pendingOverspeculationDoesNotGrowUntilConfirmed() passed after 0.003 seconds.
+◇ Test nonElasticAndUnusableHintsPreserveEstablishedAllocation() started.
+✔ Test nonElasticAndUnusableHintsPreserveEstablishedAllocation() passed after 0.001 seconds.
+✔ Suite "Window request-lifetime backing hints" passed after 0.543 seconds.
+✔ Suite KernelTests passed after 0.656 seconds.
+✔ Test run with 18 tests in 5 suites passed after 1.294 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite UnitTests started.
+◇ Suite "Window lifetime control model configuration" started.
+◇ Test nativeGemmaAndGPTFamiliesAreAcceptedBeforeModelLoad() started.
+✔ Test nativeGemmaAndGPTFamiliesAreAcceptedBeforeModelLoad() passed after 0.001 seconds.
+◇ Test nonObjectConfigurationIsAReportedError() started.
+✔ Test nonObjectConfigurationIsAReportedError() passed after 0.001 seconds.
+◇ Test otherFamiliesAndMissingTypeAreRejected() started.
+✔ Test otherFamiliesAndMissingTypeAreRejected() passed after 0.001 seconds.
+✔ Suite "Window lifetime control model configuration" passed after 0.001 seconds.
+✔ Suite UnitTests passed after 0.001 seconds.
+✔ Test run with 3 tests in 2 suites passed after 0.001 seconds.

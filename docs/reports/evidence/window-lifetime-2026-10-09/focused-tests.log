@@ -1,0 +1,47 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/.codex/worktrees/kv-window-horizon/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Elastic window complete checkpoint round trip" started.
+◇ Test shortAndWrappedRowsRestoreNativeBitsAndContinueExactly() started.
+✔ Test shortAndWrappedRowsRestoreNativeBitsAndContinueExactly() passed after 0.080 seconds.
+✔ Suite "Elastic window complete checkpoint round trip" passed after 0.080 seconds.
+◇ Suite "Gemma and GPTOSS elastic-window model parity" started.
+◇ Test gemmaBF16AcrossGrowthWrapAndDecode() started.
+✔ Test gemmaBF16AcrossGrowthWrapAndDecode() passed after 0.214 seconds.
+◇ Test gptOSSWithTrainedSinksAcrossGrowthWrapAndDecode() started.
+✔ Test gptOSSWithTrainedSinksAcrossGrowthWrapAndDecode() passed after 0.282 seconds.
+◇ Test gemmaSharedLayersBorrowExactGrowthAndPreEvictionViews() started.
+✔ Test gemmaSharedLayersBorrowExactGrowthAndPreEvictionViews() passed after 0.168 seconds.
+✔ Suite "Gemma and GPTOSS elastic-window model parity" passed after 0.666 seconds.
+◇ Suite KernelTests started.
+◇ Suite "CBv2 elastic sliding-window storage" started.
+◇ Test shortGemmaRowsOwnOnlyPopulatedCapacity() started.
+✔ Test shortGemmaRowsOwnOnlyPopulatedCapacity() passed after 0.066 seconds.
+◇ Test growthRemapsAbsoluteSlotsWithoutDiscardingHistory() started.
+✔ Test growthRemapsAbsoluteSlotsWithoutDiscardingHistory() passed after 0.050 seconds.
+◇ Test oversizedChunkReturnsPreEvictionHistoryAndKeepsRecentTail() started.
+✔ Test oversizedChunkReturnsPreEvictionHistoryAndKeepsRecentTail() passed after 0.003 seconds.
+◇ Test speculativeGrowthChargesOnlyConfirmedStorage() started.
+✔ Test speculativeGrowthChargesOnlyConfirmedStorage() passed after 0.002 seconds.
+◇ Test rollbackBeforeWindowFillAndFreshReplayRemainExact() started.
+✔ Test rollbackBeforeWindowFillAndFreshReplayRemainExact() passed after 0.001 seconds.
+◇ Test defaultPreservesFullRingForUnqualifiedModels() started.
+✔ Test defaultPreservesFullRingForUnqualifiedModels() passed after 0.001 seconds.
+✔ Suite "CBv2 elastic sliding-window storage" passed after 0.124 seconds.
+◇ Suite "Window request-lifetime backing hints" started.
+◇ Test boundedHorizonClampsOnlyGeometricSlack() started.
+✔ Test boundedHorizonClampsOnlyGeometricSlack() passed after 0.511 seconds.
+◇ Test backendPassesHorizonWithoutReducingConservativeReservation() started.
+✔ Test backendPassesHorizonWithoutReducingConservativeReservation() passed after 0.007 seconds.
+◇ Test replayOriginRemapsNonPowerOfTwoCapacityExactly() started.
+✔ Test replayOriginRemapsNonPowerOfTwoCapacityExactly() passed after 0.015 seconds.
+◇ Test underestimatedHintPreservesValidWritesAndWindowRetention() started.
+✔ Test underestimatedHintPreservesValidWritesAndWindowRetention() passed after 0.006 seconds.
+◇ Test pendingOverspeculationDoesNotGrowUntilConfirmed() started.
+✔ Test pendingOverspeculationDoesNotGrowUntilConfirmed() passed after 0.004 seconds.
+◇ Test nonElasticAndUnusableHintsPreserveEstablishedAllocation() started.
+✔ Test nonElasticAndUnusableHintsPreserveEstablishedAllocation() passed after 0.001 seconds.
+✔ Suite "Window request-lifetime backing hints" passed after 0.545 seconds.
+✔ Suite KernelTests passed after 0.670 seconds.
+✔ Test run with 16 tests in 5 suites passed after 1.417 seconds.

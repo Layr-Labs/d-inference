@@ -1,0 +1,22 @@
+{
+  "scope": "post-working-gate behavior-preserving refactor; original model controls were not rerun",
+  "sdk_review_base": "c1a9af29e2c14fedf48b5ad106a1617bacf73d69",
+  "source_binding": "temporary local MLX checkout 6923a80f624f5c91fbf456efe4e00e9698a72961",
+  "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+  "test_command": "../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests|CBv2WindowLifetimeBackingTests|BenchWindowLifetimeConfigurationTests' --no-parallel",
+  "test_counts": [
+    18,
+    3
+  ],
+  "test_log": "refactor-tests.log",
+  "test_log_sha256": "a02390ad6d8506c3573e6fa4ac63edd53397bc71f3bfb5f02917653690286f0d",
+  "sources": {
+    "Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift": "e1326e759776fd1a2ff93e254312f09f9750b927abce493ab29274a67613c247",
+    "Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift": "6026c86f215e402d948f1ca8093bb4d51f095607983bdac700eadd216db45ef0",
+    "Sources/BenchCBv2Core/BenchWindowLifetime.swift": "f78d32434f481ba3b9817482f5b7fcf68b783d059bfe98d8b1b0ac9655945ec2",
+    "Tests/MLXLMTests/Kernel/Cache/CBv2WindowLifetimeBackingTests.swift": "abacdda45d9319735c4690e52775c293efafd3483fe968f0ca96e9ebd85a2e09",
+    "Tests/MLXLMTests/Integration/Cache/CBv2ElasticWindowCheckpointTests.swift": "c19e8c8305b6659ccd4f9baf575143fed5eb320deefb2090129c4defc9516a81",
+    "Tests/BenchCBv2Tests/Unit/Runtime/BenchWindowLifetimeConfigurationTests.swift": "60443eb06dda79b659788d7170d1e2fdf1ca0928c98e703967a806615ed1ded7",
+    "Tests/BenchCBv2Tests/TestTypeTags.swift": "0d57e98224cf9cea13d841f59d692bc7a3d228921b95c7966d2ca7cb339261f5"
+  }
+}

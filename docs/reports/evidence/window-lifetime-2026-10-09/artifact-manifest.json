@@ -1,0 +1,61 @@
+{
+  "files": {
+    "build-receipt.json": {
+      "bytes": 1391,
+      "sha256": "52ff56270b1eae9c93bd985748a525438cf2311149baf0bd0dd1f976ce059649"
+    },
+    "ci-inventory.log": {
+      "bytes": 122,
+      "sha256": "50abb5dcd71c150339e32b2a1ac53c0ccb79dbb505c89652aab6ffe68bb714d9"
+    },
+    "control-summary.json": {
+      "bytes": 2006,
+      "sha256": "db57229cb744b38555323af2f591226345d6dce2fdea8c9c3ef6c18274649362"
+    },
+    "controls/driver-source.swift": {
+      "bytes": 8003,
+      "sha256": "90d9b8e8949730ea9bc0136cc4a3f8a1e86d0ac2692f35bc424e236a3c5ae3b7"
+    },
+    "controls/gemma-32.json": {
+      "bytes": 12972,
+      "sha256": "8449050ca609387a98d20c09fd462dd63f10e7f7373c57eccc90ca841a1a1d27"
+    },
+    "controls/gemma-32.log": {
+      "bytes": 69,
+      "sha256": "8a87f4058ed2b596e0805a0a5f1455e9d244dd4a3023a89c286760724c3bddec"
+    },
+    "controls/gemma-64.json": {
+      "bytes": 13356,
+      "sha256": "b9612864dcb6ce6ec53d2be6fb9ee46a4083c7e25f726caf26199e4913e02c20"
+    },
+    "controls/gemma-64.log": {
+      "bytes": 69,
+      "sha256": "b7ac3bcabd6541e6587cae82ef10eda37d90678bf1d2e7d0393fa369dba91859"
+    },
+    "controls/gpt-32.json": {
+      "bytes": 9468,
+      "sha256": "2f59c4a4d10aeda822eb4bdf2bc904cf7b6201c0f1c253f1906e3dcf155e0de7"
+    },
+    "controls/gpt-32.log": {
+      "bytes": 69,
+      "sha256": "8a87f4058ed2b596e0805a0a5f1455e9d244dd4a3023a89c286760724c3bddec"
+    },
+    "controls/gpt-64.json": {
+      "bytes": 9746,
+      "sha256": "0b7f31342a9151bceb8fb348ed4c285551cd8198d8f89c7a9e5b54299a88c0e2"
+    },
+    "controls/gpt-64.log": {
+      "bytes": 69,
+      "sha256": "b7ac3bcabd6541e6587cae82ef10eda37d90678bf1d2e7d0393fa369dba91859"
+    },
+    "focused-tests.log": {
+      "bytes": 3513,
+      "sha256": "8e4aebb0a5e9b46158ed12a8c3e9bb7abc51d2d0f90119ac9f0768e554a81a8c"
+    },
+    "preregistration.json": {
+      "bytes": 2610,
+      "sha256": "a6b5c837111e22b8b51f26e850247cbdfbb69b11751b3b15079ce15fb08b91a5"
+    }
+  },
+  "scope": "four frozen actual artifact controls plus original driver/build receipts and preregistration; original native arithmetic"
+}

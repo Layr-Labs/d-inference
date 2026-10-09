@@ -659,7 +659,7 @@ jobs:
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 5
-        run: ../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests' --no-parallel
+        run: ../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests|CBv2WindowLifetimeBackingTests|BenchWindowLifetimeConfigurationTests' --no-parallel
       - name: Run Nemotron production SDK gates
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

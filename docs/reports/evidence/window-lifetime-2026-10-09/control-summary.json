@@ -1,0 +1,81 @@
+{
+  "cells": [
+    {
+      "actual_end_offsets": [
+        543
+      ],
+      "actual_generated_tokens": 32,
+      "finish_reason": "length",
+      "hint_capacities": [
+        544
+      ],
+      "hint_sliding_tensor_bytes": 111411200,
+      "maximum_completion_tokens": 32,
+      "model": "gemma",
+      "native_logit_bits_equal": true,
+      "native_snapshot_bits_equal": true,
+      "parent_capacities": [
+        1024
+      ],
+      "parent_sliding_tensor_bytes": 209715200
+    },
+    {
+      "actual_end_offsets": [
+        575
+      ],
+      "actual_generated_tokens": 64,
+      "finish_reason": "length",
+      "hint_capacities": [
+        576
+      ],
+      "hint_sliding_tensor_bytes": 117964800,
+      "maximum_completion_tokens": 64,
+      "model": "gemma",
+      "native_logit_bits_equal": true,
+      "native_snapshot_bits_equal": true,
+      "parent_capacities": [
+        1024
+      ],
+      "parent_sliding_tensor_bytes": 209715200
+    },
+    {
+      "actual_end_offsets": [
+        543
+      ],
+      "actual_generated_tokens": 32,
+      "finish_reason": "length",
+      "hint_capacities": [
+        128
+      ],
+      "hint_sliding_tensor_bytes": 6029312,
+      "maximum_completion_tokens": 32,
+      "model": "gpt",
+      "native_logit_bits_equal": true,
+      "native_snapshot_bits_equal": true,
+      "parent_capacities": [
+        128
+      ],
+      "parent_sliding_tensor_bytes": 6029312
+    },
+    {
+      "actual_end_offsets": [
+        575
+      ],
+      "actual_generated_tokens": 64,
+      "finish_reason": "length",
+      "hint_capacities": [
+        128
+      ],
+      "hint_sliding_tensor_bytes": 6029312,
+      "maximum_completion_tokens": 64,
+      "model": "gpt",
+      "native_logit_bits_equal": true,
+      "native_snapshot_bits_equal": true,
+      "parent_capacities": [
+        128
+      ],
+      "parent_sliding_tensor_bytes": 6029312
+    }
+  ],
+  "scope": "single-row public synthetic native controls, original arithmetic; no timing/quality-score/admission claim"
+}

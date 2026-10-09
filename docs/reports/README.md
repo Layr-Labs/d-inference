@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Window lifetime backing](2026-10-09-window-lifetime-backing.md) — exact native request-horizon allocation hints, buffer extents and Gemma/GPT continuation controls.
 - [Gemma normalization controls](2026-10-09-gemma-normalization-controls.md) — native/candidate token parity passes; 0.27% aggregate ITL gain fails the preregistered benefit gate.
 - [Gemma shared-projection investigation](2026-10-09-gemma-shared-projection-kv.md) — bounded raw reconstruction fails its cost gate; hybrid rotated-band storage remains research.
 - [Autopilot shadow evidence and calibration](2026-10-07-autopilot-shadow-evidence.md) - read-only week/day demand, output-limit calibration, retained controller decisions and synthetic placement valuation, with replay and causal limits.

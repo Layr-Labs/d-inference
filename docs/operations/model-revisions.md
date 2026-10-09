@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-05
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -37,7 +37,7 @@ Overwriting an already published R2 revision is rejected.
    a download source and does not replace the catalog ID.
 
    ```bash
-   REVISION_COORDINATOR=https://api.dev.darkbloom.dev
+   REVISION_COORDINATOR=https://api.dev.darkbloom.xyz
    REVISION_MODEL_ID=nvidia-nemotron-3.5-lightning
    curl --fail --silent --show-error \
      "${REVISION_COORDINATOR}/v1/models/catalog/${REVISION_MODEL_ID}" \

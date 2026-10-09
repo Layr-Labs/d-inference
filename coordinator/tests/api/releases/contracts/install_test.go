@@ -24,7 +24,7 @@ import (
 // install.sh source while providers end up talking to the right environment.
 func TestInstallScriptTemplating(t *testing.T) {
 	t.Run("uses baseURL when set", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -32,7 +32,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 		if strings.Contains(body, "__DARKBLOOM_COORD_URL__") {
 			t.Error("install.sh still contains placeholder after serve-time substitution")
 		}
-		if !strings.Contains(body, `COORD_URL:-https://api.dev.darkbloom.dev`) {
+		if !strings.Contains(body, `COORD_URL:-https://api.dev.darkbloom.xyz`) {
 			t.Errorf("install.sh does not reference configured baseURL; got first 400 chars:\n%s", headOf(body, 400))
 		}
 	})
@@ -52,7 +52,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 	})
 
 	t.Run("trailing slash in baseURL is stripped", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev/")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz/")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -68,7 +68,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 	// is gone entirely. The R2 placeholder constants in server.go were
 	// dropped along with these tests.
 	t.Run("install.sh has no leftover R2 placeholders", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -82,7 +82,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 	})
 
 	t.Run("install.sh installs the Swift bundle, not the Python runtime", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -120,7 +120,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 	})
 
 	t.Run("enrollment excludes hardware identity", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -142,7 +142,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 	})
 
 	t.Run("fan helper is verified but never privileged-installed", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -176,15 +176,15 @@ func TestServedInstallerBindsProviderToServingCoordinator(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	const devURL = `url = "wss://api.dev.darkbloom.dev/ws/provider"` + "\n"
+	const devURL = `url = "wss://api.dev.darkbloom.xyz/ws/provider"` + "\n"
 	const other = "[provider]\nname = \"mac\"\n\n[coordinator]\nprivate_only = true\n"
 	for _, tc := range []struct {
 		name, baseURL string
 		existing      *string
 		want          *string
 	}{
-		{"dev creates the file", "https://api.dev.darkbloom.dev", nil, configText("[coordinator]\n" + devURL)},
-		{"dev writes into an existing file", "https://api.dev.darkbloom.dev", configText(other), configText(other + devURL)},
+		{"dev creates the file", "https://api.dev.darkbloom.xyz", nil, configText("[coordinator]\n" + devURL)},
+		{"dev writes into an existing file", "https://api.dev.darkbloom.xyz", configText(other), configText(other + devURL)},
 		{"production creates no file", "https://api.darkbloom.dev", nil, nil},
 		{"production removes the dev url", "https://api.darkbloom.dev", configText(other + devURL), configText(other)},
 	} {

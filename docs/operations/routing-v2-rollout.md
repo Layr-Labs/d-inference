@@ -1,6 +1,6 @@
 # Routing flags: kill switches and flag flips
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-02
 
 The routing-v2 rollout is complete: every behaviour it introduced ships in the
 coordinator binary and is **on by default**. This runbook is what remains
@@ -28,7 +28,7 @@ is not explained by one of the behaviours below; roll the binary back per
   [`coordinator-deploy.md`](coordinator-deploy.md) → "Refresh the env file"
   and "Swap". Production env-file changes and restarts require explicit human
   approval (see [`README.md`](README.md)).
-- Validate the flip on `api.dev.darkbloom.dev` first when time allows.
+- Validate the flip on `api.dev.darkbloom.xyz` first when time allows.
 - Have the Datadog routing dashboards open: `routing.decisions`,
   `routing.hedge_governor_suppressed`, `routing.ttft_admission`,
   `routing.ttft_calibration_ratio`, and the `warm_pool_tick` log stream.

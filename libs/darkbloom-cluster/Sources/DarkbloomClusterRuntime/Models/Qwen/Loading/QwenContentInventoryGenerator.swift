@@ -8,15 +8,10 @@ func layerStageTensorContentInventory(_ descriptors: [String: TensorDescriptor],
                                       check: () throws -> Void) throws -> LayerStageTensorContentInventory {
     var block = Data(count: CheckpointAlignedReadPlan.maximumScratchRequestBytes)
     let records = try descriptors.map { name, tensor -> LayerStageTensorContentRecord in
-        let dtype: String
-        switch tensor.dtype {
-        case .uint32: dtype = "U32"
-        case .float32: dtype = "F32"
-        case .float16: dtype = "F16"
-        case .bfloat16: dtype = "BF16"
-        default: throw ProbeError("Unsupported checkpoint tensor dtype for a content inventory: \(name)")
+        guard let stored = QwenStageStoredDType.allCases.first(where: { $0.native == tensor.dtype }) else {
+            throw ProbeError("Unsupported checkpoint tensor dtype for a content inventory: \(name)")
         }
-        let layout = try LayerStageTensorLayout(canonicalName: name, shape: tensor.shape, sourceDType: dtype,
+        let layout = try LayerStageTensorLayout(canonicalName: name, shape: tensor.shape, sourceDType: stored.rawValue,
                                                 byteCount: tensor.byteCount)
         let source = try LayerStageSourceTensor(layout: layout, sourceFile: tensor.file.path, sourceOffset: tensor.offset)
         var hash = SHA256(), done = 0
@@ -84,10 +79,8 @@ public enum QwenContentInventoryGenerator {
                                                        maximumBytes: 1_048_576)
         let manifest = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"),
                                                   maximumBytes: 4_194_304)
-        // The artifact's own configuration selects the registered model.
-        guard let specification = QwenDenseRegisteredSpecification.all.first(where: {
-            $0.configurationSHA256 == sha256(configuration)
-        }) else { throw ProbeError("Configuration is not a registered model's") }
+        // The closed catalog says which configuration is a registered model's.
+        let specification = try QwenResidentModelDefinition(configuration: configuration).specification
         let started = DispatchTime.now().uptimeNanoseconds
         let checkpoint = try VerifiedCheckpoint(directory: modelDirectory, configurationData: configuration,
             expectedAggregateSHA256: specification.artifactSHA256, maximumPayloadBytes: specification.manifestBytes,

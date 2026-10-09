@@ -125,11 +125,12 @@ struct ContentInventoryGenerationTests {
     @Test func anArtifactThatIsNotARegisteredModelsIsRefused() throws {
         let fixture = try InventoryFixture()
         defer { fixture.remove() }
-        let refusal = #expect(throws: ProbeError.self) {
+        // The closed model catalog refuses it, before any file is hashed.
+        let refusal = #expect(throws: QwenDenseProfileError.self) {
             _ = try QwenContentInventoryGenerator.run(modelDirectory: fixture.root,
                 deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 30_000_000_000)
         }
-        #expect(refusal?.description == "Configuration is not a registered model's")
+        #expect(refusal?.description == "Configuration is not a registered resident model's")
     }
 
     /// Reads every byte of the registered artifact (about 6 GB, twice). No model is constructed.

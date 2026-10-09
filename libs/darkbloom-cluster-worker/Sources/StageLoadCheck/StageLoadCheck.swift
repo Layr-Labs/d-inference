@@ -26,7 +26,8 @@ import Foundation
                   let rank = fields["--rank"].flatMap(Int.init), (0...1).contains(rank),
                   let cut = fields["--stage-cut"].flatMap(Int.init),
                   let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds) else {
-                throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut 4|8|12|16 [--deadline-seconds 10...300]")
+                throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut CUT [--deadline-seconds 10...300]\n"
+                    + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B")
             }
             let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds) * 1_000_000_000
             let receipt = try QwenResidentStageLoadCheck.run(modelDirectory: URL(fileURLWithPath: path),

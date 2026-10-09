@@ -139,18 +139,18 @@ public enum QwenStagedGenerationReference {
         guard nativeNames.allSatisfy({ processEnvironment[$0] == nil }) else {
             throw ProbeError("Staged reference refuses a cluster transport environment; it creates no collective")
         }
-        guard let specification = QwenDenseRegisteredSpecification.all.first(where: { $0.model == .qwen35NineB }) else {
-            throw ProbeError("Registered 9B specification is unavailable")
-        }
+        // The artifact's own configuration selects the registered model. Bytes
+        // that belong to no registered model have no definition and stop here.
+        let configBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("config.json"),
+                                                    maximumBytes: 1_048_576)
+        let specification = try QwenResidentModelDefinition(configuration: configBytes).specification
         let identity = ClusterWorkerIdentity(membershipEpoch: UUID(),
-            modelID: QwenRegisteredDenseModel.qwen35NineB.rawValue,
+            modelID: specification.model.rawValue,
             artifactSHA256: specification.artifactSHA256,
             configurationSHA256: specification.configurationSHA256,
             peers: (0...1).map {
                 ClusterWorkerPeer(id: "staged-reference-\($0)", buildSHA256: String(repeating: "0", count: 64))
             })
-        let configBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("config.json"),
-                                                    maximumBytes: 1_048_576)
         let manifestBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"),
                                                       maximumBytes: 4_194_304)
         // Each rank is admitted exactly as its worker would be. The device

@@ -7,6 +7,13 @@ public enum ClusterRuntimeAdapter: String, Sendable {
     public var version: Int { 1 }
     public var runtimeModelID: String { "registered_qwen35_9b" }
     public var profileID: String { "registered_qwen35_9b_greedy_generation_v1" }
+    /// Every model/profile pair this adapter revision executes, the original
+    /// pair first. A capability naming any other pair, or a model from one row
+    /// with the profile of another, is refused.
+    public var registeredProfiles: [(runtimeModelID: String, profileID: String)] {
+        [(runtimeModelID, profileID),
+         ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")]
+    }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

@@ -3,8 +3,10 @@ import Foundation
 enum ClusterRuntimeCapabilityValidation {
     static func check(_ value: ClusterRuntimeCapability) throws {
         guard let adapter = ClusterRuntimeAdapter(rawValue: value.adapterID),
-              value.adapterVersion == adapter.version, value.runtimeModelID == adapter.runtimeModelID,
-              value.profile.id == adapter.profileID else {
+              value.adapterVersion == adapter.version,
+              adapter.registeredProfiles.contains(where: {
+                  $0.runtimeModelID == value.runtimeModelID && $0.profileID == value.profile.id
+              }) else {
             throw ClusterWorkerProtocolError.invalid("Unknown runtime adapter, version, model or profile")
         }
         try workerRequire([value.runtimeBinarySHA256, value.artifactSHA256, value.configurationSHA256,

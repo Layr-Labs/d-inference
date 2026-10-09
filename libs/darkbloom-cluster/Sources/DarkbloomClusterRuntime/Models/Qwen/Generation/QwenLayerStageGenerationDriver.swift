@@ -9,13 +9,17 @@ import MLX
 /// A successful return follows both native request-state retirements. On error,
 /// this function retires local state and throws; the owner MUST cancel/fence the
 /// peer out of band before claiming lease retirement or releasing resources.
+///
+/// `producerStage` is the stage-0 model a phase-split rank 1 also holds. It is
+/// touched only after rank 0 has handed its request state over.
 func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
+    producerStage: LoadedQwenLayerStage? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, onCommittedToken: (Int) throws -> Bool,
     check: () throws -> Void
 ) throws -> QwenLayerStageGenerationResult {
-    try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
-        collective: collective, diagnostics: nil, onCommittedToken: onCommittedToken, check: check)
+    try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, plan: plan, agreement: agreement,
+        collective: collective, diagnostics: nil, onCommittedToken: onCommittedToken, check: check).result
 }
 
 /// Explicit diagnostic entry for an already owned reservation. The owner must
@@ -23,9 +27,11 @@ func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 /// build/source/arithmetic, deadline and cancellation checks. There is no default
 /// diagnostic mode or permissive resource callback. Do not time this as serving.
 func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
+    producerStage: LoadedQwenLayerStage? = nil,
     profile: QwenRegisteredDenseModelProfile,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, requestAllowance: QwenResidentRequestAllowance,
+    phaseSplitFault: QwenPhaseSplitFault? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> QwenGenerationDiagnosticEvidence {
     let resources = try MLX.withError { nativeError in
@@ -44,18 +50,42 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     let capture = QwenGenerationDiagnosticCapture(request: agreement.request,
         rank: collective.rank, resources: resources)
     defer { capture.discard() }
-    let result = try runQwenLayerStageGenerationCore(loaded: loaded, plan: plan, agreement: agreement,
-        collective: collective, diagnostics: capture, onCommittedToken: onCommittedToken, check: check)
+    let (result, handedOver) = try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage,
+        plan: plan, agreement: agreement,
+        collective: collective, diagnostics: capture, phaseSplitFault: phaseSplitFault,
+        onCommittedToken: onCommittedToken, check: check)
     // The core has validated both retirement acknowledgements and its final
     // native error check. Only CPU values are assembled outside that scope.
-    return try capture.finish(execution: result, agreement: agreement, stage: plan.stages[collective.rank])
+    guard let handedOver else {
+        return try capture.finish(execution: result, agreement: agreement, stage: plan.stages[collective.rank])
+    }
+    // After a hand-off the final state is not divided by stage: rank 1 owns
+    // every layer and records all of them, rank 0 owns and records none. The
+    // record keeps its type, so both ranks' records still join into one state.
+    let stage = plan.stages[collective.rank]
+    guard result.bothRequestStatesRetired, result.identity.stageIndex == collective.rank,
+          (handedOver.finalLogits != nil) == (collective.rank == 1),
+          result.completedFrames == handedOver.finalFrame.sequence + 1, resources.observationCount > 0 else {
+        throw ProbeError("Phase-split diagnostic publication precedes complete retirement/evidence")
+    }
+    return .init(execution: result, agreement: agreement.descriptor,
+        requestFingerprint: agreement.request.fingerprint, profileFingerprint: agreement.request.profile.fingerprint,
+        rank: collective.rank, sourceLayerStart: collective.rank == 0 ? stage.sourceRange.lowerBound : 0,
+        sourceLayerEnd: stage.sourceRange.upperBound, finalFrame: handedOver.finalFrame,
+        stateEntries: handedOver.entries, logicalStateBytes: handedOver.logicalBytes,
+        stageStateSHA256: handedOver.fingerprint, finalLogits: handedOver.finalLogits,
+        captureBudget: resources.budget, resourceObservationCount: resources.observationCount,
+        minimumObservedActualFreeBytes: resources.minimumActualFreeBytes,
+        minimumObservedAllocatorLimitBytes: resources.minimumAllocatorLimitBytes)
 }
 
 private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
+    producerStage: LoadedQwenLayerStage?,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
+    phaseSplitFault: QwenPhaseSplitFault? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
-) throws -> QwenLayerStageGenerationResult {
+) throws -> (result: QwenLayerStageGenerationResult, handedOver: QwenPhaseSplitRecordedState?) {
     try MLX.withError { nativeError in
         func checked() throws {
             try nativeError.check(); try check()
@@ -64,6 +94,19 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
         }
         do {
             try requireGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+            // A phase-split rank 1 must already hold the producer stage of this
+            // exact source; a pipeline rank must not be handed one.
+            if agreement.phaseSplit != nil, collective.rank == 1 {
+                guard let producerStage, producerStage.stageIndex == 0,
+                      producerStage.plan.fingerprint == plan.fingerprint,
+                      producerStage.receipt.stagePlanSHA256 == agreement.descriptor.stageFingerprints[0],
+                      producerStage.receipt.storageCommitmentSHA256 == agreement.descriptor.storageCommitmentSHA256,
+                      producerStage.receipt.verifiedAggregateSHA256 == agreement.descriptor.artifactAggregateSHA256 else {
+                    throw ProbeError("Phase-split rank1 does not hold the agreed producer stage")
+                }
+            } else if producerStage != nil {
+                throw ProbeError("Only a phase-split rank1 runs with a producer stage")
+            }
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                 material: { .generation(agreementFingerprint: agreement.fingerprint) },
@@ -80,10 +123,29 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 }
                 var selectedTokens = [Int]()
                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
-                while control.phase == .frame {
+                // A phase-split request leaves this loop after its first agreed
+                // token and decision; a pipeline request runs it to the end.
+                let split = agreement.phaseSplit
+                while control.phase == .frame,
+                      split.map({ control.selectedTokenCount < $0.terms.handoffSelectedTokens }) ?? true {
                     try autoreleasepool {
                         try checked()
                         let expected = try control.beginFrame()
+                        if agreement.compactDecode, expected.frame.phase == .decode {
+                            guard producer == nil || producer!.isComplete else {
+                                throw ProbeError("Generation decode precedes lookahead prompt drain")
+                            }
+                            // The same step with fewer transfers; see the transport.
+                            let step = try runCompactDecodeFrame(session: owned, control: control, transport: transport,
+                                expected: expected, onCommittedToken: onCommittedToken, check: checked)
+                            selectedTokens.append(step.selected)
+                            if control.phase == .retiring {
+                                finalDecision = step.decision
+                                try diagnostics?.captureFinalRow(step.row, frame: expected.frame,
+                                    tokenID: step.selected, check: checked)
+                            }
+                            return
+                        }
                         let packet: QwenLayerStageGenerationBoundaryPacket
                         let row: MLXArray?
                         if let producer, expected.frame.phase == .prefill {
@@ -132,6 +194,19 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                         }
                     }
                 }
+                var handedOver: QwenPhaseSplitOutcome?
+                if let split, control.phase == .frame {
+                    guard producer == nil || producer!.isComplete else {
+                        throw ProbeError("Hand-off precedes lookahead prompt drain")
+                    }
+                    // Hand-off, then rank 1 decodes alone. Both sessions' request
+                    // state is retired inside; only the retirement exchange is left.
+                    let outcome = try QwenPhaseSplitGeneration.run(producerStage: producerStage, plan: plan,
+                        split: split, control: control, transport: transport, session: owned,
+                        selectedTokens: &selectedTokens, recording: diagnostics, fault: phaseSplitFault,
+                        onCommittedToken: onCommittedToken, check: checked)
+                    finalDecision = outcome.finalDecision; handedOver = outcome
+                }
                 guard control.phase == .retiring, !control.isFailed,
                       let reason = control.finishReason, let lastToken = control.lastTokenID,
                       let finalDecision, selectedTokens.count == control.selectedTokenCount else {
@@ -141,13 +216,15 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 guard producer == nil || producer!.isComplete else {
                     throw ProbeError("Generation ended with a prepared or pending prompt boundary")
                 }
-                // Snapshot committed local state before finishGeneration retires it.
-                // No extra collective is introduced: the existing retirement ACK
-                // exchange cannot complete until both local captures have returned.
-                try diagnostics?.captureState(session: owned, stage: plan.stages[collective.rank],
-                    selectedTokenIDs: selectedTokens, completedFrames: control.completedFrames,
-                    committedTokens: control.committedTokens, reason: reason, check: checked)
-                try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
+                if handedOver == nil {
+                    // Snapshot committed local state before finishGeneration retires it.
+                    // No extra collective is introduced: the existing retirement ACK
+                    // exchange cannot complete until both local captures have returned.
+                    try diagnostics?.captureState(session: owned, stage: plan.stages[collective.rank],
+                        selectedTokenIDs: selectedTokens, completedFrames: control.completedFrames,
+                        committedTokens: control.committedTokens, reason: reason, check: checked)
+                    try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
+                }
                 guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
                 try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
                 try transport.exchangeRetirement(decision: finalDecision, check: checked)
@@ -156,14 +233,15 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                return .init(agreementFingerprint: agreement.fingerprint,
+                return (QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
                     completedFrames: control.completedFrames, committedTokens: control.committedTokens,
                     finishReason: reason, prefillSchedule: agreement.prefillPolicy == .serial ? nil
                         : .init(policy: agreement.prefillPolicy.rawValue, rank: collective.rank,
                             preparedAheadFrames: producer?.preparedAheadFrames ?? 0,
-                            maximumPreparedBoundaries: producer?.maximumPreparedBoundaries ?? 0))
+                            maximumPreparedBoundaries: producer?.maximumPreparedBoundaries ?? 0),
+                    phaseSplit: handedOver?.summary), handedOver?.recorded)
             } catch {
                 // Prefer a recorded native fault before invoking any cleanup. The
                 // normal withError epilogue is skipped when its body throws Swift.
@@ -250,6 +328,67 @@ private func runGenerationFrame(session: QwenLayerStageSession, control: QwenLay
             }
         }, check: check)
     return (packet, row)
+}
+
+/// One decode step of a declared compact-decode request: four transfers. Each
+/// control acknowledgement follows this rank's own commit or a validated
+/// message from the peer, in the order the pipeline's step establishes them.
+private func runCompactDecodeFrame(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
+    transport: QwenLayerStageGenerationTransport, expected: QwenLayerStageGenerationBoundaryExpectation,
+    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
+) throws -> (selected: Int, decision: QwenLayerStageGenerationDecisionPacket, row: MLXArray?) {
+    let frame = expected.frame, committed = frame.tokenOffset + frame.tokenCount
+    guard frame.phase == .decode, let target = control.lastTokenID else {
+        throw ProbeError("Generation decode lacks an agreed target token")
+    }
+    if transport.rank == 0 {
+        guard case .hidden(let boundary) = try session.decode(target, offset: frame.tokenOffset, check: check) else {
+            throw ProbeError("Generation producer did not return a residual")
+        }
+        let packet = try QwenLayerStageGenerationBoundaryPacket(expected: expected, payloadSHA256: boundary.payloadSHA256)
+        try control.acknowledgeFrame(rank: 0, packet: packet, nativeCommittedTokens: session.committedTokens)
+        try transport.sendCompactBoundary(boundary, packet: packet, check: check)
+        // The token binds this boundary, so its arrival is rank 1's commit of the frame.
+        let token = try transport.receiveCompactToken(boundaryFingerprint: packet.fingerprint,
+            previousChain: control.tokenChainSHA256, ordinal: control.selectedTokenCount,
+            committedTokens: committed, check: check)
+        try control.acknowledgeFrame(rank: 1, packet: packet, nativeCommittedTokens: committed)
+        try control.acknowledgeToken(rank: 1, packet: token)
+        try control.acknowledgeToken(rank: 0, packet: token)
+        let selected = try control.takeCommittedToken()
+        try check()
+        let keepGoing = try onCommittedToken(selected)
+        try check()
+        let decision = try control.decide(continueRequested: keepGoing)
+        try control.acknowledgeDecision(rank: 0, packet: decision)
+        try transport.sendCompactDecision(decision, check: check)
+        try control.acknowledgeDecision(rank: 1, packet: decision)
+        return (selected, decision, nil)
+    }
+    let (boundary, packet) = try transport.receiveCompactBoundary(expected: expected, check: check)
+    try control.acknowledgeFrame(rank: 0, packet: packet, nativeCommittedTokens: committed)
+    guard case .logits(let row) = try session.decode(target, offset: frame.tokenOffset, incoming: boundary, check: check) else {
+        throw ProbeError("Generation consumer output does not match its frame")
+    }
+    try control.acknowledgeFrame(rank: 1, packet: packet, nativeCommittedTokens: session.committedTokens)
+    let tokenID = try QwenLayerStageGenerationSelection.token(row, request: control.agreement.request, check: check)
+    let token = try QwenLayerStageGenerationTokenPacket(agreement: control.agreement, boundaryFingerprint: packet.fingerprint,
+        previousTokenChainSHA256: control.tokenChainSHA256, ordinal: control.selectedTokenCount,
+        committedTokens: control.committedTokens, tokenID: tokenID)
+    try control.acknowledgeToken(rank: 1, packet: token)
+    try transport.sendCompactToken(token, check: check)
+    // The decision binds this token, so its arrival is rank 0's acceptance of it.
+    let decision = try transport.receiveCompactDecision(token: token, check: check)
+    try control.acknowledgeToken(rank: 0, packet: token)
+    let selected = try control.takeCommittedToken()
+    let local = try control.decide(continueRequested: decision.content.decision == .proceed)
+    guard local.content == decision.content else {
+        throw ProbeError("Generation owner decision differs from local token/stop policy")
+    }
+    try control.acknowledgeDecision(rank: 0, packet: decision)
+    try control.acknowledgeDecision(rank: 1, packet: decision)
+    try transport.acknowledgeDecision(decision, check: check)
+    return (selected, decision, row)
 }
 
 private func agreeGenerationToken(row: MLXArray?, boundary: QwenLayerStageGenerationBoundaryPacket,

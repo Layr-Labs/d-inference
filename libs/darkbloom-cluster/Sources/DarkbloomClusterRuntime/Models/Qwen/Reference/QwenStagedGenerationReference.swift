@@ -70,6 +70,55 @@ public enum QwenStagedGenerationReference {
         public let sha256: String
     }
 
+    /// Moves stage 0's request state across an in-process boundary after the
+    /// last prompt frame, through the hand-off's own code: the agreed manifest,
+    /// the header and its fixed frame, the segmenting, the digest check of
+    /// every component and the adoption into a fresh stage 0 session. Only the
+    /// link is replaced: each segment's bytes are read out of the array rank 0
+    /// would send and materialized into a new allocation. A run with this
+    /// option must be `exact` against a run without it.
+    public struct Handoff: Sendable {
+        /// Small values force an attention tensor to be cut into several segments.
+        public var maximumSegmentBytes: Int
+        /// Fault injection: flip one bit of this segment while it crosses the
+        /// boundary. The run must then end in `HandoffRefusal`.
+        public var corruptSegment: Int?
+        public init(maximumSegmentBytes: Int = 16 * 1024 * 1024, corruptSegment: Int? = nil) {
+            self.maximumSegmentBytes = maximumSegmentBytes; self.corruptSegment = corruptSegment
+        }
+    }
+
+    public struct HandoffReceipt: Sendable {
+        public let entries: Int
+        public let segments: Int
+        public let logicalBytes: Int
+        public let headerBytes: Int
+        public let stateSHA256: String
+        public let nanoseconds: UInt64
+        /// The three parts of `nanoseconds`: the producer's snapshot and digests;
+        /// every segment materialized, moved and digested on arrival; the
+        /// adoption, its read-back against the sender's fingerprint and the
+        /// producer's retirement.
+        public let exportNanoseconds: UInt64
+        public let transferNanoseconds: UInt64
+        public let adoptionNanoseconds: UInt64
+        /// The original stage 0 request state was retired after the adoption.
+        public let producerStateRetired: Bool
+        public let activeBytesBefore: Int
+        public let activeBytesAfter: Int
+    }
+
+    /// The adopting side refused the state. Thrown after every request state
+    /// and both stages have been released; the fields say what was left.
+    public struct HandoffRefusal: Error, CustomStringConvertible, Sendable {
+        public let reason: String
+        public let requestStatesRetired: Bool
+        public let stageModelsReleased: [Bool]
+        public let activeBytesAfterRelease: Int
+        public let cacheBytesAfterRelease: Int
+        public var description: String { reason }
+    }
+
     public struct Result: Sendable {
         public let requestFingerprint: String
         public let profileID: String
@@ -125,6 +174,8 @@ public enum QwenStagedGenerationReference {
         public let stageModelsReleased: [Bool]
         /// What the host memory gate decided during the loads and the request.
         public let resourceAdmission: QwenDenseStageLoadAdmissionSummary
+        /// Present when the run handed stage 0's state across the in-process boundary.
+        public let handoff: HandoffReceipt?
     }
 
     private static let matrixPath = "/var/empty/darkbloom-staged-reference.matrix.json"
@@ -135,7 +186,8 @@ public enum QwenStagedGenerationReference {
     /// Everything a run produces that is not a plain value stays inside this
     /// function, so the release at the end can be checked against weak references.
     public static func run(modelDirectory: URL, stageCut: Int, request value: Request,
-                           deadlineUptimeNanoseconds: UInt64, topCount: Int = 4) throws -> Result {
+                           deadlineUptimeNanoseconds: UInt64, topCount: Int = 4,
+                           handoff: Handoff? = nil) throws -> Result {
         guard (2...16).contains(topCount) else { throw ProbeError("Reference top count must be 2...16") }
         let processEnvironment = ProcessInfo.processInfo.environment
         guard nativeNames.allSatisfy({ processEnvironment[$0] == nil }) else {
@@ -193,6 +245,7 @@ public enum QwenStagedGenerationReference {
         weak var retired0: Module?
         weak var retired1: Module?
         var sessions: [QwenLayerStageSession] = []
+        var handoffRefusal: String?
         return try MLX.withError { nativeError in
             func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
             func settle() throws {
@@ -270,6 +323,7 @@ public enum QwenStagedGenerationReference {
                 var reason: QwenLayerStageGenerationFinishReason?
                 var unownedFrames: [Int] = []
                 var firstUnowned: UnownedResidual?
+                var handoffReceipt: HandoffReceipt?
                 for sequence in 0..<request.forwardCount {
                     let frame = try request.frame(sequence: sequence)
                     try autoreleasepool {
@@ -354,6 +408,84 @@ public enum QwenStagedGenerationReference {
                         }
                     }
                     if reason != nil { break }
+                    if let handoff, frame.finalPromptChunk {
+                        // The agreed hand-off point: after the last prompt frame
+                        // and the first selected token, when the request continues.
+                        let started = DispatchTime.now().uptimeNanoseconds
+                        let activeBefore = Memory.snapshot().activeMemory
+                        let source = try QwenLayerStageWireSourceIdentity(
+                            sourceConfigurationSHA256: receipts[0].sourceConfigurationSHA256,
+                            artifactAggregateSHA256: receipts[0].verifiedAggregateSHA256,
+                            storageCommitmentSHA256: receipts[0].storageCommitmentSHA256,
+                            planFingerprint: plan.fingerprint, producerStageFingerprint: plan.stages[0].fingerprint)
+                        let agreement = try QwenLayerStageGenerationAgreement(request: request,
+                            membershipEpoch: identity.membershipEpoch, source: source,
+                            consumerStageFingerprint: plan.stages[1].fingerprint,
+                            rankBuildSHA256: identity.peers.map(\.buildSHA256),
+                            numericalPolicySHA256: admissions[0].arithmeticSHA256,
+                            phaseSplit: try QwenPhaseSplitPlan(plan: plan, geometry: stages[0].profile.geometry,
+                                request: request, maximumSegmentBytes: handoff.maximumSegmentBytes))
+                        let chain = agreement.initialTokenChainSHA256
+                        let (adopted, receipt): (QwenLayerStageSession, HandoffReceipt) = try autoreleasepool {
+                            // Rank 0's side: the committed state as bytes and digests.
+                            let sender = try QwenPhaseSplitHandoffSender(agreement: agreement, tokenChainSHA256: chain,
+                                components: try sessions[0].handoffComponents(check: live))
+                            let exported = DispatchTime.now().uptimeNanoseconds
+                            // The header crosses in the fixed frame the pair sends.
+                            let header = try QwenControlFrame.encode(try sender.header.encoded(),
+                                frameBytes: QwenPhaseSplitHandoffHeader.frameBytes)
+                            let receiver = try QwenPhaseSplitHandoffReceiver(agreement: agreement, tokenChainSHA256: chain)
+                            try receiver.acceptHeader(try QwenControlFrame.decode(header,
+                                frameBytes: QwenPhaseSplitHandoffHeader.frameBytes))
+                            let intake = QwenPhaseSplitHandoffIntake(receiver: receiver)
+                            for (index, segment) in sender.segments.enumerated() {
+                                try autoreleasepool {
+                                    // The array rank 0 would send; its bytes then arrive
+                                    // in an allocation that shares nothing with it.
+                                    let sent = try QwenPhaseSplitArrays.materialize(sender, segment: segment, check: live)
+                                    var bytes = sent.asData().data
+                                    try live()
+                                    if handoff.corruptSegment == index { bytes[bytes.startIndex] ^= 1 }
+                                    let arrived = try CollectivePointToPoint.materializeCompletedBytes(bytes,
+                                        shape: segment.shape, dtype: try QwenPhaseSplitArrays.dtype(segment.dtype),
+                                        maximumBytes: segment.byteCount, check: live)
+                                    try intake.accept(arrived, check: live)
+                                }
+                            }
+                            // Rank 1's side: every digest, then adoption, then the
+                            // adopted state read back against the sender's fingerprint.
+                            let state: QwenLayerStageAdoptedState
+                            let transferred = DispatchTime.now().uptimeNanoseconds
+                            do { state = try intake.adoptedState(check: live) }
+                            catch { handoffRefusal = "\(error)"; throw error }
+                            let value = try QwenLayerStageSession(stage: stages[0].loaded, plan: plan,
+                                generationRequest: request, adopting: state)
+                            guard try value.stateFingerprint(check: live) == sender.header.content.stateSHA256 else {
+                                throw ProbeError("Adopted state differs from the sender's state fingerprint")
+                            }
+                            // Only now does the producer give up its own copy.
+                            try sessions[0].retireAfterHandoff()
+                            let finished = DispatchTime.now().uptimeNanoseconds
+                            return (value, HandoffReceipt(entries: sender.header.content.entries.count,
+                                segments: sender.segments.count, logicalBytes: sender.logicalBytes,
+                                headerBytes: try sender.header.encoded().count,
+                                stateSHA256: sender.header.content.stateSHA256,
+                                nanoseconds: finished - started, exportNanoseconds: exported - started,
+                                transferNanoseconds: transferred - exported, adoptionNanoseconds: finished - transferred,
+                                producerStateRetired: sessions[0].isClosed && !sessions[0].isFailed,
+                                activeBytesBefore: activeBefore, activeBytesAfter: 0))
+                        }
+                        guard receipt.producerStateRetired else { throw ProbeError("Producer state survived its hand-off") }
+                        sessions[0] = adopted
+                        try settle()
+                        handoffReceipt = HandoffReceipt(entries: receipt.entries, segments: receipt.segments,
+                            logicalBytes: receipt.logicalBytes, headerBytes: receipt.headerBytes,
+                            stateSHA256: receipt.stateSHA256, nanoseconds: receipt.nanoseconds,
+                            exportNanoseconds: receipt.exportNanoseconds, transferNanoseconds: receipt.transferNanoseconds,
+                            adoptionNanoseconds: receipt.adoptionNanoseconds,
+                            producerStateRetired: true, activeBytesBefore: activeBefore,
+                            activeBytesAfter: Memory.snapshot().activeMemory)
+                    }
                 }
                 guard let reason, let last = tokens.last, let finalLogits else {
                     throw ProbeError("Staged reference ended without a selected-token completion")
@@ -431,15 +563,26 @@ public enum QwenStagedGenerationReference {
                     prefillNanoseconds: prefill, decodeNanoseconds: decode, requestWallNanoseconds: requestWall,
                     activeBytesBefore: before, activeBytesLoaded: loadedBytes, peakBytes: peak,
                     activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
-                    stageModelsReleased: [retired0 == nil, retired1 == nil], resourceAdmission: .current)
+                    stageModelsReleased: [retired0 == nil, retired1 == nil], resourceAdmission: .current,
+                    handoff: handoffReceipt)
             } catch {
                 var primary: Error = error
                 // Prefer a recorded native fault over a secondary Swift error.
                 do { try nativeError.check() } catch { primary = error }
                 for session in sessions { try? session.cancel() }
+                let retired = sessions.allSatisfy(\.isClosed)
                 sessions.removeAll(); stages.removeAll()
                 Stream.gpu.synchronize(); Stream.cpu.synchronize()
                 Memory.clearCache()
+                if let handoffRefusal {
+                    // A refused hand-off is an expected outcome of a fault run:
+                    // report what the release left, as a pair's ranks must leave it.
+                    Stream.gpu.synchronize(); Stream.cpu.synchronize()
+                    let after = Memory.snapshot()
+                    throw HandoffRefusal(reason: handoffRefusal, requestStatesRetired: retired,
+                        stageModelsReleased: [retired0 == nil, retired1 == nil],
+                        activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory)
+                }
                 throw primary
             }
         }

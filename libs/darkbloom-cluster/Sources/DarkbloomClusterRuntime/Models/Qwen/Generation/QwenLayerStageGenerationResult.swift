@@ -20,4 +20,6 @@ struct QwenLayerStageGenerationResult: Encodable {
     let externalTTFTMeasured = false
     // Nil is omitted, preserving the serial result's existing encoded shape.
     var prefillSchedule: QwenGenerationPrefillSummary? = nil
+    /// Present only when a declared phase-split request performed its hand-off.
+    var phaseSplit: QwenPhaseSplitSummary? = nil
 }

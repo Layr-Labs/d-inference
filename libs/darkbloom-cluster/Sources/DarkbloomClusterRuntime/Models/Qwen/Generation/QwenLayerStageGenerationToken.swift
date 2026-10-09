@@ -88,7 +88,11 @@ struct QwenLayerStageGenerationDecisionPacket {
 }
 
 enum QwenLayerStageGenerationAcknowledgement {
-    enum Phase: String { case boundaryReady, boundaryConsumed, tokenAccepted, decisionAccepted, requestRetired }
+    enum Phase: String {
+        case boundaryReady, boundaryConsumed, tokenAccepted, decisionAccepted, requestRetired
+        /// Phase split: the adopting rank's answers to the hand-off header and to its payload.
+        case handoffReady, handoffAccepted, handoffRefused
+    }
     static func values(agreement: QwenLayerStageGenerationAgreement, phase: Phase,
                        packetFingerprint: String, rank: Int) throws -> [Int32] {
         guard (0...1).contains(rank), qwenStageWireIsSHA256(packetFingerprint) else { throw ProbeError("Generation acknowledgement identity malformed") }

@@ -17,17 +17,27 @@ public final class QwenResidentRuntime {
     let control: QwenResidentControl
     let collective: Collective
     let baseReady: ClusterWorkerReady
+    /// Declared at load and bound into the load agreement with the peer.
+    public let generationMode: QwenResidentGenerationMode
     private let operation = NSLock()
     private let lifecycle: QwenLayerStageResidentLifecycle
     private var stage: QwenResidentLoadedStage?
     private weak var model: Module?
+    /// Phase split, rank 1 only: the producer stage this rank also holds, so
+    /// that it owns every layer once rank 0 has handed its request state over.
+    private var producerStage: QwenResidentLoadedStage?
+    private weak var producerModel: Module?
     private var reservation: QwenResidentReservation?
+    private var phaseSplitAllowance: QwenPhaseSplitAllowance?
     private var processLeaseOwned = true
 
     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
-         stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle) {
+         stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
+         generationMode: QwenResidentGenerationMode = .pipeline, producerStage: QwenResidentLoadedStage? = nil) {
         self.admission = admission; self.control = control; self.collective = collective
         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
+        self.generationMode = generationMode
+        self.producerStage = producerStage; producerModel = producerStage?.loaded.model
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity)
@@ -63,7 +73,30 @@ public final class QwenResidentRuntime {
         let base = try maximumRecordingCharge().reservedBytes
         let extra = try prefillAllowance(policy, promptCount: admission.profile.maximumPromptTokens,
             chunkSize: admission.profile.maximumChunkTokens)
-        return try QwenLongPrefillCheckedBytes.sum([base, extra?.reservedBytes ?? 0])
+        let split = try Self.phaseSplitAllowance(generationMode, admission: admission, profile: stage?.profile,
+            rank: collective.rank, promptCount: admission.profile.maximumPromptTokens)
+        return try QwenLongPrefillCheckedBytes.sum([base, extra?.reservedBytes ?? 0, split?.reservedBytes ?? 0])
+    }
+
+    /// The hand-off's own named storage for a prompt of `promptCount` tokens;
+    /// nil for the pipeline. Shared by load, readiness, reserve and start.
+    static func phaseSplitAllowance(_ mode: QwenResidentGenerationMode, admission: QwenResidentAdmission,
+                                    profile: QwenRegisteredDenseModelProfile?, rank: Int,
+                                    promptCount: Int) throws -> QwenPhaseSplitAllowance? {
+        guard mode == .phaseSplit else { return nil }
+        guard let profile else { throw ProbeError("Resident model already released") }
+        let shapes = try QwenPhaseSplitPlan.expectedShapes(stage: admission.plan.stages[0], geometry: profile.geometry,
+            committedTokens: promptCount, activationDType: admission.profile.activationDType)
+        // The adopting rank also runs the producer stage, with that stage's fusion.
+        var producerFusion = 0
+        if rank == 1 {
+            producerFusion = try QwenResidentRequestAllowance.derive(profile: profile, plan: admission.plan,
+                rank: 0, maximumTokens: admission.profile.maximumContextTokens,
+                chunkSize: admission.profile.maximumChunkTokens,
+                bound: QwenResidentResourceEnvironment.allocationBound).fusionBytes
+        }
+        return try .derive(rank: rank, shapes: shapes, producerFusionBytes: producerFusion,
+            bound: QwenResidentResourceEnvironment.allocationBound)
     }
 
     private func maximumRecordingCharge() throws -> QwenResidentRecordingCharge {
@@ -105,6 +138,8 @@ public final class QwenResidentRuntime {
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
                 chunkSize: min(request.chunkSize, request.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
             let prefill = try prefillAllowance(prefillPolicy, promptCount: request.promptCount, chunkSize: request.chunkSize)
+            let split = try Self.phaseSplitAllowance(generationMode, admission: admission, profile: stage.profile,
+                rank: collective.rank, promptCount: request.promptCount)
             let charge: QwenResidentRecordingCharge?
             if mode == .recording {
                 let recording = try QwenResidentRecordingCharge.derive(base: allowance, rank: collective.rank,
@@ -138,11 +173,21 @@ public final class QwenResidentRuntime {
             let reserved = QwenResidentReservation(request: request, allowance: allowance,
                 deadline: value.deadlineUptimeNanoseconds, mode: mode, recordingCharge: charge,
                 prefillPolicy: prefillPolicy, prefillAllowance: prefill)
-            try reserved.requireLive()
+            let total = try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
+                prefill?.reservedBytes ?? 0, split?.reservedBytes ?? 0])
+            if split != nil {
+                // The hand-off allowance is charged on top of everything above
+                // and must fit the same owner and readiness ceilings.
+                var readiness = baseReady.requestCapacityBytes
+                if mode == .recording { readiness = try recordingCapacity(prefillPolicy) }
+                guard total <= value.capacityLimitBytes, total <= readiness else {
+                    throw ProbeError("Phase-split reservation exceeds its owner or readiness capacity ceiling")
+                }
+            }
+            try QwenResidentRequestExecution.requireLive(reserved, phaseSplit: split)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            reservation = reserved
-            return try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
-                prefill?.reservedBytes ?? 0])
+            reservation = reserved; phaseSplitAllowance = split
+            return total
         } catch { control.fail(); throw error }
     }
 
@@ -179,19 +224,25 @@ public final class QwenResidentRuntime {
                 promptCount: reserved.request.promptCount, chunkSize: reserved.request.chunkSize)) else {
                 throw ProbeError("Lookahead allowance changed since reservation")
             }
+            let split = phaseSplitAllowance
+            guard split == (try Self.phaseSplitAllowance(generationMode, admission: admission, profile: stage?.profile,
+                rank: collective.rank, promptCount: reserved.request.promptCount)) else {
+                throw ProbeError("Phase-split allowance changed since reservation")
+            }
             let value = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
                 identity: .init(requestID: requestID, epoch: requestID,
                     recordedRequestFingerprint: reserved.request.fingerprint), deadline: reserved.deadline, body: {
                 try autoreleasepool {
                     guard let stage else { throw ProbeError("Resident model already released") }
-                    return try QwenResidentRequestExecution.run(stage: stage, admission: admission,
+                    return try QwenResidentRequestExecution.run(stage: stage, producerStage: producerStage,
+                        generationMode: generationMode, phaseSplitAllowance: split, admission: admission,
                         collective: collective, control: control, reserved: reserved,
                         onCommittedToken: onCommittedToken)
                 }
             }, prepare: { try prepare($0.0, $0.1) })
             // Output is fully prepared and control completed before this slot
             // is cleared. A thrown encode keeps the failed owner unavailable.
-            reservation = nil
+            reservation = nil; phaseSplitAllowance = nil
             return value
         } catch { control.fail(); throw error }
     }
@@ -208,9 +259,15 @@ public final class QwenResidentRuntime {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
-                    reservation = nil; stage = nil
-                    guard model == nil else { throw ProbeError("Resident model remains retained") }
+                    reservation = nil; phaseSplitAllowance = nil; stage = nil; producerStage = nil
+                    guard model == nil, producerModel == nil else { throw ProbeError("Resident model remains retained") }
                     Memory.clearCache(); try error.check()
+                    if generationMode == .phaseSplit {
+                        // Sizes only: what this process still holds after release.
+                        Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
+                        let after = Memory.snapshot()
+                        log("darkbloom-resident-release-v1 rank=\(collective.rank) active=\(after.activeMemory) cache=\(after.cacheMemory)")
+                    }
                 }
             }
             control.closed()

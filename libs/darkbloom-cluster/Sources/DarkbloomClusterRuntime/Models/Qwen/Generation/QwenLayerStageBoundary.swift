@@ -40,6 +40,17 @@ struct QwenLayerStageBoundary {
         }
     }
 
+    /// The storage half of `validateOwnedArray`, without rereading the bytes:
+    /// whether the consumer stage can take this residual as it is. A residual
+    /// that fails this is copied first; either way the consumer verifies it.
+    var hasOwnedCompactStorage: Bool {
+        guard let bound = try? Memory.allocationFootprintUpperBound(byteCount: array.nbytes),
+              let storage = try? array.evaluatedBufferInfo() else { return false }
+        return storage.isUnique && storage.isRowContiguous && storage.dataOffset == 0
+            && storage.dataElements == array.size && storage.allocatedBytes >= array.nbytes
+            && storage.allocatedBytes <= bound
+    }
+
     func validateOwnedArray(tokens: Int, hidden: Int, dtype: DType) throws {
         let bound = try Memory.allocationFootprintUpperBound(byteCount: array.nbytes)
         guard array.shape == [1, tokens, hidden], array.dtype == dtype,

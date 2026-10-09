@@ -17,6 +17,14 @@ struct QwenLayerStageSessionIdentity: Codable, Equatable {
     let activationDType: String
 }
 
+/// One stage's complete committed request state as authenticated arrays, keyed
+/// by the model's global layer index. Produced by a hand-off; nothing else.
+struct QwenLayerStageAdoptedState {
+    let committedTokens: Int
+    let attention: [Int: (keys: MLXArray, values: MLXArray)]
+    let recurrent: [Int: (conv: MLXArray, ssm: MLXArray)]
+}
+
 /// One serialized stage; no overlap, network, sampling or hidden token-history
 /// changes. Native methods install an error handler and retire on every error.
 final class QwenLayerStageSession {
@@ -29,13 +37,18 @@ final class QwenLayerStageSession {
     private let hiddenSize: Int
     private let producerStageFingerprint: String
     private var schedule: QwenLayerStageGenerationSchedule
+    private var handedOff = false
 
     var committedTokens: Int { schedule.committedTokens }
     var isClosed: Bool { state.isClosed }
     var isFailed: Bool { state.isFailed }
 
+    /// `adopting` starts the stage from another owner's committed prompt state
+    /// instead of empty state. Only the producer stage can be adopted, and only
+    /// at the frontier after its last prompt frame.
     init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
-         generationRequest request: QwenLayerStageGenerationRequest) throws {
+         generationRequest request: QwenLayerStageGenerationRequest,
+         adopting: QwenLayerStageAdoptedState? = nil) throws {
         guard plan.stages.indices.contains(stage.stageIndex), plan.stages.count == 2,
             stage.plan.fingerprint == plan.fingerprint else { throw ProbeError("Stage session received a different source plan") }
         let descriptor = plan.stages[stage.stageIndex], receipt = stage.receipt
@@ -74,12 +87,36 @@ final class QwenLayerStageSession {
         let geometry = try CBv2RequestGeometry(model: stage.model, family: .qwen35, feedForwardKind: "dense",
             layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
             configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
-        self.state = try CBv2OwnedRequestState(geometry: geometry,
-            promptCount: request.promptCount, outputCount: request.outputCount)
+        if let adopting {
+            guard stage.stageIndex == 0 else { throw ProbeError("Only the producer stage's state can be adopted") }
+            // Global to the compact stage's own indices, through its layer map.
+            let local = Dictionary(uniqueKeysWithValues: descriptor.layers.map { ($0.globalIndex, $0.localIndex) })
+            func localized<Value>(_ values: [Int: Value]) throws -> [Int: Value] {
+                var result: [Int: Value] = [:]
+                for (global, value) in values {
+                    guard let index = local[global], result.updateValue(value, forKey: index) == nil else {
+                        throw ProbeError("Adopted state names a layer outside this stage")
+                    }
+                }
+                return result
+            }
+            self.schedule = try QwenLayerStageGenerationSchedule(request: request,
+                adoptedCommittedTokens: adopting.committedTokens)
+            self.state = try MLX.withError { error in
+                let value = try CBv2OwnedRequestState(geometry: geometry, promptCount: request.promptCount,
+                    outputCount: request.outputCount, adoptingCommittedTokens: adopting.committedTokens,
+                    attention: try localized(adopting.attention), recurrent: try localized(adopting.recurrent))
+                try error.check()
+                return value
+            }
+        } else {
+            self.state = try CBv2OwnedRequestState(geometry: geometry,
+                promptCount: request.promptCount, outputCount: request.outputCount)
+            self.schedule = QwenLayerStageGenerationSchedule(request: request)
+        }
         self.stage = stage; self.descriptor = descriptor; self.request = request
         self.adapter = CBv2SteppableLanguageModelAdapter(stage.model)
         self.hiddenSize = hidden; self.producerStageFingerprint = plan.stages[0].fingerprint
-        self.schedule = QwenLayerStageGenerationSchedule(request: request)
         self.identity = .init(stageIndex: stage.stageIndex, requestFingerprint: request.fingerprint,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
             storageCommitmentSHA256: receipt.storageCommitmentSHA256,
@@ -200,13 +237,57 @@ final class QwenLayerStageSession {
 
     /// Called only after both ranks agree to EOS/length/client stop. This closes
     /// native request state without treating an ordinary early stop as failure.
+    /// `discardedDecodeForwards` is nonzero only for a stage that decoded alone
+    /// past a client stop it had not yet been told about.
     func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason,
-                          selectedTokenCount: Int, lastTokenID: Int) throws {
+                          selectedTokenCount: Int, lastTokenID: Int,
+                          discardedDecodeForwards: Int = 0) throws {
         do {
             try state.requireOpen()
-            try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
+            try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID,
+                discardedDecodeForwards: discardedDecodeForwards)
             try retire(failed: false)
         } catch { try fail(error) }
+    }
+
+    /// The producer stage's committed prompt state as hand-off components, in
+    /// snapshot order with logical bytes and digests. It reads state; the
+    /// session stays open until `retireAfterHandoff`.
+    func handoffComponents(check: () throws -> Void) throws -> [QwenPhaseSplitHandoffSender.Component] {
+        do {
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+                  schedule.decodeForwardCount == 0, !handedOff else {
+                throw ProbeError("Only the producer stage hands over, once, after its last prompt frame")
+            }
+            let snapshot = try self.snapshot(includeBytes: true, check: check)
+            guard snapshot.committedTokens == request.promptCount else { throw ProbeError("Hand-off snapshot frontier differs") }
+            return snapshot.entries.map { entry in
+                let shape = QwenPhaseSplitStateShape(globalLayerIndex: entry.globalLayerIndex, component: entry.component,
+                    shape: entry.shape, dtype: entry.dtype, byteCount: entry.byteCount)
+                // Position offsets follow from the frontier; an empty component has nothing to send.
+                let sent = entry.component != QwenPhaseSplitStateShape.positionOffsets && entry.byteCount > 0
+                return .init(shape: shape, sha256: entry.sha256, bytes: sent ? entry.bytes : nil)
+            }
+        } catch { try fail(error) }
+    }
+
+    /// After the adopting rank accepted the complete state. Retires this
+    /// stage's native request state; no further frame can run here.
+    func retireAfterHandoff() throws {
+        do {
+            try state.requireOpen()
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+                  schedule.decodeForwardCount == 0, !handedOff else {
+                throw ProbeError("Hand-off retirement differs from the producer's committed prompt frontier")
+            }
+            handedOff = true
+            try retire(failed: false)
+        } catch { try fail(error) }
+    }
+
+    /// The state-snapshot fingerprint of the current committed state.
+    func stateFingerprint(check: () throws -> Void) throws -> String {
+        try snapshot(includeBytes: false, check: check).fingerprint
     }
 
     func cancel() throws { try retire(failed: true) }
@@ -229,5 +310,5 @@ final class QwenLayerStageSession {
         throw primary
     }
 
-    deinit { try? retire(failed: !schedule.complete) }
+    deinit { try? retire(failed: !(schedule.complete || handedOff)) }
 }

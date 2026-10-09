@@ -4,28 +4,54 @@ import Foundation
 /// Executes one already-reserved request inside the runtime's autorelease and
 /// publication scopes. Returns CPU values; the runtime retains model ownership.
 enum QwenResidentRequestExecution {
-    static func run(stage: QwenResidentLoadedStage, admission: QwenResidentAdmission,
+    /// The reservation's own live check plus the hand-off's named storage.
+    static func requireLive(_ reserved: QwenResidentReservation, phaseSplit: QwenPhaseSplitAllowance?) throws {
+        guard let phaseSplit else { try reserved.requireLive(); return }
+        try reserved.allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
+            reserved.prefillAllowance?.extraNativeBytes ?? 0, reserved.recordingCharge?.capture.extraNativeBytes ?? 0,
+            phaseSplit.extraNativeBytes,
+        ]), additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
+            reserved.prefillAllowance?.extraHostBytes ?? 0, reserved.recordingCharge?.capture.extraHostBytes ?? 0,
+            phaseSplit.extraHostBytes,
+        ]))
+    }
+
+    static func run(stage: QwenResidentLoadedStage, producerStage: QwenResidentLoadedStage? = nil,
+                    generationMode: QwenResidentGenerationMode = .pipeline,
+                    phaseSplitAllowance: QwenPhaseSplitAllowance? = nil,
+                    admission: QwenResidentAdmission,
                     collective: Collective, control: QwenResidentControl,
                     reserved: QwenResidentReservation,
                     onCommittedToken: (Int, Int, Int) throws -> Bool
     ) throws -> (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) {
+        guard (generationMode == .phaseSplit) == (phaseSplitAllowance != nil),
+              (generationMode == .phaseSplit && collective.rank == 1) == (producerStage != nil) else {
+            throw ProbeError("Resident generation mode differs from its loaded stages or reservation")
+        }
         let receipt = stage.loaded.receipt
         let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
             storageCommitmentSHA256: receipt.storageCommitmentSHA256,
             planFingerprint: admission.plan.fingerprint,
             producerStageFingerprint: admission.plan.stages[0].fingerprint)
+        // Both ranks derive the hand-off terms from their own Plan, registered
+        // geometry and this request; the agreement fingerprint carries them.
+        var split: QwenPhaseSplitPlan?
+        if generationMode == .phaseSplit {
+            split = try QwenPhaseSplitPlan(plan: admission.plan, geometry: stage.profile.geometry, request: reserved.request)
+        }
         let agreement = try QwenLayerStageGenerationAgreement(request: reserved.request,
             membershipEpoch: admission.configuration.identity.membershipEpoch,
             source: source, consumerStageFingerprint: admission.plan.stages[1].fingerprint,
             rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
-            numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy)
+            numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy,
+            phaseSplit: split, compactDecode: generationMode == .pipelineCompactDecode)
         var lastResourceCheck: UInt64 = 0, ordinal = 0
         func check() throws {
             try control.check(deadline: reserved.deadline)
             let now = DispatchTime.now().uptimeNanoseconds
             if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                try reserved.requireLive()
+                try requireLive(reserved, phaseSplit: phaseSplitAllowance)
                 lastResourceCheck = DispatchTime.now().uptimeNanoseconds
             }
             try control.check(deadline: reserved.deadline)
@@ -44,13 +70,19 @@ enum QwenResidentRequestExecution {
                 activationDType: reserved.request.profile.activationDType,
                 bound: QwenResidentResourceEnvironment.allocationBound)
             try charge.requireCapture(actual.capture)
+            // A fault is a qualification input: only a recording request, which
+            // the installed owner never makes, can be asked to commit one.
+            let fault = split == nil ? nil : try QwenPhaseSplitFault.admit(environment: ProcessInfo.processInfo.environment)
             let recorded = try recordQwenLayerStageGenerationRequest(loaded: stage.loaded,
+                producerStage: producerStage?.loaded,
                 profile: stage.profile, plan: admission.plan, agreement: agreement, collective: collective,
-                requestAllowance: reserved.allowance, onCommittedToken: committedToken, check: check)
+                requestAllowance: reserved.allowance, phaseSplitFault: fault,
+                onCommittedToken: committedToken, check: check)
             try charge.requireCapture(recorded.captureBudget)
             evidence = recorded; result = recorded.execution
         } else {
             result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
+                producerStage: producerStage?.loaded,
                 plan: admission.plan, agreement: agreement, collective: collective,
                 onCommittedToken: committedToken, check: check)
             evidence = nil
@@ -59,6 +91,8 @@ enum QwenResidentRequestExecution {
               let reason = ClusterWorkerFinishReason(rawValue: result.finishReason.rawValue) else {
             throw ProbeError("Resident generation returned without clean bilateral retirement")
         }
+        // Sizes and durations of the hand-off, for whoever launched this worker.
+        if let summary = result.phaseSplit { log(summary.diagnosticLine(requestID: reserved.request.requestID)) }
         let completion = QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
             selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
             committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,

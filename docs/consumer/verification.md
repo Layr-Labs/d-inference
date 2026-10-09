@@ -249,3 +249,7 @@ and the [design record](../design/apns-code-attestation.md).
 - [`privacy-expectations.md`](./privacy-expectations.md) — what each party can see.
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — sealing your request and reading a sealed response.
 - [`../provider/attestation.md`](../provider/attestation.md) — the same verdicts from the operator's side.
+
+Local [cache-volume checks](../architecture/security/encryption.md#provider-cache-storage)
+are storage suitability checks, not evidence of peripheral firmware authenticity
+and not part of the coordinator's provider attestation verdict.

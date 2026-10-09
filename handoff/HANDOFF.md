@@ -56,12 +56,15 @@ or a cable replug; running `darkbloom cluster` again on that Mac reapplies it.
 
 ## Dependencies outside this repository
 
-The pinned forks need three small changes for a supported result. Each one
-changes provider bytes, so each is a pin decision (D2 in the gap map).
+The pinned forks need small changes for a supported result. Each one changes
+provider bytes, so each is a pin decision (D2 in the gap map). Draft pull
+requests for the research halves already exist on the forks (opened by Gaj
+on 2026-09-28):
 
 | Fork | Change | State |
 |---|---|---|
-| mlx | Clear the tail of partially filled JACCL send frames | Research commit `4e89c2e3` (+71/−58), one commit off the research pin; being carried onto the current pin |
-| mlx | Bound every JACCL polling loop, check completion status, release and report on timeout | New, modelled on the ThunderMLX progress-timeout patch |
-| mlx-c | JACCL bootstrap callback bridge | Research commit `489e965` (+192), directly on the pinned `02cf6f4` |
-| mlx-swift | Point at the above and export the bridge | After the decisions above |
+| mlx | Clear the tail of partially filled JACCL send frames | Draft [Layr-Labs/mlx#26](https://github.com/Layr-Labs/mlx/pull/26). The same commit is carried onto the current pin on the local branch `darkbloom/jaccl-send-frame-progress-guard` (`97fbd680`) |
+| mlx | Bound every JACCL polling loop, check completion status, release and report on timeout | **Local only** (`aec94c2b`). Shown on the real link; required for any serving. Not pushed: the fork carries upstream's rule against agent commits and pushes, so it waits for the owner |
+| mlx | Send from the advertised GID's index | Local only (`83291eb6`); not needed on this pair |
+| mlx-c | JACCL bootstrap callback bridge | Draft [Layr-Labs/mlx-c#14](https://github.com/Layr-Labs/mlx-c/pull/14) (`489e965`, one commit on the pinned `02cf6f4`) |
+| mlx-swift | Export the bridge and point at the above | Draft [Layr-Labs/mlx-swift#33](https://github.com/Layr-Labs/mlx-swift/pull/33), on an older base; needs redoing on the current pin once the mlx and mlx-c changes are settled |

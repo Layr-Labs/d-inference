@@ -121,6 +121,8 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .vlmExtractionFailed
         case EngineV2ProductionError.pagedUnavailable:
             return .pagedBackendUnavailable
+        case EngineV2KVQuantizationPolicy.Failure.requiresPagedBackend:
+            return .pagedBackendUnavailable
         case EngineV2ProductionError.invalidPagedPoolDType:
             return .pagedKVDTypeInvalid
         default:
@@ -191,6 +193,7 @@ public enum EngineV2Factory {
                 modelId: modelId,
                 kind: build.kvBackendKind,
                 fallbackReason: build.kvBackendFallbackReason,
+                kvQuantization: build.kvQuantization,
                 emitTelemetry: emitTelemetry)
             return EngineV2Bridge(
                 engine: build.engine,
@@ -231,6 +234,7 @@ public enum EngineV2Factory {
                 residentPrefixCacheEvidence: residentPrefixCacheEvidence,
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: build.kvBackendKind,
+                kvQuantization: build.kvQuantization,
                 pagedPageSize: pagedPageSize,
                 // Same value the INFO event below reports, but on a channel
                 // that cannot be dropped: the bridge republishes it on every
@@ -299,6 +303,7 @@ public enum EngineV2Factory {
         modelId: String,
         kind: EngineV2KVBackendKind,
         fallbackReason: String?,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) {
         let reason =
@@ -315,7 +320,7 @@ public enum EngineV2Factory {
                 operation: "engine_v2_kv_backend",
                 model: modelId,
                 kvBackend: kind.rawValue,
-                extra: ["reason": .string(reason)]),
+                extra: ["reason": .string(reason), "kv_quantization": .string(kvQuantization.rawValue)]),
             sink: emitTelemetry)
     }
 }

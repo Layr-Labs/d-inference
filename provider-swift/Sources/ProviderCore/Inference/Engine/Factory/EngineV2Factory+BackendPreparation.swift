@@ -28,6 +28,7 @@ extension EngineV2Factory {
         /// enables the scheduler even when the SSD snapshot L2 is absent.
         let residentPrefixCacheEnabled: Bool
         let hybridPrefixCache: CBv2HybridPrefixCacheConfig?
+        let kvQuantization: EngineV2KVQuantizationSelection
 
         private let lock = NSLock()
         private let modelIdentity: ObjectIdentifier
@@ -48,12 +49,14 @@ extension EngineV2Factory {
             schedulerConfig: CBv2SchedulerConfig,
             performanceProfile: ServingPerformanceProfile? = nil,
             pagedPoolDType: String?,
+            kvQuantization: EngineV2KVQuantizationSelection = .native,
             residentPrefixCacheEnabled: Bool = false,
             hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil
         ) {
             self.modelIdentity = ObjectIdentifier(model)
             self.requestedMaxConcurrentRequests = max(1, maxConcurrentRequests)
-            self.installedQwen4Batching = (model as? any CBv2Qwen4BatchCapabilityConfiguring)?
+            self.installedQwen4Batching =
+                (model as? any CBv2Qwen4BatchCapabilityConfiguring)?
                 .cbv2Qwen4BatchedAttentionEnabled
             self.layerKinds = layerKinds
             self.modelCapabilities = modelCapabilities
@@ -68,6 +71,7 @@ extension EngineV2Factory {
             self.pagedPoolConfig = (backend as? PagedKVBackend)?.pool.config
             self.residentPrefixCacheEnabled = residentPrefixCacheEnabled
             self.hybridPrefixCache = hybridPrefixCache
+            self.kvQuantization = kvQuantization
         }
 
         func consume(
@@ -83,10 +87,14 @@ extension EngineV2Factory {
                     throw CBv2KVError.backendIneligible(
                         reason: "prepared backend concurrency changed before assembly")
                 }
-                guard installedQwen4Batching == (model as? any CBv2Qwen4BatchCapabilityConfiguring)?
-                    .cbv2Qwen4BatchedAttentionEnabled else {
+                guard
+                    installedQwen4Batching
+                        == (model as? any CBv2Qwen4BatchCapabilityConfiguring)?
+                        .cbv2Qwen4BatchedAttentionEnabled
+                else {
                     throw CBv2KVError.backendIneligible(
-                        reason: "prepared backend Qwen4 batching capability changed before assembly")
+                        reason: "prepared backend Qwen4 batching capability changed before assembly"
+                    )
                 }
                 guard let backend, let caches else {
                     throw CBv2KVError.backendIneligible(
@@ -116,6 +124,7 @@ extension EngineV2Factory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil,
+        nativeKVLayerIndices: Set<Int> = [],
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
@@ -130,8 +139,12 @@ extension EngineV2Factory {
         }
         let layerKinds = adapter.layerKinds
         let modelCapabilities = adapter.modelCapabilities
-        var resolvedKind = EngineV2KVBackendPolicy.preferredBackend(
-            selection: kvBackend, modelID: modelID)
+        let precision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: nil, modelID: modelID ?? "", environment: environment)
+        var resolvedKind =
+            precision != .native && kvBackend == .auto
+            ? .paged
+            : EngineV2KVBackendPolicy.preferredBackend(selection: kvBackend, modelID: modelID)
         var fallbackReason: String?
         // Preserve precedence: model capability, operator kill switch, then
         // the version-scoped automatic crash guard. The first veto owns the reason.
@@ -172,6 +185,9 @@ extension EngineV2Factory {
 
         // Unlike policy overrides, paged failures must reject explicit requests.
         func degradeOrRefuse(_ reason: String) throws -> String {
+            if precision != .native {
+                throw EngineV2KVQuantizationPolicy.Failure.requiresPagedBackend(reason)
+            }
             guard EngineV2KVBackendPolicy.degradesPagedFailure(selection: kvBackend)
             else {
                 throw EngineV2ProductionError.pagedUnavailable(reason)
@@ -181,17 +197,23 @@ extension EngineV2Factory {
 
         // Resolve after each backend decision: an automatic paged fallback
         // cannot retain the paged profile's width or mixed-step geometry.
-        func servingPolicy(for kind: EngineV2KVBackendKind) -> (CBv2SchedulerConfig, ServingPerformanceProfile?) {
+        func servingPolicy(for kind: EngineV2KVBackendKind) -> (
+            CBv2SchedulerConfig, ServingPerformanceProfile?
+        ) {
             productionServingPolicy(
                 model: model, modelID: modelID, modelArtifactSHA256: modelArtifactSHA256,
                 constructionPurpose: constructionPurpose,
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
-                performanceQualificationAllowed: performanceQualificationAllowed, backend: kind,
+                performanceQualificationAllowed: performanceQualificationAllowed
+                    && precision == .native,
+                backend: kind,
                 maxContextLength: maxContextLength, maxConcurrentRequests: maxConcurrentRequests,
                 environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
         }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
+            try EngineV2KVQuantizationPolicy.requireResolvedBackend(
+                .contiguous, selection: precision, reason: fallbackReason)
             let (schedulerConfig, performanceProfile) = servingPolicy(for: .contiguous)
             var contiguousCapacity = cappedCapacity
             let configuredHybridCache: CBv2HybridPrefixCacheConfig?
@@ -234,7 +256,9 @@ extension EngineV2Factory {
                 if let pagedPreflightOverride {
                     try pagedPreflightOverride(layerKinds)
                 } else {
-                    try PagedKernelPreflight.run(layerKinds: layerKinds)
+                    try PagedKernelPreflight.run(
+                        layerKinds: layerKinds, precision: precision,
+                        nativeLayerIndices: nativeKVLayerIndices)
                 }
             } catch {
                 resolvedKind = .contiguous
@@ -247,9 +271,11 @@ extension EngineV2Factory {
                 let observed = try probeNativeKVTypes(model: model, adapter: adapter)
                 if let override = environment[Self.pagedPoolDTypeEnvKey],
                     !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    !observed.layerDTypes.allSatisfy({ $0 == pagedDType }) {
+                    !observed.layerDTypes.allSatisfy({ $0 == pagedDType })
+                {
                     throw CBv2KVError.backendIneligible(
-                        reason: "paged dtype override differs from the loaded model's native KV types")
+                        reason:
+                            "paged dtype override differs from the loaded model's native KV types")
                 }
                 nativeKVTypes = observed
                 pagedDType = observed.layerDTypes.first ?? pagedDType
@@ -261,6 +287,11 @@ extension EngineV2Factory {
 
         if resolvedKind == .paged, let nativeKVTypes {
             let (schedulerConfig, performanceProfile) = servingPolicy(for: .paged)
+            // Quantized reuse requires the typed complete packed checkpoint.
+            // Legacy resident blocks have no native-tail/format identity.
+            let resolvedResidentPrefix =
+                precision == .native && modelCapabilities.supportsPrefixReuse
+                ? residentPrefixCache : nil
             do {
                 let paged = try makeSegmentedPagedBackend(
                     admittedGrantBytes: cappedCapacity,
@@ -269,8 +300,9 @@ extension EngineV2Factory {
                     schedulerConfig: schedulerConfig,
                     maxContextLength: maxContextLength,
                     maxBufferLength: MLX.GPU.deviceInfo().maxBufferSize,
-                    residentPrefixCache: modelCapabilities.supportsPrefixReuse
-                        ? residentPrefixCache : nil)
+                    quantization: precision.configuration,
+                    nativeLayerIndices: nativeKVLayerIndices,
+                    residentPrefixCache: resolvedResidentPrefix)
                 let pagedCaches = paged.makeLayerCaches()
                 // Hybrid models number caches by model layer, while paged storage
                 // is dense over attending layers. Convert before indexing the pool.
@@ -301,9 +333,8 @@ extension EngineV2Factory {
                     performanceProfile: performanceProfile,
                     pagedPoolDType: Set(nativeKVTypes.layerDTypes).count == 1
                         ? Self.pagedPoolDTypeName(paged.pool.config.dtype) : "mixed",
-                    residentPrefixCacheEnabled:
-                        modelCapabilities.supportsPrefixReuse
-                            && residentPrefixCache != nil)
+                    kvQuantization: precision,
+                    residentPrefixCacheEnabled: resolvedResidentPrefix != nil)
             } catch let error as CBv2KVError {
                 switch error {
                 case .backendIneligible(let reason):

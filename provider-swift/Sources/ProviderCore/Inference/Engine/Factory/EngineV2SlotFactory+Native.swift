@@ -137,6 +137,8 @@ extension EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         activationReserveBytes: UInt64? = nil, kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        kvQuantizationConfig: String = "balanced",
+        kvQuantizationConfigByModel: [String: String] = [:],
         mtpAcceptanceConfig: String? = nil, mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         modelArtifactSHA256: String? = nil,
@@ -190,6 +192,8 @@ extension EngineV2SlotFactory {
                 constructionPurpose: constructionPurpose, kvBudget: kvBudget,
                 activationReserveBytes: activationReserveBytes, kvBackendConfig: kvBackendConfig,
                 kvBackendConfigByModel: kvBackendConfigByModel,
+                kvQuantizationConfig: kvQuantizationConfig,
+                kvQuantizationConfigByModel: kvQuantizationConfigByModel,
                 mtpAcceptanceConfig: mtpAcceptanceConfig,
                 mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
                 prefillDeadlineMode: prefillDeadlineMode,
@@ -208,10 +212,17 @@ extension EngineV2SlotFactory {
             guard ["auto", "contiguous", "paged"].contains(backend.lowercased()) else {
                 throw CBv2KVError.backendIneligible(reason: "Unknown native diffusion storage backend")
             }
-            let pageBacked = backend.lowercased() == "paged"
+            let precision = try EngineV2KVQuantizationPolicy.resolve(
+                modelType: modelType, global: kvQuantizationConfig,
+                byModel: kvQuantizationConfigByModel, modelID: modelId, environment: environment)
+            let pageBacked = !EngineV2KVBackendPolicy.killSwitchDisabled(environment: environment)
+                && (backend.lowercased() == "paged" || (backend.lowercased() == "auto" && precision != .native))
+            try EngineV2KVQuantizationPolicy.requireResolvedBackend(
+                pageBacked ? .paged : .contiguous, selection: precision)
             let prefix = try await prepareDiffusionPrefixCache(modelId: modelId, modelDirectory: modelDirectory,
                 weightHash: weightHash, kvBytesCapacity: kvBytesCapacity, kvBudget: kvBudget,
-                environment: environment, persistentTestNamespace: persistentTestNamespace, pageBacked: pageBacked)
+                environment: environment, persistentTestNamespace: persistentTestNamespace,
+                pageBacked: pageBacked, kvQuantization: precision)
             let prepared: DiffusionGemmaProviderBridge.Prepared
             do { prepared = try await DiffusionGemmaProviderBridge.make(
                 container: target, modelID: modelId, kvBytesCapacity: kvBytesCapacity,
@@ -221,7 +232,8 @@ extension EngineV2SlotFactory {
                 retainMemoryPrefixes: prefix.retainMemory, prefillChunkSize: diffusionPrefillChunkSize,
                 prefixCacheStatus: .init(modelId: modelId, backend: pageBacked ? .paged : .contiguous,
                     replayStrategy: prefix.store == nil ? .none : .direct,
-                    state: prefix.status.state, reason: prefix.status.reason), pageBacked: pageBacked)
+                    state: prefix.status.state, reason: prefix.status.reason), pageBacked: pageBacked,
+                kvQuantization: precision)
             } catch { await prefix.store?.closeAndWait(); throw error }
             let status = MTPActivationStatus.disabled(.targetUnsupported, configured: false)
             await prepared.bridge.configureMTPStatus(status, metricsInterval: startServingTelemetry ? .seconds(60) : .zero)

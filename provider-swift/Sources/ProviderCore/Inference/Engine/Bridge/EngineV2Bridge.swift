@@ -81,6 +81,7 @@ public actor EngineV2Bridge {
     /// charges. Segmented paged storage follows runtime grant changes; only
     /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
+    public nonisolated let kvQuantization: EngineV2KVQuantizationSelection
     /// Observed pool geometry from backend preparation, never a default guess.
     public let pagedPageSize: Int?
     /// Construction-time fallback reason, retained for heartbeat reporting.
@@ -370,6 +371,7 @@ public actor EngineV2Bridge {
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
@@ -380,6 +382,7 @@ public actor EngineV2Bridge {
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
+        self.kvQuantization = kvQuantization
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
         self.advertisedContextTokens =

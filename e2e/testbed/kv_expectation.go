@@ -81,6 +81,11 @@ func (s *Suite) verifyKVBackendExpectation() error {
 		return err
 	}
 	if expected == "" {
+		if s.Config.PrewarmAutomaticKVBackend {
+			return verifyAutomaticRegistryKVBackends(
+				s.Ctx, s.Coordinator.Registry, os.Getenv(EnvKVQuantization),
+				kvExpectationTimeout, s.Logger, s.Coordinator.Registry.SendLoadModel)
+		}
 		return nil
 	}
 	return VerifyRegistryKVBackends(
@@ -232,6 +237,9 @@ func PrewarmRegistrySlot(
 	logger *slog.Logger,
 	probeLoadFailure func() error,
 ) error {
+	if expectedBackend != KVBackendPaged && expectedBackend != KVBackendContiguous {
+		return fmt.Errorf("unassertable expected KV backend %q", expectedBackend)
+	}
 	return prewarmRegistrySlot(
 		ctx, reg, providerID, model, expectedBackend, timeout, logger,
 		reg.SendLoadModel, probeLoadFailure)
@@ -249,6 +257,16 @@ type prewarmSlotObservation struct {
 	pendingModelLoad bool
 }
 
+func (o prewarmSlotObservation) matchesBackend(expected string) bool {
+	return o.backend == expected ||
+		(expected == nativeAutoBackend && (o.backend == KVBackendPaged || o.backend == KVBackendContiguous))
+}
+
+func (o prewarmSlotObservation) isReady(expected string) bool {
+	return o.present && o.state == "idle" && o.numRunning == 0 && o.numWaiting == 0 &&
+		o.maxConcurrency > 0 && o.activeBudgetMax > 0 && o.matchesBackend(expected) && !o.pendingModelLoad
+}
+
 func prewarmRegistrySlot(
 	ctx context.Context,
 	reg *registry.Registry,
@@ -258,7 +276,7 @@ func prewarmRegistrySlot(
 	sendLoadModel func(string, string) error,
 	probeLoadFailure func() error,
 ) error {
-	if expectedBackend != KVBackendPaged && expectedBackend != KVBackendContiguous {
+	if expectedBackend != KVBackendPaged && expectedBackend != KVBackendContiguous && expectedBackend != nativeAutoBackend {
 		return fmt.Errorf("unassertable expected KV backend %q", expectedBackend)
 	}
 	if timeout <= 0 {
@@ -292,24 +310,18 @@ func prewarmRegistrySlot(
 			return err
 		}
 		last = observation
-		if observation.present &&
-			observation.state == "idle" &&
-			observation.numRunning == 0 &&
-			observation.numWaiting == 0 &&
-			observation.maxConcurrency > 0 &&
-			observation.activeBudgetMax > 0 &&
-			observation.backend == expectedBackend &&
-			!observation.pendingModelLoad {
+		if observation.isReady(expectedBackend) {
 			logger.Info("pre-warmed provider slot ready",
 				"provider_id", providerID, "model", model,
 				"kv_backend", observation.backend,
+				"kv_backend_fallback", observation.fallback,
 				"max_concurrency", observation.maxConcurrency,
 				"active_token_budget_max", observation.activeBudgetMax)
 			return nil
 		}
 		if observation.present &&
 			observation.backend != "" &&
-			observation.backend != expectedBackend {
+			!observation.matchesBackend(expectedBackend) {
 			return fmt.Errorf(
 				"provider %s built exact slot %s with kv_backend=%q, want %q "+
 					"(fallback reason class: %s)",

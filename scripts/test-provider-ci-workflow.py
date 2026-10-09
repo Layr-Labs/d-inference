@@ -262,6 +262,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = step_blocks(self.jobs["test-provider"])
         expected = (
             "python3 scripts/test-qwen4-packaged-resources.py",
+            "python3 scripts/test-stage-swiftpm-resource-bundles.py",
             "python3 scripts/test-profile-inventory-auth.py",
             MIMO_PREPARE,
             MIMO_PROVIDER_PREPARE,

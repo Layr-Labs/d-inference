@@ -3,6 +3,7 @@ package testbed
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -35,11 +36,8 @@ func TestGatePostureRendersBothBackendAndCap(t *testing.T) {
 	}
 }
 
-// Naming a backend and NOT a cap is the trap the CI lane exists to avoid: an
-// unnamed cap seats the provider on its own default, which v0.8.1 reverted to
-// 4. Paged at B=4 is 0.98x of contiguous where B=8 is 1.17x, so this
-// combination has all of paged's cost and none of its benefit. Pinned so that
-// anyone changing it has to decide deliberately.
+// An omitted cap must inherit the provider's default rather than synthesizing
+// the explicit eight-request width used by the separate CI gate.
 func TestBackendWithoutCapEmitsNoCapAndInheritsTheDecoderDefault(t *testing.T) {
 	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", KVBackendPaged)
 	t.Setenv("DARKBLOOM_TESTBED_MAX_CONCURRENT", "")
@@ -53,6 +51,56 @@ func TestBackendWithoutCapEmitsNoCapAndInheritsTheDecoderDefault(t *testing.T) {
 	}
 	if strings.Contains(got, "engine_v2_max_concurrent") {
 		t.Fatalf("cap must not be synthesized when unset:\n%s", got)
+	}
+}
+
+func TestExplicitContiguousLaunchPinsNativePrecision(t *testing.T) {
+	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", "")
+	t.Setenv("DARKBLOOM_TESTBED_MAX_CONCURRENT", "")
+	for _, fromEnvironment := range []bool{false, true} {
+		t.Run(fmt.Sprint(fromEnvironment), func(t *testing.T) {
+			cfg := DefaultProviderConfig()
+			if fromEnvironment {
+				t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", KVBackendContiguous)
+			} else {
+				cfg.KVBackend = KVBackendContiguous
+			}
+			spec, err := buildProviderStartSpec("http://127.0.0.1:1", t.TempDir(), cfg, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				`engine_v2_kv_backend = "contiguous"`,
+				`engine_v2_kv_quantization = "native"`,
+				"auto_update = false", "auto_restart = false",
+			} {
+				if !strings.Contains(spec.Config, want) {
+					t.Fatalf("contiguous control missing %q:\n%s", want, spec.Config)
+				}
+			}
+		})
+	}
+}
+
+func TestPagedAndDefaultLaunchesRetainPrecisionDefault(t *testing.T) {
+	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", "")
+	t.Setenv("DARKBLOOM_TESTBED_MAX_CONCURRENT", "")
+	for _, backend := range []string{"", KVBackendAuto, KVBackendPaged} {
+		t.Run(backend, func(t *testing.T) {
+			cfg := DefaultProviderConfig()
+			cfg.KVBackend = backend
+			spec, err := buildProviderStartSpec("http://127.0.0.1:1", t.TempDir(), cfg, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(spec.Config, "engine_v2_kv_quantization") {
+				t.Fatalf("default precision was overridden:\n%s", spec.Config)
+			}
+			if backend == "" && (strings.Contains(spec.Config, "engine_v2_kv_backend") ||
+				strings.Contains(spec.Config, "engine_v2_max_concurrent")) {
+				t.Fatalf("default KV settings were overridden:\n%s", spec.Config)
+			}
+		})
 	}
 }
 

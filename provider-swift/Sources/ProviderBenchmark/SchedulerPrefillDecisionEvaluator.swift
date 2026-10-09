@@ -185,6 +185,16 @@ enum SchedulerPrefillDecisionEvaluator {
                     + "\(Set(resolvedBackends).count) unique"
                 : "not applicable to scheduler simulation"))
 
+        let precisionConsistent = SchedulerPrefillDecisionKVProvenance.isConsistent(
+            results: results, reproducibility: reproducibility)
+        checks.append(.init(
+            name: "kv_precision_consistent",
+            passed: mode != .liveModel || precisionConsistent,
+            detail: mode == .liveModel
+                ? "every live cell requires the same known resolved KV precision, "
+                    + "matching the run identity and compatible with its backend"
+                : "not applicable to scheduler simulation"))
+
         let packingRecorded = results.allSatisfy { result in
             guard result.packedPrefill.modelAndCacheSupported != nil,
                 let executed = result.packedPrefill.executed
@@ -255,6 +265,7 @@ enum SchedulerPrefillDecisionEvaluator {
             && reproducibilityBound
             && signedEvidenceConsistent
             && backendConsistent
+            && precisionConsistent
             && packingRecorded
         let outcome: SchedulerPrefillDecisionReport.EvaluationOutcome
         if !prerequisitesComplete {
@@ -370,9 +381,22 @@ enum SchedulerPrefillDecisionEvaluator {
 
 public enum SchedulerPrefillDecisionExitStatus {
     public static func value(for report: SchedulerPrefillDecisionReport) -> Int32 {
-        value(
+        guard report.schemaVersion == SchedulerPrefillDecisionReport.currentSchemaVersion,
+            !report.evaluation.releaseCandidateCertified
+        else { return 2 }
+        // Decoded historical or edited JSON must meet the same identity and
+        // measured-cell predicates as a freshly emitted signed report.
+        let evaluation = SchedulerPrefillDecisionEvaluator.evaluate(
+            mode: report.mode,
+            results: report.results,
+            modelIdentity: report.modelIdentity,
+            reproducibility: report.reproducibility,
             evidenceClass: report.evidenceClass,
-            outcome: report.evaluation.outcome,
+            signedArtifactIdentity: report.signedArtifactIdentity)
+        guard evaluation.outcome == report.evaluation.outcome else { return 2 }
+        return value(
+            evidenceClass: report.evidenceClass,
+            outcome: evaluation.outcome,
             signedIdentityPresent: report.signedArtifactIdentity != nil)
     }
 

@@ -320,9 +320,11 @@ struct SchedulerPrefillDecisionMetadataTests {
         }
         #expect(start.uptimeNanoseconds > 0)
 
-        let metadata = try SchedulerPrefillDecisionMetadata.finish(start, sourceSHA: "abc123")
+        let metadata = try SchedulerPrefillDecisionMetadata.finish(
+            start, sourceSHA: "abc123", resolvedKVQuantization: "balanced")
         #expect(metadata.sourceSHA == "abc123")
         #expect(metadata.providerVersion == ProviderCore.version)
+        #expect(metadata.resolvedKVQuantization == "balanced")
         #expect(["debug", "release"].contains(metadata.buildConfiguration))
         #expect(metadata.executableSHA256.count == 64)
         #expect(metadata.postureAtStart == start.posture)
@@ -362,8 +364,10 @@ struct SchedulerPrefillDecisionMetadataTests {
         #expect(!FileManager.default.fileExists(atPath: missing.path))
     }
 
-    @Test("a live result keeps scheduler eligibility and adds measured packed execution")
-    func liveResultAssembly() throws {
+    @Test(
+        "a live result keeps scheduler eligibility and the constructed engine's precision",
+        arguments: EngineV2KVQuantizationSelection.allCases)
+    func liveResultAssembly(precision: EngineV2KVQuantizationSelection) throws {
         let source = try SchedulerPrefillBenchmark.deterministicQwenPolicyEvaluation()
         let evidence = try #require(source.results.first {
             $0.workload.name == "burst-4x4k" && $0.maxConcurrentPartialPrefills == 0
@@ -375,9 +379,16 @@ struct SchedulerPrefillDecisionMetadataTests {
             rows: [row], makespanMs: 250, aggregatePromptTokensPerSecond: 64,
             packedActivity: CBv2PackedPrefillActivity(
                 isSupported: true, rowsExecuted: 4, groupsExecuted: 2))
+        let build = EngineV2Factory.ProductionBuild(
+            engine: ScriptedBenchmarkEngine { _ in .open([]) },
+            fixedRequestBytes: 0, kvBackendKind: .paged, kvBackendFallbackReason: nil,
+            kvQuantization: precision)
+        let parts = SchedulerPrefillDecisionEngineParts(build: build)
+        #expect(parts.kvQuantization == build.kvQuantization)
         let result = SchedulerPrefillDecisionLiveHarness.makeResult(
             workload: evidence.workload, iteration: 3, cap: 0, schedulerEvidence: evidence,
-            measurement: measurement, resolvedBackend: "paged")
+            measurement: measurement, resolvedBackend: parts.resolvedBackend,
+            resolvedQuantization: parts.kvQuantization)
 
         #expect(result.workload == evidence.workload)
         #expect(result.iteration == 3)
@@ -395,5 +406,6 @@ struct SchedulerPrefillDecisionMetadataTests {
         #expect(result.packedPrefill.executedGroups == 2)
         #expect(result.packedPrefill.executedRows == 4)
         #expect(result.resolvedKVBackend == "paged")
+        #expect(result.resolvedKVQuantization == precision.rawValue)
     }
 }

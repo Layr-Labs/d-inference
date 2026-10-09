@@ -173,6 +173,8 @@ extension StandaloneServer {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                kvQuantizationConfig: config.engineV2KVQuantization,
+                kvQuantizationConfigByModel: config.engineV2KVQuantizationByModel,
                 mtpAcceptanceConfig: config.mtpAcceptance,
                 mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,

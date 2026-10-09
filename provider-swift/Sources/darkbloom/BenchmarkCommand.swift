@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 import ProviderBenchmark
+import ProviderCoreFoundation
 
 struct Benchmark: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -85,12 +86,11 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: """
         KV-backend selection passed to every engine this command builds — \
-        auto|contiguous|paged (default auto). Candidate auto selects paged only \
-        for exact model IDs qwen3.5-35b-a3b, qwen3.6-35b-a3b-vl-mtp-mxfp8, \
-        and EigenLabs/Qwen3.8-27B-4bit-mtp; all other models use contiguous. \
-        Automatic paged failures and the version-bound crash-loop guard \
-        still fall back to contiguous. Pass --kv-backend paged to require \
-        the paged arm rather than automatic fallback. \
+        auto|contiguous|paged (default auto). Live quantization makes auto \
+        require paged storage for supported targets. Use --kv-quantization \
+        native for a native control or contiguous rollback. MiMo stays native. \
+        Quantized construction refuses unavailable paged storage; native auto \
+        retains its exact-model backend policy and observable fallback. \
         Applies to --sweep, --scheduler-prefill, \
         --scheduler-prefill-decision, and --arrival-invariance alike. Each \
         engine receives the same requested selection; automatic fallback \
@@ -98,15 +98,33 @@ struct Benchmark: AsyncParsableCommand {
         run rather than degrading: if paged cannot be served, engine \
         construction throws, the cell records no samples, and the command \
         exits non-zero naming the reason. DARKBLOOM_CBV2_PAGED_KV=0 and \
-        capability/span-mask vetoes can still force contiguous, even for an \
-        explicit selection. The backend that actually served is recorded per \
+        capability/span-mask vetoes require native precision to serve contiguous. \
+        The backend that actually served is recorded per \
         measured engine (decode[].resolvedKVBackend, \
         samples[].resolvedKVBackend) and de-duplicated in each report's \
-        kvBackend block. Candidate rollout is not yet validated; see \
-        docs/design/qwen-first-paged-ssd-rollout.md. Ordinary native \
+        kvBackend block. Ordinary scalar MLX.generate does not exercise \
+        production KV compression; use --runtime-generation. Ordinary native \
         DiffusionGemma benchmarks also honor this backend selection.
         """)
     var kvBackend = "auto"
+
+    @Option(name: .long, help: "Live attention KV precision: balanced (K4/V4), k8v4, k8v8 or native. MiMo always remains native. Applies to every benchmark engine; defaults to the provider environment or balanced.")
+    var kvQuantization: String?
+
+    @Flag(name: .long, help: "Generate one request through the production CBv2 slot and print raw tokens, text, precision, timings and memory as JSON; prefix caches are off and --iterations does not apply.")
+    var runtimeGeneration = false
+
+    @Flag(name: .long, help: "Runtime generation: explicitly enable the artifact's MTP policy; default is target-only for paired precision controls.")
+    var runtimeMtp = false
+
+    @Option(name: .long, help: "Runtime MTP: offline local Gemma assistant directory; requires --runtime-generation --runtime-mtp and passes the normal artifact/target checks.")
+    var runtimeAssistantDirectory: String?
+
+    @Option(name: .long, help: "Runtime generation: read the public/synthetic prompt from a UTF-8 file (at most 4 MiB).")
+    var runtimePromptFile: String?
+
+    @Option(name: .long, help: "Runtime generation: fixed UTC template date YYYY-MM-DD for paired runs.")
+    var runtimePromptDate = PromptRenderDate.capture().value
 
     @Flag(name: .long, help: """
         Run the cold-prefill TTFT benchmark through the production \
@@ -168,11 +186,19 @@ struct Benchmark: AsyncParsableCommand {
     var teacherForcedInput: String?
 
     mutating func run() async throws {
+        if let kvQuantization {
+            let selection = try EngineV2KVQuantizationPolicy.parseSelection(kvQuantization)
+            setenv(EngineV2KVQuantizationPolicy.environmentKey, selection.rawValue, 1)
+        }
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
             throw ExitCode(2)
         }
         if let error = teacherForcedOptionError() {
+            printError(error)
+            throw ExitCode(2)
+        }
+        if let error = schedulerPrefillOptionError() {
             printError(error)
             throw ExitCode(2)
         }
@@ -243,9 +269,36 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        let precision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: selectedModel.modelType, global: snapshot.config.backend.engineV2KVQuantization,
+            byModel: snapshot.config.backend.engineV2KVQuantizationByModel,
+            modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment)
+        setenv(EngineV2KVQuantizationPolicy.environmentKey, precision.rawValue, 1)
+
         if let error = nativeBlockModeError(modelType: selectedModel.modelType) {
             printError(error)
             throw ExitCode(2)
+        }
+
+        if runtimeGeneration {
+            let input: String
+            if let runtimePromptFile {
+                let file = URL(fileURLWithPath: runtimePromptFile)
+                let handle = try FileHandle(forReadingFrom: file)
+                defer { try? handle.close() }
+                let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
+                guard bytes.count <= 4 << 20, let text = String(data: bytes, encoding: .utf8)
+                else { throw RuntimeGenerationBenchmark.Failure.invalidArguments }
+                input = text
+            } else { input = prompt }
+            let result = try await RuntimeGenerationBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
+                maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
+                assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
+                renderDate: runtimePromptDate)
+            print(result.json)
+            if !result.succeeded { throw ExitCode(2) }
+            return
         }
 
         if let teacherForcedInput {
@@ -272,7 +325,8 @@ struct Benchmark: AsyncParsableCommand {
                 modelID: selectedModel.id,
                 modelDirectory: modelPath,
                 hardware: hardware,
-                gemmaOptimizations: gemmaSettings
+                gemmaOptimizations: gemmaSettings,
+                kvQuantization: precision
             )
             return
         }
@@ -313,6 +367,13 @@ struct Benchmark: AsyncParsableCommand {
     }
 
     func benchmarkModeConflict() -> String? {
+        if !runtimeGeneration && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil) {
+            return "Runtime options require --runtime-generation"
+        }
+        if let runtimeAssistantDirectory,
+            !runtimeMtp || runtimeAssistantDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "--runtime-assistant-directory requires a nonempty path and --runtime-mtp"
+        }
         let selected = [
             (schedulerPrefillDecision, "--scheduler-prefill-decision"),
             (sweep, "--sweep"),
@@ -320,6 +381,7 @@ struct Benchmark: AsyncParsableCommand {
             (arrivalInvariance, "--arrival-invariance"),
             (parity, "--parity"),
             (teacherForcedInput != nil, "--teacher-forced-input"),
+            (runtimeGeneration, "--runtime-generation"),
         ].compactMap { $0.0 ? $0.1 : nil }
         guard selected.count <= 1 else {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
@@ -329,7 +391,7 @@ struct Benchmark: AsyncParsableCommand {
 
     func nativeBlockModeError(modelType: String?) -> String? {
         guard modelType == "diffusion_gemma",
-            sweep || schedulerPrefill || arrivalInvariance || parity || teacherForcedInput != nil else { return nil }
+            sweep || schedulerPrefill || arrivalInvariance || parity || teacherForcedInput != nil || runtimeGeneration else { return nil }
         return "Native block diffusion uses the ordinary benchmark command; AR sweep, teacher-forcing, arrival and parity modes are unsupported for this architecture."
     }
 

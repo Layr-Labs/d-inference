@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -2565,6 +2565,33 @@ numerical override as a separate experiment.
 
 #### Ordinary teacher-forced score diagnostics
 
+For live attention-precision policy and CLI scope checks:
+
+```bash
+cd provider-swift
+swift test --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark'
+```
+
+Use the production session for free-generation quality comparisons:
+
+```bash
+darkbloom benchmark --model "$MODEL_ID" --runtime-generation --kv-backend paged \
+  --kv-quantization native --runtime-prompt-file "$PUBLIC_PROMPT_FILE" \
+  --runtime-prompt-date 2026-10-09 --max-tokens 4096 > "$NATIVE_REPORT"
+darkbloom benchmark --model "$MODEL_ID" --runtime-generation --kv-backend paged \
+  --kv-quantization balanced --runtime-prompt-file "$PUBLIC_PROMPT_FILE" \
+  --runtime-prompt-date 2026-10-09 --max-tokens 4096 > "$PACKED_REPORT"
+```
+
+Keep the artifact and prompt/date fixed. These reports record actual resolved
+precision/backend, generated IDs and rendered text, finish reason, runtime
+identity, timing and memory. Target-only is an explicit diagnostic control;
+repeat with `--runtime-mtp` to measure the configured assistant. A `length`
+finish or fluent text is not a correctness result. Ordinary scalar
+`MLX.generate` benchmarks do not exercise the production compressed cache.
+MiMo is excluded from this new mode and retains its native owned benchmark.
+
+
 Build and stage the source-matched metallib for both test products as above.
 From the repository root, run the numerical/engine controls and the provider
 input/CLI controls; the shared runner rejects empty or skipped suites:
@@ -2919,6 +2946,15 @@ work, unknown dispatches and dropped records reject the measured interval.
 Component rows and sequence width remain separate axes. An observed full-width
 call proves neither constant width for the whole request nor kernel launch
 geometry; the existing concurrency, lifecycle and output gates still apply.
+The wrapper's `scripts/benchmarks/radix_forward_shapes.py` validates the current
+SDK's optional bounded step/token timing fields alongside actual-call counts.
+It rejects private or unknown fields, malformed/unbounded/nonmonotonic timing
+receipts and regressing/drop counters. Before/after observations must retain a
+coherent append-only timing prefix; existing scope, completion, delta and actual
+width checks remain required. The scalar C7 regression fixture is in
+`scripts/benchmarks/fixtures/native-cache-forward-shapes-with-timings.json`.
+Run `python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py`.
+
 The native `CBv2ForwardShapeEngineTests` exercise packed/split target dispatch,
 discarded chained work and refusal boundaries with storage-bearing cache rows
 and actual KV progression. Run these alongside the scalar, compiled-expert and
@@ -3423,13 +3459,36 @@ DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged \
 go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
   -run 'TestIntegration|TestProfile' -skip '^TestIntegrationExactCacheRouting$'
 
-# Default posture (no TOML written; .auto resolves contiguous as of v0.8.1):
-DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous \
+# Default posture (lifecycle-only TOML; no KV overrides; balanced .auto is paged):
+DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged \
 go test ./e2e/ -count=1 -v -timeout 10m -p=1 -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
 
 make e2e-integration     # go test ./e2e/... -run TestIntegration -v   (no posture pins)
 make e2e-benchmark       # go test ./e2e/... -run TestBenchmark -v
 ```
+
+The default lane leaves backend, KV precision and concurrency unset in the
+testbed config; only persistent updater/watchdog services are disabled. Its
+built-backend assertion remains enabled. Explicit `contiguous` test controls
+also write `engine_v2_kv_quantization = "native"`; paged and automatic controls
+retain the provider's precision default. The default smoke refuses inherited
+KV precision overrides so it continues testing the actual default.
+
+Automatic benchmark prewarm derives expectations from each provider's registered
+`model_type` and the inherited KV precision. MiMo stays native/contiguous before
+precision parsing; balanced and k8 controls require paged storage for other
+models. Native auto must report a concrete usable backend and records its
+actual fallback. Explicit requested backends and expected-backend overrides
+retain exact assertions. The public KV precision environment key is forwarded
+in the provider launch specification so local and owned-host processes use the
+same treatment. An explicitly resolved contiguous test control overrides an
+ambient precision value with `native`, matching its TOML pin; paged and auto
+controls preserve the supplied precision value. This test-only control does
+not change the default paged serving path. Warmup still requires idle loaded
+slots, positive token budgets and no pending load; expected targets must remain
+resident before measurement.
+Gate G2 pins both backend arms and secondary probes to native KV, preserving
+its backend-isolation/token-exactness contract and independent dtype controls.
 
 #### E2E coverage in CI
 
@@ -3670,7 +3729,7 @@ intentional skips for irrelevant PRs, rather than requiring unselected macOS job
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service, `make sqlc-check` + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build with `--enable-code-coverage`, matched Metal, serial/fresh-process provider tests and installer checks, then a job-summary coverage table (lines, regions and functions over Swift code in `provider-swift/Sources`, with product, CLI, benchmark and total rows, 80% report-only target, no branch counters; the SDK and prompt parity lanes are not counted), full report kept 14 days as the `provider-coverage` artifact · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`); each lane runs with `-coverpkg` over the production `coordinator/...` packages and `-test.gocoverdir`, then a job-summary row of e2e statement coverage (report-only), lane data kept 14 days as the `coordinator-e2e-coverage` artifact |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (balanced paged; `EXPECT_KV_BACKEND=paged`); each lane runs with `-coverpkg` over the production `coordinator/...` packages and `-test.gocoverdir`, then a job-summary row of e2e statement coverage (report-only), lane data kept 14 days as the `coordinator-e2e-coverage` artifact |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |

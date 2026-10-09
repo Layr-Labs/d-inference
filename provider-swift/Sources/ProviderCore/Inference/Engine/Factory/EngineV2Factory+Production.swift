@@ -3,6 +3,7 @@
 // are prepared before cache construction so reuse follows the backend served.
 
 import Foundation
+import MLXLLM
 import MLXLMCommon
 
 /// Construction failures reported by the factory's refusal telemetry.
@@ -100,6 +101,8 @@ extension EngineV2Factory {
         /// Actual configured scheduler cap after serving and architecture policy.
         /// Zero only for scripted/test builds without construction metadata.
         public let effectiveMaxConcurrentRequests: Int
+        /// Resolved physical attention precision; SDK-owned MiMo stays native.
+        public let kvQuantization: EngineV2KVQuantizationSelection
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -117,6 +120,7 @@ extension EngineV2Factory {
             mtpAdmissionResolution: CBv2MTPAdmissionResolution? = nil,
             legacyMTPBytesPerToken: Int = 0,
             effectiveMaxConcurrentRequests: Int = 0,
+            kvQuantization: EngineV2KVQuantizationSelection = .native,
             admissionWatermarkFraction: Double? = nil
         ) {
             self.engine = engine
@@ -129,6 +133,7 @@ extension EngineV2Factory {
             self.mtpAdmissionResolution = mtpAdmissionResolution
             self.legacyMTPBytesPerToken = legacyMTPBytesPerToken
             self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
+            self.kvQuantization = kvQuantization
         }
     }
 
@@ -166,6 +171,9 @@ extension EngineV2Factory {
             residentPrefixCache: residentPrefixCache,
             hybridPrefixCache: mtpDrafter == nil || mtpDrafter is any CBv2MTPPrefixCheckpointDrafter
                 ? hybridPrefixCache : nil,
+            nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
+                layerKinds: (model as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
+                gemmaAssistantActive: mtpDrafter != nil && mtpConfig.effectiveEnabled),
             pagedPreflightOverride: pagedPreflightOverride)
         return try assembleProductionBuild(
             model: model,
@@ -233,7 +241,8 @@ extension EngineV2Factory {
         } else {
             processOwner = nil
         }
-        let admissionConfig = AdmissionV2.Config()
+        let admissionConfig = try (backend as? PagedKVBackend)?.pool.admissionStorageConfig(
+            AdmissionV2.Config()) ?? AdmissionV2.Config()
         let engine = EngineV2(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: preparedBackend.layerKinds,
@@ -267,6 +276,7 @@ extension EngineV2Factory {
             mtpAdmissionResolution: engine.resolvedMTPAdmission,
             legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0,
             effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests,
+            kvQuantization: preparedBackend.kvQuantization,
             admissionWatermarkFraction: admissionConfig.watermarkFraction)
     }
 }

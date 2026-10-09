@@ -1,0 +1,50 @@
+{
+  "provenance.json": {
+    "bytes": 564,
+    "sha256": "14f7a547e84d8e165bb13c89be92448f0481a3f74093caeaac3f5cf2407acb78"
+  },
+  "independent-choice-review.txt": {
+    "bytes": 18623,
+    "sha256": "8f7c0e3cb0dc0eec7b2377d88a596a36fe27266bfa09915cc0c9cf360d10e174"
+  },
+  "sizing-estimates.json": {
+    "bytes": 943,
+    "sha256": "8c1c6c4c8e6ed4ad90338b1da1c1b915cd17e7228e4b256f43f1701638fae05c"
+  },
+  "validation.json": {
+    "bytes": 691,
+    "sha256": "3812154be22ab6a5634f813db55ddd3aa9beb1981aa4f1dc79c39b3f76cdb279"
+  },
+  "catalog.json": {
+    "bytes": 23042,
+    "sha256": "2d4d865e33d4903e48f241fa8e1a5a375b318877d35dbdb788f5ebd341eabc37"
+  },
+  "model-coverage.txt": {
+    "bytes": 16896,
+    "sha256": "9430de002ccbfbc7bcb0a818d89ae08fa53454e14448689a907eb67d87ca7b08"
+  },
+  "experiment/packet_reference.py": {
+    "bytes": 7153,
+    "sha256": "c5738f3fee5dd8db83cabf358c1f1d91bed593bd39548811761ad9e3fdb984c2"
+  },
+  "experiment/rotated_scalar_codec.py": {
+    "bytes": 10076,
+    "sha256": "9999d16dc1fd01154922ffd67591c675e79af711120bf04662038cf4f96997f1"
+  },
+  "experiment/results.json": {
+    "bytes": 112325,
+    "sha256": "1c7e5860764cb87c4834a87738fd38f0179a04f382286aae5e4d349741d18002"
+  },
+  "experiment/README.md": {
+    "bytes": 8757,
+    "sha256": "1edcb6317d98d82d47c21f350894bad5cb1684d64c7952657c572e8892d5dda5"
+  },
+  "experiment/test_rotated_scalar_codec.py": {
+    "bytes": 5364,
+    "sha256": "740315e3f8e225d93b0ff4d2b07421f96cd95e0c11a2b889b42f26193b8ea1cb"
+  },
+  "experiment/run_rotated_packet.py": {
+    "bytes": 11290,
+    "sha256": "1803934dc010f7f9b98db733a0a4cd82cbf870f9bf1ff7b5bd203843581002a8"
+  }
+}

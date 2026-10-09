@@ -1,0 +1,6 @@
+{
+  "negativeLogSHA256": "48928a5594ae7426e14ae450d0361145e7879aacefeeb5ec3fc827faca4da035",
+  "negativeTestExitCode": 1,
+  "positiveSourceRestoredByteExact": true,
+  "scope": "Only original promptTokens overwrite and missing GateG2 native pin reinstated; regression assertions unchanged."
+}

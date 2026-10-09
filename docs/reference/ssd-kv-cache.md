@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -127,6 +127,8 @@ and MTP codec. No public header field exposes those token boundaries
 |---|---|---|
 | `native-contiguous-full-recurrent-v1` | Native full KV, recurrent state and optional typed MTP history | Owning full-attention rows, supported native types and complete recurrent codec |
 | `native-paged-full-recurrent-v1` | Same complete recurrent state, imported into independent segmented pages | Same codec plus resolved segmented paging and observed native types |
+| `affine-paged-full-recurrent-v1` | Packed mirror of all attention rows plus exact native recent band, native recurrence and optional MTP history | Resolved quantized segmented pool and exact complete codec |
+| `affine-paged-historical-attention-v1` | Packed/native owning rows and exact historical windows, with borrower map | Resolved mixed storage and exact historical codec |
 | `native-paged-historical-attention-v2` | Owning full rows and exact historical window contents, with absolute positions and borrower map | Loaded historical capability, resolved segmented paging, exact ordered attention map; assistant absent or stateless |
 
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
@@ -135,6 +137,13 @@ Layout constants and validation live in `CompleteCheckpointContract.swift` and
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.
+
+Packed K/V descriptors use `uint8` byte streams; each head retains all coded
+rows followed by its original native recent band. The copied band is private
+input scratch until the active row's own copy completes, and its existing
+mirror is preserved when those tokens age. Resolved quantization and native
+owner exemptions separate compatibility identities. See
+[runtime KV quantization](../architecture/kv-cache-quantization.md).
 
 Validation artifacts, source scopes and model-measurement limits are linked from
 [the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).

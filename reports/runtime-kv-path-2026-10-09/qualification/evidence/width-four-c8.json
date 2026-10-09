@@ -1,0 +1,291 @@
+{
+  "aggregate_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+  "arms": [
+    {
+      "batches": [
+        {
+          "completed": 4,
+          "completed_ordinary_decode_width_four_calls": 5,
+          "completion_token_counts": [
+            32,
+            32,
+            32,
+            32
+          ],
+          "elapsed_seconds": 10.825275167,
+          "failed": 0,
+          "id": "width-four-first",
+          "live_widths_by_phase": {
+            "decode": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "mixed_prefill_decode": [],
+            "mtp_verification": [],
+            "prefill": [
+              1
+            ]
+          },
+          "peak_observed_kv_in_use_bytes": 919797760,
+          "peak_observed_kv_reserved_bytes": 1206009136,
+          "peak_observed_mlx_active_bytes": 22712400627,
+          "peak_observed_paged_committed_bytes": 409747456,
+          "prompt_token_counts": [
+            4916,
+            4916,
+            4916,
+            4916
+          ]
+        },
+        {
+          "completed": 4,
+          "completed_ordinary_decode_width_four_calls": 5,
+          "completion_token_counts": [
+            32,
+            32,
+            32,
+            32
+          ],
+          "elapsed_seconds": 9.3692665,
+          "failed": 0,
+          "id": "width-four-repeat",
+          "live_widths_by_phase": {
+            "decode": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "mixed_prefill_decode": [],
+            "mtp_verification": [],
+            "prefill": [
+              1
+            ]
+          },
+          "peak_observed_kv_in_use_bytes": 919797760,
+          "peak_observed_kv_reserved_bytes": 1206009136,
+          "peak_observed_mlx_active_bytes": 22273994205,
+          "peak_observed_paged_committed_bytes": 409747456,
+          "prompt_token_counts": [
+            4916,
+            4916,
+            4916,
+            4916
+          ]
+        }
+      ],
+      "cache_requested": false,
+      "entry_gpu_temp_c": 22.995534896850586,
+      "entry_gpu_temp_valid": true,
+      "errors": [],
+      "generated_comparison_count": 91,
+      "grant_mode": "production_single_slot",
+      "mtp": "off; no drafter supplied",
+      "passed": true,
+      "profile": "native",
+      "report": "/Users/gaj/.codex/runtime-kv-qualification/width-four/runs/native-c8-b4/report.json",
+      "report_sha256": "fc83d94d5986f85adf520ad5e130035734939dbd225d15e0ef8c5026bd7e7bcc",
+      "resolved_backend": "paged",
+      "row_finish_reasons": [
+        "stop"
+      ],
+      "shutdown_zero_ledgers": {
+        "active_requests": 0,
+        "charged_bytes": 0,
+        "closing_owner_count": 0,
+        "committed_bytes": 0,
+        "kv_in_use_bytes": 0,
+        "kv_reserved_bytes": 0,
+        "live_page_bytes": 0,
+        "materialized_bytes": 0,
+        "owner_count": 0,
+        "reserved_page_bytes": 0,
+        "segment_count": 0,
+        "unmaterialized_bytes": 0,
+        "waiting_requests": 0
+      },
+      "strict_generation_pass": true
+    },
+    {
+      "batches": [
+        {
+          "completed": 4,
+          "completed_ordinary_decode_width_four_calls": 4,
+          "completion_token_counts": [
+            32,
+            32,
+            32,
+            32
+          ],
+          "elapsed_seconds": 23.453508042,
+          "failed": 0,
+          "id": "width-four-first",
+          "live_widths_by_phase": {
+            "decode": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "mixed_prefill_decode": [],
+            "mtp_verification": [],
+            "prefill": [
+              1
+            ]
+          },
+          "peak_observed_kv_in_use_bytes": 677110280,
+          "peak_observed_kv_reserved_bytes": 1074369419,
+          "peak_observed_mlx_active_bytes": 22660914474,
+          "peak_observed_paged_committed_bytes": 128057344,
+          "prompt_token_counts": [
+            4916,
+            4916,
+            4916,
+            4916
+          ]
+        },
+        {
+          "completed": 4,
+          "completed_ordinary_decode_width_four_calls": 4,
+          "completion_token_counts": [
+            32,
+            32,
+            32,
+            32
+          ],
+          "elapsed_seconds": 23.79364,
+          "failed": 0,
+          "id": "width-four-repeat",
+          "live_widths_by_phase": {
+            "decode": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "mixed_prefill_decode": [],
+            "mtp_verification": [],
+            "prefill": [
+              1
+            ]
+          },
+          "peak_observed_kv_in_use_bytes": 677110280,
+          "peak_observed_kv_reserved_bytes": 1074369419,
+          "peak_observed_mlx_active_bytes": 22674260086,
+          "peak_observed_paged_committed_bytes": 128057344,
+          "prompt_token_counts": [
+            4916,
+            4916,
+            4916,
+            4916
+          ]
+        }
+      ],
+      "cache_requested": false,
+      "entry_gpu_temp_c": 40.60900115966797,
+      "entry_gpu_temp_valid": true,
+      "errors": [],
+      "generated_comparison_count": 91,
+      "grant_mode": "production_single_slot",
+      "mtp": "off; no drafter supplied",
+      "passed": true,
+      "profile": "balanced",
+      "report": "/Users/gaj/.codex/runtime-kv-qualification/width-four/runs/balanced-c8-b4/report.json",
+      "report_sha256": "ed61d585cadebf4847fc393a07bb1afb679589ca4c25f57c4d172c63f56844a0",
+      "resolved_backend": "paged",
+      "row_finish_reasons": [
+        "stop"
+      ],
+      "shutdown_zero_ledgers": {
+        "active_requests": 0,
+        "charged_bytes": 0,
+        "closing_owner_count": 0,
+        "committed_bytes": 0,
+        "kv_in_use_bytes": 0,
+        "kv_reserved_bytes": 0,
+        "live_page_bytes": 0,
+        "materialized_bytes": 0,
+        "owner_count": 0,
+        "reserved_page_bytes": 0,
+        "segment_count": 0,
+        "unmaterialized_bytes": 0,
+        "waiting_requests": 0
+      },
+      "strict_generation_pass": true
+    }
+  ],
+  "candidate_source_digest": "3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa",
+  "cross_precision_rows": [
+    {
+      "balanced_generated": 32,
+      "id": "width-four-first-b0",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    },
+    {
+      "balanced_generated": 32,
+      "id": "width-four-first-b1",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    },
+    {
+      "balanced_generated": 32,
+      "id": "width-four-first-b2",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    },
+    {
+      "balanced_generated": 32,
+      "id": "width-four-first-b3",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    },
+    {
+      "balanced_generated": 32,
+      "id": "width-four-repeat-b0",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    },
+    {
+      "balanced_generated": 32,
+      "id": "width-four-repeat-b1",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    },
+    {
+      "balanced_generated": 32,
+      "id": "width-four-repeat-b2",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    },
+    {
+      "balanced_generated": 32,
+      "id": "width-four-repeat-b3",
+      "native_generated": 32,
+      "same_generated_token_ids": true,
+      "same_prompt_token_ids": true
+    }
+  ],
+  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "performance_limitations": [
+    "Entry temperatures differ (22.996 C native versus 40.609 C balanced); no controlled throughput claim.",
+    "Capacity peaks are host samples at 100 ms and omit unobserved transient peaks."
+  ],
+  "post_run_artifact_hashes_verified": true,
+  "probe_artifacts": {
+    "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+    "radix-engine": "aebf7d99e8f95e1cee6b1a63e0d60f3450dfa40afa441088b94f524a243ced76"
+  },
+  "remote_owned_processes_remaining": false,
+  "scope": "Representative actual B4 decode, cache/MTP off, strict same-precision repeats and retirement; not constant B4, kernel-launch geometry, broad quality or throughput qualification.",
+  "sdk_head": "b02522c8569304754811d01a88b2fd086b338f2a"
+}

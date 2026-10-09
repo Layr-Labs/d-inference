@@ -1,0 +1,3320 @@
+{
+  "baselineNativeKVBytes": 11438080,
+  "codebooks": {
+    "4": {
+      "centroids": [
+        -2.7325894832611084,
+        -2.069017171859741,
+        -1.6180464029312134,
+        -1.2562311887741089,
+        -0.9423404335975647,
+        -0.6567591428756714,
+        -0.38804829120635986,
+        -0.12839503586292267,
+        0.12839503586292267,
+        0.38804829120635986,
+        0.6567591428756714,
+        0.9423404335975647,
+        1.2562311887741089,
+        1.6180464029312134,
+        2.069017171859741,
+        2.7325894832611084
+      ],
+      "float32StationarityResidual": 2.31790280302846e-08,
+      "float64FinalUpdateDelta": 9.723577498732539e-11,
+      "float64UpdateTolerance": 1e-10,
+      "levels": 16,
+      "lloydIterations": 498,
+      "serializedBytes": 64,
+      "serializedDType": "float32 little endian",
+      "serializedSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+      "target": "standard normal N(0,1), Gaussian approximation; not exact finite-dimensional sphere density"
+    },
+    "8": {
+      "centroids": [
+        -4.603536128997803,
+        -4.186595916748047,
+        -3.925638198852539,
+        -3.7316668033599854,
+        -3.5755884647369385,
+        -3.4440722465515137,
+        -3.3298490047454834,
+        -3.2285008430480957,
+        -3.1371331214904785,
+        -3.0537426471710205,
+        -2.9768826961517334,
+        -2.905473470687866,
+        -2.838686466217041,
+        -2.7758712768554688,
+        -2.716508150100708,
+        -2.660174608230591,
+        -2.6065220832824707,
+        -2.555259943008423,
+        -2.506143093109131,
+        -2.4589626789093018,
+        -2.413539409637451,
+        -2.369717836380005,
+        -2.327362537384033,
+        -2.2863550186157227,
+        -2.2465906143188477,
+        -2.2079761028289795,
+        -2.170428991317749,
+        -2.1338748931884766,
+        -2.0982470512390137,
+        -2.063485860824585,
+        -2.029536247253418,
+        -1.9963490962982178,
+        -1.963879108428955,
+        -1.9320849180221558,
+        -1.9009287357330322,
+        -1.8703757524490356,
+        -1.8403940200805664,
+        -1.8109537363052368,
+        -1.7820276021957397,
+        -1.7535901069641113,
+        -1.7256176471710205,
+        -1.6980881690979004,
+        -1.6709810495376587,
+        -1.6442772150039673,
+        -1.6179585456848145,
+        -1.5920082330703735,
+        -1.5664104223251343,
+        -1.5411503314971924,
+        -1.5162137746810913,
+        -1.4915876388549805,
+        -1.467259407043457,
+        -1.443217158317566,
+        -1.4194499254226685,
+        -1.395946979522705,
+        -1.3726983070373535,
+        -1.3496942520141602,
+        -1.3269259929656982,
+        -1.304384708404541,
+        -1.2820621728897095,
+        -1.2599505186080933,
+        -1.2380423545837402,
+        -1.2163305282592773,
+        -1.1948082447052002,
+        -1.173468828201294,
+        -1.1523059606552124,
+        -1.1313138008117676,
+        -1.110486626625061,
+        -1.0898185968399048,
+        -1.0693047046661377,
+        -1.0489397048950195,
+        -1.0287187099456787,
+        -1.0086369514465332,
+        -0.9886899590492249,
+        -0.968873143196106,
+        -0.9491823315620422,
+        -0.929613471031189,
+        -0.9101625680923462,
+        -0.8908258080482483,
+        -0.8715993762016296,
+        -0.8524798154830933,
+        -0.8334634900093079,
+        -0.8145471811294556,
+        -0.7957274913787842,
+        -0.7770012617111206,
+        -0.7583654522895813,
+        -0.7398170232772827,
+        -0.7213530540466309,
+        -0.7029706835746765,
+        -0.68466717004776,
+        -0.6664398312568665,
+        -0.6482859253883362,
+        -0.6302030086517334,
+        -0.6121885180473328,
+        -0.5942400097846985,
+        -0.5763550996780396,
+        -0.5585314035415649,
+        -0.5407666563987732,
+        -0.5230585932731628,
+        -0.505405068397522,
+        -0.4878039062023163,
+        -0.47025296092033386,
+        -0.45275017619132996,
+        -0.4352934956550598,
+        -0.41788092255592346,
+        -0.4005104899406433,
+        -0.3831802308559418,
+        -0.36588823795318604,
+        -0.34863266348838806,
+        -0.33141160011291504,
+        -0.3142232596874237,
+        -0.297065794467926,
+        -0.27993741631507874,
+        -0.26283639669418335,
+        -0.2457609474658966,
+        -0.2287093549966812,
+        -0.21167990565299988,
+        -0.1946708858013153,
+        -0.1776806265115738,
+        -0.16070742905139923,
+        -0.1437496691942215,
+        -0.12680566310882568,
+        -0.10987380146980286,
+        -0.0929524227976799,
+        -0.07603991031646729,
+        -0.059134647250175476,
+        -0.04223501309752464,
+        -0.025339400395751,
+        -0.008446198888123035,
+        0.008446198888123035,
+        0.025339400395751,
+        0.04223501309752464,
+        0.059134647250175476,
+        0.07603991031646729,
+        0.0929524227976799,
+        0.10987380146980286,
+        0.12680566310882568,
+        0.1437496691942215,
+        0.16070742905139923,
+        0.1776806265115738,
+        0.1946708858013153,
+        0.21167990565299988,
+        0.2287093549966812,
+        0.2457609474658966,
+        0.26283639669418335,
+        0.27993741631507874,
+        0.297065794467926,
+        0.3142232596874237,
+        0.33141160011291504,
+        0.34863266348838806,
+        0.36588823795318604,
+        0.3831802308559418,
+        0.4005104899406433,
+        0.41788092255592346,
+        0.4352934956550598,
+        0.45275017619132996,
+        0.47025296092033386,
+        0.4878039062023163,
+        0.505405068397522,
+        0.5230585932731628,
+        0.5407666563987732,
+        0.5585314035415649,
+        0.5763550996780396,
+        0.5942400097846985,
+        0.6121885180473328,
+        0.6302030086517334,
+        0.6482859253883362,
+        0.6664398312568665,
+        0.68466717004776,
+        0.7029706835746765,
+        0.7213530540466309,
+        0.7398170232772827,
+        0.7583654522895813,
+        0.7770012617111206,
+        0.7957274913787842,
+        0.8145471811294556,
+        0.8334634900093079,
+        0.8524798154830933,
+        0.8715993762016296,
+        0.8908258080482483,
+        0.9101625680923462,
+        0.929613471031189,
+        0.9491823315620422,
+        0.968873143196106,
+        0.9886899590492249,
+        1.0086369514465332,
+        1.0287187099456787,
+        1.0489397048950195,
+        1.0693047046661377,
+        1.0898185968399048,
+        1.110486626625061,
+        1.1313138008117676,
+        1.1523059606552124,
+        1.173468828201294,
+        1.1948082447052002,
+        1.2163305282592773,
+        1.2380423545837402,
+        1.2599505186080933,
+        1.2820621728897095,
+        1.304384708404541,
+        1.3269259929656982,
+        1.3496942520141602,
+        1.3726983070373535,
+        1.395946979522705,
+        1.4194499254226685,
+        1.443217158317566,
+        1.467259407043457,
+        1.4915876388549805,
+        1.5162137746810913,
+        1.5411503314971924,
+        1.5664104223251343,
+        1.5920082330703735,
+        1.6179585456848145,
+        1.6442772150039673,
+        1.6709810495376587,
+        1.6980881690979004,
+        1.7256176471710205,
+        1.7535901069641113,
+        1.7820276021957397,
+        1.8109537363052368,
+        1.8403940200805664,
+        1.8703757524490356,
+        1.9009287357330322,
+        1.9320849180221558,
+        1.963879108428955,
+        1.9963490962982178,
+        2.029536247253418,
+        2.063485860824585,
+        2.0982470512390137,
+        2.1338748931884766,
+        2.170428991317749,
+        2.2079761028289795,
+        2.2465906143188477,
+        2.2863550186157227,
+        2.327362537384033,
+        2.369717836380005,
+        2.413539409637451,
+        2.4589626789093018,
+        2.506143093109131,
+        2.555259943008423,
+        2.6065220832824707,
+        2.660174608230591,
+        2.716508150100708,
+        2.7758712768554688,
+        2.838686466217041,
+        2.905473470687866,
+        2.9768826961517334,
+        3.0537426471710205,
+        3.1371331214904785,
+        3.2285008430480957,
+        3.3298490047454834,
+        3.4440722465515137,
+        3.5755884647369385,
+        3.7316668033599854,
+        3.925638198852539,
+        4.186595916748047,
+        4.603536128997803
+      ],
+      "float32StationarityResidual": 8.564586728709855e-08,
+      "float64FinalUpdateDelta": 9.999046035602532e-11,
+      "float64UpdateTolerance": 1e-10,
+      "levels": 256,
+      "lloydIterations": 62485,
+      "serializedBytes": 1024,
+      "serializedDType": "float32 little endian",
+      "serializedSHA256": "6e7d6f659db061c6c5fc295a8a41356f3a0e0084361ed962f0fb7195b94def5d",
+      "target": "standard normal N(0,1), Gaussian approximation; not exact finite-dimensional sphere density"
+    }
+  },
+  "experimentSourcesSHA256": {
+    "packet_reference.py": "c5738f3fee5dd8db83cabf358c1f1d91bed593bd39548811761ad9e3fdb984c2",
+    "rotated_scalar_codec.py": "9999d16dc1fd01154922ffd67591c675e79af711120bf04662038cf4f96997f1",
+    "run_rotated_packet.py": "1803934dc010f7f9b98db733a0a4cd82cbf870f9bf1ff7b5bd203843581002a8",
+    "test_rotated_scalar_codec.py": "740315e3f8e225d93b0ff4d2b07421f96cd95e0c11a2b889b42f26193b8ea1cb"
+  },
+  "geometry": {
+    "attention": "full",
+    "isBidirectional": false,
+    "kShape": [
+      1,
+      2,
+      5585,
+      256
+    ],
+    "modelLayer": 3,
+    "mtpEnabled": false,
+    "qShape": [
+      1,
+      16,
+      1,
+      256
+    ],
+    "scale": 0.0625,
+    "sharesKV": false,
+    "storageOwner": 0,
+    "vShape": [
+      1,
+      2,
+      5585,
+      256
+    ],
+    "visibleEnd": 5585,
+    "visibleStart": 0
+  },
+  "identity": {
+    "artifactSHA256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "backend": "paged",
+    "inputSHA256": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e",
+    "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+  },
+  "limitations": [
+    "No whole-model accuracy, logits, generation, perplexity, retrieval or all-model quality evaluation.",
+    "No Metal kernel, live compressed KV allocation, native cache adoption, SSD integration or runtime throughput qualification.",
+    "The artificial repetitive prompt and one layer/query are not representative production traffic.",
+    "Norm-separated signed-Hadamard Gaussian quantization is MSE-style only: not Haar rotation, exact finite-dimensional Beta codebook or QJL-corrected TurboQuant.",
+    "Explicit block64 is a different quantizer with extra per-block FP32 norms; block128 key affine uses per64 affine parameters.",
+    "Recent128 is kept native; small128-token windows would receive no compression under that policy.",
+    "Byte counts include packed codes, FP32 parameters/norms, actual sign masks, uint64 seeds, actual FP32 codebooks and codec manifest. DBK3/AES and allocator page overhead excluded.",
+    "Shared-KV borrowers require one encoded payload per actual owner; no sharing is synthesized by this single-owner experiment.",
+    "Recurrent, conv/SSM, MTP, diffusion latent state and other auxiliary state remain native and are absent from the measured savings.",
+    "Positive non-power-of-two dimensions use a generic explicit zero-pad/full-inverse/crop path; current D192 may instead use exactly3 block64 tiles without padding."
+  ],
+  "nativeCapturedOutputErrorVsUnmodifiedKVFP32": {
+    "linf": 0.0038410425186157227,
+    "relativeL2": 0.0016507591375088167,
+    "rmse": 0.000443042058161569
+  },
+  "numericalPolicy": {
+    "QJLResidualCorrection": false,
+    "codebook": "Lloyd-Max for standard Gaussian; FP32 serialized centroids",
+    "fullTurboQuantImplementation": false,
+    "nativeTailTokens": [
+      0,
+      128
+    ],
+    "norms": "FP32 per old token/head/vector (or per64 block for explicit block64 candidate)",
+    "quantizedAttentionDomain": "reconstructed original basis; separate FP32 and native BF16 references",
+    "rotation": "PCG64 seeded sign mask + normalized signed FWHT",
+    "seed": 20261009
+  },
+  "packetSHA256": "904b08bd45a46abbf8b6c878e190079a80529d78b79de33efa62ddb770c7cc44",
+  "recent128AttentionMass": [
+    {
+      "queryHead": 0,
+      "recent128ProbabilityMass": 0.9261311292648315
+    },
+    {
+      "queryHead": 1,
+      "recent128ProbabilityMass": 0.5906361937522888
+    },
+    {
+      "queryHead": 2,
+      "recent128ProbabilityMass": 0.9807910919189453
+    },
+    {
+      "queryHead": 3,
+      "recent128ProbabilityMass": 0.8972877860069275
+    },
+    {
+      "queryHead": 4,
+      "recent128ProbabilityMass": 0.2595416009426117
+    },
+    {
+      "queryHead": 5,
+      "recent128ProbabilityMass": 0.922427773475647
+    },
+    {
+      "queryHead": 6,
+      "recent128ProbabilityMass": 0.9836907386779785
+    },
+    {
+      "queryHead": 7,
+      "recent128ProbabilityMass": 0.8656006455421448
+    },
+    {
+      "queryHead": 8,
+      "recent128ProbabilityMass": 0.8190045952796936
+    },
+    {
+      "queryHead": 9,
+      "recent128ProbabilityMass": 0.5475066900253296
+    },
+    {
+      "queryHead": 10,
+      "recent128ProbabilityMass": 0.8927798271179199
+    },
+    {
+      "queryHead": 11,
+      "recent128ProbabilityMass": 0.9560097455978394
+    },
+    {
+      "queryHead": 12,
+      "recent128ProbabilityMass": 0.6966906189918518
+    },
+    {
+      "queryHead": 13,
+      "recent128ProbabilityMass": 0.6532701849937439
+    },
+    {
+      "queryHead": 14,
+      "recent128ProbabilityMass": 0.5721217393875122
+    },
+    {
+      "queryHead": 15,
+      "recent128ProbabilityMass": 0.9571336507797241
+    }
+  ],
+  "runtime": {
+    "numpy": "2.4.3",
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.3",
+    "scipy": "1.17.1",
+    "threads": 1,
+    "timing": "single CPU observation; not native kernel/inference latency"
+  },
+  "schema": "darkbloom.rotated-kv-cpu-candidate.v1",
+  "scope": "One archived public artificial benchmark; Qwen3.6 owner0/model3; single decode query; CPU-only.",
+  "sourceArchive": "docs/reports/evidence/qwen36-owner0-packets-2026-09-06/payloads.tar.gz",
+  "sourceArchiveSHA256": "0ad883a7d23b3de60643197446064e15fd91ac71ee759012f5ef4ebd25f30f81",
+  "tensorSHA256": {
+    "incomingKeys": "f5b873ac4ff0d4a01dcf7ab7fbdc48a76f0198050158065aa652283ec1236b62",
+    "incomingValues": "ce0e282312a838e5bed4327fb9c49863f625e194671ef1d154ac4beffacabc0c",
+    "output": "accec5723d4f912aeadaece3119276b49643eed5f7b9f94526f107958abdfa3b",
+    "queries": "9b97f431e773234a3c3a4737a3728f993df3d6d8fee5e9126028f98c9f0c113d",
+    "storedKeys": "10f5befecf315d957d58ff439c8847bed009e4ef3565b399083fe72f47f0995a",
+    "storedValues": "9840433105308fe90923372d8c6c4b90a93b7b44921f79c73a3931580adde705"
+  },
+  "timestampUTC": "2026-10-09T09:01:15.658811+00:00",
+  "variants": [
+    {
+      "bits": 4,
+      "candidate": "native_rotation_control",
+      "codecManifestBytes": 296,
+      "maximumHeadRelativeL2NativeBF16": 2.688197916233865e-07,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 1.9073486328125e-06,
+        "maximumLogitRMSEAcrossHeads": 3.307029217018837e-08
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 4.6193599700927734e-07,
+        "relativeL2": 8.591900707663172e-08,
+        "rmse": 2.3059532348174576e-08
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 4.6193599700927734e-07,
+        "relativeL2": 6.188691395532252e-08,
+        "rmse": 1.6609634385190592e-08
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 5.960464477539063e-08,
+          "relativeL2": 1.2308525301935509e-08,
+          "rmse": 3.725290298461914e-09
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 6.4151917421770095e-09,
+          "rmse": 1.5133991837501526e-09
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 4.657824308356565e-09,
+          "rmse": 1.1465579506238112e-09
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 5.56912350195578e-09,
+          "rmse": 1.6141478698540068e-09
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 2.9802322387695312e-08,
+          "relativeL2": 1.2653147123419235e-08,
+          "rmse": 2.9560094526025053e-09
+        },
+        {
+          "linf": 4.6193599700927734e-07,
+          "relativeL2": 2.688197916233865e-07,
+          "rmse": 6.609228709618726e-08
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 5.435765757683598e-09,
+          "rmse": 1.1465579506238112e-09
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 3.2114465207826315e-09,
+          "rmse": 9.313225746154785e-10
+        },
+        {
+          "linf": 7.450580596923828e-09,
+          "relativeL2": 2.296102520613225e-09,
+          "rmse": 5.206251464550825e-10
+        },
+        {
+          "linf": 7.450580596923828e-09,
+          "relativeL2": 1.7671757346286174e-09,
+          "rmse": 4.656612873077393e-10
+        },
+        {
+          "linf": 7.450580596923828e-09,
+          "relativeL2": 3.185373539178403e-09,
+          "rmse": 6.585445079827193e-10
+        },
+        {
+          "linf": 1.862645149230957e-09,
+          "relativeL2": 5.511536391369093e-10,
+          "rmse": 1.1641532182693481e-10
+        },
+        {
+          "linf": 2.9802322387695312e-08,
+          "relativeL2": 1.808339740774907e-08,
+          "rmse": 3.734374170272015e-09
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.0,
+      "storageBytes": 11438080,
+      "storageBytesWithManifest": 11438376,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 1.2516975402832031e-06,
+            "relativeL2": 1.0358697718497161e-08,
+            "rmse": 1.4600379276922126e-08
+          },
+          "control": "unquantized FP32 forward/inverse rotation, then native BF16 round; no packed format",
+          "cpuEncodeDecodeRoundMsSingleObservation": 146.95041699451394,
+          "method": "control",
+          "nativeBF16TensorError": {
+            "linf": 1.9073486328125e-06,
+            "relativeL2": 7.080930263934036e-09,
+            "rmse": 9.980430966941296e-09
+          },
+          "nativeResidualBytes": 0,
+          "recentNativeRows": 0,
+          "storageBytes": 5719040,
+          "totalStorageBytes": 5719040
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 5.364418029785156e-07,
+            "relativeL2": 9.370632908922566e-09,
+            "rmse": 3.854566334425066e-09
+          },
+          "control": "unquantized FP32 forward/inverse rotation, then native BF16 round; no packed format",
+          "cpuEncodeDecodeRoundMsSingleObservation": 142.15862500714138,
+          "method": "control",
+          "nativeBF16TensorError": {
+            "linf": 5.364418029785156e-07,
+            "relativeL2": 8.373858184986557e-09,
+            "rmse": 3.4445476802708566e-09
+          },
+          "nativeResidualBytes": 0,
+          "recentNativeRows": 0,
+          "storageBytes": 5719040,
+          "totalStorageBytes": 5719040
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "native_rotation_control",
+      "codecManifestBytes": 298,
+      "maximumHeadRelativeL2NativeBF16": 6.4151917421770095e-09,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 9.5367431640625e-07,
+        "maximumLogitRMSEAcrossHeads": 2.3399524434973165e-08
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 5.960464477539063e-08,
+        "relativeL2": 7.783534109074457e-09,
+        "rmse": 2.088998263343978e-09
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 1.4901161193847656e-08,
+        "relativeL2": 2.448916592667143e-09,
+        "rmse": 6.572570297073232e-10
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 6.4151917421770095e-09,
+          "rmse": 1.5133991837501526e-09
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 4.657824308356565e-09,
+          "rmse": 1.1465579506238112e-09
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 3.21324367801702e-09,
+          "rmse": 9.313225746154785e-10
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 7.450580596923828e-09,
+          "relativeL2": 3.3797283774198418e-09,
+          "rmse": 7.895671277219975e-10
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        },
+        {
+          "linf": 7.450580596923828e-09,
+          "relativeL2": 2.275617825547023e-09,
+          "rmse": 4.799926683327254e-10
+        },
+        {
+          "linf": 1.4901161193847656e-08,
+          "relativeL2": 3.2114465207826315e-09,
+          "rmse": 9.313225746154785e-10
+        },
+        {
+          "linf": 3.725290298461914e-09,
+          "relativeL2": 1.0268482638799566e-09,
+          "rmse": 2.3283064365386963e-10
+        },
+        {
+          "linf": 7.450580596923828e-09,
+          "relativeL2": 1.7671757346286174e-09,
+          "rmse": 4.656612873077393e-10
+        },
+        {
+          "linf": 7.450580596923828e-09,
+          "relativeL2": 3.185373539178403e-09,
+          "rmse": 6.585445079827193e-10
+        },
+        {
+          "linf": 1.862645149230957e-09,
+          "relativeL2": 5.511536391369093e-10,
+          "rmse": 1.1641532182693481e-10
+        },
+        {
+          "linf": 0.0,
+          "relativeL2": 0.0,
+          "rmse": 0.0
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.0,
+      "storageBytes": 11438080,
+      "storageBytesWithManifest": 11438378,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 1.2516975402832031e-06,
+            "relativeL2": 1.0235997410684537e-08,
+            "rmse": 1.4427435623178816e-08
+          },
+          "control": "unquantized FP32 forward/inverse rotation, then native BF16 round; no packed format",
+          "cpuEncodeDecodeRoundMsSingleObservation": 137.44362501893193,
+          "method": "control",
+          "nativeBF16TensorError": {
+            "linf": 1.9073486328125e-06,
+            "relativeL2": 7.008312182443918e-09,
+            "rmse": 9.878077219305152e-09
+          },
+          "nativeResidualBytes": 131072,
+          "recentNativeRows": 128,
+          "storageBytes": 5587968,
+          "totalStorageBytes": 5719040
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 5.364418029785156e-07,
+            "relativeL2": 9.186560863173175e-09,
+            "rmse": 3.778849153147081e-09
+          },
+          "control": "unquantized FP32 forward/inverse rotation, then native BF16 round; no packed format",
+          "cpuEncodeDecodeRoundMsSingleObservation": 139.13345799664967,
+          "method": "control",
+          "nativeBF16TensorError": {
+            "linf": 5.364418029785156e-07,
+            "relativeL2": 8.217077393189484e-09,
+            "rmse": 3.3800566295788514e-09
+          },
+          "nativeResidualBytes": 131072,
+          "recentNativeRows": 128,
+          "storageBytes": 5587968,
+          "totalStorageBytes": 5719040
+        }
+      }
+    },
+    {
+      "bits": 8,
+      "candidate": "affine8_per_token",
+      "codecManifestBytes": 290,
+      "maximumHeadRelativeL2NativeBF16": 0.011611072306621175,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.06455421447753906,
+        "maximumLogitRMSEAcrossHeads": 0.017328212575230026
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.012319743633270264,
+        "relativeL2": 0.005747473466308939,
+        "rmse": 0.0015425463448200474
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.01344519853591919,
+        "relativeL2": 0.006051314572343089,
+        "rmse": 0.0016240933045870585
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.0063697099685668945,
+          "relativeL2": 0.005834868131563259,
+          "rmse": 0.0017659774107869073
+        },
+        {
+          "linf": 0.0015543252229690552,
+          "relativeL2": 0.002602253722294098,
+          "rmse": 0.0006138941465051567
+        },
+        {
+          "linf": 0.009839236736297607,
+          "relativeL2": 0.007613344032456871,
+          "rmse": 0.0026491659727385553
+        },
+        {
+          "linf": 0.00678563117980957,
+          "relativeL2": 0.0079409462977344,
+          "rmse": 0.0024985636924888467
+        },
+        {
+          "linf": 0.0029793009161949158,
+          "relativeL2": 0.004255952111169236,
+          "rmse": 0.0010476341329106508
+        },
+        {
+          "linf": 0.006419539451599121,
+          "relativeL2": 0.006468395806303847,
+          "rmse": 0.0018747918426393784
+        },
+        {
+          "linf": 0.004395633935928345,
+          "relativeL2": 0.004906136292674604,
+          "rmse": 0.00187529772385697
+        },
+        {
+          "linf": 0.001962810754776001,
+          "relativeL2": 0.0026873864621197365,
+          "rmse": 0.0006278232369651979
+        },
+        {
+          "linf": 0.004049435257911682,
+          "relativeL2": 0.004292858771397114,
+          "rmse": 0.001055446299802431
+        },
+        {
+          "linf": 0.003833383321762085,
+          "relativeL2": 0.00385211837500428,
+          "rmse": 0.000812521574050932
+        },
+        {
+          "linf": 0.01344519853591919,
+          "relativeL2": 0.011611072306621175,
+          "rmse": 0.003367222117718349
+        },
+        {
+          "linf": 0.002942480146884918,
+          "relativeL2": 0.004297040267490238,
+          "rmse": 0.0009743237501381307
+        },
+        {
+          "linf": 0.0029981955885887146,
+          "relativeL2": 0.003799258114802825,
+          "rmse": 0.0010011270468951179
+        },
+        {
+          "linf": 0.0029275715351104736,
+          "relativeL2": 0.0037576689979585357,
+          "rmse": 0.0007768609398509627
+        },
+        {
+          "linf": 0.0021583735942840576,
+          "relativeL2": 0.0028313585751143185,
+          "rmse": 0.000598042898248028
+        },
+        {
+          "linf": 0.003442227840423584,
+          "relativeL2": 0.004588974585991501,
+          "rmse": 0.0009476619783082285
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.4375,
+      "storageBytes": 6433920,
+      "storageBytesWithManifest": 6434210,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.030415058135986328,
+            "relativeL2": 0.006087995192977151,
+            "rmse": 0.008580908649822137
+          },
+          "biasBytes": 178720,
+          "biasSHA256": "a38a686c0158ad1e0d28d83276981eed606f4c0baa58f91a2fbd901fffeba391",
+          "bits": 8,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 58.26195899862796,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 44680,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.03125,
+            "relativeL2": 0.006260815773393897,
+            "rmse": 0.008824495835153033
+          },
+          "nativeResidualBytes": 0,
+          "packedCodeBytes": 2859520,
+          "packedCodesSHA256": "f6dc12fd481ec5028af9fcfbb79e1480671444f11ebbca7faa343dd933dbbb95",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2859520,
+          "recentNativeRows": 0,
+          "scaleBytes": 178720,
+          "scalesSHA256": "db084418dad2a5bb136b89062121a1ce069ac161c6d74bcd611c0e1dd95b0842",
+          "storageBytes": 3216960,
+          "totalStorageBytes": 3216960
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.010110259056091309,
+            "relativeL2": 0.006193616586837132,
+            "rmse": 0.002547715422853342
+          },
+          "biasBytes": 178720,
+          "biasSHA256": "4b5013036cffff1396167d847ad835921a50d3b597abd5e92dfbd576a3a8459c",
+          "bits": 8,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 58.52895800489932,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 44680,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.015625,
+            "relativeL2": 0.006399575126463815,
+            "rmse": 0.002632435511757523
+          },
+          "nativeResidualBytes": 0,
+          "packedCodeBytes": 2859520,
+          "packedCodesSHA256": "f5b718112b5399640dce83736e96e7729fc79d7adef6f9d2357b5747adefa97c",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2859520,
+          "recentNativeRows": 0,
+          "scaleBytes": 178720,
+          "scalesSHA256": "7f854d76f60e84df31989f9f8166021c942fb1e63c2d87845c117f37570c408f",
+          "storageBytes": 3216960,
+          "totalStorageBytes": 3216960
+        }
+      }
+    },
+    {
+      "bits": 8,
+      "candidate": "affine8_per_token",
+      "codecManifestBytes": 292,
+      "maximumHeadRelativeL2NativeBF16": 0.0017670617746662269,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.06455421447753906,
+        "maximumLogitRMSEAcrossHeads": 0.01716160133294479
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.002582147717475891,
+        "relativeL2": 0.0006846598268528675,
+        "rmse": 0.00018375369969915903
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.0016393661499023438,
+        "relativeL2": 0.000696042792535203,
+        "rmse": 0.0001868087380928856
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.00018753111362457275,
+          "relativeL2": 0.00017702598511574674,
+          "rmse": 5.3578570035815155e-05
+        },
+        {
+          "linf": 0.0007442235946655273,
+          "relativeL2": 0.0007100586460411869,
+          "rmse": 0.00016750897222111746
+        },
+        {
+          "linf": 1.8164515495300293e-05,
+          "relativeL2": 1.3152337849833417e-05,
+          "rmse": 4.576533747220682e-06
+        },
+        {
+          "linf": 0.00013151764869689941,
+          "relativeL2": 0.00012609389445415105,
+          "rmse": 3.967456959349407e-05
+        },
+        {
+          "linf": 0.0016393661499023438,
+          "relativeL2": 0.0015057651028122293,
+          "rmse": 0.00037065523216576405
+        },
+        {
+          "linf": 0.0001824498176574707,
+          "relativeL2": 0.00013907887919581215,
+          "rmse": 4.031045038178172e-05
+        },
+        {
+          "linf": 1.4960765838623047e-05,
+          "relativeL2": 1.2382730470028157e-05,
+          "rmse": 4.733114793457753e-06
+        },
+        {
+          "linf": 0.0003452599048614502,
+          "relativeL2": 0.00023103677656801232,
+          "rmse": 5.397446886315079e-05
+        },
+        {
+          "linf": 0.0006804764270782471,
+          "relativeL2": 0.0007968319196776968,
+          "rmse": 0.00019590984608948238
+        },
+        {
+          "linf": 0.0011291876435279846,
+          "relativeL2": 0.0017670617746662269,
+          "rmse": 0.0003727237002667242
+        },
+        {
+          "linf": 7.667392492294312e-05,
+          "relativeL2": 8.310138768611249e-05,
+          "rmse": 2.4099482221827032e-05
+        },
+        {
+          "linf": 0.00011207163333892822,
+          "relativeL2": 0.00015058275919134243,
+          "rmse": 3.414358477193143e-05
+        },
+        {
+          "linf": 0.0011150985956192017,
+          "relativeL2": 0.0010263449602591704,
+          "rmse": 0.00027044798434635334
+        },
+        {
+          "linf": 0.0009363442659378052,
+          "relativeL2": 0.0013687819724132481,
+          "rmse": 0.0002829821493371844
+        },
+        {
+          "linf": 0.0007351934909820557,
+          "relativeL2": 0.0010725067144814594,
+          "rmse": 0.00022653613341540993
+        },
+        {
+          "linf": 5.3233467042446136e-05,
+          "relativeL2": 8.379438421628981e-05,
+          "rmse": 1.730424748045795e-05
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.42747314234556844,
+      "storageBytes": 6548608,
+      "storageBytesWithManifest": 6548900,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.030415058135986328,
+            "relativeL2": 0.006018153310506273,
+            "rmse": 0.008482467899720106
+          },
+          "biasBytes": 174624,
+          "biasSHA256": "6687b10fcc77094ddb86d285747ec00ddcb839fce5c6abe5d90aecfd719f3ecd",
+          "bits": 8,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 56.394957995507866,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 43656,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.03125,
+            "relativeL2": 0.006188940323421268,
+            "rmse": 0.008723188811932736
+          },
+          "nativeResidualBytes": 131072,
+          "packedCodeBytes": 2793984,
+          "packedCodesSHA256": "a2cbdb9e826ded73c5591f8ed3a3995cb5897c1b4095e9d248a89bdd2ddc0f15",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2793984,
+          "recentNativeRows": 128,
+          "scaleBytes": 174624,
+          "scalesSHA256": "3b1a398042fccddac5fb45f9cbbf48167f80ddbe072299ddeb5dd383f3b67507",
+          "storageBytes": 3143232,
+          "totalStorageBytes": 3274304
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.010110259056091309,
+            "relativeL2": 0.006116395353473791,
+            "rmse": 0.00251595082708717
+          },
+          "biasBytes": 174624,
+          "biasSHA256": "3aab5f134eb53009f78742a09ff3889bed7a4fe745e800fade959aace68912b1",
+          "bits": 8,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 57.388707995414734,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 43656,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.015625,
+            "relativeL2": 0.00631977765136883,
+            "rmse": 0.002599611190917852
+          },
+          "nativeResidualBytes": 131072,
+          "packedCodeBytes": 2793984,
+          "packedCodesSHA256": "52f4ea6320cc130660088b2f2a3b5934ecacd542601131c1a1a160aa3f9d0a5d",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2793984,
+          "recentNativeRows": 128,
+          "scaleBytes": 174624,
+          "scalesSHA256": "e63e492ee3f29f3b231d0adccf24c85045b021e41f5cec767d6156dae6b7780a",
+          "storageBytes": 3143232,
+          "totalStorageBytes": 3274304
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "affine4_per_token",
+      "codecManifestBytes": 290,
+      "maximumHeadRelativeL2NativeBF16": 0.12328951009003146,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 1.1183750629425049,
+        "maximumLogitRMSEAcrossHeads": 0.278773372898597
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.10914146900177002,
+        "relativeL2": 0.08487683904488702,
+        "rmse": 0.02277982814467027
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.10855263471603394,
+        "relativeL2": 0.08512389762638684,
+        "rmse": 0.022846135421090583
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.06246793270111084,
+          "relativeL2": 0.07550389959286029,
+          "rmse": 0.022851961364136347
+        },
+        {
+          "linf": 0.06122481822967529,
+          "relativeL2": 0.08126239179115026,
+          "rmse": 0.01917050064111997
+        },
+        {
+          "linf": 0.10855263471603394,
+          "relativeL2": 0.12328951009003146,
+          "rmse": 0.042900251654688165
+        },
+        {
+          "linf": 0.06097730994224548,
+          "relativeL2": 0.0821856842999731,
+          "rmse": 0.02585915571458403
+        },
+        {
+          "linf": 0.04032492637634277,
+          "relativeL2": 0.0482745723969132,
+          "rmse": 0.011883143530197853
+        },
+        {
+          "linf": 0.1073375940322876,
+          "relativeL2": 0.11325869509368436,
+          "rmse": 0.03282676014703447
+        },
+        {
+          "linf": 0.06540927290916443,
+          "relativeL2": 0.07857601602734592,
+          "rmse": 0.03003451498602786
+        },
+        {
+          "linf": 0.026071801781654358,
+          "relativeL2": 0.03895527302795566,
+          "rmse": 0.00910067307177813
+        },
+        {
+          "linf": 0.04161611199378967,
+          "relativeL2": 0.06738578324518563,
+          "rmse": 0.016567532120855932
+        },
+        {
+          "linf": 0.051192134618759155,
+          "relativeL2": 0.058352341038490935,
+          "rmse": 0.012308172121034253
+        },
+        {
+          "linf": 0.10033875703811646,
+          "relativeL2": 0.09813166314414372,
+          "rmse": 0.02845827653652799
+        },
+        {
+          "linf": 0.043568000197410583,
+          "relativeL2": 0.07468121304147243,
+          "rmse": 0.016933441398242006
+        },
+        {
+          "linf": 0.08923441171646118,
+          "relativeL2": 0.10185435662656435,
+          "rmse": 0.026839227075848876
+        },
+        {
+          "linf": 0.05153974890708923,
+          "relativeL2": 0.06926523689256678,
+          "rmse": 0.014319903392393682
+        },
+        {
+          "linf": 0.03380948305130005,
+          "relativeL2": 0.05943556903656706,
+          "rmse": 0.012554051005077714
+        },
+        {
+          "linf": 0.030924096703529358,
+          "relativeL2": 0.05790485659700215,
+          "rmse": 0.01195784154566485
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.6875,
+      "storageBytes": 3574400,
+      "storageBytesWithManifest": 3574690,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.5145831108093262,
+            "relativeL2": 0.1034334224074552,
+            "rmse": 0.14578736035151305
+          },
+          "biasBytes": 178720,
+          "biasSHA256": "a38a686c0158ad1e0d28d83276981eed606f4c0baa58f91a2fbd901fffeba391",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 56.38487500254996,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 44680,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.515625,
+            "relativeL2": 0.10344234111064719,
+            "rmse": 0.14579993108702438
+          },
+          "nativeResidualBytes": 0,
+          "packedCodeBytes": 1429760,
+          "packedCodesSHA256": "71439cac144945ace334340b24113a3b745930ecc6f1ed462068d76b45521188",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2859520,
+          "recentNativeRows": 0,
+          "scaleBytes": 178720,
+          "scalesSHA256": "f04d0ff1e024155d6b843622ec2c2cffddfde5f774872821751e240e198ead88",
+          "storageBytes": 1787200,
+          "totalStorageBytes": 1787200
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10527715460188328,
+            "rmse": 0.04330526868959813
+          },
+          "biasBytes": 178720,
+          "biasSHA256": "4b5013036cffff1396167d847ad835921a50d3b597abd5e92dfbd576a3a8459c",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 54.58516700309701,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 44680,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10528679154790149,
+            "rmse": 0.04330923280259344
+          },
+          "nativeResidualBytes": 0,
+          "packedCodeBytes": 1429760,
+          "packedCodesSHA256": "5040c370ff02568b8cab53f7ebf4f0d3fd38577e59c9c7120351b65177cc4bbe",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2859520,
+          "recentNativeRows": 0,
+          "scaleBytes": 178720,
+          "scalesSHA256": "e840df597172ff74cb362db6422736deea632ca9a320351adb130206d46cff9b",
+          "storageBytes": 1787200,
+          "totalStorageBytes": 1787200
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "affine4_per_token",
+      "codecManifestBytes": 292,
+      "maximumHeadRelativeL2NativeBF16": 0.03739122542919185,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 1.1183750629425049,
+        "maximumLogitRMSEAcrossHeads": 0.2763766523238723
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.036295682191848755,
+        "relativeL2": 0.014563460006781284,
+        "rmse": 0.003908641272218077
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.03595256805419922,
+        "relativeL2": 0.014548039393595787,
+        "rmse": 0.0039045025822974345
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.0034090951085090637,
+          "relativeL2": 0.0027597677388810312,
+          "rmse": 0.0008352695169782043
+        },
+        {
+          "linf": 0.01225423812866211,
+          "relativeL2": 0.012001675743131572,
+          "rmse": 0.0028312990481443603
+        },
+        {
+          "linf": 0.0012484490871429443,
+          "relativeL2": 0.0007902587906178911,
+          "rmse": 0.000274981228857833
+        },
+        {
+          "linf": 0.0038317739963531494,
+          "relativeL2": 0.0042106382267353476,
+          "rmse": 0.0013248481227644284
+        },
+        {
+          "linf": 0.03595256805419922,
+          "relativeL2": 0.03224902296022799,
+          "rmse": 0.007938335846751887
+        },
+        {
+          "linf": 0.0031251609325408936,
+          "relativeL2": 0.003078684033100709,
+          "rmse": 0.000892321973509452
+        },
+        {
+          "linf": 0.00032341480255126953,
+          "relativeL2": 0.0002965976968148791,
+          "rmse": 0.0001133700640499211
+        },
+        {
+          "linf": 0.003995299339294434,
+          "relativeL2": 0.0037613847082461375,
+          "rmse": 0.0008787291133184515
+        },
+        {
+          "linf": 0.011104926466941833,
+          "relativeL2": 0.013558914254930169,
+          "rmse": 0.0033336074261411247
+        },
+        {
+          "linf": 0.026178978383541107,
+          "relativeL2": 0.03739122542919185,
+          "rmse": 0.00788687531996896
+        },
+        {
+          "linf": 0.0034088939428329468,
+          "relativeL2": 0.003959337127650552,
+          "rmse": 0.001148211568721854
+        },
+        {
+          "linf": 0.003134053200483322,
+          "relativeL2": 0.003882713110748468,
+          "rmse": 0.0008803779725770348
+        },
+        {
+          "linf": 0.02093002200126648,
+          "relativeL2": 0.020072270734394434,
+          "rmse": 0.005289162388443431
+        },
+        {
+          "linf": 0.023561488837003708,
+          "relativeL2": 0.03471124935983771,
+          "rmse": 0.007176207860706897
+        },
+        {
+          "linf": 0.01013113558292389,
+          "relativeL2": 0.017562514394899403,
+          "rmse": 0.0037095750081122367
+        },
+        {
+          "linf": 0.0011699050664901733,
+          "relativeL2": 0.001783870937243403,
+          "rmse": 0.0003683844026060091
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.6717435094001791,
+      "storageBytes": 3754624,
+      "storageBytesWithManifest": 3754916,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.5145831108093262,
+            "relativeL2": 0.10224327539298983,
+            "rmse": 0.14410987170586387
+          },
+          "biasBytes": 174624,
+          "biasSHA256": "6687b10fcc77094ddb86d285747ec00ddcb839fce5c6abe5d90aecfd719f3ecd",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 52.332541992655024,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 43656,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.515625,
+            "relativeL2": 0.102252415513597,
+            "rmse": 0.14412275452483667
+          },
+          "nativeResidualBytes": 131072,
+          "packedCodeBytes": 1396992,
+          "packedCodesSHA256": "3038a74c843427401d9e29a311d78b6cc3294649c893500f6da30f3e83857dc1",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2793984,
+          "recentNativeRows": 128,
+          "scaleBytes": 174624,
+          "scalesSHA256": "70f4b5c0e29005de746c5f244845733be2d1300c9a724e3f95916fc0af440040",
+          "storageBytes": 1746240,
+          "totalStorageBytes": 1877312
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10395784903131323,
+            "rmse": 0.04276257846935735
+          },
+          "biasBytes": 174624,
+          "biasSHA256": "3aab5f134eb53009f78742a09ff3889bed7a4fe745e800fade959aace68912b1",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 51.55929099419154,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 43656,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10396732888051732,
+            "rmse": 0.04276647796130764
+          },
+          "nativeResidualBytes": 131072,
+          "packedCodeBytes": 1396992,
+          "packedCodesSHA256": "718de16afcd96e2eb7d3ea349e3e7b505578905a8f3539ecef3a1bd6d830f527",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2793984,
+          "recentNativeRows": 128,
+          "scaleBytes": 174624,
+          "scalesSHA256": "10dc5f7055e308f84dfcd6872036fd993088b0c7780a0c64accfac60f2fe8a60",
+          "storageBytes": 1746240,
+          "totalStorageBytes": 1877312
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "rotated4_kv_gaussian_codebook",
+      "codecManifestBytes": 302,
+      "maximumHeadRelativeL2NativeBF16": 0.10255636242482005,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.8382391929626465,
+        "maximumLogitRMSEAcrossHeads": 0.19391888323106832
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.1348639726638794,
+        "relativeL2": 0.07497812203929435,
+        "rmse": 0.02012314258972311
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.13368821144104004,
+        "relativeL2": 0.07501667503323337,
+        "rmse": 0.020133489706631282
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.06232750415802002,
+          "relativeL2": 0.0713926387402619,
+          "rmse": 0.021607649816414
+        },
+        {
+          "linf": 0.06186056137084961,
+          "relativeL2": 0.050827277106014944,
+          "rmse": 0.011990594011206002
+        },
+        {
+          "linf": 0.13368821144104004,
+          "relativeL2": 0.09391255339935413,
+          "rmse": 0.03267814245854794
+        },
+        {
+          "linf": 0.07319248467683792,
+          "relativeL2": 0.08045167646554092,
+          "rmse": 0.02531356217256001
+        },
+        {
+          "linf": 0.03006841242313385,
+          "relativeL2": 0.045820893023899405,
+          "rmse": 0.01127915217990941
+        },
+        {
+          "linf": 0.06574040651321411,
+          "relativeL2": 0.08783537828425432,
+          "rmse": 0.025458097437695462
+        },
+        {
+          "linf": 0.08318683505058289,
+          "relativeL2": 0.07615519053001023,
+          "rmse": 0.029109190397759308
+        },
+        {
+          "linf": 0.03739025443792343,
+          "relativeL2": 0.049222137834135364,
+          "rmse": 0.011499202790877615
+        },
+        {
+          "linf": 0.07691852748394012,
+          "relativeL2": 0.09333702354436642,
+          "rmse": 0.022947928497170908
+        },
+        {
+          "linf": 0.062369853258132935,
+          "relativeL2": 0.07413886261782837,
+          "rmse": 0.015637999533832284
+        },
+        {
+          "linf": 0.08216717466711998,
+          "relativeL2": 0.10255636242482005,
+          "rmse": 0.02974144357646191
+        },
+        {
+          "linf": 0.04219183139503002,
+          "relativeL2": 0.07047388265973453,
+          "rmse": 0.01597945873565941
+        },
+        {
+          "linf": 0.053139567375183105,
+          "relativeL2": 0.051478873319804865,
+          "rmse": 0.013564988444281782
+        },
+        {
+          "linf": 0.044442981481552124,
+          "relativeL2": 0.057681128980607316,
+          "rmse": 0.01192500353167979
+        },
+        {
+          "linf": 0.023260734975337982,
+          "relativeL2": 0.03562078802703373,
+          "rmse": 0.00752386486713566
+        },
+        {
+          "linf": 0.03361727297306061,
+          "relativeL2": 0.05251989537623843,
+          "rmse": 0.010845801609954586
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.742169315129812,
+      "storageBytes": 2949088,
+      "storageBytesWithManifest": 2949390,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.6880265772342682,
+            "relativeL2": 0.09718375732008974,
+            "rmse": 0.1369785811874742
+          },
+          "bits": 4,
+          "codeSHA256": "eb600e4ef1066c3ff700ee222edf4efb02a38c702e883a75e3c219ce2e5907e9",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 192.2199160035234,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.6884765625,
+            "relativeL2": 0.0971982967636813,
+            "rmse": 0.1369990742452582
+          },
+          "nativeResidualBytes": 0,
+          "normFP32Bytes": 44680,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "baf1dd5e95106272e4f691ede56ffb1054bdda0554ac0b1de4056cec0476e7d5",
+          "packedCodeBytes": 1429760,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 0,
+          "rotationGranularity": "entire head",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5585,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "a006b2b477510bdb7270f9dcf3a1e65aaae1f21fa7726caa89f991835c027986",
+          "storageBytes": 1474544,
+          "totalStorageBytes": 1474544,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.24439145624637604,
+            "relativeL2": 0.09627048123959946,
+            "rmse": 0.03960041542463186
+          },
+          "bits": 4,
+          "codeSHA256": "18be230172c77bdccbb3359dcb893ded8179826abd89b4933a9e5176e18c02fe",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 187.47766700107604,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.244140625,
+            "relativeL2": 0.09628626251123994,
+            "rmse": 0.03960690697744062
+          },
+          "nativeResidualBytes": 0,
+          "normFP32Bytes": 44680,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "8ddeee3e3360221ce10beb12beb7348566ce3fda4679593305e568ded5bd77cc",
+          "packedCodeBytes": 1429760,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 0,
+          "rotationGranularity": "entire head",
+          "seed": 20261010,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5585,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "d77092826cc4f8f3f5f26ac1f7683accd1002ea1d795bff2e9fb13dbeb8f24d5",
+          "storageBytes": 1474544,
+          "totalStorageBytes": 1474544,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "rotated4_kv_gaussian_codebook",
+      "codecManifestBytes": 304,
+      "maximumHeadRelativeL2NativeBF16": 0.06292379404104344,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.8382391929626465,
+        "maximumLogitRMSEAcrossHeads": 0.1917232022418555
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.06559085845947266,
+        "relativeL2": 0.017915313169695694,
+        "rmse": 0.0048082346109495026
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.06575784087181091,
+        "relativeL2": 0.01799748125176532,
+        "rmse": 0.004830287444320611
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.0053231120109558105,
+          "relativeL2": 0.002861973855882114,
+          "rmse": 0.0008662031541741829
+        },
+        {
+          "linf": 0.011284112930297852,
+          "relativeL2": 0.01203266288537296,
+          "rmse": 0.0028386091828464218
+        },
+        {
+          "linf": 0.0020605921745300293,
+          "relativeL2": 0.0010572663427952753,
+          "rmse": 0.0003678901160271253
+        },
+        {
+          "linf": 0.003245308995246887,
+          "relativeL2": 0.0024588227924117077,
+          "rmse": 0.0007736515429070108
+        },
+        {
+          "linf": 0.02008497714996338,
+          "relativeL2": 0.02907943523592717,
+          "rmse": 0.007158118353580925
+        },
+        {
+          "linf": 0.0022431612014770508,
+          "relativeL2": 0.002082002867060908,
+          "rmse": 0.0006034451366927119
+        },
+        {
+          "linf": 0.0008795261383056641,
+          "relativeL2": 0.0006014128977995249,
+          "rmse": 0.00022988114700882723
+        },
+        {
+          "linf": 0.006227374076843262,
+          "relativeL2": 0.004813101891980438,
+          "rmse": 0.0011244297209426967
+        },
+        {
+          "linf": 0.021948397159576416,
+          "relativeL2": 0.02104098101915968,
+          "rmse": 0.005173155406101976
+        },
+        {
+          "linf": 0.06575784087181091,
+          "relativeL2": 0.06292379404104344,
+          "rmse": 0.013272421873439563
+        },
+        {
+          "linf": 0.0016396641731262207,
+          "relativeL2": 0.001885261997947151,
+          "rmse": 0.0005467277896083337
+        },
+        {
+          "linf": 0.003092244267463684,
+          "relativeL2": 0.0035567179945636576,
+          "rmse": 0.0008064608658347667
+        },
+        {
+          "linf": 0.017787784337997437,
+          "relativeL2": 0.019041166759113548,
+          "rmse": 0.0050174603754128315
+        },
+        {
+          "linf": 0.032257914543151855,
+          "relativeL2": 0.039684868751216976,
+          "rmse": 0.008204454530902435
+        },
+        {
+          "linf": 0.012077808380126953,
+          "relativeL2": 0.01796939642455628,
+          "rmse": 0.0037955171103947836
+        },
+        {
+          "linf": 0.0011318325996398926,
+          "relativeL2": 0.0013951236977841155,
+          "rmse": 0.0002881048170244181
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.7251594673231871,
+      "storageBytes": 3143648,
+      "storageBytesWithManifest": 3143952,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.6880265772342682,
+            "relativeL2": 0.09607480635435223,
+            "rmse": 0.1354155367643934
+          },
+          "bits": 4,
+          "codeSHA256": "40b98944ec19c1ed7f3175180f8b98e1732b81ede3502423daaf7cd2a91b52f6",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 200.65325000905432,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.6884765625,
+            "relativeL2": 0.09608902776404603,
+            "rmse": 0.13543558155969726
+          },
+          "nativeResidualBytes": 131072,
+          "normFP32Bytes": 43656,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "8d2e037c808f81bd56efbbc670b761c3415f7bc70f5b29083263dac1403ba6a0",
+          "packedCodeBytes": 1396992,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 128,
+          "rotationGranularity": "entire head",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5457,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "a006b2b477510bdb7270f9dcf3a1e65aaae1f21fa7726caa89f991835c027986",
+          "storageBytes": 1440752,
+          "totalStorageBytes": 1571824,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.24439145624637604,
+            "relativeL2": 0.09502419270988106,
+            "rmse": 0.03908776042508978
+          },
+          "bits": 4,
+          "codeSHA256": "6da644df31f76bbbf1e860a3758b9f213b584050f1f69c633088006b946430ce",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 180.63025001902133,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.244140625,
+            "relativeL2": 0.09503989942156407,
+            "rmse": 0.03909422130800626
+          },
+          "nativeResidualBytes": 131072,
+          "normFP32Bytes": 43656,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "5a751030b90e0301a78618c20c151d886ee82e1ea6e07cd20ef9369ac151b6c9",
+          "packedCodeBytes": 1396992,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 128,
+          "rotationGranularity": "entire head",
+          "seed": 20261010,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5457,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "d77092826cc4f8f3f5f26ac1f7683accd1002ea1d795bff2e9fb13dbeb8f24d5",
+          "storageBytes": 1440752,
+          "totalStorageBytes": 1571824,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        }
+      }
+    },
+    {
+      "bits": 8,
+      "candidate": "rotated8_kv_gaussian_codebook",
+      "codecManifestBytes": 302,
+      "maximumHeadRelativeL2NativeBF16": 0.008498376466227359,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.06033068895339966,
+        "maximumLogitRMSEAcrossHeads": 0.01274394025602152
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.009608566761016846,
+        "relativeL2": 0.005468079463155589,
+        "rmse": 0.0014675606661813919
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.009447365999221802,
+        "relativeL2": 0.005189325479497235,
+        "rmse": 0.0013927467603640307
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.004769116640090942,
+          "relativeL2": 0.005004209510517034,
+          "rmse": 0.001514570810369012
+        },
+        {
+          "linf": 0.0025548264384269714,
+          "relativeL2": 0.0024152377846848056,
+          "rmse": 0.0005697754702907921
+        },
+        {
+          "linf": 0.007151998579502106,
+          "relativeL2": 0.006529438912608118,
+          "rmse": 0.0022720065341345717
+        },
+        {
+          "linf": 0.009447365999221802,
+          "relativeL2": 0.005690738748660858,
+          "rmse": 0.0017905514894238873
+        },
+        {
+          "linf": 0.0047833919525146484,
+          "relativeL2": 0.004235487691531252,
+          "rmse": 0.0010425966644516673
+        },
+        {
+          "linf": 0.0039337873458862305,
+          "relativeL2": 0.0049418533774190955,
+          "rmse": 0.0014323406725475776
+        },
+        {
+          "linf": 0.007177077233791351,
+          "relativeL2": 0.005482855227526997,
+          "rmse": 0.002095739970324671
+        },
+        {
+          "linf": 0.0014673024415969849,
+          "relativeL2": 0.0023253161521275246,
+          "rmse": 0.0005432369084886443
+        },
+        {
+          "linf": 0.003033354878425598,
+          "relativeL2": 0.003317343251793778,
+          "rmse": 0.0008156051355821366
+        },
+        {
+          "linf": 0.002673029899597168,
+          "relativeL2": 0.003467227509890681,
+          "rmse": 0.0007313371188718828
+        },
+        {
+          "linf": 0.009001016616821289,
+          "relativeL2": 0.008498376466227359,
+          "rmse": 0.0024645373352347255
+        },
+        {
+          "linf": 0.003388702869415283,
+          "relativeL2": 0.005187600451922798,
+          "rmse": 0.001176252027418816
+        },
+        {
+          "linf": 0.003940671682357788,
+          "relativeL2": 0.004397332923158783,
+          "rmse": 0.0011587233061171208
+        },
+        {
+          "linf": 0.0023298151791095734,
+          "relativeL2": 0.00373350922961901,
+          "rmse": 0.0007718661464433948
+        },
+        {
+          "linf": 0.0015275776386260986,
+          "relativeL2": 0.0021969898438210476,
+          "rmse": 0.00046405078649113603
+        },
+        {
+          "linf": 0.0039049088954925537,
+          "relativeL2": 0.005754251587580695,
+          "rmse": 0.0011883015128949085
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.492001454789615,
+      "storageBytes": 5810528,
+      "storageBytesWithManifest": 5810830,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.05461454391479492,
+            "relativeL2": 0.006384616807241162,
+            "rmse": 0.008998990940441943
+          },
+          "bits": 8,
+          "codeSHA256": "bd7277dbbacfb68d43c3524ba4f07ad834e690e9994c0a55792485b03438ecc1",
+          "codebookFP32Bytes": 1024,
+          "codebookSHA256": "6e7d6f659db061c6c5fc295a8a41356f3a0e0084361ed962f0fb7195b94def5d",
+          "cpuEncodeDecodeRoundMsSingleObservation": 246.36966700199991,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.0625,
+            "relativeL2": 0.0065270301215520216,
+            "rmse": 0.009199719686422159
+          },
+          "nativeResidualBytes": 0,
+          "normFP32Bytes": 44680,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "baf1dd5e95106272e4f691ede56ffb1054bdda0554ac0b1de4056cec0476e7d5",
+          "packedCodeBytes": 2859520,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 0,
+          "rotationGranularity": "entire head",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5585,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "a006b2b477510bdb7270f9dcf3a1e65aaae1f21fa7726caa89f991835c027986",
+          "storageBytes": 2905264,
+          "totalStorageBytes": 2905264,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.015279233455657959,
+            "relativeL2": 0.0063252667048661875,
+            "rmse": 0.0026018690875854963
+          },
+          "bits": 8,
+          "codeSHA256": "7acce62c2305bde3cca3c0a0518bcfbb86636d33c9be7eda64df8861ff41b920",
+          "codebookFP32Bytes": 1024,
+          "codebookSHA256": "6e7d6f659db061c6c5fc295a8a41356f3a0e0084361ed962f0fb7195b94def5d",
+          "cpuEncodeDecodeRoundMsSingleObservation": 253.46454099053517,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.015625,
+            "relativeL2": 0.006481912002959011,
+            "rmse": 0.002666304403571426
+          },
+          "nativeResidualBytes": 0,
+          "normFP32Bytes": 44680,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "8ddeee3e3360221ce10beb12beb7348566ce3fda4679593305e568ded5bd77cc",
+          "packedCodeBytes": 2859520,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 0,
+          "rotationGranularity": "entire head",
+          "seed": 20261010,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5585,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "d77092826cc4f8f3f5f26ac1f7683accd1002ea1d795bff2e9fb13dbeb8f24d5",
+          "storageBytes": 2905264,
+          "totalStorageBytes": 2905264,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        }
+      }
+    },
+    {
+      "bits": 8,
+      "candidate": "rotated8_kv_gaussian_codebook",
+      "codecManifestBytes": 304,
+      "maximumHeadRelativeL2NativeBF16": 0.002401749200254935,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.06033068895339966,
+        "maximumLogitRMSEAcrossHeads": 0.012612294299453148
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.0028066933155059814,
+        "relativeL2": 0.0008562254143475268,
+        "rmse": 0.0002297996486605814
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.0027208328247070312,
+        "relativeL2": 0.0008065097099206074,
+        "rmse": 0.00021645660695826828
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.00012418627738952637,
+          "relativeL2": 0.00012686063504303673,
+          "rmse": 3.839555766345358e-05
+        },
+        {
+          "linf": 0.0003733299672603607,
+          "relativeL2": 0.0004990691648355787,
+          "rmse": 0.00011773472984935684
+        },
+        {
+          "linf": 2.7626752853393555e-05,
+          "relativeL2": 2.437627085151622e-05,
+          "rmse": 8.482052959487257e-06
+        },
+        {
+          "linf": 8.541345596313477e-05,
+          "relativeL2": 8.317315675100371e-05,
+          "rmse": 2.6169857074468806e-05
+        },
+        {
+          "linf": 0.0027208328247070312,
+          "relativeL2": 0.0019565590631467357,
+          "rmse": 0.00048162150420557166
+        },
+        {
+          "linf": 0.000166282057762146,
+          "relativeL2": 0.00015154208355840613,
+          "rmse": 4.392277012408432e-05
+        },
+        {
+          "linf": 1.8835067749023438e-05,
+          "relativeL2": 1.519175042854707e-05,
+          "rmse": 5.80682094841e-06
+        },
+        {
+          "linf": 0.0001246929168701172,
+          "relativeL2": 0.00016391961394668882,
+          "rmse": 3.829465693926328e-05
+        },
+        {
+          "linf": 0.0006783008575439453,
+          "relativeL2": 0.000908682074698328,
+          "rmse": 0.0002234094305238507
+        },
+        {
+          "linf": 0.002238929271697998,
+          "relativeL2": 0.002401749200254935,
+          "rmse": 0.0005065973707686328
+        },
+        {
+          "linf": 6.356090307235718e-05,
+          "relativeL2": 6.422541842919997e-05,
+          "rmse": 1.862543301286614e-05
+        },
+        {
+          "linf": 9.231641888618469e-05,
+          "relativeL2": 0.00012346930268421032,
+          "rmse": 2.7995798626407236e-05
+        },
+        {
+          "linf": 0.0009116828441619873,
+          "relativeL2": 0.001117815221241804,
+          "rmse": 0.00029455094063128643
+        },
+        {
+          "linf": 0.000823676586151123,
+          "relativeL2": 0.0012142032890889649,
+          "rmse": 0.0002510245337852379
+        },
+        {
+          "linf": 0.0005708448588848114,
+          "relativeL2": 0.0009522119414474863,
+          "rmse": 0.00020112732954943497
+        },
+        {
+          "linf": 5.5752694606781006e-05,
+          "relativeL2": 7.884534281875153e-05,
+          "rmse": 1.6282228666965846e-05
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.48072123992837956,
+      "storageBytes": 5939552,
+      "storageBytesWithManifest": 5939856,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.05461454391479492,
+            "relativeL2": 0.006312293270478865,
+            "rmse": 0.00889705234776611
+          },
+          "bits": 8,
+          "codeSHA256": "de50beb40b4e8f2f747b152e0409748bc9bb785eac7afc291e47e69f4aa9461b",
+          "codebookFP32Bytes": 1024,
+          "codebookSHA256": "6e7d6f659db061c6c5fc295a8a41356f3a0e0084361ed962f0fb7195b94def5d",
+          "cpuEncodeDecodeRoundMsSingleObservation": 240.2480419841595,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.0625,
+            "relativeL2": 0.006453105315949384,
+            "rmse": 0.009095524137029503
+          },
+          "nativeResidualBytes": 131072,
+          "normFP32Bytes": 43656,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "8d2e037c808f81bd56efbbc670b761c3415f7bc70f5b29083263dac1403ba6a0",
+          "packedCodeBytes": 2793984,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 128,
+          "rotationGranularity": "entire head",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5457,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "a006b2b477510bdb7270f9dcf3a1e65aaae1f21fa7726caa89f991835c027986",
+          "storageBytes": 2838704,
+          "totalStorageBytes": 2969776,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.015279233455657959,
+            "relativeL2": 0.0062434424962649615,
+            "rmse": 0.0025682110793291977
+          },
+          "bits": 8,
+          "codeSHA256": "56d445c4ca94ced2120c3e74657b4c5f6c135e47b68f29b86fd828d3b5985b78",
+          "codebookFP32Bytes": 1024,
+          "codebookSHA256": "6e7d6f659db061c6c5fc295a8a41356f3a0e0084361ed962f0fb7195b94def5d",
+          "cpuEncodeDecodeRoundMsSingleObservation": 250.9087089856621,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.015625,
+            "relativeL2": 0.006397714264814471,
+            "rmse": 0.0026316700549590013
+          },
+          "nativeResidualBytes": 131072,
+          "normFP32Bytes": 43656,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "5a751030b90e0301a78618c20c151d886ee82e1ea6e07cd20ef9369ac151b6c9",
+          "packedCodeBytes": 2793984,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 128,
+          "rotationGranularity": "entire head",
+          "seed": 20261010,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5457,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "d77092826cc4f8f3f5f26ac1f7683accd1002ea1d795bff2e9fb13dbeb8f24d5",
+          "storageBytes": 2838704,
+          "totalStorageBytes": 2969776,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "rotated4_k_gaussian_v_affine",
+      "codecManifestBytes": 301,
+      "maximumHeadRelativeL2NativeBF16": 0.10339644178582548,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.8382391929626465,
+        "maximumLogitRMSEAcrossHeads": 0.19391888323106832
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.10120964050292969,
+        "relativeL2": 0.07655628684186946,
+        "rmse": 0.020546701282426267
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.10008800029754639,
+        "relativeL2": 0.07654754277565719,
+        "rmse": 0.020544354489969777
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.06646899878978729,
+          "relativeL2": 0.0749426845966427,
+          "rmse": 0.022682104396751963
+        },
+        {
+          "linf": 0.0408322811126709,
+          "relativeL2": 0.05069783624256528,
+          "rmse": 0.01196005779265454
+        },
+        {
+          "linf": 0.10008800029754639,
+          "relativeL2": 0.09517791084096451,
+          "rmse": 0.03311844068536852
+        },
+        {
+          "linf": 0.05779761075973511,
+          "relativeL2": 0.08100723481850675,
+          "rmse": 0.025488364756248976
+        },
+        {
+          "linf": 0.03784273564815521,
+          "relativeL2": 0.04817190946858954,
+          "rmse": 0.011857872290041234
+        },
+        {
+          "linf": 0.08345280587673187,
+          "relativeL2": 0.092656087370152,
+          "rmse": 0.02685532579857755
+        },
+        {
+          "linf": 0.07067602872848511,
+          "relativeL2": 0.07847810190354874,
+          "rmse": 0.029997088766588246
+        },
+        {
+          "linf": 0.0369497612118721,
+          "relativeL2": 0.048380269818140816,
+          "rmse": 0.011302526834386317
+        },
+        {
+          "linf": 0.07829664647579193,
+          "relativeL2": 0.09875778032567557,
+          "rmse": 0.024280680863748218
+        },
+        {
+          "linf": 0.05741533637046814,
+          "relativeL2": 0.06940392246341331,
+          "rmse": 0.014639265680722694
+        },
+        {
+          "linf": 0.06967048346996307,
+          "relativeL2": 0.10339644178582548,
+          "rmse": 0.029985067397786586
+        },
+        {
+          "linf": 0.04707615077495575,
+          "relativeL2": 0.07329905865260788,
+          "rmse": 0.016620047582127054
+        },
+        {
+          "linf": 0.0391615554690361,
+          "relativeL2": 0.05375212909160728,
+          "rmse": 0.014164004822978114
+        },
+        {
+          "linf": 0.034654904156923294,
+          "relativeL2": 0.05467964049039475,
+          "rmse": 0.0113044754408008
+        },
+        {
+          "linf": 0.025201603770256042,
+          "relativeL2": 0.03608068905539092,
+          "rmse": 0.0076210057048675525
+        },
+        {
+          "linf": 0.027982737869024277,
+          "relativeL2": 0.046961332210208456,
+          "rmse": 0.009697911407522122
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.714834657564906,
+      "storageBytes": 3261744,
+      "storageBytesWithManifest": 3262045,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.6880265772342682,
+            "relativeL2": 0.09718375732008974,
+            "rmse": 0.1369785811874742
+          },
+          "bits": 4,
+          "codeSHA256": "eb600e4ef1066c3ff700ee222edf4efb02a38c702e883a75e3c219ce2e5907e9",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 206.62075001746416,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.6884765625,
+            "relativeL2": 0.0971982967636813,
+            "rmse": 0.1369990742452582
+          },
+          "nativeResidualBytes": 0,
+          "normFP32Bytes": 44680,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "baf1dd5e95106272e4f691ede56ffb1054bdda0554ac0b1de4056cec0476e7d5",
+          "packedCodeBytes": 1429760,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 0,
+          "rotationGranularity": "entire head",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5585,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "a006b2b477510bdb7270f9dcf3a1e65aaae1f21fa7726caa89f991835c027986",
+          "storageBytes": 1474544,
+          "totalStorageBytes": 1474544,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10527715460188328,
+            "rmse": 0.04330526868959813
+          },
+          "biasBytes": 178720,
+          "biasSHA256": "4b5013036cffff1396167d847ad835921a50d3b597abd5e92dfbd576a3a8459c",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 53.57341701164842,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 44680,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10528679154790149,
+            "rmse": 0.04330923280259344
+          },
+          "nativeResidualBytes": 0,
+          "packedCodeBytes": 1429760,
+          "packedCodesSHA256": "5040c370ff02568b8cab53f7ebf4f0d3fd38577e59c9c7120351b65177cc4bbe",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2859520,
+          "recentNativeRows": 0,
+          "scaleBytes": 178720,
+          "scalesSHA256": "e840df597172ff74cb362db6422736deea632ca9a320351adb130206d46cff9b",
+          "storageBytes": 1787200,
+          "totalStorageBytes": 1787200
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "rotated4_k_gaussian_v_affine",
+      "codecManifestBytes": 303,
+      "maximumHeadRelativeL2NativeBF16": 0.0651022137151595,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.8382391929626465,
+        "maximumLogitRMSEAcrossHeads": 0.1917232022418555
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.06525671482086182,
+        "relativeL2": 0.01825493916371412,
+        "rmse": 0.004899385764364995
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.06566154956817627,
+        "relativeL2": 0.018352064225807704,
+        "rmse": 0.004925452854609275
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.004043757915496826,
+          "relativeL2": 0.0028189961013184188,
+          "rmse": 0.0008531955348048152
+        },
+        {
+          "linf": 0.010575875639915466,
+          "relativeL2": 0.01253856255386183,
+          "rmse": 0.002957955287549242
+        },
+        {
+          "linf": 0.0017150640487670898,
+          "relativeL2": 0.0010010240775871948,
+          "rmse": 0.00034831985956901767
+        },
+        {
+          "linf": 0.0022455453872680664,
+          "relativeL2": 0.002372019728152892,
+          "rmse": 0.0007463395606038775
+        },
+        {
+          "linf": 0.023738086223602295,
+          "relativeL2": 0.02942650252220665,
+          "rmse": 0.007243551536573945
+        },
+        {
+          "linf": 0.0019497871398925781,
+          "relativeL2": 0.0019804857027619113,
+          "rmse": 0.0005740215273133725
+        },
+        {
+          "linf": 0.0009795725345611572,
+          "relativeL2": 0.0006127210989412185,
+          "rmse": 0.00023420353892720873
+        },
+        {
+          "linf": 0.005992472171783447,
+          "relativeL2": 0.004258708646906616,
+          "rmse": 0.0009949131937963382
+        },
+        {
+          "linf": 0.019687533378601074,
+          "relativeL2": 0.02006139614039985,
+          "rmse": 0.004932313745407653
+        },
+        {
+          "linf": 0.06566154956817627,
+          "relativeL2": 0.0651022137151595,
+          "rmse": 0.013731912680898024
+        },
+        {
+          "linf": 0.001249745488166809,
+          "relativeL2": 0.0015931028747245084,
+          "rmse": 0.0004620013633464376
+        },
+        {
+          "linf": 0.002914324402809143,
+          "relativeL2": 0.0032907928261115445,
+          "rmse": 0.0007461641985350424
+        },
+        {
+          "linf": 0.019654959440231323,
+          "relativeL2": 0.01944031585085736,
+          "rmse": 0.0051226385284662964
+        },
+        {
+          "linf": 0.03134506940841675,
+          "relativeL2": 0.041002962492055206,
+          "rmse": 0.008476957389157264
+        },
+        {
+          "linf": 0.013120949268341064,
+          "relativeL2": 0.01662011696339918,
+          "rmse": 0.0035105207109315507
+        },
+        {
+          "linf": 0.0011255741119384766,
+          "relativeL2": 0.0013261478858044924,
+          "rmse": 0.0002738607297645835
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.698451488361683,
+      "storageBytes": 3449136,
+      "storageBytesWithManifest": 3449439,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.6880265772342682,
+            "relativeL2": 0.09607480635435223,
+            "rmse": 0.1354155367643934
+          },
+          "bits": 4,
+          "codeSHA256": "40b98944ec19c1ed7f3175180f8b98e1732b81ede3502423daaf7cd2a91b52f6",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 190.54433298879303,
+          "method": "nonuniform",
+          "nativeBF16TensorError": {
+            "linf": 0.6884765625,
+            "relativeL2": 0.09608902776404603,
+            "rmse": 0.13543558155969726
+          },
+          "nativeResidualBytes": 131072,
+          "normFP32Bytes": 43656,
+          "normGranularity": "one FP32 norm per vector per token per head",
+          "normSHA256": "8d2e037c808f81bd56efbbc670b761c3415f7bc70f5b29083263dac1403ba6a0",
+          "packedCodeBytes": 1396992,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 256,
+          "recentNativeRows": 128,
+          "rotationGranularity": "entire head",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5457,
+            256
+          ],
+          "signMaskBytes": 32,
+          "signSHA256": "a006b2b477510bdb7270f9dcf3a1e65aaae1f21fa7726caa89f991835c027986",
+          "storageBytes": 1440752,
+          "totalStorageBytes": 1571824,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10395784903131323,
+            "rmse": 0.04276257846935735
+          },
+          "biasBytes": 174624,
+          "biasSHA256": "3aab5f134eb53009f78742a09ff3889bed7a4fe745e800fade959aace68912b1",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 52.37650001072325,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 43656,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10396732888051732,
+            "rmse": 0.04276647796130764
+          },
+          "nativeResidualBytes": 131072,
+          "packedCodeBytes": 1396992,
+          "packedCodesSHA256": "718de16afcd96e2eb7d3ea349e3e7b505578905a8f3539ecef3a1bd6d830f527",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2793984,
+          "recentNativeRows": 128,
+          "scaleBytes": 174624,
+          "scalesSHA256": "10dc5f7055e308f84dfcd6872036fd993088b0c7780a0c64accfac60f2fe8a60",
+          "storageBytes": 1746240,
+          "totalStorageBytes": 1877312
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "block128_hadamard_k_affine4_v_affine4",
+      "codecManifestBytes": 310,
+      "maximumHeadRelativeL2NativeBF16": 0.0938904278154791,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.8306684494018555,
+        "maximumLogitRMSEAcrossHeads": 0.19003156277394911
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.06910974159836769,
+        "relativeL2": 0.0702547080491976,
+        "rmse": 0.018855440350085843
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.0684942677617073,
+        "relativeL2": 0.07023094356230297,
+        "rmse": 0.01884906227411721
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.048585593700408936,
+          "relativeL2": 0.06518653418964643,
+          "rmse": 0.01972931423140183
+        },
+        {
+          "linf": 0.03053891658782959,
+          "relativeL2": 0.039952003824400374,
+          "rmse": 0.009425023040155014
+        },
+        {
+          "linf": 0.06758508086204529,
+          "relativeL2": 0.07920604065365215,
+          "rmse": 0.027560812547083677
+        },
+        {
+          "linf": 0.05444580316543579,
+          "relativeL2": 0.07613799661395966,
+          "rmse": 0.02395629271699693
+        },
+        {
+          "linf": 0.043060511350631714,
+          "relativeL2": 0.06747598779373606,
+          "rmse": 0.016609714141064352
+        },
+        {
+          "linf": 0.059778034687042236,
+          "relativeL2": 0.07380546231849384,
+          "rmse": 0.021391683941494488
+        },
+        {
+          "linf": 0.06709739565849304,
+          "relativeL2": 0.07931208062538338,
+          "rmse": 0.03031586474538378
+        },
+        {
+          "linf": 0.02757483348250389,
+          "relativeL2": 0.04196627495660034,
+          "rmse": 0.00980409887375939
+        },
+        {
+          "linf": 0.0684942677617073,
+          "relativeL2": 0.0767336864004981,
+          "rmse": 0.0188658163928482
+        },
+        {
+          "linf": 0.04631766676902771,
+          "relativeL2": 0.054207345380468334,
+          "rmse": 0.011433874379213933
+        },
+        {
+          "linf": 0.06772702932357788,
+          "relativeL2": 0.0938904278154791,
+          "rmse": 0.027228314218837122
+        },
+        {
+          "linf": 0.05399505794048309,
+          "relativeL2": 0.06918985240996889,
+          "rmse": 0.015688313880046233
+        },
+        {
+          "linf": 0.06554967164993286,
+          "relativeL2": 0.06745134116668954,
+          "rmse": 0.017773828455671412
+        },
+        {
+          "linf": 0.03867162764072418,
+          "relativeL2": 0.05662779802442755,
+          "rmse": 0.011707237763317415
+        },
+        {
+          "linf": 0.020740974694490433,
+          "relativeL2": 0.03427712322057524,
+          "rmse": 0.007240054401661196
+        },
+        {
+          "linf": 0.03791402280330658,
+          "relativeL2": 0.05827276975699221,
+          "rmse": 0.012033818718017501
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.6874979017457475,
+      "storageBytes": 3574424,
+      "storageBytesWithManifest": 3574734,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.8252344727516174,
+            "relativeL2": 0.09000610211039003,
+            "rmse": 0.12686181832514448
+          },
+          "biasBytes": 178720,
+          "biasSHA256": "7155174ad029014a28d12596c1f542c5447b0bd90d03e57f5dd2977dffd76e66",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 183.07100000674836,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 44680,
+          "method": "rotated_affine128",
+          "nativeBF16TensorError": {
+            "linf": 0.826171875,
+            "relativeL2": 0.09002232835408633,
+            "rmse": 0.12688468889426852
+          },
+          "nativeResidualBytes": 0,
+          "normGranularity": "none; existing affine scale+bias per64 rotated channels",
+          "packedCodeBytes": 1429760,
+          "packedCodesSHA256": "a6474f3c20ad62c940854d585dbfd599f2116313e6bb7d9e7fcfc1acce2ecf59",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2859520,
+          "recentNativeRows": 0,
+          "rotationBlockSize": 128,
+          "rotationSignBytes": 16,
+          "rotationSignSHA256": "400378d3dad56290089c2391c055adfe126ad51e52e17b9e9e5c18ca70c08672",
+          "scaleBytes": 178720,
+          "scalesSHA256": "96af4673f79b322bbe3d49ab24926d45ecebd2ecf9f1ac32710ab0a225fc869e",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "storageBytes": 1787224,
+          "totalStorageBytes": 1787224
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10527715460188328,
+            "rmse": 0.04330526868959813
+          },
+          "biasBytes": 178720,
+          "biasSHA256": "4b5013036cffff1396167d847ad835921a50d3b597abd5e92dfbd576a3a8459c",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 53.627667017281055,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 44680,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10528679154790149,
+            "rmse": 0.04330923280259344
+          },
+          "nativeResidualBytes": 0,
+          "packedCodeBytes": 1429760,
+          "packedCodesSHA256": "5040c370ff02568b8cab53f7ebf4f0d3fd38577e59c9c7120351b65177cc4bbe",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2859520,
+          "recentNativeRows": 0,
+          "scaleBytes": 178720,
+          "scalesSHA256": "e840df597172ff74cb362db6422736deea632ca9a320351adb130206d46cff9b",
+          "storageBytes": 1787200,
+          "totalStorageBytes": 1787200
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "block128_hadamard_k_affine4_v_affine4",
+      "codecManifestBytes": 312,
+      "maximumHeadRelativeL2NativeBF16": 0.032415795485943345,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 0.8306684494018555,
+        "maximumLogitRMSEAcrossHeads": 0.1879201970591146
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.024309009313583374,
+        "relativeL2": 0.011580561416072773,
+        "rmse": 0.0031080704918502572
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.024040475487709045,
+        "relativeL2": 0.011506544275235418,
+        "rmse": 0.0030882052639858797
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.0024727582931518555,
+          "relativeL2": 0.002635388474534904,
+          "rmse": 0.0007976249693632599
+        },
+        {
+          "linf": 0.009479956701397896,
+          "relativeL2": 0.011036678667148353,
+          "rmse": 0.0026036478966577035
+        },
+        {
+          "linf": 0.0007930397987365723,
+          "relativeL2": 0.0005663620292390695,
+          "rmse": 0.00019707332411551592
+        },
+        {
+          "linf": 0.0022143572568893433,
+          "relativeL2": 0.002113426597307601,
+          "rmse": 0.000664975024989098
+        },
+        {
+          "linf": 0.019391383975744247,
+          "relativeL2": 0.022624015262438513,
+          "rmse": 0.005569068916499285
+        },
+        {
+          "linf": 0.0020125657320022583,
+          "relativeL2": 0.00207260035922646,
+          "rmse": 0.0006007199254477234
+        },
+        {
+          "linf": 0.0003554821014404297,
+          "relativeL2": 0.0002717393204367058,
+          "rmse": 0.00010386831891691854
+        },
+        {
+          "linf": 0.002810657024383545,
+          "relativeL2": 0.0031934427088387797,
+          "rmse": 0.0007460473462922221
+        },
+        {
+          "linf": 0.010722756385803223,
+          "relativeL2": 0.013475749862163794,
+          "rmse": 0.0033131605502258426
+        },
+        {
+          "linf": 0.024040475487709045,
+          "relativeL2": 0.032415795485943345,
+          "rmse": 0.0068374153149752355
+        },
+        {
+          "linf": 0.0022065043449401855,
+          "relativeL2": 0.0027424475937573053,
+          "rmse": 0.0007953124354515614
+        },
+        {
+          "linf": 0.002905517816543579,
+          "relativeL2": 0.0036185074251547282,
+          "rmse": 0.0008204711859585653
+        },
+        {
+          "linf": 0.013159573078155518,
+          "relativeL2": 0.0169326427024303,
+          "rmse": 0.004461851780684814
+        },
+        {
+          "linf": 0.014713376760482788,
+          "relativeL2": 0.02251976114610263,
+          "rmse": 0.004655738123470961
+        },
+        {
+          "linf": 0.014728546142578125,
+          "relativeL2": 0.016443129058588545,
+          "rmse": 0.0034731371168936513
+        },
+        {
+          "linf": 0.0009044483304023743,
+          "relativeL2": 0.0013130544683856542,
+          "rmse": 0.0002711568285724023
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.6717414111459266,
+      "storageBytes": 3754648,
+      "storageBytesWithManifest": 3754960,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.8252344727516174,
+            "relativeL2": 0.08899483248976338,
+            "rmse": 0.12543645382338736
+          },
+          "biasBytes": 174624,
+          "biasSHA256": "b866ba6a1a165b926465bd49b169111ea4d2d06443c1d52ebd8a7cbf728cabe1",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 179.41333301132545,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 43656,
+          "method": "rotated_affine128",
+          "nativeBF16TensorError": {
+            "linf": 0.826171875,
+            "relativeL2": 0.08901091185193884,
+            "rmse": 0.1254591173659168
+          },
+          "nativeResidualBytes": 131072,
+          "normGranularity": "none; existing affine scale+bias per64 rotated channels",
+          "packedCodeBytes": 1396992,
+          "packedCodesSHA256": "a8ead6adf23893ed4cb7e69550d14c8b6af4f509fa561cc9dc511190a774d57d",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2793984,
+          "recentNativeRows": 128,
+          "rotationBlockSize": 128,
+          "rotationSignBytes": 16,
+          "rotationSignSHA256": "400378d3dad56290089c2391c055adfe126ad51e52e17b9e9e5c18ca70c08672",
+          "scaleBytes": 174624,
+          "scalesSHA256": "959418c77f614499187bb7b5a99aabd6ca3adeb57c38968a7784c44bcf0ba372",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "storageBytes": 1746264,
+          "totalStorageBytes": 1877336
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10395784903131323,
+            "rmse": 0.04276257846935735
+          },
+          "biasBytes": 174624,
+          "biasSHA256": "3aab5f134eb53009f78742a09ff3889bed7a4fe745e800fade959aace68912b1",
+          "bits": 4,
+          "constantGroups": 0,
+          "cpuEncodeDecodeRoundMsSingleObservation": 52.72537498967722,
+          "groupAxis": -1,
+          "groupSize": 64,
+          "groups": 43656,
+          "method": "affine",
+          "nativeBF16TensorError": {
+            "linf": 0.171875,
+            "relativeL2": 0.10396732888051732,
+            "rmse": 0.04276647796130764
+          },
+          "nativeResidualBytes": 131072,
+          "packedCodeBytes": 1396992,
+          "packedCodesSHA256": "718de16afcd96e2eb7d3ea349e3e7b505578905a8f3539ecef3a1bd6d830f527",
+          "packing": "little-endian bitstream, tightly packed, no padded group values",
+          "parameterByteOrder": "little",
+          "parameterDType": "float32",
+          "quantizedElements": 2793984,
+          "recentNativeRows": 128,
+          "scaleBytes": 174624,
+          "scalesSHA256": "10dc5f7055e308f84dfcd6872036fd993088b0c7780a0c64accfac60f2fe8a60",
+          "storageBytes": 1746240,
+          "totalStorageBytes": 1877312
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "block64_rotated4_kv_gaussian_codebook",
+      "codecManifestBytes": 310,
+      "maximumHeadRelativeL2NativeBF16": 0.1805098230243063,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 1.4734234809875488,
+        "maximumLogitRMSEAcrossHeads": 0.24974194029241115
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.18968826532363892,
+        "relativeL2": 0.10793410884256577,
+        "rmse": 0.028968096338760827
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.19113963842391968,
+        "relativeL2": 0.10813591499428118,
+        "rmse": 0.02902225845773634
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.05729356408119202,
+          "relativeL2": 0.06524561554908087,
+          "rmse": 0.019747195757394746
+        },
+        {
+          "linf": 0.03668338060379028,
+          "relativeL2": 0.054657692418123495,
+          "rmse": 0.012894222092757614
+        },
+        {
+          "linf": 0.19113963842391968,
+          "relativeL2": 0.1805098230243063,
+          "rmse": 0.06281083304030499
+        },
+        {
+          "linf": 0.1701033115386963,
+          "relativeL2": 0.15467026006416681,
+          "rmse": 0.04866592489290506
+        },
+        {
+          "linf": 0.055441319942474365,
+          "relativeL2": 0.05396486304835626,
+          "rmse": 0.013283850717900766
+        },
+        {
+          "linf": 0.16026878356933594,
+          "relativeL2": 0.17322630239182385,
+          "rmse": 0.0502076972992704
+        },
+        {
+          "linf": 0.10983911156654358,
+          "relativeL2": 0.1021521611821061,
+          "rmse": 0.03904614627969107
+        },
+        {
+          "linf": 0.03171038627624512,
+          "relativeL2": 0.04051144594501668,
+          "rmse": 0.009464223879165987
+        },
+        {
+          "linf": 0.061794549226760864,
+          "relativeL2": 0.06168188832009783,
+          "rmse": 0.015165167143639009
+        },
+        {
+          "linf": 0.06484833359718323,
+          "relativeL2": 0.056320991029213,
+          "rmse": 0.011879702498268559
+        },
+        {
+          "linf": 0.09312707185745239,
+          "relativeL2": 0.07537600284706092,
+          "rmse": 0.02185911320068963
+        },
+        {
+          "linf": 0.06119914352893829,
+          "relativeL2": 0.08231270687733401,
+          "rmse": 0.018663829114076828
+        },
+        {
+          "linf": 0.09106588363647461,
+          "relativeL2": 0.08640746632304135,
+          "rmse": 0.022768879864369304
+        },
+        {
+          "linf": 0.037890076637268066,
+          "relativeL2": 0.05172856078770931,
+          "rmse": 0.010694368868708148
+        },
+        {
+          "linf": 0.025256942957639694,
+          "relativeL2": 0.03311869480483538,
+          "rmse": 0.006995369785148445
+        },
+        {
+          "linf": 0.06417741626501083,
+          "relativeL2": 0.09881804482300506,
+          "rmse": 0.020406760180234657
+        }
+      ],
+      "recentNativeRows": 0,
+      "sizeReductionFraction": 0.7187360116383169,
+      "storageBytes": 3217120,
+      "storageBytesWithManifest": 3217430,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 1.100744605064392,
+            "relativeL2": 0.09542435256006879,
+            "rmse": 0.13449873502379495
+          },
+          "bits": 4,
+          "codeSHA256": "065f93222d230a1a949434c9e88115bc28c5af33be77dc26d7a082c6a8f4a628",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 177.5973339972552,
+          "method": "nonuniform64",
+          "nativeBF16TensorError": {
+            "linf": 1.1015625,
+            "relativeL2": 0.09543905910022223,
+            "rmse": 0.13451946360087352
+          },
+          "nativeResidualBytes": 0,
+          "normFP32Bytes": 178720,
+          "normGranularity": "one FP32 norm per 64-channel block per token per head",
+          "normSHA256": "c86f2694d8b0eb5060ecfad558b38d6b56845f483585f9aaf228a674178d1f63",
+          "packedCodeBytes": 1429760,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 64,
+          "recentNativeRows": 0,
+          "rotationGranularity": "independent 64-channel blocks",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5585,
+            4,
+            64
+          ],
+          "signMaskBytes": 8,
+          "signSHA256": "3ffff73fc176d146a4e626d73dd60649a9b6b53d859f8865ac3628a63c03f7be",
+          "storageBytes": 1608560,
+          "totalStorageBytes": 1608560,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.3040575683116913,
+            "relativeL2": 0.09539103575224028,
+            "rmse": 0.03923865960712364
+          },
+          "bits": 4,
+          "codeSHA256": "544d87865aa566b75f35c8421ed6e27409df03a09ad311e9f18203c86ce2b1a9",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 173.17770898807794,
+          "method": "nonuniform64",
+          "nativeBF16TensorError": {
+            "linf": 0.3046875,
+            "relativeL2": 0.09540447655067175,
+            "rmse": 0.03924418841714589
+          },
+          "nativeResidualBytes": 0,
+          "normFP32Bytes": 178720,
+          "normGranularity": "one FP32 norm per 64-channel block per token per head",
+          "normSHA256": "fd0d8f9ff16210443f231bcb0c44105c2dc84ebfef61435e005874e75fd5d156",
+          "packedCodeBytes": 1429760,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 64,
+          "recentNativeRows": 0,
+          "rotationGranularity": "independent 64-channel blocks",
+          "seed": 20261010,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5585,
+            4,
+            64
+          ],
+          "signMaskBytes": 8,
+          "signSHA256": "90d71eb7896591815c84298f30269f79e1b7aa9b23daed958240244a9424ffb2",
+          "storageBytes": 1608560,
+          "totalStorageBytes": 1608560,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        }
+      }
+    },
+    {
+      "bits": 4,
+      "candidate": "block64_rotated4_kv_gaussian_codebook",
+      "codecManifestBytes": 312,
+      "maximumHeadRelativeL2NativeBF16": 0.04040123658970283,
+      "nativeLogitDistortion": {
+        "maximumLogitLinfAcrossHeads": 1.4734234809875488,
+        "maximumLogitRMSEAcrossHeads": 0.24508856576462068
+      },
+      "operatorFP32ReconstructionError": {
+        "linf": 0.04910624027252197,
+        "relativeL2": 0.013638057358378773,
+        "rmse": 0.0036602753630672487
+      },
+      "operatorNativeBF16ReconstructionError": {
+        "linf": 0.04986807703971863,
+        "relativeL2": 0.013660704441681885,
+        "rmse": 0.003666353542596885
+      },
+      "perHeadNativeBF16Error": [
+        {
+          "linf": 0.0028676390647888184,
+          "relativeL2": 0.0025018674891604965,
+          "rmse": 0.0007572135943809021
+        },
+        {
+          "linf": 0.010769784450531006,
+          "relativeL2": 0.01254590016202312,
+          "rmse": 0.0029596862927394637
+        },
+        {
+          "linf": 0.0025560855865478516,
+          "relativeL2": 0.0013206578208288515,
+          "rmse": 0.0004595407413162456
+        },
+        {
+          "linf": 0.0040781497955322266,
+          "relativeL2": 0.002998853527204865,
+          "rmse": 0.0009435684692017043
+        },
+        {
+          "linf": 0.04986807703971863,
+          "relativeL2": 0.04040123658970283,
+          "rmse": 0.009945063609172815
+        },
+        {
+          "linf": 0.0046964287757873535,
+          "relativeL2": 0.003664136935406683,
+          "rmse": 0.0010620089188295124
+        },
+        {
+          "linf": 0.0004855543375015259,
+          "relativeL2": 0.0003624681389612545,
+          "rmse": 0.00013854806214406065
+        },
+        {
+          "linf": 0.002699807286262512,
+          "relativeL2": 0.0029348563190045892,
+          "rmse": 0.0006856367776638486
+        },
+        {
+          "linf": 0.011337101459503174,
+          "relativeL2": 0.017008015664062688,
+          "rmse": 0.004181606746353449
+        },
+        {
+          "linf": 0.019578099250793457,
+          "relativeL2": 0.02929123856881912,
+          "rmse": 0.0061783571923102795
+        },
+        {
+          "linf": 0.0020171403884887695,
+          "relativeL2": 0.0021246134467523773,
+          "rmse": 0.0006161399395839478
+        },
+        {
+          "linf": 0.0020206570625305176,
+          "relativeL2": 0.0026644262886169248,
+          "rmse": 0.0006041399781920386
+        },
+        {
+          "linf": 0.015036523342132568,
+          "relativeL2": 0.017672668938671882,
+          "rmse": 0.00465685308307774
+        },
+        {
+          "linf": 0.015038132667541504,
+          "relativeL2": 0.020264181059045785,
+          "rmse": 0.004189419225427502
+        },
+        {
+          "linf": 0.008972972631454468,
+          "relativeL2": 0.013714925426015045,
+          "rmse": 0.002896882727295832
+        },
+        {
+          "linf": 0.0011219382286071777,
+          "relativeL2": 0.001422731781230376,
+          "rmse": 0.00029380611924035286
+        }
+      ],
+      "recentNativeRows": 128,
+      "sizeReductionFraction": 0.7022633169203223,
+      "storageBytes": 3405536,
+      "storageBytesWithManifest": 3405848,
+      "tensors": {
+        "keys": {
+          "beforeNativeRoundTensorError": {
+            "linf": 1.100744605064392,
+            "relativeL2": 0.09431474865296151,
+            "rmse": 0.1329347702927852
+          },
+          "bits": 4,
+          "codeSHA256": "33e89df0dadb238bfb91b3046cacc334d4972785f131d81bb21874e236224375",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 171.39900001347996,
+          "method": "nonuniform64",
+          "nativeBF16TensorError": {
+            "linf": 1.1015625,
+            "relativeL2": 0.09432889265062926,
+            "rmse": 0.1329547059773715
+          },
+          "nativeResidualBytes": 131072,
+          "normFP32Bytes": 174624,
+          "normGranularity": "one FP32 norm per 64-channel block per token per head",
+          "normSHA256": "ab4643620ca9209f06bf74e64816c9efa97901ef8db8ac4d79ca98921227b072",
+          "packedCodeBytes": 1396992,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 64,
+          "recentNativeRows": 128,
+          "rotationGranularity": "independent 64-channel blocks",
+          "seed": 20261009,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5457,
+            4,
+            64
+          ],
+          "signMaskBytes": 8,
+          "signSHA256": "3ffff73fc176d146a4e626d73dd60649a9b6b53d859f8865ac3628a63c03f7be",
+          "storageBytes": 1571696,
+          "totalStorageBytes": 1702768,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        },
+        "values": {
+          "beforeNativeRoundTensorError": {
+            "linf": 0.3040575683116913,
+            "relativeL2": 0.09414504133758426,
+            "rmse": 0.03872612559044674
+          },
+          "bits": 4,
+          "codeSHA256": "f7646fdba6fd83e569b6f3855f7d4239ce408de906d80b27472b2c7df5565f3c",
+          "codebookFP32Bytes": 64,
+          "codebookSHA256": "c33086d9c316b1b70be014a1c2d0bf96dc54090c69eb4ede8db8b3efb8d0c7ab",
+          "cpuEncodeDecodeRoundMsSingleObservation": 170.60366700752638,
+          "method": "nonuniform64",
+          "nativeBF16TensorError": {
+            "linf": 0.3046875,
+            "relativeL2": 0.09415836528275866,
+            "rmse": 0.03873160633342431
+          },
+          "nativeResidualBytes": 131072,
+          "normFP32Bytes": 174624,
+          "normGranularity": "one FP32 norm per 64-channel block per token per head",
+          "normSHA256": "d6896fde424e6abcadcf1b26b396c2f88dae0b7ac4bceaab3f60e3a4ff9c70ad",
+          "packedCodeBytes": 1396992,
+          "packing": "INT4 low nibble first; INT8 byte per code",
+          "paddedDimension": 64,
+          "recentNativeRows": 128,
+          "rotationGranularity": "independent 64-channel blocks",
+          "seed": 20261010,
+          "seedBytes": 8,
+          "shape": [
+            1,
+            2,
+            5457,
+            4,
+            64
+          ],
+          "signMaskBytes": 8,
+          "signSHA256": "90d71eb7896591815c84298f30269f79e1b7aa9b23daed958240244a9424ffb2",
+          "storageBytes": 1571696,
+          "totalStorageBytes": 1702768,
+          "version": "signed-fwht-gaussian-lloyd-max-v1",
+          "zeroPaddedCoordinatesRetained": true
+        }
+      }
+    }
+  ]
+}

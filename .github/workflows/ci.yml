@@ -59,6 +59,11 @@ jobs:
         run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU
         run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
+      - name: Test actual-call and bounded timing receipts without a GPU
+        run: |
+          python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
 
   docs:
     name: Docs Lint
@@ -284,6 +289,8 @@ jobs:
           echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
       - name: Test Qwen resources in a relocated app
         run: python3 scripts/test-qwen4-packaged-resources.py
+      - name: Test SwiftPM resource bundle staging
+        run: python3 scripts/test-stage-swiftpm-resource-bundles.py
       - name: Test profile inventory authentication in a terminal
         run: python3 scripts/test-profile-inventory-auth.py
       - name: Prepare pinned public MiMo metadata and original corpus

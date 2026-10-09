@@ -88,8 +88,11 @@ class IntegrationWorkflowTests(unittest.TestCase):
             self.assertEqual(field(step, "DARKBLOOM_TESTBED_KV_BACKEND", 10), "paged")
             self.assertEqual(field(step, "DARKBLOOM_TESTBED_MAX_CONCURRENT", 10), '"8"')
         self.assertEqual(field(gates[0], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "paged")
-        self.assertEqual(field(gates[2], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "contiguous")
+        self.assertEqual(field(gates[2], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "paged")
         self.assertIsNone(field(gates[2], "DARKBLOOM_TESTBED_KV_BACKEND", 10))
+        self.assertIsNone(field(gates[2], "DARKBLOOM_TESTBED_MAX_CONCURRENT", 10))
+        self.assertIsNone(field(gates[2], "DARKBLOOM_CBV2_KV_QUANTIZATION", 10))
+        self.assertIn('if [ -n "${DARKBLOOM_CBV2_KV_QUANTIZATION:-}" ]; then', gates[2])
 
     def test_command_assertion_accepts_only_additive_coverage(self):
         command = "go test ./e2e/ -count=1 -v -timeout 25m -p=1 -run 'TestIntegration|TestProfile' -skip '^TestIntegrationExactCacheRouting$'"
@@ -122,6 +125,39 @@ class IntegrationWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(AssertionError):
                 self.assert_integration_command(invalid, command)
+
+    def test_actual_default_smoke_refuses_precision_override_before_tests(self):
+        script = run_command(self.ids["smoke"])
+        for precision in (None, "native", "balanced"):
+            with self.subTest(precision=precision), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                tools = root / "tools"
+                tools.mkdir()
+                fixtures = {
+                    "brew": '#!/bin/bash\nprintf "%s\\n" "$STUB_BREW_PREFIX"\n',
+                    "go": '#!/bin/bash\nprintf "%s\\n" "$@" > "$GO_CALL_LOG"\n',
+                }
+                for name, body in fixtures.items():
+                    path = tools / name
+                    path.write_text(body)
+                    path.chmod(0o700)
+                calls = root / "go-calls"
+                env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
+                       "STUB_BREW_PREFIX": str(root), "GO_CALL_LOG": str(calls),
+                       "RUNNER_TEMP": str(root), "E2E_COVER_PKG": "fixture/pkg"}
+                env.pop("DARKBLOOM_CBV2_PAGED_KV", None)
+                env.pop("DARKBLOOM_CBV2_KV_QUANTIZATION", None)
+                if precision is not None:
+                    env["DARKBLOOM_CBV2_KV_QUANTIZATION"] = precision
+                result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                                        text=True, capture_output=True, timeout=10)
+                if precision is None:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("-test.gocoverdir=", calls.read_text())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("precision default", result.stdout)
+                    self.assertFalse(calls.exists(), "overridden default invoked the E2E tests")
 
     def test_actual_shell_builds_on_cold_and_warm_cache_and_stages_fresh_metal(self):
         cleanup = self.named["Revalidate source timestamps and discard cached runtime resources"]

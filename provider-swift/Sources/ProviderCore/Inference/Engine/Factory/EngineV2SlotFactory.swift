@@ -127,6 +127,8 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        kvQuantizationConfig: String = "balanced",
+        kvQuantizationConfigByModel: [String: String] = [:],
         mtpAcceptanceConfig: String? = nil,
         mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -151,6 +153,8 @@ enum EngineV2SlotFactory {
             kvBudget: kvBudget,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
+            kvQuantizationConfig: kvQuantizationConfig,
+            kvQuantizationConfigByModel: kvQuantizationConfigByModel,
             mtpAcceptanceConfig: mtpAcceptanceConfig,
             mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
@@ -185,6 +189,8 @@ enum EngineV2SlotFactory {
         activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        kvQuantizationConfig: String = "balanced",
+        kvQuantizationConfigByModel: [String: String] = [:],
         mtpAcceptanceConfig: String? = nil,
         mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -203,6 +209,12 @@ enum EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        var environment = environment
+        let kvPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: modelType, global: kvQuantizationConfig,
+            byModel: kvQuantizationConfigByModel, modelID: modelId, environment: environment)
+        environment[EngineV2KVQuantizationPolicy.environmentKey] = kvPrecision.rawValue
+        logInfo("engine_v2: \(modelId) KV precision \(kvPrecision.rawValue)")
         // Check explicit fixture ownership before any cache or model preparation.
         try deadlineQualificationCacheIsolation?.validate(environment: environment)
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
@@ -346,6 +358,9 @@ enum EngineV2SlotFactory {
                     environment: environment,
                     residentPrefixCache: residentPrefixCache,
                     hybridPrefixCache: hybridPrefixCache,
+                    nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
+                        layerKinds: (servingModel as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
+                        gemmaAssistantActive: assistantHandle?.drafter != nil && mtpConfig.effectiveEnabled),
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
@@ -445,6 +460,7 @@ enum EngineV2SlotFactory {
                 resolvedKind: preparedBackend.kind,
                 pagedPoolDType: preparedBackend.pagedPoolDType,
                 pagedLayerDTypes: preparedBackend.pagedLayerDTypes,
+                pagedPoolConfig: preparedBackend.pagedPoolConfig,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
                 servingModelIsGPTOSS: servingModel is GPTOSSModel)
@@ -490,7 +506,8 @@ enum EngineV2SlotFactory {
         }
         let deadlineProfiles = assemblyOverrides.deadlineProfiles ?? DeadlinePerformanceProfiles.reviewed
         let deadlineProfile = deadlineRuntime.flatMap { runtime in
-            constructionPurpose == .serving && (!mtpConfig.effectiveEnabled || mtpPerformanceConfiguration != nil)
+            constructionPurpose == .serving && preparedBackend?.kvQuantization == .native
+                && (!mtpConfig.effectiveEnabled || mtpPerformanceConfiguration != nil)
                 ? DeadlinePerformanceProfiles.resolve(modelID: modelId,
                     artifactSHA256: modelArtifactSHA256 ?? weightHash,
                     kvBackend: preparedBackend!.kind.rawValue, runtime: runtime,
@@ -598,11 +615,17 @@ enum EngineV2SlotFactory {
         resolvedKind: EngineV2KVBackendKind,
         pagedPoolDType: String?,
         pagedLayerDTypes: [DType]? = nil,
+        pagedPoolConfig: PagedKVPoolConfig? = nil,
         layerKinds: [CBv2LayerKind],
         nominalFP16BytesPerToken: Int,
         servingModelIsGPTOSS: Bool
     ) -> Int {
         if resolvedKind == .paged, let pagedLayerDTypes {
+            if let pagedPoolConfig {
+                return (try? EngineV2Factory.physicalFullKVBytesPerToken(
+                    layerKinds: layerKinds, dtypes: pagedLayerDTypes,
+                    config: pagedPoolConfig)) ?? Int.max
+            }
             return EngineV2Factory.nativeFullKVBytesPerToken(
                 layerKinds: layerKinds, dtypes: pagedLayerDTypes)
         }

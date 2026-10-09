@@ -1,0 +1,121 @@
+{
+  "candidateArtifacts": {
+    "darkbloom": "f90f942ba3618b2fb0d82fa45958608e2c73d3f13dfe282bafeb7af6b4a4cb39",
+    "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c"
+  },
+  "candidateSourceDigest": "374e3ca41cc9beb377344783c357a7c65c46d3971861ea5f34dd5489940b70c9",
+  "curatedSHA256": "52558fb7a1f229ae484d8067e0128a976ce7fe5e417a9f0a255e5b2963cc0fe9",
+  "qualification": {
+    "configPath": "/private/tmp/runtime-kv-qualification.toml",
+    "configSHA256": "9d0e59fa319fc95b3f7855c7b5f89859721d5a72f808685da847e988031cb927",
+    "environment": {
+      "SHA256": "574c1b2648ad3153cbae25cfe5acdfff644c8df9f7b7c26a179983a6812c8a73",
+      "policy": "system_allowlist_v1",
+      "values": {
+        "HOME": "/Users/gaj",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "LC_CTYPE": "C.UTF-8",
+        "LOGNAME": "gaj",
+        "PATH": "/Users/gaj/.elan/bin:/Users/gaj/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/usr/local/MacGPG2/bin:/Applications/Privileges.app/Contents/MacOS:/Library/TeX/texbin:/usr/local/go/bin:/opt/homebrew/bin:/Applications/ChatGPT.app/Contents/Resources/codex-cli/codex-path:/Users/gaj/.codex/tmp/arg0/codex-arg0S3EIlh:/Users/gaj/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override:/Users/gaj/.bun/bin:/Users/gaj/.darkbloom/bin:/Users/gaj/.grok/bin:/Users/gaj/.kimi-code/bin:/Users/gaj/.opencode/bin:/Users/gaj/google-cloud-sdk/bin:/Users/gaj/.nvm/versions/node/v24.14.0/bin:/Users/gaj/.local/bin:/Users/gaj/.elan/bin:/Users/gaj/.local/share/solana/install/active_release/bin:/opt/homebrew/sbin:/Users/gaj/.cargo/bin:/Users/gaj/.foundry/bin:/Users/gaj/.nanocodex/bin:/Users/gaj/.docker/bin:/Users/gaj/.lmstudio/bin:/Users/gaj/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback:/Applications/ChatGPT.app/Contents/Resources:/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS:/Users/gaj/.docker/bin",
+        "SHELL": "/bin/zsh",
+        "TMPDIR": "/var/folders/hv/5779vnmn5c564l3tdknlf4x80000gp/T/",
+        "USER": "gaj",
+        "__CF_USER_TEXT_ENCODING": "0x1F6:0x0:0x0"
+      }
+    },
+    "runnerFiles": {
+      "curate_runs.py": "9c21eeed1833fdc01d0a03492e149eaa94c1c3d0a53348ba34f229d354e8488b",
+      "qualification_environment.py": "61ba774776edac1f444f460830477d786e88c96f38eaebfb36186673564d5427",
+      "run_suite.py": "0faf371a0ada529ee7284b0533f6882ae408d2d62a0f4cf9810ffd17306c2ab6",
+      "suite_inputs.py": "d8df8011fa5077ecb19e2bc979a8b7cfdc6a5fd9154a1c3f610fbabdf64de783"
+    },
+    "suiteSHA256": "8fda81d3dd0436aeb292f2f20ba9b4eede8580a231c1c74a7c6a1aa67673fe96"
+  },
+  "results": [
+    {
+      "exitCode": 0,
+      "finishReason": "stop",
+      "generatedTokenCount": 95,
+      "identityPassed": true,
+      "inputIdentity": {
+        "expected": {
+          "early": "cedar-0837",
+          "late": "hazel-2651",
+          "middle": "juniper-1942"
+        },
+        "expectedModelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+        "file": "retrieval.txt",
+        "maximumGeneratedTokens": 1024,
+        "mode": "retrieval",
+        "modelID": "gpt-oss-20b",
+        "promptSHA256": "127af1a80d3a14d1e525fa758d1cbbab49dc9fef2af8a99644addab36e24e6f5",
+        "renderDate": "2026-10-09",
+        "scoreFile": "gpt-oss-20b-scores-input.json",
+        "scoreInputSHA256": "173743ad840c0dc4718bee43f9505978a2df5e695e39f30f932bb1afd4b83e27",
+        "suiteSHA256": "8fda81d3dd0436aeb292f2f20ba9b4eede8580a231c1c74a7c6a1aa67673fe96"
+      },
+      "rawJSONSHA256": "6f9838a8cd87d16c4c2db9335a47fa4ffbb6b952c2f6fb48efb46c95ee3b801d",
+      "rawLogSHA256": "2c14d9f71a212221d4c0c9dffdcd40bac2603d9f4897c7a72c76ebe3a26f894f",
+      "reportParsed": true,
+      "requestedPrecision": "native",
+      "resolvedBackend": "paged",
+      "resolvedPrecision": "native",
+      "runtimeIdentity": {
+        "binary_sha256": "f90f942ba3618b2fb0d82fa45958608e2c73d3f13dfe282bafeb7af6b4a4cb39",
+        "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+        "normalization": "darkbloom-request-normalization-v8",
+        "renderer": "swift-jinja-request-date-compatible-v4",
+        "tokenizer": "huggingface-tokenizer-json-v1"
+      },
+      "sameProfileTokenIDsEqualC3": true,
+      "taskPassed": true
+    },
+    {
+      "exitCode": 0,
+      "finishReason": "stop",
+      "generatedTokenCount": 117,
+      "identityPassed": true,
+      "inputIdentity": {
+        "expected": {
+          "early": "cedar-0837",
+          "late": "hazel-2651",
+          "middle": "juniper-1942"
+        },
+        "expectedModelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+        "file": "retrieval.txt",
+        "maximumGeneratedTokens": 1024,
+        "mode": "retrieval",
+        "modelID": "gpt-oss-20b",
+        "promptSHA256": "127af1a80d3a14d1e525fa758d1cbbab49dc9fef2af8a99644addab36e24e6f5",
+        "renderDate": "2026-10-09",
+        "scoreFile": "gpt-oss-20b-scores-input.json",
+        "scoreInputSHA256": "173743ad840c0dc4718bee43f9505978a2df5e695e39f30f932bb1afd4b83e27",
+        "suiteSHA256": "8fda81d3dd0436aeb292f2f20ba9b4eede8580a231c1c74a7c6a1aa67673fe96"
+      },
+      "rawJSONSHA256": "770fefa01e539c36125bad5f051cfeb1f5988e17182c45653914c5cd9333669a",
+      "rawLogSHA256": "1e2611500a02d60cbed78c3f2e87c598eebf0c3111b34bf541c5884f56171295",
+      "reportParsed": true,
+      "requestedPrecision": "balanced",
+      "resolvedBackend": "paged",
+      "resolvedPrecision": "balanced",
+      "runtimeIdentity": {
+        "binary_sha256": "f90f942ba3618b2fb0d82fa45958608e2c73d3f13dfe282bafeb7af6b4a4cb39",
+        "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+        "normalization": "darkbloom-request-normalization-v8",
+        "renderer": "swift-jinja-request-date-compatible-v4",
+        "tokenizer": "huggingface-tokenizer-json-v1"
+      },
+      "sameProfileTokenIDsEqualC3": true,
+      "taskPassed": true
+    }
+  ],
+  "runManifestSHA256": "f27d2dbea832a392cb11db527998651865327e0d365f91f8ff7873b971ca78cb",
+  "schema": 1,
+  "scope": "Two fresh paged GPT retrieval arms validate schema2 qualification environment/input provenance. Existing nine-model tables retain historical cohorts. No cross-profile token equality, broad accuracy or controlled timing claim.",
+  "syntheticAmbientOverrides": {
+    "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "1",
+    "DARKBLOOM_CBV2_KV_QUANTIZATION": "native"
+  },
+  "syntheticOverridesAbsentFromChild": true
+}

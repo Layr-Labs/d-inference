@@ -29,7 +29,8 @@ extension Benchmark {
         modelID: String,
         modelDirectory: URL,
         hardware: HardwareInfo,
-        gemmaOptimizations: GemmaOptimizationSettings
+        gemmaOptimizations: GemmaOptimizationSettings,
+        kvQuantization: EngineV2KVQuantizationSelection
     ) async throws {
         let lengths = Self.parsePositiveInts(prefillLengths)
         guard !lengths.isEmpty else {
@@ -78,7 +79,8 @@ extension Benchmark {
         print(try report.jsonString())
 
         if let message = Self.sweepFailureMessage(
-            backend: backend, failure: report.decodeConstructionFailure,
+            backend: backend, kvQuantization: kvQuantization,
+            failure: report.decodeConstructionFailure,
             coverage: report.decodeCoverage)
         {
             printError(message)
@@ -104,32 +106,32 @@ extension Benchmark {
     /// a cell that silently did not happen. The release headline number is
     /// B=8, so that is precisely the cell a capacity regression takes out.
     ///
-    /// Only for an EXPLICIT `--kv-backend`. `auto` keeps its old behaviour
-    /// exactly: it promised nothing about the backend, so a degraded or
-    /// unbuildable cell is an ordinary bad run rather than a broken
-    /// guarantee, and scripts pinned to today's exit status must not start
-    /// failing. That asymmetry is the one
-    /// `EngineV2KVBackendPolicy.degradesPagedFailure` already encodes for
-    /// the engine; this is the same rule at the benchmark's exit status.
+    /// Native `auto` retains its observable fallback contract. Quantized
+    /// `auto` requires paged storage, so a missing cell must fail just as an
+    /// explicit backend selection does. The caller passes resolved precision,
+    /// including model-specific overrides and the MiMo exclusion.
     ///
     /// The message names the REASON, not just the count: "no decode cells"
     /// alone sends the reader back to the stderr log to find out why.
     static func sweepFailureMessage(
         backend: EngineV2KVBackendSelection,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
         failure: ThroughputSweepReport.DecodeConstructionFailure?,
         coverage: ThroughputSweepReport.DecodeCoverage = .init(
             requestedBatchSizes: [], unmeasured: [])
     ) -> String? {
-        guard backend != .auto else { return nil }
+        guard backend != .auto || kvQuantization != .native else { return nil }
+        let selection = "--kv-backend \(backend.rawValue)"
+            + (kvQuantization == .native ? "" : " --kv-quantization \(kvQuantization.rawValue)")
         if let failure {
-            return "--kv-backend \(backend.rawValue) produced no decode cells: "
+            return "\(selection) produced no decode cells: "
                 + failure.reason
         }
         guard !coverage.unmeasured.isEmpty else { return nil }
         let cells = coverage.unmeasured
             .map { "B=\($0.batchSize): \($0.reason)" }
             .joined(separator: "; ")
-        return "--kv-backend \(backend.rawValue) left "
+        return "\(selection) left "
             + "\(coverage.unmeasured.count) of \(coverage.requestedBatchSizes.count) "
             + "requested decode cells unmeasured — \(cells)"
     }
@@ -159,6 +161,17 @@ extension Benchmark {
         )
 
         print(try report.jsonString())
+    }
+
+    func schedulerPrefillOptionError() -> String? {
+        guard schedulerPrefill else { return nil }
+        let lengths = Self.parsePositiveInts(prefillLengths)
+        guard !lengths.isEmpty, lengths.allSatisfy({ $0 > 1 }) else {
+            // The measured producer excludes singleton prompts. Refuse before
+            // loading weights instead of returning an empty measured report.
+            return "--scheduler-prefill requires --prefill-lengths greater than 1"
+        }
+        return nil
     }
 
     func runArrivalInvarianceBenchmark(

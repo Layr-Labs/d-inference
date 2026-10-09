@@ -78,6 +78,8 @@ public struct StandaloneServerConfig: Sendable {
     public let engineV2KVBackend: String
     /// Per-model overrides (`engine_v2_kv_backend_by_model`).
     public let engineV2KVBackendByModel: [String: String]
+    public let engineV2KVQuantization: String
+    public let engineV2KVQuantizationByModel: [String: String]
     public let prefillDeadlineMode: PrefillDeadlineMode?
     /// MTP policy inherited from provider config, including exact Gemma QAT.
     /// External assistants download asynchronously through the configured catalog.
@@ -99,6 +101,8 @@ public struct StandaloneServerConfig: Sendable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
+        engineV2KVQuantization: String = "balanced",
+        engineV2KVQuantizationByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil,
@@ -116,6 +120,8 @@ public struct StandaloneServerConfig: Sendable {
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
+        self.engineV2KVQuantization = engineV2KVQuantization
+        self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpMode = mtpMode
         self.mtpDrafterPath = mtpDrafterPath
@@ -1217,6 +1223,8 @@ public actor StandaloneServer {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                kvQuantizationConfig: config.engineV2KVQuantization,
+                kvQuantizationConfigByModel: config.engineV2KVQuantizationByModel,
                 mtpAcceptanceConfig: config.mtpAcceptance,
                 mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,

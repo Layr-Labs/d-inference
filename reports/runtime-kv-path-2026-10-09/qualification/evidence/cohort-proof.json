@@ -1,0 +1,333 @@
+{
+  "date": "2026-10-09",
+  "scope": "Named cohort/source-map and actual M5 score-record comparisons; no universal numerical equivalence claim.",
+  "source_transitions": [
+    {
+      "from": "C3",
+      "to": "C5",
+      "from_digest": "49f91100994ffe51ee0e9a928a871fdb544382801d3707aeebeff90661e460b7",
+      "to_digest": "eafe9365859a44c2c7f8e7e13ae1caebff463b07b60873e61ec7e058c136b53b",
+      "changed_files": [
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedQuantizedAttention.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedQuantizedAttentionWorkspace.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedQuantizedKernelSmoke.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedQuantizedMetal.swift",
+        "provider-swift/Sources/ProviderBenchmark/RuntimeGenerationBenchmark.swift",
+        "provider-swift/Sources/darkbloom/BenchmarkCommand.swift"
+      ],
+      "source_count": 1316
+    },
+    {
+      "from": "C5",
+      "to": "C7",
+      "from_digest": "eafe9365859a44c2c7f8e7e13ae1caebff463b07b60873e61ec7e058c136b53b",
+      "to_digest": "b290e9349127d7206af16e7801ceee3348876b0356a1bea965bd01c80a0cfa10",
+      "changed_files": [
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVBackend.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/DiffusionGemmaPrefillGeometry.swift",
+        "libs/mlx-swift-lm/Libraries/MLXVLM/DiffusionGemmaVisualEmbeddings.swift",
+        "provider-swift/Sources/ProviderCore/Inference/Engine/Factory/DiffusionGemmaProviderBridge.swift"
+      ],
+      "source_count": 1316
+    },
+    {
+      "from": "C7",
+      "to": "C8",
+      "from_digest": "b290e9349127d7206af16e7801ceee3348876b0356a1bea965bd01c80a0cfa10",
+      "to_digest": "3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa",
+      "changed_files": [
+        "libs/mlx-swift-lm/Libraries/MLXLLM/Models/DiffusionGemmaPrefixCache.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVBackend.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationAdmission.swift",
+        "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineLoopV2+HistoricalCheckpoint.swift",
+        "libs/mlx-swift-lm/Libraries/MLXVLM/DiffusionGemmaEngine.swift"
+      ],
+      "source_count": 1316
+    }
+  ],
+  "matched_m5_scores": [
+    {
+      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "profile": "native",
+      "prior": "candidate03-m5-matrix/qwen3.6-35b-a3b-vl-mtp-mxfp8-scores-native.json",
+      "current": "candidate07-m5-final-controls/qwen3.6-35b-a3b-vl-mtp-mxfp8-scores-native.json",
+      "prior_sha256": "5af4fe7bf9ff9db362173b4e122db870cf36dbbd7ec620144e367607a71eb1cc",
+      "current_sha256": "588c63fcc0e6f2ae0993cf94eee77d6185180d189b5633cd4e9eb6a5e8823a82",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    },
+    {
+      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "profile": "balanced",
+      "prior": "candidate03-m5-matrix/qwen3.6-35b-a3b-vl-mtp-mxfp8-scores-balanced.json",
+      "current": "candidate07-m5-final-controls/qwen3.6-35b-a3b-vl-mtp-mxfp8-scores-balanced.json",
+      "prior_sha256": "0cfdcde7ff7596ec7572caee89bc41873bb8abd181e9be104dca42484a8a298f",
+      "current_sha256": "3afde59ce25da0e77495a484a958b2a0c4977582c92f68c8b8932b4312c09990",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    },
+    {
+      "model": "EigenLabs--Qwen3.8-27B-4bit-mtp",
+      "profile": "native",
+      "prior": "candidate03-m5-matrix/EigenLabs--Qwen3.8-27B-4bit-mtp-scores-native.json",
+      "current": "candidate07-m5-final-controls/EigenLabs--Qwen3.8-27B-4bit-mtp-scores-native.json",
+      "prior_sha256": "dffdb03416871b8c84d190e6a205c29f80768cf2cfb795eb8632525ada45602b",
+      "current_sha256": "63e76b60c5c0829c6b8c4265e5f9be06a0afa81c27ada5631b8572f45311873b",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    },
+    {
+      "model": "EigenLabs--Qwen3.8-27B-4bit-mtp",
+      "profile": "balanced",
+      "prior": "candidate03-m5-matrix/EigenLabs--Qwen3.8-27B-4bit-mtp-scores-balanced.json",
+      "current": "candidate07-m5-final-controls/EigenLabs--Qwen3.8-27B-4bit-mtp-scores-balanced.json",
+      "prior_sha256": "62ca95b76c87f26b47ce92cdd8df667f89db7aa4568e647e9d681d984a41d95c",
+      "current_sha256": "4330e0d23eb3ddd8144e8ca959482bfb5020feb3192595b0290d7803a193728a",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    },
+    {
+      "model": "ternary-bonsai-2-27b",
+      "profile": "native",
+      "prior": "candidate03-m5-matrix/ternary-bonsai-2-27b-scores-native.json",
+      "current": "candidate07-m5-final-controls/ternary-bonsai-2-27b-scores-native.json",
+      "prior_sha256": "cc1cb73be012aa9167e81fb09bcfe053f280a27650c70c88fbf5da93ab5ad1ab",
+      "current_sha256": "8762440075574e6ee779f93d9c3e7fa2485c78136e92f01aa7dbe4e141be576a",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    },
+    {
+      "model": "ternary-bonsai-2-27b",
+      "profile": "balanced",
+      "prior": "candidate03-m5-matrix/ternary-bonsai-2-27b-scores-balanced.json",
+      "current": "candidate07-m5-final-controls/ternary-bonsai-2-27b-scores-balanced.json",
+      "prior_sha256": "522f3f7fb4d48b0b239b48b01bcf5f753b0ec8da239ab36e192b368322da428d",
+      "current_sha256": "1b5cabec0235742474eff6a5eac11e1924e59f17d4ab67d6a986ed8977192058",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    },
+    {
+      "model": "gemma-4-26b-qat-4bit",
+      "profile": "native",
+      "prior": "candidate05-m5-gemma/gemma-4-26b-qat-4bit-scores-native.json",
+      "current": "candidate07-m5-final-controls/gemma-4-26b-qat-4bit-scores-native.json",
+      "prior_sha256": "1f4f594804c156e5d2cde017fb1511e6d9a03a193bc2c296db74595f7787457b",
+      "current_sha256": "659584e4deed74682a56beeee7c4469969ca30f981dc0540473c0cff596e1f08",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    },
+    {
+      "model": "gemma-4-26b-qat-4bit",
+      "profile": "balanced",
+      "prior": "candidate05-m5-gemma/gemma-4-26b-qat-4bit-scores-balanced.json",
+      "current": "candidate07-m5-final-controls/gemma-4-26b-qat-4bit-scores-balanced.json",
+      "prior_sha256": "d45e7caf39b71f31b52ed700dbf49508ee9fe8fe85eb672fc6b3224fb2567f3b",
+      "current_sha256": "42bf2f3460a6ddfd6b4b706bf2148c7e2644581c7feef7246016c6ce2150bd87",
+      "same_input_sha256": true,
+      "same_mean_nll": true,
+      "same_plain_top1": true,
+      "same_diagnostic_record_bits": true
+    }
+  ],
+  "curated_progress_sha256": "7e0432fac3572d282209ce08b977111f1bc7ca65a11e85b98f9358e99c228191",
+  "curated_stages": 10,
+  "curated_cells": 148,
+  "b4_answer_checks": [
+    {
+      "profile": "native",
+      "id": "width-four-first-b0",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "native",
+      "id": "width-four-first-b1",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "native",
+      "id": "width-four-first-b2",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "native",
+      "id": "width-four-first-b3",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "native",
+      "id": "width-four-repeat-b0",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "native",
+      "id": "width-four-repeat-b1",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "native",
+      "id": "width-four-repeat-b2",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "native",
+      "id": "width-four-repeat-b3",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-first-b0",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-first-b1",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-first-b2",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-first-b3",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-repeat-b0",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-repeat-b1",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-repeat-b2",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    },
+    {
+      "profile": "balanced",
+      "id": "width-four-repeat-b3",
+      "finish": "stop",
+      "generated_tokens": 32,
+      "exact_expected_answer": true
+    }
+  ],
+  "gemma8_c8_score_pair": {
+    "stage": "candidate08-m4-gemma8",
+    "host": "M4 Max 128 GiB",
+    "modelID": "gemma-4-26b-8bit",
+    "inputSHA256": "167abb8dc653358dc0455fbe8ca56b0d98b524b88107dac167a1a235b6d62d13",
+    "sameInputTokens": true,
+    "scoredTokens": 254,
+    "promptTokens": 5326,
+    "meanForcedTokenNLL": {
+      "native": 6.908567612565409,
+      "balanced": 7.0743518926965905
+    },
+    "nllDelta": 0.16578428013118174,
+    "top1Agreement": 0.8149606299212598,
+    "finiteBothArms": true,
+    "plainDiagnosticTop1EqualBothArms": true,
+    "exactDiagnosticRepeatsBothArms": true,
+    "rawJSONSHA256": {
+      "native": "f19b43922ceb1d326d47aa0c4320da04ac9ac46521f25cbfbaa44f989b276a28",
+      "balanced": "ee53f65709fe0853c0c52a4fe3765a1e495e41ba0dddd489e7253d612b81ee05"
+    }
+  },
+  "gemmaBaseDefaultAlias": {
+    "proof": "candidate08-m4-gemma-base-default-r2/proof.json",
+    "sha256": "efad99205f15b360171d8555bc0f285ffee300b762d709a1600321e3998943e8",
+    "answer": {
+      "early": "cedar-0837",
+      "late": "hazel-2651",
+      "middle": "juniper-1942"
+    },
+    "candidateArtifacts": {
+      "darkbloom": "b7c00f1dbfcba088be3c009b85f28a9a6875757561da8a6e70526c40394ee42b",
+      "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c"
+    },
+    "candidateSourceDigest": "3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa",
+    "commandOmitsPrecision": true,
+    "completionTokenCount": 52,
+    "exitCode": 0,
+    "expectedAnswer": {
+      "early": "cedar-0837",
+      "late": "hazel-2651",
+      "middle": "juniper-1942"
+    },
+    "finishReason": "stop",
+    "kvQuantization": "balanced",
+    "modelID": "gemma-4-26b",
+    "passed": true,
+    "rawSHA256": "db548d46c473c39769748d5a77f0ac5f1f7d8fa2c7a53496ebe933e5ece0e538",
+    "resolvedBackend": "paged",
+    "stderrSHA256": "4adea1fff5109807fe8c9f5afad69d4761caf203df33caaf163177915b2f5ddd",
+    "verifiedModelAggregateSHA256": "a4722b6020adb1894c700b45ddcd58bc0e0f033abe7139f86cbbbfe60cba4eb6"
+  },
+  "curated_progress": "curated-progress-v8.json",
+  "independentArtifactIdentityAudit": {
+    "file": "artifact-identity-audit-v8.json",
+    "sha256": "9530bfa856d208721002ece65b5964f2af61fb199a309c4e74784b8bde3ffb28",
+    "parsedReports": 138,
+    "nestedGenerationReports": 108,
+    "flatScoreReports": 30,
+    "aliasRawReportPassed": true,
+    "unparsedFailuresRetained": 10,
+    "scope": "Both required exact lowercase SHA-256 fields are present in the mode-required envelope and equal each frozen manifest. No fallback or conflicting alternate envelope qualifies."
+  },
+  "curatorSourceSHA256": "3ffae39cf5ccbf2be5276f7daa8863bcf909966e68846c67bbaead1ba88f85ed",
+  "curatorNativePeerBinding": "Only parsed native score peers listed for the exact model in the same manifest qualify; raw peer SHA and both execution artifact IDs are validated before context/top1 comparison."
+}

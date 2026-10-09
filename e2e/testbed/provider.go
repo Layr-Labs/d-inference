@@ -180,15 +180,12 @@ func findProviderBinary() string {
 // BuildProviderTOML renders the minimal provider config the testbed needs in
 // order to select a CBv2 KV backend and/or a per-slot concurrency cap.
 //
-// This file exists ONLY because those two settings have no env-var or CLI
-// equivalent. In particular DARKBLOOM_CBV2_PAGED_KV is negative-polarity — it
-// can force paged OFF but never ON — so `engine_v2_kv_backend = "paged"` under
-// `[backend]` is the sole way an e2e run can exercise paged KV.
-//
 // A config is always returned, even when both performance knobs are unset.
 // `auto_update` / `auto_restart` must remain pinned off: otherwise the default
 // testbed launch installs a launchd watchdog that outlives the provider process
 // and leaks into later tests (or the operator's real provider session).
+// An explicit contiguous fixture pins native precision as well; the provider's
+// balanced default requires paged storage and must not silently become native.
 func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 	backend := ResolveKVBackend(cfg.KVBackend)
 	maxConcurrent, err := ResolveMaxConcurrent(cfg.MaxConcurrent)
@@ -214,6 +211,9 @@ func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 	b.WriteString("\n[backend]\n")
 	if backend != "" {
 		fmt.Fprintf(&b, "engine_v2_kv_backend = %q\n", backend)
+	}
+	if backend == KVBackendContiguous {
+		b.WriteString("engine_v2_kv_quantization = \"native\"\n")
 	}
 	if maxConcurrent > 0 {
 		fmt.Fprintf(&b, "engine_v2_max_concurrent = %d\n", maxConcurrent)

@@ -144,15 +144,40 @@ public enum PackagedRuntimeSmoke {
 
     public static func runPagedKernel(
         shapes: [PagedAttentionKernelSmokeShape] =
-            PagedAttentionKernel.gptOSSRuntimeSmokeShapes
+            PagedAttentionKernel.gptOSSRuntimeSmokeShapes,
+        precision: EngineV2KVQuantizationSelection = .native,
+        packedShapes: [PagedQuantizedKernelSmokeShape] = []
     ) throws {
         try PagedAttentionKernel.runtimeSmoke(shapes: shapes)
+        if let quantization = precision.configuration {
+            try PagedQuantizedKernelSmoke.runtimeSmoke(
+                shapes: packedShapes, quantization: quantization)
+        }
     }
 
-    public static func runPagedKernel(arguments: [String]) throws {
-        let shapes = try arguments.isEmpty
+    public static func runPagedKernel(
+        arguments: [String], precision: String = "native", packedArguments: [String] = []
+    ) throws {
+        let selected = try EngineV2KVQuantizationPolicy.parseSelection(precision)
+        let shapes =
+            try arguments.isEmpty
             ? PagedAttentionKernel.gptOSSRuntimeSmokeShapes
             : arguments.map(PagedAttentionKernelSmokeShape.init(argumentValue:))
-        try runPagedKernel(shapes: shapes)
+        var packed = try packedArguments.map(PagedQuantizedKernelSmokeShape.init(argumentValue:))
+        // Bare packaged-artifact smoke covers the default balanced GPT-OSS
+        // geometry. A model-specific request supplies its selected groups,
+        // including an intentionally empty packed set for all-native owners.
+        if arguments.isEmpty, packedArguments.isEmpty, let config = selected.configuration {
+            packed = try PagedQuantizedKernelSmoke.smokeShapes(
+                layerKinds: [
+                    CBv2LayerKind(
+                        attention: .full, hasSinks: true, headDim: 64,
+                        kvHeads: 8, queryHeads: 64)
+                ], quantization: config)
+        }
+        guard selected != .native || packed.isEmpty else {
+            throw EngineV2KVQuantizationPolicy.Failure.invalidSelection("native with packed shapes")
+        }
+        try runPagedKernel(shapes: shapes, precision: selected, packedShapes: packed)
     }
 }

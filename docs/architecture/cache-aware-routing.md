@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -258,6 +258,13 @@ queued dispatch (`coordinator/registry/cache_attempt_ownership.go`,
 `coordinator/internal/inference/providerwire/provider_wire.go`).
 
 ### Protocol v2 proof
+
+Runtime cache precision belongs to the provider's concrete storage identity.
+Quantized slots advertise only the exact complete checkpoint contract they can
+restore; native and packed namespaces differ. Legacy resident-page and native
+tensor snapshot formats are bypassed for packed precision. These provider
+choices do not change proof or receipt authority. See
+[runtime KV quantization](kv-cache-quantization.md).
 
 Each supported tier advertises a connection-scoped capability containing:
 

@@ -68,6 +68,7 @@ provider-build: ## Build the Swift provider CLI with its source-matched metallib
 
 provider-test: ## Build and run Swift provider tests with source-matched metallibs
 	python3 scripts/test-stage-test-metallib.py
+	python3 scripts/test-stage-swiftpm-resource-bundles.py
 	cd provider-swift && swift build --build-tests
 	@set -eu; \
 	    bin_path="$$(cd provider-swift && swift build --show-bin-path)"; \
@@ -76,9 +77,12 @@ provider-test: ## Build and run Swift provider tests with source-matched metalli
 
 provider: provider-build provider-test ## Build + test provider
 
-benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
+benchmark-wrapper-test: ## Unit-test benchmark wrappers (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
 	cd scripts && python3 -m unittest discover -s serving_performance -t . -p 'test_*.py'
+	python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
+	python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+	python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)

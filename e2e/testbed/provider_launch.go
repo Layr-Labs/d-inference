@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 )
@@ -73,6 +74,14 @@ func buildProviderStartSpec(coordinatorURL, root string, cfg ProviderConfig, ind
 		"DARKBLOOM_LOCAL_DIR":          filepath.Join(root, "local"),
 		"DARKBLOOM_KV_BACKEND_GUARD":   filepath.Join(root, "kv-backend-guard.json"),
 		"TMPDIR":                       filepath.Join(root, "tmp"),
+	}
+	if precision, supplied := os.LookupEnv(EnvKVQuantization); supplied {
+		if ResolveKVBackend(cfg.KVBackend) == KVBackendContiguous {
+			// This fixture is a native control. Its TOML pin must also win
+			// against a supplied environment override, which precedes TOML.
+			precision = "native"
+		}
+		env[EnvKVQuantization] = precision
 	}
 	if cfg.AuthTokenPath != "" {
 		env["DARKBLOOM_AUTH_TOKEN_PATH"] = cfg.AuthTokenPath

@@ -7,7 +7,7 @@ import Foundation
 /// certifies the global FCFS release policy; representative non-Qwen evidence
 /// remains external to the Qwen matrix.
 public struct SchedulerPrefillDecisionReport: Codable, Sendable {
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
     public static let minimumLiveIterations = 10
 
     public enum Mode: String, Codable, Sendable {
@@ -69,6 +69,9 @@ public struct SchedulerPrefillDecisionReport: Codable, Sendable {
         public let hardware: HardwareIdentity
         public let postureAtStart: PowerThermalPosture
         public let postureAtEnd: PowerThermalPosture
+        /// Actual engine precision shared by every measured cell. Nil for
+        /// historical reports without precision provenance or mixed runs.
+        public let resolvedKVQuantization: String?
     }
 
     public struct SignedArtifactIdentity: Codable, Sendable, Equatable {
@@ -140,6 +143,10 @@ public struct SchedulerPrefillDecisionReport: Codable, Sendable {
         public let schedulerSteps: Int?
         public let packedPrefill: PackedPrefill
         public let resolvedKVBackend: String?
+        /// Canonical precision copied from the constructed production engine,
+        /// never inferred from a requested flag or the checkpoint's weights.
+        /// Nil for simulation and historical reports without this provenance.
+        public let resolvedKVQuantization: String?
     }
 
     public struct EvaluationThresholds: Codable, Sendable, Equatable {

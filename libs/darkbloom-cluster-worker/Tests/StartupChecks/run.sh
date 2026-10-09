@@ -43,6 +43,7 @@ check() {
   passed=$((passed + 1)); printf 'ok %-58s %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-150)"
 }
 transport=DARKBLOOM_CLUSTER_TRANSPORT; fault=DARKBLOOM_CLUSTER_QUALIFICATION_FAULT; retired=DARKBLOOM_CLUSTER_GENERATION_MODE
+gate=DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE
 # With no switch the worker gets as far as the missing model: the baseline every refusal is told apart from.
 check baseline-stops-at-the-missing-model 1 "" "qualification switch" --
 check transport-switch-refused-without-the-flag 1 "$transport is a qualification switch" "" "$transport=local-socket-test" --
@@ -54,6 +55,12 @@ check transport-switch-passes-the-gate-with-the-flag 1 "" "qualification switch"
 check fault-switch-passes-the-gate-with-the-flag 1 "" "qualification switch" "$fault=handoff_corrupt_segment=3" -- --qualification-switches yes
 check flag-alone-changes-nothing 1 "" "qualification switch" -- --qualification-switches yes
 check flag-takes-only-yes 1 "takes only the value yes" "" -- --qualification-switches no
+# The host memory gate's record and measure modes are a qualification switch like the other two.
+check memory-gate-switch-refused-without-the-flag 1 "$gate is a qualification switch" "" "$gate=measure" --
+check memory-gate-switch-refused-whatever-its-value 1 "$gate is a qualification switch" "" "$gate=" --
+check memory-gate-switch-passes-the-gate-with-the-flag 1 "" "qualification switch" "$gate=measure" -- --qualification-switches yes
+check memory-gate-record-refused-without-the-flag 1 "$gate is a qualification switch" "" "$gate=record" --
+check memory-gate-record-passes-the-gate-with-the-flag 1 "" "qualification switch" "$gate=record" -- --qualification-switches yes
 check retired-mode-name-refused 1 "$retired is no longer read" "" "$retired=phase_split_v1" --
 check retired-mode-name-refused-even-with-the-flag 1 "$retired is no longer read" "" "$retired=phase_split_v1" -- --qualification-switches yes
 check unknown-generation-mode-refused 1 "generation mode must be one the registered model lists" "" -- --generation-mode phase-split

@@ -119,6 +119,8 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
     let purpose: String
     private let comparesWithFirstSample: Bool
     private let list: QwenDenseStageLoadWatchList?
+    /// Off in every installed process; see `QwenDenseStageLoadMeasurement`.
+    private let measurement: QwenDenseStageLoadMeasurement
     private let lock = NSLock()
     private var registered = false
     private var baseline: QwenDenseStageLoadBaseline?
@@ -129,8 +131,10 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
     private var latest: QwenDenseStageLoadAdmission?
 
     /// `list` is where this watch appears once it has taken a decision.
-    init(_ purpose: String, comparesWithFirstSample: Bool = true, list: QwenDenseStageLoadWatchList? = .shared) {
+    init(_ purpose: String, comparesWithFirstSample: Bool = true, list: QwenDenseStageLoadWatchList? = .shared,
+         measurement: QwenDenseStageLoadMeasurement = .shared) {
         self.purpose = purpose; self.comparesWithFirstSample = comparesWithFirstSample; self.list = list
+        self.measurement = measurement
     }
 
     /// One gate pass: the policy's decision on a fresh sample. A refusal is
@@ -161,8 +165,12 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
         guard decision.admitted else {
             refusals += 1; lastRefusal = decision
             if decision.stoppedByCompressionOrSwap { stopped = true }
+            // Qualification measurement only (off in every installed process):
+            // a refusal for admissible memory alone is recorded, not enforced.
+            if measurement.judge(decision, first: first, scope: ObjectIdentifier(self)) { return true }
             throw ProbeError(decision.refusal ?? "\(purpose) refused")
         }
+        _ = measurement.judge(decision, first: first, scope: ObjectIdentifier(self))
         if decision.reclaimableUsedForAdmission { usedReclaimable = true }
         let room = decision.admissibleBytes - decision.requiredBytes
         if room < tightest.map({ $0.admissibleBytes - $0.requiredBytes }) ?? Int.max { tightest = decision }

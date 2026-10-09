@@ -21,6 +21,11 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
     public static let transportEnvironmentName = "DARKBLOOM_CLUSTER_TRANSPORT"
     public static let faultEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"
     public static let retiredGenerationModeEnvironmentName = "DARKBLOOM_CLUSTER_GENERATION_MODE"
+    /// `measure` records what the host memory gate would have refused for
+    /// admissible memory alone instead of enforcing it; see
+    /// `QwenDenseStageLoadMeasurement`. Spelled out here so this file still
+    /// compiles without the rest of the runtime.
+    public static let memoryGateEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE"
     /// The worker argument that permits the two switches, with the value `yes`.
     public static let permittingArgument = "--qualification-switches"
 
@@ -38,7 +43,8 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
                 + "declare the mode with the worker's --generation-mode argument")
         }
         guard !permitted else { return }
-        for name in [Self.transportEnvironmentName, Self.faultEnvironmentName] where environment[name] != nil {
+        for name in [Self.transportEnvironmentName, Self.faultEnvironmentName, Self.memoryGateEnvironmentName]
+        where environment[name] != nil {
             throw ProbeError("\(name) is a qualification switch and this process was not started with "
                 + "\(Self.permittingArgument) yes; it is refused, not ignored")
         }

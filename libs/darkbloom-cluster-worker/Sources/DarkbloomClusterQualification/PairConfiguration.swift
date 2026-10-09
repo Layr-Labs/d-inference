@@ -148,6 +148,18 @@ public struct PairConfiguration: Sendable {
             "remote transport must be an absolute executable and its arguments")
     }
 
+    /// The environment of a transport process (the local shell, `ssh`) and of
+    /// inspection commands: a fixed base, plus what `ssh` needs to find the
+    /// operator's keys and agent. A worker never inherits it; its launch
+    /// script starts it with an exact environment of its own.
+    static var transportEnvironment: [String: String] {
+        var value = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"]
+        for name in ["HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK"] {
+            if let inherited = ProcessInfo.processInfo.environment[name] { value[name] = inherited }
+        }
+        return value
+    }
+
     func side(_ rank: Int) -> PairSide { rank == 0 ? local : remote }
     func transport(_ rank: Int) -> [String] { rank == 0 ? ["/bin/sh", "-c"] : remoteTransport }
 

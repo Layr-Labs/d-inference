@@ -350,7 +350,7 @@ public struct PairDriver: Sendable {
         let command = configuration.command(rank, script: script)
         let process = Process(), output = Pipe(), diagnostics = Pipe()
         process.executableURL = URL(fileURLWithPath: command[0]); process.arguments = Array(command.dropFirst())
-        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"]
+        process.environment = PairConfiguration.transportEnvironment
         process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = diagnostics
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }

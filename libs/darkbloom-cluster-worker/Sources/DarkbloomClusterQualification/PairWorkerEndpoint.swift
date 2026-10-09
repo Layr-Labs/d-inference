@@ -68,7 +68,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         writer = DispatchQueue(label: "darkbloom.pair-check.writer.\(rank)")
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = Array(command.dropFirst())
-        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"]
+        process.environment = PairConfiguration.transportEnvironment
         process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
             throw ClusterWorkerOwnerError.invalid("Cannot suppress pipe SIGPIPE")

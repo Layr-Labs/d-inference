@@ -19,6 +19,10 @@ struct WorkerConfiguration {
     /// qualification switch in the environment stops the worker at startup.
     /// An installed owner never passes it.
     let qualificationSwitchesPermitted: Bool
+    /// Which adapter executes the registered model `--model-id` names.
+    let family: ClusterResidentModelCatalog.Family
+    /// That model's own session bound; the dense models keep 300 seconds.
+    let maximumLifetimeNanoseconds: UInt64
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
@@ -52,15 +56,21 @@ struct WorkerConfiguration {
             return value
         }
         let rank = try integer("--rank"), cut = try integer("--stage-cut")
+        // The closed catalog of every adapter: an ID outside it has no entry.
+        guard let registered = ClusterResidentModelCatalog.entry(runtimeModelID: fields["--model-id"]!) else {
+            throw WorkerFailure.invalid("Worker requires a registered model ID")
+        }
+        let lifetime = UInt64(registered.maximumLifetimeSeconds) * 1_000_000_000
         guard (0...1).contains(rank), fields["--model-dir"]!.hasPrefix("/"),
-              QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: fields["--model-id"]!)?.supportedCuts.contains(cut) == true,
+              registered.supportedCuts.contains(cut),
               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
               epoch.uuidString.lowercased() == fields["--membership-epoch"],
               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
               String(deadline) == fields["--deadline-uptime-nanoseconds"],
-              deadline > now, deadline - now <= 300_000_000_000 else {
-            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a <=300-second local lifetime")
+              deadline > now, deadline - now <= lifetime else {
+            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a <=\(registered.maximumLifetimeSeconds)-second local lifetime")
         }
+        family = registered.family; maximumLifetimeNanoseconds = lifetime
         guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
             throw WorkerFailure.invalid("Unknown worker prefill schedule")
         }
@@ -68,8 +78,7 @@ struct WorkerConfiguration {
         // unknown or unsupported mode never falls back to the pipeline.
         if let text = fields["--generation-mode"] {
             guard let mode = ClusterGenerationMode(rawValue: text),
-                  QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: fields["--model-id"]!)?
-                      .supportedGenerationModes.contains(mode) == true else {
+                  registered.supportedGenerationModes.contains(mode) else {
                 throw WorkerFailure.invalid("Worker generation mode must be one the registered model lists: "
                     + ClusterGenerationMode.allCases.map(\.rawValue).joined(separator: ", "))
             }

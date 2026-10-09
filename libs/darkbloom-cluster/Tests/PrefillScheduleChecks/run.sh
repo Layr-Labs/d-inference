@@ -46,6 +46,11 @@ task_catalog=(
   Models/Qwen/Resident/QwenResidentModelDefinition
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
+  Models/MiMo/Metadata/MiMoRegisteredSpecification
+  Models/MiMo/Metadata/MiMoLayerStagePlan
+  Models/MiMo/Metadata/MiMoArithmeticEnvironment
+  Models/MiMo/Resident/MiMoResidentCapabilityMetadata
+  Models/Metadata/ClusterResidentModelCatalog
 )
 task_catalog_paths=()
 for task_source in "${task_catalog[@]}"; do task_catalog_paths+=("$task_runtime/$task_source.swift"); done

@@ -16,11 +16,11 @@ enum QwenResidentRequestExecution {
         ]))
     }
 
-    static func run(stage: QwenResidentLoadedStage, producerStage: QwenResidentLoadedStage? = nil,
+    static func run(stage: any LayerStageResidentStage, producerStage: (any LayerStageResidentStage)? = nil,
                     generationMode: QwenResidentGenerationMode = .pipeline,
                     phaseSplitAllowance: QwenPhaseSplitAllowance? = nil,
                     qualificationFault: QwenPhaseSplitFault? = nil,
-                    admission: QwenResidentAdmission,
+                    admission: any LayerStageResidentAdmission,
                     collective: Collective, control: QwenResidentControl,
                     reserved: QwenResidentReservation,
                     onCommittedToken: (Int, Int, Int) throws -> Bool
@@ -39,7 +39,10 @@ enum QwenResidentRequestExecution {
         // geometry and this request; the agreement fingerprint carries them.
         var split: QwenPhaseSplitPlan?
         if generationMode == .phaseSplit {
-            split = try QwenPhaseSplitPlan(plan: admission.plan, geometry: stage.profile.geometry, request: reserved.request)
+            guard let geometry = stage.handoffGeometry else {
+                throw ProbeError("This registered model's request state does not change owner")
+            }
+            split = try QwenPhaseSplitPlan(plan: admission.plan, geometry: geometry, request: reserved.request)
         }
         let agreement = try QwenLayerStageGenerationAgreement(request: reserved.request,
             membershipEpoch: admission.configuration.identity.membershipEpoch,
@@ -68,7 +71,7 @@ enum QwenResidentRequestExecution {
             guard let charge = reserved.recordingCharge else { throw ProbeError("Recording capture was not reserved") }
             let actual = try QwenResidentRecordingCharge.derive(base: reserved.allowance, rank: collective.rank,
                 vocabularySize: reserved.request.profile.vocabularySize,
-                activationDType: reserved.request.profile.activationDType,
+                activationDType: reserved.request.profile.selectedRowDType,
                 bound: QwenResidentResourceEnvironment.allocationBound)
             try charge.requireCapture(actual.capture)
             // A fault is a qualification input: it exists only in a process
@@ -77,8 +80,11 @@ enum QwenResidentRequestExecution {
             let fault = split == nil ? nil : qualificationFault
             let recorded = try recordQwenLayerStageGenerationRequest(loaded: stage.loaded,
                 producerStage: producerStage?.loaded,
-                profile: stage.profile, plan: admission.plan, agreement: agreement, collective: collective,
-                requestAllowance: reserved.allowance, phaseSplitFault: fault,
+                plan: admission.plan, agreement: agreement, collective: collective,
+                resources: {
+                    try stage.diagnosticResources(plan: admission.plan, request: reserved.request,
+                        rank: collective.rank, requestAllowance: reserved.allowance)
+                }, phaseSplitFault: fault,
                 onCommittedToken: committedToken, check: check)
             try charge.requireCapture(recorded.captureBudget)
             evidence = recorded; result = recorded.execution

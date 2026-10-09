@@ -43,7 +43,18 @@ final class QwenGenerationDiagnosticResources {
         }
         // Preserve the base in full, including its largest host state-copy component.
         budget = try .derive(rank: rank, vocabularySize: request.profile.vocabularySize,
-            activationDType: request.profile.activationDType,
+            activationDType: request.profile.selectedRowDType,
+            requestReservedBytes: actual.reservedBytes,
+            bound: QwenResidentResourceEnvironment.allocationBound)
+        try requireLive(force: true)
+    }
+
+    /// For a family whose own stage has already bound this capture to its
+    /// loaded source and rederived `actual` with the real allocator.
+    init(rederivedAllowance actual: QwenResidentRequestAllowance, request: QwenLayerStageGenerationRequest,
+         rank: Int) throws {
+        budget = try .derive(rank: rank, vocabularySize: request.profile.vocabularySize,
+            activationDType: request.profile.selectedRowDType,
             requestReservedBytes: actual.reservedBytes,
             bound: QwenResidentResourceEnvironment.allocationBound)
         try requireLive(force: true)

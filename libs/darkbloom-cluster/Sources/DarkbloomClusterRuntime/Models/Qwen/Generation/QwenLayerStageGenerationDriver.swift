@@ -28,18 +28,17 @@ func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 /// diagnostic mode or permissive resource callback. Do not time this as serving.
 func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage? = nil,
-    profile: QwenRegisteredDenseModelProfile,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
-    collective: Collective, requestAllowance: QwenResidentRequestAllowance,
+    collective: Collective, resources makeResources: () throws -> QwenGenerationDiagnosticResources,
     phaseSplitFault: QwenPhaseSplitFault? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> QwenGenerationDiagnosticEvidence {
     let resources = try MLX.withError { nativeError in
         do {
             try check(); try nativeError.check()
-            let value = try QwenGenerationDiagnosticResources(loaded: loaded, profile: profile,
-                plan: plan, request: agreement.request,
-                rank: collective.rank, requestAllowance: requestAllowance)
+            // The loaded stage's own family binds the capture to its source and
+            // rederives the reserved allowance with the actual allocator.
+            let value = try makeResources()
             try nativeError.check(); try check(); try nativeError.check()
             return value
         } catch {

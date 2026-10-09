@@ -56,20 +56,21 @@ extension QwenStagedGenerationReference {
         // As the staged reference: the artifact's own configuration selects the
         // registered model. Bytes of no registered model stop here.
         let configBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1_048_576)
-        let specification = try QwenResidentModelDefinition(configuration: configBytes).specification
+        let manifestBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304)
+        let specification = try RegisteredResidentModels.identity(configuration: configBytes, manifest: manifestBytes)
         let matrixPath = "/var/empty/darkbloom-staged-service.matrix.json"
         let matrix = Data(#"[[null,"staged-service-0"],["staged-service-1",null]]"#.utf8)
         let identity = ClusterWorkerIdentity(membershipEpoch: UUID(),
-            modelID: specification.model.rawValue,
+            modelID: specification.runtimeModelID,
             artifactSHA256: specification.artifactSHA256, configurationSHA256: specification.configurationSHA256,
             peers: (0...1).map { ClusterWorkerPeer(id: "staged-service-\($0)", buildSHA256: String(repeating: "0", count: 64)) })
-        let manifestBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304)
-        let admissions = try (0...1).map { rank -> QwenResidentAdmission in
+        let admissions = try (0...1).map { rank -> any LayerStageResidentAdmission in
             var environment = processEnvironment
             environment["JACCL_RANK"] = String(rank)
             environment["JACCL_IBV_DEVICES"] = matrixPath
             environment["JACCL_COORDINATOR"] = "127.0.0.1:1"
-            return try QwenResidentAdmission(configuration: .init(identity: identity, modelDirectory: modelDirectory,
+            return try LayerStageResidentFamily.admission(configuration: .init(identity: identity,
+                    modelDirectory: modelDirectory,
                     rank: rank, stageCut: stageCut, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
                     allocatorPolicy: .disableFreedBufferCache),
                 configBytes: configBytes, manifestBytes: manifestBytes, environment: environment,
@@ -87,7 +88,7 @@ extension QwenStagedGenerationReference {
         try control.check()
         try QwenResidentResourceEnvironment.require()
 
-        var stages: [QwenResidentLoadedStage] = []
+        var stages: [any LayerStageResidentStage] = []
         weak var retired0: Module?
         weak var retired1: Module?
         var sessions: [QwenLayerStageSession] = []
@@ -106,7 +107,7 @@ extension QwenStagedGenerationReference {
                 for rank in 0...1 {
                     let started = DispatchTime.now().uptimeNanoseconds
                     try autoreleasepool {
-                        let loaded = try loadQwenResidentStage(admissions[rank], check: checked)
+                        let loaded = try admissions[rank].loadResidentStage(check: checked, constructed: { _ in })
                         if rank == 0 { retired0 = loaded.loaded.model } else { retired1 = loaded.loaded.model }
                         stages.append(loaded)
                     }
@@ -139,7 +140,7 @@ extension QwenStagedGenerationReference {
                         id: value.requestID, now: DispatchTime.now().uptimeNanoseconds)
                     // Each rank's named request allowance, checked live as the worker does.
                     let allowances = try (0...1).map {
-                        try QwenResidentRequestAllowance.derive(profile: stages[$0].profile, plan: plan, rank: $0,
+                        try stages[$0].requestAllowance(plan: plan, rank: $0,
                             maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
                             bound: QwenResidentResourceEnvironment.allocationBound)
                     }

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 
 /// The installed worker already provides a bounded metadata-only command. Run
@@ -37,16 +38,20 @@ enum DistributedCapabilityProbe {
                 throw ClusterConfigurationError.invalid("Cannot bound installed capability pipes")
             }
         }
+        // The child's exit is taken from Foundation's termination handler.
+        // waitUntilExit() can sleep on a dispatch thread after the child is
+        // already gone, which would hold this bounded probe open.
+        let exit = ClusterProcessExit()
         var launched = false
         defer {
             if launched {
                 if child.isRunning { _ = Darwin.kill(child.processIdentifier, SIGKILL) }
-                child.waitUntilExit()
+                exit.wait()
             }
             for handle in handles { try? handle.close() }
             try? output.fileHandleForWriting.close(); try? error.fileHandleForWriting.close()
         }
-        try child.run(); launched = true
+        try exit.run(child); launched = true
         try output.fileHandleForWriting.close(); try error.fileHandleForWriting.close()
         var data = [Data(), Data()], open = [true, true]
         let limits = [ClusterRuntimeCapabilityCodec.maximumBytes, 4096]
@@ -69,7 +74,7 @@ enum DistributedCapabilityProbe {
                 else { data[index].append(contentsOf: buffer.prefix(count)) }
             }
         }
-        child.waitUntilExit()
+        exit.wait()
         try DistributedInstalledFiles.check(deadline)
         guard child.terminationReason == .exit, child.terminationStatus == 0, data[1].isEmpty else {
             throw ClusterConfigurationError.invalid("Installed capability command failed")

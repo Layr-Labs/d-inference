@@ -250,6 +250,59 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertThrowsError(try stored.validate())
     }
 
+    /// A request names one registered model; its profile and cuts follow from
+    /// that row, and a pair run takes its cut from the request's model.
+    func testRequestNamesOneRegisteredModelAndCarriesThatModelsCuts() throws {
+        func make(_ modelID: String? = nil) throws -> QualificationRequest {
+            let source = QualificationPromptSource(kind: "tokenIDs", description: "test")
+            guard let modelID else {
+                return try .init(requestID: UUID(), promptTokenIDs: Array(1...40), chunkSize: 16, outputCount: 4,
+                                 stopTokenIDs: [], promptSource: source)
+            }
+            return try .init(requestID: UUID(), promptTokenIDs: Array(1...40), chunkSize: 16, outputCount: 4,
+                             stopTokenIDs: [], promptSource: source, modelID: modelID)
+        }
+        // The default is the original model, with its original bytes on disk.
+        let small = try make()
+        XCTAssertEqual(small.modelID, "registered_qwen35_9b"); XCTAssertEqual(small.profileID, "registered_qwen35_9b_greedy_generation_v1")
+        XCTAssertEqual(small.supportedCuts, [4, 8, 12, 16]); XCTAssertEqual(try make("registered_qwen35_9b").profileID, small.profileID)
+        let large = try make("registered_qwen38_27b")
+        XCTAssertEqual(large.profileID, "registered_qwen38_27b_greedy_generation_v1")
+        XCTAssertEqual(large.supportedCuts, Array(stride(from: 4, through: 60, by: 4)))
+        XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
+        XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID), ["registered_qwen35_9b", "registered_qwen38_27b"])
+        for unknown in ["", "registered_qwen4", "EigenLabs/Qwen3.8-27B-4bit-mtp", "registered_qwen38_27b "] {
+            XCTAssertThrowsError(try make(unknown), unknown)
+        }
+        // A stored request cannot pair one model with the other's profile.
+        var crossed = large
+        crossed.profileID = small.profileID
+        XCTAssertThrowsError(try crossed.validate())
+        crossed = small; crossed.modelID = large.modelID
+        XCTAssertThrowsError(try crossed.validate())
+        crossed = large; crossed.modelID = "registered_qwen4"
+        XCTAssertThrowsError(try crossed.validate()); XCTAssertEqual(crossed.supportedCuts, [])
+
+        func pair(_ request: QualificationRequest, cut: Int) throws -> PairConfiguration {
+            let side = PairSide(modelDirectory: "/models/registered", workerPath: "/opt/worker/darkbloom-cluster-worker",
+                                rdmaDevice: "rdma_en5", scratchDirectory: "/tmp")
+            return try .init(request: request, stageCut: cut, local: side, remote: side,
+                             remoteTransport: ["/bin/sh", "-c"], coordinator: "10.0.0.5:4499", progressTimeoutMilliseconds: 60_000)
+        }
+        for cut in stride(from: 4, through: 60, by: 4) {
+            let configuration = try pair(large, cut: cut)
+            XCTAssertTrue(configuration.launchScript(0, artifactSHA256: String(repeating: "a", count: 64),
+                configurationSHA256: String(repeating: "b", count: 64), workerSHA256: String(repeating: "c", count: 64))
+                .contains("'--stage-cut' '\(cut)' "))
+        }
+        XCTAssertTrue(try pair(large, cut: 16).launchScript(1, artifactSHA256: String(repeating: "a", count: 64),
+            configurationSHA256: String(repeating: "b", count: 64), workerSHA256: String(repeating: "c", count: 64))
+            .contains("'--model-id' 'registered_qwen38_27b'"))
+        for cut in [0, 2, 6, 18, 62, 64] { XCTAssertThrowsError(try pair(large, cut: cut), "27B cut \(cut)") }
+        for cut in [4, 8, 12, 16] { XCTAssertNoThrow(try pair(small, cut: cut)) }
+        for cut in [20, 32, 60] { XCTAssertThrowsError(try pair(small, cut: cut), "9B cut \(cut)") }
+    }
+
     func testRankEvidenceJoinsAndRefusesDisagreement() throws {
         func record(rank: Int, tokens: [Int] = [5, 6], plan: String = "p") -> Data {
             var value: [String: Any] = ["schema": PairEvidence.schema, "rank": rank,

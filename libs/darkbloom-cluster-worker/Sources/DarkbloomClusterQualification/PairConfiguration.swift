@@ -128,7 +128,8 @@ public struct PairConfiguration: Sendable {
             guard condition else { throw QualificationError("Pair configuration: " + message) }
         }
         try request.validate()
-        try require(QualificationRequest.supportedCuts.contains(stageCut), "stage cut must be 4, 8, 12 or 16")
+        try require(request.supportedCuts.contains(stageCut), "stage cut must be one of the request model's cuts: "
+            + request.supportedCuts.map(String.init).joined(separator: ", "))
         for (name, side) in [("local", local), ("remote", remote)] {
             try require(Self.isPath(side.modelDirectory), "\(name) model directory must be an absolute path of letters, digits, '.', '_', '-', '/'")
             try require(Self.isPath(side.workerPath), "\(name) worker must be an absolute path of letters, digits, '.', '_', '-', '/'")

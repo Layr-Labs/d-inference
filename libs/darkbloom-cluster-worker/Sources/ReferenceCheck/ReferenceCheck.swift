@@ -27,7 +27,7 @@ import Foundation
             }
             guard let model = fields["--model-dir"], model.hasPrefix("/"),
                   let requestPath = fields["--request"], let reportPath = fields["--report"],
-                  let cut = fields["--stage-cut"].flatMap(Int.init), QualificationRequest.supportedCuts.contains(cut),
+                  let cut = fields["--stage-cut"].flatMap(Int.init),
                   let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds) else {
                 throw Failure(usage)
             }
@@ -37,6 +37,17 @@ import Foundation
                 throw Failure("Report \(reportURL.lastPathComponent) already exists; a report is never overwritten")
             }
             let modelDirectory = URL(fileURLWithPath: model)
+            // The artifact's configuration selects the registered model; the
+            // request must have been written for that model and the cut must be
+            // one of its cuts, before anything is hashed or loaded.
+            let registered = try QwenResidentCapabilityMetadata.registeredModel(
+                configuration: QualificationFiles.read(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+            guard request.modelID == registered.runtimeModelID, request.profileID == registered.profileID else {
+                throw Failure("The request is for \(request.modelID); the artifact in --model-dir is \(registered.runtimeModelID)")
+            }
+            guard registered.supportedCuts.contains(cut) else {
+                throw Failure("--stage-cut must be one of " + registered.supportedCuts.map(String.init).joined(separator: ", "))
+            }
             let started = DispatchTime.now().uptimeNanoseconds
             // Covers a native call that never returns; nothing is released by it.
             // The thread is the bound that is relied on: an alarm alone did not
@@ -154,7 +165,8 @@ import Foundation
         }
     }
 
-    static let usage = "usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut 4|8|12|16 --report NEW-REPORT.json [--deadline-seconds 10...300]"
+    static let usage = "usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]\n"
+        + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B"
 
     struct Failure: Error, CustomStringConvertible {
         let description: String

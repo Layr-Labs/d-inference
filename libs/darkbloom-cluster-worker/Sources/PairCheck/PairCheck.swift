@@ -19,8 +19,8 @@ import Foundation
           darkbloom-cluster-pair-check request --output NEW-REQUEST.json --chunk-size N --output-count N
               (--model-dir /ABS/MODEL (--user-text-file FILE | --raw-text-file FILE) [--prompt-tokens N]
                | --synthetic-tokens N [--seed N] | --token-ids-file FILE)
-              [--stop-token-ids A,B] [--request-id UUID]
-          darkbloom-cluster-pair-check run --request REQUEST.json --stage-cut 4|8|12|16 --report NEW-REPORT.json
+              [--stop-token-ids A,B] [--request-id UUID] [--model-id registered_qwen35_9b|registered_qwen38_27b]
+          darkbloom-cluster-pair-check run --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --remote-ssh DESTINATION [--ssh-option Key=Value]...
               --local-worker /ABS/WORKER --remote-worker /ABS/WORKER
               --local-model-dir /ABS/MODEL --remote-model-dir /ABS/MODEL
@@ -72,7 +72,7 @@ import Foundation
     static func request(_ arguments: [String]) async throws {
         let fields = try parse(arguments, allowed: ["--output", "--chunk-size", "--output-count", "--model-dir",
             "--user-text-file", "--raw-text-file", "--prompt-tokens", "--synthetic-tokens", "--seed",
-            "--token-ids-file", "--stop-token-ids", "--request-id"])
+            "--token-ids-file", "--stop-token-ids", "--request-id", "--model-id"])
         guard let output = fields["--output"]?.first, let chunk = try integer(fields, "--chunk-size"),
               let count = try integer(fields, "--output-count") else { throw Failure(usage) }
         let stops = try (fields["--stop-token-ids"]?.first ?? "").split(separator: ",").map { text -> Int in
@@ -87,6 +87,7 @@ import Foundation
         guard sources.count == 1 else { throw Failure("Choose exactly one prompt source\n" + usage) }
         let promptTokens = try integer(fields, "--prompt-tokens")
         let tokens: [Int], source: QualificationPromptSource
+        var tokenizerModelID: String?
         switch sources[0] {
         case "--synthetic-tokens":
             let length = try integer(fields, "--synthetic-tokens")!, seed = try integer(fields, "--seed") ?? 0
@@ -103,6 +104,7 @@ import Foundation
                 throw Failure("A text prompt needs --model-dir for the artifact's tokenizer")
             }
             let tokenizer = try await PromptTokenizer.load(modelDirectory: URL(fileURLWithPath: model))
+            tokenizerModelID = tokenizer.modelID
             let data = try QualificationFiles.read(URL(fileURLWithPath: fields[sources[0]]![0]), maximumBytes: 4 << 20)
             guard let text = String(data: data, encoding: .utf8) else { throw Failure("The prompt text is not UTF-8") }
             if sources[0] == "--user-text-file" {
@@ -118,10 +120,20 @@ import Foundation
                 tokens = body; source = tokenizer.rawSource(text: text, tokenCount: body.count)
             }
         }
+        // A closed choice: the request names one registered model, and the
+        // reference and the workers each refuse a request for another one. A
+        // text prompt takes the model from the artifact whose tokenizer made it.
+        let modelID = fields["--model-id"]?.first ?? tokenizerModelID ?? QualificationRequest.modelID
+        guard QualificationRequest.registeredModel(modelID) != nil else {
+            throw Failure("--model-id must be one of: " + QualificationRequest.registeredModels.map(\.modelID).joined(separator: ", "))
+        }
+        guard tokenizerModelID == nil || tokenizerModelID == modelID else {
+            throw Failure("--model-id is \(modelID) but the tokenizer in --model-dir belongs to \(tokenizerModelID!)")
+        }
         let value = try QualificationRequest(requestID: id, promptTokenIDs: tokens, chunkSize: chunk,
-            outputCount: count, stopTokenIDs: stops, promptSource: source)
+            outputCount: count, stopTokenIDs: stops, promptSource: source, modelID: modelID)
         try QualificationFiles.writeNew(value.encoded(), to: URL(fileURLWithPath: output))
-        print("request \(value.requestID): \(tokens.count) prompt tokens, chunk \(chunk), \(count) outputs, prompt SHA-256 \(value.promptTokenIDsSHA256)")
+        print("request \(value.requestID) for \(value.modelID): \(tokens.count) prompt tokens, chunk \(chunk), \(count) outputs, prompt SHA-256 \(value.promptTokenIDsSHA256)")
     }
 
     static func run(_ arguments: [String]) async throws {

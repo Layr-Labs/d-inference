@@ -8,11 +8,19 @@ import Tokenizers
 /// hash is the one the runtime pins.
 public struct PromptTokenizer: Sendable {
     public static let registeredManifestSHA256 = "4f2735026cc7b40ee2c886ee53fb8755816c0001c4c69c141a61d5f56ff22aa4"
+    /// The manifest pins of the registered artifacts, as the runtime pins them,
+    /// and the model each one is. A tokenizer under any other manifest is refused.
+    public static let registeredManifests: [(sha256: String, modelID: String)] = [
+        (registeredManifestSHA256, "registered_qwen35_9b"),
+        ("d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc", "registered_qwen38_27b"),
+    ]
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.
     static let assistantSuffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
     public let tokenizerSHA256: String
+    /// The registered model whose manifest the tokenizer files were checked against.
+    public let modelID: String
     private let tokenizer: any Tokenizer
 
     public static func load(modelDirectory: URL) async throws -> Self {
@@ -22,8 +30,9 @@ public struct PromptTokenizer: Sendable {
         }
         let manifestData = try QualificationFiles.read(modelDirectory.appendingPathComponent("manifest.json"),
                                                        maximumBytes: 4 << 20)
-        guard QualificationHash.sha256(manifestData) == registeredManifestSHA256 else {
-            throw QualificationError("manifest.json is not the registered Qwen3.5 9B manifest")
+        let manifestSHA256 = QualificationHash.sha256(manifestData)
+        guard let registered = registeredManifests.first(where: { $0.sha256 == manifestSHA256 }) else {
+            throw QualificationError("manifest.json is not a registered model's manifest")
         }
         let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
         var tokenizerSHA256 = ""
@@ -34,7 +43,7 @@ public struct PromptTokenizer: Sendable {
             }
             if name == "tokenizer.json" { tokenizerSHA256 = actual }
         }
-        return .init(tokenizerSHA256: tokenizerSHA256,
+        return .init(tokenizerSHA256: tokenizerSHA256, modelID: registered.modelID,
                      tokenizer: try await AutoTokenizer.from(modelFolder: modelDirectory))
     }
 

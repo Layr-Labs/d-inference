@@ -70,6 +70,25 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     public static let supportedCuts = [4, 8, 12, 16]
     public static let maximumFileBytes = 1 << 20
 
+    /// The registered models a request may name, the original first. This tool
+    /// links no runtime, so the rows repeat the runtime's closed catalog; the
+    /// worker's own description is checked against the request before a launch.
+    public struct RegisteredModel: Equatable, Sendable {
+        public let modelID: String
+        public let profileID: String
+        public let supportedCuts: [Int]
+    }
+    public static let registeredModels: [RegisteredModel] = [
+        .init(modelID: modelID, profileID: profileID, supportedCuts: supportedCuts),
+        .init(modelID: "registered_qwen38_27b", profileID: "registered_qwen38_27b_greedy_generation_v1",
+              supportedCuts: Array(stride(from: 4, through: 60, by: 4))),
+    ]
+    public static func registeredModel(_ modelID: String) -> RegisteredModel? {
+        registeredModels.first { $0.modelID == modelID }
+    }
+    /// The cuts of the model this request names; empty for an unknown model.
+    public var supportedCuts: [Int] { Self.registeredModel(modelID)?.supportedCuts ?? [] }
+
     public var schema: String
     public var requestID: String
     public var modelID: String
@@ -82,9 +101,13 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     public var promptSource: QualificationPromptSource
 
     public init(requestID: UUID, promptTokenIDs: [Int], chunkSize: Int, outputCount: Int,
-                stopTokenIDs: [Int], promptSource: QualificationPromptSource) throws {
+                stopTokenIDs: [Int], promptSource: QualificationPromptSource,
+                modelID: String = QualificationRequest.modelID) throws {
         schema = Self.currentSchema; self.requestID = requestID.uuidString.lowercased()
-        modelID = Self.modelID; profileID = Self.profileID
+        guard let registered = Self.registeredModel(modelID) else {
+            throw QualificationError("Request: \(modelID) is not a registered model")
+        }
+        self.modelID = registered.modelID; profileID = registered.profileID
         self.chunkSize = chunkSize; self.outputCount = outputCount; self.stopTokenIDs = stopTokenIDs
         self.promptTokenIDs = promptTokenIDs; promptTokenIDsSHA256 = QualificationHash.tokenIDs(promptTokenIDs)
         self.promptSource = promptSource
@@ -99,7 +122,7 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         }
         try require(schema == Self.currentSchema, "unknown schema")
         try require(UUID(uuidString: requestID)?.uuidString.lowercased() == requestID, "request ID must be a lowercase UUID")
-        try require(modelID == Self.modelID && profileID == Self.profileID, "only the registered Qwen3.5 9B greedy profile is supported")
+        try require(Self.registeredModel(modelID)?.profileID == profileID, "the model and profile must be one registered pair")
         try require((1...Self.maximumPromptTokens).contains(promptTokenIDs.count), "prompt must have 1...8192 tokens")
         try require((1...Self.maximumChunkTokens).contains(chunkSize), "chunk size must be 1...512")
         try require((1...Self.maximumOutputTokens).contains(outputCount), "output count must be 1...128")

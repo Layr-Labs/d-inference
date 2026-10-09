@@ -391,7 +391,8 @@ struct SchedulerPrefillDecisionEvaluatorTests {
 
     private func reproducibility(
         sourceSHA: String? = String(repeating: "c", count: 40),
-        powerSource: String = "ac"
+        powerSource: String = "ac",
+        precision: String? = "native"
     ) -> SchedulerPrefillDecisionReport.Reproducibility {
         let posture = SchedulerPrefillDecisionReport.PowerThermalPosture(
             powerSource: powerSource,
@@ -414,7 +415,8 @@ struct SchedulerPrefillDecisionEvaluatorTests {
                 memoryGB: 128,
                 gpuCores: 40),
             postureAtStart: posture,
-            postureAtEnd: posture)
+            postureAtEnd: posture,
+            resolvedKVQuantization: precision)
     }
 
     private func signedArtifact(
@@ -431,7 +433,9 @@ struct SchedulerPrefillDecisionEvaluatorTests {
 
     private func results(
         iterations: Int = 10,
-        throughputRatio: Double = 0.97
+        throughputRatio: Double = 0.97,
+        precision: String? = "native",
+        backend: String = "contiguous"
     ) -> [SchedulerPrefillDecisionReport.Result] {
         SchedulerPrefillDecisionScenarios.qwenEvaluationWorkloads.flatMap {
             workload in
@@ -441,7 +445,9 @@ struct SchedulerPrefillDecisionEvaluatorTests {
                         workload: workload,
                         iteration: iteration,
                         cap: cap,
-                        throughputRatio: throughputRatio)
+                        throughputRatio: throughputRatio,
+                        precision: precision,
+                        backend: backend)
                 }
             }
         }
@@ -451,7 +457,9 @@ struct SchedulerPrefillDecisionEvaluatorTests {
         workload: SchedulerPrefillDecisionReport.Workload,
         iteration: Int,
         cap: Int,
-        throughputRatio: Double
+        throughputRatio: Double,
+        precision: String?,
+        backend: String
     ) -> SchedulerPrefillDecisionReport.Result {
         let ttft: [Double]
         switch (workload.name, cap) {
@@ -499,7 +507,156 @@ struct SchedulerPrefillDecisionEvaluatorTests {
                 eligibleRows: cap == 0 ? 4 : 0,
                 executedGroups: cap == 0 ? 1 : 0,
                 executedRows: cap == 0 ? 4 : 0),
-            resolvedKVBackend: "contiguous")
+            resolvedKVBackend: backend,
+            resolvedKVQuantization: precision)
+    }
+
+    private func signedReport(
+        precision: String = "native", backend: String = "paged"
+    ) -> SchedulerPrefillDecisionReport {
+        let values = results(precision: precision, backend: backend)
+        let metadata = reproducibility(precision: precision)
+        let identity = modelIdentity()
+        let artifact = signedArtifact(metadata)
+        let evaluation = SchedulerPrefillDecisionEvaluator.evaluate(
+            mode: .liveModel, results: values, modelIdentity: identity,
+            reproducibility: metadata, evidenceClass: .signedCandidateModelFamily,
+            signedArtifactIdentity: artifact)
+        return .init(
+            schemaVersion: SchedulerPrefillDecisionReport.currentSchemaVersion,
+            mode: .liveModel, evidenceClass: .signedCandidateModelFamily,
+            signedArtifactIdentity: artifact, modelIdentity: identity,
+            reproducibility: metadata,
+            configuration: SchedulerPrefillDecisionScenarios.configuration(
+                modeledPromptTokensPerSecond: nil, timingBasis: "test"),
+            kvBackend: .init(selection: "auto", resolved: [backend]),
+            results: values, evaluation: evaluation)
+    }
+
+    private func decodedReport(
+        _ report: SchedulerPrefillDecisionReport,
+        edit: (inout [String: Any]) -> Void
+    ) throws -> SchedulerPrefillDecisionReport {
+        var object = try #require(try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(report)) as? [String: Any])
+        edit(&object)
+        return try JSONDecoder().decode(
+            SchedulerPrefillDecisionReport.self,
+            from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    @Test(
+        "signed current reports bind every known resolved profile to cells and run identity",
+        arguments: EngineV2KVQuantizationSelection.allCases)
+    func signedPrecisionRoundTrip(precision: EngineV2KVQuantizationSelection) throws {
+        let source = signedReport(precision: precision.rawValue)
+        let decoded = try JSONDecoder().decode(
+            SchedulerPrefillDecisionReport.self,
+            from: JSONEncoder().encode(source))
+        #expect(decoded.schemaVersion == 4)
+        #expect(decoded.reproducibility?.resolvedKVQuantization == precision.rawValue)
+        #expect(decoded.results.allSatisfy { $0.resolvedKVQuantization == precision.rawValue })
+        #expect(decoded.signedArtifactIdentity == source.signedArtifactIdentity)
+        #expect(decoded.modelIdentity == source.modelIdentity)
+        #expect(decoded.reproducibility == source.reproducibility)
+        #expect(SchedulerPrefillDecisionExitStatus.value(for: decoded) == 0)
+        #expect(!decoded.evaluation.releaseCandidateCertified)
+    }
+
+    @Test(
+        "encoded pass cannot qualify missing, unknown, mixed or incompatible precision",
+        arguments: ["missing_cell", "missing_run", "missing_both", "unknown",
+                    "mixed_caps", "run_mismatch", "packed_contiguous"])
+    func precisionProvenanceRefusal(defect: String) throws {
+        let source = signedReport(precision: defect == "packed_contiguous" ? "balanced" : "native")
+        #expect(source.evaluation.outcome == .pass)
+        let decoded = try decodedReport(source) { object in
+            var rows = object["results"] as! [[String: Any]]
+            var metadata = object["reproducibility"] as! [String: Any]
+            switch defect {
+            case "missing_cell":
+                rows[0].removeValue(forKey: "resolvedKVQuantization")
+            case "missing_run":
+                metadata.removeValue(forKey: "resolvedKVQuantization")
+            case "missing_both":
+                for index in rows.indices {
+                    rows[index].removeValue(forKey: "resolvedKVQuantization")
+                }
+                metadata.removeValue(forKey: "resolvedKVQuantization")
+            case "unknown":
+                for index in rows.indices {
+                    rows[index]["resolvedKVQuantization"] = "int4"
+                }
+                metadata["resolvedKVQuantization"] = "int4"
+            case "mixed_caps":
+                for index in rows.indices where rows[index]["maxConcurrentPartialPrefills"] as? Int == 1 {
+                    rows[index]["resolvedKVQuantization"] = "balanced"
+                }
+            case "run_mismatch":
+                metadata["resolvedKVQuantization"] = "k8v8"
+            case "packed_contiguous":
+                rows[0]["resolvedKVBackend"] = "contiguous"
+            default:
+                Issue.record("unknown precision defect")
+            }
+            object["results"] = rows
+            object["reproducibility"] = metadata
+        }
+        // Keep the old encoded success to exercise strict report consumption,
+        // rather than constructing a report that already admits insufficiency.
+        #expect(decoded.evaluation.outcome == .pass)
+        let evaluation = SchedulerPrefillDecisionEvaluator.evaluate(
+            mode: decoded.mode, results: decoded.results, modelIdentity: decoded.modelIdentity,
+            reproducibility: decoded.reproducibility, evidenceClass: decoded.evidenceClass,
+            signedArtifactIdentity: decoded.signedArtifactIdentity)
+        #expect(evaluation.outcome == .insufficientEvidence)
+        #expect(evaluation.checks.first { $0.name == "kv_precision_consistent" }?.passed == false)
+        #expect(SchedulerPrefillDecisionExitStatus.value(for: decoded) == 2)
+    }
+
+    @Test("historical schema-three reports remain readable but do not qualify current precision")
+    func legacyPrecisionIsUnqualified() throws {
+        let decoded = try decodedReport(signedReport()) { object in
+            object["schemaVersion"] = 3
+            var rows = object["results"] as! [[String: Any]]
+            for index in rows.indices {
+                rows[index].removeValue(forKey: "resolvedKVQuantization")
+            }
+            object["results"] = rows
+            var metadata = object["reproducibility"] as! [String: Any]
+            metadata.removeValue(forKey: "resolvedKVQuantization")
+            object["reproducibility"] = metadata
+        }
+        #expect(decoded.schemaVersion == 3)
+        #expect(decoded.reproducibility?.resolvedKVQuantization == nil)
+        #expect(decoded.results.allSatisfy { $0.resolvedKVQuantization == nil })
+        #expect(decoded.evaluation.outcome == .pass)
+        #expect(SchedulerPrefillDecisionExitStatus.value(for: decoded) == 2)
+    }
+
+    @Test("precision provenance does not bypass source, binary or model identity checks")
+    func precisionPreservesIdentityGates() throws {
+        let source = signedReport(precision: "balanced")
+        let missingSource = try decodedReport(source) { object in
+            var metadata = object["reproducibility"] as! [String: Any]
+            metadata.removeValue(forKey: "sourceSHA")
+            object["reproducibility"] = metadata
+        }
+        let mismatchedBinary = try decodedReport(source) { object in
+            var artifact = object["signedArtifactIdentity"] as! [String: Any]
+            artifact["expectedRegisteredBinarySHA256"] = String(repeating: "e", count: 64)
+            object["signedArtifactIdentity"] = artifact
+        }
+        let invalidModel = try decodedReport(source) { object in
+            var model = object["modelIdentity"] as! [String: Any]
+            model["snapshotAggregateSHA256"] = "missing"
+            object["modelIdentity"] = model
+        }
+        for invalid in [missingSource, mismatchedBinary, invalidModel] {
+            #expect(SchedulerPrefillDecisionKVProvenance.isConsistent(
+                results: invalid.results, reproducibility: invalid.reproducibility))
+            #expect(SchedulerPrefillDecisionExitStatus.value(for: invalid) == 2)
+        }
     }
 
     @Test("complete cap comparison passes measurement criteria but never certifies release")

@@ -3474,6 +3474,18 @@ also write `engine_v2_kv_quantization = "native"`; paged and automatic controls
 retain the provider's precision default. The default smoke refuses inherited
 KV precision overrides so it continues testing the actual default.
 
+Automatic benchmark prewarm derives expectations from each provider's registered
+`model_type` and the inherited KV precision. MiMo stays native/contiguous before
+precision parsing; balanced and k8 controls require paged storage for other
+models. Native auto must report a concrete usable backend and records its
+actual fallback. Explicit requested backends and expected-backend overrides
+retain exact assertions. The public KV precision environment key is forwarded
+in the provider launch specification so local and owned-host processes use the
+same treatment. Warmup still requires idle loaded slots, positive token budgets
+and no pending load; expected targets must remain resident before measurement.
+Gate G2 pins both backend arms and secondary probes to native KV, preserving
+its backend-isolation/token-exactness contract and independent dtype controls.
+
 #### E2E coverage in CI
 
 The testbed runs the coordinator inside the test process

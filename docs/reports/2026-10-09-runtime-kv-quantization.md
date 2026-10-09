@@ -382,6 +382,56 @@ claim. Post-run artifact hashes match; no owned remote process remains.
   final code and controlled prior SDK `142fae2` with identical settings.
   MiMo and its fixtures were not changed; this baseline failure is retained.
 
+## Final benchmark and report review repairs
+
+C11 keeps the SDK/core and production attention/quantization math unchanged
+from the measured cohorts. It repairs benchmark/report consumers of the new
+default: Gate G2 forces both backend arms to native precision and uses their
+observed native per-layer types; automatic E2E prewarm uses registered
+`model_type` and the inherited precision while preserving exact requested
+assertions and readiness; owned hosts receive the same public precision key.
+Diffusion rows retain numeric usage `promptTokens` and export IDs separately
+as `promptTokenIDs`. Signed scheduler decision schema 4 binds actual
+constructed precision to every result and the run identity, rejects missing,
+unknown, mixed or backend-incompatible precision, and revalidates decoded
+reports through the existing model/binary/source gates. Legacy schema 3 remains
+readable but unqualified. These changes do not constitute new model accuracy
+measurements or signed release qualification.
+
+C11 compiled-source digest is
+`1c3f7fe4d6c2784af0955cf6ca7a10aab90ea87a67097e242039da94bc1d39f9`;
+its developer executable is
+`00f35e723a17951fb0c033c15c2dc5399d796c55e1041093f012ca56f993528b`.
+The 1,319-source map reconstructs from C9 with fourteen benchmark/report
+changes. The model/scoring/SSD write tables retain their named cohorts.
+
+A real C11 GPT Gate G2 run under ambient `balanced` constructs native
+contiguous and native paged engines with observed mixed native storage.
+Three prompts produce 24 identical raw generated tokens, eight per row with
+matching `length` finishes. One criterion is evaluated and passes. Four are
+unavailable: no MTP assistant, no model packed-prefill claim, no vision-span
+support, and a short prefix below the 1,536-token frozen replay bound. The
+separate FP32 diagnostic is refused or non-perturbing under the unchanged
+native-dtype guard. This bounded token-exact result is not semantic task
+accuracy, packed-quality qualification or a complete Gate G2 qualification.
+Earlier C10 real GPT/Gemma probes with the historical FP16 pin were
+inconclusive; their native contiguous construction worked, but the strict
+paged native-dtype guard refused the mismatched pin. Those results remain
+retained and do not become passes.
+
+Controlled reinstatement of the original Diffusion usage overwrite and
+missing parity native pin produces seven assertion issues across the nineteen
+two-suite regressions. The exact positive source is restored byte-for-byte.
+The final affected gate passes 152 core functions in nine suites and five
+CLI functions in one suite, with no skipped affected tests. The full Go
+testbed suite, four benchmark posture/control functions and seven workflow
+functions pass. The combined build is 73.60s; the restored and native-dtype
+builds are 7.71s and 27.40s, followed by a 30.60s test-only rebuild.
+The Go old blanket-paged expectation and dropped owned-host precision controls
+also fail meaningful assertions, with exact source restoration. Final local
+and remote validation is tracked in the PR; no unavailable criterion or earlier
+failure is silently counted as a pass.
+
 ## Retained failed stages and limits
 
 C3 Gemma packed startup refused its underquoted 64 MiB synthetic smoke pool;
@@ -438,3 +488,7 @@ Portable report evidence is collected under
 
 - [C8 independent raw-token/hash audit](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/encrypted-cache-c8-audit.json), [reported retirement ledgers](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/encrypted-cache-c8-retirement.json) and [ten-file M5 artifact verification](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/gpt-artifact-m5-verification.json).
 - [Merged C9 default/auto GPT control](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/gpt-default-c9.json).
+
+- [C11 bounded native Gate G2 report](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/native-g2-c11.json), [execution identity](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/native-g2-c11-execution.json) and [controlled review regressions](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/review-negative-controls.json).
+
+- [C11 review repair validation](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/review-repairs-c11.json).

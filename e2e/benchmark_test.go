@@ -27,10 +27,12 @@ var (
 const benchmarkControlFirstContentDeadlineBase = 30 * time.Second
 
 type benchmarkControlKey struct {
-	modelID         string
-	kvBackend       string
-	expectKVBackend string
-	maxConcurrent   int
+	modelID          string
+	kvBackend        string
+	expectKVBackend  string
+	maxConcurrent    int
+	kvPrecision      string
+	automaticPrewarm bool
 }
 
 func init() {
@@ -55,13 +57,13 @@ func benchmarkSuiteConfig(cfg testbed.SuiteConfig) testbed.SuiteConfig {
 	}
 
 	// Benchmarks measure steady serving throughput, not cold model-load time.
-	// Declaring the expected backend makes Suite.Start pre-warm every
+	// Declaring the backend policy makes Suite.Start pre-warm every
 	// (provider, model) slot through the production load_model push and wait for
 	// the first capacity heartbeat before the measured load begins.
 	requested := testbed.ResolveKVBackend(cfg.KVBackend)
 	switch requested {
 	case "", testbed.KVBackendAuto:
-		cfg.ExpectKVBackend = testbed.KVBackendPaged
+		cfg.PrewarmAutomaticKVBackend = true
 	case testbed.KVBackendContiguous:
 		cfg.ExpectKVBackend = testbed.KVBackendContiguous
 	default:
@@ -85,6 +87,7 @@ func benchmarkControlSuiteConfig(measured testbed.SuiteConfig, modelID string) t
 		KVBackend:                  measured.KVBackend,
 		MaxConcurrent:              measured.MaxConcurrent,
 		ExpectKVBackend:            measured.ExpectKVBackend,
+		PrewarmAutomaticKVBackend:  measured.PrewarmAutomaticKVBackend,
 	})
 }
 
@@ -94,29 +97,35 @@ func benchmarkControlCacheKey(cfg testbed.SuiteConfig, modelID string) benchmark
 		expected = os.Getenv(testbed.EnvExpectKVBackend)
 	}
 	return benchmarkControlKey{
-		modelID:         modelID,
-		kvBackend:       testbed.ResolveKVBackend(cfg.KVBackend),
-		expectKVBackend: expected,
-		maxConcurrent:   cfg.MaxConcurrent,
+		modelID:          modelID,
+		kvBackend:        testbed.ResolveKVBackend(cfg.KVBackend),
+		expectKVBackend:  expected,
+		maxConcurrent:    cfg.MaxConcurrent,
+		kvPrecision:      envOr(testbed.EnvKVQuantization, "balanced"),
+		automaticPrewarm: cfg.PrewarmAutomaticKVBackend,
 	}
 }
 
 func TestBenchmarkSuiteConfigPrewarmsResolvedBackend(t *testing.T) {
 	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", "")
+	t.Setenv(testbed.EnvExpectKVBackend, "")
 
 	for _, tc := range []struct {
-		name     string
-		cfg      testbed.SuiteConfig
-		expected string
+		name      string
+		cfg       testbed.SuiteConfig
+		expected  string
+		automatic bool
 	}{
-		{name: "provider default", cfg: testbed.SuiteConfig{}, expected: testbed.KVBackendPaged},
-		{name: "auto", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendAuto}, expected: testbed.KVBackendPaged},
+		{name: "provider default", cfg: testbed.SuiteConfig{}, automatic: true},
+		{name: "auto", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendAuto}, automatic: true},
 		{name: "contiguous", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendContiguous}, expected: testbed.KVBackendContiguous},
 		{name: "paged", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendPaged}, expected: testbed.KVBackendPaged},
 		{name: "caller expectation wins", cfg: testbed.SuiteConfig{ExpectKVBackend: testbed.KVBackendPaged}, expected: testbed.KVBackendPaged},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.expected, benchmarkSuiteConfig(tc.cfg).ExpectKVBackend)
+			resolved := benchmarkSuiteConfig(tc.cfg)
+			require.Equal(t, tc.expected, resolved.ExpectKVBackend)
+			require.Equal(t, tc.automatic, resolved.PrewarmAutomaticKVBackend)
 		})
 	}
 
@@ -152,6 +161,22 @@ func TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture(t *testing.T) {
 	require.Equal(t, measured.KVBackend, control.KVBackend)
 	require.Equal(t, measured.MaxConcurrent, control.MaxConcurrent)
 	require.Equal(t, measured.ExpectKVBackend, control.ExpectKVBackend)
+	require.Equal(t, measured.PrewarmAutomaticKVBackend, control.PrewarmAutomaticKVBackend)
+}
+
+func TestBenchmarkAutomaticControlPreservesPolicyAndPrecisionIdentity(t *testing.T) {
+	t.Setenv(testbed.EnvExpectKVBackend, "")
+	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", "auto")
+	t.Setenv(testbed.EnvKVQuantization, "native")
+	measured := benchmarkSuiteConfig(testbed.SuiteConfig{})
+	require.True(t, measured.PrewarmAutomaticKVBackend)
+	require.Empty(t, measured.ExpectKVBackend)
+	control := benchmarkControlSuiteConfig(measured, "model")
+	require.True(t, control.PrewarmAutomaticKVBackend)
+	nativeKey := benchmarkControlCacheKey(control, "model")
+	t.Setenv(testbed.EnvKVQuantization, "balanced")
+	require.NotEqual(t, nativeKey, benchmarkControlCacheKey(control, "model"),
+		"a native control must not satisfy a different precision's benchmark proof")
 }
 
 func canonicalCapacityRejection(rr testbed.RequestResult) bool {

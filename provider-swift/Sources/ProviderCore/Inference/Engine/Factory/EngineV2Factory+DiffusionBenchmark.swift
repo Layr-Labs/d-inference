@@ -13,7 +13,7 @@ public struct DiffusionGemmaBenchmarkIteration: Sendable {
     public let text: String
     public let usage: CBv2Usage
     public let totalMilliseconds: Double
-    public var promptTokens: [Int]? = nil
+    public var promptTokenIDs: [Int]? = nil
     public var renderDate: String? = nil
     public var preRequestActiveMemoryBytes: Int? = nil
     public var peakMLXMemoryBytes: Int? = nil

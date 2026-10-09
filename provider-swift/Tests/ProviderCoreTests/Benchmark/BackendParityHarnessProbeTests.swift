@@ -122,17 +122,40 @@ struct BackendParityHarnessProbeTests {
         #expect(custom.kvBytesCapacity == 1024)
     }
 
-    @Test("the pool dtype is pinned to fp16 and a probe override wins")
+    @Test("main arms observe native layer types and only explicit probe dtype overrides win")
     func engineEnvironmentPrecedence() {
         let ambient = ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32", "OTHER": "kept"]
         #expect(Harness.engineEnvironment(ambient: ambient, overrides: [:]) == [
-            "DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float16", "OTHER": "kept",
+            "OTHER": "kept",
+            EngineV2KVQuantizationPolicy.environmentKey: "native",
         ])
         #expect(Harness.engineEnvironment(
             ambient: ambient,
             overrides: ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32", "EXTRA": "1"]
-        ) == ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32", "OTHER": "kept", "EXTRA": "1"])
-        #expect(Harness.pinnedPoolDTypeEnvironment == ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float16"])
+        ) == [
+            "DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32", "OTHER": "kept", "EXTRA": "1",
+            EngineV2KVQuantizationPolicy.environmentKey: "native",
+        ])
+        for ambientDType in ["float16", "bfloat16", "float32", "invalid"] {
+            let main = Harness.engineEnvironment(
+                ambient: ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": ambientDType], overrides: [:])
+            #expect(main["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == nil)
+            #expect(main[EngineV2KVQuantizationPolicy.environmentKey] == "native")
+        }
+    }
+
+    @Test("both parity backends remain eligible under the balanced provider default")
+    func parityPinsNativeForBothBackends() throws {
+        for raw in ["balanced", "k8v4", "k8v8", "native"] {
+            let environment = Harness.engineEnvironment(
+                ambient: [EngineV2KVQuantizationPolicy.environmentKey: raw],
+                overrides: [EngineV2KVQuantizationPolicy.environmentKey: "balanced"])
+            let precision = try EngineV2KVQuantizationPolicy.resolve(
+                modelType: "gpt_oss", modelID: "test/parity", environment: environment)
+            #expect(precision == .native)
+            try EngineV2KVQuantizationPolicy.requireResolvedBackend(.contiguous, selection: precision)
+            try EngineV2KVQuantizationPolicy.requireResolvedBackend(.paged, selection: precision)
+        }
     }
 
     @Test("short names trim whitespace and cut long prompts to 40 characters")
@@ -183,11 +206,19 @@ struct BackendParityHarnessProbeTests {
         let candidate = BackendParityObservation(
             selection: "paged", resolvedBackend: "contiguous", fallbackReason: "kill switch")
         let text = Harness.makeNotes(baseline: baseline, candidate: candidate, isVLM: false)
-        #expect(text.count == 3)
+        #expect(text.count == 4)
         #expect(text[0] == "verdicts describe the RESOLVED backends (contiguous vs contiguous "
             + "(fallback: kill switch)), not the requested selections (contiguous vs paged).")
         #expect(!text[1].contains("VLM"))
         #expect(text[2].hasPrefix("token comparisons are over RAW SAMPLED TOKEN IDS"))
+        #expect(text[3].contains("both backend arms use native KV precision"))
+        #expect(text[3].contains("observed per-layer storage types; ambient dtype overrides are cleared"))
+        #expect(text[3].contains("unreported storage"))
+        #expect(text[3].contains("fp32 diagnostic may be UNAVAILABLE"))
+        #expect(text[3].contains("never coerces KV or proves packed precision quality"))
+        let mixed = Harness.makeNotes(baseline: baseline, candidate: .init(
+            selection: "paged", resolvedBackend: "paged", pagedPoolDType: "mixed"), isVLM: false)
+        #expect(mixed[3].contains("mixed storage (mixed means multiple native layer types)"))
         let vlm = Harness.makeNotes(baseline: baseline, candidate: candidate, isVLM: true)
         #expect(vlm[1].hasSuffix("This checkpoint IS a VLM and is served here through the "
             + "wrapper's directly owned shared text tower."))
@@ -377,7 +408,6 @@ struct BackendParityHarnessProbeTests {
 
     @Test("the numerics control refuses a candidate that served no paged rows")
     func numericsControlNeedsPagedRows() async {
-        let perturbation = "paged pool dtype float16 -> float32"
         let cases: [(BackendParityObservation, String, String?)] = [
             (BackendParityObservation(selection: "paged", resolvedBackend: "contiguous"),
              "resolved contiguous, 0 rows", nil),
@@ -386,13 +416,16 @@ struct BackendParityHarnessProbeTests {
             (BackendParityObservation(
                 selection: "paged", resolvedBackend: "paged", pagedPoolDType: "float16"),
              "resolved paged, 0 rows", "float16"),
+            (BackendParityObservation(
+                selection: "paged", resolvedBackend: "paged", pagedPoolDType: "mixed"),
+             "resolved paged, 0 rows", "mixed"),
         ]
         for (candidate, summary, dtype) in cases {
             let control = await Harness.probeNumericsControl(
                 container: container(), serving: serving(), candidate: candidate,
                 kvCapacity: 0, facts: (eos: [], prompts: []), configuration: .init())
             #expect(control == BackendParityReport.NumericsControl(
-                perturbation: perturbation, tokenExact: nil,
+                perturbation: "paged pool dtype native (\(dtype ?? "unreported")) -> float32", tokenExact: nil,
                 detail: "the candidate arm did not serve paged rows (\(summary)), so there "
                     + "is nothing to perturb",
                 candidatePoolDType: dtype))

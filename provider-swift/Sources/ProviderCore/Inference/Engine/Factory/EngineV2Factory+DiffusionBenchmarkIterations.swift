@@ -78,7 +78,7 @@ extension EngineV2Factory {
                 if reason == .stop, let last = ids.last, stopTokens.contains(last) { ids.removeLast() }
                 let sample = DiffusionGemmaBenchmarkIteration(tokenIDs: ids, text: text, usage: usage,
                     totalMilliseconds: diffusionMilliseconds(ContinuousClock.now - start),
-                    promptTokens: prepared.tokens, renderDate: prepared.renderDate,
+                    promptTokenIDs: prepared.tokens, renderDate: prepared.renderDate,
                     preRequestActiveMemoryBytes: preRequestActive,
                     peakMLXMemoryBytes: Memory.peakMemory,
                     peakObservedKVBytesInUse: peakInUse, peakObservedKVBytesReserved: peakReserved,

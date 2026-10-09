@@ -316,6 +316,12 @@ type SuiteConfig struct {
 	// REQUESTS a backend, this one asserts the CONSTRUCTED one — a lane
 	// exercising the `.auto` default sets only the expectation.
 	ExpectKVBackend string
+	// PrewarmAutomaticKVBackend observes the provider's automatic policy before
+	// a benchmark starts. The inherited KV precision and each registered model
+	// type determine the assertion: packed non-MiMo must be paged, MiMo must be
+	// contiguous, and native auto must report a concrete resolved backend.
+	// Exact ExpectKVBackend declarations remain authoritative.
+	PrewarmAutomaticKVBackend bool
 }
 
 func DefaultSuiteConfig() SuiteConfig {

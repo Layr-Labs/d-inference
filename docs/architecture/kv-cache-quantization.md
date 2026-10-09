@@ -143,6 +143,22 @@ AR benchmarks use a different cache path. Native-block Diffusion benchmarks
 exercise their production engine directly. Host-observed cache samples do not
 measure every transient; MLX peak measurements are reported separately.
 
+Signed scheduler-prefill decision reports use schema `4` and bind
+`resolvedKVQuantization` on every measured cell and in `reproducibility` to the
+constructed engine's canonical `balanced`, `k8v4`, `k8v8` or `native` profile.
+The runtime snapshot's global and per-model configuration reaches construction;
+an explicit environment or CLI override takes precedence, and MiMo remains
+native before override parsing. The existing decision matrix accepts only
+`qwen3_5_moe`; this provenance does not extend its model-family qualification
+scope. Simulation leaves precision absent. Missing, unknown, mixed or
+backend-incompatible live precision yields insufficient evidence. Historical
+reports remain readable but cannot clear the current signed decision gate,
+which rechecks the measured cells and model/source/binary identity rather than
+trusting an encoded success. Global release certification remains false
+([`SchedulerPrefillDecisionReport`](../../provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionReport.swift),
+[`SchedulerPrefillDecisionKVProvenance`](../../provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionKVProvenance.swift),
+[`SchedulerPrefillDecisionExitStatus.value`](../../provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionEvaluator.swift)).
+
 ## Code map
 
 | Concern | Owner |

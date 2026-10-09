@@ -1060,13 +1060,21 @@ smoke proves entry-point operation, not sustained decode performance.
 
 For `diffusion_gemma`, the ordinary command uses the
 [native block benchmark](../architecture/native-block-inference.md#ordinary-cli-benchmark).
-`--kv-backend auto|contiguous|paged` selects storage (`auto` remains contiguous).
+`--kv-backend auto|contiguous|paged` selects storage. With the default `balanced`
+precision (also `k8v4` or `k8v8`), `auto` resolves to paged; with `native`, `auto`
+resolves to contiguous. Explicit `contiguous` requires `native`, and an
+unavailable paged route refuses quantized construction
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`,
+`EngineV2SlotFactory.makeProductionBundle`).
 The prefill column is encoder prefill, not time to first output. Each
 `NATIVE_BLOCK_BENCHMARK` JSON row separately reports first committed output,
 generation including first-block work, completion usage including EOS, committed
 tokens excluding EOS, resolved backend and the production KV grant. Native framing
 can be included in committed tokens; the row does not certify a visible-token
 performance target. Loading and its integrity hashes have a separate clock.
+The numeric `promptTokens` usage count remains separate from the exact
+`promptTokenIDs` array (`provider-swift/Sources/ProviderBenchmark/DiffusionGemmaBenchmarkRow.swift`,
+`DiffusionGemmaBenchmarkRow`).
 The row also exposes existing native execution/prefill quantum counts,
 post-first-block commit count and quantum wall-time sum/maximum. Those are work
 diagnostics, not output tokens or GPU-only timing. Prefill, refinement and

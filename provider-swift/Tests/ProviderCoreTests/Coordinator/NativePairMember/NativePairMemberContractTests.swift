@@ -8,10 +8,9 @@ import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 @testable import ProviderCore
 
-// Contract coverage for the staged native-pair member components. The
-// member-mode serving integration is intentionally NOT staged (isClusterMember
-// is false); these tests pin the components' contracts without activating any
-// member behavior. No coordinator, no TLS, no model, no native launch.
+// Contract coverage for the native-pair member components in isolation: no
+// coordinator, no TLS, no model, no native launch. The flow against a real
+// owner process is in NativePairMemberInvocationTests.
 
 func memberDigest(_ label: String) -> Data { Data(SHA256.hash(data: Data(label.utf8))) }
 func memberHex(_ bytes: Data) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
@@ -96,6 +95,18 @@ struct MemberContractFixture {
 
 func deadConnection() -> NWConnection {
     NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
+}
+
+extension CoordinatorClient {
+    // Test-only attachment after the real member acknowledgment on a plain
+    // WebSocket. This bypass of the TLS gate is never compiled into
+    // ProviderCore; the production gate is tested separately.
+    func attachFixtureControl(_ control: NativePairMemberControl) throws -> NativePairMemberConnection {
+        guard sessionRegistered, let nonce = memberNegotiation?.nonce, let connection = nwConnection else { throw NativePairMemberError.inactive }
+        nativePairMember = control
+        let value = try control.attach(nonce: nonce, connection: connection)
+        nativePairConnection = value; return value
+    }
 }
 
 struct ContractSigner: AttestationSigner {
@@ -230,12 +241,30 @@ struct NativePairMemberContractTests {
         control2.detach(connection2)
     }
 
-    @Test func memberModeIsStagedInactive() throws {
-        // The serving integration is not staged: no configuration path enables
-        // the member role, so a ProviderLoop always reports isClusterMember ==
-        // false and refuses member installation. Pin that contract at the type
-        // level: a loop created for ordinary solo serving can never become a
-        // member through these components.
+    /// The coordinator asks for exactly the 30-second limit, measured on its
+    /// own clock. The member measures on its clock at receipt: a prepare that
+    /// leaves it more than 30 seconds, or none, is refused.
+    @Test func prepareMustLeaveBetweenZeroAndThirtySecondsOnTheMembersClock() throws {
+        let fixture = try MemberContractFixture(lifetimeSeconds: 300, preparationSeconds: 30)
+        let connection = NativePairMemberConnection(nonce: String(repeating: "b", count: 64),
+            connection: deadConnection(), signer: ContractSigner(), onInvalidation: { _ in })
+        defer { connection.invalidate() }
+        let prepare = try fixture.prepareMessage(0, nonce: connection.nonce, sequence: 1)
+        func session(memberClockBehindBy nanoseconds: Int64) throws -> NativePairMemberSession {
+            try NativePairMemberSession(installation: fixture.installations[0], connection: connection, message: prepare,
+                receivedAt: DispatchTime.now().uptimeNanoseconds,
+                wallUnixNanoseconds: fixture.prepareUnix - 30_000_000_000 - nanoseconds) { _, _ in }
+        }
+        // Receipt at the coordinator's own reservation instant, or any later one, is accepted.
+        _ = try session(memberClockBehindBy: 0)
+        _ = try session(memberClockBehindBy: -29_999_999_999)
+        // One nanosecond behind that instant leaves more than 30 seconds.
+        #expect(throws: NativePairMemberError.deadline) { _ = try session(memberClockBehindBy: 1) }
+        // At or past the deadline nothing is left.
+        #expect(throws: NativePairMemberError.binding) { _ = try session(memberClockBehindBy: -30_000_000_000) }
+    }
+
+    @Test func controlHoldsNoSessionUntilAPrepareArrives() throws {
         let fixture = try MemberContractFixture()
         let control = NativePairMemberControl(installation: fixture.installations[0], signer: ContractSigner())
         #expect(control.status == "idle")

@@ -34,6 +34,8 @@ public struct CapturedMessages: Sendable {
     public var drainBarriers: [String] = []
     public var appAttestShadow: [AppAttestShadowPayload] = []
     public var registers: [ProviderMessage.Register] = []
+    /// The exact bytes of each `register` frame, in arrival order.
+    public var registerFrames: [Data] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
     public var codeAttestationResponses: [ProviderMessage.CodeAttestationResponse] = []
@@ -666,7 +668,9 @@ public final class MockCoordinator: @unchecked Sendable {
             switch parsed {
             case .drainBarrier(let id): captured.drainBarriers.append(id)
             case .appAttestShadow(let p): captured.appAttestShadow.append(p)
-            case .register(let r):           captured.registers.append(r)
+            case .register(let r):
+                captured.registers.append(r)
+                captured.registerFrames.append(data)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)
             case .codeAttestationResponse(let c): captured.codeAttestationResponses.append(c)

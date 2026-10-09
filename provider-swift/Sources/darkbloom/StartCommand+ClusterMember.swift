@@ -29,7 +29,13 @@ extension Start {
         // Hardware-only capabilities are honest here. Native/kernel capability
         // proof belongs to the selected installed adapter, not a solo GPU probe.
         let capabilities: Set<ProviderRuntimeCapability> = hardware.chipFamily == .m5 ? [.appleM5] : []
-        try current.withCurrentReference { _ in try prepared.requireUnchanged() }
+        // A setup saved for coordinator pairing yields this Mac's member
+        // installation; every other setup yields none and registers no claim.
+        let installation = try current.withCurrentReference { _ in
+            let installation = try prepared.nativeMemberInstallation(chip: hardware.chipName)
+            try prepared.requireUnchanged()
+            return installation
+        }
         try ModelRuntimeRequirements.requireEligible(modelID: prepared.model.id, available: capabilities)
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL ?? config.coordinator.url,
@@ -38,7 +44,13 @@ extension Start {
             runtimeCapabilities: capabilities,
             modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
             executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect)
-        return try ProviderLoop(config: loopConfig)
+        let loop = try ProviderLoop(config: loopConfig)
+        if let installation {
+            do { try await loop.installNativePairMember(installation) } catch {
+                throw ClusterConfigurationError.invalid("This Mac cannot register the saved pair approval: it needs its attestation signing key and the approved chip and model")
+            }
+        }
+        return loop
     }
 
     func runClusterMember() async throws {

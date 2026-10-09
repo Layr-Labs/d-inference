@@ -4,9 +4,9 @@ import DarkbloomClusterProcess
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 
-/// Explicit local development installation. Pins are observations to compare
-/// with B's coordinator approval, never authority to start on their own.
-/// This key-only increment cannot publish model readiness or serving capacity.
+/// One Mac's saved expectations for a coordinator-formed pair. Pins are
+/// observations to compare with the coordinator's approval, never authority to
+/// start on their own. Nothing here publishes model readiness or capacity.
 public struct NativePairMemberInstallation: Sendable {
     let policy: NativePairMemberPolicy
     let rank: Int
@@ -46,20 +46,31 @@ public struct NativePairMemberInstallation: Sendable {
         localOwner = try .init(installedDarkbloom: installedOwner); self.ownerSHA256 = ownerSHA256
         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
     }
+    /// The claim this member registers. Its `policySHA256` is the digest of
+    /// exactly the policy bytes a prepare frame must carry.
+    var membership: ClusterMembership {
+        get throws {
+            try ClusterMembership(clusterID: clusterID, rank: rank,
+                policySHA256: ClusterConfigurationCodec.sha256(policy.bytes))
+        }
+    }
     func prepare(start: ClusterNativeAuthorizationStart, deadline: UInt64) throws -> [DistributedInstalledFiles.Identity] {
         try policy.require(start)
         guard start.rank == rank else { throw NativePairMemberError.binding }
         let gate = try ClusterDeviceExclusion(directoryURL: leaseDirectory)
-        return try withExtendedLifetime(gate) {
-            var files = [try DistributedInstalledFiles.verify(localOwner.installedDarkbloom,
-                expectedSHA256: ownerSHA256, maximumBytes: 256 * 1024 * 1024, executable: true, deadline: deadline)]
-            for i in 0..<3 {
-                files.append(try DistributedInstalledFiles.verify(artifacts[i], expectedSHA256: Self.hex(policy.hashes[i + 2]),
-                    maximumBytes: 256 * 1024 * 1024, executable: i == 0, deadline: deadline))
-            }
-            for file in files { try file.requireUnchanged() }
-            return files
+        return try withExtendedLifetime(gate) { try verifyInstalledFiles(deadline: deadline) }
+    }
+    /// Hashes the owner against its saved pin, and the native executable,
+    /// metallib and resource library against the policy's own digests.
+    func verifyInstalledFiles(deadline: UInt64) throws -> [DistributedInstalledFiles.Identity] {
+        var files = [try DistributedInstalledFiles.verify(localOwner.installedDarkbloom,
+            expectedSHA256: ownerSHA256, maximumBytes: 256 * 1024 * 1024, executable: true, deadline: deadline)]
+        for i in 0..<3 {
+            files.append(try DistributedInstalledFiles.verify(artifacts[i], expectedSHA256: Self.hex(policy.hashes[i + 2]),
+                maximumBytes: 256 * 1024 * 1024, executable: i == 0, deadline: deadline))
         }
+        for file in files { try file.requireUnchanged() }
+        return files
     }
     func launch(start: ClusterNativeAuthorizationStart, until: UInt64, relay: ClusterOwnerNativeKeyRelay) throws -> ClusterRemoteWorkerEndpoint {
         let fresh = ClusterWorkerIdentity(membershipEpoch: start.common.epoch, modelID: identity.modelID,

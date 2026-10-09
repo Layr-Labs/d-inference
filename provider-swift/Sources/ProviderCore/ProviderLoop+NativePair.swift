@@ -1,9 +1,11 @@
 import Foundation
 
 extension ProviderLoop {
-    /// Explicit development opt-in before serve(). The existing registration,
-    /// challenge and heartbeat use this SAME signer and member role. It adds no
-    /// solo capacity, native runtime approval, automatic model load or fallback.
+    /// Called before run() by a member whose saved setup carries a pair
+    /// approval. The registration, challenge and heartbeat use this SAME signer
+    /// and member role, and the registration carries this installation's
+    /// membership. It adds no solo capacity, native runtime approval, automatic
+    /// model load or fallback.
     public func installNativePairMember(_ installation: NativePairMemberInstallation) throws {
         guard isClusterMember, !nativePairConfigurationClosed, coordinatorClient == nil, nativePairMemberControl == nil,
               let signer, loopConfig.hardware.chipName == installation.chip, loopConfig.models.contains(where: { $0.id == installation.policy.model }),

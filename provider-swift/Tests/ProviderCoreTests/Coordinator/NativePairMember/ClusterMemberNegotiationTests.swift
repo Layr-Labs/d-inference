@@ -46,7 +46,8 @@ struct ClusterMemberNegotiationTests {
         #expect(registration.clusterModels?.count == 1)
         let nonce = try #require(registration.memberRegistrationNonce)
         #expect(nonce.count == 64 && nonce.allSatisfy { "0123456789abcdef".contains($0) })
-        // Not accepted yet: no session, and installNativePairMember refuses.
+        // Not accepted yet: no session. A control is installed only before the
+        // first connection, so installing one now is refused.
         #expect(await client.sessionRegistered == false)
         await #expect(throws: NativePairMemberError.self) {
             let fixture = try MemberContractFixture()
@@ -106,10 +107,11 @@ struct ClusterMemberNegotiationTests {
         try await mock.pushClusterMemberAcceptance(nonce: nonce)
         #expect(await waitFor { await client.sessionRegistered })
 
-        // The driver binds to the exact accepted connection and nonce.
+        // The driver binds to the exact accepted connection and nonce. The
+        // mock speaks plain WebSocket, so the test attaches past the TLS gate.
         let fixture = try MemberContractFixture()
         let control = NativePairMemberControl(installation: fixture.installations[0], signer: ContractSigner())
-        try await client.installNativePairMember(control)
+        _ = try await client.attachFixtureControl(control)
 
         // A prepare whose epoch/start does not match the committed
         // installation is refused; nothing is published to the coordinator.
@@ -124,6 +126,51 @@ struct ClusterMemberNegotiationTests {
             return await !connection.isLive
         }
         #expect(detached)
+        #expect(mock.snapshot().nativePairs.isEmpty)
+    }
+
+    /// A member that loses trust or runtime verification may not keep its
+    /// attachment; the installed control stays for the next accepted connection.
+    @Test("Lost trust or runtime verification drops the member attachment", arguments: ["trust", "runtime"])
+    func lostTrustOrRuntimeDropsTheMemberAttachment(kind: String) async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        let client = CoordinatorClient(config: memberConfig(url.mockProviderWebSocketURL()),
+            stats: .init(), state: .init(), liveAPNsToken: { nil })
+        _ = await client.start()
+        defer { Task { await client.shutdown(); await mock.shutdown() } }
+        let registration = try #require(try await mock.awaitFirstRegister(timeout: .seconds(3)))
+        try await mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+        #expect(await waitFor { await client.sessionRegistered })
+        let fixture = try MemberContractFixture()
+        let control = NativePairMemberControl(installation: fixture.installations[0], signer: ContractSigner())
+        let attachment = try await client.attachFixtureControl(control)
+        let message: CoordinatorMessage = kind == "trust"
+            ? .trustStatus(.init(trustLevel: "none", status: "untrusted", reason: "fixture"))
+            : .runtimeStatus(.init(verified: false))
+        await client.handleIncomingFrame(try ProviderProtocolCodec.encodeCoordinatorMessage(message), receivedAt: .now)
+        #expect(await client.nativePairConnection == nil)
+        #expect(!attachment.isLive)
+        #expect(await client.nativePairMember === control)
+    }
+
+    /// The coordinator must queue the acknowledgment before any pair frame. A
+    /// frame that overtakes it has no attachment to bind to and strict
+    /// sequencing leaves no way to accept it later, so the connection ends and
+    /// the member negotiates again.
+    @Test func nativePairFrameBeforeAcceptanceEndsTheConnection() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        let client = CoordinatorClient(config: memberConfig(url.mockProviderWebSocketURL()),
+            stats: .init(), state: .init(), liveAPNsToken: { nil })
+        _ = await client.start()
+        defer { Task { await client.shutdown(); await mock.shutdown() } }
+        let registration = try #require(try await mock.awaitFirstRegister(timeout: .seconds(3)))
+        let nonce = try #require(registration.memberRegistrationNonce)
+        try await mock.pushNativePair(try MemberContractFixture().prepareMessage(0, nonce: nonce, sequence: 1))
+        // A second registration with a fresh nonce is the reconnect.
+        #expect(await waitFor(6) { mock.snapshot().registers.count >= 2 })
+        #expect(mock.snapshot().registers.last?.memberRegistrationNonce != nonce)
         #expect(mock.snapshot().nativePairs.isEmpty)
     }
 }

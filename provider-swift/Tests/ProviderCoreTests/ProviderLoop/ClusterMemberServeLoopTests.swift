@@ -142,6 +142,36 @@ struct ClusterMemberServeLoopTests {
         await fixture.cleanUp(task)
     }
 
+    /// A member whose saved setup carries a pair approval registers the claim
+    /// derived from its installed control. The frame is read as raw bytes from
+    /// a real WebSocket, on the attested registration path.
+    @Test("Member with an installed control registers its membership", arguments: [0, 1])
+    func memberWithAnInstalledControlRegistersItsMembership(rank: Int) async throws {
+        let contract = try MemberContractFixture()
+        let fixture = try await ClusterMemberServeFixture.make(stopOnDisconnect: false, pairing: contract.installations[rank])
+        let task = fixture.start()
+        do {
+            let registration = try await fixture.awaitRegistration()
+            let policy = SHA256.hash(data: contract.policy).map { String(format: "%02x", $0) }.joined()
+            #expect(registration.attestation != nil)
+            let claim = try ClusterMembership(clusterID: "native-member-contract", rank: rank, policySHA256: policy)
+            #expect(registration.clusterMembership == claim)
+            let raw = String(decoding: try #require(fixture.mock.snapshot().registerFrames.first), as: UTF8.self)
+            #expect(raw.contains(#""cluster_membership":{"cluster_id":"native-member-contract","policy_sha256":"\#(policy)","rank":\#(rank)}"#))
+            #expect(raw.contains(#""execution_role":"cluster_member""#) && raw.contains(#""models":[]"#))
+            print("REGISTER_FRAME_AS_EMITTED rank=\(rank) \(raw)")
+            // The mock speaks plain WebSocket: the acknowledgment must not
+            // attach the control, and the member reports no accepted connection.
+            try await fixture.mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+            await #expect(throws: (any Error).self) {
+                try await fixture.loop.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(3)))
+            }
+            #expect(await fixture.loop.nativePairMemberStatus == "idle")
+            #expect(fixture.mock.snapshot().nativePairs.isEmpty)
+        } catch { await fixture.cleanUp(task); throw error }
+        await fixture.cleanUp(task)
+    }
+
     @Test func acceptedLeaderLoopEndsWhenItsControlConnectionDrops() async throws {
         try await withMemberServeLoop(stopOnDisconnect: true) { fixture, task in
             try await fixture.accept(try await fixture.awaitRegistration())

@@ -197,7 +197,10 @@ extension ProviderLoop {
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
             idleUnloadMins: loopConfig.config.backend.idleTimeoutMins,
             autopilotInventory: loopConfig.autopilotInventory,
-            executionRole: loopConfig.executionRole
+            executionRole: loopConfig.executionRole,
+            // Only a member with an installed control claims a membership, and
+            // the claim is derived from that control's own policy bytes.
+            clusterMembership: try nativePairMemberControl?.installation.membership
         )
 
         // A termination received during the APNs/startup awaits can already
@@ -215,6 +218,10 @@ extension ProviderLoop {
             stats: stats,
             state: state
         )
+        // Installed before the first connection: each connection attaches it
+        // only after TLS readiness and its nonce-bound acceptance (inside the
+        // client); an ordinary WebSocket acknowledgment never activates it.
+        if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
         // client existed (e.g. a local-endpoint request during startup) may
@@ -283,11 +290,6 @@ extension ProviderLoop {
         self.outboundSend = send
         // A control-only member never downloads or swaps models autonomously.
         if !isClusterMember { self.prefetchCoordinator = makePrefetchCoordinator() }
-        // The staged member control binds to the actual client only after TLS
-        // readiness and nonce-bound acceptance (inside the client); an ordinary
-        // WebSocket ACK never activates it.
-        if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
-
         // Start the idle-timeout monitor before processing events so that
         // a rogue model-load (e.g. during `attestation_challenge` priming)
         // followed by a long disconnect is still subject to the unload

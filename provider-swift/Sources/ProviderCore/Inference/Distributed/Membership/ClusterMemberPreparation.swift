@@ -38,4 +38,31 @@ public struct ClusterMemberPreparation: Sendable {
     }
 
     public func requireUnchanged() throws { try validation.requireUnchanged() }
+
+    /// Nil unless the saved setup carries a pair approval. Built only from
+    /// this Mac's verified installation: the approval must be unexpired and
+    /// cover this chip, and the owner, native executable, metallib and
+    /// resource library must hash to their pins, so a member never registers
+    /// a policy it did not install. The loop installs the result with its own
+    /// signer before connecting; nothing is granted here.
+    public func nativeMemberInstallation(chip: String) throws -> NativePairMemberInstallation? {
+        let plan = validation.plan
+        guard let attachment = plan.configuration.nativeMember else { return nil }
+        try requireUnchanged()
+        let policy = try NativePairMemberPolicy(attachment.policyBytes)
+        guard Date().timeIntervalSince1970 * 1_000_000_000 < Double(policy.notAfter) else {
+            throw ClusterConfigurationError.invalid("Saved pair approval has expired")
+        }
+        guard let installation = try? NativePairMemberInstallation(expectedCoordinatorPolicy: policy.bytes,
+                rank: plan.configuration.localRank, clusterID: plan.configuration.clusterID,
+                identity: plan.identity(epoch: UUID()), profile: plan.capability.profile,
+                installedOwner: URL(fileURLWithPath: plan.localPeer.ownerExecutable), ownerSHA256: attachment.ownerSHA256,
+                nativeExecutable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
+                metallib: URL(fileURLWithPath: attachment.metallibPath),
+                resourceLibrary: URL(fileURLWithPath: attachment.resourceLibraryPath), chip: chip) else {
+            throw ClusterConfigurationError.invalid("Saved pair approval does not cover this Mac's chip, artifact or native build")
+        }
+        _ = try installation.verifyInstalledFiles(deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+        return installation
+    }
 }

@@ -449,7 +449,7 @@ extension CoordinatorClient {
             }
 
             await handleIncomingFrame(
-                data, receivedAt: receivedAt, profileAnchor: profileAnchor)
+                data, receivedAt: receivedAt, profileAnchor: profileAnchor, sourceConnection: connection)
         }
     }
 

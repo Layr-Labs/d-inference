@@ -104,9 +104,9 @@ public actor CoordinatorClient {
     /// The reconnect loop exits instead of cycling an unacknowledged member.
     internal var memberRoleFailure = false
 
-    /// The staged native-pair member control and its exact-connection
-    /// attachment; nil unless `installNativePairMember` succeeded on THIS
-    /// accepted connection. Dropped at every connection boundary.
+    /// The member control installed before the first connection, and its
+    /// attachment to the current accepted connection. The attachment is nil
+    /// until this connection's acceptance and dropped at every boundary.
     internal var nativePairMember: NativePairMemberControl?
     internal var nativePairConnection: NativePairMemberConnection?
 
@@ -257,6 +257,7 @@ public actor CoordinatorClient {
     /// registration while `shutdownRequested` is still false). Fire-and-forget:
     /// the actor is not blocked waiting for the frame to flush.
     private func closeCurrentConnection() {
+        detachNativePairMember()
         guard let connection = nwConnection else { return }
         nwConnection = nil
         // Best-effort close frame: enqueue a .goingAway close frame so the

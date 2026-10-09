@@ -44,8 +44,8 @@ Weights show up as anonymous pages of the loading process, not as wired pages.
 The v2 gate refused all four stages in that state ("requires at least 6 GiB
 actual free memory"). With free memory on Mac A (86–89 GiB free) the same
 loads took 13.1 s and 5.0 s: no measurable cost there. Mac B had no
-free-memory state in that session; its earlier loads of the same stage took
-7.6 s, so the cost there is at most about 0.8 s.
+free-memory state in that session; the same-session comparison for Mac B is
+in "Proof on hardware" below (8.4 s either way).
 
 The kernel supplied the pages from inactive file-backed memory as fast as the
 loader asked (about 5 GiB/s), kept its own small free pool (0.10 GiB on Mac A,

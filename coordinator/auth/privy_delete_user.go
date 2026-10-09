@@ -9,8 +9,8 @@ import (
 	"net/url"
 )
 
-// ErrPrivyUserNotFound is DeleteUser's result when Privy answers 404: Privy
-// has no user with the ID.
+// ErrPrivyUserNotFound is the result of DeleteUser and GetOrCreateUser when
+// Privy answers 404: Privy has no user with the ID.
 var ErrPrivyUserNotFound = errors.New("privy: user not found")
 
 // DeleteUser deletes the Privy user with the Privy user ID (DID). Privy

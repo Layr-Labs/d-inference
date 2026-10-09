@@ -2,6 +2,7 @@ package billing
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
@@ -9,6 +10,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/api/modelprice"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // handleGetPricing handles GET /v1/pricing.
@@ -104,6 +106,11 @@ func (s *Owner) HandleSetPricing(w http.ResponseWriter, r *http.Request) {
 
 	price := req.ModelPrice(access.ResolveAccountID(r), req.Model)
 	if err := s.store.SetModelPrice(price); err != nil {
+		// The request authenticated before the account's erasure confirm.
+		if errors.Is(err, store.ErrErasureConflict) {
+			httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("account_deleted", "Pricing is unavailable for a deleted account"))
+			return
+		}
 		s.logger.Error("pricing: set failed", "error", err)
 		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorResponse("internal_error", "failed to set price"))
 		return

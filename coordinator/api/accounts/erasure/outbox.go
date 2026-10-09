@@ -31,6 +31,9 @@ const (
 	erasureOutboxBaseBackoff = time.Minute
 	erasureOutboxMaxBackoff  = 6 * time.Hour
 	erasureLogTag            = "erasure_log:true"
+	// privyUserLiveError is the manual_action reason of a privy_user row whose
+	// Privy user a live account holds. It does not name the account.
+	privyUserLiveError = "a live account holds this Privy user; the worker did not delete it"
 )
 
 // outboxOutcome is what one delivery attempt decided.
@@ -215,12 +218,22 @@ func (s *Owner) closeGlobalRecipient(ctx context.Context, id string) outboxOutco
 }
 
 // deletePrivyUser treats a user that Privy does not have as deleted. Every
-// other failure is retried.
+// other failure is retried. It does not delete a Privy user that a live
+// account holds: the Privy user is that account's login. Such a row needs an
+// operator. From the scrub until the row is done, CreateUser refuses the ID
+// (PrivyUserPendingErasure), so no account can take it after the check.
 func (s *Owner) deletePrivyUser(ctx context.Context, id string) outboxOutcome {
 	if s.privy == nil {
 		return outboxOutcome{kind: outboxRetry, err: "Privy is not configured"}
 	}
-	err := s.privy.DeleteUser(ctx, id)
+	live, err := s.store.PrivyUserLive(ctx, id)
+	if err != nil {
+		return outboxOutcome{kind: outboxRetry, err: "check for a live account of the Privy user: " + err.Error()}
+	}
+	if live {
+		return outboxOutcome{kind: outboxManual, err: privyUserLiveError}
+	}
+	err = s.privy.DeleteUser(ctx, id)
 	if err == nil || errors.Is(err, auth.ErrPrivyUserNotFound) {
 		return outboxOutcome{kind: outboxDone}
 	}

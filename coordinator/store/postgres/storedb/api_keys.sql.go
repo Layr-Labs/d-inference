@@ -11,9 +11,17 @@ import (
 )
 
 const deactivateAPIKeyByHash = `-- name: DeactivateAPIKeyByHash :execrows
-UPDATE api_keys SET active = FALSE WHERE key_hash = $1 AND active = TRUE
+WITH forgotten AS (
+    DELETE FROM erasure_revoked_credentials
+    WHERE kind = 'api_key' AND credential_id = $1::text
+    RETURNING credential_id
+)
+UPDATE api_keys SET active = FALSE
+WHERE key_hash = $1::text AND (active OR EXISTS (SELECT 1 FROM forgotten))
 `
 
+// A key that a pending erasure revoked is already inactive. The revoke then
+// removes it from erasure_revoked_credentials, so a cancel keeps it revoked.
 func (q *Queries) DeactivateAPIKeyByHash(ctx context.Context, keyHash string) (int64, error) {
 	result, err := q.db.Exec(ctx, deactivateAPIKeyByHash, keyHash)
 	if err != nil {

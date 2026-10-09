@@ -130,9 +130,14 @@ func (s *PostgresStore) RevokeProviderToken(token string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// A token that a pending erasure revoked leaves erasure_revoked_credentials
+	// too, so a cancel keeps it revoked.
 	h := store.HashKey(token)
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
+		`WITH forgotten AS (
+		   DELETE FROM erasure_revoked_credentials WHERE kind = 'provider_token' AND credential_id = $1
+		 )
+		 UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
 	)
 	if err != nil {
 		return fmt.Errorf("store: revoke provider token: %w", err)

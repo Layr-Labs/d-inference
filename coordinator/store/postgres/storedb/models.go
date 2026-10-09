@@ -58,22 +58,23 @@ type ErasureRefusedCredit struct {
 }
 
 type ErasureRequest struct {
-	ID               string
-	AccountID        string
-	Actor            string
-	CanceledBy       string
-	Reason           string
-	State            string
-	Plan             []byte
-	ConfirmTokenHash string
-	ConfirmExpiresAt *time.Time
-	WalletHash       string
-	WalletAddresses  []string
-	RequestedAt      *time.Time
-	ScrubAfter       *time.Time
-	ErasedAt         *time.Time
-	CanceledAt       *time.Time
-	LeaseUntil       *time.Time
-	LastError        string
-	CreatedAt        time.Time
+	ID                   string
+	AccountID            string
+	Actor                string
+	CanceledBy           string
+	Reason               string
+	State                string
+	Plan                 []byte
+	ConfirmTokenHash     string
+	ConfirmExpiresAt     *time.Time
+	WalletHash           string
+	WalletAddresses      []string
+	RequestedAt          *time.Time
+	ScrubAfter           *time.Time
+	ErasedAt             *time.Time
+	CanceledAt           *time.Time
+	LeaseUntil           *time.Time
+	LastError            string
+	CreatedAt            time.Time
+	CredentialProvenance int16
 }

@@ -8,18 +8,32 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+// SetModelPrice refuses with store.ErrErasureConflict an account that is
+// soft deleted for erasure or erased: the scrub deletes its prices, and a
+// write admitted before the erasure must not add them again. It takes the
+// user fence that the erasure confirm and scrub take.
 func (s *PostgresStore) SetModelPrice(price store.ModelPrice) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: set model price: %w", err)
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, price.AccountID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO model_prices (account_id, model, input_price, output_price, cache_read_price, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, NOW())
 		 ON CONFLICT (account_id, model) DO UPDATE SET
 		   input_price = $3, output_price = $4, cache_read_price = $5, updated_at = NOW()`,
 		price.AccountID, price.Model, price.InputPrice, price.OutputPrice, price.CacheReadPrice,
-	)
-	if err != nil {
+	); err != nil {
+		return fmt.Errorf("store: set model price: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store: set model price: %w", err)
 	}
 

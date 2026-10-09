@@ -46,5 +46,13 @@ SELECT COALESCE(SUM(cost_micro_usd), 0)::bigint AS total_micro_usd FROM usage
 WHERE key_id = sqlc.arg('key_id')
   AND (sqlc.narg('since')::timestamptz IS NULL OR created_at >= sqlc.narg('since'));
 
+-- A key that a pending erasure revoked is already inactive. The revoke then
+-- removes it from erasure_revoked_credentials, so a cancel keeps it revoked.
 -- name: DeactivateAPIKeyByHash :execrows
-UPDATE api_keys SET active = FALSE WHERE key_hash = $1 AND active = TRUE;
+WITH forgotten AS (
+    DELETE FROM erasure_revoked_credentials
+    WHERE kind = 'api_key' AND credential_id = sqlc.arg('key_hash')::text
+    RETURNING credential_id
+)
+UPDATE api_keys SET active = FALSE
+WHERE key_hash = sqlc.arg('key_hash')::text AND (active OR EXISTS (SELECT 1 FROM forgotten));

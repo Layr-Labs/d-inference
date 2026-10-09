@@ -112,7 +112,9 @@ var ErrAccountPendingDeletion = errors.New("privy: account is pending deletion")
 
 // GetOrCreateUser looks up an existing user by Privy DID, or creates one by
 // fetching wallet details from Privy's REST API. It refuses with
-// ErrAccountPendingDeletion while the account waits for erasure.
+// ErrAccountPendingDeletion from the erasure confirm until the erasure outbox
+// has deleted the Privy user, and with ErrPrivyUserNotFound when Privy has no
+// user with the DID (for example a token issued before the deletion).
 func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 	// Try existing user first.
 	user, err := p.store.GetUserByPrivyID(privyUserID)
@@ -127,8 +129,13 @@ func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 		return nil, ErrAccountPendingDeletion
 	}
 
-	// Fetch user details from Privy to get wallet and email info.
+	// Fetch user details from Privy to get wallet and email info. A user that
+	// Privy does not have gets no account: its token can outlive an erasure
+	// that deleted the Privy user. Other failures still create the account.
 	details, err := p.fetchUserDetails(privyUserID)
+	if errors.Is(err, ErrPrivyUserNotFound) {
+		return nil, ErrPrivyUserNotFound
+	}
 	if err != nil {
 		p.logger.Error("privy: failed to fetch user details", "privy_user_id", privyUserID, "error", err)
 		details = &privyUserDetails{}
@@ -141,6 +148,10 @@ func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 	}
 
 	if err := p.store.CreateUser(user); err != nil {
+		// An erasure took the Privy user ID after the check above.
+		if errors.Is(err, store.ErrErasurePrivyUserPending) {
+			return nil, ErrAccountPendingDeletion
+		}
 		// Race condition: another request created the user first.
 		if existing, err2 := p.store.GetUserByPrivyID(privyUserID); err2 == nil {
 			return existing, nil
@@ -192,6 +203,9 @@ func (p *PrivyAuth) fetchUserDetails(privyUserID string) (*privyUserDetails, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrPrivyUserNotFound
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("privy: API returned %d: %s", resp.StatusCode, string(body))

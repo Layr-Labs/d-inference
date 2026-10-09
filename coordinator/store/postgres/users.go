@@ -7,19 +7,43 @@ import (
 
 	pgerrors "github.com/eigeninference/d-inference/coordinator/internal/store/pgerrors"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/store/postgres/storedb"
 )
 
-// CreateUser creates a new user record linked to a Privy identity.
+// CreateUser creates a new user record linked to a Privy identity. It refuses
+// with store.ErrErasurePrivyUserPending a Privy user ID that an erasure holds.
+// The check and the insert run under the lock that the privy_user outbox
+// delivery takes for the same ID.
 func (s *PostgresStore) CreateUser(user *store.User) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: create user: %w", err)
+	}
+	defer rollbackErasureTx(tx)
+	if user.PrivyUserID != "" {
+		q := storedb.New(tx)
+		if err := q.LockPrivyUserProvisioning(ctx, user.PrivyUserID); err != nil {
+			return fmt.Errorf("store: create user: %w", err)
+		}
+		erasing, err := q.PrivyUserInErasure(ctx, user.PrivyUserID)
+		if err != nil {
+			return fmt.Errorf("store: create user: %w", err)
+		}
+		if erasing {
+			return fmt.Errorf("store: create user: %w", store.ErrErasurePrivyUserPending)
+		}
+	}
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO users (account_id, privy_user_id, email, role, platform_fee_percent)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		user.AccountID, user.PrivyUserID, user.Email, user.Role, user.PlatformFeePercent,
-	)
-	if err != nil {
+	); err != nil {
+		return fmt.Errorf("store: create user: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store: create user: %w", err)
 	}
 	return nil

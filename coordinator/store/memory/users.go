@@ -20,6 +20,10 @@ func (s *MemoryStore) CreateUser(user *store.User) error {
 	if _, exists := s.usersByAccountID[user.AccountID]; exists {
 		return fmt.Errorf("user with account ID %q already exists", user.AccountID)
 	}
+	// As PostgresStore.CreateUser: an erasure holds the Privy user ID.
+	if user.PrivyUserID != "" && s.privyUserInErasureLocked(user.PrivyUserID) {
+		return fmt.Errorf("store: create user: %w", store.ErrErasurePrivyUserPending)
+	}
 
 	copy := *user
 	copy.CreatedAt = s.now()

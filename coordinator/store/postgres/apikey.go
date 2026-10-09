@@ -351,7 +351,8 @@ func (s *PostgresStore) KeySpendSince(keyID string, since time.Time) int64 {
 	return total
 }
 
-// RevokeKey deactivates a key. Returns true if the key existed and was active.
+// RevokeKey deactivates a key. Returns true if the key existed and was
+// active, or was a key that a pending erasure would restore on cancel.
 func (s *PostgresStore) RevokeKey(key string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

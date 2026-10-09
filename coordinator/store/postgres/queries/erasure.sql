@@ -28,7 +28,8 @@ WHERE id = $1 AND state = 'planned';
 -- name: MarkErasurePending :exec
 UPDATE erasure_requests
 SET state = 'pending', actor = $2, reason = $3, wallet_addresses = $4,
-    requested_at = $5, scrub_after = $6, confirm_token_hash = '', confirm_expires_at = NULL
+    requested_at = $5, scrub_after = $6, confirm_token_hash = '', confirm_expires_at = NULL,
+    credential_provenance = $7
 WHERE id = $1;
 
 -- name: MarkErasureCanceled :exec
@@ -63,8 +64,25 @@ VALUES ($1, $2, $3, $4, $5);
 -- name: ListErasureOutbox :many
 SELECT * FROM erasure_outbox WHERE request_id = $1 ORDER BY created_at, id;
 
--- name: CountUsersPendingErasureByPrivyID :one
-SELECT COUNT(*) FROM users WHERE privy_user_id = $1 AND deleted_at IS NOT NULL;
+-- A Privy user ID is in erasure from the confirm (a soft-deleted user holds
+-- it) until the outbox worker has deleted it in Privy (its privy_user row is
+-- done). The scrub replaces the users value and inserts the outbox row in one
+-- transaction, so one statement sees one of the two.
+-- name: PrivyUserInErasure :one
+SELECT EXISTS (
+    SELECT 1 FROM users WHERE privy_user_id = sqlc.arg('privy_user_id')::text AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 1 FROM erasure_outbox WHERE target = 'privy_user'
+      AND external_id = sqlc.arg('privy_user_id')::text AND state <> 'done'
+);
+
+-- CreateUser and the privy_user delivery take this lock for the same Privy
+-- user ID, so a new account and a Privy deletion of its ID never overlap.
+-- name: LockPrivyUserProvisioning :exec
+SELECT pg_advisory_xact_lock(714321, hashtext(sqlc.arg('privy_user_id')::text));
+
+-- name: CountLiveUsersByPrivyID :one
+SELECT COUNT(*) FROM users WHERE privy_user_id = $1 AND deleted_at IS NULL;
 
 -- Soft delete and cancel.
 
@@ -85,32 +103,65 @@ UPDATE users SET deleted_at = $2 WHERE account_id = $1 AND deleted_at IS NULL;
 -- name: SoftDeleteProviders :execrows
 UPDATE providers SET deleted_at = $2 WHERE account_id = $1 AND deleted_at IS NULL;
 
--- A credential that is live at confirm gets revoked_at (the request's
--- requested_at). One that was already revoked gets the earlier
--- already_revoked_at. Cancel clears deleted_at on both and makes only the
--- first kind active.
+-- Confirm revokes every credential of the account and stamps deleted_at with
+-- the request's requested_at. It lists in erasure_revoked_credentials only the
+-- credentials it changed from live to revoked. Cancel restores only listed
+-- credentials, and only while they are still in the state the confirm left.
 
--- name: SoftDeleteAPIKeys :execrows
-UPDATE api_keys
-SET active = FALSE,
-    deleted_at = CASE WHEN active THEN sqlc.arg('revoked_at')::timestamptz ELSE sqlc.arg('already_revoked_at')::timestamptz END
-WHERE owner_account_id = sqlc.arg('owner_account_id') AND deleted_at IS NULL;
+-- name: SoftDeleteAPIKeys :exec
+WITH old AS (
+    SELECT a.key_hash, a.active FROM api_keys a
+    WHERE a.owner_account_id = sqlc.arg('owner_account_id')::text AND a.deleted_at IS NULL
+    FOR UPDATE
+), revoked AS (
+    UPDATE api_keys k SET active = FALSE, deleted_at = sqlc.arg('deleted_at')::timestamptz
+    FROM old WHERE k.key_hash = old.key_hash
+    RETURNING k.key_hash, old.active AS was_active
+)
+INSERT INTO erasure_revoked_credentials (request_id, kind, credential_id)
+SELECT sqlc.arg('request_id')::text, 'api_key', key_hash FROM revoked WHERE was_active;
 
--- name: SoftDeleteProviderTokens :execrows
-UPDATE provider_tokens
-SET active = FALSE,
-    deleted_at = CASE WHEN active THEN sqlc.arg('revoked_at')::timestamptz ELSE sqlc.arg('already_revoked_at')::timestamptz END
-WHERE account_id = sqlc.arg('account_id') AND deleted_at IS NULL;
+-- name: SoftDeleteProviderTokens :exec
+WITH old AS (
+    SELECT p.token_hash, p.active FROM provider_tokens p
+    WHERE p.account_id = sqlc.arg('account_id')::text AND p.deleted_at IS NULL
+    FOR UPDATE
+), revoked AS (
+    UPDATE provider_tokens t SET active = FALSE, deleted_at = sqlc.arg('deleted_at')::timestamptz
+    FROM old WHERE t.token_hash = old.token_hash
+    RETURNING t.token_hash, old.active AS was_active
+)
+INSERT INTO erasure_revoked_credentials (request_id, kind, credential_id)
+SELECT sqlc.arg('request_id')::text, 'provider_token', token_hash FROM revoked WHERE was_active;
 
--- name: RestoreAPIKeys :execrows
-UPDATE api_keys SET active = (deleted_at = sqlc.arg('revoked_at')::timestamptz), deleted_at = NULL
-WHERE owner_account_id = sqlc.arg('owner_account_id')
-  AND deleted_at IN (sqlc.arg('revoked_at')::timestamptz, sqlc.arg('already_revoked_at')::timestamptz);
+-- The list rows are deleted first, so a revoke during the grace period
+-- (DeactivateAPIKeyByHash, RevokeProviderToken) and a cancel lock in the
+-- same order. A credential that a revoke removed from the list stays revoked.
 
--- name: RestoreProviderTokens :execrows
-UPDATE provider_tokens SET active = (deleted_at = sqlc.arg('revoked_at')::timestamptz), deleted_at = NULL
-WHERE account_id = sqlc.arg('account_id')
-  AND deleted_at IN (sqlc.arg('revoked_at')::timestamptz, sqlc.arg('already_revoked_at')::timestamptz);
+-- name: RestoreRevokedAPIKeys :execrows
+WITH listed AS (
+    DELETE FROM erasure_revoked_credentials c
+    WHERE c.request_id = sqlc.arg('request_id')::text AND c.kind = 'api_key'
+    RETURNING c.credential_id
+)
+UPDATE api_keys k SET active = TRUE, deleted_at = NULL
+FROM listed
+WHERE k.key_hash = listed.credential_id AND k.owner_account_id = sqlc.arg('owner_account_id')::text
+  AND NOT k.active AND k.deleted_at = sqlc.arg('requested_at')::timestamptz;
+
+-- name: RestoreRevokedProviderTokens :execrows
+WITH listed AS (
+    DELETE FROM erasure_revoked_credentials c
+    WHERE c.request_id = sqlc.arg('request_id')::text AND c.kind = 'provider_token'
+    RETURNING c.credential_id
+)
+UPDATE provider_tokens t SET active = TRUE, deleted_at = NULL
+FROM listed
+WHERE t.token_hash = listed.credential_id AND t.account_id = sqlc.arg('account_id')::text
+  AND NOT t.active AND t.deleted_at = sqlc.arg('requested_at')::timestamptz;
+
+-- name: DeleteErasureRevokedCredentials :exec
+DELETE FROM erasure_revoked_credentials WHERE request_id = $1;
 
 -- name: RestoreUser :execrows
 UPDATE users SET deleted_at = NULL WHERE account_id = $1 AND deleted_at IS NOT NULL;
@@ -250,6 +301,32 @@ WHERE a.kind = 'mda_serial' AND a.scope = '' AND (
  a.digest = ANY(sqlc.arg('digests')::text[])
  OR EXISTS(SELECT 1 FROM darkbloom_machine_sessions own WHERE own.machine_id=a.machine_id AND own.account_id=sqlc.arg('account_id'))
 );
+
+-- MicroMDM devices for the plan (erasure.Keys.MDMDevices): the trust and
+-- verification rows of the scrub's Secure Enclave keys, and every other row
+-- that holds one of their serials or UDIDs or an account serial.
+-- name: ListErasureDeviceRows :many
+WITH device_rows AS (
+    SELECT t.se_pubkey, t.serial, t.mda_udid AS udid FROM provider_trust_reuse t
+    UNION SELECT j.se_pubkey, j.serial, j.udid FROM provider_verification_jobs j
+), own AS (
+    SELECT d.serial, d.udid FROM device_rows d WHERE d.se_pubkey = ANY(sqlc.arg('se_keys')::text[])
+)
+SELECT r.se_pubkey::text AS se_pubkey, r.serial::text AS serial, r.udid::text AS udid FROM device_rows r
+WHERE r.se_pubkey = ANY(sqlc.arg('se_keys')::text[])
+   OR (r.serial <> '' AND (r.serial = ANY(sqlc.arg('serials')::text[]) OR r.serial IN (SELECT o.serial FROM own o)))
+   OR (r.udid <> '' AND r.udid IN (SELECT o.udid FROM own o));
+
+-- An unlinked row (account_id '') is not another account: a provider of the
+-- erased account that reconnects after the confirm comes back unlinked.
+-- name: ListSerialsOfOtherLiveAccounts :many
+SELECT DISTINCT h.serial_number::text AS serial_number FROM (
+    SELECT p.serial_number, p.account_id FROM providers p WHERE p.serial_number = ANY(sqlc.arg('serials')::text[])
+    UNION ALL
+    SELECT s.serial_number, s.account_id FROM provider_sessions s WHERE s.serial_number = ANY(sqlc.arg('serials')::text[])
+) h
+WHERE h.account_id <> sqlc.arg('account_id')::text AND h.account_id <> ''
+  AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = h.account_id AND r.state = 'erased');
 
 -- Scrub statements, in erasure_rules.go order.
 

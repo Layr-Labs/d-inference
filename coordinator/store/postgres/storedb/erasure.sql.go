@@ -211,6 +211,17 @@ func (q *Queries) CountLegacyMDMCohortRows(ctx context.Context, accountID string
 	return count, err
 }
 
+const countLiveUsersByPrivyID = `-- name: CountLiveUsersByPrivyID :one
+SELECT COUNT(*) FROM users WHERE privy_user_id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) CountLiveUsersByPrivyID(ctx context.Context, privyUserID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countLiveUsersByPrivyID, privyUserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countMDASerialAliasesRows = `-- name: CountMDASerialAliasesRows :one
 SELECT COUNT(*) FROM darkbloom_machine_aliases
 WHERE kind = 'mda_serial' AND scope = '' AND digest = ANY($1::text[])
@@ -466,17 +477,6 @@ func (q *Queries) CountUsageLocationRows(ctx context.Context, consumerKeyHash st
 	return count, err
 }
 
-const countUsersPendingErasureByPrivyID = `-- name: CountUsersPendingErasureByPrivyID :one
-SELECT COUNT(*) FROM users WHERE privy_user_id = $1 AND deleted_at IS NOT NULL
-`
-
-func (q *Queries) CountUsersPendingErasureByPrivyID(ctx context.Context, privyUserID string) (int64, error) {
-	row := q.db.QueryRow(ctx, countUsersPendingErasureByPrivyID, privyUserID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countUsersRow = `-- name: CountUsersRow :one
 
 SELECT COUNT(*) FROM users WHERE account_id = $1
@@ -586,6 +586,15 @@ func (q *Queries) DeleteDeviceCodesRows(ctx context.Context, accountID string) (
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteErasureRevokedCredentials = `-- name: DeleteErasureRevokedCredentials :exec
+DELETE FROM erasure_revoked_credentials WHERE request_id = $1
+`
+
+func (q *Queries) DeleteErasureRevokedCredentials(ctx context.Context, requestID string) error {
+	_, err := q.db.Exec(ctx, deleteErasureRevokedCredentials, requestID)
+	return err
 }
 
 const deleteLegacyMDMCohortRows = `-- name: DeleteLegacyMDMCohortRows :execrows
@@ -701,7 +710,7 @@ func (q *Queries) GetBalanceForErasure(ctx context.Context, accountID string) (G
 
 const getErasureRequest = `-- name: GetErasureRequest :one
 
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE id = $1
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at, credential_provenance FROM erasure_requests WHERE id = $1
 `
 
 // Account erasure: requests, outbox, key collection and the scrub statements
@@ -729,12 +738,13 @@ func (q *Queries) GetErasureRequest(ctx context.Context, id string) (ErasureRequ
 		&i.LeaseUntil,
 		&i.LastError,
 		&i.CreatedAt,
+		&i.CredentialProvenance,
 	)
 	return i, err
 }
 
 const getErasureRequestForUpdate = `-- name: GetErasureRequestForUpdate :one
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE id = $1 FOR UPDATE
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at, credential_provenance FROM erasure_requests WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetErasureRequestForUpdate(ctx context.Context, id string) (ErasureRequest, error) {
@@ -759,6 +769,7 @@ func (q *Queries) GetErasureRequestForUpdate(ctx context.Context, id string) (Er
 		&i.LeaseUntil,
 		&i.LastError,
 		&i.CreatedAt,
+		&i.CredentialProvenance,
 	)
 	return i, err
 }
@@ -775,7 +786,7 @@ func (q *Queries) GetGlobalRecipientDataForErasure(ctx context.Context, accountI
 }
 
 const getLatestErasureRequest = `-- name: GetLatestErasureRequest :one
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests WHERE account_id = $1 ORDER BY created_at DESC LIMIT 1
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at, credential_provenance FROM erasure_requests WHERE account_id = $1 ORDER BY created_at DESC LIMIT 1
 `
 
 func (q *Queries) GetLatestErasureRequest(ctx context.Context, accountID string) (ErasureRequest, error) {
@@ -800,12 +811,13 @@ func (q *Queries) GetLatestErasureRequest(ctx context.Context, accountID string)
 		&i.LeaseUntil,
 		&i.LastError,
 		&i.CreatedAt,
+		&i.CredentialProvenance,
 	)
 	return i, err
 }
 
 const getOpenErasureRequestForUpdate = `-- name: GetOpenErasureRequestForUpdate :one
-SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at FROM erasure_requests
+SELECT id, account_id, actor, canceled_by, reason, state, plan, confirm_token_hash, confirm_expires_at, wallet_hash, wallet_addresses, requested_at, scrub_after, erased_at, canceled_at, lease_until, last_error, created_at, credential_provenance FROM erasure_requests
 WHERE account_id = $1 AND state IN ('planned', 'pending')
 FOR UPDATE
 `
@@ -832,6 +844,7 @@ func (q *Queries) GetOpenErasureRequestForUpdate(ctx context.Context, accountID 
 		&i.LeaseUntil,
 		&i.LastError,
 		&i.CreatedAt,
+		&i.CredentialProvenance,
 	)
 	return i, err
 }
@@ -1355,6 +1368,53 @@ func (q *Queries) ListAppAttestKeysForSessions(ctx context.Context, sessionIds [
 	return items, nil
 }
 
+const listErasureDeviceRows = `-- name: ListErasureDeviceRows :many
+WITH device_rows AS (
+    SELECT t.se_pubkey, t.serial, t.mda_udid AS udid FROM provider_trust_reuse t
+    UNION SELECT j.se_pubkey, j.serial, j.udid FROM provider_verification_jobs j
+), own AS (
+    SELECT d.serial, d.udid FROM device_rows d WHERE d.se_pubkey = ANY($1::text[])
+)
+SELECT r.se_pubkey::text AS se_pubkey, r.serial::text AS serial, r.udid::text AS udid FROM device_rows r
+WHERE r.se_pubkey = ANY($1::text[])
+   OR (r.serial <> '' AND (r.serial = ANY($2::text[]) OR r.serial IN (SELECT o.serial FROM own o)))
+   OR (r.udid <> '' AND r.udid IN (SELECT o.udid FROM own o))
+`
+
+type ListErasureDeviceRowsParams struct {
+	SeKeys  []string
+	Serials []string
+}
+
+type ListErasureDeviceRowsRow struct {
+	SePubkey string
+	Serial   string
+	Udid     string
+}
+
+// MicroMDM devices for the plan (erasure.Keys.MDMDevices): the trust and
+// verification rows of the scrub's Secure Enclave keys, and every other row
+// that holds one of their serials or UDIDs or an account serial.
+func (q *Queries) ListErasureDeviceRows(ctx context.Context, arg ListErasureDeviceRowsParams) ([]ListErasureDeviceRowsRow, error) {
+	rows, err := q.db.Query(ctx, listErasureDeviceRows, arg.SeKeys, arg.Serials)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListErasureDeviceRowsRow
+	for rows.Next() {
+		var i ListErasureDeviceRowsRow
+		if err := rows.Scan(&i.SePubkey, &i.Serial, &i.Udid); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listErasureOutbox = `-- name: ListErasureOutbox :many
 SELECT id, request_id, target, external_id, state, attempts, next_at, lease_until, last_error, done_at, created_at, stripe_job_id, stripe_job_status, stripe_job_status_since, stripe_job_generation, lease_generation FROM erasure_outbox WHERE request_id = $1 ORDER BY created_at, id
 `
@@ -1464,6 +1524,43 @@ func (q *Queries) ListMDASerialAliasesForErasure(ctx context.Context, arg ListMD
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSerialsOfOtherLiveAccounts = `-- name: ListSerialsOfOtherLiveAccounts :many
+SELECT DISTINCT h.serial_number::text AS serial_number FROM (
+    SELECT p.serial_number, p.account_id FROM providers p WHERE p.serial_number = ANY($1::text[])
+    UNION ALL
+    SELECT s.serial_number, s.account_id FROM provider_sessions s WHERE s.serial_number = ANY($1::text[])
+) h
+WHERE h.account_id <> $2::text AND h.account_id <> ''
+  AND NOT EXISTS (SELECT 1 FROM erasure_requests r WHERE r.account_id = h.account_id AND r.state = 'erased')
+`
+
+type ListSerialsOfOtherLiveAccountsParams struct {
+	Serials   []string
+	AccountID string
+}
+
+// An unlinked row (account_id ”) is not another account: a provider of the
+// erased account that reconnects after the confirm comes back unlinked.
+func (q *Queries) ListSerialsOfOtherLiveAccounts(ctx context.Context, arg ListSerialsOfOtherLiveAccountsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSerialsOfOtherLiveAccounts, arg.Serials, arg.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var serial_number string
+		if err := rows.Scan(&serial_number); err != nil {
+			return nil, err
+		}
+		items = append(items, serial_number)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1739,6 +1836,17 @@ func (q *Queries) LockLiveUserForErasure(ctx context.Context, accountID string) 
 	return i, err
 }
 
+const lockPrivyUserProvisioning = `-- name: LockPrivyUserProvisioning :exec
+SELECT pg_advisory_xact_lock(714321, hashtext($1::text))
+`
+
+// CreateUser and the privy_user delivery take this lock for the same Privy
+// user ID, so a new account and a Privy deletion of its ID never overlap.
+func (q *Queries) LockPrivyUserProvisioning(ctx context.Context, privyUserID string) error {
+	_, err := q.db.Exec(ctx, lockPrivyUserProvisioning, privyUserID)
+	return err
+}
+
 const lockUserForErasure = `-- name: LockUserForErasure :one
 SELECT account_id, privy_user_id, email, stripe_account_id, deleted_at
 FROM users WHERE account_id = $1 FOR UPDATE
@@ -1802,17 +1910,19 @@ func (q *Queries) MarkErasureErased(ctx context.Context, arg MarkErasureErasedPa
 const markErasurePending = `-- name: MarkErasurePending :exec
 UPDATE erasure_requests
 SET state = 'pending', actor = $2, reason = $3, wallet_addresses = $4,
-    requested_at = $5, scrub_after = $6, confirm_token_hash = '', confirm_expires_at = NULL
+    requested_at = $5, scrub_after = $6, confirm_token_hash = '', confirm_expires_at = NULL,
+    credential_provenance = $7
 WHERE id = $1
 `
 
 type MarkErasurePendingParams struct {
-	ID              string
-	Actor           string
-	Reason          string
-	WalletAddresses []string
-	RequestedAt     *time.Time
-	ScrubAfter      *time.Time
+	ID                   string
+	Actor                string
+	Reason               string
+	WalletAddresses      []string
+	RequestedAt          *time.Time
+	ScrubAfter           *time.Time
+	CredentialProvenance int16
 }
 
 func (q *Queries) MarkErasurePending(ctx context.Context, arg MarkErasurePendingParams) error {
@@ -1823,8 +1933,29 @@ func (q *Queries) MarkErasurePending(ctx context.Context, arg MarkErasurePending
 		arg.WalletAddresses,
 		arg.RequestedAt,
 		arg.ScrubAfter,
+		arg.CredentialProvenance,
 	)
 	return err
+}
+
+const privyUserInErasure = `-- name: PrivyUserInErasure :one
+SELECT EXISTS (
+    SELECT 1 FROM users WHERE privy_user_id = $1::text AND deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 1 FROM erasure_outbox WHERE target = 'privy_user'
+      AND external_id = $1::text AND state <> 'done'
+)
+`
+
+// A Privy user ID is in erasure from the confirm (a soft-deleted user holds
+// it) until the outbox worker has deleted it in Privy (its privy_user row is
+// done). The scrub replaces the users value and inserts the outbox row in one
+// transaction, so one statement sees one of the two.
+func (q *Queries) PrivyUserInErasure(ctx context.Context, privyUserID string) (bool, error) {
+	row := q.db.QueryRow(ctx, privyUserInErasure, privyUserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const recordErasureFailure = `-- name: RecordErasureFailure :exec
@@ -1841,46 +1972,6 @@ func (q *Queries) RecordErasureFailure(ctx context.Context, arg RecordErasureFai
 	return err
 }
 
-const restoreAPIKeys = `-- name: RestoreAPIKeys :execrows
-UPDATE api_keys SET active = (deleted_at = $1::timestamptz), deleted_at = NULL
-WHERE owner_account_id = $2
-  AND deleted_at IN ($1::timestamptz, $3::timestamptz)
-`
-
-type RestoreAPIKeysParams struct {
-	RevokedAt        time.Time
-	OwnerAccountID   string
-	AlreadyRevokedAt time.Time
-}
-
-func (q *Queries) RestoreAPIKeys(ctx context.Context, arg RestoreAPIKeysParams) (int64, error) {
-	result, err := q.db.Exec(ctx, restoreAPIKeys, arg.RevokedAt, arg.OwnerAccountID, arg.AlreadyRevokedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const restoreProviderTokens = `-- name: RestoreProviderTokens :execrows
-UPDATE provider_tokens SET active = (deleted_at = $1::timestamptz), deleted_at = NULL
-WHERE account_id = $2
-  AND deleted_at IN ($1::timestamptz, $3::timestamptz)
-`
-
-type RestoreProviderTokensParams struct {
-	RevokedAt        time.Time
-	AccountID        string
-	AlreadyRevokedAt time.Time
-}
-
-func (q *Queries) RestoreProviderTokens(ctx context.Context, arg RestoreProviderTokensParams) (int64, error) {
-	result, err := q.db.Exec(ctx, restoreProviderTokens, arg.RevokedAt, arg.AccountID, arg.AlreadyRevokedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const restoreProviders = `-- name: RestoreProviders :execrows
 UPDATE providers SET deleted_at = NULL WHERE account_id = $1 AND deleted_at = $2
 `
@@ -1892,6 +1983,62 @@ type RestoreProvidersParams struct {
 
 func (q *Queries) RestoreProviders(ctx context.Context, arg RestoreProvidersParams) (int64, error) {
 	result, err := q.db.Exec(ctx, restoreProviders, arg.AccountID, arg.DeletedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const restoreRevokedAPIKeys = `-- name: RestoreRevokedAPIKeys :execrows
+
+WITH listed AS (
+    DELETE FROM erasure_revoked_credentials c
+    WHERE c.request_id = $3::text AND c.kind = 'api_key'
+    RETURNING c.credential_id
+)
+UPDATE api_keys k SET active = TRUE, deleted_at = NULL
+FROM listed
+WHERE k.key_hash = listed.credential_id AND k.owner_account_id = $1::text
+  AND NOT k.active AND k.deleted_at = $2::timestamptz
+`
+
+type RestoreRevokedAPIKeysParams struct {
+	OwnerAccountID string
+	RequestedAt    time.Time
+	RequestID      string
+}
+
+// The list rows are deleted first, so a revoke during the grace period
+// (DeactivateAPIKeyByHash, RevokeProviderToken) and a cancel lock in the
+// same order. A credential that a revoke removed from the list stays revoked.
+func (q *Queries) RestoreRevokedAPIKeys(ctx context.Context, arg RestoreRevokedAPIKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreRevokedAPIKeys, arg.OwnerAccountID, arg.RequestedAt, arg.RequestID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const restoreRevokedProviderTokens = `-- name: RestoreRevokedProviderTokens :execrows
+WITH listed AS (
+    DELETE FROM erasure_revoked_credentials c
+    WHERE c.request_id = $3::text AND c.kind = 'provider_token'
+    RETURNING c.credential_id
+)
+UPDATE provider_tokens t SET active = TRUE, deleted_at = NULL
+FROM listed
+WHERE t.token_hash = listed.credential_id AND t.account_id = $1::text
+  AND NOT t.active AND t.deleted_at = $2::timestamptz
+`
+
+type RestoreRevokedProviderTokensParams struct {
+	AccountID   string
+	RequestedAt time.Time
+	RequestID   string
+}
+
+func (q *Queries) RestoreRevokedProviderTokens(ctx context.Context, arg RestoreRevokedProviderTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreRevokedProviderTokens, arg.AccountID, arg.RequestedAt, arg.RequestID)
 	if err != nil {
 		return 0, err
 	}
@@ -2287,51 +2434,59 @@ func (q *Queries) ScrubUsersRow(ctx context.Context, arg ScrubUsersRowParams) (i
 	return result.RowsAffected(), nil
 }
 
-const softDeleteAPIKeys = `-- name: SoftDeleteAPIKeys :execrows
+const softDeleteAPIKeys = `-- name: SoftDeleteAPIKeys :exec
 
-UPDATE api_keys
-SET active = FALSE,
-    deleted_at = CASE WHEN active THEN $1::timestamptz ELSE $2::timestamptz END
-WHERE owner_account_id = $3 AND deleted_at IS NULL
+WITH old AS (
+    SELECT a.key_hash, a.active FROM api_keys a
+    WHERE a.owner_account_id = $2::text AND a.deleted_at IS NULL
+    FOR UPDATE
+), revoked AS (
+    UPDATE api_keys k SET active = FALSE, deleted_at = $3::timestamptz
+    FROM old WHERE k.key_hash = old.key_hash
+    RETURNING k.key_hash, old.active AS was_active
+)
+INSERT INTO erasure_revoked_credentials (request_id, kind, credential_id)
+SELECT $1::text, 'api_key', key_hash FROM revoked WHERE was_active
 `
 
 type SoftDeleteAPIKeysParams struct {
-	RevokedAt        time.Time
-	AlreadyRevokedAt time.Time
-	OwnerAccountID   string
+	RequestID      string
+	OwnerAccountID string
+	DeletedAt      time.Time
 }
 
-// A credential that is live at confirm gets revoked_at (the request's
-// requested_at). One that was already revoked gets the earlier
-// already_revoked_at. Cancel clears deleted_at on both and makes only the
-// first kind active.
-func (q *Queries) SoftDeleteAPIKeys(ctx context.Context, arg SoftDeleteAPIKeysParams) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteAPIKeys, arg.RevokedAt, arg.AlreadyRevokedAt, arg.OwnerAccountID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Confirm revokes every credential of the account and stamps deleted_at with
+// the request's requested_at. It lists in erasure_revoked_credentials only the
+// credentials it changed from live to revoked. Cancel restores only listed
+// credentials, and only while they are still in the state the confirm left.
+func (q *Queries) SoftDeleteAPIKeys(ctx context.Context, arg SoftDeleteAPIKeysParams) error {
+	_, err := q.db.Exec(ctx, softDeleteAPIKeys, arg.RequestID, arg.OwnerAccountID, arg.DeletedAt)
+	return err
 }
 
-const softDeleteProviderTokens = `-- name: SoftDeleteProviderTokens :execrows
-UPDATE provider_tokens
-SET active = FALSE,
-    deleted_at = CASE WHEN active THEN $1::timestamptz ELSE $2::timestamptz END
-WHERE account_id = $3 AND deleted_at IS NULL
+const softDeleteProviderTokens = `-- name: SoftDeleteProviderTokens :exec
+WITH old AS (
+    SELECT p.token_hash, p.active FROM provider_tokens p
+    WHERE p.account_id = $2::text AND p.deleted_at IS NULL
+    FOR UPDATE
+), revoked AS (
+    UPDATE provider_tokens t SET active = FALSE, deleted_at = $3::timestamptz
+    FROM old WHERE t.token_hash = old.token_hash
+    RETURNING t.token_hash, old.active AS was_active
+)
+INSERT INTO erasure_revoked_credentials (request_id, kind, credential_id)
+SELECT $1::text, 'provider_token', token_hash FROM revoked WHERE was_active
 `
 
 type SoftDeleteProviderTokensParams struct {
-	RevokedAt        time.Time
-	AlreadyRevokedAt time.Time
-	AccountID        string
+	RequestID string
+	AccountID string
+	DeletedAt time.Time
 }
 
-func (q *Queries) SoftDeleteProviderTokens(ctx context.Context, arg SoftDeleteProviderTokensParams) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteProviderTokens, arg.RevokedAt, arg.AlreadyRevokedAt, arg.AccountID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) SoftDeleteProviderTokens(ctx context.Context, arg SoftDeleteProviderTokensParams) error {
+	_, err := q.db.Exec(ctx, softDeleteProviderTokens, arg.RequestID, arg.AccountID, arg.DeletedAt)
+	return err
 }
 
 const softDeleteProviders = `-- name: SoftDeleteProviders :execrows

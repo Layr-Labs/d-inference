@@ -6,10 +6,15 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+// SetModelPrice refuses, as PostgresStore does, an account that is soft
+// deleted for erasure or erased.
 func (s *MemoryStore) SetModelPrice(price store.ModelPrice) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.accountAdmissionLocked(price.AccountID); err != nil {
+		return err
+	}
 	s.modelPrices[price.AccountID+":"+price.Model] = price.Clone()
 	return nil
 }

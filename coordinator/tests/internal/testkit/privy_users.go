@@ -7,26 +7,36 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// PrivyUsers answers Privy's delete-user API in process. NewPrivyUsers
-// connects a real PrivyAuth to it, so the erasure outbox deletes Privy users
-// here instead of at auth.privy.io.
+// PrivyUsers answers Privy's get-user and delete-user API in process.
+// NewPrivyUsers connects a real PrivyAuth to it, so logins look up Privy users
+// and the erasure outbox deletes them here instead of at auth.privy.io.
 type PrivyUsers struct {
 	t       testing.TB
+	key     *ecdsa.PrivateKey
 	mu      sync.Mutex
 	status  int
 	failure error
 	deleted []string
+	// gone holds the user IDs that a delete removed (204) or that Privy did
+	// not have (404). A get of one of them answers 404.
+	gone map[string]bool
+	// lookups counts the get-user requests.
+	lookups int
 }
 
 const (
@@ -46,7 +56,7 @@ func NewPrivyUsers(t testing.TB, srv *api.Server, st store.Store) *PrivyUsers {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &PrivyUsers{t: t, status: http.StatusNoContent}
+	p := &PrivyUsers{t: t, key: key, status: http.StatusNoContent, gone: map[string]bool{}}
 	pa, err := auth.NewPrivyAuth(auth.Config{
 		AppID: privyUsersAppID, AppSecret: privyUsersAppSecret,
 		VerificationKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})),
@@ -80,22 +90,60 @@ func (p *PrivyUsers) Deleted() []string {
 	return append([]string(nil), p.deleted...)
 }
 
-// RoundTrip checks the request against Privy's documented delete-user call:
-// DELETE https://auth.privy.io/api/v1/users/<did>, Basic auth with the app ID
-// and secret, and the privy-app-id header.
+// Lookups returns how many get-user requests the API received.
+func (p *PrivyUsers) Lookups() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lookups
+}
+
+// Token returns a Privy access token for the user ID, valid for one hour.
+// It creates no user.
+func (p *PrivyUsers) Token(privyUserID string) string {
+	p.t.Helper()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, auth.PrivyClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: "privy.io", Subject: privyUserID,
+			Audience:  jwt.ClaimStrings{privyUsersAppID},
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	}).SignedString(p.key)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	return token
+}
+
+// RoundTrip checks the request against Privy's documented user calls:
+// GET or DELETE https://auth.privy.io/api/v1/users/<did>, Basic auth with the
+// app ID and secret, and the privy-app-id header. A get answers 404 for a
+// deleted user and an empty user otherwise.
 func (p *PrivyUsers) RoundTrip(r *http.Request) (*http.Response, error) {
 	id, secret, ok := r.BasicAuth()
-	if r.Method != http.MethodDelete || r.URL.Scheme != "https" || r.URL.Host != "auth.privy.io" ||
+	if (r.Method != http.MethodDelete && r.Method != http.MethodGet) || r.URL.Scheme != "https" || r.URL.Host != "auth.privy.io" ||
 		!strings.HasPrefix(r.URL.Path, "/api/v1/users/") || !ok || id != privyUsersAppID ||
 		secret != privyUsersAppSecret || r.Header.Get("Privy-App-Id") != privyUsersAppID {
 		p.t.Errorf("unexpected Privy request: %s %s", r.Method, r.URL)
 		return nil, errors.New("unexpected Privy request")
 	}
+	user := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.deleted = append(p.deleted, strings.TrimPrefix(r.URL.Path, "/api/v1/users/"))
+	if r.Method == http.MethodGet {
+		p.lookups++
+		if p.gone[user] {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
+		}
+		body := `{"id":` + strconv.Quote(user) + `,"linked_accounts":[]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
+	}
+	p.deleted = append(p.deleted, user)
 	if p.failure != nil {
 		return nil, p.failure
+	}
+	if p.status == http.StatusNoContent || p.status == http.StatusNotFound {
+		p.gone[user] = true
 	}
 	return &http.Response{StatusCode: p.status, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
 }

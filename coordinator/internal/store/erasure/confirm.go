@@ -20,12 +20,16 @@ const (
 	StripePayoutBounceWindow = 30 * 24 * time.Hour
 )
 
-// AlreadyRevokedAt is the deleted_at that confirm gives an API key or a
-// provider token that was already revoked. It is one microsecond (the
-// PostgreSQL timestamp unit) before requestedAt. Cancel makes a credential
-// stamped requestedAt active again and leaves one stamped AlreadyRevokedAt
-// revoked.
-func AlreadyRevokedAt(requestedAt time.Time) time.Time { return requestedAt.Add(-time.Microsecond) }
+// Values of erasure_requests.credential_provenance.
+const (
+	// CredentialProvenanceNone: the request was confirmed before migration 34.
+	// Nothing records which credentials its confirm revoked, so a cancel
+	// restores no API key and no provider token.
+	CredentialProvenanceNone int16 = 0
+	// CredentialProvenanceListed: erasure_revoked_credentials lists each API
+	// key and provider token that the confirm changed from live to revoked.
+	CredentialProvenanceListed int16 = 1
+)
 
 // WalletHash binds the confirm call to the planned wallet list.
 func WalletHash(wallets []string) string {

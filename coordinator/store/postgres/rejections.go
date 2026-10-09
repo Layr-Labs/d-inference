@@ -11,7 +11,9 @@ import (
 
 // RecordRejection writes a rejected-request record with its counterfactual
 // servability snapshot. Best-effort; failures are discarded and never block
-// the request path.
+// the request path. The write is asynchronous, so it can arrive after the
+// consumer's account was erased. It then writes no requested model, resolved
+// model or parameters, as the scrub leaves the account's earlier rows.
 func (s *PostgresStore) RecordRejection(record *store.RejectionRecord) error {
 	if record == nil {
 		return nil
@@ -25,6 +27,21 @@ func (s *PostgresStore) RecordRejection(record *store.RejectionRecord) error {
 		createdAt = time.Now().UTC()
 	}
 
+	tx, err := beginErasureObservation(ctx, s.pool)
+	if err != nil {
+		return nil
+	}
+	defer rollbackErasureTx(tx)
+	erased, _, err := erasedObservationOwners(ctx, tx, []string{record.ConsumerKeyHash}, nil)
+	if err != nil {
+		return nil
+	}
+	rec := *record
+	if erased[rec.ConsumerKeyHash] {
+		rec.RequestedModel, rec.ResolvedModel, rec.Params = "", "", nil
+	}
+	record = &rec
+
 	// Mirror marshalProviderLocation's JSONB handling: pass nil (→ SQL NULL)
 	// when there are no params so we never write an invalid empty JSONB value.
 	var params json.RawMessage
@@ -32,7 +49,7 @@ func (s *PostgresStore) RecordRejection(record *store.RejectionRecord) error {
 		params = record.Params
 	}
 
-	_, _ = s.pool.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO request_rejections (
 			request_id, endpoint, stage, reason_code, http_status, consumer_key_hash, key_id, client_class,
 			requested_model, resolved_model, stream, n, estimated_prompt_tokens, requested_max_tokens,
@@ -57,7 +74,10 @@ func (s *PostgresStore) RecordRejection(record *store.RejectionRecord) error {
 		record.CouldHaveServed, record.CandidateCount, record.CapacityRejections, record.ModelTooLargeRejections, record.VisionRejections,
 		record.WarmProviderExisted, record.BestTTFTMs, record.ShortfallMicroUSD, record.LimitKind, record.OverBy,
 		createdAt,
-	)
+	); err != nil {
+		return nil
+	}
+	_ = tx.Commit(ctx)
 	return nil
 }
 

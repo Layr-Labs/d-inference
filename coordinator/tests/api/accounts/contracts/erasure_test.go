@@ -125,6 +125,10 @@ func TestAdminErasureHTTPFlow(t *testing.T) {
 	if plan["grace_seconds"] != float64(defaultErasureGrace/time.Second) {
 		t.Fatalf("grace_seconds = %v", plan["grace_seconds"])
 	}
+	// The account has no Mac; the list is empty, not missing.
+	if devices, ok := plan["mdm_devices"].([]any); !ok || len(devices) != 0 {
+		t.Fatalf("mdm_devices = %v", plan["mdm_devices"])
+	}
 	token := plan["confirm_token"].(string)
 
 	if code, body := erasureCall(t, ts, http.MethodPost, base, "admin-key", map[string]any{"account_id": account, "confirm_token": token, "email": "other@example.com"}); code != http.StatusBadRequest {

@@ -65,6 +65,10 @@ var (
 	// ErrErasureCountMismatch: a scrub statement changed a different number
 	// of rows than the count read in the same transaction. Nothing commits.
 	ErrErasureCountMismatch = errors.New("erasure: affected rows differ from the count")
+	// ErrErasurePrivyUserPending: CreateUser refuses a Privy user ID that an
+	// erasure holds, from the confirm until the outbox worker has deleted the
+	// Privy user.
+	ErrErasurePrivyUserPending = errors.New("erasure: the Privy user is pending deletion")
 )
 
 // ErasureRowCount is the number of rows one scrub rule changes.
@@ -90,6 +94,13 @@ type ErasureStripeObject struct {
 	ID     string        `json:"id"`
 }
 
+// ErasureMDMDevice is one Mac to remove from MicroMDM by hand after the
+// scrub. Plans return them to the admin; they are never stored.
+type ErasureMDMDevice struct {
+	Serial string `json:"serial,omitempty"`
+	UDID   string `json:"udid,omitempty"`
+}
+
 // ErasureCounts is the part of a plan that is stored in erasure_requests.plan:
 // counts only, no personal data and no Stripe IDs.
 type ErasureCounts struct {
@@ -107,12 +118,13 @@ type ErasureSummary struct {
 	Applied *ErasureCounts `json:"applied,omitempty"`
 }
 
-// ErasurePlan is the dry run of an erasure. Email and StripeObjects are shown
-// to the admin and never stored.
+// ErasurePlan is the dry run of an erasure. Email, StripeObjects and
+// MDMDevices are shown to the admin and never stored.
 type ErasurePlan struct {
 	AccountID     string                `json:"account_id"`
 	Email         string                `json:"email"`
 	StripeObjects []ErasureStripeObject `json:"stripe_objects"`
+	MDMDevices    []ErasureMDMDevice    `json:"mdm_devices"`
 	Wallets       []ErasureWalletCount  `json:"wallets"`
 	ErasureCounts
 }
@@ -243,13 +255,17 @@ type AccountErasureStore interface {
 
 	// RequestAccountErasure checks the token and email, soft deletes the
 	// account (users and providers get deleted_at; API keys and provider
-	// tokens are revoked and get deleted_at) and starts the grace period.
+	// tokens are revoked and get deleted_at) and starts the grace period. It
+	// records which API keys and provider tokens it changed from live to
+	// revoked.
 	RequestAccountErasure(ctx context.Context, in ErasureConfirm) (*ErasureRequest, error)
 
 	// CancelAccountErasure ends a pending request before scrub_after. The
-	// user is live again, and so are the providers, API keys and provider
-	// tokens that the confirm removed. Credentials that were already revoked
-	// stay revoked.
+	// user is live again, and so are the providers that the confirm removed.
+	// An API key or provider token is live again only if the confirm recorded
+	// it as live and nothing revoked it after the confirm. Every other
+	// credential stays revoked, including all credentials of a request
+	// confirmed before the confirm recorded them.
 	CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*ErasureRequest, error)
 
 	// ScrubAccount applies every rule in erasure.Rules in one transaction,
@@ -285,7 +301,14 @@ type AccountErasureStore interface {
 	// or already completed claim returns ErrErasureConflict without any writes.
 	SaveErasureOutboxResult(ctx context.Context, id string, r ErasureOutboxResult) error
 
-	// PrivyUserPendingErasure reports whether a soft-deleted account holds
-	// this Privy user ID. Login refuses such an account.
+	// PrivyUserPendingErasure reports whether an erasure holds this Privy user
+	// ID: a soft-deleted account holds it, or a privy_user outbox row that is
+	// not done holds it. Login refuses it, and CreateUser refuses it with
+	// ErrErasurePrivyUserPending.
 	PrivyUserPendingErasure(ctx context.Context, privyUserID string) (bool, error)
+
+	// PrivyUserLive reports whether a live account holds this Privy user ID.
+	// It takes the lock that CreateUser takes for the same ID. The outbox
+	// worker does not delete a Privy user that a live account holds.
+	PrivyUserLive(ctx context.Context, privyUserID string) (bool, error)
 }

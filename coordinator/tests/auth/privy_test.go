@@ -287,9 +287,10 @@ func TestConfigCheck(t *testing.T) {
 	}
 }
 
-// TestGetOrCreateUserRefusesPendingErasure: during the erasure grace period
-// a login must not create a second live account; after the scrub the Privy
-// ID is free and the login makes a fresh account.
+// TestGetOrCreateUserRefusesPendingErasure: from the confirm until the
+// erasure outbox has deleted the Privy user, a login must not create a second
+// live account. The scrub replaces users.privy_user_id, and then the
+// privy_user outbox row holds the ID until it is done.
 func TestGetOrCreateUserRefusesPendingErasure(t *testing.T) {
 	st := testMemStore()
 	if err := st.CreateUser(&store.User{AccountID: "acct-gone", PrivyUserID: "did:privy:gone", Email: "gone@example.com"}); err != nil {
@@ -317,11 +318,10 @@ func TestGetOrCreateUserRefusesPendingErasure(t *testing.T) {
 	if _, err := st.ScrubAccount(ctx, req.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := a.GetOrCreateUser("did:privy:gone")
-	if err != nil {
-		t.Fatalf("login after erasure: %v", err)
+	if _, err := a.GetOrCreateUser("did:privy:gone"); !errors.Is(err, production.ErrAccountPendingDeletion) {
+		t.Fatalf("login after the scrub, before the Privy deletion: %v, want ErrAccountPendingDeletion", err)
 	}
-	if fresh.AccountID == "acct-gone" || fresh.Email != "" {
-		t.Fatalf("login after erasure = %+v, want a fresh account", fresh)
+	if err := st.CreateUser(&store.User{AccountID: "acct-again", PrivyUserID: "did:privy:gone"}); !errors.Is(err, store.ErrErasurePrivyUserPending) {
+		t.Fatalf("CreateUser before the Privy deletion: %v, want ErrErasurePrivyUserPending", err)
 	}
 }

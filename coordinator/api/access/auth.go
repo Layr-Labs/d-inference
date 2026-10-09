@@ -140,11 +140,16 @@ func (s *Owner) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // writePrivyUserError answers a failed Privy user resolution. An account that
 // waits for erasure gets 403 account_pending_deletion: the login must not
-// create a second live account for the same person.
+// create a second live account for the same person. A token of a Privy user
+// that Privy no longer has (an erasure deleted it) gets 401.
 func (s *Owner) writePrivyUserError(w http.ResponseWriter, err error) {
 	if errors.Is(err, auth.ErrAccountPendingDeletion) {
 		httpx.WriteJSON(w, http.StatusForbidden, httpx.ErrorResponse("account_pending_deletion",
 			"this account is scheduled for deletion; contact support to cancel"))
+		return
+	}
+	if errors.Is(err, auth.ErrPrivyUserNotFound) {
+		httpx.WriteJSON(w, http.StatusUnauthorized, httpx.ErrorResponse("authentication_error", "the Privy user does not exist"))
 		return
 	}
 	s.logger.Error("privy: user resolution failed", "error", err)

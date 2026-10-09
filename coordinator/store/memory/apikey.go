@@ -94,13 +94,24 @@ func (s *MemoryStore) AuthenticateKey(rawKey string) (*store.APIKey, error) {
 // RevokeKey deactivates a key (soft-disable), matching PostgresStore semantics
 // and the Store interface contract ("deactivates a key"). The record is kept so
 // it still appears in ListAPIKeys as disabled. Returns true only if the key
-// existed AND was active (a second revoke returns false). By-ID deletion
-// (RevokeAPIKeyByID) is the hard-delete path.
+// existed AND was active, or was a key that a pending erasure would restore on
+// cancel (a second revoke returns false). By-ID deletion (RevokeAPIKeyByID) is
+// the hard-delete path.
 func (s *MemoryStore) RevokeKey(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.keyRecords[key]
-	if !ok || rec.Disabled {
+	if !ok {
+		return false
+	}
+	forgotten := false
+	for _, r := range s.erasureRequests {
+		if r.revokedKeys[key] {
+			delete(r.revokedKeys, key)
+			forgotten = true
+		}
+	}
+	if rec.Disabled && !forgotten {
 		return false
 	}
 	rec.Disabled = true

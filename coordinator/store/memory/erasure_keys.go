@@ -149,6 +149,7 @@ func (s *MemoryStore) collectErasureKeysLocked(u *store.User, wallets []string) 
 			}
 			if s.machineSharedLocked(machine, account) {
 				k.MDADigestsShared++
+				k.SharedMDADigests = append(k.SharedMDADigests, alias.Digest)
 			} else {
 				k.MDADigestsToDelete = append(k.MDADigestsToDelete, alias.Digest)
 			}
@@ -156,6 +157,45 @@ func (s *MemoryStore) collectErasureKeysLocked(u *store.User, wallets []string) 
 		sort.Strings(k.MDADigestsToDelete)
 	}
 	return k
+}
+
+// mdmDevicesLocked mirrors mdmDevices (ListErasureDeviceRows and
+// ListSerialsOfOtherLiveAccounts) over the memory maps.
+func (s *MemoryStore) mdmDevicesLocked(k *erasure.Keys) []store.ErasureMDMDevice {
+	var all []erasure.DeviceRow
+	for _, r := range s.providerTrustReuse {
+		all = append(all, erasure.DeviceRow{SEKey: r.SEPubKey, Serial: r.Serial, UDID: r.MDAUDID})
+	}
+	for _, j := range s.verificationJobs {
+		all = append(all, erasure.DeviceRow{SEKey: j.SEPubKey, Serial: j.Serial, UDID: j.UDID})
+	}
+	ownKeys, serials := stringSet(k.SEKeys), stringSet(k.Serials)
+	ownSerials, ownUDIDs := map[string]bool{}, map[string]bool{}
+	for _, r := range all {
+		if ownKeys[r.SEKey] {
+			ownSerials[r.Serial], ownUDIDs[r.UDID] = true, true
+		}
+	}
+	var rows []erasure.DeviceRow
+	for _, r := range all {
+		if ownKeys[r.SEKey] || (r.Serial != "" && (serials[r.Serial] || ownSerials[r.Serial])) || (r.UDID != "" && ownUDIDs[r.UDID]) {
+			rows = append(rows, r)
+		}
+	}
+	candidates := stringSet(k.MDMSerials(rows))
+	var elsewhere []string
+	other := func(account, serial string) {
+		if candidates[serial] && account != k.AccountID && account != "" && !s.erasedAccounts[account] {
+			elsewhere = append(elsewhere, serial)
+		}
+	}
+	for _, p := range s.providerRecords {
+		other(p.AccountID, p.SerialNumber)
+	}
+	for _, ps := range s.history.ProviderSessions {
+		other(ps.AccountID, ps.SerialNumber)
+	}
+	return k.MDMDevices(rows, elsewhere)
 }
 
 // machineSharedLocked reports whether another account has a session on machine.

@@ -116,6 +116,9 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	if !ok {
 		return errors.New("provider token not found")
 	}
+	for _, r := range s.erasureRequests {
+		delete(r.revokedTokens, h)
+	}
 	pt.Active = false
 	return nil
 }

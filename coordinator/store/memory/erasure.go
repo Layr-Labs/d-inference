@@ -19,6 +19,10 @@ type memoryErasureRequest struct {
 	walletHash string
 	wallets    []string
 	leaseUntil time.Time
+	// As erasure_revoked_credentials: the raw API keys and the provider token
+	// hashes that the confirm changed from live to revoked.
+	revokedKeys   map[string]bool
+	revokedTokens map[string]bool
 }
 
 var _ store.AccountErasureStore = (*MemoryStore)(nil)
@@ -75,7 +79,7 @@ func (s *MemoryStore) PlanAccountErasure(ctx context.Context, accountID string, 
 	if err != nil {
 		return nil, err
 	}
-	plan := &store.ErasurePlan{AccountID: accountID, Email: u.Email, StripeObjects: k.StripeObjects()}
+	plan := &store.ErasurePlan{AccountID: accountID, Email: u.Email, StripeObjects: k.StripeObjects(), MDMDevices: s.mdmDevicesLocked(k)}
 	plan.Rows, plan.Retained = rows, k.Retained()
 	plan.StripeObjectCounts = erasure.StripeObjectCounts(plan.StripeObjects)
 	plan.OpenWithdrawals = s.openWithdrawalsLocked(accountID, time.Now())
@@ -145,24 +149,23 @@ func (s *MemoryStore) RequestAccountErasure(ctx context.Context, in store.Erasur
 			p.DeletedAt = &now
 		}
 	}
-	// As SoftDeleteAPIKeys: a credential already revoked gets the earlier stamp.
-	alreadyRevoked := erasure.AlreadyRevokedAt(now)
-	for _, rec := range s.keyRecords {
+	// As SoftDeleteAPIKeys and SoftDeleteProviderTokens: every credential gets
+	// deleted_at; the list holds only those that were live.
+	r.revokedKeys, r.revokedTokens = map[string]bool{}, map[string]bool{}
+	for raw, rec := range s.keyRecords {
 		if rec.OwnerAccountID == in.AccountID && rec.DeletedAt == nil {
-			at := now
-			if rec.Disabled {
-				at = alreadyRevoked
+			if !rec.Disabled {
+				r.revokedKeys[raw] = true
 			}
-			rec.Disabled, rec.DeletedAt = true, &at
+			rec.Disabled, rec.DeletedAt = true, &now
 		}
 	}
-	for _, pt := range s.providerTokens {
+	for hash, pt := range s.providerTokens {
 		if pt.AccountID == in.AccountID && pt.DeletedAt == nil {
-			at := now
-			if !pt.Active {
-				at = alreadyRevoked
+			if pt.Active {
+				r.revokedTokens[hash] = true
 			}
-			pt.Active, pt.DeletedAt = false, &at
+			pt.Active, pt.DeletedAt = false, &now
 		}
 	}
 	scrubAfter := now.Add(in.Grace)
@@ -193,33 +196,24 @@ func (s *MemoryStore) CancelAccountErasure(ctx context.Context, accountID, actor
 	}
 	u.DeletedAt = nil
 	s.usersByPrivyID[u.PrivyUserID] = u
-	// As RestoreProviders, RestoreAPIKeys and RestoreProviderTokens.
+	// As RestoreProviders, RestoreRevokedAPIKeys and RestoreRevokedProviderTokens.
 	revoked := *r.RequestedAt
-	alreadyRevoked := erasure.AlreadyRevokedAt(revoked)
-	// removedByConfirm reports whether the confirm stamped deletedAt, and
-	// whether the credential was live before the confirm.
-	removedByConfirm := func(deletedAt *time.Time) (removed, live bool) {
-		if deletedAt == nil {
-			return false, false
-		}
-		live = deletedAt.Equal(revoked)
-		return live || deletedAt.Equal(alreadyRevoked), live
-	}
 	for _, p := range s.providerRecords {
 		if p.AccountID == accountID && p.DeletedAt != nil && p.DeletedAt.Equal(revoked) {
 			p.DeletedAt = nil
 		}
 	}
-	for _, rec := range s.keyRecords {
-		if removed, live := removedByConfirm(rec.DeletedAt); rec.OwnerAccountID == accountID && removed {
-			rec.Disabled, rec.DeletedAt = !live, nil
+	for raw := range r.revokedKeys {
+		if rec := s.keyRecords[raw]; rec != nil && rec.OwnerAccountID == accountID && rec.Disabled && rec.DeletedAt != nil && rec.DeletedAt.Equal(revoked) {
+			rec.Disabled, rec.DeletedAt = false, nil
 		}
 	}
-	for _, pt := range s.providerTokens {
-		if removed, live := removedByConfirm(pt.DeletedAt); pt.AccountID == accountID && removed {
-			pt.Active, pt.DeletedAt = live, nil
+	for hash := range r.revokedTokens {
+		if pt := s.providerTokens[hash]; pt != nil && pt.AccountID == accountID && !pt.Active && pt.DeletedAt != nil && pt.DeletedAt.Equal(revoked) {
+			pt.Active, pt.DeletedAt = true, nil
 		}
 	}
+	r.revokedKeys, r.revokedTokens = nil, nil
 	at := now
 	r.State, r.CanceledBy, r.CanceledAt, r.wallets, r.walletHash, r.leaseUntil = store.ErasureCanceled, actor, &at, nil, "", time.Time{}
 	return r.copyOut(), nil
@@ -276,6 +270,7 @@ func (s *MemoryStore) ScrubAccount(ctx context.Context, requestID string, now ti
 	}
 	at := now
 	r.State, r.ErasedAt, r.wallets, r.walletHash, r.leaseUntil, r.LastError = store.ErasureErased, &at, nil, "", time.Time{}, ""
+	r.revokedKeys, r.revokedTokens = nil, nil
 	r.Summary.Applied = &applied
 	s.erasedAccounts[r.AccountID] = true
 	return &store.ErasureResult{Request: r.copyOut(), SEKeys: k.SEKeys, ProviderIDs: k.ProviderIDs}, nil
@@ -347,12 +342,34 @@ func (s *MemoryStore) PrivyUserPendingErasure(ctx context.Context, privyUserID s
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.privyUserInErasureLocked(privyUserID), nil
+}
+
+// privyUserInErasureLocked mirrors PrivyUserInErasure: a soft-deleted user
+// holds the ID, or a privy_user outbox row that is not done holds it.
+func (s *MemoryStore) privyUserInErasureLocked(privyUserID string) bool {
 	for _, u := range s.usersByAccountID {
 		if u.PrivyUserID == privyUserID && u.DeletedAt != nil {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	for _, o := range s.erasureOutbox {
+		if o.Target == store.ErasureTargetPrivyUser && o.ExternalID == privyUserID && o.State != store.ErasureOutboxDone {
+			return true
+		}
+	}
+	return false
+}
+
+// PrivyUserLive holds the store lock, which CreateUser also takes.
+func (s *MemoryStore) PrivyUserLive(ctx context.Context, privyUserID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	u := s.usersByPrivyID[privyUserID]
+	return u != nil && u.DeletedAt == nil, nil
 }
 
 func (s *MemoryStore) ListErasureRefusedCredits(ctx context.Context, accountID string) ([]store.ErasureRefusedCredit, error) {

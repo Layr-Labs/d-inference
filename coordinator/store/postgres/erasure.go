@@ -93,6 +93,9 @@ func (s *PostgresStore) PlanAccountErasure(ctx context.Context, accountID string
 			return err
 		}
 		plan = &store.ErasurePlan{AccountID: accountID, Email: user.Email, StripeObjects: k.StripeObjects()}
+		if plan.MDMDevices, err = mdmDevices(ctx, q, k); err != nil {
+			return err
+		}
 		plan.Rows, plan.Retained, plan.OpenWithdrawals = rows, k.Retained(), open
 		if plan.Wallets, err = walletCounts(ctx, q, k.Wallets); err != nil {
 			return err
@@ -212,17 +215,18 @@ func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.Eras
 		if _, err := q.SoftDeleteProviders(ctx, storedb.SoftDeleteProvidersParams{AccountID: in.AccountID, DeletedAt: &now}); err != nil {
 			return err
 		}
-		alreadyRevoked := erasure.AlreadyRevokedAt(now)
-		if _, err := q.SoftDeleteAPIKeys(ctx, storedb.SoftDeleteAPIKeysParams{OwnerAccountID: in.AccountID, RevokedAt: now, AlreadyRevokedAt: alreadyRevoked}); err != nil {
+		// Both statements list the credentials they change from live to
+		// revoked; CancelAccountErasure restores only those.
+		if err := q.SoftDeleteAPIKeys(ctx, storedb.SoftDeleteAPIKeysParams{OwnerAccountID: in.AccountID, DeletedAt: now, RequestID: open.ID}); err != nil {
 			return err
 		}
-		if _, err := q.SoftDeleteProviderTokens(ctx, storedb.SoftDeleteProviderTokensParams{AccountID: in.AccountID, RevokedAt: now, AlreadyRevokedAt: alreadyRevoked}); err != nil {
+		if err := q.SoftDeleteProviderTokens(ctx, storedb.SoftDeleteProviderTokensParams{AccountID: in.AccountID, DeletedAt: now, RequestID: open.ID}); err != nil {
 			return err
 		}
 		scrubAfter := now.Add(in.Grace)
 		if err := q.MarkErasurePending(ctx, storedb.MarkErasurePendingParams{
 			ID: open.ID, Actor: in.Actor, Reason: in.Reason, WalletAddresses: erasure.NormalizeWallets(in.WalletAddresses),
-			RequestedAt: &now, ScrubAfter: &scrubAfter,
+			RequestedAt: &now, ScrubAfter: &scrubAfter, CredentialProvenance: erasure.CredentialProvenanceListed,
 		}); err != nil {
 			return err
 		}
@@ -235,9 +239,12 @@ func (s *PostgresStore) RequestAccountErasure(ctx context.Context, in store.Eras
 	return result, nil
 }
 
-// CancelAccountErasure restores the user of a pending request and the
-// providers, API keys and provider tokens that its confirm removed. API keys
-// and provider tokens that were revoked before the confirm stay revoked.
+// CancelAccountErasure restores the user of a pending request, the providers
+// that its confirm removed, and the API keys and provider tokens that
+// erasure_revoked_credentials lists for the request and that are still in
+// the state the confirm left. Every other credential stays revoked: one that
+// was revoked before the confirm, one revoked during the grace period, and
+// every credential of a request confirmed before migration 34.
 func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*store.ErasureRequest, error) {
 	var result *store.ErasureRequest
 	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
@@ -262,13 +269,13 @@ func (s *PostgresStore) CancelAccountErasure(ctx context.Context, accountID, act
 		if _, err := q.RestoreProviders(ctx, storedb.RestoreProvidersParams{AccountID: accountID, DeletedAt: open.RequestedAt}); err != nil {
 			return err
 		}
-		revoked := *open.RequestedAt
-		alreadyRevoked := erasure.AlreadyRevokedAt(revoked)
-		if _, err := q.RestoreAPIKeys(ctx, storedb.RestoreAPIKeysParams{OwnerAccountID: accountID, RevokedAt: revoked, AlreadyRevokedAt: alreadyRevoked}); err != nil {
-			return err
-		}
-		if _, err := q.RestoreProviderTokens(ctx, storedb.RestoreProviderTokensParams{AccountID: accountID, RevokedAt: revoked, AlreadyRevokedAt: alreadyRevoked}); err != nil {
-			return err
+		if open.CredentialProvenance >= erasure.CredentialProvenanceListed {
+			if _, err := q.RestoreRevokedAPIKeys(ctx, storedb.RestoreRevokedAPIKeysParams{RequestID: open.ID, OwnerAccountID: accountID, RequestedAt: *open.RequestedAt}); err != nil {
+				return err
+			}
+			if _, err := q.RestoreRevokedProviderTokens(ctx, storedb.RestoreRevokedProviderTokensParams{RequestID: open.ID, AccountID: accountID, RequestedAt: *open.RequestedAt}); err != nil {
+				return err
+			}
 		}
 		if err := q.MarkErasureCanceled(ctx, storedb.MarkErasureCanceledParams{ID: open.ID, CanceledBy: actor, CanceledAt: &now}); err != nil {
 			return err
@@ -344,6 +351,10 @@ func (s *PostgresStore) ScrubAccount(ctx context.Context, requestID string, now 
 			return err
 		}
 		if err := q.DeleteStagedErasureObjects(ctx, req.AccountID); err != nil {
+			return err
+		}
+		// A scrubbed request cannot be canceled; its credential list has no use.
+		if err := q.DeleteErasureRevokedCredentials(ctx, req.ID); err != nil {
 			return err
 		}
 		outbox := k.OutboxRows()
@@ -470,12 +481,27 @@ func (s *PostgresStore) RecordAccountErasureFailure(ctx context.Context, request
 }
 
 // PrivyUserPendingErasure reports whether a soft-deleted user holds the
-// Privy ID. After the scrub the stored ID is random and never matches.
+// Privy ID, or a privy_user outbox row that is not done holds it.
 func (s *PostgresStore) PrivyUserPendingErasure(ctx context.Context, privyUserID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	n, err := s.queries().CountUsersPendingErasureByPrivyID(ctx, privyUserID)
-	return n > 0, err
+	return s.queries().PrivyUserInErasure(ctx, privyUserID)
+}
+
+// PrivyUserLive counts the live users of the Privy ID under the lock that
+// CreateUser takes. The lock ends with the check: from then on CreateUser
+// refuses the ID until the privy_user row is done.
+func (s *PostgresStore) PrivyUserLive(ctx context.Context, privyUserID string) (bool, error) {
+	var live bool
+	err := s.erasureTx(ctx, pgx.TxOptions{}, func(ctx context.Context, q *storedb.Queries) error {
+		if err := q.LockPrivyUserProvisioning(ctx, privyUserID); err != nil {
+			return err
+		}
+		n, err := q.CountLiveUsersByPrivyID(ctx, privyUserID)
+		live = n > 0
+		return err
+	})
+	return live, err
 }
 
 // walletCounts counts the rows that hold each planned wallet address.

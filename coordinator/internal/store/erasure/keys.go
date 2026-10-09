@@ -43,6 +43,9 @@ type Keys struct {
 
 	MDADigestsToDelete []string
 	MDADigestsShared   int64
+	// SharedMDADigests are the MDADigestsShared aliases: their machine has a
+	// session of another account that is not erased.
+	SharedMDADigests []string
 
 	Wallets []WalletReplacement
 }

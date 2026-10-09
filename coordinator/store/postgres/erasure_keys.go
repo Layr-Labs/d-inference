@@ -136,10 +136,29 @@ func collectErasureKeys(ctx context.Context, q *storedb.Queries, accountID, stri
 	for _, a := range aliases {
 		if a.Shared {
 			k.MDADigestsShared++
+			k.SharedMDADigests = append(k.SharedMDADigests, a.Digest)
 		} else {
 			k.MDADigestsToDelete = append(k.MDADigestsToDelete, a.Digest)
 		}
 	}
 	sort.Strings(k.MDADigestsToDelete)
 	return k, nil
+}
+
+// mdmDevices lists the Macs for MicroMDM removal from the keys the scrub
+// would use (erasure.Keys.MDMDevices).
+func mdmDevices(ctx context.Context, q *storedb.Queries, k *erasure.Keys) ([]store.ErasureMDMDevice, error) {
+	found, err := q.ListErasureDeviceRows(ctx, storedb.ListErasureDeviceRowsParams{SeKeys: k.SEKeys, Serials: k.Serials})
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]erasure.DeviceRow, 0, len(found))
+	for _, r := range found {
+		rows = append(rows, erasure.DeviceRow{SEKey: r.SePubkey, Serial: r.Serial, UDID: r.Udid})
+	}
+	elsewhere, err := q.ListSerialsOfOtherLiveAccounts(ctx, storedb.ListSerialsOfOtherLiveAccountsParams{Serials: k.MDMSerials(rows), AccountID: k.AccountID})
+	if err != nil {
+		return nil, err
+	}
+	return k.MDMDevices(rows, elsewhere), nil
 }

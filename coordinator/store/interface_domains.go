@@ -18,7 +18,8 @@ type APIKeyStore interface {
 	// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
 	GetKeyAccount(key string) string
 
-	// RevokeKey deactivates a key. Returns true if the key existed.
+	// RevokeKey deactivates a key. Returns true if the key existed. A key that
+	// a pending erasure revoked stays revoked when the erasure is canceled.
 	RevokeKey(key string) bool
 
 	// --- Multi-key management (one account → many named, limited keys) ---
@@ -485,7 +486,8 @@ type DeviceAuthStore interface {
 	// other errors indicate a storage failure, not an invalid credential.
 	GetProviderToken(token string) (*ProviderToken, error)
 
-	// RevokeProviderToken deactivates a provider token.
+	// RevokeProviderToken deactivates a provider token. A token that a
+	// pending erasure revoked stays revoked when the erasure is canceled.
 	RevokeProviderToken(token string) error
 }
 

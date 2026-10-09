@@ -640,7 +640,20 @@ CREATE TABLE public.erasure_requests (
     lease_until timestamp with time zone,
     last_error text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    credential_provenance smallint DEFAULT 0 NOT NULL,
     CONSTRAINT erasure_requests_state_check CHECK ((state = ANY (ARRAY['planned'::text, 'pending'::text, 'erased'::text, 'canceled'::text])))
+);
+
+
+--
+-- Name: erasure_revoked_credentials; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.erasure_revoked_credentials (
+    request_id text NOT NULL,
+    kind text NOT NULL,
+    credential_id text NOT NULL,
+    CONSTRAINT erasure_revoked_credentials_kind_check CHECK ((kind = ANY (ARRAY['api_key'::text, 'provider_token'::text])))
 );
 
 
@@ -2410,6 +2423,14 @@ ALTER TABLE ONLY public.erasure_requests
 
 
 --
+-- Name: erasure_revoked_credentials erasure_revoked_credentials_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_revoked_credentials
+    ADD CONSTRAINT erasure_revoked_credentials_pkey PRIMARY KEY (request_id, kind, credential_id);
+
+
+--
 -- Name: erasure_se_owners erasure_se_owners_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3010,6 +3031,13 @@ CREATE INDEX erasure_requests_erased ON public.erasure_requests USING btree (acc
 --
 
 CREATE UNIQUE INDEX erasure_requests_open ON public.erasure_requests USING btree (account_id) WHERE (state = ANY (ARRAY['planned'::text, 'pending'::text]));
+
+
+--
+-- Name: erasure_revoked_credentials_credential; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX erasure_revoked_credentials_credential ON public.erasure_revoked_credentials USING btree (kind, credential_id);
 
 
 --
@@ -3720,6 +3748,14 @@ ALTER TABLE ONLY public.darkbloom_machines
 
 ALTER TABLE ONLY public.erasure_outbox
     ADD CONSTRAINT erasure_outbox_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.erasure_requests(id);
+
+
+--
+-- Name: erasure_revoked_credentials erasure_revoked_credentials_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.erasure_revoked_credentials
+    ADD CONSTRAINT erasure_revoked_credentials_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.erasure_requests(id);
 
 
 --

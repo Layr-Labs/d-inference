@@ -8,7 +8,8 @@ import (
 )
 
 // RecordRejection writes a rejected-request record with its counterfactual
-// servability snapshot. Best-effort; failures are discarded.
+// servability snapshot. Best-effort; failures are discarded. A record of an
+// erased consumer keeps no model names and no parameters.
 func (s *MemoryStore) RecordRejection(record *store.RejectionRecord) error {
 	if record == nil {
 		return nil
@@ -22,6 +23,13 @@ func (s *MemoryStore) RecordRejection(record *store.RejectionRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// As PostgresStore: a late record of an erased consumer keeps no model
+	// names and no parameters.
+	for account := range s.erasedAccounts {
+		if rec.ConsumerKeyHash == store.HashKey(account) {
+			rec.RequestedModel, rec.ResolvedModel, rec.Params = "", "", nil
+		}
+	}
 	s.inferenceRejections = append(s.inferenceRejections, rec)
 	return nil
 }

@@ -74,6 +74,8 @@ artifact, materializes only that rank's stage, then releases it. The JSON
 receipt carries the verified aggregate, the storage commitment (equal on both
 ranks and both Macs for one cut), loaded bytes, load time, and active and cached
 bytes after release. Exit status is 0 only if the model object was released.
+`--hold-seconds N` keeps the loaded stage resident for N seconds first, so a
+second load can be tried against it.
 It refuses to run with a cluster transport environment set. It shows nothing
 about membership, transport or generation.
 
@@ -264,9 +266,13 @@ both.
   has passed admission, per-rank stage loads and the single-Mac reference on
   both chips; it has not yet completed a two-Mac run (see
   [handoff/QWEN27B-PAIR.md](../../handoff/QWEN27B-PAIR.md)).
-- The host gate counts free pages only, never file cache. A Mac that has been
-  reading model files can hold almost nothing free while most of its memory is
-  reclaimable, and a load or an 8,192-token request is then refused.
+- The host gate admits on free pages plus part of the file cache: three
+  quarters of the file-backed memory above the kernel's own file-cache
+  minimum, at most 32 GiB, and only while memory pressure is normal. Anonymous
+  memory is never counted. A refusal names the requirement, the free pages and
+  the cache counted; the stage check and the reference print the gate's
+  decisions. See
+  [handoff/DESIGN-resource-gate-v3.md](../../handoff/DESIGN-resource-gate-v3.md).
 - The owner-authenticated JACCL bootstrap (`--bootstrap-socket-path`,
   `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`) is parsed
   but refused: the pinned mlx-c does not carry the bootstrap bridge. Without

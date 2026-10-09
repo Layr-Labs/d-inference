@@ -7,7 +7,7 @@ set -uo pipefail
 . "$(dirname "$0")/env.sh"
 export PATH=$T/tools/native-swift:$PATH; out=$1; mkdir -p "$out"
 products=$(swift build --package-path $W/libs/darkbloom-cluster --show-bin-path)
-bundle="$products/DarkbloomClusterRuntimeTests.xctest/Contents/MacOS"
+bundle=$(ls -d "$products"/*PackageTests.xctest/Contents/MacOS | head -1)
 cp "$METALLIB" "$products/mlx.metallib"; cp "$METALLIB" "$bundle/mlx.metallib"
 swift test --package-path $W/libs/darkbloom-cluster --skip-build 2>&1 | scrub > "$out/library-tests.log"; echo "library tests exit=${PIPESTATUS[0]}"
 rm -f "$bundle/mlx.metallib"

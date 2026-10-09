@@ -1,0 +1,164 @@
+{
+  "artifacts": [
+    {
+      "file": "2026-10-09-gpt-oss-arithmetic-repro-native.json.gz",
+      "raw_sha256": "2c1348d36d73c331a87b5dcf0c1a906beb5e19d99114502ce5f2c69d2bbcb650",
+      "gzip_sha256": "f4519c631642ba83e33b9e4e6294bc4e51972a126c1606140888790281840bc4",
+      "raw_bytes": 670481,
+      "gzip_bytes": 55934
+    },
+    {
+      "file": "2026-10-09-gpt-oss-arithmetic-repro-half.json.gz",
+      "raw_sha256": "d5f669509f07efa451e72c87aad419b05666cb9f364104a9c8b8403657756ac1",
+      "gzip_sha256": "e15544d45c13019fa49faeb179b18d3af6ff1f867bdc50826a7f3c0878d36dac",
+      "raw_bytes": 769378,
+      "gzip_bytes": 66388
+    }
+  ],
+  "comparison": {
+    "scope": "Frozen binary follow-up of the original GPT 4K arithmetic request at the original 256-token cap. The original campaign observation remains unchanged. Request ordering differs in this single-case report; actual prompt IDs, model, binary, metallib, grant and controls match.",
+    "runtime_identity": {
+      "binary_sha256": "76c2db5cc2ebfde4f92c718c79591e11de1c293938fb42f187bfb25da3fcaf10",
+      "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+      "normalization": "darkbloom-request-normalization-v8",
+      "renderer": "swift-jinja-request-date-compatible-v4",
+      "tokenizer": "huggingface-tokenizer-json-v1"
+    },
+    "model_hash": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "prompt_tokens": 4602,
+    "arms": {
+      "0": {
+        "correct_final_answers": 6,
+        "observations": [
+          {
+            "case": "main",
+            "completion_tokens": 164,
+            "finish": "stop",
+            "answer": {
+              "final_text": "272",
+              "oracle_pass": true
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That seems to be a rule that applies at some point. We need to consider all archive records? The archive records show categories and checkpoint values but no actions. They are just checkpoints. The inventory rule likely applies once. The question: \"How many Iris units remain?\" We need to compute final inventory after applying the gains and shipments. Starting 137, then gains 219 => 356, then ships 84 => 272. So answer 272. But check if any other inventory changes? No other inventory rules. So answer 272.<|end|><|start|>assistant<|channel|>final<|message|>272<|return|>"
+          },
+          {
+            "case": "tenant-1",
+            "completion_tokens": 164,
+            "finish": "stop",
+            "answer": {
+              "final_text": "272",
+              "oracle_pass": true
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That seems to be a rule that applies at some point. We need to consider all archive records? The archive records show categories and checkpoint values but no actions. They are just checkpoints. The inventory rule likely applies once. The question: \"How many Iris units remain?\" We need to compute final inventory after applying the gains and shipments. Starting 137, then gains 219 => 356, then ships 84 => 272. So answer 272. But check if any other inventory changes? No other inventory rules. So answer 272.<|end|><|start|>assistant<|channel|>final<|message|>272<|return|>"
+          },
+          {
+            "case": "tenant-2",
+            "completion_tokens": 164,
+            "finish": "stop",
+            "answer": {
+              "final_text": "272",
+              "oracle_pass": true
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That seems to be a rule that applies at some point. We need to consider all archive records? The archive records show categories and checkpoint values but no actions. They are just checkpoints. The inventory rule likely applies once. The question: \"How many Iris units remain?\" We need to compute final inventory after applying the gains and shipments. Starting 137, then gains 219 => 356, then ships 84 => 272. So answer 272. But check if any other inventory changes? No other inventory rules. So answer 272.<|end|><|start|>assistant<|channel|>final<|message|>272<|return|>"
+          },
+          {
+            "case": "tenant-3",
+            "completion_tokens": 164,
+            "finish": "stop",
+            "answer": {
+              "final_text": "272",
+              "oracle_pass": true
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That seems to be a rule that applies at some point. We need to consider all archive records? The archive records show categories and checkpoint values but no actions. They are just checkpoints. The inventory rule likely applies once. The question: \"How many Iris units remain?\" We need to compute final inventory after applying the gains and shipments. Starting 137, then gains 219 => 356, then ships 84 => 272. So answer 272. But check if any other inventory changes? No other inventory rules. So answer 272.<|end|><|start|>assistant<|channel|>final<|message|>272<|return|>"
+          },
+          {
+            "case": "donor",
+            "completion_tokens": 164,
+            "finish": "stop",
+            "answer": {
+              "final_text": "272",
+              "oracle_pass": true
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That seems to be a rule that applies at some point. We need to consider all archive records? The archive records show categories and checkpoint values but no actions. They are just checkpoints. The inventory rule likely applies once. The question: \"How many Iris units remain?\" We need to compute final inventory after applying the gains and shipments. Starting 137, then gains 219 => 356, then ships 84 => 272. So answer 272. But check if any other inventory changes? No other inventory rules. So answer 272.<|end|><|start|>assistant<|channel|>final<|message|>272<|return|>"
+          },
+          {
+            "case": "recovered",
+            "completion_tokens": 164,
+            "finish": "stop",
+            "answer": {
+              "final_text": "272",
+              "oracle_pass": true
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That seems to be a rule that applies at some point. We need to consider all archive records? The archive records show categories and checkpoint values but no actions. They are just checkpoints. The inventory rule likely applies once. The question: \"How many Iris units remain?\" We need to compute final inventory after applying the gains and shipments. Starting 137, then gains 219 => 356, then ships 84 => 272. So answer 272. But check if any other inventory changes? No other inventory rules. So answer 272.<|end|><|start|>assistant<|channel|>final<|message|>272<|return|>"
+          }
+        ],
+        "cancellation": "observed"
+      },
+      "half": {
+        "correct_final_answers": 0,
+        "observations": [
+          {
+            "case": "main",
+            "completion_tokens": 256,
+            "finish": "length",
+            "answer": {
+              "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+              "oracle_pass": false
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer "
+          },
+          {
+            "case": "tenant-1",
+            "completion_tokens": 256,
+            "finish": "length",
+            "answer": {
+              "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+              "oracle_pass": false
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer "
+          },
+          {
+            "case": "tenant-2",
+            "completion_tokens": 256,
+            "finish": "length",
+            "answer": {
+              "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+              "oracle_pass": false
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer "
+          },
+          {
+            "case": "tenant-3",
+            "completion_tokens": 256,
+            "finish": "length",
+            "answer": {
+              "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+              "oracle_pass": false
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer "
+          },
+          {
+            "case": "donor",
+            "completion_tokens": 256,
+            "finish": "length",
+            "answer": {
+              "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+              "oracle_pass": false
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer "
+          },
+          {
+            "case": "recovered",
+            "completion_tokens": 256,
+            "finish": "length",
+            "answer": {
+              "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+              "oracle_pass": false
+            },
+            "text": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer "
+          }
+        ],
+        "cancellation": "observed"
+      }
+    }
+  }
+}

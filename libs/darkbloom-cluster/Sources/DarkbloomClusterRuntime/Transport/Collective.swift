@@ -5,8 +5,26 @@ import MLX
 public enum ClusterTransport: String {
     case jaccl
     case loopbackTest = "loopback-test"
+    /// Two ranks on one Mac over a 127.0.0.1 socket (`CollectiveLocalSocket`).
+    /// Correctness only: point-to-point transfers, no reductions, never RDMA.
+    case localSocketTest = "local-socket-test"
 
     var backend: String { self == .jaccl ? "jaccl" : "ring" }
+
+    /// The transport a resident rank was launched for. Absence means JACCL;
+    /// only the single-Mac qualification socket can be declared instead.
+    static func admit(environment: [String: String]) throws -> Self {
+        guard let value = environment[CollectiveLocalSocket.environmentName] else { return .jaccl }
+        guard value == Self.localSocketTest.rawValue else {
+            throw ProbeError("Unknown \(CollectiveLocalSocket.environmentName); only \(Self.localSocketTest.rawValue) can be declared")
+        }
+        return .localSocketTest
+    }
+
+    /// Extra load-agreement fields. JACCL's agreement bytes are unchanged.
+    var loadAgreementFields: [String] {
+        self == .jaccl ? [] : ["qwen-resident-transport-v1", rawValue]
+    }
 }
 
 public final class Collective {
@@ -16,9 +34,10 @@ public final class Collective {
     public let transport: ClusterTransport
     private var tokenSequence: TokenSelectionSequence?
     private(set) var modelReductionCount = 0
+    private let localSocket: CollectiveLocalSocket?
 
     public var transportLabel: String { transport.rawValue }
-    public var correctnessOnly: Bool { transport == .loopbackTest }
+    public var correctnessOnly: Bool { transport != .jaccl }
 
     public static var jacclAvailable: Bool { mlx_distributed_is_available("jaccl") }
 
@@ -31,7 +50,10 @@ public final class Collective {
         // staged; only direct backend initialization remains. Adding the
         // bootstrap back requires the mlx-c pin decision recorded in the
         // handoff — never a local reimplementation.
-        self.transport = transport
+        guard transport != .localSocketTest else {
+            throw ProbeError("local-socket-test is created with its rank and loopback endpoint, not from a native backend")
+        }
+        self.transport = transport; localSocket = nil
         let expectedRank: Int? = try transport == .loopbackTest ? Self.validateLoopback() : nil
         guard mlx_distributed_is_available(transport.backend) else {
             throw ProbeError("Requested \(transport.rawValue) backend is unavailable; no fallback is allowed")
@@ -56,9 +78,20 @@ public final class Collective {
         }
     }
 
+    /// The single-Mac qualification group: two ranks, point-to-point only, over
+    /// a 127.0.0.1 socket. No native distributed backend is initialized.
+    init(localSocketRank rank: Int, coordinator: String, progressTimeoutMilliseconds: Int,
+         deadlineUptimeNanoseconds: UInt64) throws {
+        log("Using local-socket-test transport for correctness only; this is not RDMA and its timings are not pair timings")
+        localSocket = try CollectiveLocalSocket(rank: rank, coordinator: coordinator,
+            progressTimeoutMilliseconds: progressTimeoutMilliseconds, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
+        transport = .localSocketTest; self.rank = rank; size = 2
+    }
+
     deinit { mlx_distributed_group_free(handle) }
 
     func sum(_ input: MLXArray) -> MLXArray {
+        precondition(localSocket == nil, "local-socket-test carries point-to-point transfers only")
         // Control agreements and token selection are Int32. Count floating
         // model reductions separately to detect optimized-path hook bypasses.
         if [.float16, .bfloat16, .float32].contains(input.dtype) { modelReductionCount += 1 }
@@ -73,7 +106,11 @@ public final class Collective {
     public func sendCompleted(_ input: MLXArray, to peer: Int, maximumBytes: Int,
                        check: () throws -> Void) throws -> MLXArray {
         try withExtendedLifetime(self) {
-            try CollectivePointToPoint.send(input, peer: peer, group: handle,
+            if let localSocket {
+                guard peer == 1 - rank else { throw ProbeError("Point-to-point transfer requires the other rank of a two-rank group") }
+                return try localSocket.send(input, maximumBytes: maximumBytes, check: check)
+            }
+            return try CollectivePointToPoint.send(input, peer: peer, group: handle,
                 rank: rank, size: size, maximumBytes: maximumBytes, check: check)
         }
     }
@@ -83,7 +120,11 @@ public final class Collective {
     public func receiveCompleted(shape: [Int], dtype: DType, from peer: Int, maximumBytes: Int,
                           check: () throws -> Void) throws -> MLXArray {
         try withExtendedLifetime(self) {
-            try CollectivePointToPoint.receive(shape: shape, dtype: dtype, peer: peer,
+            if let localSocket {
+                guard peer == 1 - rank else { throw ProbeError("Point-to-point transfer requires the other rank of a two-rank group") }
+                return try localSocket.receive(shape: shape, dtype: dtype, maximumBytes: maximumBytes, check: check)
+            }
+            return try CollectivePointToPoint.receive(shape: shape, dtype: dtype, peer: peer,
                 group: handle, rank: rank, size: size, maximumBytes: maximumBytes, check: check)
         }
     }

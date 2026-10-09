@@ -31,6 +31,7 @@ task_catalog=(
   Support/WorkerJSONScanner
   Support/BoundedProbeInput
   Models/Qwen/Metadata/QwenLayerStageMetadata
+  Models/Qwen/Metadata/QwenRoutedExpertStageMetadata
   Models/Qwen/Metadata/QwenLayerStagePlan
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
   Models/Qwen/Metadata/QwenDenseProfileTypes

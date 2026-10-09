@@ -29,6 +29,7 @@ xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -parse-as-library -target
   "$R/Models/Qwen/Metadata/QwenRegistered9BContentInventory.swift" \
   "$R/Models/Qwen/Metadata/QwenRegisteredContentInventory.swift" \
   "$R/Models/Qwen/Metadata/QwenLayerStageMetadata.swift" \
+  "$R/Models/Qwen/Metadata/QwenRoutedExpertStageMetadata.swift" \
   "$R/Models/Qwen/Metadata/QwenLayerStagePlan.swift" \
   "$R/Models/Metadata/LayerStageTensorMetadata.swift" \
   "$R/Models/Metadata/LayerStageTensorContentInventory.swift" \

@@ -56,8 +56,9 @@ struct QwenLayerStagePlan {
             var root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any]
         else { throw ProbeError("Layer stages require bounded configuration and disabled active MTP") }
         let nested = root["text_config"] != nil
+        let wrappers = QwenRoutedExpertStageMetadata.wrapperModelTypes
         guard let type = root["model_type"] as? String,
-            ["qwen3_5", "qwen3_5_text"].contains(type), !nested || type == "qwen3_5",
+            (wrappers + ["qwen3_5_text"]).contains(type), !nested || wrappers.contains(type),
             !nested || root["text_config"] is [String: Any] else {
             throw ProbeError("Layer stages require a dense Qwen text model or its standard wrapper")
         }
@@ -79,7 +80,9 @@ struct QwenLayerStagePlan {
                 throw ProbeError("Layer policy disagrees with the public Qwen interval constructor")
             }
         }
-        let namespace = type == "qwen3_5" ? "language_model." : ""
+        let namespace = wrappers.contains(type) ? "language_model." : ""
+        // A routed-expert Plan is the routed-expert adapter's, and says so.
+        let routed = type == QwenRoutedExpertStageMetadata.rootModelType
         let inventory = QwenStageMetadata.moduleInventory(namespace: namespace, layerTypes: expectedTypes, text: text)
         let policy = try QwenStageMetadata.policy(root: root, modules: inventory.modules,
             inputWidths: inventory.inputWidths, namespace: namespace)
@@ -123,7 +126,8 @@ struct QwenLayerStagePlan {
             if nested { stageRoot["text_config"] = stageText } else { stageRoot = stageText }
             for key in policy.containerKeys { stageRoot[key] = mappedPolicy }
             let data = try QwenStageMetadata.json(stageRoot)
-            let identity: [String: Any] = ["adapter": "qwen35-dense-layer-stage-v1",
+            let identity: [String: Any] = [
+                "adapter": routed ? QwenRoutedExpertStageMetadata.stageAdapter : "qwen35-dense-layer-stage-v1",
                 "sourceConfigurationSHA256": sha256(configuration), "stage": index,
                 "sourceLayerStart": range.lowerBound, "sourceLayerEnd": range.upperBound,
                 "constructionConfigurationSHA256": sha256(data), "activeModuleRoots": active.sorted(),
@@ -139,7 +143,8 @@ struct QwenLayerStagePlan {
         self.namespace = namespace
         self.quantizablePaths = Set(inventory.inputWidths.keys); self.requiredParameterNames = inventory.required
         self.fingerprint = sha256(try QwenStageMetadata.json([
-            "adapter": "qwen35-dense-two-layer-stages-v1", "sourceConfigurationSHA256": sha256(configuration),
+            "adapter": routed ? QwenRoutedExpertStageMetadata.planAdapter : "qwen35-dense-two-layer-stages-v1",
+            "sourceConfigurationSHA256": sha256(configuration),
             "stages": stages.map(\.fingerprint)]))
     }
 

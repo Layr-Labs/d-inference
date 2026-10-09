@@ -94,6 +94,7 @@ given); **none** (no operation exists; gap-map row given).
 | `intent.running` | A session that is already serving | The live status endpoint, never a file | wired (observed at launch) |
 | `intent.desired` | "This cluster should be running" | — | none (nothing persists it; the console never starts a session by itself) |
 
-The console adds one file of its own, `~/.darkbloom/cluster-device/console.lock`:
-an empty lock held while a screen is open so a second screen refuses to open.
-It records no intent.
+The console adds one file of its own, `darkbloom-cluster-console.lock` in the
+user's own temporary directory: an empty lock held while a screen is open so a
+second screen refuses to open. It records no intent, and opening a screen
+writes nothing under the home directory.

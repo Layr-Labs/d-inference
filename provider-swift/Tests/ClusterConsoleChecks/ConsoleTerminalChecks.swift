@@ -297,15 +297,15 @@ extension ClusterConsoleCheck {
     }
 
     static func secondInstance() throws {
-        let paths = try ClusterUserPaths(homeDirectory: scratch.appendingPathComponent("instance-home"))
-        var first: ClusterConsoleInstanceLock? = try ClusterConsoleInstanceLock.acquire(paths: paths)
+        let directory = scratch.appendingPathComponent("instance")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        var first: ClusterConsoleInstanceLock? = try ClusterConsoleInstanceLock.acquire(directory: directory)
         expect(first != nil, "the first screen takes the lock")
         var information = stat()
-        let file = paths.deviceDirectory.appendingPathComponent("console.lock")
+        let file = directory.appendingPathComponent("darkbloom-cluster-console.lock")
         expect(lstat(file.path, &information) == 0 && information.st_mode & 0o777 == 0o600 && information.st_size == 0, "the lock is an empty owner-only file")
-        expect(lstat(paths.deviceDirectory.path, &information) == 0 && information.st_mode & 0o777 == 0o700, "in an owner-only directory")
         var refusal = ""
-        do { _ = try ClusterConsoleInstanceLock.acquire(paths: paths) } catch { refusal = String(describing: error) }
+        do { _ = try ClusterConsoleInstanceLock.acquire(directory: directory) } catch { refusal = String(describing: error) }
         expect(refusal.contains("Another `darkbloom cluster` screen is open") && refusal.contains("--plain"),
             "a second screen is refused and told what it can do instead: \(refusal)")
         // Another process is refused the same way: the lock is the kernel's, not this process's.
@@ -315,17 +315,29 @@ extension ClusterConsoleCheck {
         try probe.run(); probe.waitUntilExit()
         expect(probe.terminationStatus != 0, "another process cannot take the lock while a screen holds it")
         first = nil
-        let again = try ClusterConsoleInstanceLock.acquire(paths: paths)
+        let again = try ClusterConsoleInstanceLock.acquire(directory: directory)
         withExtendedLifetime(again) {}
         expect(lstat(file.path, &information) == 0 && information.st_size == 0, "a closed screen releases the lock and leaves it empty")
 
+        // The real lock lives in the user's own temporary directory, not in the home directory.
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        expect(confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, buffer.count) > 0, "the user temporary directory is known")
+
         // A lock file that is not what the console would have made is refused, not replaced.
-        let loose = try ClusterUserPaths(homeDirectory: scratch.appendingPathComponent("loose-home"))
-        try FileManager.default.createDirectory(at: loose.deviceDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try Data().write(to: loose.deviceDirectory.appendingPathComponent("console.lock"))
-        chmod(loose.deviceDirectory.appendingPathComponent("console.lock").path, 0o644)
+        let loose = scratch.appendingPathComponent("instance-loose")
+        try FileManager.default.createDirectory(at: loose, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try Data().write(to: loose.appendingPathComponent("darkbloom-cluster-console.lock"))
+        chmod(loose.appendingPathComponent("darkbloom-cluster-console.lock").path, 0o644)
         var unsafe = ""
-        do { _ = try ClusterConsoleInstanceLock.acquire(paths: loose) } catch { unsafe = String(describing: error) }
+        do { _ = try ClusterConsoleInstanceLock.acquire(directory: loose) } catch { unsafe = String(describing: error) }
         expect(unsafe.contains("owner-only"), "a lock file others can read is refused: \(unsafe)")
+        // A directory others can write to is not trusted to hold the lock.
+        let shared = scratch.appendingPathComponent("instance-shared")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: false)
+        chmod(shared.path, 0o777)
+        var foreign = ""
+        do { _ = try ClusterConsoleInstanceLock.acquire(directory: shared) } catch { foreign = String(describing: error) }
+        expect(foreign.contains("not this user's own") && !FileManager.default.fileExists(atPath: shared.appendingPathComponent("darkbloom-cluster-console.lock").path),
+            "a directory others can write to is refused and nothing is created in it: \(foreign)")
     }
 }

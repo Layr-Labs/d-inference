@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -1151,8 +1151,13 @@ appended to the persisted `GateReason` enum in
 `warmplan` cold reasons. A verified pair is a bilateral, time-boxed hold:
 preparation and commit require both members' current identity, attestation
 and release evidence; disconnect, trust loss, release-policy generation
-changes or capability loss quarantine the hold, and only both original
-owners' cleanup observations release it. The public control shapes live in
+changes or capability loss quarantine the hold. Both original owners' cleanup
+observations release it; once every member has delivered its observation or
+its original connection is gone, the hold is released 40 seconds after the
+fixed membership expiry. A member that is still connected and owes its
+observation is never released by time alone
+(`releaseAbandonedQuarantineLocked`,
+`coordinator/registry/verified_pair_lifecycle.go`). The public control shapes live in
 [cluster-control-protocol.md](../reference/cluster-control-protocol.md);
 the catalog stays empty, so the lifecycle is inert until an explicitly
 approved native runtime catalog is configured.

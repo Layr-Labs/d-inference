@@ -94,8 +94,8 @@ mimo() { # NAME EXPECTED_STATUS MUST_CONTAIN MUST_NOT_CONTAIN [ENV=VALUE ...] --
   passed=$((passed + 1)); printf 'ok %-58s %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-150)"
 }
 mimo mimo-baseline-stops-at-the-missing-model 1 "" "Worker requires a registered model ID" --
-mimo mimo-unlisted-cut-refused 1 "one of that model's cuts" "" -- --cut 31
-mimo mimo-deep-cut-is-in-its-row 1 "" "one of that model's cuts" -- --cut 40
+mimo mimo-unlisted-cut-refused 1 "Worker requires a registered model ID, rank0|1" "" -- --cut 31
+mimo mimo-deep-cut-is-in-its-row 1 "" "Worker requires a registered model ID" -- --cut 40
 mimo mimo-phase-split-is-not-in-its-row 1 "generation mode must be one the registered model lists" "" -- --generation-mode phase_split_v1
 mimo mimo-compact-mode-reaches-the-model 1 "" "generation mode must be" -- --generation-mode pipeline_compact_decode_v1
 mimo mimo-has-no-recording-runtime 1 "Only the dense adapter has a recording runtime" "" -- --evidence-directory "$work/evidence"

@@ -131,7 +131,8 @@ struct MiMoStagePipelineEquivalenceTests {
         return rows
     }
 
-    @Test(arguments: ["float32", "bfloat16"])
+    // bfloat16 only: the Plan admits no other activation dtype, as the registered model has none.
+    @Test(arguments: ["bfloat16"])
     func everyCutReproducesTheWholeModel(dtypeName: String) throws {
         let dtype: DType = dtypeName == "float32" ? .float32 : .bfloat16
         let data = Self.configuration(dtype: dtypeName)

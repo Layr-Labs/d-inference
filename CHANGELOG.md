@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - SSD cache write budget
+
+- Raise the provider's default SSD prefix-cache write budget from 750 GB/day to 5 TB/day (5,000 decimal GB/day). Saved `cache.daily_write_gb` settings and `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides still take precedence.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

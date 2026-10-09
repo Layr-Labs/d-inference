@@ -7,7 +7,7 @@ struct CacheSettingsTests {
     @Test func legacyConfigurationKeepsDefaults() throws {
         let config = try ConfigManager.parseValidating("[provider]\nname = \"cache-test\"\n")
         #expect(config.cache == CacheSettings())
-        #expect(CacheStorage.dailyWriteBytes(settings: config.cache, environment: [:]) == 750_000_000_000)
+        #expect(CacheStorage.dailyWriteBytes(settings: config.cache, environment: [:]) == 5_000_000_000_000)
     }
 
     @Test func roundTripPreservesDirectoryPinAndOtherSettings() throws {

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1485,8 +1485,9 @@ routing also requires the separate live capability described in
 once in [`reference/configuration.md`](../reference/configuration.md).
 
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides the compiled SSD
-write budget when `[cache].daily_write_gb` is absent. A saved daily choice wins
-over the environment, so `darkbloom cache set` also works with an older plist.
+write budget in decimal GB/day (`0` means unlimited) when `[cache].daily_write_gb`
+is absent. A saved daily choice wins over the environment, so `darkbloom cache set`
+also works with an older plist.
 It and `DARKBLOOM_PREFIX_CACHE_DISK_GB` are also forwarded when
 `darkbloom start` installs the launchd job. An ordinary `darkbloom restart` reuses
 the saved plist and does not import newly exported shell variables; stop and

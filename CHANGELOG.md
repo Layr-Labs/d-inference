@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — provider build environment
+
+- A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.
+- The LaunchAgent now forwards `DARKBLOOM_R2_CDN_URL` to the daemon. `darkbloom doctor` prints the build environment, the coordinator and the model CDN. `runtime-smoke` prints a `build-environment-runtime-smoke` line first.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

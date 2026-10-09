@@ -542,6 +542,18 @@ without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
 
+The `build-provider` job sets `DARKBLOOM_RELEASE_ENVIRONMENT` to the release
+environment. When the value is `dev`, `provider-swift/Package.swift` compiles
+`ProviderCore` with `DARKBLOOM_ENV_DEV`, and the binary defaults to
+`wss://api.dev.darkbloom.dev/ws/provider` and the model CDN
+`https://models.darkbloom.ai` (`BuildEnvironment.swift`). Every other build,
+including local builds, tests and `qualify-sdk`, uses the production defaults.
+`provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override them. The
+signing and notarization steps require the
+`build-environment-runtime-smoke: <environment>` line from `runtime-smoke`.
+The release cache key includes the variable, so dev and prod builds do not share
+cached products.
+
 Dev and production builds carry the same version string. A Mac reaches the dev
 release only through the dev installer
 (`curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash`), which writes

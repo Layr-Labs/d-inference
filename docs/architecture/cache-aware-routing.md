@@ -1251,3 +1251,15 @@ Provider-local complete-checkpoint capacity eviction has an independent,
 opt-in [measured retention policy](prefix-cache.md#measured-complete-checkpoint-retention).
 Its volatile utility scores do not enter holder proofs, routing discounts or
 heartbeat schemas. An evicted holder still produces the ordinary miss path.
+
+
+### Native storage composition boundary
+
+Shared native historical checkpoints can use the optional lossless stream codec
+and measured retention together. Logical transfer/native admission remains
+separate from unique retained and marginal reclaimable disk bytes. Actual
+framed writes are charged once; linked payloads are uncharged. Complete graph
+and indexed-generation validation still precede adoption benefit credit.
+The affine INT4 opaque-role checkpoint layout does not provide authenticated
+stable token-page topology to this sharing layer, so native sharing receipts
+cannot establish combined INT4 deduplication savings.

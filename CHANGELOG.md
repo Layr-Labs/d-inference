@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — native checkpoint storage composition
+
+- Let shared Gemma/GPT-OSS native checkpoint pages use opt-in lossless compression, charge actual new encrypted bytes, and rank opt-in measured retention by marginal bytes reclaimed after shared links retire. Reprice each retirement and preserve complete graph/generation checks. The affine INT4 opaque-role layout remains outside the stable-page sharing gate.
+
 ## Unreleased — Lossless SSD checkpoint compression
 
 - Add an optional native LZ4/byte-plane codec for complete checkpoints, excluding MiMo, with bit-exact restoration, bounded decoding and charging of actual encrypted writes. It defaults off while length-leakage and model-data performance qualification remain separate gates.

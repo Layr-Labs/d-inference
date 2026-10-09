@@ -178,36 +178,36 @@ final class SSDBlockIndex: @unchecked Sendable {
         }
     }
 
-    func retentionPriority(tag16: Data, now: Int64) -> SSDEvictionPriority? {
+    func retentionPriority(tag16: Data, now: Int64, reclaimableBytes: Int? = nil) -> SSDEvictionPriority? {
         lock.withLock {
             guard let entry = entries[tag16] else { return nil }
-            return retentionPriority(tag: tag16, entry: entry, now: now)
+            return retentionPriority(tag: tag16, entry: entry, now: now, reclaimableBytes: reclaimableBytes)
         }
     }
 
-    func lowestRetentionPriority(now: Int64) -> SSDEvictionPriority? {
+    func lowestRetentionPriority(now: Int64, reclaimableBytes: ((Data) -> Int?)? = nil) -> SSDEvictionPriority? {
         lock.withLock {
             var lowest: SSDEvictionPriority?
             for (tag, entry) in entries {
-                let candidate = retentionPriority(tag: tag, entry: entry, now: now)
+                let candidate = retentionPriority(tag: tag, entry: entry, now: now, reclaimableBytes: reclaimableBytes?(tag))
                 if lowest.map({ candidate < $0 }) ?? true { lowest = candidate }
             }
             return lowest
         }
     }
 
-    func retentionEntries(now: Int64) -> [(tag16: Data, priority: SSDEvictionPriority)] {
+    func retentionEntries(now: Int64, reclaimableBytes: ((Data) -> Int?)? = nil) -> [(tag16: Data, priority: SSDEvictionPriority)] {
         lock.withLock {
             entries.map { tag, entry in
-                (tag, retentionPriority(tag: tag, entry: entry, now: now))
+                (tag, retentionPriority(tag: tag, entry: entry, now: now, reclaimableBytes: reclaimableBytes?(tag)))
             }.sorted { $0.priority < $1.priority }
         }
     }
 
-    private func retentionPriority(tag: Data, entry: Entry, now: Int64) -> SSDEvictionPriority {
-        .init(probationary: entry.retention.isProbationary(writtenAt: entry.writtenAt, now: now),
-            savedMillisPerByte: entry.fileBytes > 0
-                ? entry.retention.value(now: now) / Double(entry.fileBytes) : 0,
+    private func retentionPriority(tag: Data, entry: Entry, now: Int64, reclaimableBytes: Int? = nil) -> SSDEvictionPriority {
+        let bytes = reclaimableBytes.map { max(1, $0) } ?? entry.fileBytes
+        return .init(probationary: entry.retention.isProbationary(writtenAt: entry.writtenAt, now: now),
+            savedMillisPerByte: bytes > 0 ? entry.retention.value(now: now) / Double(bytes) : 0,
             lastAccess: entry.lastAccess, tieBreak: tag.hexString)
     }
 

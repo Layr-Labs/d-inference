@@ -21,23 +21,28 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 .init(savedMillisPerByte: 0, lastAccess: $0, tieBreak: config.root.path)
             }
         }
-        guard let priority = index.lowestRetentionPriority(now: now) else { return nil }
+        guard let priority = index.lowestRetentionPriority(now: now, reclaimableBytes: marginalReclaimableBytes) else { return nil }
         return .init(probationary: priority.probationary, savedMillisPerByte: priority.savedMillisPerByte,
             lastAccess: priority.lastAccess, tieBreak: config.root.path + ":" + priority.tieBreak)
     }
 
     func evictLowestPriorityEntry(now: Int64) -> Int {
         guard config.utilityRetentionEnabled else { return evictOldestEntry() }
-        return evictEntries(index.retentionEntries(now: now).map(\.tag16))
+        return evictEntries(index.retentionEntries(now: now, reclaimableBytes: marginalReclaimableBytes).map(\.tag16))
     }
 
     func retentionPriorities(urls: [URL], now: Int64) -> [String: SSDEvictionPriority] {
         guard config.utilityRetentionEnabled else { return [:] }
         return Dictionary(uniqueKeysWithValues: urls.compactMap { url in
             guard let tag = SSDPrefixCache.hexDecode(url.deletingPathExtension().lastPathComponent) else { return nil }
-            guard let priority = index.retentionPriority(tag16: tag, now: now) else { return nil }
+            guard let priority = index.retentionPriority(tag16: tag, now: now, reclaimableBytes: marginalReclaimableBytes(tag)) else { return nil }
             return (url.standardizedFileURL.path, priority)
         })
+    }
+
+    private func marginalReclaimableBytes(_ tag: Data) -> Int? {
+        sharedPageAccounting.marginalReclaimableBytes(checkpoint:
+            SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString))
     }
 
     private func evictEntries(_ tags: [Data]) -> Int {

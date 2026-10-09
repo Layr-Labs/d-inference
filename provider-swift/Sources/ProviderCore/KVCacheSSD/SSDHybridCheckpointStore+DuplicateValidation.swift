@@ -58,7 +58,7 @@ extension SSDHybridCheckpointStore {
                     if sharedHeader {
                         guard metadata == SSDSharedCheckpointPages.manifestMetadata(bytes: bytes.count,
                             tag: job.tag, identity: self.identity, layout: self.config.backendLayout,
-                            createdAt: metadata.createdAt) else {
+                            createdAt: metadata.createdAt, chunkCodec: metadata.chunkCodec) else {
                             throw CBv2CompleteCheckpointError.incompatibleCheckpoint
                         }
                         return

@@ -209,15 +209,20 @@ struct SSDSharedCheckpointPageTests {
             nextObjects.contains($0.physicalIdentity)
         })
         let original = store.diskBytesOnDisk
+        let firstMargin = try #require(store.sharedPageAccounting.marginalReclaimableBytes(checkpoint: first))
+        let secondMargin = try #require(store.sharedPageAccounting.marginalReclaimableBytes(checkpoint: second))
         let handle = try FileHandle(forWritingTo: shared.url)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(count: 4096))
         try handle.close()
         store.reconcileExternalRemovals()
         #expect(store.diskBytesOnDisk == original + 4096)
+        #expect(store.sharedPageAccounting.marginalReclaimableBytes(checkpoint: first) == firstMargin)
+        #expect(store.sharedPageAccounting.marginalReclaimableBytes(checkpoint: second) == secondMargin)
         #expect(store.diskBytesOnDisk == SSDCheckpointPageFiles.physicalBytes(checkpoints: [first, second]))
         _ = store.retireOwnedEntries([first])
         #expect(store.diskBytesOnDisk == SSDCheckpointPageFiles.physicalBytes(checkpoints: [second]))
+        #expect(store.sharedPageAccounting.marginalReclaimableBytes(checkpoint: second) == store.diskBytesOnDisk)
         await store.closeAndWait()
     }
 
@@ -358,18 +363,21 @@ private final class HistoricalPageFixture: @unchecked Sendable {
             kvDTypes: [.float32, .float32], assistant: nil, admission: admission, pagedConfig: config)
     }
 
-    func makeStore(diskBudget: SSDDiskBudget = SSDDiskBudget(), modelID: String = "gpt-oss-20b") throws -> SSDHybridCheckpointStore {
+    func makeStore(diskBudget: SSDDiskBudget = SSDDiskBudget(), modelID: String = "gpt-oss-20b",
+                   losslessCompression: Bool = false, utilityRetention: Bool = false,
+                   maxWriteBytesPerDay: Int = 1 << 30) throws -> SSDHybridCheckpointStore {
         let layout = CBv2CompleteCheckpointManifest.historicalAttentionLayout
         let epoch = try SSDCacheEpochStore(root: modelRoot, binding: .init(modelId: modelID,
             modelAggregateHash: identity.modelAggregateHash, promptContractId: identity.promptContractID,
             blockHashVersion: CBv2BlockHasher.version, blockSize: PrefixCachePolicy.blockSize,
             layoutEpoch: SSDHybridCheckpointEnvelope.layoutEpoch(identity: identity, backendLayout: layout), keyFingerprint: "page-key"))
         let store = SSDHybridCheckpointStore(config: .init(modelId: modelID, identity: identity,
-            backendLayout: layout, root: modelRoot, dedicatedRoot: root, epochStore: epoch,
+            backendLayout: layout, losslessCompression: losslessCompression,
+            root: modelRoot, dedicatedRoot: root, epochStore: epoch,
             maxReadBytes: 16 << 20, maxStageMillis: 10000, minEffectiveTokens: 1024, ttlSeconds: 3600,
             strictFsync: true, nowSeconds: { Int64(Date().timeIntervalSince1970) },
-            diskBudgetBytes: { 1 << 30 }, maintainWholeRoot: {}), kekKey: key, kvBudget: budget,
-            diskBudget: diskBudget, maxWriteBytesPerDay: 1 << 30)
+            diskBudgetBytes: { 1 << 30 }, maintainWholeRoot: {}, utilityRetentionEnabled: utilityRetention), kekKey: key, kvBudget: budget,
+            diskBudget: diskBudget, maxWriteBytesPerDay: maxWriteBytesPerDay)
         store.scanOnDisk()
         return store
     }
@@ -430,4 +438,139 @@ private final class HistoricalPageFixture: @unchecked Sendable {
             })
     }
     func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+
+@Suite("Compressed shared checkpoint composition", .serialized)
+struct SSDCompressedSharedCheckpointTests {
+    @Test("compressed page graph restores and reopens with exact native bytes")
+    func compressedGraph() async throws {
+        let fixture = try HistoricalPageFixture(window: 128)
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(losslessCompression: true, utilityRetention: true)
+        for position in [1024, 2048] {
+            #expect(try await fixture.donate(store, position: position) == [position])
+            try fixture.verify(store, position: position)
+            let metadata = try SSDBlockStore.readMetadataOnly(from: fixture.file(store, position: position))
+            #expect(metadata.chunkCodec == SSDLosslessChunkCodec.identity)
+            for page in SSDCheckpointPageFiles.files(for: fixture.file(store, position: position)) {
+                #expect(try SSDBlockStore.readMetadataOnly(from: page.url).chunkCodec == SSDLosslessChunkCodec.identity)
+            }
+        }
+        #expect(store.stats().bytesWritten == store.diskBytesOnDisk)
+        await store.closeAndWait()
+        let reopened = try fixture.makeStore(losslessCompression: true, utilityRetention: true)
+        try fixture.verify(reopened, position: 2048)
+        let request = fixture.request()
+        let stage = await reopened.stage(requestID: .init(901), request: request,
+            reserveReadScratch: fixture.reserveScratch) { try fixture.codec.plan(manifest: $0, request: request) }
+        #expect(stage.staged)
+        let receipt = try #require(reopened.makeRetentionReceipt(requestID: .init(901),
+            stageMillis: 1, prefillTokensPerSecond: 1000))
+        let restored = try #require(reopened.takeStaged(requestID: .init(901), tokens: fixture.tokens,
+            cacheSalt: "scope-a", maximumSequenceLength: fixture.tokens.count + request.maxTokens))
+        receipt.complete(.init(promptTokens: fixture.tokens.count, completionTokens: 0,
+            prefixCacheOutcome: .hit, prefixCacheTier: .snapshot,
+            prefixCacheMatchedTokens: 2048, prefixCachePrefillTokensSaved: 2048))
+        #expect(reopened.stats().retentionAdoptions == 1)
+        restored.close()
+        await reopened.closeAndWait()
+    }
+
+    @Test("legacy raw page graphs are read without rewriting when compression is enabled")
+    func existingRawGraph() async throws {
+        let fixture = try HistoricalPageFixture(window: 128)
+        defer { fixture.remove() }
+        let raw = try fixture.makeStore()
+        #expect(try await fixture.donate(raw, position: 1024) == [1024])
+        await raw.closeAndWait()
+        let compressed = try fixture.makeStore(losslessCompression: true)
+        #expect(try await fixture.donate(compressed, position: 1024, receipt: 333) == [1024])
+        try fixture.verify(compressed, position: 1024)
+        #expect(compressed.stats().bytesWritten == 0)
+        #expect(try SSDBlockStore.readMetadataOnly(from: fixture.file(compressed, position: 1024)).chunkCodec == nil)
+        await compressed.closeAndWait()
+    }
+
+    @Test("write cap pays actual encoded files and leaves authenticated links uncharged")
+    func encodedWriteCap() async throws {
+        let fixture = try HistoricalPageFixture(window: 128)
+        defer { fixture.remove() }
+        let first = try fixture.source(position: 1024)
+        let native = try first.manifest.validateStructure()
+        first.close()
+        let cap = native / 2
+        let store = try fixture.makeStore(losslessCompression: true, maxWriteBytesPerDay: cap)
+        #expect(try await fixture.donate(store, position: 1024) == [1024])
+        #expect(try await fixture.donate(store, position: 2048) == [2048])
+        #expect(store.stats().bytesWritten < cap)
+        #expect(store.stats().bytesWritten == SSDCheckpointPageFiles.physicalBytes(checkpoints:
+            [1024, 2048].map { fixture.file(store, position: $0) }))
+        try fixture.verify(store, position: 2048)
+        await store.closeAndWait()
+    }
+
+    @Test("whole-root utility reprices marginal page bytes after every retirement")
+    func marginalUtility() async throws {
+        try await Device.withDefaultDevice(.cpu) {
+            let fixture = try HistoricalPageFixture(window: 128)
+            defer { fixture.remove() }
+            let store = try fixture.makeStore(diskBudget: .shared,
+                losslessCompression: true, utilityRetention: true)
+            #expect(try await fixture.donate(store, position: 1024) == [1024])
+            #expect(try await fixture.donate(store, position: 2048) == [2048])
+            #expect(try await fixture.donate(store, position: 3072, receipt: 444) == [3072])
+            let files = [1024, 2048, 3072].map { fixture.file(store, position: $0) }
+            // Independent oracle: actual filesystem link counts identify bytes
+            // freed by deleting this endpoint; no accounting/index score is read.
+            let costs = try files.map { endpoint -> (marginal: Int, logical: Int) in
+                let links = [endpoint] + SSDCheckpointPageFiles.files(for: endpoint).map(\.url)
+                var marginal = 0, logical = 0
+                for link in links {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: link.path)
+                    let bytes = try #require(attributes[.size] as? NSNumber).intValue
+                    let references = try #require(attributes[.referenceCount] as? NSNumber).intValue
+                    logical += bytes
+                    if references == 1 { marginal += bytes }
+                }
+                return (marginal, logical)
+            }
+            let margins = costs.map(\.marginal)
+            let logical = costs.map(\.logical)
+            for (file, cost) in zip(files, costs) {
+                #expect(store.sharedPageAccounting.marginalReclaimableBytes(checkpoint: file) == cost.marginal)
+            }
+            #expect(margins[0] < logical[0])
+            let scale = 1000 / Double(margins[2])
+            // Choose C strictly between A's density while its prefix is shared
+            // and A's density once it owns the whole prefix. Compression changes
+            // these sizes, so a fixed numerical threshold would not prove repricing.
+            let finalAFactor = 2 * Double(margins[0]) / Double(logical[0])
+            let independentFactor = (2 + finalAFactor) / 2
+            let benefits = [Double(margins[0]) * scale * 2, Double(margins[1]) * scale,
+                            Double(margins[2]) * scale * independentFactor]
+            #expect(finalAFactor < independentFactor && independentFactor < 2)
+            let now = store.config.nowSeconds() + 60
+            for (position, benefit) in zip([1024, 2048, 3072], benefits) {
+                let tag = Data(fixture.tag(store, position: position).prefix(16))
+                let generation = try #require(store.index.retentionGeneration(tag16: tag))
+                #expect(store.index.creditRetention(tag16: tag, generation: generation,
+                    savedMillis: benefit, now: now))
+            }
+            // Logical-byte ranking would pick the shallow checkpoint first;
+            // marginal ownership retains it while another endpoint owns its prefix.
+            #expect(benefits[0] / Double(logical[0]) < benefits[1] / Double(logical[1]))
+            let first = try #require(store.evictionPriority(now: now))
+            #expect(first.tieBreak.hasSuffix(Data(fixture.tag(store, position: 2048).prefix(16)).hexString))
+            let remaining = costs[2].logical
+            let result = SSDWholeRootMaintainer().maintain(root: fixture.root, ttlSeconds: 0,
+                nowSeconds: now, budgetBytes: remaining)
+            #expect(result.budgetEvicted == 2)
+            #expect(result.bytesAfter == remaining)
+            #expect(SSDBlockStore.indexedBlockFileStatus(at: files[0], under: fixture.modelRoot) == .missing)
+            #expect(SSDBlockStore.indexedBlockFileStatus(at: files[1], under: fixture.modelRoot) == .missing)
+            try fixture.verify(store, position: 3072)
+            await store.closeAndWait()
+        }
+    }
 }

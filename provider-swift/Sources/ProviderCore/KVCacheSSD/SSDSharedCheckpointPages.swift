@@ -83,17 +83,17 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
     }
 
     static func manifestMetadata(bytes: Int, tag: Data, identity: CBv2CompleteCheckpointIdentity,
-                                 layout: String, createdAt: Int64) -> SSDBlockMetadata {
+                                 layout: String, createdAt: Int64, chunkCodec: String? = nil) -> SSDBlockMetadata {
         .init(lookupTag: tag.hexString, weightHash: identity.modelAggregateHash,
             layoutEpoch: SSDHybridCheckpointEnvelope.layoutEpoch(identity: identity, backendLayout: layout),
             blockSize: PrefixCachePolicy.blockSize, layerCount: 1,
             chunks: [.init(layerIndex: 0, tensor: 0, shape: [bytes], dtype: "uint8")],
             chunkPlaintextSizes: [bytes], createdAt: createdAt,
-            windowKind: SSDCheckpointPageFiles.manifestKind)
+            windowKind: SSDCheckpointPageFiles.manifestKind, chunkCodec: chunkCodec)
     }
 
     private static func pageMetadata(reference: Reference, identity: CBv2CompleteCheckpointIdentity,
-                                     layout: String) -> SSDBlockMetadata {
+                                     layout: String, chunkCodec: String? = nil) -> SSDBlockMetadata {
         // Page identity is a keyed, execution-scoped value. Tensor roles,
         // token positions, plaintext hash and cacheSalt stay in the endpoint.
         .init(lookupTag: reference.id, weightHash: identity.modelAggregateHash,
@@ -101,16 +101,17 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
             blockSize: PrefixCachePolicy.blockSize, layerCount: 1,
             chunks: [.init(layerIndex: 0, tensor: 0, shape: [reference.bytes], dtype: "uint8")],
             chunkPlaintextSizes: [reference.bytes], createdAt: 0,
-            windowKind: SSDCheckpointPageFiles.pageKind)
+            windowKind: SSDCheckpointPageFiles.pageKind, chunkCodec: chunkCodec)
     }
 
     func write(source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID,
                checkpoint: URL, tag: Data, key: SymmetricKey, strictFsync: Bool,
-               createdAt: Int64, maximumPlaintextBytes: Int,
+               createdAt: Int64, maximumPlaintextBytes: Int, losslessCompression: Bool = false,
                check: () throws -> Void, charge: (Int) throws -> Void,
                countRead: (Int) -> Void) throws -> Written {
         let manifest = source.manifest
         let geometry = try SSDCheckpointPageGeometry.pages(manifest)
+        let codec = losslessCompression ? SSDLosslessChunkCodec.identity : nil
         let lookupKeys = SSDLookupKeys(kek: key)
         try SSDNoFollowIO.prepareDirectory(SSDCheckpointPageFiles.directory(for: checkpoint))
         var published = false
@@ -148,7 +149,7 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
                                       offset: page.offset, bytes: page.bytes)
             let target = SSDCheckpointPageFiles.pageURL(checkpoint: checkpoint, id: id)
             let metadata = Self.pageMetadata(reference: reference, identity: manifest.identity,
-                                             layout: manifest.backendLayout)
+                                             layout: manifest.backendLayout, chunkCodec: codec)
             var linked = false
             var authenticated: SSDAuthenticatedFileIdentity?
             if let previous = lock.withLock({ links[id] }), previous != target {
@@ -175,11 +176,12 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
                 }
                 written = file.bytes
             } else {
-                let estimate = try SSDBlockStore.serializedByteCount(metadata: metadata)
-                try charge(estimate)
                 written = try SSDBlockStore.writeStreaming(to: target, metadata: metadata, kekKey: key,
                     maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-                    strictFsync: strictFsync, chunk: { _ in try check(); return bytes })
+                    strictFsync: strictFsync, elementBytes: { _ in
+                        let width = manifest.tensors[page.tensor].dtype.mlxDType.size
+                        return [2, 4].contains(width) ? width : 1
+                    }, beforeBytesWrite: charge, chunk: { _ in try check(); return bytes })
                 authenticated = try Self.readPage(at: target, reference: reference, key: key,
                     identity: manifest.identity, layout: manifest.backendLayout,
                     check: check, countRead: countRead, consume: { _ in })
@@ -197,13 +199,12 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
             throw CBv2CompleteCheckpointError.invalidManifest
         }
         let metadata = Self.manifestMetadata(bytes: encoded.count, tag: tag, identity: manifest.identity,
-                                            layout: manifest.backendLayout, createdAt: createdAt)
-        try charge(SSDBlockStore.serializedByteCount(metadata: metadata))
+                                            layout: manifest.backendLayout, createdAt: createdAt, chunkCodec: codec)
         if strictFsync { try SSDCheckpointPageFiles.synchronizeDirectories(for: checkpoint) }
         try Self.requireUnchanged(authenticatedPages)
         let written = try SSDBlockStore.writeStreaming(to: checkpoint, metadata: metadata, kekKey: key,
             maximumChunkBytes: Self.maximumManifestBytes, strictFsync: strictFsync,
-            chunk: { _ in try check(); return encoded })
+            beforeBytesWrite: charge, chunk: { _ in try check(); return encoded })
         if strictFsync { try SSDCheckpointPageFiles.synchronize(checkpoint.deletingLastPathComponent()) }
         try Self.requireUnchanged(authenticatedPages)
         try check()
@@ -233,7 +234,6 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
                          identity: CBv2CompleteCheckpointIdentity, layout: String,
                          check: () throws -> Void, beforeRead: ((Int) throws -> Void)? = nil,
                          countRead: (Int) -> Void, consume: (Data) throws -> Void) throws -> SSDAuthenticatedFileIdentity {
-        let expected = pageMetadata(reference: reference, identity: identity, layout: layout)
         var chunks = 0
         var authenticated: SSDAuthenticatedFileIdentity?
         try SSDBlockStore.readStreaming(from: url, kekKey: key,
@@ -242,7 +242,8 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
             maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60, requireEOF: true,
             checkCancellation: check, beforeRead: beforeRead, onBytesRead: countRead,
             onAuthenticatedFile: { authenticated = $0 }, validateMetadata: { metadata in
-                guard metadata == expected else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
+                guard metadata == pageMetadata(reference: reference, identity: identity,
+                    layout: layout, chunkCodec: metadata.chunkCodec) else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
             }, consumeChunk: { index, bytes in
                 guard index == 0, bytes.count == reference.bytes,
                     Data(SHA256.hash(data: bytes)).hexString == reference.hash else {
@@ -279,7 +280,7 @@ final class SSDSharedCheckpointPages: @unchecked Sendable {
             validateMetadata: { metadata in
                 guard metadata == manifestMetadata(bytes: encoded.count, tag: tag,
                     identity: envelope.manifest.identity, layout: envelope.manifest.backendLayout,
-                    createdAt: metadata.createdAt) else {
+                    createdAt: metadata.createdAt, chunkCodec: metadata.chunkCodec) else {
                     throw CBv2CompleteCheckpointError.incompatibleCheckpoint
                 }
             }, consumeChunk: { index, bytes in

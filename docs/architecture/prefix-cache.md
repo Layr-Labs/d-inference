@@ -439,7 +439,7 @@ IDs cannot credit a successor (`SSDCheckpointRetentionReceipt`,
 
 Each index entry holds the decayed sum of observed successful reuse benefit:
 `max(0, saved_tokens / cold_prefill_tokens_per_second - actual_stage_seconds)`.
-Capacity eviction removes the lowest sum per encoded file byte, with LRU and
+Capacity eviction removes the lowest sum per reclaimable encoded byte, with LRU and
 opaque tag order as ties. The sum has a five-minute half-life; it is empirical
 utility, not a hit-probability estimate. New uncredited files receive 30 seconds
 of probation so prior hits do not immediately exclude new demand. Probation
@@ -448,10 +448,14 @@ always runs first. Metadata is bounded by the existing index, kept only in RAM,
 and discarded on replacement, removal, restart or unload
 (`SSDCheckpointRetentionValue`, `SSDBlockIndex.retentionEntries`).
 
-The physical denominator currently applies to independently encoded `.dbk3`
-files. Combining this policy with shared-page manifests requires marginal
-unique-inode retirement accounting; logical restore bytes are not an eviction
-savings estimate. Unloaded roots have no retained utility history and use LRU.
+An independent `.dbk3` file's denominator is its encoded size. Logical restore
+bytes are not an eviction savings estimate for shared pages: their denominator is the
+checkpoint's marginal reclaimable bytes: its unique manifest and pages whose
+last retained endpoint link would retire. `SSDCheckpointPageAccounting` reads
+cached inode reference counts without filesystem work on the ranking path.
+Removing a sibling changes marginal ownership, so active-store and whole-root
+selection reprice after each retirement. Unloaded roots have no retained utility
+history and use LRU.
 The policy stays off by default pending measured demand traces and contention
 qualification. A synthetic encrypted-I/O fixture verifies useful old-prefix
 retention against LRU under the same cap; it is not a fleet hit-rate result.
@@ -504,6 +508,14 @@ Newly encoded pages are authenticated too, and all page file identities are
 rechecked around manifest publication. Windows share only equal absolute token ranges
 and equal bytes: Gemma's 1,024-token windows and GPT-OSS's 128-token windows at
 checkpoints 1,024 tokens apart do not overlap.
+
+With `DARKBLOOM_PREFIX_CACHE_SSD_COMPRESSION=lz4`, page payloads and reference
+manifests use the authenticated lossless frame codec. KV byte planes use their
+native element width; opaque/unsupported widths use raw byte planes. Each
+actual new encrypted header and chunk is charged before its write, while an
+authenticated link charges no repeated payload. Raw and framed graphs restore
+through the same bounded native manifest and page hash checks
+(`SSDSharedCheckpointPages.write`, `SSDSharedCheckpointPages.read`).
 
 The encrypted endpoint binds every ordered page ID, digest, tensor offset and
 length. Staging authenticates that endpoint and every referenced page, checks

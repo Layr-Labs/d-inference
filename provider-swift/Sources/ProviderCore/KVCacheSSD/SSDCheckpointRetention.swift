@@ -1,7 +1,7 @@
 import Foundation
 import MLXLMCommon
 
-/// Least measured benefit per stored byte is evicted first; evidence-free
+/// Least measured benefit per reclaimable byte is evicted first; evidence-free
 /// entries preserve deterministic LRU order. No score extends sliding TTL.
 struct SSDEvictionPriority: Comparable, Sendable {
     var probationary = false

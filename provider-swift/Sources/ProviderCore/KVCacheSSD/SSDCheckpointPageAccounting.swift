@@ -58,6 +58,22 @@ final class SSDCheckpointPageAccounting: @unchecked Sendable {
         }
     }
 
+    /// Bytes uniquely owned by this retained endpoint. Shared objects become
+    /// reclaimable only after their other indexed endpoint links retire.
+    /// Ranking reads cached metadata only; it never stats or decrypts files.
+    func marginalReclaimableBytes(checkpoint: URL) -> Int? {
+        let path = SSDCheckpointFileCoordinator.pathKey(for: checkpoint)
+        return lock.withLock {
+            guard let entry = entries[path] else { return nil }
+            var ownReferences: [Object: Int] = [:]
+            for object in entry.objects { ownReferences[object, default: 0] += 1 }
+            return ownReferences.reduce(0) { bytes, item in
+                guard let held = objects[item.key], held.references == item.value else { return bytes }
+                return SSDCheckpointPageFiles.saturatingAdd(bytes, held.bytes)
+            }
+        }
+    }
+
     func remove(checkpoint: URL) {
         let path = SSDCheckpointFileCoordinator.pathKey(for: checkpoint)
         lock.withLock { removeLocked(path) }

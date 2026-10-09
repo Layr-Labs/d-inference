@@ -218,10 +218,6 @@ extension SSDHybridCheckpointStore {
         }
     }
 
-    private struct SharedPageWriteRefusal: Error {
-        let outcome: PrefixCacheDonationOutcome
-    }
-
     private struct WriteResult {
         var positions: [Int] = []
         var outcome: PrefixCacheDonationOutcome = .writeFailed
@@ -280,8 +276,8 @@ extension SSDHybridCheckpointStore {
             } else {
                 if let space = SSDPrefixCache.volumeSpace(at: config.root) {
                     let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
-                    let required = config.losslessCompression
-                        ? try SSDBlockStore.minimumEncodedByteCount(metadata: metadata) : envelope.plaintextBytes
+                    let required = job.sharedCheckpoint ? 1 : (config.losslessCompression
+                        ? try SSDBlockStore.minimumEncodedByteCount(metadata: metadata) : envelope.plaintextBytes)
                     guard space.free >= floor, space.free - floor >= required else {
                         result.outcome = .diskSpaceInsufficient; return
                     }
@@ -292,10 +288,8 @@ extension SSDHybridCheckpointStore {
                     let result = try sharedPages.write(source: job.source, requestID: requestID,
                         checkpoint: url, tag: job.tag, key: kekKey, strictFsync: config.strictFsync,
                         createdAt: config.nowSeconds(), maximumPlaintextBytes: config.maxReadBytes,
-                        check: { try self.checkWrite(job) }, charge: { bytes in
-                            if let refusal = Self.writeRefusal(self.rateLimiter.consume(bytes: bytes, repeated: job.repeated)) {
-                                throw SharedPageWriteRefusal(outcome: refusal)
-                            }
+                        losslessCompression: config.losslessCompression, check: { try self.checkWrite(job) }, charge: { bytes in
+                            try self.admitWriteFragment(bytes: bytes, job: job)
                         }, countRead: { count in
                             self.statsBox.update { $0.bytesRead += count; $0.donationReadBytes += count }
                         })
@@ -320,7 +314,13 @@ extension SSDHybridCheckpointStore {
                             default: return 1
                             }
                         }, beforeBytesWrite: { bytes in
-                            try self.admitStreamedWrite(bytes: bytes, job: job)
+                            if self.config.losslessCompression {
+                                try self.admitWriteFragment(bytes: bytes, job: job)
+                            } else {
+                                // Independent raw files paid their complete
+                                // encoded size before this stream began.
+                                try self.checkWrite(job)
+                            }
                         },
                         chunk: { index in
                             try self.checkWrite(job)
@@ -381,9 +381,7 @@ extension SSDHybridCheckpointStore {
                 result.outcome = .writeFailed
             }
         } catch {
-            if let refusal = error as? SharedPageWriteRefusal {
-                result.outcome = refusal.outcome
-            } else if isClosed {
+            if isClosed {
                 result.outcome = .cacheClosed
             } else if !epochMatches(job.epoch) {
                 result.outcome = .cacheEpochChanged
@@ -407,11 +405,10 @@ extension SSDHybridCheckpointStore {
         }
     }
 
-    private func admitStreamedWrite(bytes: Int, job: WriteJob) throws {
+    /// New shared files and compressed independent files pay each actual
+    /// encoded fragment once; authenticated hard links call neither branch.
+    private func admitWriteFragment(bytes: Int, job: WriteJob) throws {
         try checkWrite(job)
-        // Raw files paid their complete known size before the stream began.
-        // Compressed files pay their actual encrypted size segment by segment.
-        guard config.losslessCompression else { return }
         if let space = SSDPrefixCache.volumeSpace(at: config.root) {
             let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
             guard space.free >= floor, space.free - floor >= bytes else {

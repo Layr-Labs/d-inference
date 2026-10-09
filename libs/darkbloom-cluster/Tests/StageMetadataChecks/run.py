@@ -30,6 +30,7 @@ def prepare_snapshot(output):
         'Models/Qwen/Metadata/QwenRoutedExpertStageMetadata.swift',
         'Models/Qwen/Metadata/QwenLayerStagePlan.swift',
         'Models/Qwen/Prism/QwenPrismStageConfiguration.swift',
+        'Models/Qwen/Prism/QwenRegisteredPack.swift',
         'Models/Qwen/Metadata/QwenDenseProfileTypes.swift',
         'Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift',
         'Support/CanonicalJSON.swift',
@@ -46,7 +47,7 @@ def prepare_snapshot(output):
         'Checkpoints/CheckpointManifest.swift',
     ]
     sources = [RUNTIME / path for path in runtime_sources] + sorted(BASE.glob('*.swift'))
-    if len(sources) != 26:
+    if len(sources) != 27:
         raise ValueError('Unexpected Swift fixture closure')
     files = sources + [BASE / 'run.py', BASE / 'owned_process.py',
                        BASE / 'fixture-inputs.json'] + sorted((BASE / 'Inputs').glob('*.json'))

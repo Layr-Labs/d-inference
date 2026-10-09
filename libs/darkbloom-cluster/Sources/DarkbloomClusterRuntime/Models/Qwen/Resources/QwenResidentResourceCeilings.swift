@@ -42,6 +42,15 @@ struct QwenResidentResourceCeilings: Equatable {
             maximumManifestPayloadBytes = specification.manifestBytes
             namedStateByteCeiling = 1_616_248_896
             pinnedMaximumNamedStateBytes = 1_616_248_896
+        case .ternaryBonsai2TwentySevenB:
+            // As for the 27B: the registered manifest total (8,608,670,713
+            // bytes, already above the legacy 8 GiB bound) and this model's
+            // own estimate at the largest request. The estimate is the 27B's
+            // because the geometry is and the formula counts four bytes per
+            // state element, which is exact for this pack's F32 state.
+            maximumManifestPayloadBytes = specification.manifestBytes
+            namedStateByteCeiling = 1_616_248_896
+            pinnedMaximumNamedStateBytes = 1_616_248_896
         }
         maximumNamedStateBytes = try QwenLongPrefillTensorBudget.estimate(
             geometry: specification.expectedGeometry(), maximumTokens: Self.maximumContextTokens,

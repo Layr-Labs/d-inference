@@ -14,6 +14,10 @@ enum QwenResidentArithmeticPolicy: Equatable {
     /// The Metal kernels of that route come from the metallib beside the
     /// binary, which both ranks must hold identical.
     case routedExperts
+    /// The dense contract plus the two switches the pinned SDK reads for a
+    /// Prism Hadamard pack, each at the product's own serving default, and
+    /// the process-wide constant-cache switch required absent.
+    case prismHadamard
 
     static let expertSlicesName = "MLX_GATHER_QMM_EXPERT_SLICES"
     static let expertSlicesValue = "trust"
@@ -23,21 +27,30 @@ enum QwenResidentArithmeticPolicy: Equatable {
         switch self {
         case .dense: QwenLongPrefillArithmeticEnvironment.contract
         case .routedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
+        case .prismHadamard: QwenPrismArithmeticContract.contract
         }
     }
 
     var requiredValues: [String: String] {
         var values = QwenLongPrefillArithmeticEnvironment.requiredValues
         if self == .routedExperts { values[Self.expertSlicesName] = Self.expertSlicesValue }
+        if self == .prismHadamard { values.merge(QwenPrismArithmeticContract.values) { current, _ in current } }
         return values
     }
 
     var requiredAbsentNames: [String] {
         QwenLongPrefillArithmeticEnvironment.requiredAbsentNames
             + (self == .routedExperts ? [Self.directReductionName] : [])
+            + (self == .prismHadamard ? QwenPrismArithmeticContract.absentNames : [])
     }
 
     func admit(_ environment: [String: String]) throws -> QwenLongPrefillArithmeticEnvironment.Receipt {
+        if self == .prismHadamard {
+            return try QwenLongPrefillArithmeticEnvironment.admit(environment, contract: contract,
+                additionalValues: QwenPrismArithmeticContract.values,
+                additionalAbsentNames: QwenPrismArithmeticContract.absentNames,
+                additionalBindings: QwenPrismArithmeticContract.bindings)
+        }
         guard self == .routedExperts else { return try QwenLongPrefillArithmeticEnvironment.admit(environment) }
         return try QwenLongPrefillArithmeticEnvironment.admit(environment, contract: contract,
             additionalValues: [Self.expertSlicesName: Self.expertSlicesValue],

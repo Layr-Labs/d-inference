@@ -39,10 +39,15 @@ struct QwenResidentModelDefinition {
             // 4, 8, ... 60. A structural cut is not a memory or speed claim.
             profileID = "registered_qwen38_27b_greedy_generation_v1"
             supportedCuts = structural
+        case .ternaryBonsai2TwentySevenB:
+            // The 27B's geometry, so the 27B's cuts: 4, 8, ... 60.
+            profileID = "registered_ternary_bonsai_2_27b_greedy_generation_v1"
+            supportedCuts = structural
         }
-        // Both rows run under the dense contract. A model whose arithmetic
-        // depends on more of the process environment names its own here.
-        let arithmetic: QwenResidentArithmeticPolicy = .dense
+        // A Prism pack's arithmetic depends on two more switches of the
+        // process environment, so it has its own contract and the adapter
+        // that names it.
+        let arithmetic: QwenResidentArithmeticPolicy = model.pack == .prismHadamard ? .prismHadamard : .dense
         let registered = (runtimeModelID: model.rawValue, profileID: profileID)
         guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.rawValue),
               adapter.registeredProfiles.contains(where: { $0 == registered }),
@@ -56,7 +61,9 @@ struct QwenResidentModelDefinition {
         // the layer kinds and head counts), so both rows carry every mode. A
         // model that must not run one drops it from its own row here.
         switch model {
-        case .qwen35NineB, .qwen38TwentySevenB:
+        case .qwen35NineB, .qwen38TwentySevenB, .ternaryBonsai2TwentySevenB:
+            // The Prism pack's state has the 27B's shapes in F32; the hand-off
+            // carries each component in the profile's activation dtype.
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
         }
         guard supportedGenerationModes.first == .pipeline,

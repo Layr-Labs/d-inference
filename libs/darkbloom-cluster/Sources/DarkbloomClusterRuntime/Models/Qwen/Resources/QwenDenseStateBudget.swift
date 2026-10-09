@@ -11,7 +11,8 @@ enum QwenDenseStateBudget {
 
     /// Logical final state differs deliberately from the conservative capacity/
     /// transient formula. No state tensor is constructed, captured or read here.
-    static func finalState(_ g: QwenLongPrefillBudgetGeometry) throws -> QwenDenseFinalStateGeometry {
+    static func finalState(_ g: QwenLongPrefillBudgetGeometry,
+                           pack: QwenRegisteredPack = .affineBFloat16) throws -> QwenDenseFinalStateGeometry {
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
         let full = g.layers / g.fullAttentionInterval, recurrent = g.layers - full
         let channels = try sum([product([2, g.linearKeyHeads, g.linearKeyDimension]),
@@ -19,11 +20,13 @@ enum QwenDenseStateBudget {
         let kvShape = [1, g.kvHeads, 8192, g.headDimension]
         let convShape = [1, g.convolutionKernel - 1, channels]
         let ssmShape = [1, g.linearValueHeads, g.linearValueDimension, g.linearKeyDimension]
-        let kv = try product(kvShape + [2]), conv = try product(convShape + [2]), ssm = try product(ssmShape + [4])
+        let element = pack.activationElementBytes
+        let kv = try product(kvShape + [element]), conv = try product(convShape + [element]), ssm = try product(ssmShape + [4])
         let bytes = try sum([product([full, sum([product([2, kv]), 4])]), product([recurrent, sum([conv, ssm])])])
         return .init(committedTokens: 8192, attentionLayers: full, recurrentLayers: recurrent,
             componentCount: try sum([product([full, 3]), product([recurrent, 2])]),
             kvShape: kvShape, convolutionShape: convShape, ssmShape: ssmShape,
+            kvDType: pack.activationDType, convolutionDType: pack.activationDType,
             kvBytesPerTensor: kv, convolutionBytesPerTensor: conv, ssmBytesPerTensor: ssm, logicalBytes: bytes)
     }
 }

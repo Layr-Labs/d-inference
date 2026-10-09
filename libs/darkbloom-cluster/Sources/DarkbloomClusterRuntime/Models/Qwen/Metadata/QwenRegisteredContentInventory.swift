@@ -9,6 +9,7 @@ enum QwenRegisteredContentInventory {
         switch model {
         case .qwen35NineB: QwenRegistered9BContentInventory.document
         case .qwen38TwentySevenB: nil
+        case .ternaryBonsai2TwentySevenB: nil
         }
     }
 
@@ -56,6 +57,7 @@ enum QwenRegisteredContentInventory {
         switch model {
         case .qwen35NineB: name = ("QwenRegistered9BContentInventory", "Qwen3.5 9B")
         case .qwen38TwentySevenB: name = ("QwenRegistered27BContentInventory", "Qwen3.8 27B")
+        case .ternaryBonsai2TwentySevenB: name = ("QwenRegisteredBonsai27BContentInventory", "Ternary Bonsai 2 27B")
         }
         let lines = String(decoding: document, as: UTF8.self).split(separator: "\n").map { "    " + $0 + "\n" }
         return """

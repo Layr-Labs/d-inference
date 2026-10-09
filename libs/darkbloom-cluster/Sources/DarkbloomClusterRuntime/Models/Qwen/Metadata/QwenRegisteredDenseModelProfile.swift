@@ -11,7 +11,9 @@ struct QwenRegisteredDenseModelProfile {
     let geometry: QwenLongPrefillBudgetGeometry
     let vocabularySize: Int, manifestPayloadBytes: Int, sourceTensorBytes: Int, largestSourceTensorBytes: Int
     let fingerprint: String
-    let requiredNativeDType = "bfloat16", requiredBF16ConversionPolicy = true
+    /// The registered pack's activation dtype and load conversion: BF16 and
+    /// converted for every affine pack.
+    let requiredNativeDType: String, requiredBF16ConversionPolicy: Bool
     let runtimeExecutionAuthorized = false, actualPayloadVerificationEstablished = false
     let providerEligibilityEstablished = false
     let supportedPlanningRoles = QwenDenseStorageRole.allCases
@@ -24,11 +26,15 @@ struct QwenRegisteredDenseModelProfile {
         self.canonicalTensors = tensors; self.geometry = geometry; self.vocabularySize = 248_320
         self.manifestPayloadBytes = spec.manifestBytes; self.sourceTensorBytes = spec.sourceBytes
         self.largestSourceTensorBytes = spec.largestTensorBytes
+        let pack = spec.model.pack
+        self.requiredNativeDType = pack.activationDType
+        self.requiredBF16ConversionPolicy = pack.convertsFloat16ToBFloat16
         self.fingerprint = QwenDenseProfileIdentity.fingerprint([
             "qwen-registered-dense-metadata-profile-v1", spec.model.rawValue,
             spec.configurationSHA256, spec.manifestSHA256, spec.artifactSHA256, spec.inventorySHA256,
             "manifest=\(spec.manifestBytes)", "source=\(spec.sourceBytes)", "count=\(spec.tensorCount)",
-            "largest=\(spec.largestTensorBytes)", "native=bfloat16", "bf16Policy=true", "executionAuthorized=false",
+            "largest=\(spec.largestTensorBytes)", "native=\(pack.activationDType)",
+            "bf16Policy=\(pack.convertsFloat16ToBFloat16)", "executionAuthorized=false",
         ])
     }
 
@@ -55,7 +61,8 @@ struct QwenRegisteredDenseModelProfile {
               try QwenLongPrefillCheckedBytes.sum(declared.files.map(\.size_bytes)) == spec.manifestBytes,
               declared.files.first(where: { $0.path == "config.json" })?.sha256 == configurationSHA,
               let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
-              root["model_type"] as? String == "qwen3_5", let text = root["text_config"] as? [String: Any] else {
+              root["model_type"] as? String == spec.model.pack.rootModelType,
+              let text = root["text_config"] as? [String: Any] else {
             throw QwenDenseProfileError("Pinned registered manifest/configuration semantics differ")
         }
         try QwenStageMetadata.validate(text: text, root: root, nested: true)

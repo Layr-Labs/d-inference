@@ -98,6 +98,9 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         guard action.first else { return }
         // Cancellation cannot rely on a responsive callback or native receive.
         // The watchdog is independent of the request queue and observes real exit.
+        // Its fence closes each worker's command stream; a worker still inside
+        // a collective ends itself at its own progress limit or deadline, and
+        // the wait below lasts until that exit is actually observed.
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self, !self.retired.isComplete else { return }
             for worker in self.owner.workers { worker.requestNativeCleanup() }

@@ -28,6 +28,41 @@ final class WorkerCompletion: @unchecked Sendable {
     func value() async { await withCheckedContinuation { c in group.notify(queue: .global()) { c.resume() } } }
 }
 
+/// When an owner may signal a direct child that has not ended itself.
+///
+/// A fence is cooperative first: the owner closes the child's command stream,
+/// which a worker treats as the order to cancel its request, release its model
+/// and exit. A signal ends the process without that release, so none is sent
+/// until the child's own hard deadline has passed: the lifetime it was started
+/// with, or its startup deadline when it was told one and never became ready.
+/// SIGKILL follows SIGTERM only for a process that ignored both its own
+/// deadline and SIGTERM; nothing else could return the device, and by then the
+/// child's contract says it no longer runs.
+public struct ClusterWorkerSignalPolicy: Sendable, Equatable {
+    /// The child was given its startup deadline and exits there by itself.
+    public let childEndsItselfAtStartupDeadline: Bool
+    /// Wait after the child's own hard deadline before SIGTERM.
+    public let terminateMarginNanoseconds: UInt64
+    /// Wait after SIGTERM before SIGKILL.
+    public let killMarginNanoseconds: UInt64
+    /// Wait after SIGKILL before an owner stops waiting for the exit.
+    public let reapMarginNanoseconds: UInt64
+
+    public init(childEndsItselfAtStartupDeadline: Bool = false, terminateMarginNanoseconds: UInt64 = 5_000_000_000,
+                killMarginNanoseconds: UInt64 = 10_000_000_000, reapMarginNanoseconds: UInt64 = 5_000_000_000) {
+        self.childEndsItselfAtStartupDeadline = childEndsItselfAtStartupDeadline
+        self.terminateMarginNanoseconds = terminateMarginNanoseconds
+        self.killMarginNanoseconds = killMarginNanoseconds; self.reapMarginNanoseconds = reapMarginNanoseconds
+    }
+
+    public static let standard = ClusterWorkerSignalPolicy()
+    /// Longest an owner waits past the child's lifetime for its observed exit.
+    public var allowanceNanoseconds: UInt64 { terminateMarginNanoseconds + killMarginNanoseconds + reapMarginNanoseconds }
+    var isBounded: Bool {
+        [terminateMarginNanoseconds, killMarginNanoseconds, reapMarginNanoseconds].allSatisfy { $0 <= 60_000_000_000 }
+    }
+}
+
 public struct ClusterWorkerLaunch: Sendable {
     public let executable: URL
     public let arguments: [String]
@@ -39,12 +74,15 @@ public struct ClusterWorkerLaunch: Sendable {
 
 /// Owns one direct child. Native workers must not spawn untracked descendants.
 /// An event or a sent signal never completes observedExit; actual process exit does.
+/// A fence closes the child's command stream and waits; see ClusterWorkerSignalPolicy
+/// for the only conditions under which this owner signals the child.
 public final class ClusterWorkerProcess: @unchecked Sendable {
     public let expectedIdentity: ClusterWorkerIdentity
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
     public let executionPlanSHA256: String
     public let lifetimeDeadline: UInt64
+    public let retirement: ClusterWorkerSignalPolicy
     private let process = Process()
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
@@ -68,14 +106,25 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     private var launched = false
     private var terminalValue: ClusterWorkerProcessTermination?
     private var launchedPID: Int32?
+    private var readyObserved = false
+    private var signals: [Int32] = []
     public var launchedProcessIdentifier: Int32? { lock.withLock { launchedPID } }
+    /// Signals this owner sent, in order. Empty when the child ended itself.
+    public var sentSignals: [Int32] { lock.withLock { signals } }
+    /// After this an owner stops waiting: the child outlived its own hard
+    /// deadline, SIGTERM and SIGKILL, and its ownership cannot be resolved here.
+    public var retirementDeadlineUptimeNanoseconds: UInt64 {
+        let value = lifetimeDeadline.addingReportingOverflow(retirement.allowanceNanoseconds)
+        return value.overflow ? UInt64.max : value.partialValue
+    }
     public var termination: ClusterWorkerProcessTermination? { lock.withLock { terminalValue } }
     public var observedExit: Bool { exited.isComplete }
     public var readiness: ClusterWorkerReady? { lock.withLock { fault == nil && fenceAt == nil ? readyValue : nil } }
     public var diagnosticTail: Data { lock.withLock { stderrTail } }
 
     public init(launch: ClusterWorkerLaunch, expectedIdentity: ClusterWorkerIdentity, rank: Int,
-                profile: ClusterWorkerProfile, executionPlanSHA256: String, startupDeadline: UInt64, lifetimeDeadline: UInt64) throws {
+                profile: ClusterWorkerProfile, executionPlanSHA256: String, startupDeadline: UInt64, lifetimeDeadline: UInt64,
+                retirement: ClusterWorkerSignalPolicy = .standard) throws {
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
             executionPlanSHA256: executionPlanSHA256)
         let now = DispatchTime.now().uptimeNanoseconds
@@ -84,13 +133,13 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
               launch.environment.count <= 128,
               launch.environment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0")
                   && !$0.value.contains("\0") && $0.key.utf8.count <= 256 && $0.value.utf8.count <= 8192 }),
-              startupDeadline > now, lifetimeDeadline >= startupDeadline,
+              startupDeadline > now, lifetimeDeadline >= startupDeadline, retirement.isBounded,
               lifetimeDeadline - now <= ClusterWorkerLimits.deadlineNanoseconds else {
             throw ClusterWorkerOwnerError.invalid("Invalid worker launch")
         }
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.startupDeadline = startupDeadline
-        self.lifetimeDeadline = lifetimeDeadline
+        self.lifetimeDeadline = lifetimeDeadline; self.retirement = retirement
         wakeup = try WorkerPumpWakeup()
         process.executableURL = launch.executable; process.arguments = launch.arguments
         process.environment = launch.environment
@@ -156,9 +205,13 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         }
     }
 
+    /// Stops this owner's use of the child and closes its command stream. The
+    /// child ends itself; this call sends no signal.
     public func fence() { fail(.closed) }
     public func waitUntilExited() async { await exited.value() }
     func waitForExit() { exited.wait() }
+    /// False when the exit was not observed by `deadline`; ownership is retained.
+    public func waitForExit(until deadline: UInt64) -> Bool { exited.wait(until: deadline) }
 
     private func fail(_ error: ClusterWorkerOwnerError) {
         let failure = lock.withLock { () -> (changed: Bool, notify: (@Sendable () -> Void)?) in
@@ -186,7 +239,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
                       ready.profile == expectedProfile, ready.executionPlanSHA256 == executionPlanSHA256 else {
                     throw ClusterWorkerOwnerError.invalid("Worker readiness differs")
                 }
-                readyValue = ready
+                readyValue = ready; readyObserved = true
             } else if nextEvent == 0 { throw ClusterWorkerOwnerError.invalid("Worker event precedes readiness") }
             guard incoming.count < 32 else { throw ClusterWorkerOwnerError.invalid("Worker event queue exceeded bound") }
             incoming.append(frame); nextEvent += 1
@@ -200,7 +253,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
 
     private func pump() {
         var decoder = ClusterWorkerLineDecoder(commandStream: false)
-        var stdoutOpen = true, stderrOpen = true, termSent = false, killSent = false
+        var stdoutOpen = true, stderrOpen = true, inputOpen = true
+        var terminateSentAt: UInt64?, killSent = false
         var exitObservedAt: UInt64?
         var wakeupUsable = true
         let outFD = output.fileHandleForReading.fileDescriptor, errFD = diagnostics.fileHandleForReading.fileDescriptor
@@ -213,13 +267,25 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             let now = DispatchTime.now().uptimeNanoseconds
             if now >= lifetimeDeadline { fail(.deadline) }
             if lock.withLock({ readyValue == nil && fault == nil && nextEvent == 0 }) && now >= startupDeadline { fail(.deadline) }
-            if let at = lock.withLock({ fenceAt }), process.isRunning {
-                if !termSent { process.terminate(); termSent = true }
-                if now >= at && now - at >= 2_000_000_000 && !killSent { _ = Darwin.kill(process.processIdentifier, SIGKILL); killSent = true }
+            if lock.withLock({ fenceAt }) != nil {
+                // End of the command stream is the fence. A worker reads it as
+                // the order to cancel, release its model and exit by itself.
+                if inputOpen { try? input.fileHandleForWriting.close(); inputOpen = false }
+                if process.isRunning {
+                    // The child's own hard deadline: the last moment it has
+                    // promised to still be running. No signal precedes it.
+                    let own = lock.withLock { retirement.childEndsItselfAtStartupDeadline && !readyObserved ? startupDeadline : lifetimeDeadline }
+                    if terminateSentAt == nil, now >= own, now - own >= retirement.terminateMarginNanoseconds {
+                        process.terminate(); terminateSentAt = now; lock.withLock { signals.append(SIGTERM) }
+                    }
+                    if let sent = terminateSentAt, !killSent, now - sent >= retirement.killMarginNanoseconds {
+                        _ = Darwin.kill(process.processIdentifier, SIGKILL); killSent = true; lock.withLock { signals.append(SIGKILL) }
+                    }
+                }
             }
             var fds = [pollfd(fd: stdoutOpen ? outFD : -1, events: Int16(POLLIN), revents: 0),
                 pollfd(fd: stderrOpen ? errFD : -1, events: Int16(POLLIN), revents: 0),
-                pollfd(fd: lock.withLock({ outgoing.isEmpty }) ? -1 : inFD, events: Int16(POLLOUT), revents: 0),
+                pollfd(fd: !inputOpen || lock.withLock({ outgoing.isEmpty }) ? -1 : inFD, events: Int16(POLLOUT), revents: 0),
                 pollfd(fd: wakeupUsable ? wakeup.readDescriptor : -1, events: Int16(POLLIN), revents: 0)]
             let status = fds.withUnsafeMutableBufferPointer { Darwin.poll($0.baseAddress, nfds_t($0.count), 50) }
             if status < 0 && errno != EINTR { fail(.invalid("Worker poll failed")) }

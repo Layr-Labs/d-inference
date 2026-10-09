@@ -61,13 +61,37 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         self.maximumRequests = maximumRequests
         self.workers = workers; identity = workers[0].expectedIdentity; profile = workers[0].expectedProfile
         executionPlanSHA256 = workers[0].executionPlanSHA256
-        do {
-            for worker in workers {
-                let first = try worker.receiveWorkerEvent(until: startupDeadline)
-                guard case .ready = first.event, first.requestID == nil else { throw ClusterWorkerOwnerError.unavailable }
-            }
-        } catch { for worker in workers { worker.requestNativeCleanup() }; throw error }
+        do { try Self.awaitReadiness(of: workers, until: startupDeadline) }
+        catch { for worker in workers { worker.requestNativeCleanup() }; throw error }
         for worker in workers { worker.setInvalidationHandler { [weak self] in self?.invalidate() } }
+    }
+
+    /// Both ranks are watched at once. A rank that fails or exits while its peer
+    /// is still loading ends the wait for both; nothing waits out the startup
+    /// deadline on a peer that can no longer become a pair.
+    private static func awaitReadiness(of workers: [any ClusterWorkerEndpoint], until deadline: UInt64) throws {
+        let watch = ReadinessWatch(), finished = DispatchGroup()
+        for worker in workers {
+            finished.enter()
+            DispatchQueue.global().async {
+                defer { finished.leave() }
+                do {
+                    let first = try worker.receiveWorkerEvent(until: deadline, cancelled: { watch.failed })
+                    guard case .ready = first.event, first.requestID == nil else { throw ClusterWorkerOwnerError.unavailable }
+                } catch { watch.record(error) }
+            }
+        }
+        finished.wait() // Each receive is bounded by the startup deadline.
+        if let error = watch.failure { throw error }
+    }
+
+    /// Keeps the first rank's own failure; the peer's induced cancellation is not it.
+    private final class ReadinessWatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var first: Error?
+        var failed: Bool { lock.withLock { first != nil } }
+        var failure: Error? { lock.withLock { first } }
+        func record(_ error: Error) { lock.withLock { if first == nil { first = error } } }
     }
 
     public func setInvalidationHandler(_ value: @escaping @Sendable () -> Void) {
@@ -175,7 +199,9 @@ public final class ClusterWorkerPair: @unchecked Sendable {
                             let event = try worker.receiveWorkerEvent(until: deadline)
                             guard event.requestID == nil, event.event == .shutdownComplete else { throw ClusterWorkerOwnerError.closed }
                         } catch { worker.requestNativeCleanup() }
-                        // A shutdown message is not a process fence. Bound its grace.
+                        // A shutdown message may go unanswered. After its grace the
+                        // endpoint is fenced: its command stream closes and the
+                        // worker ends itself. No signal follows from this timer.
                         DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: deadline)) { worker.requestNativeCleanup() }
                     }
                     await worker.waitUntilNativeCleanup()

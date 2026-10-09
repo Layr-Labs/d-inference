@@ -39,10 +39,22 @@ extension ClusterWorkerEndpoint {
     public func receiveWorkerEvent(until deadline: UInt64) throws -> ClusterWorkerEventFrame {
         try receiveWorkerEvent(until: deadline, cancelled: { false })
     }
+
+    /// Bounded form of waitForNativeCleanup. False means the proof did not
+    /// arrive by `deadline`; it grants nothing and ownership stays retained.
+    public func waitForNativeCleanup(until deadline: UInt64) -> Bool {
+        while !nativeCleanupObserved {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { return false }
+            Thread.sleep(forTimeInterval: min(0.02, Double(deadline - now) / 1_000_000_000))
+        }
+        return true
+    }
 }
 
-/// All methods delegate to the unchanged direct-child supervisor. No pipe,
-/// callback, deadline, signal, exit observation or event ordering is replaced.
+/// All methods delegate to the direct-child supervisor. No pipe, callback,
+/// deadline, exit observation or event ordering is replaced. Requesting native
+/// cleanup closes the child's command stream; it does not signal the child.
 extension ClusterWorkerProcess: ClusterWorkerEndpoint {
     public var localLifetimeDeadlineUptimeNanoseconds: UInt64 { lifetimeDeadline }
     public var nativeCleanupObserved: Bool { observedExit }

@@ -19,6 +19,11 @@ import DarkbloomClusterBootstrap
             for (sequence, bytes) in parts.enumerated() { _ = try connection.exchange(sequence: UInt64(sequence), contribution: bytes) }
         }
         if behavior == "hang" { signal(SIGTERM, SIG_IGN) }
+        // Retirement-policy stand-ins. A signalled exit is made visible as 99.
+        if behavior == "exit-early" { exit(9) }
+        if behavior == "startup-exit" { usleep(300_000); exit(123) }
+        if behavior == "never-ready" { while true { pause() } }
+        if behavior == "slow-exit" { signal(SIGTERM) { _ in _exit(99) } }
         var session = try ClusterWorkerSession(identity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan)
         var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0
         func emit(_ event: ClusterWorkerEvent) throws {
@@ -30,10 +35,15 @@ import DarkbloomClusterBootstrap
         }
         try emit(.ready(.init(identity: fixtureIdentity, rank: rank, profile: fixtureProfile,
             executionPlanSHA256: fixturePlan, requestCapacityBytes: behavior == "larger" ? 2048 : 1024)))
+        // Neither reads its command stream again; "deaf" also ignores SIGTERM.
+        if behavior == "deaf" { signal(SIGTERM, SIG_IGN) }
+        if behavior == "deaf" || behavior == "deaf-term" { while true { pause() } }
         var decoder = ClusterWorkerLineDecoder(commandStream: true)
         while true {
             var buffer = [UInt8](repeating: 0, count: 65_536)
             let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
+            // A worker that needs three seconds to end itself after its stream closes.
+            if count == 0 && behavior == "slow-exit" { usleep(3_000_000); exit(3) }
             if count == 0 { break }
             if count < 0 { if errno == EINTR { continue }; exit(74) }
             let bytes = Data(buffer.prefix(count))

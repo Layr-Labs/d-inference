@@ -31,6 +31,11 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
   -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/RetirementPolicyTests.swift" -o "$task_build/retirement-check"
+"$task_build/retirement-check" "$task_build/fake-worker"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/EndpointOwnershipTests.swift" -o "$task_build/endpoint-check"
 "$task_build/endpoint-check" "$task_build/fake-worker"
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \

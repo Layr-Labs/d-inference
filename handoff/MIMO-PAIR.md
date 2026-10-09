@@ -1,6 +1,6 @@
 # Registered MiMo V2.6 Flash across two Macs
 
-> Last updated: 2026-10-09 19:16Z (branch `work/mimo`, base `e15f5b891`). Work in progress: one pair run across the cable has completed (cut 34, short prompt); no repeat, no fault run, no reference yet.
+> Last updated: 2026-10-09 22:05Z (branch `work/mimo`, base `e15f5b891`). Work in progress: the pair has run at cuts 34 and 30, short and 4,096-token prompts, repeated, and with one rank ended by SIGTERM; the single-Mac reference **diverges** from the pair (at token 28 of the short request, token 50 of the 4,096 one).
 
 "Mac A" is the M3 Ultra (256 GiB), "Mac B" the M5 Max (128 GiB). Raw logs,
 receipts and gate records are outside the repository in the task's evidence
@@ -17,10 +17,11 @@ layer pipeline neither Mac holds more than about 103 GiB of it.
 | Admission, ceilings and capability from the real metadata | the eight model-free check runners pass on `846d461c8`; runtime unit tests **128 of 128 passed** and startup checks **31 cases passed** on builds 6 and 7 | `unit/pure-4/`, `unit/build6.*`, `unit/build7.*` |
 | Stage load and release, rank 1 on Mac B | **passed at cut 40** (26.87 GiB) after four loads the growth guard stopped; **refused at cut 28** by the committed rule (72.27 GiB needed, 61.62 free); **passed at cut 34** twice (46.56 GiB, builds 6 and 7) | `stage-load/B-*` |
 | Stage load and release, rank 0 on Mac A | **passed at cut 34** twice (109.21 GiB, builds 6 and 7) | `stage-load/A-rank0-cut34-*` |
-| Single-Mac reference | not run; the owner put it after the pair | |
-| Pair across the cable | **passed once** at cut 34, pipeline, 27-token prompt, 37 tokens to end of sequence; both ranks' token chains equal; not yet repeated, no reference to compare tokens with; the 4,096-token request was not run (stopped for a restart of both Macs) | `pair/pair-cut34-short-1.*` |
-| One rank ended mid-request | not run | |
-| Worker package XCTest suites | not built, not run (the qualification suite ran 41 tests through its check runner) | `unit/pure-4/qualification.log` |
+| Single-Mac reference | **ran** at cut 34 on Mac A (both stages in one process, 167.3 GB active), short and 4,096; the pair's tokens **diverge** from it (verdict `diverged`: no logits, so a near tie cannot be shown) | `reference/` |
+| Pair across the cable | **passed** at cut 34 (short twice, same 37 tokens; 4,096 once) and at cut 30 (short, the same 37 tokens); one 4,096 attempt failed before ready because Mac B's link port had lost its address (below) | `pair/pair-cut34-short-{1,2}.*`, `pair-cut34-4096-2.*`, `pair-cut30-short-1.*`, `pair-cut34-4096-1.*` |
+| One rank ended mid-request | **passed with a finding**: rank 0 SIGTERM mid-decode (29 tokens in); rank 1 exited by itself only at the 180 s JACCL progress timeout; nothing left on either Mac, wired memory back | `pair/pair-cut34-fault-sigterm-rank0-1.*` |
+| Stage ended with SIGTERM mid-decode | **passed** on both Macs at cut 34: wired memory back to its level within 1 s | `stage-load/*-cut34-sigterm-b7.sigterm.txt` |
+| Worker package XCTest suites | **passed**: built (`unit/worker-xctest-build-7.log`), 41 XCTest tests, 0 failures | `unit/worker-xctest-7.txt` |
 
 `STATUS.md` in the evidence folder is the live record: every attempt, the
 binaries on each Mac, what is in flight and the next command.
@@ -232,8 +233,10 @@ Measured once so far (rank 1 at cut 40 on Mac B, residency on): limit
 33.32 GiB loaded, 5.23 GiB after the process exited; limit 0 before and
 after. The reading inside the process right after release still said
 30.76 GiB, so the check now waits up to five seconds and reports how long the
-kernel took. Not yet measured: decode without residency, and wired memory
-after SIGTERM.
+kernel took. Not yet measured: decode without residency. Wired memory after SIGTERM
+(build 7, cut 34, 512-token prefill then SIGTERM after decode step 32): Mac B
+5.35 GiB before, 52.44 loaded, 4.87 one second after; Mac A 9.36 GiB before,
+120.32 loaded, 10.10 one second after and 9.35 at 20 s.
 
 ## Stage loads (model level, one Mac, no collective)
 
@@ -257,7 +260,8 @@ guard stopped are in `STATUS.md` and in the gate design.
 The first run across the cable (2026-10-09 19:13Z, build 7, `pair/pair-cut34-short-1.*`):
 cut 34 from fresh device profiles (Mac A 127.87 GiB admissible, needs 115.24;
 Mac B 59.26, needs 52.58), pipeline mode, prefill schedule one chunk of
-lookahead, committed memory rule enforced on both workers, guarded JACCL over
+serial prefill (the only schedule the MiMo row admits; the planner prints its own
+choice, one chunk of lookahead, which the run does not use), committed memory rule enforced on both workers, guarded JACCL over
 RDMA, all four lanes held.
 
 | | |
@@ -265,7 +269,7 @@ RDMA, all four lanes held.
 | Request | one user turn, 27 prompt tokens, greedy, up to 64 outputs |
 | Result | completed; 37 tokens, ended on end of sequence; text coherent |
 | Ranks agree | both ranks report the same token chain `05dc5660…` and boundary chain `ae23d6fb…` (the report's own "ranks agree" field says "not recorded" for this model) |
-| Tokens vs a reference | no reference yet |
+| Tokens vs a reference | diverged at token 28 from the single-Mac reference (below) |
 | Both ranks ready | 60.5 s after launch (rank 0 verify 26.0 s and load 31.1 s; rank 1 verify 13.5 s and load 8.4 s) |
 | First token | 2.316 s (12 prompt tokens/s at 27 tokens; not a prefill rate worth quoting) |
 | Decode | 21.9 tokens/s; request total 3.98 s |
@@ -276,15 +280,72 @@ The first attempt (18:56Z, build 6) was refused before any worker started:
 the pair endpoint checked a fixed 10...300 s lifetime while the configuration
 admits the model's own 1,800 s. Fixed in `cddd9fdc2`.
 
+## After the restart (session 3, build 7, 2026-10-09 21:30-22:02Z)
+
+Fresh plans: Mac A 185.35 / 177.09 GiB admissible, Mac B 73.36 / 72.28; the
+planner chose cut 30, and cuts 30 to 42 fitted both Macs. All four lanes held,
+committed memory rule recorded and enforced, residency on, serial prefill.
+
+| Run | Cut | Prompt | Result | Ready | First token | Prefill | Decode | Peak, rank 0 / rank 1 |
+|---|---:|---:|---|---:|---:|---:|---:|---:|
+| `pair-cut34-short-2` | 34 | 27 | 37 tokens (eos), the same IDs as `short-1` | 65.9 s | 0.660 s | (41 tok/s) | 32.9 tok/s | 109.29 / 46.65 GiB |
+| `pair-cut34-4096-2` | 34 | 4,096 | 64 tokens (length) | 60.7 s | 10.784 s | 380 tok/s | 32.7 tok/s | 110.20 / 47.25 GiB |
+| `pair-cut30-short-1` | 30 | 27 | 37 tokens (eos), the same IDs as cut 34 | 56.8 s | 0.747 s | (36 tok/s) | 34.9 tok/s | 96.15 / 59.78 GiB |
+
+Every completed run: both exit 0, shutdown acknowledged, 0 workers left on
+either Mac; release lines 3,840 (3,392 at cut 30) and 1,592 (2,040) bytes
+active, 0 cached, wired limit 0. Driver clock throughout; first token
+includes control and transport.
+
+- Repeats agree on tokens (`selected-token SHA c30db72a…`) and on rank 1's
+  final row hash (`e784d209…`). The token *chain* differs between sessions by
+  design: it is seeded with the agreement fingerprint, which includes the
+  session's membership epoch. `pair-check compare` says `incomparable` for
+  pair-vs-pair here only because these runs used `--evidence none` (no final
+  row in the report); `--evidence final-row` would let it decide.
+- **Link finding.** The first 4,096 attempt (21:32:01Z, 8 s after a completed
+  run) failed before ready: Mac B `[jaccl] No IPv4-mapped GID for this
+  device`; Mac B's `darkbloom cluster link` then said
+  `portBridgedWithoutAddress ... its recorded address is missing`. Nothing
+  was loaded. By 21:35Z the link was `ready` again without any action from
+  this work. Restoring the address takes a macOS approval prompt, so a port
+  that loses its address between runs breaks "approve once".
+- **Fault run** (`pair-cut34-fault-sigterm-rank0-1`): rank 0 on Mac A got
+  SIGTERM by hand 0.77 s after the first token of the 4,096 request (29
+  tokens committed; the driver's `--fault` switch covers phase split only).
+  Rank 0 ended by signal 15. Rank 1 exited by itself with status 1, but only
+  when JACCL's progress timeout expired (`mesh recv: no completion for
+  180001 ms`); its release line still printed (1,592 bytes, wired limit 0).
+  How long a survivor waits is therefore the progress timeout the driver
+  passes (180 s here, `pair-run.sh`'s default 420 s, the driver's 60 s).
+  Wired memory: Mac A 10.77 GiB before, 10.32-10.81 after; Mac B 4.95 before,
+  4.81-5.56 after. No process left on either Mac.
+
 ## Single-Mac reference
 
-Not run. `darkbloom-cluster-stage-check mimo-reference` loads both stages in
-one process on one Mac (about 162 GiB admissible) and runs the same request;
-the owner put it after the pair.
+`darkbloom-cluster-stage-check mimo-reference` at cut 34 on Mac A (both
+stages in one process, 167.26 GB active, wired limit 167.4 GB; load 84 s):
+
+| Request | Reference | Pair at cut 34 | First different token |
+|---|---|---|---|
+| short, 27 tokens | 35 tokens (eos); prefill 0.27 s; decode 0.83 s | 37 tokens (eos) | index 28: reference 264, pair 279 |
+| 4,096 tokens | 64 tokens (length); prefill 12.60 s (325 tok/s); decode 1.62 s (39 tok/s) | 64 tokens (length) | index 50: reference 6083, pair 2608 |
+
+Verdict **`diverged`** for both (`reference/compare-*.txt`). `pair-check
+compare` cannot read the MiMo reference's schema
+(`mimo_staged_reference_v1`), so the comparator's rules were applied by a
+script to what both files carry (tokens, rank 1's final row hash, boundary
+chain). Neither file has logits, so whether the first difference is a near
+tie cannot be shown. The pair is self-consistent (two sessions, and cut 30,
+give the same 37 tokens), so the difference is between the single-process
+reference and the pair: the obvious candidates are rank 1's layers running
+on the M5 Max instead of the M3 Ultra, and the reference's own path. The next
+step that separates them is the pair at cut 34 with both ranks on Mac A over
+the local test socket, and both reports with `--evidence final-row`.
 
 ## What stands between this and serving MiMo on the pair through the product
 
-1. The pair has run once; it has to be repeated and compared with a single-Mac reference.
+1. The pair's tokens diverge from the single-Mac reference (above); the cause is not yet known.
 2. The stages run the product's ordinary-cache text path. The product serves
    MiMo through its continuous-batching adapter with a paged KV pool and the
    MTP assistant; a stage on that adapter needs a residual egress and ingress
@@ -308,10 +369,19 @@ lanes; anything on Mac B needs `lane-b.sh`.
 
 ## Not done
 
-- The worker package's XCTest build has not run.
-- The pair ran once: no repeat, no 4,096-token request, no second cut, no
-  fault run (one rank ended with SIGTERM), no `stage-sigterm.sh`, no probe
-  without residency, no single-Mac reference.
+- The cause of the divergence from the single-Mac reference (local-socket
+  pair on Mac A, final-row evidence, logits at the first difference).
+- No probe without residency; no compact-decode mode on the cable.
+- A survivor rank notices a dead peer only at the JACCL progress timeout.
 - Verifying only the shards a rank reads (each rank still hashes all 53 files).
 - The loader pace that was tried was removed: no dependable effect.
 - Phase split, and the reversed placement that could have one, were not built.
+  What the code supports today: the MiMo row lists only `pipeline` and
+  `pipelineCompactDecode` (`MiMoRegisteredSpecification.swift`), the stage
+  generation refuses an agreement with phase-split terms
+  (`requireMiMoGenerationSource`: `agreement.phaseSplit == nil`), and the
+  phase-split hand-off lives only in the Qwen dense path, where rank 1 adopts
+  every layer and decodes alone. For MiMo that rank would need the whole
+  155.8 GiB text model, so only the reversed order (rank 0 on Mac B with cut 16
+  or 20, rank 1 on Mac A) could have it; the cuts are listed, but neither
+  `pair-run.sh` nor the hold scripts launch rank 0 on Mac B.

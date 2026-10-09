@@ -8,11 +8,33 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// The API passes r.TLS from its accepted request, not a forwarded header or a
-// provider claim. Explicit trusted TLS proxy deployment support is separate.
+// NativePairTransport is the API's evidence that a member connection is
+// protected in transit. The zero value is unprotected and never attaches.
+type NativePairTransport struct {
+	direct       *tls.ConnectionState
+	trustedProxy bool
+}
+
+// NativePairDirectTLS is the handshake state of the accepted request itself
+// (r.TLS), never a forwarded header or a provider claim.
+func NativePairDirectTLS(state *tls.ConnectionState) NativePairTransport {
+	return NativePairTransport{direct: state}
+}
+
+// NativePairTrustedProxyTLS records that the operator's explicitly configured
+// TLS-terminating proxy delivered the request. The coordinator did not observe
+// the handshake; only the API's trusted-proxy policy may construct this.
+func NativePairTrustedProxyTLS() NativePairTransport {
+	return NativePairTransport{trustedProxy: true}
+}
+
+func (t NativePairTransport) protected() bool {
+	return t.trustedProxy || (t.direct != nil && t.direct.HandshakeComplete)
+}
+
 // This is protocol attachment only, never native/runtime approval by itself.
-func (c *NativePairCoordinator) Attach(p *Provider, nonce string, tlsState *tls.ConnectionState) (*NativePairConnection, error) {
-	if c == nil || p == nil || tlsState == nil || !tlsState.HandshakeComplete {
+func (c *NativePairCoordinator) Attach(p *Provider, nonce string, transport NativePairTransport) (*NativePairConnection, error) {
+	if c == nil || p == nil || !transport.protected() {
 		return nil, ErrNativePairControl
 	}
 	b, e := hex.DecodeString(nonce)
@@ -34,6 +56,7 @@ func (c *NativePairCoordinator) Attach(p *Provider, nonce string, tlsState *tls.
 	}
 	n := &NativePairConnection{coordinator: c, provider: p, nonce: nonce}
 	c.connections[p] = n
+	c.wakeFormation()
 	return n, nil
 }
 func (c *NativePairCoordinator) Detach(n *NativePairConnection) {

@@ -48,7 +48,10 @@ type ServerConfig struct {
 	// approved native runtime entries. Nil keeps every native-pair handler
 	// disabled: member attachment, reservation and relay all fail closed.
 	NativePairCatalog *registry.NativeRuntimeCatalog
-	MDMScheduler      MDMSchedulerConfig
+	// ClusterPairs is the operator opt-in that produces NativePairCatalog from
+	// a reviewed file and starts the pair selector. Zero keeps both off.
+	ClusterPairs ClusterPairConfig
+	MDMScheduler MDMSchedulerConfig
 	// FirstContentDeadlineBase is the ordinary-model fixed term in the
 	// request-absolute first-content budget for selected accounts. Model policy may override it;
 	// zero keeps the ordinary coordinator default.
@@ -110,6 +113,10 @@ func ReadServerConfig() ServerConfig {
 			AccountCapFrac: env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_ACCOUNT_CAP", 0), // 0 = per-machine (no per-account cap)
 		},
 		AutopilotRewardsEnabled: env.EnvBool(env.EnvPrefix+"_AUTOPILOT_REWARDS", false),
+		ClusterPairs: ClusterPairConfig{
+			CatalogPath:       os.Getenv(env.EnvPrefix + "_CLUSTER_PAIR_CATALOG"),
+			TrustedTLSProxies: ParseCommaList(os.Getenv(env.EnvPrefix + "_CLUSTER_PAIR_TRUSTED_TLS_PROXIES")),
+		},
 	}
 }
 

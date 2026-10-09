@@ -61,9 +61,12 @@ type Provider struct {
 	// Immutable per connection; never restored from durable provider history.
 	executionRole protocol.ExecutionRole
 	memberNonce   string // immutable nonce of the negotiated control-only registration
-	ID            string
-	Hardware      protocol.Hardware
-	Models        []protocol.ModelInfo
+	// clusterMembership is the member's registered cluster claim; nil for a
+	// solo connection and for a member that registered none.
+	clusterMembership *protocol.ClusterMembership
+	ID                string
+	Hardware          protocol.Hardware
+	Models            []protocol.ModelInfo
 	// CapacityModelIDs is the catalog/capability-accepted inventory used by
 	// the last applied heartbeat to canonicalize warm models and slots.
 	// Guarded by mu; nil until the first applied heartbeat.

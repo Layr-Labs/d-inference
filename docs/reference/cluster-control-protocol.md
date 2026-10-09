@@ -13,9 +13,11 @@ closed; a member registration is still acknowledged, because the acknowledgment
 confirms the role and the connection binding only. A provider enters member
 mode only through the explicit distributed start opt-in
 (`provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift`,
-`makeClusterMemberLoop`), and no coordinator selector reserves a pair yet:
-`BeginNativePair` (`coordinator/api/native_pair.go`) has no production caller
-(see the staging handoff).
+`makeClusterMemberLoop`). When the operator configures an approval catalog the
+coordinator's pair selector reserves pairs by itself (see
+[pair formation](#pair-formation)); the provider does not yet register the
+cluster membership the selector needs or install its member control in a
+product path, so no real pair forms today.
 
 ## Member registration and acknowledgment
 
@@ -51,6 +53,33 @@ protocol support and connection binding; it is not attestation, runtime approval
 native-owner authorization or serving readiness
 (`provider-swift/Sources/ProviderCore/Protocol/ProviderExecutionRole.swift`,
 `ClusterMemberNegotiation`).
+
+## Pair formation
+
+Pair formation is off unless the operator sets
+[`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](configuration.md#experimental-cluster-pairs).
+The selector (`coordinator/registry/native_pair_formation.go`, `RunFormation`)
+then examines attached member connections once a second, and at once when a
+member attaches or a held pair is released. It offers two connections to the
+reservation below when all of the following hold. It adds no authority: the
+reservation repeats every identity, trust, release and idleness check itself.
+
+| Condition | Rule | Source |
+|---|---|---|
+| Registered membership | Both members registered a `cluster_membership` with the same `cluster_id` and `policy_sha256` and the two distinct ranks. Rank 0 is the leader. A rank claimed by two connections is never resolved by guessing | `formationCandidates` |
+| Account | Both connections are linked to the same nonempty account. A member cannot name a peer or another account | `formationCandidates` |
+| Approval | Exactly the registered policy: an unrevoked catalog entry whose canonical bytes hash to `policy_sha256`, whose model is in both members' cluster inventories and before whose expiry a full 300-second session fits | `formationApproval` |
+| Eligibility | Neither device is held by an earlier pair, and both members pass the pair identity, trust, release-evidence and idleness gates | `coordinator/registry/native_pair_formation.go`, `verifiedPairAdmission`; `coordinator/registry/verified_pair_membership.go`, `verifiedPairMemberLocked` |
+
+A session that stops before owners are committed (a member refused or never
+answered the prepare) delays the next attempt for that cluster by 2 seconds,
+doubling to at most 60; a committed session resets it. When a session ends at
+its fixed lifetime and both owners report cleanup, or when an abandoned
+quarantine is released, the same selector forms the next session with a new
+epoch. `NativePairCoordinator.Pairs` (`native_pair_view.go`) lists every
+registered cluster with its members, state (`waiting`, `preparing`, `active`)
+and, while waiting, the reason (`peer_absent`, `no_approval`, `device_held`,
+`not_eligible`, `retry_backoff`).
 
 ## Native pair messages
 
@@ -106,8 +135,8 @@ this protocol (`coordinator/protocol/native_pair.go`, `SigningBytes`).
 
 | Boundary | Exact rule | Source |
 |---|---|---|
-| Attachment | Actual accepted request has completed TLS; exact current `cluster_member` connection and nonce | `coordinator/registry/native_pair_connection.go`, `Attach` |
-| Selection | Explicit in-process hook chooses two current connections and an approved runtime ID; no public HTTP/provider selection route | `coordinator/api/native_pair.go`, `BeginNativePair` |
+| Attachment | Actual accepted request has completed TLS, or it arrived from an operator-listed TLS-terminating proxy that marked it HTTPS (off by default); exact current `cluster_member` connection and nonce | `coordinator/registry/native_pair_connection.go`, `Attach` / `NativePairTransport`; `coordinator/api/provider/member_transport.go`, `memberTransport` |
+| Selection | The pair selector, or the explicit in-process hook, chooses two current connections and an approved runtime ID; no public HTTP/provider selection route | `coordinator/registry/native_pair_formation.go`, `RunFormation`; `coordinator/api/native_pair.go`, `BeginNativePair` |
 | Default | Nil/empty native runtime catalog disables handlers | `coordinator/registry/native_pair_types.go`, `NewNativePairCoordinator` |
 | Catalog | At most 64 immutable entries; each binds runtime, model, resources, profile, plan, chips, schedule, limits and expiry | `coordinator/registry/native_pair_approval.go`, `NewNativeRuntimeCatalog` |
 | Relay | At most 64 sessions, 16 queued/in-flight frames and 1,048,576 bytes per rank; one control write capped at five seconds and the unchanged membership expiry | `coordinator/registry/native_pair_types.go`; `coordinator/registry/native_pair_relay.go`, `enqueueLocked` / `writeLoop` |

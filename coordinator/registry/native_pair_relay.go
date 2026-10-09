@@ -162,10 +162,7 @@ func (c *NativePairCoordinator) removeReleasedLocked(s *NativePairSession) {
 	if !s.writersEnded || !s.cancellationPublished {
 		return
 	}
-	c.registry.mu.RLock()
-	released := s.handle.registry == c.registry && s.handle.state != nil && s.handle.state.phase == VerifiedPairReleased
-	c.registry.mu.RUnlock()
-	if !released {
+	if !c.sessionReleasedLocked(s) {
 		return
 	} // Only the actual Registry phase proves its hold ended.
 	if c.sessions[s.membership.Epoch] == s {
@@ -176,6 +173,16 @@ func (c *NativePairCoordinator) removeReleasedLocked(s *NativePairSession) {
 			n.session = nil
 		}
 	}
+	// Both devices are free again: let the selector re-form without waiting.
+	c.wakeFormation()
+}
+
+// sessionReleasedLocked reports whether the Registry released the session's
+// device holds. The caller holds mu.
+func (c *NativePairCoordinator) sessionReleasedLocked(s *NativePairSession) bool {
+	c.registry.mu.RLock()
+	defer c.registry.mu.RUnlock()
+	return s.handle.registry == c.registry && s.handle.state != nil && s.handle.state.phase == VerifiedPairReleased
 }
 
 // The Registry releases an abandoned quarantine on its own clock, with no relay

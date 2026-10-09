@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -1468,6 +1468,7 @@ is used. Place tests by the behavior they exercise:
 | Domain invariants | `coordinator/tests/<owner>/`; retain constructor dependencies in fixtures or test a cohesive production component under `coordinator/internal/`. Do not add raw-state getters, test hooks or arbitrary exports solely to relocate assertions. |
 | Pure request/response behavior | `coordinator/tests/api/inference/request/` and `coordinator/tests/api/inference/response/`; preserve parser, normalization, metadata, emitter and benchmark coverage independently of the router. |
 | Composition and global middleware | `coordinator/tests/api/`: configuration/owner wiring, release-policy propagation, request identity and recovery middleware. |
+| Cluster pair control | `coordinator/tests/api/cluster_pair_*_test.go` drive the composed server with fake members from `coordinator/tests/internal/clustermember/` (`Dial`, `GrantPairTrust`, `CatalogFile`): real WebSocket sessions that register in the member role and sign native-pair frames. Their trust evidence is fabricated through the registry's public setters, so these prove control flow, not hardware trust. Selector timing (lifetime, backoff, quarantine release) runs on a `testing/synctest` clock in `coordinator/tests/registry/native_pair_formation_test.go`. |
 | Backend conformance | `coordinator/tests/store/contracts/`; backend-specific invariants in `coordinator/tests/store/memory/` and `coordinator/tests/store/postgres/`. |
 
 Provider heartbeat telemetry and inventory write-failure tests construct the

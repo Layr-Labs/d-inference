@@ -139,6 +139,60 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 | `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/app/routing.go`; `coordinator/api/inference/configuration.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
 | `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/app/runtime_policy.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |
 
+### Experimental cluster pairs
+
+Off unless `EIGENINFERENCE_CLUSTER_PAIR_CATALOG` is set. With it unset no
+approval catalog exists, the pair selector is not started, member connections
+are never attached to pair control and a member registration is only
+acknowledged. Both values are validated before startup
+(`coordinator/api/cluster_pair_config.go`, `ClusterPairConfig.Check`, reported
+as `cluster_pairs`), so a mistyped file or address stops the coordinator
+instead of disabling or widening the feature.
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_CLUSTER_PAIR_CATALOG` | absolute path to a JSON approval file | unset (off) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/native_pair.go` (`clusterPairCatalog`); `coordinator/registry/native_pair_catalog_file.go` (`ParseNativeRuntimeCatalog`) | The operator's reviewed native-runtime approvals. Enables member attachment and native-pair control, and starts the pair selector (`StartClusterPairFormation`). Only this file can approve a runtime; no provider message can add or change an entry. |
+| `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES` | comma-separated IP addresses or CIDR prefixes | unset (trust none) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/provider/member_transport.go` (`ParseTrustedTLSProxies`, `memberTransport`) | Addresses of the operator's TLS-terminating reverse proxy. Requires the catalog. A prefix that would trust every peer (`/0`) and a hostname are refused. See the trade-off below. |
+
+The approval file has schema `darkbloom_cluster_pair_catalog_v1` and an
+`approvals` list of at most 64 entries. Every field is required; unknown
+fields, trailing data and out-of-bounds values are errors.
+
+| Field | Type | Rule |
+|---|---|---|
+| `id` | string | 1–128 bytes, unique in the file |
+| `model` | string | the exact catalog model ID the pair serves |
+| `generation` | integer | positive policy generation |
+| `plan_sha256`, `artifact_sha256`, `native_runtime_sha256`, `metallib_sha256`, `resource_library_sha256`, `capability_sha256`, `resource_policy_sha256`, `profile_sha256` | string | 64 lowercase hex, nonzero |
+| `schedule` | integer | `1` or `2` |
+| `maximum_plaintext`, `maximum_transport_frame` | integer | plaintext 1 to 16 MiB; frame at least plaintext + 40 |
+| `maximum_records`, `maximum_cumulative_plaintext` | integer | 1 to 1,048,576 records; 1 byte to 4 GiB |
+| `allowed_chips` | list of strings | 1–16 chip names, sorted, unique |
+| `not_after` | RFC 3339 time | approval expiry; a pair is formed only while a full session fits before it |
+
+Each entry's canonical bytes are what a member compares with its installed
+policy, and their SHA-256 is the `policy_sha256` it registers
+(`NativeRuntimeCatalog.PolicySHA256`). Changing any field therefore produces a
+different policy: members that installed the old one are no longer offered a
+pair.
+
+**Trusted TLS proxy trade-off.** By default a member connection attaches to
+pair control only when the accepted request itself completed a TLS handshake.
+The production coordinator listens on plain HTTP behind Caddy
+(`coordinator/Caddyfile`), so it never sees one. With the setting, a request
+is also accepted when its immediate peer address is in the list and it carries
+exactly one `X-Forwarded-Proto: https` header. The coordinator then no longer
+observes the handshake; it relies on the deployment for three things: only the
+proxy can reach the coordinator's port from a listed address, the proxy
+forwards only TLS traffic to it, and the proxy replaces any client-supplied
+`X-Forwarded-Proto` (Caddy's default for untrusted clients). Anything else able
+to connect from a listed address, including any local process when loopback is
+listed, can claim TLS. Member control frames remain individually signed by the
+member's attested key and carry only public values, so what the setting gives
+up is the coordinator's own assurance that the client hop was encrypted, not
+frame authenticity. With the setting unset the forwarded header is ignored
+whatever its source.
+
 ### Database, store and persistent disk
 
 | Variable | Values / type | Default | Read in | Effect |

@@ -56,13 +56,19 @@ type NativePairCoordinator struct {
 	connections map[*Provider]*NativePairConnection
 	sessions    map[[16]byte]*NativePairSession
 	closed      bool
+	// formations is the pair selector's memory per registered cluster; nothing
+	// is written to it unless RunFormation runs. formationWake coalesces
+	// requests for a prompt selector pass.
+	formations    map[nativePairFormationKey]*nativePairFormation
+	formationWake chan struct{}
 }
 
 func NewNativePairCoordinator(r *Registry, c *NativeRuntimeCatalog) *NativePairCoordinator {
 	if r == nil || c == nil || len(c.entries) == 0 {
 		return nil
 	}
-	return &NativePairCoordinator{registry: r, catalog: c, revoked: make(map[string]bool), connections: make(map[*Provider]*NativePairConnection), sessions: make(map[[16]byte]*NativePairSession)}
+	return &NativePairCoordinator{registry: r, catalog: c, revoked: make(map[string]bool), connections: make(map[*Provider]*NativePairConnection), sessions: make(map[[16]byte]*NativePairSession),
+		formations: make(map[nativePairFormationKey]*nativePairFormation), formationWake: make(chan struct{}, 1)}
 }
 
 // Done means admission ended, never that native memory or device leases retired.

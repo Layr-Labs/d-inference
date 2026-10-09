@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -414,9 +414,17 @@ quarantine. `coordinator/protocol/native_pair.go` and
 `native_authorization.go` own the closed public frame and canonical
 authorization bytes, mirrored by
 `provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift`;
-`coordinator/protocol/execution_role.go` owns the member registration role.
+`coordinator/protocol/execution_role.go` owns the member registration role
+and the registered cluster membership.
 The `Server.nativePairs` lifecycle is constructed only when
 `ServerConfig.NativePairCatalog` is configured (nil by default, handlers
 fail closed); the provider read loop attaches/detaches member connections
 and dispatches the five member frame types through the strict decoder.
+`coordinator/api/cluster_pair_config.go` owns the operator opt-in that builds
+that catalog from a reviewed file (`native_pair_catalog_file.go`), and
+`coordinator/api/provider/member_transport.go` owns the transport evidence a
+member needs to attach. `coordinator/registry/native_pair_formation.go` owns
+the pair selector, the production caller of `Reserve`, started by
+`app.startBackgroundLoops` through `Server.StartClusterPairFormation`;
+`native_pair_view.go` owns the listing of registered clusters.
 See [cluster-control-protocol.md](../../reference/cluster-control-protocol.md).

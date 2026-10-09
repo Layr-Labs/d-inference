@@ -239,6 +239,7 @@ type RegisterMessage struct {
 	ExecutionRole               ExecutionRole                      `json:"execution_role,omitempty"`
 	MemberRegistrationNonce     string                             `json:"member_registration_nonce,omitempty"`
 	ClusterModels               []ModelInfo                        `json:"cluster_models,omitempty"`
+	ClusterMembership           *ClusterMembership                 `json:"cluster_membership,omitempty"`
 	AppAttestProtocol           int                                `json:"app_attest_protocol,omitempty"`
 	ModelAutopilot              *ModelAutopilotState               `json:"model_autopilot,omitempty"`
 	Type                        string                             `json:"type"`

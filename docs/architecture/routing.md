@@ -1221,9 +1221,14 @@ no desired models in the first place, so catalog publication stays
 deliverable to it (`DesiredModelsForProvider`,
 `coordinator/registry/model_commands.go`). The empty `desired_models`
 revoke still passes. The public control shapes live in
-[cluster-control-protocol.md](../reference/cluster-control-protocol.md);
-the catalog stays empty, so the lifecycle is inert until an explicitly
-approved native runtime catalog is configured.
+[cluster-control-protocol.md](../reference/cluster-control-protocol.md).
+The catalog is empty by default, so the lifecycle is inert. When the operator
+configures one, the pair selector
+(`coordinator/registry/native_pair_formation.go`, `RunFormation`) forms a pair
+from two attached members of one account that registered the same cluster,
+the same approved policy and the two ranks, and forms the next session when
+one ends. A formed pair is not yet a routing candidate: members stay excluded
+by `member_only`, and no request is dispatched to a pair.
 
 ## Related
 

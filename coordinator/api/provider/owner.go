@@ -41,6 +41,9 @@ type Dependencies struct {
 	// NativePairs is nil unless startup supplies an explicit native approval
 	// catalog; member attachment and native-pair frames then fail closed.
 	NativePairs *registry.NativePairCoordinator
+	// TrustedTLSProxies lets a member connection that arrived through the
+	// operator's TLS-terminating proxy attach. The zero value trusts none.
+	TrustedTLSProxies TrustedTLSProxies
 }
 
 type Owner struct {
@@ -57,6 +60,8 @@ type Owner struct {
 	heartbeat   *heartbeat.Ingestor
 	inventory   *inventory.Controller
 	nativePairs *registry.NativePairCoordinator
+	// trustedTLSProxies is fixed at construction.
+	trustedTLSProxies TrustedTLSProxies
 }
 
 func New(d Dependencies) *Owner {
@@ -71,7 +76,8 @@ func New(d Dependencies) *Owner {
 	return &Owner{registry: d.Registry, store: d.Store, trust: d.Trust, releases: d.Releases,
 		catalog: d.Catalog, geoResolver: d.Geo, observation: d.Observation, logger: d.Logger, inference: d.Inference,
 		sessions: d.Sessions, heartbeat: heartbeat.New(d.Registry, d.Observation),
-		inventory: inventory.New(d.Registry, supportsDesiredModels, d.Logger), nativePairs: d.NativePairs}
+		inventory: inventory.New(d.Registry, supportsDesiredModels, d.Logger), nativePairs: d.NativePairs,
+		trustedTLSProxies: d.TrustedTLSProxies}
 }
 
 // SetInferenceEvents is setup-only; sessions must not be running yet.

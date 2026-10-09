@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -1696,3 +1696,12 @@ authorization; the hook fails closed while `ServerConfig.NativePairCatalog`
 is nil (the default), and any configured catalog must come from
 `NewNativeRuntimeCatalog` with explicitly approved entries. The wire shapes
 it drives are documented in [cluster-control-protocol.md](cluster-control-protocol.md).
+
+Its production counterpart is the pair selector, started by
+`Server.StartClusterPairFormation` only when the operator set
+`ServerConfig.ClusterPairs` (see
+[configuration](configuration.md#experimental-cluster-pairs)). The selector is
+not reachable over HTTP either: it pairs two attached member connections of one
+account from what they registered. `Server.ClusterPairs`
+(`registry.NativePairView`) is the in-process listing of registered clusters
+and their state; no route serves it yet.

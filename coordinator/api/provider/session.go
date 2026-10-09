@@ -444,7 +444,7 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 
 			if s.nativePairs != nil && regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
 				var attachErr error
-				nativeConnection, attachErr = s.nativePairs.Attach(provider, regMsg.MemberRegistrationNonce, r.TLS)
+				nativeConnection, attachErr = s.nativePairs.Attach(provider, regMsg.MemberRegistrationNonce, s.memberTransport(r))
 				if attachErr != nil {
 					_ = conn.Close(websocket.StatusPolicyViolation, "native pair transport refused")
 					return

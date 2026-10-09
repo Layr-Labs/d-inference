@@ -39,6 +39,13 @@ const nativePairFixtureModel = "verified-pair-fixture-model"
 // never relay.
 func pairMember(t *testing.T, r *production.Registry, conn *websocket.Conn, id, serial, nonce string) *production.Provider {
 	t.Helper()
+	return pairMemberWith(t, r, conn, id, serial, nonce, nil)
+}
+
+// pairMemberWith is pairMember with the registration adjusted before it is
+// sent, for members that also register a cluster membership.
+func pairMemberWith(t *testing.T, r *production.Registry, conn *websocket.Conn, id, serial, nonce string, adjust func(*protocol.RegisterMessage)) *production.Provider {
+	t.Helper()
 	processKey := sha256.Sum256([]byte("fixture-process-" + id))
 	se := pairDeviceSEKey(serial)
 	msg := &protocol.RegisterMessage{
@@ -56,6 +63,9 @@ func pairMember(t *testing.T, r *production.Registry, conn *websocket.Conn, id, 
 			TextBackendInprocess: true, TextProxyDisabled: true, SIPEnabled: true,
 			AntiDebugEnabled: true, CoreDumpsDisabled: true, EnvScrubbed: true,
 		},
+	}
+	if adjust != nil {
+		adjust(msg)
 	}
 	p := r.Register(id, conn, msg)
 	if p == nil {
@@ -309,7 +319,7 @@ func newNativePairWireFixture(t *testing.T) *nativePairWireFixture {
 		f.p[rank] = pairMember(t, r, server, ids[rank], f.serials[rank], f.nonces[rank])
 		// Explicit test TLS state; this is not a claim that the helper's
 		// cleartext socket is a TLS deployment.
-		n, err := f.c.Attach(f.p[rank], f.nonces[rank], &tls.ConnectionState{HandshakeComplete: true})
+		n, err := f.c.Attach(f.p[rank], f.nonces[rank], production.NativePairDirectTLS(&tls.ConnectionState{HandshakeComplete: true}))
 		if err != nil {
 			t.Fatalf("attach rank%d: %v", rank, err)
 		}
@@ -399,16 +409,26 @@ func (f *nativePairWireFixture) reserve(t *testing.T) *production.NativePairSess
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.readPrepares(t)
+	return s
+}
+
+// readPrepares reads both ranks' prepare frames and adopts that session's
+// epoch, generation and starts for the frames the fixture signs next. It
+// returns the rank-0 frame.
+func (f *nativePairWireFixture) readPrepares(t *testing.T) protocol.NativePairMessage {
+	t.Helper()
+	var first protocol.NativePairMessage
 	for rank := range f.n {
 		m := f.read(t, rank, protocol.TypeNativePairPrepare)
 		f.starts[rank] = parsePrepareStart(t, m)
 		if rank == 0 {
-			f.epoch, f.gen = m.Epoch, m.Generation
+			first, f.epoch, f.gen = m, m.Epoch, m.Generation
 		} else if m.Epoch != f.epoch || m.Generation != f.gen {
 			t.Fatal("ranks disagree on membership")
 		}
 	}
-	return s
+	return first
 }
 
 func (f *nativePairWireFixture) prepared(t *testing.T, rank int) {
@@ -514,7 +534,7 @@ func TestNativePairNegativeSecurityCases(t *testing.T) {
 		}
 		c := production.NewNativePairCoordinator(r, catalog)
 		defer c.Close()
-		if _, err = c.Attach(p, strings.Repeat("3", 64), &tls.ConnectionState{HandshakeComplete: true}); err == nil {
+		if _, err = c.Attach(p, strings.Repeat("3", 64), production.NativePairDirectTLS(&tls.ConnectionState{HandshakeComplete: true})); err == nil {
 			t.Fatal("solo provider attached as member")
 		}
 	})
@@ -644,7 +664,7 @@ func TestNativePairAttachRequiresActualTLSState(t *testing.T) {
 	c := production.NewNativePairCoordinator(r, catalog)
 	defer c.Close()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
-		n, err := c.Attach(p, nonce, q.TLS)
+		n, err := c.Attach(p, nonce, production.NativePairDirectTLS(q.TLS))
 		if err != nil {
 			w.WriteHeader(http.StatusForbidden)
 			return

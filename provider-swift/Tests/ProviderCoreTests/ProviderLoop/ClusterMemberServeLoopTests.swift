@@ -98,4 +98,20 @@ struct ClusterMemberServeLoopTests {
             #expect(await fixture.loop.memberConnectionID != nil)
         }
     }
+
+    @Test func acceptedMemberRunsNoSoloMonitorAndKeepsItsEmptyCapacity() async throws {
+        try await withMemberServeLoop(stopOnDisconnect: false) { fixture, _ in
+            try await fixture.accept(try await fixture.awaitRegistration())
+            #expect(await fixture.loop.runsNoSoloMonitor())
+            let capacity = await fixture.loop.state.backendCapacity
+            #expect(capacity?.slots.isEmpty == true && capacity?.freeForLoadGb == 0)
+        }
+    }
+}
+
+private extension ProviderLoop {
+    func runsNoSoloMonitor() -> Bool {
+        idleMonitorTask == nil && capacityRefreshTask == nil && mtpUpgradeMonitorTask == nil
+            && modelRevisionMonitorTask == nil && autoUpdateTask == nil && prefetchCoordinator == nil
+    }
 }

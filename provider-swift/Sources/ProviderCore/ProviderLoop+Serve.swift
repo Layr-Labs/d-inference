@@ -89,16 +89,19 @@ extension ProviderLoop {
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint
         // can perform the first normal cold target load. This never downloads
-        // assistant bytes and fails open on timeout.
-        await prewarmSpecDecCatalog()
+        // assistant bytes and fails open on timeout. A control-only member
+        // serves no solo target, so it fetches no catalog and upgrades nothing.
+        if !isClusterMember { await prewarmSpecDecCatalog() }
         if Task.isCancelled || servingDrain.refusing {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
             return
         }
-        startMTPUpgradeMonitor()
-        startModelRevisionMonitor()
+        if !isClusterMember {
+            startMTPUpgradeMonitor()
+            startModelRevisionMonitor()
+        }
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -289,10 +292,14 @@ extension ProviderLoop {
         // a rogue model-load (e.g. during `attestation_challenge` priming)
         // followed by a long disconnect is still subject to the unload
         // timer.
-        startIdleMonitor()
-        startCapacityRefreshMonitor()
-        // An unattended binary relaunch is never a member-mode action.
-        if !isClusterMember { startAutoUpdateMonitor() }
+        // A control-only member holds no solo residency to unload, keeps the
+        // empty capacity it published at preparation, and never relaunches
+        // its binary unattended.
+        if !isClusterMember {
+            startIdleMonitor()
+            startCapacityRefreshMonitor()
+            startAutoUpdateMonitor()
+        }
 
         logger.info(.coordinatorClientStarted)
 

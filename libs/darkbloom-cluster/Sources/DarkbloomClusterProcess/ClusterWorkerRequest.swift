@@ -41,7 +41,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             throw ClusterWorkerOwnerError.deadline
         }
         let deadline = min(reservation.deadlineUptimeNanoseconds, admissionDeadline ?? UInt64.max,
-                           now + 5_000_000_000)
+                           now + owner.timing.admissionWaitNanoseconds)
         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
         var bytes = 0
         for (index, worker) in owner.workers.enumerated() {

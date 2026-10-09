@@ -20,7 +20,8 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         try finalKillFollowsTheChildsOwnDeadline(executable)
         try startupDeadlineBelongsToTheChild(executable)
         try pairWatchesBothRanks(executable)
-        print("{\"passed\":true,\"groups\":5,\"retirementPolicy\":true,\"actualOwnedChildren\":true,\"modelExecution\":false}")
+        try pairWaitsComeFromItsCaller(executable)
+        print("{\"passed\":true,\"groups\":6,\"retirementPolicy\":true,\"actualOwnedChildren\":true,\"modelExecution\":false}")
     }
 
     static func child(_ executable: URL, rank: Int = 0, _ behavior: String, startup: Double, lifetime: Double,
@@ -100,6 +101,57 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         let own = try child(executable, "startup-exit", startup: 2, lifetime: 4, retirement: margin)
         try require(own.waitForExit(until: begin + seconds(2)), "Self-ending child was not observed")
         try require(own.termination == .exited(123) && own.sentSignals.isEmpty, "Self-ending child was signalled")
+    }
+
+    /// The admission and shutdown waits are the caller's, chosen for the model
+    /// its ranks hold. Neither ends in a signal.
+    static func pairWaitsComeFromItsCaller(_ executable: URL) throws {
+        func pair(_ behaviors: [String], _ timing: ClusterWorkerPairTiming) throws -> ([ClusterWorkerProcess], ClusterWorkerPair) {
+            let workers = try (0..<2).map { try child(executable, rank: $0, behaviors[$0], startup: 5, lifetime: 20, retirement: .standard) }
+            return (workers, try ClusterWorkerPair(workers: workers, startupDeadline: now() + seconds(5), timing: timing))
+        }
+        func reservation() -> ClusterWorkerReservation {
+            .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
+                  deadlineUptimeNanoseconds: now() + seconds(10), capacityLimitBytes: 1800)
+        }
+        func settle(_ pair: ClusterWorkerPair) {
+            let done = DispatchSemaphore(value: 0)
+            Task.detached { await pair.shutdown(); done.signal() }
+            done.wait()
+        }
+        try require(ClusterWorkerPairTiming.standard == .init(admissionWaitNanoseconds: seconds(5), shutdownAcknowledgementNanoseconds: seconds(2)),
+            "The standing waits changed")
+        var refused = false
+        do { _ = try ClusterWorkerPair(workers: [], startupDeadline: now() + seconds(1), timing: .init(admissionWaitNanoseconds: 0, shutdownAcknowledgementNanoseconds: seconds(2))) }
+        catch { refused = true }
+        try require(refused, "An unbounded wait was accepted")
+
+        // A rank that takes 0.3 s to admit: refused under a 0.1 s wait, admitted under the standing one.
+        let hasty = try pair(["slow-admit", "normal"], .init(admissionWaitNanoseconds: seconds(0.1), shutdownAcknowledgementNanoseconds: seconds(2)))
+        var admitted = true
+        do { _ = try hasty.1.reserve(requestID: UUID(), reservation: reservation()) } catch { admitted = false }
+        try require(!admitted && hasty.1.readiness == nil, "The caller's admission wait was not applied")
+        settle(hasty.1)
+        try require(hasty.0.allSatisfy { $0.observedExit && $0.sentSignals.isEmpty }, "An admission wait ended in a signal")
+        let patient = try pair(["slow-admit", "normal"], .standard)
+        let lease = try patient.1.reserve(requestID: UUID(), reservation: reservation())
+        try require(lease.reservedBytes == 1600, "A rank that admitted within the standing wait was refused")
+        lease.cancel()
+        let limit = now() + seconds(6)
+        while !lease.isRetired && now() < limit { Thread.sleep(forTimeInterval: 0.01) }
+        lease.releaseResources()
+        settle(patient.1)
+
+        // A rank that takes 0.5 s to release: its stream is closed after a 0.2 s
+        // wait (the stand-in reports that as status 21), and it is left to
+        // finish; under a 2 s wait it acknowledges and exits 0.
+        let brisk = try pair(["slow-shutdown", "slow-shutdown"], .init(admissionWaitNanoseconds: seconds(5), shutdownAcknowledgementNanoseconds: seconds(0.2)))
+        settle(brisk.1)
+        try require(brisk.0.allSatisfy { $0.termination == .exited(21) && $0.sentSignals.isEmpty },
+            "The caller's shutdown wait was not applied, or ended in a signal: \(brisk.0.map { String(describing: $0.termination) })")
+        let calm = try pair(["slow-shutdown", "slow-shutdown"], .standard)
+        settle(calm.1)
+        try require(calm.0.allSatisfy { $0.termination == .exited(0) && $0.sentSignals.isEmpty }, "A rank that released within its wait was not left to acknowledge")
     }
 
     /// Rank 1 exits while rank 0 is still starting. The pair fails at once

@@ -8,6 +8,8 @@ import DarkbloomClusterBootstrap
     static func main() throws {
         guard [3, 9].contains(CommandLine.arguments.count), let rank = Int(CommandLine.arguments[1]), (0...1).contains(rank) else { exit(64) }
         let behavior = CommandLine.arguments[2]
+        // A stand-in's own hard deadline: no check, passing or failing, leaves one behind.
+        alarm(60)
         if behavior.hasPrefix("bootstrap") {
             guard CommandLine.arguments.count == 9, CommandLine.arguments[3] == "--bootstrap-socket-path",
                   CommandLine.arguments[5] == "--bootstrap-owner-pid", CommandLine.arguments[7] == "--bootstrap-deadline-uptime-nanoseconds",
@@ -82,6 +84,14 @@ import DarkbloomClusterBootstrap
                     let last = 8 + selected
                     let reason: ClusterWorkerFinishReason? = reservation!.stopTokenIDs.contains(last) ? .eos
                         : selected == reservation!.outputCount ? .length : decision == .cleanStop ? .clientStop : nil
+                    // "batched": rank 0 of a phase-split pair as its owner sees it.
+                    // Tokens after the first arrive in relayed batches of 1, 2, 4,
+                    // 8 then 16 with a pause before each batch, and a client stop
+                    // is answered only at the decoding rank's next batch boundary.
+                    if behavior == "batched" {
+                        if reason == .clientStop { usleep(250_000) }
+                        else if reason == nil, [1, 3, 7, 15, 31].contains(selected) { usleep(80_000) }
+                    }
                     if let reason { try emit(.finished(reason)); try emit(.retired(.clean)); if behavior == "exhausted" { try emit(.unavailable(.runtimeError)) } }
                     else {
                         try emit(.committedToken(ordinal: selected, tokenID: 9 + selected,
@@ -91,6 +101,14 @@ import DarkbloomClusterBootstrap
                     if behavior == "hang" { continue }
                     try emit(.retired(.cancelled))
                 case .shutdown:
+                    // "slow-shutdown": releasing takes half a second. Status 21
+                    // reports that the command stream was closed before the
+                    // release was acknowledged.
+                    if behavior == "slow-shutdown" {
+                        usleep(500_000)
+                        var probe = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+                        if poll(&probe, 1, 0) > 0 { exit(21) }
+                    }
                     try emit(.shutdownComplete); return
                 }
             }

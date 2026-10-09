@@ -13,6 +13,27 @@ public struct ClusterWorkerPairReadiness: Sendable {
     public let requestCapacityBytes: Int
 }
 
+/// How long a pair's owner waits for a rank to answer. Neither wait ends in a
+/// signal: when one passes, the rank's command stream is closed and the rank
+/// ends itself. The caller chooses the values for the model its ranks hold.
+public struct ClusterWorkerPairTiming: Sendable, Equatable {
+    /// Longest a rank may take to answer a reservation.
+    public let admissionWaitNanoseconds: UInt64
+    /// Longest a rank may take to answer `shutdown`.
+    public let shutdownAcknowledgementNanoseconds: UInt64
+
+    public init(admissionWaitNanoseconds: UInt64, shutdownAcknowledgementNanoseconds: UInt64) {
+        self.admissionWaitNanoseconds = admissionWaitNanoseconds
+        self.shutdownAcknowledgementNanoseconds = shutdownAcknowledgementNanoseconds
+    }
+
+    public static let standard = ClusterWorkerPairTiming(admissionWaitNanoseconds: 5_000_000_000,
+                                                         shutdownAcknowledgementNanoseconds: 2_000_000_000)
+    var isBounded: Bool {
+        (1...60_000_000_000).contains(admissionWaitNanoseconds) && (1...60_000_000_000).contains(shutdownAcknowledgementNanoseconds)
+    }
+}
+
 /// Coordinates two owned native endpoints. The direct-child implementation is
 /// local; any remote endpoint must authenticate its owner, translate deadlines
 /// and retain ownership until actual native cleanup is acknowledged.
@@ -21,6 +42,7 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     public let profile: ClusterWorkerProfile
     public let executionPlanSHA256: String
     public let maximumRequests: Int
+    public let timing: ClusterWorkerPairTiming
     let workers: [any ClusterWorkerEndpoint]
     private let lock = NSLock()
     private var active: ClusterWorkerRequest?
@@ -51,14 +73,15 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     }
 
     public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
-                maximumRequests: Int = ClusterWorkerLimits.requestsPerEpoch) throws {
-        guard (1...ClusterWorkerLimits.requestsPerEpoch).contains(maximumRequests), workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
+                maximumRequests: Int = ClusterWorkerLimits.requestsPerEpoch,
+                timing: ClusterWorkerPairTiming = .standard) throws {
+        guard timing.isBounded, (1...ClusterWorkerLimits.requestsPerEpoch).contains(maximumRequests), workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
               workers[0].expectedIdentity == workers[1].expectedIdentity,
               workers[0].expectedProfile == workers[1].expectedProfile,
               workers[0].executionPlanSHA256 == workers[1].executionPlanSHA256 else {
             throw ClusterWorkerOwnerError.invalid("Expected two ordered workers with one identity/profile/plan")
         }
-        self.maximumRequests = maximumRequests
+        self.maximumRequests = maximumRequests; self.timing = timing
         self.workers = workers; identity = workers[0].expectedIdentity; profile = workers[0].expectedProfile
         executionPlanSHA256 = workers[0].executionPlanSHA256
         do { try Self.awaitReadiness(of: workers, until: startupDeadline) }
@@ -189,7 +212,7 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         guard first.0 else { await shutdownFinished.value(); return }
         let lease = first.1
         if let lease { lease.cancel(reason: .callerCancelled); await lease.waitUntilRetired(); lease.releaseResources() }
-        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        let deadline = DispatchTime.now().uptimeNanoseconds + timing.shutdownAcknowledgementNanoseconds
         await withTaskGroup(of: Void.self) { group in
             for worker in workers {
                 group.addTask {

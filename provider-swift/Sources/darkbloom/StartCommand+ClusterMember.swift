@@ -28,7 +28,7 @@ extension Start {
         let hashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         // Hardware-only capabilities are honest here. Native/kernel capability
         // proof belongs to the selected installed adapter, not a solo GPU probe.
-        let capabilities: Set<ProviderRuntimeCapability> = hardware.chipFamily == .m5 ? [.appleM5] : []
+        let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: hardware.chipFamily)
         // A setup saved for coordinator pairing yields this Mac's member
         // installation; every other setup yields none and registers no claim.
         let installation = try current.withCurrentReference { _ in
@@ -36,7 +36,9 @@ extension Start {
             try prepared.requireUnchanged()
             return installation
         }
-        try ModelRuntimeRequirements.requireEligible(modelID: prepared.model.id, available: capabilities)
+        // The unchanged model eligibility gate, with a refusal that says why a
+        // pair cannot meet it.
+        try DistributedServingEligibility.require(modelID: prepared.model.id, memberCapabilities: capabilities)
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL ?? config.coordinator.url,
             hardware: hardware, models: [prepared.model], config: config,

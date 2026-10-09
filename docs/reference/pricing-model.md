@@ -65,7 +65,7 @@ explicit value (including `0`) is used verbatim. Settlement:
 |---|---|---|---|
 | platform | `PUT /v1/admin/pricing` | `input_price > 0`, `output_price > 0`; optional `cache_read_price` in `[0, input_price]` (omitted = unset) | `coordinator/api/billing/pricing.go` (`HandleAdminPricing`); `coordinator/api/modelprice/price.go` (`modelprice.Input.Validate`) |
 | platform | `POST /v1/admin/models/register` | `input_price`, `output_price` required and positive; optional `cache_read_price` as above | `coordinator/api/catalog/model_registry_handlers.go` (`HandleRegisterModel`) |
-| provider custom | `PUT /v1/pricing`, `DELETE /v1/pricing` | positive; optional `cache_read_price` in `[0, input_price]`; no floor or ceiling relative to the platform price | `coordinator/api/billing/pricing.go` (`HandleSetPricing`, `HandleDeletePricing`) |
+| provider custom | `PUT /v1/pricing`, `DELETE /v1/pricing` | positive; optional `cache_read_price` in `[0, input_price]`; no floor or ceiling relative to the platform price. Refused with 409 `account_deleted` for an account in erasure | `coordinator/api/billing/pricing.go` (`HandleSetPricing`, `HandleDeletePricing`) |
 
 Storage: `model_prices(account_id, model, input_price, output_price,
 cache_read_price NULL, updated_at)`, primary key `(account_id, model)`

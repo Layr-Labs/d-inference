@@ -1428,12 +1428,6 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 	return (&ProviderEligibility{registry: r}).routingLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown)
 }
 
-// The pair revalidation path may pass only its own exact hold. All ordinary
-// dispatch/plan/preflight callers pass nil and remain excluded.
-func (r *Registry) providerRoutingGateReasonAllowPairLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
-	return (&ProviderEligibility{registry: r}).routingAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, pair, pairEligibility)
-}
-
 func (e *ProviderEligibility) routingLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
 	// A request scoped to its owner's machines may reach that owner's pair
 	// through the pair's leader. The pair is admitted on its own hold and with

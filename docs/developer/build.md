@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -1109,6 +1109,12 @@ Candidate native prefix-cache benchmarks must build ProviderCore and
 prompt SPI carries production sampling parameters into each engine request.
 See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
 for sampling scope, regression filters and diagnostic restrictions.
+
+Elastic-window SDK tests compile against the same pinned local MLX source as
+the provider. The temporary standalone SwiftPM binding and exact test selection
+are documented in [the elastic window test procedure](test.md#elastic-contiguous-window-tests).
+Stage the authoritative metallib after the SDK test build; staging it while
+Xcode is signing the test bundles can invalidate that build.
 
 ### Qwen packaged resource regression
 

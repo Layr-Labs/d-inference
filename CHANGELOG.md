@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — compact contiguous sliding-window KV
+
+- Allocate fresh Gemma 4 and GPT-OSS contiguous sliding-window cache backing as tokens arrive, growing to each model's existing window. Preserve exact K/V contents, absolute positions, rollback and checkpoint compatibility; MiMo keeps its existing allocation path.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

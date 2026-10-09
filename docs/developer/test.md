@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Autopilot rewards
 
@@ -2430,6 +2430,32 @@ for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilit
   ../../scripts/run-nested-suite.sh "$suite"
 done
 ```
+
+#### Elastic contiguous window tests
+
+After the nested SDK build and source-matched metallib staging above, run:
+
+```bash
+../../scripts/run-nested-suite.sh 'CBv2ElasticWindow(Storage|ModelParity|Checkpoint)Tests' --no-parallel
+```
+
+The Provider SDK Tests CI gate covers dense allocation receipts, absolute
+replay/growth/rollback, Gemma shared-layer borrowing, complete checkpoint
+export/import and continuation, and fixed-versus-elastic tiny Gemma/GPT-OSS
+logits and KV snapshots. The storage suite lives under
+`libs/mlx-swift-lm/Tests/MLXLMTests/Kernel/Cache`; model and codec integration
+fixtures live under `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Cache`.
+The provider factory test (`EngineV2KVBackendGateTests`,
+`contiguousElasticWindowsRequireLoadedFamily`) checks the loaded-family gate.
+These fixtures preserve native arithmetic; they do not qualify another cache
+format or establish full-model performance.
+
+For a standalone local SDK build against the provider's pinned MLX checkout,
+use `swift package edit mlx-swift --path /absolute/path/to/libs/mlx-swift`
+in `libs/mlx-swift-lm` before building tests, then `swift package unedit mlx-swift`
+after validation. This is temporary SwiftPM workspace state; do not change the
+SDK's checked-in dependency pin or publish the workspace override. Stage the
+source-matched metallib only after building the test bundles.
 
 #### Finding provider tests
 

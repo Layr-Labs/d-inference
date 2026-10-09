@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -39,6 +39,25 @@ SSD snapshots survive beyond a request without retaining their KV in resident me
 | Memory | Per-request grant reserved at admission in `GlobalKVCacheBudget` | Production starts with empty segmented storage under the admitted slot grant; native admission reserves growth before allocation and retains live owners across grant changes. Actual committed backing is reported separately. |
 | On failure | — | Under `auto`: degrade to contiguous with a `fallback:<why>` reason; under explicit `paged`: refuse the load with `EngineV2ProductionError.pagedUnavailable` (503) |
 | Prefix-reuse backend | `.contiguousUnquantized` | `.pagedFP16` |
+
+Fresh contiguous Gemma 4 text/VLM and GPT-OSS rows grow sliding-window tensor
+backing geometrically with retained tokens, up to the model's unchanged window.
+For a nonzero replay origin, slots are indexed by the absolute position modulo
+the allocated capacity; growth remaps the retained native K/V bits before any
+new write. Multi-token attention and sharing layers retain their pre-eviction
+history plus the current chunk. Speculative commits grow only for accepted
+tokens after rollback. Other model factories, including MiMo, retain full-window
+allocation (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift`,
+`ensureCapacity`).
+
+`CBv2ContiguousKVBackend.bytesInUse` reflects the owned tensor extents; admission
+continues reserving the original worst-case window and transient bounds.
+Historical captures export the same temporal snapshots and complete imports
+retain full-ring backing, so the checkpoint format and identity do not change
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift`,
+`CBv2ContiguousBackendConfig.elasticWindowStorage`;
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/ContiguousCompleteCheckpointCodec.swift`).
 
 The default setting remains `"auto"`. In the candidate, it prefers paged only
 for these exact fleet/private-candidate identities, not family names, aliases or substrings:

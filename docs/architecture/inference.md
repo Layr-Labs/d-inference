@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -629,6 +629,12 @@ and the coordinator can refuse to route
   `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` gates the load-time parity prefill
   between MLXVLM's inline text model and the extracted MLXLLM target
   (`provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift`).
+
+### Contiguous window backing
+
+Fresh contiguous Gemma 4 and GPT-OSS sliding rows use
+[elastic window backing](prefix-cache.md#kv-layouts). Their semantic windows,
+native dtypes, admission bounds and complete checkpoint format remain unchanged.
 
 ### Paged runtime type failures
 

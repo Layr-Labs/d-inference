@@ -34,7 +34,7 @@ reviewed; that gate is open.
 | `745a8f484` | `darkbloom-cluster-stage-check`: one rank's verified load and release on one Mac, no collective. First execution of the loader on the real artifact |
 | `960b855f5` | Host gate: swap left from earlier is admitted while memory pressure is normal; refused under warning pressure. Policy tests added |
 
-Nothing has been pushed. The clone's push URL is disabled on purpose.
+Pushed: branch `feat/cluster-two-mac-foundation` on `Layr-Labs/d-inference`, draft pull request 1407 (opened 2026-10-08 at `6693e195b`, every commit verified). Later commits are local until the next push. The clone's default push URL stays disabled on purpose; pushes name the destination explicitly. The `mlx` fork branch is local only: that fork carries upstream's rule against agent-written commit messages and agent pushes, so it waits for the owner.
 
 ## What only the owner can unblock
 

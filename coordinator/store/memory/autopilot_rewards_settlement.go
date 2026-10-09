@@ -17,7 +17,7 @@ type autopilotRewardDay struct {
 }
 
 func finalAutopilotRewardStatus(status string) bool {
-	return status == earningsfloor.Paid || status == earningsfloor.Zero || status == earningsfloor.OptedOut
+	return status == earningsfloor.Paid || status == earningsfloor.Zero || status == earningsfloor.OptedOut || status == earningsfloor.Ineligible
 }
 
 func (s *MemoryStore) SettleAutopilotRewardDay(ctx context.Context, machineID string, day time.Time) (earningsfloor.Settlement, error) {
@@ -74,15 +74,27 @@ func (s *MemoryStore) SettleAutopilotRewardDay(ctx context.Context, machineID st
 	if prior, exists := s.autopilotRewardReceipts[key]; exists {
 		receipt.CreatedAt = prior.CreatedAt
 	}
-	optedIn, err := s.autopilotRewardOptedInBeforeLocked(machine, day.AddDate(0, 0, 1))
+	optedIn, qualified, err := s.autopilotRewardConsentBeforeLocked(machine, day.AddDate(0, 0, 1))
 	if err != nil {
 		return earningsfloor.Settlement{}, err
+	}
+	uptimeMissing := false
+	if optedIn && qualified {
+		qualified, err = s.autopilotRewardUptimeLocked(machine, day)
+		uptimeMissing = errors.Is(err, earningsfloor.ErrHistory)
+		if err != nil && !uptimeMissing {
+			return earningsfloor.Settlement{}, err
+		}
 	}
 	switch {
 	case enrollment.HistoryConflict:
 		receipt.Status = earningsfloor.HistoryRequired
 	case !optedIn:
 		receipt.Status = earningsfloor.OptedOut
+	case uptimeMissing:
+		receipt.Status = earningsfloor.HistoryRequired
+	case !qualified:
+		receipt.Status = earningsfloor.Ineligible
 	case !enrollment.BaselineKnown:
 		receipt.Status = earningsfloor.HistoryRequired
 	default:

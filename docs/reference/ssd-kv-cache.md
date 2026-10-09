@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -17,12 +17,24 @@ The tier owns one root per user, one directory per model.
 
 | Item | Value | Code |
 |---|---|---|
-| Root | `~/Library/Caches/darkbloom/kv3/` (`FileManager.urls(for: .cachesDirectory)` + `ssdRootDirectoryName = "darkbloom/kv3"`) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
+| Root | By default `~/Library/Caches/darkbloom/kv3/`; a saved `cache.directory` selects `<directory>/darkbloom/kv3/` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
 | Per-model directory | `<root>/<modelKey>/`, `modelKey = SHA256(modelId)` first 12 hex characters | `SSDPrefixCacheFactory.swift` (`cacheDirectory`) |
 | Block file | `<tag>.dbk3`, one file per attention block or complete recurrent checkpoint ([block size](../architecture/prefix-cache.md#block-hashing)); `fileExtension = "dbk3"` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
 | Epoch record | `<modelKey>/cache-epoch.json`, schema `darkbloom.cache-epoch.v1` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheEpochStore.swift` |
 | Test root | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, honoured only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` affirmative | `SSDPrefixCacheFactory.swift` (`isolatedTestRoot`) |
 | Retired root | `darkbloom/kv/` (the pre-v0.7.5 tier) is never read or written; `kv3/` is a sibling, not a subtree | `SSDPrefixCacheFactory.swift` (`ssdRootDirectoryName`) |
+
+The selected volume must pass `CacheVolume.inspect`: local writable APFS with
+ownership enabled, an operator-owned directory without group/other write access,
+and APFS encryption on external volumes. Missing storage or a UUID mismatch
+refuses cache I/O; it never redirects to the default disk. Descriptor walks check
+the pinned UUID before creating directories and opening active cache files
+(`CacheStorage.validateOpenedDirectory`, `SSDNoFollowIO`).
+
+The `.write-budget` ledger remains at the built-in root for production even when
+payloads use another disk. Existing internal usage survives disk selection and
+restart; an external volume cannot reset it. Explicit isolated test roots keep
+their own ledgers (`CacheStorage.writeBudgetRoot`).
 
 ## DBK3 file format
 
@@ -233,7 +245,7 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | Maintenance sweep | `SSDWholeRootMaintainer`, `intervalSeconds = 60`: TTL expiry, budget eviction, crash-temp cleanup | `SSDPrefixCacheFactory.swift` (`startWholeRootMaintenance`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift` |
 | TTL | `defaultTTLSeconds = 1800`, `maxTTLSeconds = 1800`, sliding on hit. Raising either needs the sign-off recorded in `docs/threat-model.yaml` (T-041, SEC-035) | `SSDPrefixCachePolicy.swift` |
 | Daily write cap | `defaultMaxWriteBytesPerDay = 750 * 1_000_000_000` | `SSDPrefixCachePolicy.swift` |
-| Complete-checkpoint repeat reserve | Demand gate first: a not-yet-durable checkpoint is written only when the coordinator's `cache_repeated_prefix_tokens >= minEffectiveTokens` or the local `SSDCheckpointDemand` history has seen the tag within the cache TTL; otherwise it settles `skipped_novel` with no bytes written and no write budget charged. Without a hint (older coordinator, standalone/local serving) the legacy write-every-checkpoint behavior stays (`SSDCheckpointDemand.admitsWrite`, `SSDHybridCheckpointStore.demandRefusal`). Admitted novel checkpoint tags use a 90% burst/refill sub-budget; tags observed again within the cache TTL can use the full shared budget. Both debit the original total cap; unlimited mode stays unlimited. The 4,096-entry volatile tag history is an admission input as well as a priority signal; durable duplicates authenticate and bypass both the gate and write consumption. Novel-share exhaustion reports `write_priority_limited`; total-budget exhaustion remains `write_rate_limited`. | `SSDCheckpointDemand.swift`, `SSDHybridCheckpointStore+DemandAdmission.swift`, `SSDHybridCheckpointStore+Write.swift`, `SSDWriteRateLimiter.swift` |
+| Complete-checkpoint repeat reserve | Demand gate first: a not-yet-durable checkpoint is written only when the coordinator's `cache_repeated_prefix_tokens >= minEffectiveTokens` or the local `SSDCheckpointDemand` history has seen the tag within the cache TTL; otherwise it settles `skipped_novel` with no bytes written and no write budget charged. Without a hint (older coordinator, standalone/local serving) the legacy write-every-checkpoint behavior stays (`SSDCheckpointDemand.admitsWrite`, `SSDHybridCheckpointStore.donationWritePolicy`). Admitted novel checkpoint tags use a 90% burst/refill sub-budget. A checkpoint whose own position is covered by the authenticated `cache_repeated_prefix_tokens` hint, or whose tag was observed again locally within the cache TTL, can use the full shared budget. Merely satisfying the donation floor does not classify a deeper unique extension as repeated. Both debit the original total cap; unlimited mode stays unlimited. The 4,096-entry volatile tag history is an admission input as well as a priority signal; durable duplicates authenticate and bypass both the gate and write consumption. Novel-share exhaustion reports `write_priority_limited`; total-budget exhaustion remains `write_rate_limited`. | `SSDCheckpointDemand.swift`, `SSDHybridCheckpointStore+DemandAdmission.swift`, `SSDHybridCheckpointStore+Write.swift`, `SSDWriteRateLimiter.swift` |
 | Complete-checkpoint maintenance | Per-file removals run under the store's `removalLock` (`performIndexedRemoval`): unlink plus index and accounting update, serialized with other removals, refused once the store is closed or no longer owns its epoch. Whole-root external deletion reconciles missing index entries before the barrier lifts. Targeted eviction and corrupt-file removal update only their known index entries, avoiding a full filesystem scan per victim. No per-file removal rotates the model epoch; the coordinator learns of a removed checkpoint through the next lookup miss, or a hit at a shorter boundary, on that provider. A reader that finds its file gone reports `miss_absent` without counting corruption. Whole-root maintenance brackets a removal only through a registered store that still owns its root (`ownsEvictionRoot`); if every registered store for the root is closed or disowned it uses the unloaded-root path, so TTL expiry and budget eviction never wait for a disowned store to close. | `SSDHybridCheckpointStore+Maintenance.swift`, `performExternalDestructiveChange`, `reconcileExternalRemovals` |
 | Owned retirement coordination | Capacity/TTL and active-owner whole-root retirement acquire the store removal lock, validate the durable epoch/binding and try the shared per-file lease without waiting. A busy renamed-but-not-indexed file is skipped; its writer commits the index before releasing that lease. Survivor identity and sequence are unchanged. | `SSDOwnedEntryRetirement.swift`, `SSDCacheEpochStore.performOwnedRetirement`, `SSDDiskBudget.retireActiveEntries` |
 | Epoch record read failure | Owned retirement and whole-root rotation reread the persisted record first. A failed no-follow parent open, status probe, descriptor stat or read (EACCES, EIO, EBUSY and the like) proves nothing about the record: that operation is refused, nothing is written, the first such failure after a successful read is logged, and the store keeps its epoch; the next owned operation rereads and proceeds once the record matches. Sequence issue also refuses without disowning. Confirmed absence (the record is replaced by rename, never unlinked), an unsafe parent, an observed symlink, directory or other non-regular entry, or a read record that is unparseable, oversized or names another schema, epoch or binding disowns the store permanently. | `SSDCacheEpochStore.swift` (`performOwnedRetirement`, `performOwnedDestructiveChange`), `SSDNoFollowIO.swift` (`checkedRegularFileStatus`, `openRegularFileForReading`) |
@@ -352,7 +364,9 @@ eviction change; both values stay in the vocabulary for them.
 
 ## Verification
 
-Three observable surfaces exist; there is no dedicated CLI verifier.
+`darkbloom cache status` checks saved storage settings and volume suitability;
+it does not certify hardware firmware or prove a runtime cache hit. Runtime
+observations remain available through these surfaces.
 
 | Surface | What to look for | Code |
 |---|---|---|
@@ -362,6 +376,8 @@ Three observable surfaces exist; there is no dedicated CLI verifier.
 | `darkbloom benchmark --parity` | Loads the model on both KV backends and reports the prefix-reuse probe as PASS/FAIL/UNAVAILABLE | `provider-swift/Sources/darkbloom/BenchmarkCommand+Parity.swift` |
 
 ## Related
+
+- [`../provider/cache-storage.md`](../provider/cache-storage.md) — set daily writes and select a disk
 
 - [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) — layouts, reuse plan, construction gate
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — coordinator side

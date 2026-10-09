@@ -1,5 +1,7 @@
 version: "1.1"
 created: "2026-05-14"
+# Autopilot cohort payout and repair boundaries reviewed 2026-10-08 in T-055
+# and T-060. This does not re-verify unrelated historical entries.
 # Initial legacy MDM cohort soft-delete filtering verified 2026-10-06.
 # Upcoming frozen legacy MDM policy documented 2026-10-04, not a production
 # activation claim or a revalidation of the older threat entries. Cohort gates
@@ -590,6 +592,14 @@ trust_boundaries:
       Memory wiping functions (secureZero via memset_s) are defined in
       SecurityHardening.swift but call-site coverage in the inference path is not
       confirmed from static analysis.
+
+      Cache payload placement is operator-controlled through provider.toml.
+      A selected external APFS volume is not part of the attested Mac boundary:
+      its controller can retain, replay or delete ciphertext and expose activity
+      metadata. UUID and filesystem checks detect ordinary replacement, not a
+      malicious clone. Keys stay on the Mac; T-041 describes cache protections
+      and retention limits. Cache disk-space checks use the selected payload
+      volume, while daily-write accounting stays on the Mac.
     current_limitations:
       - "Binary hash is computed once at startup. A binary modification after the hash
         is captured (e.g. via a writable path the binary was loaded from) would not be
@@ -857,6 +867,14 @@ trust_boundaries:
       GPU memory metrics (MLX.GPU.activeMemory, peakMemory, cacheMemory) are tracked
       and reported but not explicitly zeroed between requests. There is no Metal-level
       memset of GPU buffers between inference sessions.
+
+      Encrypted DBK3 cache payloads may reside on the built-in disk or an
+      operator-selected local APFS volume. CacheVolume and descriptor-relative
+      I/O enforce the selected filesystem's UUID, ownership and suitability;
+      external or unclassified volumes must report encryption. The volume is
+      not an attested part of the inference boundary: firmware and a cloned
+      filesystem UUID remain outside these checks. The KEK and write ledger
+      stay on the Mac. T-041 covers the residual cache exposure.
     current_limitations:
       - "GPU-side MLX buffers (Metal allocations for activations, KV-cache, logits) are
         not explicitly zeroed between requests. Residual inference data from one consumer
@@ -872,6 +890,11 @@ trust_boundaries:
       - "Model weight files are loaded from the user-writable HuggingFace cache directory.
         The operator can replace weight files between idle periods without affecting the
         currently-loaded model."
+      - "Cache TTL does not erase ciphertext from detached,
+        replaced or previously selected volumes. Cleanup needs access to the selected
+        volume; retained copies require destruction of the installation KEK for a
+        cryptographic purge. Disk metadata and malicious firmware are not hidden or
+        authenticated by payload encryption."
 
   - id: TB-008
     name: coordinator_to_payments
@@ -2029,7 +2052,7 @@ threats:
             observer cannot test a guessed prefix against anything. The
             long-open HMAC mitigation ships IMPLEMENTED with the tier that
             re-opened it.
-        (b) The at-rest window is bounded by a 30-MINUTE sliding TTL
+        (b) Cache reuse is bounded by a 30-MINUTE sliding TTL
             (raised from 15 minutes on 2026-09-26 by operator decision, the
             SEC-035 re-acceptance recorded in detection_hint below;
             DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
@@ -2041,6 +2064,13 @@ threats:
             The separate fixed 20 GiB pre-write free-space reserve includes
             the pending donation payload; it does not reserve OS disk blocks
             against unrelated concurrent writers.
+            TTL/LRU cleanup requires the selected volume to remain mounted and
+            accessible. Detached, replaced and previously selected volumes can
+            retain ciphertext and visible metadata indefinitely. Expiration
+            is enforced on entries the cache considers expired. File mtimes
+            seed restart freshness; TTL is not an anti-rollback proof against
+            a controller replaying metadata. KEK destruction provides the
+            cryptographic purge for retained copies, not a promise of physical erasure.
         (c) File crypto is the reviewed legacy scheme unchanged: per-file
             random DEK wrapped AES-256-GCM under the SE-rooted KEK,
             HKDF-derived per-chunk nonces ("dbkv-chunk-v3"), canonical
@@ -2060,6 +2090,14 @@ threats:
       shape), file count, mtimes/createdAt (activity timing), and the
       cached-model identity (modelKey directory — already public via
       heartbeats). None of these confirm a specific prefix.
+      Payload roots can be operator-selected external APFS volumes. Their
+      controllers are outside the attested process boundary: UUID cloning,
+      retained ciphertext, replay of authenticated data and filesystem metadata,
+      and denial of service remain possible. AES-GCM and context bindings reject
+      forged or incompatible payloads; they do not attest the peripheral or
+      provide a trusted monotonic freshness record. Relocation does not sweep
+      the old root. Disk budget and free-space guards apply to the selected
+      payload volume; the rolling-day write ledger remains on the Mac.
       Kill switch: DARKBLOOM_PREFIX_CACHE=0 disables the sole production
       tier, encrypted SSD. There is no production RAM tier or tier
       composition. Purge points: KEK wipe makes all files
@@ -2071,7 +2109,7 @@ threats:
       cached earlier the same half-hour). Cache scope is coordinator-authored
       from authenticated account, model build, and prompt-contract identity;
       callers cannot choose or override it.
-    adversaries: [ADV-002]
+    adversaries: [ADV-001, ADV-002]
     affected_assets: [A-001]
     affected_files:
       # (BatchScheduler / PrefixCacheManager / EncryptedPrefixCachePersistence
@@ -2085,6 +2123,9 @@ threats:
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/CacheStorage.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift
+      - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift
       - provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift
       - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift
       - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift
@@ -2113,14 +2154,15 @@ threats:
           outside that scope. Caller prompt_cache_key/user values are ignored.
         status: implemented
       - description: >
-          SSD tier at-rest window bound: 30-minute sliding TTL (env can only
+          SSD tier reuse window bound: 30-minute sliding TTL (env can only
           shorten), default available-disk/2 box-wide LRU disk budget without
           a fixed ceiling (20 GiB fallback when unavailable;
           DARKBLOOM_PREFIX_CACHE_DISK_GB overrides), a fixed 20 GiB pre-write
           free-space reserve including the pending donation payload, verified weightHash in
           coordinator mode (model-ID fallback in standalone) + layoutEpoch
           fail-closed bindings, and KEK-wipe purge (files become unreadable AND
-          unfindable — K_lookup derives from the KEK).
+          unfindable — K_lookup derives from the KEK). TTL/LRU deletion requires
+          a mounted, accessible selected volume; it cannot purge detached media.
         status: implemented
       - description: >
           SSD tier NO-persistent-memory-carve posture: the engine keeps its full
@@ -2141,7 +2183,8 @@ threats:
           baseline (as it did under the 2026-06 default-on legacy posture) —
           but the covered channel is strictly narrower than legacy: leak #2 is
           CLOSED (HMAC-keyed names, vs legacy's plaintext tokenPrefixHash),
-          the at-rest window is TTL/LRU-bounded, authenticated account scoping
+          cache reuse is TTL-bounded and accessible selected storage is swept,
+          authenticated account scoping
           closes cross-account reuse, per-donation gating caches only adoptable
           long prefixes, and DARKBLOOM_PREFIX_CACHE=0 survives restarts. The
           residual same-account in-process TTFT oracle can extend across
@@ -2162,6 +2205,20 @@ threats:
           never reads the retired tier's files under darkbloom/kv/. Releases
           through v0.9.10 deleted them in a startup sweep; later releases leave
           any remaining ones in place (KEK wipe is the crypto purge).
+        status: implemented
+      - description: >
+          Operator-selected cache storage is constrained by CacheVolume.inspect
+          and CacheStorage.validateOpenedDirectory: local writable APFS, ownership
+          enabled, private operator-owned directories without write-granting ACLs,
+          encrypted external volumes rechecked during active I/O,
+          and a pinned filesystem UUID checked against opened descriptors. Missing
+          mounts and changed UUIDs refuse I/O without recreating mount paths or
+          falling back to internal payload storage. Encryption keys and the
+          rolling-day write ledger stay on the Mac. DBK3 payload authentication,
+          HMAC names and TTL remain unchanged. These checks do not authenticate
+          peripheral firmware or defeat UUID cloning, ciphertext retention,
+          denial of service or every replay of still-valid ciphertext; operators
+          must source trusted hardware. See encryption.md, Provider cache storage.
         status: implemented
     open_findings: [SEC-035]
     severity: medium
@@ -3277,13 +3334,15 @@ threats:
       A queued request may outlive a grant, credential revocation, endpoint replacement
       or policy change. Selection-time authorization and a public snapshot are insufficient.
     adversaries: [ADV-001, ADV-003]
-    affected_assets: [A-001, A-015, A-016]
+    affected_assets: [A-001, A-009, A-015, A-016]
     affected_files:
       - coordinator/appattest/verify.go
       - coordinator/appattest/service/authorizer.go
       - coordinator/registry/app_attest_authorization.go
       - coordinator/registry/app_attest_presenter.go
       - coordinator/registry/inference_authorization.go
+      - coordinator/registry/autopilot_reward_snapshot.go
+      - coordinator/api/provider/autopilot_rewards.go
     mitigations:
       - description: >
           Verified transcript/credential/counter and current account/session/endpoint
@@ -3293,6 +3352,13 @@ threats:
       - description: >
           Explicit credential revocation denies matching live presenters and retained
           grant keys across both paths; failed storage reads never extend readiness.
+        status: implemented
+      - description: >
+          Autopilot reward qualification evaluates the lease interval at the original
+          server receive time while retaining current binding, policy, revocation
+          and privacy checks. A grant accepted during delayed frame processing cannot
+          retroactively qualify an earlier UTC day. Consent journaling preserves that
+          original timestamp through deferred baseline materialization and retries.
         status: implemented
       - description: Committed in-flight frames and already delivered plaintext cannot be recalled.
         status: accepted
@@ -3344,6 +3410,10 @@ threats:
       An operator may rotate credentials, reinstall, create new accounts or inflate
       app-origin hardware claims. Verified aliases identify known continuity, not a
       globally unique physical Mac or an Apple-certified RAM entitlement.
+      Autopilot's cohort fallback can pay a new machine with little or no personal
+      inference history. Provider-origin inventory and connected-session evidence
+      do not prove useful work or prevent an operator from enrolling unlinkable
+      identities to draw multiple cohort floors.
     adversaries: [ADV-001]
     affected_assets: [A-009, A-015]
     affected_files:
@@ -3351,13 +3421,32 @@ threats:
       - coordinator/store/machine_continuity.go
       - coordinator/store/machine_floor_settlement.go
       - coordinator/payments/baserewards/machine_candidates.go
+      - coordinator/registry/autopilot_reward_snapshot.go
+      - coordinator/store/postgres/autopilot_rewards_cohort_peers.go
+      - coordinator/store/postgres/autopilot_rewards_uptime.go
+      - coordinator/store/postgres/autopilot_rewards_settlement.go
+      - coordinator/store/memory/autopilot_rewards_settlement.go
     mitigations:
       - description: >
           Protocol3 binds hardware and the verification key; authenticated associations,
           canonical settlement identity, overlapping-uptime union and account/pool caps
           prevent known duplicate sessions from multiplying base floors.
         status: implemented
+      - description: >
+          Autopilot rejects provisional or ambiguous ownership, unions known machine
+          sessions for uptime, freezes the original baseline and atomically records
+          one finalized payment per canonical machine/day against a shared pool cap.
+          Historical qualification and missing cohort evidence fail closed. These
+          controls bound known duplicate claims, not unlinkable physical identities.
+        status: implemented
       - description: Deliberate unlinkable identities and false capacity require separate abuse policy/qualification.
+        status: open
+      - description: >
+          Autopilot has no minimum personal served-work requirement, cohort-size
+          threshold beyond one eligible peer, or per-account payout cap. Those
+          abuse controls and independent
+          validation of provider-origin inventory need a separate product policy;
+          the current global pool cap only bounds aggregate loss.
         status: open
     open_findings: []
     severity: high
@@ -3543,3 +3632,42 @@ threats:
       Run the marker tests after every schema change; check each new column that
       holds user-chosen text, a device identifier or a location against
       coordinator/internal/store/erasure/rules.go (docs/developer/personal-data.md).
+
+  - id: T-060
+    trust_boundary: TB-006
+    stride: Tampering
+    title: Compromised reward administration funds or restores unjustified floors
+    description: >
+      An attacker with administrator authorization, or an administrator relying on
+      false historical evidence, can raise the Autopilot pool cap or restore an
+      unknown baseline. The supplied evidence string records the asserted source;
+      it is not independent proof that the earnings or original opt-in existed.
+    adversaries: [ADV-003]
+    affected_assets: [A-009]
+    affected_files:
+      - coordinator/api/autopilot_handlers.go
+      - coordinator/api/autopilot/rewards.go
+      - coordinator/store/postgres/autopilot_rewards.go
+      - coordinator/store/postgres/autopilot_rewards_pool.go
+    mitigations:
+      - description: >
+          The routes require authentication and administrator authorization, accept
+          bounded strict payloads and return no-store responses. Configured
+          per-account financial rate limits apply except to shared admin-key
+          requests, which bypass them. Restoration requires an unknown baseline, bounded nonempty
+          evidence and a first-opt-in time no later than the first observation;
+          an already frozen baseline cannot be replaced. Pool reductions cannot
+          invalidate money already spent, and settlement still enforces the cap.
+        status: implemented
+      - description: >
+          Independent approval of funding and historical evidence, plus an
+          actor-attributed audit history for every cap and restoration change,
+          remain operator controls; the stored baseline evidence alone does not
+          provide those guarantees.
+        status: open
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Verify unauthorized and malformed requests fail, frozen baselines cannot be
+      overwritten and concurrent settlement cannot overspend; independently review
+      every cap increase and baseline repair before enabling payments.

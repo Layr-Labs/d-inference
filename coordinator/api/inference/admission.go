@@ -35,6 +35,8 @@ type AdmissionRequest struct {
 	ModelMaxContext           int
 	AllowedProviderSerials    []string
 	Deadline                  time.Duration
+	FallbackDeadline          time.Duration
+	DeadlineForWork           func(string, *protocol.PromptWork) time.Duration
 	ReceivedAt                time.Time
 	CachePlanForModel         func(string) registry.CachePlan
 	PromptWorkForModel        func(string) *protocol.PromptWork

@@ -187,7 +187,7 @@ func TestAutopilotRewardsErasureFencesCredit(t *testing.T) {
 				if _, err := f.rewards.SettleAutopilotRewardDay(t.Context(), enrollment.MachineID, enrollment.NextDay); !errors.Is(err, store.ErrErasureConflict) {
 					t.Fatalf("erasure did not fence settlement: %v", err)
 				}
-				if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: account.ProviderID, AccountID: account.AccountID, Supported: true, OptedIn: true, At: f.optIn.Add(time.Hour)}); !errors.Is(err, store.ErrErasureConflict) {
+				if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: account.ProviderID, AccountID: account.AccountID, Supported: true, Qualified: true, OptedIn: true, At: f.optIn.Add(time.Hour)}); !errors.Is(err, store.ErrErasureConflict) {
 					t.Fatalf("erasure did not fence consent: %v", err)
 				}
 				if _, err := f.rewards.RestoreAutopilotBaseline(t.Context(), earningsfloor.Baseline{MachineID: enrollment.MachineID, FirstOptInAt: f.optIn, SevenDayEarningsMicroUSD: 70, Evidence: "audit"}); !errors.Is(err, store.ErrErasureConflict) {

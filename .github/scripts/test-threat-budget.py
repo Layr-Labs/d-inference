@@ -19,7 +19,7 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from threat_review.budget_runner import run
-from threat_review.budget_scan import Scanner
+from threat_review.budget_scan import Scanner, failure
 from threat_review.client import APIError, GitHub, ReviewUnavailable, request_json
 from threat_review.context import ThreatContext, SONNET, OPUS, SOL
 from threat_review.paid import PaidCalls, microdollars
@@ -567,6 +567,12 @@ class ScanTests(unittest.TestCase):
         with self.assertRaises(ReviewUnavailable):
             scanner.run()
         self.assertEqual(len(self.service.calls), 1)
+
+    def test_diagnostics_preserve_safe_validation_reasons_only(self):
+        self.assertEqual(failure(ReviewUnavailable("Model returned an unknown threat reference")),
+                         "Model returned an unknown threat reference")
+        self.assertNotIn("private provider payload", failure(ValueError("private provider payload")))
+        self.assertEqual(failure(APIError(422)), "Service returned HTTP 422; no automatic paid retry")
 
     def test_control_characters_cannot_spoof_report_text(self):
         text = plain("safe\u202eevil\u2066\x00\x1b@team\u200b")

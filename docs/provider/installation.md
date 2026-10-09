@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -14,6 +14,30 @@ and defaults are the ArgumentParser declarations; `—` means required.
 outside cached Autopilot consent. Enrollment remains saved, ordinary serving
 continues, and `darkbloom autopilot models` refreshes inventory before control
 can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
+
+## `darkbloom cache`
+
+Persistent settings for encrypted inference caches; downloaded model weights use
+[`darkbloom models location`](#darkbloom-models-location) separately. Changes apply
+when serving starts again. Commands use `--config` and never migrate, erase,
+format or mount a disk (`provider-swift/Sources/darkbloom/Cache/CacheCommand.swift`,
+`Cache`; `Cache/CacheConfiguration.swift`, `updateCacheSettings`).
+
+| Command / flag | Behavior |
+|---|---|
+| `cache status` | Read saved settings and inspect the selected volume without loading keys or creating cache directories |
+| `cache status --json` | Emit directory, saved daily byte limit and unlimited flag (omitted when unset), limit source, selected volume details, storage problem and `saved_settings` scope |
+| `cache set --daily-write-gb <number>` | Save the rolling-day write ceiling in decimal GB; `0` explicitly selects unlimited writes |
+| `cache set --directory <absolute-path>` | Select an existing private directory and pin its volume UUID. Payloads live in its `darkbloom/kv3` subtree |
+| `cache set --reset-directory` | Return to the built-in directory; preserve the daily write choice and existing cache files |
+
+Both setting flags can be combined. The saved daily choice takes precedence over
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY`, including an older value baked
+into launchd. When no daily choice is saved, the environment/default rules in
+[configuration](../reference/configuration.md#ssd-prefix-cache) still apply.
+Invalid, missing or changed selected storage disables SSD caching; inference can
+continue cold. See [selecting cache storage](cache-storage.md) for disk preparation,
+limits and verification. These checks do not certify disk firmware.
 
 ## Global options
 
@@ -45,6 +69,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
+| `cache` | Inspect or set encrypted-cache storage and daily write limits | ✓ | `Cache/CacheCommand.swift` (`Cache`) |
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
@@ -301,6 +326,11 @@ deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
+With no accepted work left, a graceful drain retries native MiMo owner
+retirement until the owners retire or its deadline passes: after served
+requests, the first attempt only starts joining their finished consumers
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
+`performLifecycleDrain`).
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
@@ -753,6 +783,11 @@ Output includes:
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- `Not serving:` when the daemon is alive but a graceful drain has closed
+  admission — draining, a drain that did not finish, or a drain whose relaunch
+  never happened — with the commands that finish or interrupt it
+  (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`,
+  `Status.lifecycleDrainLine`).
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
   separated into `Startup preload pending`, `Not loaded (loads on request)`,
@@ -1450,7 +1485,9 @@ routing also requires the separate live capability described in
 once in [`reference/configuration.md`](../reference/configuration.md).
 
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides the compiled SSD
-write budget. It and `DARKBLOOM_PREFIX_CACHE_DISK_GB` are also forwarded when
+write budget when `[cache].daily_write_gb` is absent. A saved daily choice wins
+over the environment, so `darkbloom cache set` also works with an older plist.
+It and `DARKBLOOM_PREFIX_CACHE_DISK_GB` are also forwarded when
 `darkbloom start` installs the launchd job. An ordinary `darkbloom restart` reuses
 the saved plist and does not import newly exported shell variables; stop and
 start with the intended environment to update them. See the

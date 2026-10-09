@@ -30,6 +30,7 @@ type consentCaptureStore struct {
 	*memory.MemoryStore
 	mu            sync.Mutex
 	calls         []consentCaptureCall
+	baselineCalls int
 	beforeConsent func(context.Context, earningsfloor.Consent) error
 	inventoryGate <-chan struct{}
 	observed      chan store.MachineObservation
@@ -39,21 +40,33 @@ type consentCaptureStore struct {
 
 func (s *consentCaptureStore) ObserveAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) (earningsfloor.Enrollment, error) {
 	s.mu.Lock()
+	s.baselineCalls++
+	s.mu.Unlock()
+	return s.MemoryStore.ObserveAutopilotConsent(ctx, consent)
+}
+
+func (s *consentCaptureStore) RecordAutopilotConsent(ctx context.Context, consent earningsfloor.Consent) error {
+	s.mu.Lock()
 	before := s.beforeConsent
 	s.mu.Unlock()
-	var enrollment earningsfloor.Enrollment
 	var err error
 	if before != nil {
 		err = before(ctx, consent)
 	}
 	if err == nil {
-		enrollment, err = s.MemoryStore.ObserveAutopilotConsent(ctx, consent)
+		err = s.MemoryStore.RecordAutopilotConsent(ctx, consent)
 	}
 	deadline, _ := ctx.Deadline()
 	s.mu.Lock()
 	s.calls = append(s.calls, consentCaptureCall{consent, deadline, err})
 	s.mu.Unlock()
-	return enrollment, err
+	return err
+}
+
+func (s *consentCaptureStore) baselineCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.baselineCalls
 }
 
 func (s *consentCaptureStore) ObserveMachine(ctx context.Context, observation store.MachineObservation) (store.MachineIdentity, error) {

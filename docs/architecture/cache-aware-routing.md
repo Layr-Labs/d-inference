@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -16,6 +16,11 @@ SSD donations also pass the persistent root-wide write budget before publication
 (`SSDWriteRateLimiter`, `SSDWriteBudget`). Reloading a model or restarting the
 provider does not create a new allowance. Budget refusal leaves existing durable
 receipts and cache reads intact; it does not advertise a newly refused write.
+Operators may persist a daily cap or select a UUID-pinned APFS cache volume with
+[`darkbloom cache`](../provider/cache-storage.md). The write ledger remains on the
+Mac when payload storage changes. A missing or unsuitable selected volume refuses
+cache construction or active I/O, leaving inference to recompute. This does not
+change the coordinator's receipt or routing protocol.
 See the [SSD accounting contract](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 A provider that already holds a request's exact token prefix in its local
@@ -85,8 +90,9 @@ identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
 
-Sidecar timeout, crash, malformed output, unavailable artifacts, and dynamic-time
-templates return a non-participating plan. Ordinary inference continues subject
+Sidecar timeout, crash, malformed output, unavailable artifacts, and unsupported
+clock use in templates return a non-participating plan. Supported request-owned
+dates remain eligible (`validate_template_source`, `coordinator/promptsidecar/src/render.rs`). Ordinary inference continues subject
 to its existing admission and remaining request budget.
 Requests carrying media (`HasMedia`) never produce a participating plan.
 
@@ -689,6 +695,29 @@ visits its ordinary candidate pool once. Epoch, connection pointer, capability
 and proof quarantine remain required; capability revisions are rechecked at
 selection and reservation. A miss, a shorter hit or an epoch rotation removes only that
 provider's evidence from the common bucket.
+
+After the ordinary holder proof, expiry and recompute checks,
+`Tracker.MatchBoundaries` retains the deepest representative of each query-local
+compatibility group (`coordinator/internal/registry/cachetracker/matching.go`,
+`coordinator/internal/registry/cachetracker/match_groups.go`,
+`cacheMatchCompatibilityEqual`, `cacheMatchGroups.retain`). Groups distinguish
+the connection pointer, model, epoch, tier, bound measurement capability and
+whether an SSD stage cost is usable at the captured query timestamp. A deeper
+stale or uncreditable record therefore cannot hide a shorter current endpoint.
+Uncreditable representatives still count toward `MatchingHolders`; the current
+capability and quarantine checks determine `ValidHolders` as before.
+
+The optimization tracks at most `cacheMatchMaxTrackedProviders = 256` providers
+and `cacheMatchMaxGroupsPerProvider = 8` groups for any one provider. Exceeding
+either scratch budget disables grouping for the rest of that query and appends
+every remaining validated match in the original order. It neither discards
+tracker evidence nor changes provider admission. Cold queries allocate no group
+map, and dense compatible queries avoid copying the same provider identity at
+every boundary. Complete hint maps and opportunity counters are checked against
+the original materialization path in `coordinator/tests/registry/cache_match_reference_test.go`
+and `coordinator/tests/registry/cache_match_groups_test.go`; dense, sparse, cold and
+compatibility-churn workloads live in `coordinator/tests/registry/cache_match_benchmark_test.go`
+(`BenchmarkCacheMatchMaterialization`).
 
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,
 and time-to-first-token gates remain mandatory

@@ -46,7 +46,7 @@ func (d *dispatchState) dispatchInput(timing *registry.RequestTiming, exclude ma
 		Request: d.r, Model: d.model, PublicModel: d.publicModel, Body: d.rawBody, Stream: d.stream,
 		ConsumerKey: d.consumerKey, ConsumerLocation: d.consumerLocation,
 		ReservedMicroUSD: d.reservedMicroUSD, EstimatedPromptTokens: d.estimatedPromptTokens,
-		Deadline: d.deadline, RequestedMaxTokens: d.requestedMaxTokens, TokenAdmission: d.tokenAdmission,
+		Deadline: d.deadline, FallbackDeadline: d.fallbackDeadline, DeadlineForWork: d.promptDeadlineForWork, RequestedMaxTokens: d.requestedMaxTokens, TokenAdmission: d.tokenAdmission,
 		RequiresVision: d.requiresVision, Traits: d.traits(), AllowedProviderSerials: d.allowedProviderSerials,
 		IsResponsesAPI: d.isResponsesAPI,
 		Scope:          providerdispatch.Scope{SelfRouteOnly: d.policy.enabled, PreferOwner: d.policy.prefer, OwnerAccountID: d.policy.ownerAccountID},

@@ -28,6 +28,10 @@ def failure(error):
         return f"Service returned HTTP {error.status}; no automatic paid retry"
     if isinstance(error, ScanTimeout):
         return "Runtime limit reached; completed findings retained"
+    if isinstance(error, ReviewUnavailable):
+        # These are fixed, credential-free messages emitted by our validators.
+        # Preserve the reason; raw provider/SDK exceptions still use the fallback.
+        return str(error)
     return "Review unavailable or invalid response; completed findings retained"
 
 

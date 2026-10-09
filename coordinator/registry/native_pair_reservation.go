@@ -36,6 +36,7 @@ func (c *NativePairCoordinator) Reserve(m [2]*NativePairConnection, approvalID s
 		}
 	}
 	c.mu.Lock()
+	c.removeReleasedSessionsLocked()
 	if c.closed || len(c.sessions) >= nativePairMaximumSessions || !c.validConnectionLocked(m[0]) || !c.validConnectionLocked(m[1]) || m[0] == m[1] || m[0].session != nil || m[1].session != nil {
 		c.mu.Unlock()
 		return nil, ErrNativePairControl

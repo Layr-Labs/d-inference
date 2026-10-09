@@ -67,7 +67,9 @@ func (r *Registry) ObserveVerifiedPairOwnerReleased(h *VerifiedPairHandle, p *Pr
 	r.quarantineVerifiedPairLocked(s)
 	if s.released[0] && s.released[1] {
 		r.releaseVerifiedPairLocked(s)
+		return nil
 	}
+	r.releaseAbandonedQuarantineLocked(s, time.Now())
 	return nil
 }
 
@@ -117,23 +119,36 @@ func (r *Registry) providerPairHeldLocked(p *Provider, now time.Time, except *ve
 	return false
 }
 
-// Caller holds r.mu. Disconnect also holds the disconnecting p.mu, while trust
-// revocation may not; this helper reads no provider fields or other locks.
-// A never-start-authorized pending grant is safe to cancel;
-// possible native ownership is retained independently of live registry entries.
+// Caller holds r.mu for writing while Disconnect removes p from the registry;
+// it also holds the disconnecting p.mu, and this helper reads no provider
+// fields or other locks. A never-start-authorized pending grant is safe to
+// cancel. A committed grant is quarantined: possible native ownership outlives
+// the registry entry, and this member's release receipt can no longer arrive.
 func (r *Registry) disconnectVerifiedPairLocked(p *Provider) {
-	if s := r.verifiedPairs.connections[p]; s != nil {
-		r.endVerifiedPairLocked(s)
+	s := r.verifiedPairs.connections[p]
+	if s == nil {
+		return
 	}
+	r.endVerifiedPairLocked(s)
+	if s.phase != VerifiedPairQuarantined {
+		return
+	}
+	if rank := verifiedPairRank(s, p); rank >= 0 {
+		s.departed[rank] = true
+	}
+	r.releaseAbandonedQuarantineLocked(s, time.Now())
 }
 
 // Call only after releasing p.mu. Loss notifications refer to the observed
 // object, so a late challenge from a disconnected socket cannot revoke a new
 // connection's replacement grant merely because its textual ID was reused.
+// The connection itself stays registered and can still deliver its receipt.
 func (r *Registry) invalidateVerifiedPairForProvider(p *Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.disconnectVerifiedPairLocked(p)
+	if s := r.verifiedPairs.connections[p]; s != nil {
+		r.endVerifiedPairLocked(s)
+	}
 }
 
 // Invalidation observed during a policy reconciliation belongs to the exact
@@ -166,11 +181,45 @@ func (r *Registry) closeVerifiedPairDoneLocked(s *verifiedPairState) {
 }
 
 func (r *Registry) quarantineVerifiedPairLocked(s *verifiedPairState) {
-	if s.phase == VerifiedPairReleased {
+	if s.phase == VerifiedPairReleased || s.phase == VerifiedPairQuarantined {
 		return
 	}
 	s.phase = VerifiedPairQuarantined
 	r.closeVerifiedPairDoneLocked(s)
+	// Members that already left wait only for the owners to retire.
+	s.timer = time.AfterFunc(time.Until(verifiedPairOwnersRetiredBy(s)), func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if _, exists := r.verifiedPairs.states[s]; exists {
+			r.releaseAbandonedQuarantineLocked(s, time.Now())
+		}
+	})
+}
+
+// After this instant no owner started under the reservation can still be
+// running or retiring: the fixed lifetime is immutable and never refreshed.
+func verifiedPairOwnersRetiredBy(s *verifiedPairState) time.Time {
+	return s.membership.ExpiresAt.Add(verifiedPairOwnerRetirementLimit)
+}
+
+// A quarantine normally ends with both authenticated owner-release receipts.
+// A member whose original connection left the registry can never deliver one,
+// so its device would stay fenced until the coordinator restarts. Release the
+// pair once every member either delivered its receipt or departed, and no
+// owner can still be running. A member that is still connected and owes its
+// receipt keeps the whole pair held; time alone never releases it. This is
+// not a receipt and proves nothing about a remote machine. Caller holds r.mu
+// for writing.
+func (r *Registry) releaseAbandonedQuarantineLocked(s *verifiedPairState, now time.Time) {
+	if s.phase != VerifiedPairQuarantined || now.Before(verifiedPairOwnersRetiredBy(s)) {
+		return
+	}
+	for rank := range s.providers {
+		if !s.released[rank] && !s.departed[rank] {
+			return
+		}
+	}
+	r.releaseVerifiedPairLocked(s)
 }
 
 func (r *Registry) releaseVerifiedPairLocked(s *verifiedPairState) {
@@ -198,6 +247,7 @@ func (r *Registry) expireVerifiedPairsLocked(now time.Time) {
 		if !now.Before(deadline) {
 			r.endVerifiedPairLocked(s)
 		}
+		r.releaseAbandonedQuarantineLocked(s, now)
 	}
 }
 

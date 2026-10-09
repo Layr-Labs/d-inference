@@ -40,8 +40,7 @@ const nativePairFixtureModel = "verified-pair-fixture-model"
 func pairMember(t *testing.T, r *production.Registry, conn *websocket.Conn, id, serial, nonce string) *production.Provider {
 	t.Helper()
 	processKey := sha256.Sum256([]byte("fixture-process-" + id))
-	x, y := elliptic.P256().ScalarBaseMult([]byte(serial))
-	se := base64.StdEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y))
+	se := pairDeviceSEKey(serial)
 	msg := &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
 		ExecutionRole:           protocol.ExecutionRoleClusterMember,
@@ -62,6 +61,14 @@ func pairMember(t *testing.T, r *production.Registry, conn *websocket.Conn, id, 
 	if p == nil {
 		t.Fatal("member registration refused")
 	}
+	trustPairDevice(t, p, serial, se, &protocol.BackendCapacity{TotalMemoryGB: 64})
+	return p
+}
+
+// trustPairDevice gives a registered fixture connection the hardware, code and
+// release evidence of the device identified by serial and its SE key.
+func trustPairDevice(t *testing.T, p *production.Provider, serial, se string, capacity *protocol.BackendCapacity) {
+	t.Helper()
 	p.Mu().Lock()
 	p.Attested = true
 	p.TrustLevel = production.TrustHardware
@@ -74,7 +81,7 @@ func pairMember(t *testing.T, r *production.Registry, conn *websocket.Conn, id, 
 	p.RuntimeManifestChecked = true
 	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now()
-	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 64}
+	p.BackendCapacity = capacity
 	p.Mu().Unlock()
 	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, PublicKey: se,
 		EncryptionPublicKey: p.PublicKey, SerialNumber: serial, SecureEnclaveAvailable: true})
@@ -83,12 +90,22 @@ func pairMember(t *testing.T, r *production.Registry, conn *websocket.Conn, id, 
 		Backend: p.Backend, Version: p.Version, PolicyGeneration: 7, VerifiedAt: time.Now()}) {
 		t.Fatal("fixture current release evidence refused")
 	}
-	return p
+}
+
+// pairDeviceSEKey is the fixture Secure Enclave public key of a device serial.
+func pairDeviceSEKey(serial string) string {
+	x, y := elliptic.P256().ScalarBaseMult([]byte(serial))
+	return base64.StdEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y))
 }
 
 func pairEnvironment(t *testing.T) *production.Registry {
 	t.Helper()
-	r := production.New(testLogger())
+	return pairEnvironmentWith(t, production.Dependencies{})
+}
+
+func pairEnvironmentWith(t *testing.T, dependencies production.Dependencies) *production.Registry {
+	t.Helper()
+	r := production.NewWithDependencies(testLogger(), dependencies)
 	r.SetModelCatalog([]production.CatalogEntry{{ID: nativePairFixtureModel}})
 	r.SetReleasePolicyGeneration(7, true, nil)
 	return r
@@ -255,9 +272,10 @@ type nativePairWireFixture struct {
 	serials [2]string
 }
 
-func newNativePairWireFixture(t *testing.T) *nativePairWireFixture {
+// newNativePairFixture builds the approved-policy coordinator over r with no
+// member attached yet.
+func newNativePairFixture(t *testing.T, r *production.Registry) *nativePairWireFixture {
 	t.Helper()
-	r := pairEnvironment(t)
 	policy := production.NativeRuntimeApproval{ID: "fixture-explicit-native-policy", Model: nativePairFixtureModel,
 		Generation: 11, PlanSHA256: sha256.Sum256([]byte("fixture-plan")), Schedule: 2,
 		MaximumPlaintext: 4096, MaximumTransportFrame: 4136, MaximumRecords: 64, MaximumCumulativePlaintext: 262144,
@@ -277,6 +295,13 @@ func newNativePairWireFixture(t *testing.T) *nativePairWireFixture {
 	if f.c == nil {
 		t.Fatal("approved catalog did not construct the coordinator")
 	}
+	return f
+}
+
+func newNativePairWireFixture(t *testing.T) *nativePairWireFixture {
+	t.Helper()
+	r := pairEnvironment(t)
+	f := newNativePairFixture(t, r)
 	t.Cleanup(f.c.Close)
 	for rank := range f.p {
 		server, client := testWebSocketPair(t)

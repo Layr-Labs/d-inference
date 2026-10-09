@@ -177,6 +177,15 @@ func (c *NativePairCoordinator) removeReleasedLocked(s *NativePairSession) {
 		}
 	}
 }
+
+// The Registry releases an abandoned quarantine on its own clock, with no relay
+// event to observe it. Selection drops those sessions first so their slots and
+// any surviving member attachment become reusable. The caller holds mu.
+func (c *NativePairCoordinator) removeReleasedSessionsLocked() {
+	for _, s := range c.sessions {
+		c.removeReleasedLocked(s)
+	}
+}
 func (c *NativePairCoordinator) RevokeApproval(id string) {
 	if c == nil {
 		return

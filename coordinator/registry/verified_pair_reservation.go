@@ -112,7 +112,8 @@ func (r *Registry) AcknowledgeVerifiedPairPrepared(h *VerifiedPairHandle, p *Pro
 
 // CommitVerifiedPairOwners is the start-authorization linearization point.
 // After success, even failed/delayed delivery may have started owners: neither
-// cancellation, EOF, timeout nor reconnect may release the device holds. The
+// cancellation, EOF, timeout nor reconnect releases the device holds. Only both
+// owner-release receipts do, or releaseAbandonedQuarantineLocked's bound. The
 // caller must already have approved the native binding and must complete fresh
 // authenticated key establishment before allowing RDMA inference records.
 func (r *Registry) CommitVerifiedPairOwners(h *VerifiedPairHandle) (VerifiedPairMembership, error) {

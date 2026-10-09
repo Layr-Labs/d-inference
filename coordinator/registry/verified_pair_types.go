@@ -16,6 +16,14 @@ const (
 	verifiedPairLifetimeLimit    = 300 * time.Second
 	verifiedPairHeartbeatLimit   = 30 * time.Second
 	verifiedPairMaximumHeld      = 1024
+	// verifiedPairOwnerRetirementLimit bounds how long an owner started under a
+	// reservation can outlive its ExpiresAt. The provider anchors the fixed
+	// lifetime to its own clock when the prepare frame arrives and refuses a
+	// frame that leaves it more than verifiedPairPreparationLimit to prepare;
+	// a pair commits only before PrepareBefore, so an owner's lifetime deadline
+	// trails ExpiresAt by less than that limit. Native cleanup then has three
+	// seconds (NativePairMemberSession.cleanupDeadline); the rest is slack.
+	verifiedPairOwnerRetirementLimit = verifiedPairPreparationLimit + 10*time.Second
 )
 
 var (
@@ -103,15 +111,21 @@ type verifiedPairState struct {
 	phase      VerifiedPairPhase
 	prepared   [2]bool
 	released   [2]bool
+	// departed marks a member whose original connection left the registry
+	// after commit: its owner-release receipt can never arrive.
+	departed   [2]bool
 	done       chan struct{}
 	doneClosed bool
 	timer      *time.Timer
 }
 
 // All indexes and state fields except the immutable Done channel are protected
-// by Registry.mu. Physical serial AND SE keys remain held across reconnect when
-// an active owner might still exist. There is deliberately no TTL that releases
-// an uncertain active device, and no ID-only administrative clear method.
+// by Registry.mu. Physical serial AND SE keys remain held across reconnect
+// while an owner might still exist: until both authenticated owner-release
+// receipts arrive, or, for a member whose original connection is gone, until
+// the reservation's fixed lifetime and the owner retirement limit have passed
+// (releaseAbandonedQuarantineLocked). No TTL releases a member that is still
+// connected, and there is no ID-only administrative clear method.
 type verifiedPairRegistry struct {
 	generation  uint64
 	states      map[*verifiedPairState]struct{}

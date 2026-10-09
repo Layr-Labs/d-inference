@@ -17,7 +17,8 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     private var active: (id: UUID, deadline: UInt64)?
 
     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
-         evidenceDirectory: String) throws {
+         evidenceDirectory: String, generationMode: ClusterGenerationMode = .pipeline,
+         qualification: QwenResidentQualificationSwitches = .refused) throws {
         guard bootstrap == nil else {
             throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
         }
@@ -27,7 +28,7 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .serial: policy = .serial
         case .oneChunkLookahead: policy = .oneChunkLookahead
         }
-        owner = try .load(configuration)
+        owner = try .load(configuration, generationMode: generationMode, qualification: qualification)
     }
 
     /// The recording ceiling: the serving allowance plus the capture terms.

@@ -26,8 +26,11 @@ public struct PairConfiguration: Sendable {
     public static let phaseSplitMode = "phase_split_v1"
     /// The pipeline with four transfers per decode step instead of eleven.
     public static let pipelineCompactDecodeMode = "pipeline_compact_decode_v1"
-    /// The name the runtime reads its declared generation mode from.
-    public static let generationModeEnvironment = "DARKBLOOM_CLUSTER_GENERATION_MODE"
+    /// The worker argument a mode other than the pipeline is declared with.
+    public static let generationModeArgument = "--generation-mode"
+    /// The worker argument without which a worker refuses the two
+    /// qualification switches below. Passed only when one of them is set.
+    public static let qualificationSwitchesArgument = "--qualification-switches"
     public static let maximumRepetitions = 8
     /// The name a recording worker reads a qualification fault from.
     public static let faultEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"
@@ -301,10 +304,6 @@ public struct PairConfiguration: Sendable {
         if let progressTimeoutMilliseconds {
             environment.append(("JACCL_PROGRESS_TIMEOUT_MS", String(progressTimeoutMilliseconds)))
         }
-        // The pipeline's launch is unchanged; any other mode is declared to both ranks.
-        if generationMode != Self.pipelineMode {
-            environment.append((Self.generationModeEnvironment, generationMode))
-        }
         if workerTransport != Self.jacclTransport {
             environment.append((Self.workerTransportEnvironment, workerTransport))
         }
@@ -317,6 +316,14 @@ public struct PairConfiguration: Sendable {
             "--peer0-id", Self.peerIDs[0], "--peer0-build-sha256", workerSHA256,
             "--peer1-id", Self.peerIDs[1], "--peer1-build-sha256", workerSHA256]
         if prefillSchedule != "serial_v1" { arguments += ["--prefill-schedule", prefillSchedule] }
+        // The pipeline's launch is unchanged; any other mode is declared to both ranks.
+        if generationMode != Self.pipelineMode { arguments += [Self.generationModeArgument, generationMode] }
+        // A worker refuses a qualification switch in its environment unless it
+        // was started with this flag. Both ranks get it when either has one,
+        // so the two launches differ only where the run says they do.
+        if workerTransport != Self.jacclTransport || faultValue != nil {
+            arguments += [Self.qualificationSwitchesArgument, "yes"]
+        }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")
         let evidence = recording ? " --evidence-directory \"$RUN/evidence\"" : ""
         return """

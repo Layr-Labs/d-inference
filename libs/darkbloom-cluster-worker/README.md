@@ -54,7 +54,42 @@ swift build --package-path libs/darkbloom-cluster-worker --build-tests \
   --triple arm64-apple-macosx26.2 -Xcc -target -Xcc arm64-apple-macosx26.2
 swift test --package-path libs/darkbloom-cluster-worker --skip-build \
   --triple arm64-apple-macosx26.2
+
+# The startup refusals of a built worker (qualification switches, generation
+# mode); no model, no GPU, a second or two.
+bash libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh /ABS/darkbloom-cluster-worker
 ```
+
+## Generation modes
+
+How the two ranks divide one request is declared to both workers at launch
+with `--generation-mode` and is part of the load agreement they compare before
+either stage is read. Absent, the worker runs the pipeline exactly as before.
+
+| `--generation-mode` | What runs |
+|---|---|
+| `pipeline_v1` (default) | Every frame passes through rank 0 and then rank 1 |
+| `pipeline_compact_decode_v1` | The same pipeline; a decode step's messages travel as four transfers instead of eleven |
+| `phase_split_v1` | The prompt is prefilled as a pipeline. After the first selected token rank 0 hands its request state to rank 1, which holds every layer and decodes alone, and relays tokens to rank 0 in batches |
+
+The mode must be one the registered model's own row lists; both registered
+models list all three, and `--describe-runtime` reports them as
+`supportedGenerationModes` (omitted when a runtime runs the pipeline only, so
+such a record keeps the bytes it always had). An unknown mode is refused at
+startup; it never falls back to the pipeline. A phase-split rank 1 loads both
+stages, so it takes longer to become ready and its `ready` capacity includes
+the hand-off's own allowance.
+
+Two switches exist for qualification only and cannot take effect in a worker
+that was not started with `--qualification-switches yes`:
+`DARKBLOOM_CLUSTER_TRANSPORT=local-socket-test` (both ranks on one Mac over a
+loopback socket: correctness only, never a pair timing) and
+`DARKBLOOM_CLUSTER_QUALIFICATION_FAULT` (a fault a recording rank commits
+during a hand-off). Without the flag a worker that finds either in its
+environment stops at startup and names it. The pair driver passes the flag
+only when it sets one of them; an installed owner never does.
+`DARKBLOOM_CLUSTER_GENERATION_MODE`, the name a launcher used before the
+argument existed, is refused always.
 
 ## Per-Mac stage check
 
@@ -152,6 +187,20 @@ write its selected history and state digests, and rank 1 the final row, to a
 file the driver collects afterwards. That is the only way to see rank 1's
 tokens or any logits: the worker protocol reports tokens from rank 0 alone.
 `--evidence none` runs the serving path and yields rank 0's tokens only.
+
+`--mode pipeline|pipeline-compact|phase-split` declares the generation mode
+to both workers (the driver refuses a mode the workers do not describe).
+`--repetitions N` (serving path) runs N requests in one loaded session and
+times each on the driver's clock; the first is the warm-up.
+`--stop-after-tokens N` makes the owner stop like a client that hangs up.
+`--transport local-socket-test` with `--remote-command-prefix` runs both ranks
+on this Mac, and `--fault RANK:…` asks one recording rank for a hand-off fault;
+both are qualification inputs and make the driver start the workers with
+`--qualification-switches yes`. `darkbloom-cluster-pair-check solo` times one
+Mac alone on the same driver clock through `darkbloom-cluster-reference
+--serve yes`, and `darkbloom-cluster-reference --handoff in-process` moves
+stage 0's state through the hand-off's own serialize, verify and adopt code
+inside one process.
 
 The driver never signals a worker. After a completed request it sends
 `shutdown`, waits for `shutdownComplete` and for the process to exit. On any

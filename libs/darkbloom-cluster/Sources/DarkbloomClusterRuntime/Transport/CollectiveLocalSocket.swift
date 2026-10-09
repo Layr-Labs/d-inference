@@ -15,7 +15,7 @@ import MLX
 /// sooner, so a failure path qualified here is not faster than on the link.
 /// Reductions are not implemented; the layer pipeline does not use any.
 final class CollectiveLocalSocket {
-    static let environmentName = "DARKBLOOM_CLUSTER_TRANSPORT"
+    static let environmentName = QwenResidentQualificationSwitches.transportEnvironmentName
     static let progressEnvironmentName = "JACCL_PROGRESS_TIMEOUT_MS"
     static let defaultProgressMilliseconds = 60_000
     private static let frameHeaderBytes = 8

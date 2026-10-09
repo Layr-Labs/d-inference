@@ -29,14 +29,17 @@ public final class QwenResidentRuntime {
     private weak var producerModel: Module?
     private var reservation: QwenResidentReservation?
     private var phaseSplitAllowance: QwenPhaseSplitAllowance?
+    /// Qualification only: admitted at load from a permitted switch, nil otherwise.
+    private let qualificationFault: QwenPhaseSplitFault?
     private var processLeaseOwned = true
 
     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: QwenResidentLoadedStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
-         generationMode: QwenResidentGenerationMode = .pipeline, producerStage: QwenResidentLoadedStage? = nil) {
+         generationMode: QwenResidentGenerationMode = .pipeline, producerStage: QwenResidentLoadedStage? = nil,
+         qualificationFault: QwenPhaseSplitFault? = nil) {
         self.admission = admission; self.control = control; self.collective = collective
         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
-        self.generationMode = generationMode
+        self.generationMode = generationMode; self.qualificationFault = qualificationFault
         self.producerStage = producerStage; producerModel = producerStage?.loaded.model
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
@@ -87,6 +90,12 @@ public final class QwenResidentRuntime {
         guard let profile else { throw ProbeError("Resident model already released") }
         let shapes = try QwenPhaseSplitPlan.expectedShapes(stage: admission.plan.stages[0], geometry: profile.geometry,
             committedTokens: promptCount, activationDType: admission.profile.activationDType)
+        // The state that changes owner is part of the admitted model's own
+        // named state, so it is held to that model's ceiling and no other's.
+        let ceilings = try QwenResidentResourceCeilings(model: profile.model)
+        guard try QwenLongPrefillCheckedBytes.sum(shapes.map(\.byteCount)) <= ceilings.namedStateByteCeiling else {
+            throw ProbeError("Phase-split hand-off exceeds the model's named-state byte ceiling")
+        }
         // The adopting rank also runs the producer stage, with that stage's fusion.
         var producerFusion = 0
         if rank == 1 {
@@ -235,7 +244,8 @@ public final class QwenResidentRuntime {
                 try autoreleasepool {
                     guard let stage else { throw ProbeError("Resident model already released") }
                     return try QwenResidentRequestExecution.run(stage: stage, producerStage: producerStage,
-                        generationMode: generationMode, phaseSplitAllowance: split, admission: admission,
+                        generationMode: generationMode, phaseSplitAllowance: split,
+                        qualificationFault: qualificationFault, admission: admission,
                         collective: collective, control: control, reserved: reserved,
                         onCommittedToken: onCommittedToken)
                 }

@@ -12,7 +12,8 @@ private final class Sides {
     private(set) var sides: [PairSide] = []
 
     init(modes: [String], skews: [Int64] = [0, 0], evidenceTokenDelta: Int = 0, evidenceDeltaRanks: [Int] = [1],
-         alterWorker: Bool = false, alterMetallib: Bool = false, removeProgressGuard: Bool = false) throws {
+         alterWorker: Bool = false, alterMetallib: Bool = false, removeProgressGuard: Bool = false,
+         pipelineOnly: Bool = false) throws {
         let files = FileManager.default
         root = files.temporaryDirectory.appendingPathComponent("pair-check-\(UUID().uuidString.lowercased())")
         let fake = try Self.fakeWorker()
@@ -33,7 +34,8 @@ private final class Sides {
             try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: worker.path)
             try Data("metallib\(alterMetallib && rank == 1 ? "!" : "")".utf8).write(to: side.appendingPathComponent("mlx.metallib"))
             let behavior: [String: Any] = ["mode": modes[rank], "clockSkewNanoseconds": skews[rank],
-                                           "evidenceTokenDelta": evidenceTokenDelta, "evidenceDeltaRanks": evidenceDeltaRanks]
+                                           "evidenceTokenDelta": evidenceTokenDelta, "evidenceDeltaRanks": evidenceDeltaRanks,
+                                           "pipelineOnly": pipelineOnly]
             try JSONSerialization.data(withJSONObject: behavior).write(to: side.appendingPathComponent("behavior.json"))
             for name in ["config.json", "manifest.json"] { try Data("{}".utf8).write(to: model.appendingPathComponent(name)) }
             sides.append(.init(modelDirectory: model.path, workerPath: worker.path,
@@ -148,6 +150,8 @@ final class PairDriverTests: XCTestCase {
             XCTAssertEqual(Array(arguments.prefix(6)), ["--model-dir", sides.sides[rank].modelDirectory, "--rank", String(rank), "--stage-cut", "8"])
             XCTAssertTrue(arguments.contains("--evidence-directory"))
             XCTAssertFalse(arguments.contains("--prefill-schedule"))
+            XCTAssertFalse(arguments.contains("--generation-mode"))
+            XCTAssertFalse(arguments.contains("--qualification-switches"))
             let builds = ["--peer0-build-sha256", "--peer1-build-sha256"].map { arguments[arguments.firstIndex(of: $0)! + 1] }
             XCTAssertEqual(builds, [report.ranks[0].workerSHA256, report.ranks[1].workerSHA256].compactMap { $0 })
         }
@@ -444,15 +448,40 @@ final class PairDriverTests: XCTestCase {
         XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
         XCTAssertEqual(report.generationMode, "phase_split_v1")
         XCTAssertEqual(report.identity?.generationMode, "phase_split_v1")
-        // Both ranks, or the runtime's load agreement would stop them; the
-        // pipeline's launch carries no such name (asserted exactly above).
+        // Both ranks, or the runtime's load agreement would stop them. The mode
+        // is a worker argument; the pipeline's launch carries none (asserted
+        // exactly above), and nothing about it travels in the environment.
         for rank in 0...1 {
             let observed = try sides.observed(configuration, rank)
-            XCTAssertEqual((observed["environment"] as? [String: String])?["DARKBLOOM_CLUSTER_GENERATION_MODE"], "phase_split_v1")
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            let index = try XCTUnwrap(arguments.firstIndex(of: "--generation-mode"))
+            XCTAssertEqual(arguments[index + 1], "phase_split_v1")
+            XCTAssertFalse(arguments.contains("--qualification-switches"), "a mode alone is not a qualification switch")
+            XCTAssertNil((observed["environment"] as? [String: String])?["DARKBLOOM_CLUSTER_GENERATION_MODE"])
         }
         assertEndedByItself(report, sides, configuration)
         configuration.generationMode = "phase_split"
         XCTAssertThrowsError(try configuration.validate())
+    }
+
+    func testAModeTheWorkerDoesNotAdvertiseIsRefusedBeforeAnyLaunch() throws {
+        // An older worker describes the pipeline only. Asking it for a phase
+        // split must stop at the description, not run a pipeline under another name.
+        let sides = try Sides(modes: ["ok", "ok"], pipelineOnly: true)
+        var configuration = try sides.configuration(outputCount: 2, recording: false)
+        configuration.generationMode = PairConfiguration.phaseSplitMode
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "refused", report.failure ?? "")
+        XCTAssertTrue(report.failure?.contains("generation mode") == true, report.failure ?? "")
+        XCTAssertFalse(report.ranks.contains { $0.launched }, "nothing may be launched after a refused description")
+        // The same worker still runs the pipeline.
+        configuration.generationMode = PairConfiguration.pipelineMode
+        configuration.membershipEpoch = UUID()
+        try configuration.validate()
+        let pipeline = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(pipeline.outcome, "completed", pipeline.failure ?? "")
+        assertEndedByItself(pipeline, sides, configuration)
     }
 
     func testQualificationSwitchesReachOnlyTheRankTheyAreMeantFor() throws {
@@ -469,9 +498,15 @@ final class PairDriverTests: XCTestCase {
         // A loopback run says in its own timing note that it is not a pair timing.
         XCTAssertTrue(report.timing.note.contains("not RDMA"))
         for rank in 0...1 {
-            let environment = try XCTUnwrap(try sides.observed(configuration, rank)["environment"] as? [String: String])
+            let observed = try sides.observed(configuration, rank)
+            let environment = try XCTUnwrap(observed["environment"] as? [String: String])
             XCTAssertEqual(environment["DARKBLOOM_CLUSTER_TRANSPORT"], "local-socket-test")
             XCTAssertEqual(environment["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"], rank == 0 ? "handoff_corrupt_segment=3" : nil)
+            // A worker refuses either switch without the explicit test flag (the
+            // stand-in refuses as the real worker does), so both ranks carry it.
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            let index = try XCTUnwrap(arguments.firstIndex(of: "--qualification-switches"))
+            XCTAssertEqual(arguments[index + 1], "yes")
         }
         assertEndedByItself(report, sides, configuration)
         // A loopback socket is this Mac only; a fault is a recording phase-split input.

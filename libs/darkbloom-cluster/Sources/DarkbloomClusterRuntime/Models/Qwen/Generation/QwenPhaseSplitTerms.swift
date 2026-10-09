@@ -76,6 +76,13 @@ struct QwenPhaseSplitPlan: Equatable {
         let shapes = try Self.expectedShapes(stage: plan.stages[0], geometry: geometry,
             committedTokens: request.promptCount, activationDType: request.profile.activationDType)
         let segments = try Self.segments(shapes, maximumSegmentBytes: maximumSegmentBytes)
+        // One header names every component. Whether it fits its fixed frame
+        // depends on the model's layer count and the cut, so it is settled
+        // here, with the terms, and not when the header is first written.
+        guard try QwenPhaseSplitHandoffHeader.encodedBytesBound(shapes: shapes)
+                <= QwenPhaseSplitHandoffHeader.frameBytes - QwenControlFrame.headerBytes else {
+            throw ProbeError("Phase split: this model and cut name more state components than one hand-off header holds")
+        }
         self.shapes = shapes; self.segments = segments
         terms = .init(handoffCommittedTokens: request.promptCount,
             producerLayerCount: plan.stages[0].sourceRange.count, entryCount: shapes.count,
@@ -185,10 +192,11 @@ struct QwenPhaseSplitAllowance: Encodable, Equatable {
 
 /// A fault a qualification run asks a rank to commit during the hand-off, so
 /// that the failure paths can be exercised on real state. It is read from the
-/// environment and honoured only for a recording request, which is itself
-/// qualification only; a serving request never sees one.
+/// environment only by a process that was started with the explicit test flag
+/// (`QwenResidentQualificationSwitches`), and honoured only for a recording
+/// request, which is itself qualification only; a serving request never sees one.
 struct QwenPhaseSplitFault: Equatable {
-    static let environmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"
+    static let environmentName = QwenResidentQualificationSwitches.faultEnvironmentName
     /// Rank 0: flip one bit of this segment after its digest was computed.
     var corruptSegment: Int?
     /// Rank 1: stop for this long after receiving this segment, still checking

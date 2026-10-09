@@ -1,5 +1,6 @@
 import Darwin
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Foundation
 import XCTest
 @testable import DarkbloomClusterWorker
@@ -203,6 +204,106 @@ final class WorkerTests: XCTestCase {
             XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--evidence-directory", path], now: 100), path)
         }
         XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--evidence-directory", "/a", "--evidence-directory", "/b"], now: 100))
+    }
+
+    /// `--generation-mode` is a closed choice that the named model's own row
+    /// must list; absent, the worker runs the pipeline exactly as before.
+    func testGenerationModeIsADeclaredClosedChoicePerRegisteredModel() throws {
+        func args(_ model: String, _ cut: String) -> [String] {
+            ["--model-dir", "/invented/model", "--rank", "1", "--stage-cut", cut,
+             "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", model,
+             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+             "--deadline-uptime-nanoseconds", "300000000100"]
+        }
+        for (model, cut) in [("registered_qwen35_9b", "8"), ("registered_qwen38_27b", "16")] {
+            let base = args(model, cut)
+            let plain = try WorkerConfiguration(arguments: base, now: 100)
+            XCTAssertEqual(plain.generationMode, .pipeline, "absent means the pipeline")
+            XCTAssertFalse(plain.qualificationSwitchesPermitted)
+            for mode in ClusterGenerationMode.allCases {
+                let value = try WorkerConfiguration(arguments: base + ["--generation-mode", mode.rawValue], now: 100)
+                XCTAssertEqual(value.generationMode, mode, "\(model) \(mode.rawValue)")
+                // The mode is no part of the load configuration the runtime already had.
+                XCTAssertEqual(value.load.stageCut, plain.load.stageCut); XCTAssertEqual(value.load.prefillSchedule, plain.load.prefillSchedule)
+                XCTAssertFalse(value.qualificationSwitchesPermitted)
+            }
+            // Never a fallback: an unknown, misspelt, empty or repeated mode stops the worker.
+            for bad in ["phase_split", "phase-split", "phase_split_v2", "PIPELINE_V1", "pipeline", " phase_split_v1", "1"] {
+                XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", bad], now: 100), bad)
+            }
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", ""], now: 100))
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", "phase_split_v1",
+                                                                          "--generation-mode", "pipeline_v1"], now: 100))
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode"], now: 100))
+            // It composes with every other optional argument.
+            let all = try WorkerConfiguration(arguments: base + ["--prefill-schedule", "one_chunk_lookahead_v1",
+                "--generation-mode", "phase_split_v1", "--startup-deadline-uptime-nanoseconds", "90000000100",
+                "--evidence-directory", "/private/run/evidence", "--qualification-switches", "yes"], now: 100)
+            XCTAssertEqual(all.generationMode, .phaseSplit); XCTAssertEqual(all.load.prefillSchedule, .oneChunkLookahead)
+            XCTAssertEqual(all.startupDeadlineUptimeNanoseconds, 90_000_000_100)
+            XCTAssertEqual(all.evidenceDirectory, "/private/run/evidence"); XCTAssertTrue(all.qualificationSwitchesPermitted)
+        }
+        // The catalog the worker checks against is the runtime's own row.
+        for model in ["registered_qwen35_9b", "registered_qwen38_27b"] {
+            XCTAssertEqual(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes,
+                           [.pipeline, .pipelineCompactDecode, .phaseSplit], model)
+        }
+    }
+
+    /// The two qualification switches cannot take effect in a worker that was
+    /// not started with the explicit test flag: it stops, and says which.
+    func testQualificationSwitchesAreRefusedWithoutTheExplicitTestFlag() throws {
+        let args = ["--model-dir", "/invented/model", "--rank", "0", "--stage-cut", "8",
+            "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",
+            "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+            "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+            "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+            "--deadline-uptime-nanoseconds", "300000000100"]
+        let installed = try WorkerConfiguration(arguments: args, now: 100)
+        let qualification = try WorkerConfiguration(arguments: args + ["--qualification-switches", "yes"], now: 100)
+        XCTAssertFalse(installed.qualificationSwitchesPermitted); XCTAssertTrue(qualification.qualificationSwitchesPermitted)
+        // The flag takes one value. Anything else is not "off": it is refused.
+        for bad in ["no", "true", "1", "YES", "yes ", ""] {
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--qualification-switches", bad], now: 100), bad)
+        }
+        let serving = ["PATH": "/usr/bin:/bin", "JACCL_RANK": "0", "JACCL_COORDINATOR": "10.0.0.1:47000",
+                       "DARKBLOOM_BF16_WEIGHTS": "1", "MLX_ENABLE_TF32": "1", "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "128"]
+        func refusal(_ permitted: Bool, _ extra: [String: String]) -> String? {
+            do {
+                _ = try WorkerQualificationGate.admit(permitted: permitted, environment: serving.merging(extra) { $1 })
+                return nil
+            } catch { return "\(error)" }
+        }
+        // An ordinary serving environment passes either way and yields the matching switches.
+        XCTAssertEqual(try WorkerQualificationGate.admit(permitted: false, environment: serving), .refused)
+        XCTAssertEqual(try WorkerQualificationGate.admit(permitted: true, environment: serving), .permittedByExplicitFlag)
+        XCTAssertFalse(QwenResidentQualificationSwitches.refused.permitted)
+        // Without the flag each switch is refused by name, whatever its value,
+        // including an empty or unknown one: present is enough.
+        for (name, values) in [("DARKBLOOM_CLUSTER_TRANSPORT", ["local-socket-test", "jaccl", "", "tcp"]),
+                               ("DARKBLOOM_CLUSTER_QUALIFICATION_FAULT", ["handoff_corrupt_segment=3", "handoff_stall_after_segment=2:1500", "", "x"])] {
+            for value in values {
+                let message = refusal(false, [name: value])
+                XCTAssertNotNil(message, "\(name)=\(value) must be refused without the flag")
+                XCTAssertTrue(message?.contains(name) == true, message ?? "")
+                XCTAssertTrue(message?.contains("--qualification-switches") == true, message ?? "")
+                XCTAssertNil(refusal(true, [name: value]), "\(name)=\(value) passes the gate with the flag")
+            }
+        }
+        XCTAssertNotNil(refusal(false, ["DARKBLOOM_CLUSTER_TRANSPORT": "local-socket-test",
+                                        "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT": "handoff_corrupt_segment=3"]))
+        // The retired declaration of the mode is refused with or without the flag.
+        for permitted in [false, true] {
+            let message = refusal(permitted, ["DARKBLOOM_CLUSTER_GENERATION_MODE": "phase_split_v1"])
+            XCTAssertTrue(message?.contains("DARKBLOOM_CLUSTER_GENERATION_MODE") == true, message ?? "nil")
+            XCTAssertTrue(message?.contains("--generation-mode") == true, message ?? "nil")
+        }
+        // The names the gate refuses are the names the runtime would have read.
+        XCTAssertEqual(QwenResidentQualificationSwitches.transportEnvironmentName, "DARKBLOOM_CLUSTER_TRANSPORT")
+        XCTAssertEqual(QwenResidentQualificationSwitches.faultEnvironmentName, "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT")
+        XCTAssertEqual(QwenResidentQualificationSwitches.permittingArgument, "--qualification-switches")
     }
 
     func testStartupDeadlineIsOptionalCanonicalAndWithinTheLifetime() throws {

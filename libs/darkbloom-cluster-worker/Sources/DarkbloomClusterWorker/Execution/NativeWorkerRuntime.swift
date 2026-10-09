@@ -6,7 +6,9 @@ import Foundation
 /// explicitly thread-safe operation. No model or tensor crosses the pipe.
 final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     private let owner: QwenResidentRuntime
-    init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil) throws {
+    init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
+         generationMode: ClusterGenerationMode = .pipeline,
+         qualification: QwenResidentQualificationSwitches = .refused) throws {
         // STAGING DIVERGENCE: the owner-authenticated JACCL bootstrap needs the
         // mlx-c bootstrap bridge (`mlx_distributed_init_jaccl_with_bootstrap`),
         // which the pinned mlx-c does not carry. The flags are still parsed so
@@ -15,7 +17,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         guard bootstrap == nil else {
             throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
         }
-        owner = try .load(configuration)
+        owner = try .load(configuration, generationMode: generationMode, qualification: qualification)
     }
     var readiness: ClusterWorkerReady? { owner.readiness }
     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {

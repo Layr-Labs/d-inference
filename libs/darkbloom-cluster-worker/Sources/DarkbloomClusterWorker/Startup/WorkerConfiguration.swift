@@ -11,17 +11,26 @@ struct WorkerConfiguration {
     let evidenceDirectory: String?
     /// When named by the owner, the worker ends itself here unless it is ready.
     let startupDeadlineUptimeNanoseconds: UInt64?
+    /// How the two ranks divide a request (`--generation-mode`); the pipeline
+    /// when the argument is absent. Both ranks must be started with the same
+    /// mode, and it must be one the registered model's resident row lists.
+    let generationMode: ClusterGenerationMode
+    /// `--qualification-switches yes`: the explicit test flag without which a
+    /// qualification switch in the environment stops the worker at startup.
+    /// An installed owner never passes it.
+    let qualificationSwitchesPermitted: Bool
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
-        let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds"]
+        let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
+            "--generation-mode", "--qualification-switches"]
         let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
         }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline and optional complete bootstrap triple")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional qualification-switches flag and optional complete bootstrap triple")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
@@ -55,6 +64,21 @@ struct WorkerConfiguration {
         guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
             throw WorkerFailure.invalid("Unknown worker prefill schedule")
         }
+        // A closed choice, and one the named model's own row must list: an
+        // unknown or unsupported mode never falls back to the pipeline.
+        if let text = fields["--generation-mode"] {
+            guard let mode = ClusterGenerationMode(rawValue: text),
+                  QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: fields["--model-id"]!)?
+                      .supportedGenerationModes.contains(mode) == true else {
+                throw WorkerFailure.invalid("Worker generation mode must be one the registered model lists: "
+                    + ClusterGenerationMode.allCases.map(\.rawValue).joined(separator: ", "))
+            }
+            generationMode = mode
+        } else { generationMode = .pipeline }
+        if let text = fields["--qualification-switches"] {
+            guard text == "yes" else { throw WorkerFailure.invalid("--qualification-switches takes only the value yes") }
+            qualificationSwitchesPermitted = true
+        } else { qualificationSwitchesPermitted = false }
         if let text = fields["--startup-deadline-uptime-nanoseconds"] {
             guard let startup = UInt64(text), String(startup) == text, startup > now, startup <= deadline else {
                 throw WorkerFailure.invalid("Worker startup deadline must be canonical, in the future and within its lifetime")

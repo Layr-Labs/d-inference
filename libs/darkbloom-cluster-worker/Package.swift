@@ -31,6 +31,7 @@ let package = Package(
         .testTarget(name: "DarkbloomClusterWorkerTests", dependencies: [
             "DarkbloomClusterWorker",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),
         // One Mac, one rank, real artifact: verified stage load and release.
         .executableTarget(name: "StageLoadCheck", dependencies: [

@@ -18,6 +18,11 @@ import Foundation
             }
             let now = DispatchTime.now().uptimeNanoseconds
             let configuration = try WorkerConfiguration(arguments: arguments, now: now)
+            // Before anything native: a qualification switch in the environment
+            // of a worker that was not started with the test flag ends it here.
+            let qualification = try WorkerQualificationGate.admit(
+                permitted: configuration.qualificationSwitchesPermitted,
+                environment: ProcessInfo.processInfo.environment)
             let deadline = configuration.load.deadlineUptimeNanoseconds
             // Fixed before any native initialization. The signal handler neither
             // allocates nor claims cleanup: the parent must observe process exit.
@@ -40,8 +45,10 @@ import Foundation
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
             try pipes.check()
             let runtime: any WorkerRuntime = try configuration.evidenceDirectory.map {
-                try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0)
-            } ?? NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap)
+                try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0,
+                    generationMode: configuration.generationMode, qualification: qualification)
+            } ?? NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
+                    generationMode: configuration.generationMode, qualification: qualification)
             startup?.disarm()
             try WorkerCoordinator(runtime: runtime, pipes: pipes).run()
             alarm(0)

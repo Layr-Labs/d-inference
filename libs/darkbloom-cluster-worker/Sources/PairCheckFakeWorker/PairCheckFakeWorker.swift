@@ -19,6 +19,8 @@ import Foundation
         var evidenceTokenDelta = 0
         var evidenceDeltaRanks = [1]
         var firstToken = 100
+        /// Describe a runtime that runs the pipeline only, as an older worker would.
+        var pipelineOnly = false
 
         init() {}
         init(from decoder: Decoder) throws {
@@ -28,8 +30,9 @@ import Foundation
             evidenceTokenDelta = try values.decodeIfPresent(Int.self, forKey: .evidenceTokenDelta) ?? 0
             evidenceDeltaRanks = try values.decodeIfPresent([Int].self, forKey: .evidenceDeltaRanks) ?? [1]
             firstToken = try values.decodeIfPresent(Int.self, forKey: .firstToken) ?? 100
+            pipelineOnly = try values.decodeIfPresent(Bool.self, forKey: .pipelineOnly) ?? false
         }
-        enum CodingKeys: String, CodingKey { case mode, clockSkewNanoseconds, evidenceTokenDelta, evidenceDeltaRanks, firstToken }
+        enum CodingKeys: String, CodingKey { case mode, clockSkewNanoseconds, evidenceTokenDelta, evidenceDeltaRanks, firstToken, pipelineOnly }
     }
 
     /// The name the guarded JACCL reads; the driver looks for it in a worker.
@@ -62,7 +65,7 @@ import Foundation
             UInt64(bitPattern: Int64(bitPattern: DispatchTime.now().uptimeNanoseconds) + behavior.clockSkewNanoseconds)
         }
         if arguments == ["--uptime-nanoseconds"] { print(uptime()); exit(0) }
-        if arguments.first == "--describe-runtime" { describe(arguments, executable: executable) }
+        if arguments.first == "--describe-runtime" { describe(arguments, executable: executable, pipelineOnly: behavior.pipelineOnly) }
 
         var fields: [String: String] = [:]
         guard arguments.count % 2 == 0 else { exit(64) }
@@ -78,6 +81,14 @@ import Foundation
               fields["--artifact-sha256"] == artifact, fields["--configuration-sha256"] == configuration,
               let matrixPath = environment["JACCL_IBV_DEVICES"],
               let matrix = try? Data(contentsOf: URL(fileURLWithPath: matrixPath)) else { exit(64) }
+        // What a real worker would refuse at startup: an unknown generation
+        // mode, a qualification switch without the explicit test flag, and the
+        // retired environment declaration of the mode.
+        if let mode = fields["--generation-mode"], ClusterGenerationMode(rawValue: mode) == nil { exit(66) }
+        if let flag = fields["--qualification-switches"], flag != "yes" { exit(66) }
+        if environment["DARKBLOOM_CLUSTER_GENERATION_MODE"] != nil { exit(67) }
+        if fields["--qualification-switches"] == nil,
+           environment["DARKBLOOM_CLUSTER_TRANSPORT"] != nil || environment["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"] != nil { exit(67) }
         // What a real worker would refuse: its own deadline on its own clock.
         let now = uptime()
         guard deadline > now, deadline - now <= 300_000_000_000 else { exit(65) }
@@ -211,7 +222,7 @@ import Foundation
         } catch { exit(70) }
     }
 
-    static func describe(_ arguments: [String], executable: URL) -> Never {
+    static func describe(_ arguments: [String], executable: URL, pipelineOnly: Bool) -> Never {
         guard arguments.count == 7, arguments[1] == "--config", arguments[3] == "--manifest",
               arguments[5] == "--expected-executable-sha256",
               FileManager.default.fileExists(atPath: arguments[2]), FileManager.default.fileExists(atPath: arguments[4]),
@@ -231,7 +242,8 @@ import Foundation
                     ])
                 }, arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1",
                 arithmeticPolicySHA256: hash("fake-arithmetic"), maxLifetimeSeconds: 300, maxRequests: 16,
-                supportedPrefillSchedules: [.serial, .oneChunkLookahead])
+                supportedPrefillSchedules: [.serial, .oneChunkLookahead],
+                supportedGenerationModes: pipelineOnly ? [.pipeline] : ClusterGenerationMode.allCases)
             try FileHandle.standardOutput.write(contentsOf: ClusterRuntimeCapabilityCodec.encode(capability))
             exit(0)
         } catch { exit(1) }

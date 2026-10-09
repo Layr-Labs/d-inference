@@ -1,53 +1,60 @@
+import DarkbloomClusterProtocol
 import Foundation
 import Testing
-@testable import DarkbloomClusterRuntime
+@_spi(Benchmark) @testable import DarkbloomClusterRuntime
 
 // Phase split (pair prefill, single-rank decode): the agreement terms, the
 // hand-off wire format and its verification, the relay of tokens selected
 // alone, and the mode declaration. Pure contracts on the registered
 // configuration: no collective, model, GPU or network. The state bytes are
 // synthetic; the manifest they follow is checked against sizes a real run of
-// the registered model recorded.
+// each registered model recorded. Every fixture takes its geometry, profile
+// and Plan from the registered model it names: nothing here is a 9B constant
+// that the 27B borrows.
 
 private enum PhaseSplitFixture {
-    static func configuration() throws -> Data {
+    static func configuration(_ model: QwenRegisteredDenseModel = .qwen35NineB) throws -> Data {
         // Tests/DarkbloomClusterRuntimeTests -> libs, then the worker's fixtures.
         let libraries = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let name = model == .qwen35NineB ? "qwen35-9b" : "qwen38-27b"
         return try Data(contentsOf: libraries.appendingPathComponent(
-            "darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-qwen35-9b.configuration.json"))
+            "darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-\(name).configuration.json"))
     }
 
-    static func specification() throws -> QwenDenseRegisteredSpecification {
-        try #require(QwenDenseRegisteredSpecification.all.first { $0.model == .qwen35NineB })
+    static func specification(_ model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenDenseRegisteredSpecification {
+        try QwenResidentModelDefinition(model: model).specification
     }
 
-    static func plan(cut: Int) throws -> QwenLayerStagePlan {
-        try QwenLayerStagePlan(configuration: try configuration(), ranges: [0..<cut, cut..<32])
+    static func plan(cut: Int, model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStagePlan {
+        try QwenLayerStagePlan(configuration: try configuration(model),
+            ranges: [0..<cut, cut..<(try specification(model).layers)])
     }
 
     static func request(promptCount: Int = 24, chunkSize: Int = 16, outputCount: Int = 8,
-                        stopTokenIDs: Set<Int> = [], id: UUID = UUID()) throws -> QwenLayerStageGenerationRequest {
+                        stopTokenIDs: Set<Int> = [], id: UUID = UUID(),
+                        model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageGenerationRequest {
         try QwenLayerStageGenerationRequest(
-            profile: try QwenResidentAdapterDefinition.profile(specification: try specification()), requestID: id,
+            profile: try QwenResidentAdapterDefinition.profile(specification: try specification(model)), requestID: id,
             promptTokenIDs: (0..<promptCount).map { 1000 + $0 }, chunkSize: chunkSize, outputCount: outputCount,
             stopTokenIDs: stopTokenIDs)
     }
 
     static func agreement(_ request: QwenLayerStageGenerationRequest, cut: Int = 4, split: Bool = true,
                           maximumSegmentBytes: Int = 16 * 1024 * 1024, relayBatchTokens: Int = 16,
-                          epoch: UUID = UUID(uuidString: "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11")!) throws -> QwenLayerStageGenerationAgreement {
-        let plan = try plan(cut: cut)
+                          epoch: UUID = UUID(uuidString: "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11")!,
+                          model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageGenerationAgreement {
+        let plan = try plan(cut: cut, model: model)
         let source = try QwenLayerStageWireSourceIdentity(
-            sourceConfigurationSHA256: sha256(try configuration()),
-            artifactAggregateSHA256: try specification().artifactSHA256,
+            sourceConfigurationSHA256: sha256(try configuration(model)),
+            artifactAggregateSHA256: try specification(model).artifactSHA256,
             storageCommitmentSHA256: String(repeating: "c", count: 64),
             planFingerprint: plan.fingerprint, producerStageFingerprint: plan.stages[0].fingerprint)
         return try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: epoch, source: source,
             consumerStageFingerprint: plan.stages[1].fingerprint,
             rankBuildSHA256: [String(repeating: "1", count: 64), String(repeating: "1", count: 64)],
             numericalPolicySHA256: String(repeating: "3", count: 64),
-            phaseSplit: split ? try QwenPhaseSplitPlan(plan: plan, geometry: try specification().expectedGeometry(),
+            phaseSplit: split ? try QwenPhaseSplitPlan(plan: plan, geometry: try specification(model).expectedGeometry(),
                 request: request, maximumSegmentBytes: maximumSegmentBytes, relayBatchTokens: relayBatchTokens) : nil)
     }
 
@@ -104,13 +111,19 @@ private enum PhaseSplitFixture {
 @Suite("Phase split contracts (registered configuration, no execution)")
 struct PhaseSplitContractTests {
     @Test func modeIsDeclaredNeverGuessed() throws {
-        #expect(try QwenResidentGenerationMode.admit(environment: [:]) == .pipeline)
-        #expect(try QwenResidentGenerationMode.admit(environment: ["DARKBLOOM_CLUSTER_GENERATION_MODE": "pipeline_v1"]) == .pipeline)
-        #expect(try QwenResidentGenerationMode.admit(environment: ["DARKBLOOM_CLUSTER_GENERATION_MODE": "phase_split_v1"]) == .phaseSplit)
-        #expect(try QwenResidentGenerationMode.admit(environment: ["DARKBLOOM_CLUSTER_GENERATION_MODE": "pipeline_compact_decode_v1"]) == .pipelineCompactDecode)
-        // A misspelt or empty declaration must not silently run the default.
-        #expect(throws: ProbeError.self) { _ = try QwenResidentGenerationMode.admit(environment: ["DARKBLOOM_CLUSTER_GENERATION_MODE": "phase-split"]) }
-        #expect(throws: ProbeError.self) { _ = try QwenResidentGenerationMode.admit(environment: ["DARKBLOOM_CLUSTER_GENERATION_MODE": ""]) }
+        // One closed list, shared with the worker's flag and the capability record.
+        #expect(QwenResidentGenerationMode.allCases.map(\.rawValue) == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1"])
+        #expect(ClusterGenerationMode(rawValue: "phase_split_v1") == QwenResidentGenerationMode.phaseSplit)
+        // A misspelt or empty declaration is no mode at all; nothing maps it to the default.
+        for bad in ["phase-split", "", "phase_split", "PHASE_SPLIT_V1", "pipeline"] { #expect(ClusterGenerationMode(rawValue: bad) == nil) }
+        // The runtime reads no environment for the mode. The name a launcher
+        // used before the worker had its argument is refused, never obeyed,
+        // whether or not qualification switches are permitted.
+        for switches in [QwenResidentQualificationSwitches.refused, .permittedByExplicitFlag] {
+            #expect(throws: ProbeError.self) {
+                try switches.admit(environment: ["DARKBLOOM_CLUSTER_GENERATION_MODE": "phase_split_v1"])
+            }
+        }
         // The pipeline adds nothing to the load agreement; another mode is bound into it.
         #expect(QwenResidentGenerationMode.pipeline.loadAgreementFields.isEmpty)
         #expect(QwenResidentGenerationMode.phaseSplit.loadAgreementFields == ["qwen-resident-generation-mode-v1", "phase_split_v1"])
@@ -131,6 +144,41 @@ struct PhaseSplitContractTests {
         for bad in ["handoff_corrupt_segment", "handoff_corrupt_segment=-1", "handoff_stall_after_segment=2", "exit=1", "handoff_corrupt_segment=03"] {
             #expect(throws: ProbeError.self) { _ = try QwenPhaseSplitFault.admit(environment: ["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT": bad]) }
         }
+    }
+
+    @Test func qualificationSwitchesAreRefusedUnlessExplicitlyPermitted() throws {
+        let serving = ["JACCL_RANK": "0", "JACCL_COORDINATOR": "10.0.0.1:47000", "MLX_ENABLE_TF32": "1"]
+        // What an installed caller passes, and what `load` defaults to.
+        let refused = QwenResidentQualificationSwitches.refused, permitted = QwenResidentQualificationSwitches.permittedByExplicitFlag
+        #expect(!refused.permitted && permitted.permitted)
+        try refused.admit(environment: serving); try permitted.admit(environment: serving)
+        for (name, value) in [("DARKBLOOM_CLUSTER_TRANSPORT", "local-socket-test"), ("DARKBLOOM_CLUSTER_TRANSPORT", ""),
+                              ("DARKBLOOM_CLUSTER_QUALIFICATION_FAULT", "handoff_corrupt_segment=3"),
+                              ("DARKBLOOM_CLUSTER_QUALIFICATION_FAULT", "anything")] {
+            var environment = serving; environment[name] = value
+            // Present is enough: the switch is refused by name, not parsed, not ignored.
+            do {
+                try refused.admit(environment: environment)
+                Issue.record("\(name) was not refused")
+            } catch {
+                #expect("\(error)".contains(name) && "\(error)".contains("--qualification-switches"))
+            }
+            try permitted.admit(environment: environment)
+        }
+        // The names are the ones the transport and the fault are read from.
+        #expect(QwenResidentQualificationSwitches.transportEnvironmentName == CollectiveLocalSocket.environmentName)
+        #expect(QwenResidentQualificationSwitches.faultEnvironmentName == QwenPhaseSplitFault.environmentName)
+    }
+
+    @Test func everyRegisteredModelListsItsOwnGenerationModes() throws {
+        for model in QwenRegisteredDenseModel.allCases {
+            let definition = try QwenResidentModelDefinition(model: model)
+            // The pipeline first; the row is what load, the worker and the capability consult.
+            #expect(definition.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+            #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model.rawValue)?.supportedGenerationModes
+                == definition.supportedGenerationModes)
+        }
+        #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: "registered_qwen4")?.supportedGenerationModes == nil)
     }
 
     @Test func compactDecodeIsADeclaredFraming() throws {

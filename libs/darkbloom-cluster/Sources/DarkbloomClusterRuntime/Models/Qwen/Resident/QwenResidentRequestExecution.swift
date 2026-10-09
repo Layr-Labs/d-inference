@@ -19,6 +19,7 @@ enum QwenResidentRequestExecution {
     static func run(stage: QwenResidentLoadedStage, producerStage: QwenResidentLoadedStage? = nil,
                     generationMode: QwenResidentGenerationMode = .pipeline,
                     phaseSplitAllowance: QwenPhaseSplitAllowance? = nil,
+                    qualificationFault: QwenPhaseSplitFault? = nil,
                     admission: QwenResidentAdmission,
                     collective: Collective, control: QwenResidentControl,
                     reserved: QwenResidentReservation,
@@ -70,9 +71,10 @@ enum QwenResidentRequestExecution {
                 activationDType: reserved.request.profile.activationDType,
                 bound: QwenResidentResourceEnvironment.allocationBound)
             try charge.requireCapture(actual.capture)
-            // A fault is a qualification input: only a recording request, which
-            // the installed owner never makes, can be asked to commit one.
-            let fault = split == nil ? nil : try QwenPhaseSplitFault.admit(environment: ProcessInfo.processInfo.environment)
+            // A fault is a qualification input: it exists only in a process
+            // started with the explicit test flag, and only a recording request,
+            // which the installed owner never makes, can be asked to commit one.
+            let fault = split == nil ? nil : qualificationFault
             let recorded = try recordQwenLayerStageGenerationRequest(loaded: stage.loaded,
                 producerStage: producerStage?.loaded,
                 profile: stage.profile, plan: admission.plan, agreement: agreement, collective: collective,

@@ -4,15 +4,28 @@ import MLX
 import MLXNN
 
 extension QwenResidentRuntime {
-    /// `generationMode` nil takes the launcher's declaration from the process
-    /// environment (`QwenResidentGenerationMode.environmentName`); absent there
-    /// too, the pipeline. Both ranks must be given the same mode: it is part of
-    /// the load agreement they compare before either stage is read.
+    /// `generationMode` is the caller's declaration (the worker's
+    /// `--generation-mode`); nothing is read from the environment for it. Both
+    /// ranks must be given the same mode: it is part of the load agreement they
+    /// compare before either stage is read, and it must be in the registered
+    /// model's own resident row.
+    ///
+    /// `qualification` says whether this process may honour the two
+    /// qualification switches in its environment. The default refuses them: a
+    /// switch that is present and not permitted stops the load here, by name.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
-                            generationMode declared: QwenResidentGenerationMode? = nil) throws -> QwenResidentRuntime {
-        let mode = try declared ?? QwenResidentGenerationMode.admit(environment: ProcessInfo.processInfo.environment)
-        // JACCL unless the launcher declared the single-Mac qualification socket.
-        let transport = try ClusterTransport.admit(environment: ProcessInfo.processInfo.environment)
+                            generationMode mode: QwenResidentGenerationMode = .pipeline,
+                            qualification: QwenResidentQualificationSwitches = .refused) throws -> QwenResidentRuntime {
+        let launchEnvironment = ProcessInfo.processInfo.environment
+        try qualification.admit(environment: launchEnvironment)
+        // JACCL unless the single-Mac qualification socket was permitted and declared.
+        var transport = ClusterTransport.jaccl
+        // A recording request may be asked to commit this; fixed here, once.
+        var fault: QwenPhaseSplitFault?
+        if qualification.permitted {
+            transport = try ClusterTransport.admit(environment: launchEnvironment)
+            fault = try QwenPhaseSplitFault.admit(environment: launchEnvironment)
+        }
         // STAGING DIVERGENCE (recorded in the handoff source ledger, same as
         // Transport/Collective.swift): the research source accepted an optional
         // owner QwenResidentBootstrap producing a JACCLBootstrap group creator.
@@ -25,6 +38,10 @@ extension QwenResidentRuntime {
             manifestBytes: BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304),
             environment: ProcessInfo.processInfo.environment, now: DispatchTime.now().uptimeNanoseconds,
             read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
+        // The model's own row decides which modes it runs; nothing else does.
+        guard admission.definition.supportedGenerationModes.contains(mode) else {
+            throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.specification.model.rawValue)")
+        }
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
         try QwenResidentProcessLease.shared.acquire()
         var stage: QwenResidentLoadedStage?
@@ -163,7 +180,7 @@ extension QwenResidentRuntime {
             try control.loaded()
             return .init(admission: admission, control: control, collective: collective,
                 stage: stage!, capacity: capacity, lifecycle: lifecycle,
-                generationMode: mode, producerStage: producerStage)
+                generationMode: mode, producerStage: producerStage, qualificationFault: fault)
         } catch {
             let primary = error; control.fail(); stage = nil; producerStage = nil
             do {

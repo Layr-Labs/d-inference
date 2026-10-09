@@ -192,9 +192,10 @@ public struct PairDriver: Sendable {
             guard capability.runtimeBinarySHA256 == workerSHA256, capability.runtimeModelID == c.request.modelID,
                   capability.profile.id == c.request.profileID,
                   capability.supportedPrefillSchedules.map(\.rawValue).contains(c.prefillSchedule),
+                  capability.supportedGenerationModes.map(\.rawValue).contains(c.generationMode),
                   c.lifetimeSeconds <= capability.maxLifetimeSeconds,
                   let selected = capability.partitions.first(where: { $0.stages.count == 2 && $0.stages[0].sourceLayerEnd == c.stageCut }) else {
-                throw QualificationError("the worker does not offer this model, profile, schedule, lifetime or cut")
+                throw QualificationError("the worker does not offer this model, profile, schedule, generation mode, lifetime or cut")
             }
             partition = selected
         } catch {

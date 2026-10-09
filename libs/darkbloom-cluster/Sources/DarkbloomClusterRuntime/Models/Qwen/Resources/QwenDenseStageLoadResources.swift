@@ -261,3 +261,20 @@ public struct QwenResidentResourceAdmissionReport: Encodable, Sendable {
         scopes.filter { $0.refusals > 0 || $0.unjudged > 0 || $0.stoppedByCompressionOrSwap }
     }
 }
+
+/// A load or run that failed, with what this process still held after it had
+/// released everything. The description is the original failure followed by
+/// those figures, so a caller that only prints the error still shows them.
+public struct QwenResidentReleasedFailure: Error, CustomStringConvertible, Encodable, Sendable {
+    public let schema = "qwen_resident_released_failure_v1"
+    public let failure: String
+    public let activeBytesAfterRelease: Int
+    public let cacheBytesAfterRelease: Int
+    public let modelsReleased: [Bool]
+    public let resourceAdmission: QwenResidentResourceAdmissionReport
+
+    public var description: String {
+        "\(failure) [after release: \(activeBytesAfterRelease) bytes active, \(cacheBytesAfterRelease) cached, "
+            + "models released: \(modelsReleased.map { $0 ? "yes" : "no" }.joined(separator: ", "))]"
+    }
+}

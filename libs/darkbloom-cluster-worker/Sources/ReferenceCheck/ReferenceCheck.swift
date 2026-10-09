@@ -240,6 +240,14 @@ import Foundation
             if let text = report.decodedOutput { summary["decodedOutput"] = text }
             print(String(decoding: try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))
             Darwin.exit(released ? 0 : 2)
+        } catch let failure as QwenResidentReleasedFailure {
+            // A run that began and failed: the failure and what was still held
+            // after release go to standard output as one record.
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            if let record = try? encoder.encode(failure) { print(String(decoding: record, as: UTF8.self)) }
+            FileHandle.standardError.write(Data("darkbloom-cluster-reference: \(failure)\n".utf8))
+            Darwin.exit(1)
         } catch {
             FileHandle.standardError.write(Data("darkbloom-cluster-reference: \(error)\n".utf8))
             Darwin.exit(1)

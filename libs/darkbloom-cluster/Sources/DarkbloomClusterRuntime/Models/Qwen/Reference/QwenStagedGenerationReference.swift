@@ -263,9 +263,10 @@ public enum QwenStagedGenerationReference {
                 for rank in 0...1 {
                     let started = DispatchTime.now().uptimeNanoseconds
                     try autoreleasepool {
-                        let loaded = try loadQwenResidentStage(admissions[rank], check: checked)
-                        if rank == 0 { retired0 = loaded.loaded.model } else { retired1 = loaded.loaded.model }
-                        stages.append(loaded)
+                        // Set when the model is built, so a load that fails
+                        // part-way is answered for as well.
+                        stages.append(try loadQwenResidentStage(admissions[rank], check: checked,
+                            constructed: { if rank == 0 { retired0 = $0 } else { retired1 = $0 } }))
                     }
                     try settle()
                     loadSeconds.append(Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9)
@@ -584,7 +585,11 @@ public enum QwenStagedGenerationReference {
                         stageModelsReleased: [retired0 == nil, retired1 == nil],
                         activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory)
                 }
-                throw primary
+                // What this process still holds after releasing a failed run.
+                let after = Memory.snapshot()
+                throw QwenResidentReleasedFailure(failure: String(describing: primary),
+                    activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
+                    modelsReleased: [retired0 == nil, retired1 == nil], resourceAdmission: .current)
             }
         }
     }

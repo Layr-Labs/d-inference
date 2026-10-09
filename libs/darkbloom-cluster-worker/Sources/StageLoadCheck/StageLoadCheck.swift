@@ -37,6 +37,14 @@ import Foundation
             encoder.outputFormatting = [.sortedKeys]
             print(String(decoding: try encoder.encode(receipt), as: UTF8.self))
             Darwin.exit(receipt.modelReleased ? 0 : 2)
+        } catch let failure as QwenResidentReleasedFailure {
+            // A load that began and failed: the failure and what was still held
+            // after release go to standard output as one record, like a receipt.
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            if let record = try? encoder.encode(failure) { print(String(decoding: record, as: UTF8.self)) }
+            FileHandle.standardError.write(Data("darkbloom-cluster-stage-check: \(failure)\n".utf8))
+            Darwin.exit(1)
         } catch {
             FileHandle.standardError.write(Data("darkbloom-cluster-stage-check: \(error)\n".utf8))
             Darwin.exit(1)

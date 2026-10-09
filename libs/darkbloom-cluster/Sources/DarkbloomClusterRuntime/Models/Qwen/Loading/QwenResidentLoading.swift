@@ -66,17 +66,23 @@ private final class QwenResidentLoadGate: QwenLayerStageGate {
 /// The model-returning seam for this Mac's own artifact; the public facade
 /// stores the result privately. All actual source, both compact inventories and
 /// allocation limits are checked before entering the selected-tensor materializer.
-func loadQwenResidentStage(_ admission: QwenResidentAdmission,
-                          check: () throws -> Void) throws -> QwenResidentLoadedStage {
+///
+/// `constructed` receives the stage's model as soon as it exists, before any
+/// tensor is read. A caller that keeps a weak reference from it can tell
+/// whether the model was released after a load that failed part-way; a weak
+/// reference taken from the returned stage is never set on that path.
+func loadQwenResidentStage(_ admission: QwenResidentAdmission, check: () throws -> Void,
+                          constructed: (Module) -> Void = { _ in }) throws -> QwenResidentLoadedStage {
     let local = try prepareQwenResidentSource(admission, check: check)
-    return try loadQwenResidentStage(admission, source: local.metadata, payload: local.payload, check: check)
+    return try loadQwenResidentStage(admission, source: local.metadata, payload: local.payload, check: check,
+                                     constructed: constructed)
 }
 
 /// The same checks and the same materializer for any payload source: the
 /// metadata fixes every tensor before the payload supplies one.
 func loadQwenResidentStage(_ admission: QwenResidentAdmission, source prepared: QwenResidentSource,
-                          payload: some QwenLayerStagePayloadSource,
-                          check: () throws -> Void) throws -> QwenResidentLoadedStage {
+                          payload: some QwenLayerStagePayloadSource, check: () throws -> Void,
+                          constructed: (Module) -> Void = { _ in }) throws -> QwenResidentLoadedStage {
     let plan = admission.plan, index = admission.configuration.rank
     let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
         try inspectOtherQwenLayerStage(source: prepared.source, stage: plan.stages[1 - index], check: check)
@@ -87,6 +93,7 @@ func loadQwenResidentStage(_ admission: QwenResidentAdmission, source prepared: 
     return try autoreleasepool {
         try withRandomState(MLXRandom.RandomState(seed: 7)) {
             let value = try prepareQwenLayerStageModel(source: prepared.source, stage: plan.stages[index], check: check)
+            constructed(value.model)
             try QwenDenseObservedStageValidation.validateRegistered(source: prepared.validation, profile: prepared.profile,
                 requirement: prepared.pairRequirement, plan: plan, stageIndex: index,
                 active: value.inventory.active, inert: value.inventory.inert, summary: value.inventory.summary)

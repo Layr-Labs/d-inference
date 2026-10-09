@@ -100,8 +100,9 @@ public enum QwenResidentStageLoadCheck {
                 let before = Memory.snapshot().activeMemory
                 let started = DispatchTime.now().uptimeNanoseconds
                 try autoreleasepool {
-                    let value = try loadQwenResidentStage(admission, check: checked)
-                    retired = value.loaded.model; stage = value
+                    // The weak reference is set when the model is built, so
+                    // it also answers for a load that fails part-way.
+                    stage = try loadQwenResidentStage(admission, check: checked, constructed: { retired = $0 })
                 }
                 try settle()
                 let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
@@ -135,13 +136,17 @@ public enum QwenResidentStageLoadCheck {
                     modelReleased: retired == nil, loadSeconds: seconds, heldSeconds: holdSeconds == 0 ? 0 : held,
                     resourceAdmission: .current)
             } catch {
-                let primary = error
+                var primary: Error = error
                 stage = nil
                 Stream.gpu.synchronize(); Stream.cpu.synchronize()
                 Memory.clearCache()
                 // Prefer a recorded native fault over a secondary Swift error.
-                try nativeError.check()
-                throw primary
+                do { try nativeError.check() } catch { primary = error }
+                // What this process still holds after releasing a failed load.
+                let after = Memory.snapshot()
+                throw QwenResidentReleasedFailure(failure: String(describing: primary),
+                    activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
+                    modelsReleased: [retired == nil], resourceAdmission: .current)
             }
         }
     }

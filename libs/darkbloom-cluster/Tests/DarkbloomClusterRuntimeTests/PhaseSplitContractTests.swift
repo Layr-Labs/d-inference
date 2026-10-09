@@ -593,4 +593,207 @@ struct PhaseSplitContractTests {
         #expect(throws: ProbeError.self) { _ = try QwenPhaseSplitAllowance.derive(rank: 0, shapes: split.shapes, producerFusionBytes: 0) { $0 - 1 } }
         #expect(throws: ProbeError.self) { _ = try QwenPhaseSplitAllowance.derive(rank: 2, shapes: split.shapes, producerFusionBytes: 0) { $0 } }
     }
+
+    @Test func pipelineAgreementBytesAreTheOnesItAlwaysHad() throws {
+        // What this work must not change: a pipeline request's agreement. The
+        // expected object below is written out field by field as the agreement
+        // was defined before the phase split and the compact framing existed;
+        // the descriptor's own encoding must equal it byte for byte, for both
+        // registered models and both prefill schedules.
+        let epoch = UUID(uuidString: "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11")!
+        let id = UUID(uuidString: "0b1d5c1e-7f55-4d0a-8f4e-3d2c1b0a9f8e")!
+        for (model, cut) in [(QwenRegisteredDenseModel.qwen35NineB, 8), (.qwen38TwentySevenB, 16)] {
+            let request = try PhaseSplitFixture.request(id: id, model: model)
+            let plan = try PhaseSplitFixture.plan(cut: cut, model: model)
+            let configurationSHA256 = sha256(try PhaseSplitFixture.configuration(model))
+            let artifact = try PhaseSplitFixture.specification(model).artifactSHA256
+            let commitment = String(repeating: "c", count: 64), policy = String(repeating: "3", count: 64)
+            let builds = [String(repeating: "1", count: 64), String(repeating: "2", count: 64)]
+            for prefill in [QwenResidentPrefillPolicy.serial, .oneChunkLookahead] {
+                let agreement = try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: epoch,
+                    source: try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: configurationSHA256,
+                        artifactAggregateSHA256: artifact, storageCommitmentSHA256: commitment,
+                        planFingerprint: plan.fingerprint, producerStageFingerprint: plan.stages[0].fingerprint),
+                    consumerStageFingerprint: plan.stages[1].fingerprint, rankBuildSHA256: builds,
+                    numericalPolicySHA256: policy, prefillPolicy: prefill)
+                var expected: [String: Any] = [
+                    "schema": "qwen_stage_generation_agreement_v1", "rankCount": 2,
+                    "membershipEpoch": "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11",
+                    "requestID": "0b1d5c1e-7f55-4d0a-8f4e-3d2c1b0a9f8e",
+                    "requestFingerprint": request.fingerprint, "profileFingerprint": request.profile.fingerprint,
+                    "sourceConfigurationSHA256": configurationSHA256, "artifactAggregateSHA256": artifact,
+                    "storageCommitmentSHA256": commitment, "planFingerprint": plan.fingerprint,
+                    "stageFingerprints": [plan.stages[0].fingerprint, plan.stages[1].fingerprint],
+                    "rankBuildSHA256": builds, "numericalPolicySHA256": policy, "mtpEnabled": false,
+                ]
+                if prefill != .serial { expected["prefillSchedulingPolicy"] = prefill.rawValue }
+                let bytes = try JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys, .withoutEscapingSlashes])
+                #expect(try canonicalJSONData(agreement.descriptor) == bytes, "\(model.rawValue) \(prefill.rawValue)")
+                #expect(agreement.fingerprint == sha256(Data("qwen-stage-generation-v1|agreement|".utf8) + bytes))
+                #expect(agreement.phaseSplit == nil && !agreement.compactDecode)
+            }
+        }
+        // The 9B's profile and its cut-4 Plan are the ones the capability
+        // fixture pinned before this work, and the pipeline over JACCL adds
+        // nothing to the load agreement.
+        #expect(try PhaseSplitFixture.request().profile.fingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff")
+        #expect(try PhaseSplitFixture.plan(cut: 4).fingerprint == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
+        #expect(QwenResidentGenerationMode.pipeline.loadAgreementFields.isEmpty && ClusterTransport.jaccl.loadAgreementFields.isEmpty)
+    }
+
+    // MARK: Registered Qwen3.8 27B
+
+    @Test func registered27BManifestEqualsTheStateARealRunRecorded() throws {
+        // The registered 27B's state after 8,319 committed tokens, as a
+        // single-Mac reference of the real artifact recorded it (144 entries,
+        // 699,138,112 bytes): rank 0's share at each cut.
+        let geometry = try PhaseSplitFixture.specification(.qwen38TwentySevenB).expectedGeometry()
+        #expect(geometry.layers == 64)
+        let measured = [4: (9, 43_696_132), 12: (27, 131_088_396), 16: (36, 174_784_528), 20: (45, 218_480_660),
+                        24: (54, 262_176_792), 60: (135, 655_441_980)]
+        for (cut, expected) in measured {
+            let shapes = try QwenPhaseSplitPlan.expectedShapes(
+                stage: try PhaseSplitFixture.plan(cut: cut, model: .qwen38TwentySevenB).stages[0],
+                geometry: geometry, committedTokens: 8319, activationDType: "bfloat16")
+            #expect(shapes.count == expected.0, "27B cut \(cut)")
+            #expect(shapes.map(\.byteCount).reduce(0, +) == expected.1, "27B cut \(cut)")
+        }
+        let shapes = try QwenPhaseSplitPlan.expectedShapes(
+            stage: try PhaseSplitFixture.plan(cut: 4, model: .qwen38TwentySevenB).stages[0],
+            geometry: geometry, committedTokens: 8319, activationDType: "bfloat16")
+        #expect(shapes.map { "\($0.globalLayerIndex)|\($0.component)" } == [
+            "0|conv", "0|ssm", "1|conv", "1|ssm", "2|conv", "2|ssm", "3|kv.keys", "3|kv.position_offsets", "3|kv.values"])
+        // Its own recurrent geometry, not the 9B's: wider convolution state, 48 value heads.
+        #expect(shapes[0].shape == [1, 3, 10_240] && shapes[0].dtype == "bfloat16" && shapes[0].byteCount == 61_440)
+        #expect(shapes[1].shape == [1, 48, 128, 128] && shapes[1].dtype == "float32" && shapes[1].byteCount == 3_145_728)
+        #expect(shapes[6].shape == [1, 4, 8319, 256] && shapes[6].byteCount == 17_037_312)
+        // The 9B's geometry on the 27B's Plan, or the reverse, is not a hand-off either rank would derive.
+        let small = try PhaseSplitFixture.specification().expectedGeometry()
+        let request = try PhaseSplitFixture.request(model: .qwen38TwentySevenB)
+        #expect(throws: ProbeError.self) {
+            _ = try QwenPhaseSplitPlan(plan: try PhaseSplitFixture.plan(cut: 16, model: .qwen38TwentySevenB), geometry: small, request: request)
+        }
+        #expect(throws: ProbeError.self) {
+            _ = try QwenPhaseSplitPlan(plan: try PhaseSplitFixture.plan(cut: 16), geometry: geometry, request: request)
+        }
+    }
+
+    @Test func registered27BIsSupportedAtEveryCutOfItsRow() throws {
+        // The decision for the 27B: supported. At the largest admitted prompt
+        // every one of its cuts yields terms both ranks can derive, with every
+        // component within the unchanged 16 MiB transfer limit and the header
+        // within its fixed frame.
+        let definition = try QwenResidentModelDefinition(model: .qwen38TwentySevenB)
+        #expect(definition.supportedCuts == Array(stride(from: 4, through: 60, by: 4)))
+        let request = try PhaseSplitFixture.request(promptCount: 8192, chunkSize: 512, outputCount: 128, model: .qwen38TwentySevenB)
+        let ceilings = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
+        var fingerprints = Set<String>()
+        for cut in definition.supportedCuts {
+            let agreement = try PhaseSplitFixture.agreement(request, cut: cut, model: .qwen38TwentySevenB)
+            let split = try #require(agreement.phaseSplit)
+            // Three attention layers in four are recurrent: 9 entries per 4 layers, 2 of 9 not sent.
+            #expect(split.terms.entryCount == 9 * cut / 4 && split.terms.producerLayerCount == cut)
+            #expect(split.terms.segmentCount == 8 * cut / 4)
+            #expect(split.terms.logicalBytes == (cut / 4) * (3 * (61_440 + 3_145_728) + 2 * 16_777_216 + 4))
+            // An attention tensor after 8,192 tokens is exactly the limit: nothing is cut.
+            #expect(split.segments.allSatisfy { $0.tokens == nil && $0.byteCount <= CollectivePointToPointShape.hardByteLimit })
+            #expect(split.shapes.map(\.byteCount).max() == CollectivePointToPointShape.hardByteLimit)
+            // The state that changes owner is within this model's own ceiling.
+            #expect(split.terms.logicalBytes <= ceilings.namedStateByteCeiling)
+            // One header names every component and fits its fixed frame.
+            let bound = try QwenPhaseSplitHandoffHeader.encodedBytesBound(shapes: split.shapes)
+            #expect(bound <= QwenPhaseSplitHandoffHeader.frameBytes - QwenControlFrame.headerBytes, "27B cut \(cut): \(bound) bytes")
+            let header = try QwenPhaseSplitHandoffHeader(agreement: agreement, tokenChainSHA256: agreement.initialTokenChainSHA256,
+                digests: split.shapes.map { $0.component == QwenPhaseSplitStateShape.positionOffsets
+                    ? QwenPhaseSplitHandoffHeader.positionOffsetsSHA256(committedTokens: 8192) : String(repeating: "e", count: 64) })
+            let encoded = try header.encoded()
+            #expect(encoded.count <= bound, "the bound must cover the real header at cut \(cut)")
+            _ = try QwenControlFrame.encode(encoded, frameBytes: QwenPhaseSplitHandoffHeader.frameBytes)
+            fingerprints.insert(agreement.fingerprint)
+        }
+        // Every cut is another agreement; the largest names 135 components.
+        #expect(fingerprints.count == definition.supportedCuts.count)
+        // The 9B at its own largest cut, by the same rule.
+        let small = try #require(try PhaseSplitFixture.agreement(
+            try PhaseSplitFixture.request(promptCount: 8192, chunkSize: 512, outputCount: 128), cut: 16).phaseSplit)
+        #expect(small.terms.entryCount == 36)
+        #expect(try QwenPhaseSplitHandoffHeader.encodedBytesBound(shapes: small.shapes) < 16_384)
+        // A model and cut whose components one header cannot name is refused
+        // when the terms are derived: shown with shapes no registered model has.
+        let many = (0..<400).map { QwenPhaseSplitStateShape(globalLayerIndex: $0, component: "ssm", shape: [1, 48, 128, 128],
+                                                           dtype: "float32", byteCount: 3_145_728) }
+        #expect(try QwenPhaseSplitHandoffHeader.encodedBytesBound(shapes: many)
+            > QwenPhaseSplitHandoffHeader.frameBytes - QwenControlFrame.headerBytes)
+    }
+
+    @Test func registered27BTermsAreItsOwnAndFencedFromThe9B() throws {
+        let large = try PhaseSplitFixture.request(model: .qwen38TwentySevenB), small = try PhaseSplitFixture.request(id: large.requestID)
+        let largeSplit = try PhaseSplitFixture.agreement(large, cut: 16, model: .qwen38TwentySevenB)
+        let smallSplit = try PhaseSplitFixture.agreement(small, cut: 16)
+        let largePipeline = try PhaseSplitFixture.agreement(large, cut: 16, split: false, model: .qwen38TwentySevenB)
+        // The same request ID, prompt, cut and epoch on the two models: four different agreements.
+        #expect(Set([largeSplit.fingerprint, smallSplit.fingerprint, largePipeline.fingerprint,
+                     try PhaseSplitFixture.agreement(small, cut: 16, split: false).fingerprint]).count == 4)
+        let a = try #require(largeSplit.phaseSplit).terms, b = try #require(smallSplit.phaseSplit).terms
+        #expect(a.entryCount == b.entryCount && a.producerLayerCount == b.producerLayerCount)
+        #expect(a.manifestSHA256 != b.manifestSHA256 && a.logicalBytes > b.logicalBytes)
+        // The 27B's pipeline agreement does not mention the phase split either.
+        #expect(!String(decoding: try canonicalJSONData(largePipeline.descriptor), as: UTF8.self).contains("phaseSplit"))
+        // A hand-off header written for one model is refused by a rank that holds the other.
+        let smallFour = try PhaseSplitFixture.agreement(small), largeFour = try PhaseSplitFixture.agreement(large, model: .qwen38TwentySevenB)
+        let sender = try QwenPhaseSplitHandoffSender(agreement: smallFour, tokenChainSHA256: smallFour.initialTokenChainSHA256,
+            components: PhaseSplitFixture.components(try #require(smallFour.phaseSplit)))
+        let receiver = try QwenPhaseSplitHandoffReceiver(agreement: largeFour, tokenChainSHA256: largeFour.initialTokenChainSHA256)
+        #expect(throws: ProbeError.self) { try receiver.acceptHeader(try sender.header.encoded()) }
+        #expect(receiver.header == nil && receiver.refusal != nil)
+    }
+
+    @Test func registered27BHandoffIsVerifiedAndACorruptedSegmentRefused() throws {
+        let request = try PhaseSplitFixture.request(model: .qwen38TwentySevenB)
+        let agreement = try PhaseSplitFixture.agreement(request, model: .qwen38TwentySevenB)
+        let split = try #require(agreement.phaseSplit)
+        #expect(split.terms.entryCount == 9 && split.segments.count == 8)
+        let components = PhaseSplitFixture.components(split)
+        let sender = try QwenPhaseSplitHandoffSender(agreement: agreement, tokenChainSHA256: agreement.initialTokenChainSHA256,
+            components: components)
+        for corrupted in [nil, 1, sender.segments.count - 1] as [Int?] {
+            let receiver = try QwenPhaseSplitHandoffReceiver(agreement: agreement, tokenChainSHA256: agreement.initialTokenChainSHA256)
+            try receiver.acceptHeader(try sender.header.encoded())
+            for (index, segment) in sender.segments.enumerated() {
+                var bytes = try sender.bytes(for: segment)
+                if index == corrupted { bytes[bytes.startIndex + bytes.count / 3] ^= 0x04 }
+                try receiver.acceptSegment(index, bytes: bytes)
+            }
+            guard let corrupted else {
+                let verified = try receiver.finish()
+                #expect(verified.count == 8 && receiver.refusal == nil)
+                for (index, component) in components.enumerated() { #expect(verified[index] == component.bytes) }
+                continue
+            }
+            let shape = split.shapes[sender.segments[corrupted].entryIndex]
+            do {
+                _ = try receiver.finish()
+                Issue.record("a corrupted 27B hand-off segment was accepted")
+            } catch {
+                #expect("\(error)".contains("global layer \(shape.globalLayerIndex) \(shape.component)"))
+            }
+            #expect(receiver.refusal != nil)
+        }
+    }
+
+    @Test func registered27BAllowanceIsNamedPerRankFromItsOwnShapes() throws {
+        let request = try PhaseSplitFixture.request(promptCount: 8192, chunkSize: 512, outputCount: 128, model: .qwen38TwentySevenB)
+        let split = try #require(try PhaseSplitFixture.agreement(request, cut: 16, model: .qwen38TwentySevenB).phaseSplit)
+        let owner = try QwenPhaseSplitAllowance.derive(rank: 0, shapes: split.shapes, producerFusionBytes: 1000) { $0 + 16 }
+        let adopter = try QwenPhaseSplitAllowance.derive(rank: 1, shapes: split.shapes, producerFusionBytes: 1000) { $0 + 16 }
+        #expect(split.terms.logicalBytes == 4 * (3 * (61_440 + 3_145_728) + 2 * 16_777_216 + 4))
+        #expect(owner.extraHostBytes == split.terms.logicalBytes && adopter.extraHostBytes == split.terms.logicalBytes)
+        #expect(owner.extraNativeBytes == split.terms.logicalBytes + 16 * 36)
+        #expect(adopter.extraNativeBytes == owner.extraNativeBytes + 1000)
+        // More than the 9B hands over at the same cut and prompt: the charge follows the model.
+        let small = try #require(try PhaseSplitFixture.agreement(
+            try PhaseSplitFixture.request(promptCount: 8192, chunkSize: 512, outputCount: 128), cut: 16).phaseSplit)
+        #expect(owner.extraHostBytes > small.terms.logicalBytes)
+        #expect(owner.extraHostBytes - small.terms.logicalBytes == 12 * ((61_440 + 3_145_728) - (49_152 + 2_097_152)))
+    }
 }

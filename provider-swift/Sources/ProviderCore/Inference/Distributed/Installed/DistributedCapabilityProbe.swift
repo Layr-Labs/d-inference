@@ -26,7 +26,8 @@ enum DistributedCapabilityProbe {
 
     // Internal actual-child fixture seam. Production supplies only the fixed
     // describe-runtime command above after verifying its executable pin.
-    static func run(executable: URL, arguments: [String], deadline: UInt64) throws -> Data {
+    static func run(executable: URL, arguments: [String], deadline: UInt64,
+                    maximumOutputBytes: Int = ClusterRuntimeCapabilityCodec.maximumBytes) throws -> Data {
         try DistributedInstalledFiles.check(deadline)
         let child = Process(), output = Pipe(), error = Pipe()
         child.executableURL = executable; child.arguments = arguments
@@ -57,7 +58,7 @@ enum DistributedCapabilityProbe {
         try exit.run(child); launched = true
         try output.fileHandleForWriting.close(); try error.fileHandleForWriting.close()
         var data = [Data(), Data()], open = [true, true]
-        let limits = [ClusterRuntimeCapabilityCodec.maximumBytes, 4096]
+        let limits = [maximumOutputBytes, 4096]
         while open.contains(true) || child.isRunning {
             try DistributedInstalledFiles.check(deadline)
             var descriptors = handles.enumerated().map { index, handle in

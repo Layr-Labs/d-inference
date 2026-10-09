@@ -5,7 +5,7 @@ import ProviderCore
 struct Cluster: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "cluster",
         abstract: "Set up this Mac's cluster link, and manage saved distributed-cluster setup.",
-        subcommands: [Setup.self, Console.self, Configure.self, Status.self, Doctor.self, Link.self, Recover.self, WorkerOwner.self],
+        subcommands: [Setup.self, Console.self, Plan.self, Configure.self, Status.self, Doctor.self, Link.self, Recover.self, WorkerOwner.self],
         defaultSubcommand: Setup.self)
 
     struct Configure: AsyncParsableCommand {

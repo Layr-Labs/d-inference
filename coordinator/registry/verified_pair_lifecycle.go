@@ -139,15 +139,19 @@ func (r *Registry) disconnectVerifiedPairLocked(p *Provider) {
 	r.releaseAbandonedQuarantineLocked(s, time.Now())
 }
 
-// Call only after releasing p.mu. Loss notifications refer to the observed
-// object, so a late challenge from a disconnected socket cannot revoke a new
-// connection's replacement grant merely because its textual ID was reused.
-// The connection itself stays registered and can still deliver its receipt.
+// Call only after releasing p.mu, and after the lost trust or evidence is
+// already recorded on p, so a grant reserved later sees it. Loss notifications
+// refer to the observed object, so a late challenge from a disconnected socket
+// cannot revoke a new connection's replacement grant merely because its
+// textual ID was reused. The connection itself stays registered and can still
+// deliver its receipt. Trust setters run for the whole fleet, so the registry
+// is write-locked only when this connection actually holds a grant.
 func (r *Registry) invalidateVerifiedPairForProvider(p *Provider) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s := r.verifiedPairs.connections[p]; s != nil {
-		r.endVerifiedPairLocked(s)
+	r.mu.RLock()
+	pair := r.verifiedPairs.connections[p]
+	r.mu.RUnlock()
+	if pair != nil {
+		r.invalidateVerifiedPairState(pair)
 	}
 }
 

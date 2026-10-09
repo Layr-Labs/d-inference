@@ -58,6 +58,9 @@ func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 		p.RuntimeCapabilities = nil
 	}
 	p.mu.Unlock()
+	if (!attested || trust != TrustHardware) && p.registry != nil {
+		p.registry.invalidateVerifiedPairForProvider(p)
+	}
 	p.reconcileRuntimeCapabilities()
 }
 
@@ -345,8 +348,11 @@ func (p *Provider) GetChallengeVerifiedSIP() bool {
 
 func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.ChallengeVerifiedSIP = v
+	p.mu.Unlock()
+	if !v && p.registry != nil {
+		p.registry.invalidateVerifiedPairForProvider(p)
+	}
 }
 
 // SetCodeAttested updates general code-proof state at validated call sites.

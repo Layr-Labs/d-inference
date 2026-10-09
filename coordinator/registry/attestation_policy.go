@@ -287,7 +287,7 @@ func (r *Registry) notifyRuntimeCapabilitiesPromoted(providerID string) {
 // non-recoverable: the provider stays untrusted until it reconnects and
 // re-registers. This is the default for every direct deroute call site.
 func (r *Registry) MarkUntrusted(providerID string) {
-	r.connectionLifecycle.MarkUntrusted(providerID, false)
+	r.markUntrusted(providerID, false)
 }
 
 // MarkUntrustedTransient sets a provider's status to untrusted for a *transient*
@@ -301,7 +301,15 @@ func (r *Registry) MarkUntrusted(providerID string) {
 // model hash and runtime before RecordChallengeSuccess is reached, so using it
 // as the recovery trigger is safe.
 func (r *Registry) MarkUntrustedTransient(providerID string) {
-	r.connectionLifecycle.MarkUntrusted(providerID, true)
+	r.markUntrusted(providerID, true)
+}
+
+// markUntrusted deroutes the provider, then revokes any verified pair grant on
+// that connection. Even a transient untrust that later recovers must not
+// resurrect the grant; its device hold is quarantined, never freed.
+func (r *Registry) markUntrusted(providerID string, recoverable bool) {
+	r.connectionLifecycle.MarkUntrusted(providerID, recoverable)
+	r.invalidateVerifiedPairForProvider(r.GetProvider(providerID))
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
@@ -321,6 +329,10 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 		p.RuntimeCapabilities = nil
 	}
 	p.mu.Unlock()
+
+	if level != TrustHardware {
+		r.invalidateVerifiedPairForProvider(p)
+	}
 
 	// Persist trust state.
 	r.persistProviderNow(p)
@@ -418,6 +430,10 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 		p.ChallengeVerifiedSIP = false
 	}
 	p.mu.Unlock()
+
+	if !transientOnly || count >= MaxFailedChallenges {
+		r.invalidateVerifiedPairForProvider(p)
+	}
 
 	// Persist challenge state and reputation.
 	r.persistProviderNow(p)

@@ -60,21 +60,40 @@ public enum ClusterDiagnosticExport {
         let activity: [Activity]
     }
 
-    /// The redacted document as bytes. Throws when redaction left something
-    /// recognizable or broke the document, instead of returning it.
+    /// The redacted document as bytes. Every string in it is redacted as the
+    /// text it is, before it is written as JSON, so no rule has to see through
+    /// JSON's own quoting. Throws when the second look still recognizes
+    /// something, instead of returning it.
     public static func render(_ input: Input, redaction: ClusterDiagnosticRedaction, createdAt: String) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try render(input, redaction: redaction, createdAt: createdAt, marking: redaction.marked)
+    }
+
+    /// `marking` is the redactor's own `marked` everywhere but in the check
+    /// that proves the second look refuses what a faulty first one lets by.
+    static func render(_ input: Input, redaction: ClusterDiagnosticRedaction, createdAt: String,
+                       marking: (String) -> String) throws -> Data {
         let document = Document(createdAt: createdAt, darkbloomVersion: input.darkbloomVersion, snapshot: input.snapshot,
             sessionState: input.sessionState, sessionOutput: Array(input.sessionOutput.suffix(sessionOutputLines)),
             activity: input.activity)
-        let redacted = redaction.redact(String(decoding: try encoder.encode(document), as: UTF8.self))
-        let residue = redaction.residue(in: redacted)
-        guard residue.isEmpty else { throw Failure.redactionIncomplete(residue) }
-        let bytes = Data((redacted + "\n").utf8)
-        guard (try? JSONSerialization.jsonObject(with: bytes)) != nil else {
-            throw Failure.notWritten("redaction left a document that is not JSON")
+        var residue = Set<String>()
+        func redacted(_ value: Any) -> Any {
+            switch value {
+            case let text as String:
+                let marked = marking(text)
+                residue.formUnion(redaction.residue(inMarked: marked))
+                return ClusterDiagnosticRedaction.named(marked)
+            case let list as [Any]: return list.map(redacted)
+            // Field names are this schema's own and stay as they are, and so
+            // does a schema's name, which no user's name may rewrite.
+            case let object as [String: Any]:
+                return Dictionary(uniqueKeysWithValues: object.map { ($0.key, $0.key == "schema" ? $0.value : redacted($0.value)) })
+            default: return value
+            }
         }
+        let tree = redacted(try JSONSerialization.jsonObject(with: JSONEncoder().encode(document)))
+        guard residue.isEmpty else { throw Failure.redactionIncomplete(residue.sorted()) }
+        var bytes = try JSONSerialization.data(withJSONObject: tree, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        bytes.append(10)
         return bytes
     }
 

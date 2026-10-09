@@ -1,6 +1,6 @@
 # Registered MiMo V2.6 Flash across two Macs
 
-> Last updated: 2026-10-09 17:52Z (branch `work/mimo`, base `e15f5b891`). Work in progress: the pair has not run.
+> Last updated: 2026-10-09 18:05Z (branch `work/mimo`, base `e15f5b891`). Work in progress: the pair has not run.
 
 "Mac A" is the M3 Ultra (256 GiB), "Mac B" the M5 Max (128 GiB). Raw logs,
 receipts and gate records are outside the repository in the task's evidence
@@ -14,8 +14,8 @@ layer pipeline neither Mac holds more than about 103 GiB of it.
 
 | Step | State | Evidence (folder `mimo-20261009`) |
 |---|---|---|
-| Admission, ceilings and capability from the real metadata | type-checked; the eight model-free check runners pass; the runtime unit tests **have not run** | `unit/pure-3/`, `unit/` |
-| Stage load and release, rank 1 on Mac B | **passed at cut 40** (26.87 GiB) after four loads the growth guard stopped | `stage-load/B-*` |
+| Admission, ceilings and capability from the real metadata | the eight model-free check runners pass; the runtime unit tests ran once: 127 of 128 passed, and the one failure and one startup-check failure were wrong expectations, corrected and **not re-run** | `unit/pure-3/`, `unit/build5.*` |
+| Stage load and release, rank 1 on Mac B | **passed at cut 40** (26.87 GiB) after four loads the growth guard stopped; **refused at cut 28** by the committed rule when the first pair hold began (72.27 GiB needed, 61.62 free) | `stage-load/B-*` |
 | Stage load and release, rank 0 on Mac A | **not attempted** | |
 | Single-Mac reference | not run; the owner put it after the pair | |
 | Pair across the cable | **not run** | |
@@ -78,9 +78,9 @@ finish with the next layer's input norm in one kernel. At the cut, stage 0
 runs that kernel against a placeholder norm (its residual output does not
 depend on the norm) and stage 1 computes the norm itself with the stock
 operation. A unit test builds a tiny random four-layer MiMo
-with the product's class and compares the whole model with its two stages in
-float32 and bfloat16; it has not run yet. There is no single-Mac comparison on
-the real weights yet either.
+with the product's class and compares the whole model with its two stages at
+every cut, prefill and decode, in bfloat16: it passed. There is no single-Mac
+comparison on the real weights yet.
 
 ## Artifact
 
@@ -166,6 +166,7 @@ not run.
 | `2926d6a57`, `4baffbebb` | wip: stage check with a prefill and decode probe |
 | `80d7edae6` | wip: pair driver, request and tokenizer rows |
 | `f214e9add` | the MiMo section of `DESIGN-resource-gate-v3.md` |
+| `40193382a` | wip: two test expectations corrected |
 
 ### Shared files other workers also edit
 
@@ -278,7 +279,8 @@ lanes; anything on Mac B needs `lane-b.sh`.
 
 ## Not done
 
-- The runtime unit tests and the worker package's XCTest build have not run.
+- The two corrected test expectations have not been re-run, and the worker
+  package's XCTest build has not run.
 - Rank 0 has never been loaded; no pair run; no fault run; no reference.
 - Verifying only the shards a rank reads (each rank still hashes all 53 files).
 - The loader pace that was tried was removed: no dependable effect.

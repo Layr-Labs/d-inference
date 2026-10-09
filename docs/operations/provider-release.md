@@ -556,7 +556,7 @@ cached products.
 
 Dev and production builds carry the same version string. A Mac reaches the dev
 release only through the dev installer
-(`curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash`), which writes
+(`curl -fsSL https://api.dev.darkbloom.dev/install.sh | bash`), which writes
 the dev `[coordinator] url` into `provider.toml`
 (`scripts/install.sh`, `bind_provider_coordinator`); updates then come from the
 dev coordinator. See [dev-environment.md](dev-environment.md), step 9.

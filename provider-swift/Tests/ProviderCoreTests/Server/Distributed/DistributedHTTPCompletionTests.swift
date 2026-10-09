@@ -139,6 +139,32 @@ struct DistributedHTTPCompletionTests {
         }
     }
 
+    /// The engine admits only greedy sampling. A refusal has no native
+    /// terminal, so a stream must answer it as the non-streamed request does.
+    @Test func refusedStreamAdmissionAnswersBeforeEventStreamHeaders() async throws {
+        try await withCompletionFixture { fixture in
+            var statuses: [Int] = []
+            for stream in [false, true] {
+                let (data, reply) = try await URLSession.shared.data(
+                    for: try fixture.request(stream: stream, temperature: 0.7))
+                let http = try #require(reply as? HTTPURLResponse)
+                #expect((400..<600).contains(http.statusCode), "stream=\(stream) answered \(http.statusCode)")
+                #expect(http.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("application/json") == true)
+                #expect(try jsonObject(data)["error"] != nil)
+                #expect(!String(decoding: data, as: UTF8.self).contains("data:"))
+                statuses.append(http.statusCode)
+            }
+            #expect(statuses.first == statuses.last)
+            #expect(fixture.session.base.reserveCount == 0)
+            // The refusal released its acquisition and response hold: the next request is served.
+            let request = try fixture.request(stream: true)
+            let client = Task { try await URLSession.shared.data(for: request) }
+            fixture.completeTwoTokens(try await fixture.startedLease())
+            let served = String(decoding: try await client.value.0, as: UTF8.self)
+            #expect(served.contains("t4") && served.hasSuffix("data: [DONE]\n\n"))
+        }
+    }
+
     /// A non-streamed request has no HTTP content timer, so only the engine
     /// can enforce the first-token budget selected at the HTTP origin.
     @Test func nonStreamedRequestIsCancelledAtItsFirstTokenBudget() async throws {

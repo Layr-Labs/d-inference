@@ -902,6 +902,13 @@ extension EngineV2Bridge {
             }
             if let failure = error as? PreContentDeadlineFailure { throw failure }
             if error is CancellationError { throw CancellationError() }
+            // A refused distributed admission has no native terminal for the
+            // HTTP writer to report. Throw the mapped error before response
+            // headers instead of returning a stream that can only abort.
+            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
+                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
+                    EngineV2Translation.admissionErrorMessage(for: error))
+            }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity

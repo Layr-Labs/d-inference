@@ -96,7 +96,9 @@ enum ConsoleFixtures {
             "clusterID": "fixture-cluster", "memberID": "peer-0", "role": "leader", "configurationSHA256": pin("d"),
             "capabilitySHA256": pin("1"), "publicModelID": "fixture/public-model", "runtimeModelID": "registered_fixture",
             "artifactSHA256": pin("b"), "configurationModelSHA256": pin("2"), "planSHA256": pin("c"), "prefillSchedule": ClusterPrefillSchedule.serial.rawValue,
-            "peers": [["id": "peer-0", "rank": 0, "runtimeBinarySHA256": pin("3")], ["id": "peer-1", "rank": 1, "runtimeBinarySHA256": pin("3")]],
+            "generationMode": ClusterGenerationMode.pipeline.rawValue,
+            "peers": [["id": "peer-0", "rank": 0, "runtimeBinarySHA256": pin("3"), "supportedGenerationModes": [ClusterGenerationMode.pipeline.rawValue]],
+                      ["id": "peer-1", "rank": 1, "runtimeBinarySHA256": pin("3"), "supportedGenerationModes": [ClusterGenerationMode.pipeline.rawValue]]],
             "maximumLifetimeSeconds": 300, "maximumRequests": 16,
         ] as [String: Any]))
     }
@@ -107,7 +109,7 @@ enum ConsoleFixtures {
         let binding = try binding()
         return .init(schema: ClusterLiveStatus.schemaName, nonce: "n", binding: binding, authenticationConfigured: true, hostPhase: host,
             session: .init(binding: binding, phase: phase, observedMembershipEpoch: ready ? "11111111-2222-3333-4444-555555555555" : nil,
-                observedPrefillSchedule: ready ? .serial : nil, ready: ready,
+                observedPrefillSchedule: ready ? .serial : nil, observedGenerationMode: ready ? .pipeline : nil, ready: ready,
                 admission: ready ? .init(remainingLifetimeNanoseconds: 281_000_000_000, remainingRequests: 15, activeRequest: false, draining: false, valid: true) : nil,
                 members: (0..<2).map { .init(peerID: "peer-\($0)", rank: $0, transport: $0 == 0 ? .localPipes : .authenticatedSSH,
                     nativeReady: capacity[$0] != nil, requestCapacityBytes: capacity[$0], nativeCleanupObserved: false,

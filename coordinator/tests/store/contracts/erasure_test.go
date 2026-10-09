@@ -163,15 +163,23 @@ func TestAccountErasureLifecycle(t *testing.T) {
 				t.Fatal("no erasure_log outbox row")
 			}
 
-			// The old Privy ID is free: a new login makes a fresh account.
-			if pending, _ := s.PrivyUserPendingErasure(ctx, a.PrivyID); pending {
-				t.Fatal("erased account still blocks its Privy ID")
-			}
+			// The old Privy ID stays held until the outbox has deleted the
+			// Privy user: no account can take it before that deletion.
 			if _, err := s.GetUserByPrivyID(a.PrivyID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("Privy lookup after scrub: %v", err)
 			}
+			if pending, _ := s.PrivyUserPendingErasure(ctx, a.PrivyID); !pending {
+				t.Fatal("the Privy ID is free before its privy_user row is done")
+			}
+			if err := s.CreateUser(&store.User{AccountID: erasurefixture.UniqueID("acct-new"), PrivyUserID: a.PrivyID}); !errors.Is(err, store.ErrErasurePrivyUserPending) {
+				t.Fatalf("re-signup before the Privy deletion: %v; want ErrErasurePrivyUserPending", err)
+			}
+			finishPrivyUserRow(t, s, req.ID)
+			if pending, _ := s.PrivyUserPendingErasure(ctx, a.PrivyID); pending {
+				t.Fatal("the Privy ID is held after its privy_user row is done")
+			}
 			if err := s.CreateUser(&store.User{AccountID: erasurefixture.UniqueID("acct-new"), PrivyUserID: a.PrivyID}); err != nil {
-				t.Fatalf("re-signup: %v", err)
+				t.Fatalf("re-signup after the Privy deletion: %v", err)
 			}
 		})
 	}
@@ -355,5 +363,30 @@ func TestErasurePlanRunsEveryRuleInOrder(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// finishPrivyUserRow stores done for the privy_user outbox row of request,
+// as the outbox worker does after Privy deleted the user.
+func finishPrivyUserRow(t *testing.T, s store.Store, request string) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	rows, err := s.LeaseDueErasureOutbox(ctx, now.Add(time.Hour), now, time.Minute, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rows {
+		result := store.ErasureOutboxResult{LeaseGeneration: r.LeaseGeneration, State: r.State, Attempts: r.Attempts, NextAt: r.NextAt, LastError: r.LastError, ExternalID: r.ExternalID}
+		if r.RequestID == request && r.Target == store.ErasureTargetPrivyUser {
+			found, result.State, result.NextAt = true, store.ErasureOutboxDone, now
+		}
+		if err := s.SaveErasureOutboxResult(ctx, r.ID, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !found {
+		t.Fatal("no privy_user row to finish")
 	}
 }

@@ -48,16 +48,16 @@ func TestErasureHidesSoftDeletedUser(t *testing.T) {
 				t.Fatalf("ClaimModelTokenPromotion: %v, want ErrPromotionIneligible", err)
 			}
 
-			// The Privy ID is free again for a new live account, and only one
-			// live account may hold it.
-			again := erasurefixture.UniqueID("acct-again")
-			if err := s.CreateUser(&store.User{AccountID: again, PrivyUserID: a.PrivyID}); err != nil {
-				t.Fatalf("re-signup with the Privy ID of a deleted user: %v", err)
+			// The pending erasure holds the Privy ID: no new account can take
+			// it. Only one live account may hold a Privy ID.
+			if err := s.CreateUser(&store.User{AccountID: erasurefixture.UniqueID("acct-again"), PrivyUserID: a.PrivyID}); !errors.Is(err, store.ErrErasurePrivyUserPending) {
+				t.Fatalf("re-signup with the Privy ID of a pending erasure: %v; want ErrErasurePrivyUserPending", err)
 			}
-			if u, err := s.GetUserByPrivyID(a.PrivyID); err != nil || u.AccountID != again {
-				t.Fatalf("GetUserByPrivyID after re-signup = %+v, %v", u, err)
+			other := erasurefixture.UniqueID("did:privy:other")
+			if err := s.CreateUser(&store.User{AccountID: erasurefixture.UniqueID("acct-other"), PrivyUserID: other}); err != nil {
+				t.Fatal(err)
 			}
-			if err := s.CreateUser(&store.User{AccountID: erasurefixture.UniqueID("acct-dup"), PrivyUserID: a.PrivyID}); err == nil {
+			if err := s.CreateUser(&store.User{AccountID: erasurefixture.UniqueID("acct-dup"), PrivyUserID: other}); err == nil {
 				t.Fatal("two live users hold the same Privy ID")
 			}
 		})

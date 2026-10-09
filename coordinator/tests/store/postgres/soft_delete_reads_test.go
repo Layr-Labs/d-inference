@@ -67,16 +67,16 @@ func TestSoftDeletedUserIsHidden(t *testing.T) {
 		t.Fatalf("ClaimModelTokenPromotion: %v, want ErrPromotionIneligible", err)
 	}
 
-	// The Privy ID is free again for a new live account, and only one
-	// live account may hold it.
-	again := uniqueID("acct-again")
-	if err := s.CreateUser(&store.User{AccountID: again, PrivyUserID: privy}); err != nil {
-		t.Fatalf("re-signup with the Privy ID of a deleted user: %v", err)
+	// A soft-deleted user holds its Privy ID: no new account can take it.
+	// Only one live account may hold a Privy ID.
+	if err := s.CreateUser(&store.User{AccountID: uniqueID("acct-again"), PrivyUserID: privy}); !errors.Is(err, store.ErrErasurePrivyUserPending) {
+		t.Fatalf("re-signup with the Privy ID of a soft-deleted user: %v; want ErrErasurePrivyUserPending", err)
 	}
-	if u, err := s.GetUserByPrivyID(privy); err != nil || u.AccountID != again {
-		t.Fatalf("GetUserByPrivyID after re-signup = %+v, %v", u, err)
+	other := uniqueID("did:privy:other")
+	if err := s.CreateUser(&store.User{AccountID: uniqueID("acct-other"), PrivyUserID: other}); err != nil {
+		t.Fatal(err)
 	}
-	if err := s.CreateUser(&store.User{AccountID: uniqueID("acct-dup"), PrivyUserID: privy}); err == nil {
+	if err := s.CreateUser(&store.User{AccountID: uniqueID("acct-dup"), PrivyUserID: other}); err == nil {
 		t.Fatal("two live users hold the same Privy ID")
 	}
 }

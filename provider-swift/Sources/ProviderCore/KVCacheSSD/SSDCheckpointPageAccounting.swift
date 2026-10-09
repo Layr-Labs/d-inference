@@ -14,12 +14,13 @@ final class SSDCheckpointPageAccounting: @unchecked Sendable {
     private var physicalBytes = 0
 
     func register(checkpoint: URL) {
+        let path = SSDCheckpointFileCoordinator.pathKey(for: checkpoint)
         guard let main = SSDCheckpointPageFiles.info(checkpoint) else { return }
         let files = [main] + SSDCheckpointPageFiles.files(for: checkpoint)
         let logical = files.reduce(0) { SSDCheckpointPageFiles.saturatingAdd($0, $1.bytes) }
         lock.withLock {
-            let indexedLogical = entries[checkpoint.path]?.logicalBytes ?? logical
-            removeLocked(checkpoint.path)
+            let indexedLogical = entries[path]?.logicalBytes ?? logical
+            removeLocked(path)
             var ids: [Object] = []
             for file in files {
                 let id = Object(device: file.device, inode: file.inode)
@@ -39,25 +40,28 @@ final class SSDCheckpointPageAccounting: @unchecked Sendable {
                     physicalBytes = SSDCheckpointPageFiles.saturatingAdd(physicalBytes, file.bytes)
                 }
             }
-            entries[checkpoint.path] = Entry(logicalBytes: indexedLogical, objects: ids)
+            entries[path] = Entry(logicalBytes: indexedLogical, objects: ids)
             logicalBytes = SSDCheckpointPageFiles.saturatingAdd(logicalBytes, indexedLogical)
         }
     }
 
     func reconcile(indexedCheckpoints: [URL]) {
-        let paths = Set(indexedCheckpoints.map(\.path))
+        let paths = Set(indexedCheckpoints.map(SSDCheckpointFileCoordinator.pathKey))
         lock.withLock {
             for path in Array(entries.keys) where !paths.contains(path) { removeLocked(path) }
         }
         for checkpoint in indexedCheckpoints {
-            let known = lock.withLock { entries[checkpoint.path] != nil }
+            let known = lock.withLock { entries[SSDCheckpointFileCoordinator.pathKey(for: checkpoint)] != nil }
             if known || SSDBlockStore.isRealDirectory(SSDCheckpointPageFiles.directory(for: checkpoint)) {
                 register(checkpoint: checkpoint)
             }
         }
     }
 
-    func remove(checkpoint: URL) { lock.withLock { removeLocked(checkpoint.path) } }
+    func remove(checkpoint: URL) {
+        let path = SSDCheckpointFileCoordinator.pathKey(for: checkpoint)
+        lock.withLock { removeLocked(path) }
+    }
     func removeAll() { lock.withLock { entries.removeAll(); objects.removeAll(); logicalBytes = 0; physicalBytes = 0 } }
     func diskBytes(indexedBytes: Int) -> Int {
         lock.withLock { SSDCheckpointPageFiles.saturatingAdd(max(0, indexedBytes - logicalBytes), physicalBytes) }

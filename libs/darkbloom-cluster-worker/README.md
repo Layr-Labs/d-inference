@@ -316,11 +316,20 @@ both.
   both chips; it has not yet completed a two-Mac run (see
   [handoff/QWEN27B-PAIR.md](../../handoff/QWEN27B-PAIR.md)).
 - The host gate admits on free pages plus part of the file cache: three
-  quarters of the file-backed memory above the kernel's own file-cache
-  minimum, at most 32 GiB, and only while memory pressure is normal. Anonymous
-  memory is never counted. A refusal names the requirement, the free pages and
-  the cache counted; the stage check and the reference print the gate's
-  decisions. See
+  quarters of the file-backed memory that is both above the kernel's own
+  file-cache minimum and short of the point where half of the cache is
+  active, at most 32 GiB, and only while memory pressure is normal. Anonymous
+  memory is never counted. A load or a request stops counting cache once the
+  Mac has compressed more than 512 MiB or swapped out more than 64 MiB since
+  its first check, and then stops unless free pages alone are enough. This is
+  proven on two Macs with 128 and 256 GB only. It does not protect a Mac whose
+  cache is mapped by another program (the load is stopped after about half a
+  GiB has been compressed, each time it is tried), two loads started together
+  can both be stopped part-way, and a Mac with 32 or 48 GB is mostly refused.
+  A refusal names the requirement, the free pages and the cache counted, and
+  says when waiting for more cache cannot help. The stage check and the
+  reference print the gate's record per load and per request; a load that
+  fails part-way prints one record with what it still held after release. See
   [handoff/DESIGN-resource-gate-v3.md](../../handoff/DESIGN-resource-gate-v3.md).
 - The owner-authenticated JACCL bootstrap (`--bootstrap-socket-path`,
   `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`) is parsed

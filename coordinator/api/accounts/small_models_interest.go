@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/eigeninference/d-inference/coordinator/api/access"
 	"github.com/eigeninference/d-inference/coordinator/api/httpx"
@@ -110,7 +111,7 @@ func (s *Owner) HandleAdminSmallModelsInterest(w http.ResponseWriter, r *http.Re
 		}
 	}
 	after := r.URL.Query().Get("after")
-	if len(after) > 256 {
+	if len(after) > 256 || !utf8.ValidString(after) || strings.ContainsRune(after, '\x00') {
 		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorResponse("invalid_request_error", "invalid cursor"))
 		return
 	}

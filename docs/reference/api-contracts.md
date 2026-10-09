@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -62,7 +62,7 @@ Both Earn-page notification buttons register the same per-account interest; a la
 | Identity/contact | Derived from the verified session and stored user; caller-supplied identity, email, or other unknown fields reject with `400` | Same handler |
 | Body | One JSON object, no trailing values; maximum 1024 bytes (`413` when exceeded) | Same handler, `interestJSONError` |
 | Contactability | A stored account email is required (`422 email_required`); `401` invalid/missing session, `403` noninteractive credentials, `429` rate limit, `500` storage failure never acknowledge registration | Same handler and `RequirePrivyAuth` in `coordinator/api/access/auth.go`, `RateLimitFinancial` in `coordinator/api/access/rate_limits.go` |
-| Export page | `limit` defaults to 100, valid range 1–100; `after` is exclusive account ID, at most 256 bytes; follow `next_cursor` until absent | `coordinator/api/accounts/small_models_interest.go` (`HandleAdminSmallModelsInterest`) |
+| Export page | `limit` defaults to 100, valid range 1–100; `after` is an exclusive account ID, at most 256 bytes, valid UTF-8 with no NUL; an invalid cursor returns `400 invalid_request_error` before querying the store. Follow `next_cursor` until absent | `coordinator/api/accounts/small_models_interest.go` (`HandleAdminSmallModelsInterest`) |
 
 The console forwards only to this fixed coordinator path. Its pending hardware marker is not proof of registration; success requires `204` or authenticated readback. See [sign-in and registration steps](../consumer/authentication.md#6-register-hardware-interest).
 

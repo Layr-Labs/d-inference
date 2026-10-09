@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - small-model interest export cursors
+
+- Reject NUL and invalid UTF-8 pagination cursors with `400 invalid_request_error` before listing small-model interest. Valid cursors, page limits, and export authorization remain unchanged.
+
 ## Unreleased — Member-only automatic security clearance
 
 - Limit scan-only merge clearance to verified active Layr-Labs organization members. Non-members, bots and unavailable membership require independent formal human review. Use a separate read-only membership token and retain ordinary CI and current-revision checks.

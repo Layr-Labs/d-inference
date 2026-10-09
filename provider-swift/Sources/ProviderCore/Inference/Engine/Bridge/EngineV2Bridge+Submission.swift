@@ -930,7 +930,8 @@ extension EngineV2Bridge {
             prefixCacheReceiptID: prefixCacheReceiptID,
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
-            nativeRetirement: nativeRetirement
+            nativeRetirement: nativeRetirement,
+            httpResponse: distributed == nil ? nil : httpResponse
         )
 
         let bridge = self

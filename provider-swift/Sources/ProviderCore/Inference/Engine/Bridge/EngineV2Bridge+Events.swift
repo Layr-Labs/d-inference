@@ -17,7 +17,8 @@ extension EngineV2Bridge {
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
-        nativeRetirement: CBv2RequestRetirement? = nil
+        nativeRetirement: CBv2RequestRetirement? = nil,
+        httpResponse: DistributedHTTPResponse? = nil
     ) {
         let bridge = self
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
@@ -33,7 +34,8 @@ extension EngineV2Bridge {
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 readyReceiptRegistered: readyReceiptRegistered,
                 profile: profile,
-                nativeRetirement: nativeRetirement
+                nativeRetirement: nativeRetirement,
+                httpResponse: httpResponse
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
@@ -64,7 +66,8 @@ extension EngineV2Bridge {
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
-        nativeRetirement: CBv2RequestRetirement? = nil
+        nativeRetirement: CBv2RequestRetirement? = nil,
+        httpResponse: DistributedHTTPResponse? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -140,6 +143,13 @@ extension EngineV2Bridge {
                 }
                 #endif
                 sawTerminal = true
+                // The distributed engine emits .finished only after its lease
+                // retired. An engine teardown or a cancelled pump never
+                // reaches this line, so neither can fill the HTTP terminal.
+                httpResponse?.recordTerminal(.init(
+                    promptTokens: usage.promptTokens,
+                    completionTokens: usage.completionTokens,
+                    cause: Self.httpTerminalCause(reason)))
                 if reason == .stop || reason == .length {
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,
@@ -281,6 +291,18 @@ extension EngineV2Bridge {
         }
         if !sawFirstToken {
             wedgeMonitor.recordTerminalWithoutFirstToken()
+        }
+    }
+
+    /// The cause a distributed HTTP response reports for an engine finish: nil
+    /// for a natural stop/length, and `.engineError` for a failure that has no
+    /// wire cause of its own.
+    private static func httpTerminalCause(_ reason: CBv2FinishReason) -> InferenceTerminalCause? {
+        switch reason {
+        case .stop, .length: return nil
+        case .cancelled: return .cancelled
+        case .terminal(let cause, _): return wireTerminalCause(cause) ?? .engineError
+        case .error: return .engineError
         }
     }
 

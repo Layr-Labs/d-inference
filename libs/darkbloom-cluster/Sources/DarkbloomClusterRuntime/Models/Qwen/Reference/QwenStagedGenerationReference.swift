@@ -43,6 +43,24 @@ public enum QwenStagedGenerationReference {
         public let forwardNanoseconds: UInt64
     }
 
+    /// A stage 0 residual that the pair's sender would have refused: it sends
+    /// the array's own storage and requires an owned, compact allocation.
+    public struct UnownedResidual: Sendable {
+        public let frameSequence: Int
+        public let phase: String
+        public let tokenCount: Int
+        public let byteCount: Int
+        public let allocatedBytes: Int
+        public let allocationBound: Int
+        public let dataOffset: Int
+        public let dataElements: Int
+        public let elementCount: Int
+        public let isUnique: Bool
+        public let isRowContiguous: Bool
+        /// The same check again after the GPU stream has drained.
+        public let ownedAfterGPUSynchronize: Bool
+    }
+
     public struct StateEntry: Sendable {
         public let globalLayerIndex: Int
         public let component: String
@@ -85,6 +103,10 @@ public enum QwenStagedGenerationReference {
         /// chain in them is the initial one; a chain only advances through the
         /// pair's token exchange.
         public let rankRecords: [Data]
+        /// Frames whose stage 0 residual failed the sender's ownership check as
+        /// produced, and the first of them. A pair fails at the first such frame.
+        public let unownedResidualFrames: [Int]
+        public let firstUnownedResidual: UnownedResidual?
 
         public let stageLoadSeconds: [Double]
         public let loadedTensorBytes: [Int]
@@ -244,6 +266,8 @@ public enum QwenStagedGenerationReference {
                 var completedFrames = 0
                 var prefill: UInt64 = 0, decode: UInt64 = 0
                 var reason: QwenLayerStageGenerationFinishReason?
+                var unownedFrames: [Int] = []
+                var firstUnowned: UnownedResidual?
                 for sequence in 0..<request.forwardCount {
                     let frame = try request.frame(sequence: sequence)
                     try autoreleasepool {
@@ -264,6 +288,28 @@ public enum QwenStagedGenerationReference {
                         }
                         guard case .hidden(let produced) = try forward(0, nil) else {
                             throw ProbeError("Staged reference stage 0 did not return a residual")
+                        }
+                        // Rank 0's sender applies this check to the residual as
+                        // produced, before it sends it. Recorded, not enforced: the
+                        // copy below gives stage 1 an owned array either way.
+                        let senderDType = stages[0].loaded.activationDType
+                        func senderAccepts() -> Bool {
+                            (try? produced.validateOwnedArray(tokens: frame.tokenCount,
+                                hidden: request.profile.hiddenSize, dtype: senderDType)) != nil
+                        }
+                        if !senderAccepts() {
+                            unownedFrames.append(frame.sequence)
+                            let info = try produced.array.evaluatedBufferInfo()
+                            let bound = try Memory.allocationFootprintUpperBound(byteCount: produced.array.nbytes)
+                            Stream.gpu.synchronize()
+                            if firstUnowned == nil, let info {
+                                firstUnowned = .init(frameSequence: frame.sequence, phase: frame.phase.rawValue,
+                                    tokenCount: frame.tokenCount, byteCount: produced.array.nbytes,
+                                    allocatedBytes: info.allocatedBytes, allocationBound: bound,
+                                    dataOffset: info.dataOffset, dataElements: info.dataElements,
+                                    elementCount: produced.array.size, isUnique: info.isUnique,
+                                    isRowContiguous: info.isRowContiguous, ownedAfterGPUSynchronize: senderAccepts())
+                            }
                         }
                         // The pair moves these bytes over the link into a fresh
                         // allocation. Here they are copied into one, and the copy
@@ -378,6 +424,7 @@ public enum QwenStagedGenerationReference {
                         .init(globalLayerIndex: $0.globalLayerIndex, component: $0.component, shape: $0.shape,
                               dtype: $0.dtype, byteCount: $0.byteCount, sha256: $0.sha256)
                     }, stateSHA256: state.fingerprint, rankRecords: rankRecords,
+                    unownedResidualFrames: unownedFrames, firstUnownedResidual: firstUnowned,
                     stageLoadSeconds: loadSeconds, loadedTensorBytes: loadedTensorBytes,
                     prefillNanoseconds: prefill, decodeNanoseconds: decode, requestWallNanoseconds: requestWall,
                     activeBytesBefore: before, activeBytesLoaded: loadedBytes, peakBytes: peak,

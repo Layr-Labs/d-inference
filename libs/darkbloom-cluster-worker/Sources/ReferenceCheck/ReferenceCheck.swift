@@ -119,7 +119,13 @@ import Foundation
                 metallibSHA256: executable.flatMap {
                     try? QualificationHash.file($0.deletingLastPathComponent().appendingPathComponent("mlx.metallib"), maximumBytes: 1 << 30)
                 }, timing: timing, memory: memory, promptSource: request.promptSource,
-                decodedOutput: tokenizer?.decode(result.selectedTokenIDs))
+                decodedOutput: tokenizer?.decode(result.selectedTokenIDs),
+                senderCheck: .init(refusedFrames: result.unownedResidualFrames, firstRefused: result.firstUnownedResidual.map {
+                    .init(frameSequence: $0.frameSequence, phase: $0.phase, tokenCount: $0.tokenCount, byteCount: $0.byteCount,
+                          allocatedBytes: $0.allocatedBytes, allocationBound: $0.allocationBound, dataOffset: $0.dataOffset,
+                          dataElements: $0.dataElements, elementCount: $0.elementCount, isUnique: $0.isUnique,
+                          isRowContiguous: $0.isRowContiguous, ownedAfterGPUSynchronize: $0.ownedAfterGPUSynchronize)
+                }))
             try QualificationFiles.writeNew(QualificationReportFiles.encode(report), to: reportURL)
 
             let released = result.stageModelsReleased.allSatisfy { $0 }
@@ -132,7 +138,12 @@ import Foundation
                 "activeBytesLoaded": result.activeBytesLoaded, "activeBytesAfterRelease": result.activeBytesAfterRelease,
                 "cacheBytesAfterRelease": result.cacheBytesAfterRelease, "stageModelsReleased": released,
                 "rankRecordsJoinToThisEvidence": true,
+                "residualFramesAPairSenderWouldRefuse": result.unownedResidualFrames.count,
             ]
+            if !result.unownedResidualFrames.isEmpty {
+                FileHandle.standardError.write(Data(("darkbloom-cluster-reference: \(result.unownedResidualFrames.count) stage 0 "
+                    + "residual(s) would be refused by a pair's sender, first at frame \(result.unownedResidualFrames[0])\n").utf8))
+            }
             if let rate = timing.decodeTokensPerSecond { summary["decodeTokensPerSecond"] = rate }
             if let text = report.decodedOutput { summary["decodedOutput"] = text }
             print(String(decoding: try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))

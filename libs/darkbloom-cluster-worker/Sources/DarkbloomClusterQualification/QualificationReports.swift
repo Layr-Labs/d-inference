@@ -218,6 +218,42 @@ public struct ReferenceMemory: Codable, Equatable, Sendable {
     }
 }
 
+/// Whether a pair's sender would accept each stage 0 residual of this run. It
+/// sends the array's own storage and refuses one that is not an owned compact
+/// allocation, so a pair fails at the first frame listed here.
+public struct ReferenceSenderCheck: Codable, Equatable, Sendable {
+    public struct Residual: Codable, Equatable, Sendable {
+        public var frameSequence: Int
+        public var phase: String
+        public var tokenCount: Int
+        public var byteCount: Int
+        public var allocatedBytes: Int
+        public var allocationBound: Int
+        public var dataOffset: Int
+        public var dataElements: Int
+        public var elementCount: Int
+        public var isUnique: Bool
+        public var isRowContiguous: Bool
+        public var ownedAfterGPUSynchronize: Bool
+
+        public init(frameSequence: Int, phase: String, tokenCount: Int, byteCount: Int, allocatedBytes: Int,
+                    allocationBound: Int, dataOffset: Int, dataElements: Int, elementCount: Int, isUnique: Bool,
+                    isRowContiguous: Bool, ownedAfterGPUSynchronize: Bool) {
+            self.frameSequence = frameSequence; self.phase = phase; self.tokenCount = tokenCount
+            self.byteCount = byteCount; self.allocatedBytes = allocatedBytes; self.allocationBound = allocationBound
+            self.dataOffset = dataOffset; self.dataElements = dataElements; self.elementCount = elementCount
+            self.isUnique = isUnique; self.isRowContiguous = isRowContiguous
+            self.ownedAfterGPUSynchronize = ownedAfterGPUSynchronize
+        }
+    }
+    public var refusedFrames: [Int]
+    public var firstRefused: Residual?
+
+    public init(refusedFrames: [Int], firstRefused: Residual?) {
+        self.refusedFrames = refusedFrames; self.firstRefused = firstRefused
+    }
+}
+
 public struct ReferenceReport: Codable, Equatable, Sendable {
     public static let currentSchema = "darkbloom_cluster_reference_report_v1"
     public var schema: String
@@ -232,15 +268,17 @@ public struct ReferenceReport: Codable, Equatable, Sendable {
     public var memory: ReferenceMemory
     public var promptSource: QualificationPromptSource
     public var decodedOutput: String?
+    public var senderCheck: ReferenceSenderCheck?
 
     public init(identity: QualificationIdentity, evidence: QualificationEvidence, host: QualificationHost,
                 binarySHA256: String?, metallibSHA256: String?, timing: ReferenceTiming, memory: ReferenceMemory,
-                promptSource: QualificationPromptSource, decodedOutput: String?) {
+                promptSource: QualificationPromptSource, decodedOutput: String?, senderCheck: ReferenceSenderCheck? = nil) {
         schema = Self.currentSchema; kind = "singleHostStagedReference"
         createdUTC = QualificationReportFiles.timestamp()
         self.identity = identity; self.evidence = evidence; self.host = host
         self.binarySHA256 = binarySHA256; self.metallibSHA256 = metallibSHA256
         self.timing = timing; self.memory = memory; self.promptSource = promptSource; self.decodedOutput = decodedOutput
+        self.senderCheck = senderCheck
     }
 }
 

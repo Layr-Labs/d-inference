@@ -624,7 +624,8 @@ public enum ConfigManager: Sendable {
         return config
     }
 
-    /// Save config to a file path, creating parent directories as needed.
+    /// Save config to a file path, creating parent directories as needed. The
+    /// file is replaced atomically and owner-only (`ProviderConfigFile`).
     public static func save(_ config: ProviderConfig, to path: URL) throws {
         let dir = path.deletingLastPathComponent()
         do {
@@ -637,7 +638,7 @@ public enum ConfigManager: Sendable {
 
         let toml = serialize(config)
         do {
-            try toml.write(to: path, atomically: true, encoding: .utf8)
+            try ProviderConfigFile.replace(path, with: Data(toml.utf8))
         } catch {
             throw ConfigError.writeFailed(path: path.path, underlying: error)
         }

@@ -16,6 +16,12 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
   "$task_fixtures/ConfigurationFilesCheck.swift" -o "$task_build/files-check"
 "$task_build/files-check"
 xcrun swiftc -swift-version 6 -warnings-as-errors \
+  "$task_config/ClusterConfigurationFiles.swift" "$task_config/ProviderConfigFile.swift" \
+  "$task_fixtures/ProviderConfigFileCheck.swift" -o "$task_build/provider-config-file-check"
+# The strict reader refuses symlinked path components such as /var, so the
+# fixture directory lives under the checkout.
+(cd "$task_provider" && "$task_build/provider-config-file-check")
+xcrun swiftc -swift-version 6 -warnings-as-errors \
   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol \
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \

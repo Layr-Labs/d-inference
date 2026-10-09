@@ -1,0 +1,60 @@
+{
+  "images": {
+    "native": {
+      "sdk_revision": "45fedc12e55075072faa16871992119ad5e77c27",
+      "provider_revision": "776d3eadd1a4c0bd26623ea994eab50648fb86f4",
+      "original_native_normalizer": true,
+      "benchmark_binary_sha256": "1251f40050a59d33eab9ab50506faa458bed79da3e6af1f56d17c02e2139a3c4",
+      "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+      "gemma_source_sha256": "bf04df8668622c4e164208e5ade09f087113961461e700dd5215b121f55bbef8",
+      "local_mlx_swift_revision": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+      "local_mlx_core_revision": "cb77239be31b1df7f5db895226af55c39fc4f093",
+      "token_receipts": true
+    },
+    "candidate": {
+      "sdk_revision": "f4fb61cefc202670a9468874a4d6cc96d6074f66",
+      "provider_revision": "776d3eadd1a4c0bd26623ea994eab50648fb86f4",
+      "original_native_normalizer": false,
+      "benchmark_binary_sha256": "de2ba746424d8a44f5d739a3fbf2ac71de9dcb30d71759d5d948a4b1dcc831a8",
+      "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+      "gemma_source_sha256": "f63d610b3a81657988f508d30b84cbf5db743ea8cd822eb1351f534354087ff8",
+      "normalization_helper_sha256": "3ca83d484fb1d5d06071701920dae8af508f5df15121bf0de95c716852121906",
+      "token_receipts": true
+    }
+  },
+  "model_config_sha256": "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa",
+  "model_path": "/Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local",
+  "weight_inventory": [
+    {
+      "name": "model-00001-of-00003.safetensors",
+      "bytes": 5275612587,
+      "mtime_ns": 1780961684666871760
+    },
+    {
+      "name": "model-00002-of-00003.safetensors",
+      "bytes": 5296718232,
+      "mtime_ns": 1780961834930345976
+    },
+    {
+      "name": "model-00003-of-00003.safetensors",
+      "bytes": 5036507755,
+      "mtime_ns": 1780961969051610404
+    }
+  ],
+  "prompt_lengths": [
+    128,
+    4096
+  ],
+  "batches": [
+    1,
+    2
+  ],
+  "steps": 64,
+  "prefill_chunk": 512,
+  "pairs_per_cell": 3,
+  "input": "BenchCBv2 seeded syntheticPrompt, seed FACE plus request index",
+  "quality_gate": "every token ID, finish reason, prompt and completion count equal; native repeats stable",
+  "benefit_gate": "geometric mean ITL improves at least 1 percent; every cell median ITL and TTFT regresses at most 2 percent",
+  "failure_action": "evidence only; no runtime default change",
+  "claim_limit": "synthetic continuation identity; no task score or KV storage reduction claim"
+}

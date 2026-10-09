@@ -1,0 +1,27 @@
+== BenchCBv2RealModel ==
+model: /Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local
+mode: perf  engines: ["v2"]  batches: [1]  steps: 64
+prompt lengths: [4096]  paged nominalMaxSeqLen: 4160
+host: load avg (1m) 6.1 / 16 cores; no darkbloom process
+model loaded in 1.2s
+model class: Gemma4TextModel; layers: 30
+- optimization model: layer18(requested=true, effective=true, interval=18); weightedUnsort(requested=false, effective=false); safeR1GeometryEligible=true; safeR1(requested=false, effective=false, aot=true, nax=false)
+- optimization-run-json: {"model":{"layer18Effective":true,"layer18Interval":18,"layer18Requested":true,"safeR1GeometryEligible":true,"weightedUnsortEffective":false,"weightedUnsortRequested":false},"safeR1AOTAvailable":true,"safeR1Effective":false,"safeR1NAXAvailable":false,"safeR1Requested":false}
+vocabSize=262144
+
+## Performance (maxTokens 64)
+
+| engine | B | prompts (tok) | decode TPS/req | agg TPS | TTFT p50 (ms) | ITL p50 (ms) |
+|---|---|---|---|---|---|---|
+| v2 | 1 | 4096 | 97.2 | 19.8 | 2589 | 10.3 |
+
+- optimization provenance [perf/v2/B1]: layer18(requested=true, effective=true, interval=18); weightedUnsort(requested=false, effective=false); safeR1GeometryEligible=true; layer18ExpectedMinimumSubmissions=1, layer18Submissions=8, layer18Engaged=true; weightedCalls=0, weightedEngaged=false; safeR1(requested=false, effective=false, armed=true, aot=true, nax=false, exactGeometryExpected=true, attempts=0, hits=0, fallbacks=0, fallbackNAX=0, fallbackOuterRoute=0, fallbackQuantization=0, fallbackTopology=0, fallbackAssignmentCount=0, fallbackGeometry=0, fallbackMetallibUnavailable=0)
+- optimization-cell-json [perf/v2/B1]: {"aggregateTPS":19.756348667038434,"batch":1,"decodeTPSPerRequest":97.19911938511451,"engine":"v2","itlP50Ms":10.262012481689453,"optimizationProvenance":{"layer18Engaged":true,"layer18ExpectedMinimumSubmissions":1,"layer18IntermediateSubmissions":8,"model":{"layer18Effective":true,"layer18Interval":18,"layer18Requested":true,"safeR1GeometryEligible":true,"weightedUnsortEffective":false,"weightedUnsortRequested":false},"safeR1":{"aotAvailable":true,"armed":true,"attempts":0,"effective":false,"exactGeometryExpected":true,"fallbackAssignmentCount":0,"fallbackGeometry":0,"fallbackMetallibUnavailable":0,"fallbackNAX":0,"fallbackOuterRoute":0,"fallbackQuantization":0,"fallbackTopology":0,"fallbacks":0,"hits":0,"naxAvailable":false,"requested":false},"weightedUnsortEffectiveCalls":0,"weightedUnsortEngaged":false},"perRequest":["    req 0: prompt=4096 tokens=64 ttft=2589ms decodeTPS=97.2 finish=length"],"promptMix":[4096],"tokenReceipts":[{"completionTokens":64,"finishReason":"length","promptTokens":4096,"tokenIDs":[10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,10595,100,236751,100,236771,236761,236771,236761,236771,236761,236771,236761,236771,236761]}],"ttftP50Ms":2589.25998210907}
+
+Per-request detail:
+    [mem after v2 B=1] gpuActive=13.48 GiB gpuPeak=14.53 GiB
+  v2 B=1:
+    req 0: prompt=4096 tokens=64 ttft=2589ms decodeTPS=97.2 finish=length
+report written to docs/reports/evidence/gemma-normalization-2026-10-09/L4096-B1-R2-candidate.md
+
+DONE

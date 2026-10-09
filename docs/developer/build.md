@@ -554,7 +554,7 @@ provider, with the Python runner and original oracles owned by this repository.
 | `Makefile` | — | Every target below; `make help` lists them. |
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
-See [finding provider tests](test.md#finding-provider-tests) for the folder map;
+See [finding provider tests](test.md#nested-sdk-test-products) for the folder map;
 `provider-swift/Package.swift` (`package`) retains recursive source discovery.
 The [inference source map](../architecture/inference.md#code-map) locates engine,
 memory, caching and request-processing code within the same `ProviderCore`
@@ -1096,6 +1096,35 @@ a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
 The [rollout runbook](../operations/app-attest-rollout.md) separates these checks
 from real Apple receipt renewal and final signed-artifact fleet qualification.
+
+## Gemma benchmark evidence images
+
+Build `BenchCBv2` in release mode in an isolated SDK checkout at the native
+receipt revision stated in the [normalization report](../reports/2026-10-09-gemma-normalization-controls.md).
+Use the documented [local-MLX package edit](test.md#finding-provider-tests)
+against the same parent-pinned MLX source and stage its source-matched metallib.
+Archive the executable, runtime resource bundles and `build-receipt.json` before
+applying the portable candidate patch in another isolated checkout. The candidate
+is an experiment image; keep the serving SDK on its native revision.
+
+```bash
+# From the isolated libs/mlx-swift-lm checkout:
+swift package edit --path ../mlx-swift mlx-swift
+swift build -c release --product BenchCBv2
+../../scripts/fetch-metallib.sh "$(swift build -c release --show-bin-path)"
+```
+
+`scripts/benchmarks/gemma-native-normalization-controls.py` expects `--native`
+and `--candidate` image directories containing `BenchCBv2`, `mlx.metallib`, runtime
+bundles and a build receipt. The receipt identifies the SDK/provider sources,
+executable/metallib hashes and whether the original normalizer is installed.
+See [receipt tests](test.md#complete-benchmark-output-receipts) before running
+the campaign with a new output directory and an exclusive model lease.
+
+The operator probe (`scripts/benchmarks/gemma-raw-kv-probe.py`) requires a Python
+environment with `mlx` and `numpy`. It reads one global BF16 K norm vector and
+creates synthetic projections. Its [dated report](../reports/2026-10-09-gemma-shared-projection-kv.md)
+preserves the executed script and rejected reconstruction result.
 
 ## Related
 

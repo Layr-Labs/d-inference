@@ -1,0 +1,12 @@
+{
+  "gemma-native-normalization-controls.py": {
+    "bytes": 7424,
+    "sha256": "2d3bfeda6d096d5f39fecb6ff0302e0183e3935aa9a54a9db3b48daea31c70ea",
+    "captured_from": "scripts/benchmarks/gemma-native-normalization-controls.py"
+  },
+  "gemma-raw-kv-probe.py": {
+    "bytes": 7879,
+    "sha256": "d6dbcc00af0b1a308b7a8ce2ceb71fbf28f7d6c61a3f608481d09d32df71ed37",
+    "captured_from": "scripts/benchmarks/gemma-raw-kv-probe.py"
+  }
+}

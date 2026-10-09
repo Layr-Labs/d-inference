@@ -1,0 +1,32 @@
+{
+  "archive": "raw-cell-reports.zip",
+  "bytes": 38172,
+  "sha256": "a04a4fb29257da6a99da06a667de227a82a225327e66505b5c95a6acd3def043",
+  "members": [
+    "L128-B1-R0-candidate.md",
+    "L128-B1-R0-native.md",
+    "L128-B1-R1-candidate.md",
+    "L128-B1-R1-native.md",
+    "L128-B1-R2-candidate.md",
+    "L128-B1-R2-native.md",
+    "L128-B2-R0-candidate.md",
+    "L128-B2-R0-native.md",
+    "L128-B2-R1-candidate.md",
+    "L128-B2-R1-native.md",
+    "L128-B2-R2-candidate.md",
+    "L128-B2-R2-native.md",
+    "L4096-B1-R0-candidate.md",
+    "L4096-B1-R0-native.md",
+    "L4096-B1-R1-candidate.md",
+    "L4096-B1-R1-native.md",
+    "L4096-B1-R2-candidate.md",
+    "L4096-B1-R2-native.md",
+    "L4096-B2-R0-candidate.md",
+    "L4096-B2-R0-native.md",
+    "L4096-B2-R1-candidate.md",
+    "L4096-B2-R1-native.md",
+    "L4096-B2-R2-candidate.md",
+    "L4096-B2-R2-native.md"
+  ],
+  "original_manifest": "artifact-manifest.json"
+}

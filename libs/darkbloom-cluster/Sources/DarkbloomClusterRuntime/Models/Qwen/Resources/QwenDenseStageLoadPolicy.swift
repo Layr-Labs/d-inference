@@ -14,7 +14,7 @@ struct QwenDenseStageLoadNativeObservation: Encodable {
 }
 
 struct QwenDenseStageLoadResourceDecision: Encodable {
-    let policy = "registered_dense_selected_stage_load_resources_v1"
+    let policy = "registered_dense_selected_stage_load_resources_v2"
     let ordinal: Int, remainingAllocationBytes: Int
     let requiredActualFreeBytes: Int, requiredAllocatorBytes: Int
     let os: QwenDenseStageLoadOSObservation
@@ -31,6 +31,18 @@ enum QwenDenseStageLoadPolicy {
     static let loadingHeadroomBytes = 4 * gib
     static let allocatorHeadroomBytes = 2 * gib
     static let maximumObservationAgeNanoseconds: UInt64 = 1_000_000_000
+    /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical.
+    static let normalPressureLevel = 1
+    static let warningPressureLevel = 2
+
+    /// Swap occupancy is history: pages written out earlier stay counted until
+    /// they are touched or the Mac restarts. It says the Mac is short of memory
+    /// now only together with pressure, so it is refused under warning pressure
+    /// and admitted while the kernel reports normal. The free-page requirements
+    /// are unchanged and never count reclaimable or swapped pages.
+    static func swapIsAcceptable(swapUsedBytes: Int, pressureLevel: Int) -> Bool {
+        swapUsedBytes == 0 || pressureLevel <= normalPressureLevel
+    }
 
     static func requireInitial(_ os: QwenDenseStageLoadOSObservation, now: UInt64) throws {
         try validateOS(os, now: now)
@@ -69,8 +81,11 @@ enum QwenDenseStageLoadPolicy {
               os.physicalMemoryBytes > 0, os.pageSizeBytes > 0,
               [os.kernelFreePages, os.freePages, os.inactivePages, os.speculativePages, os.actualFreeBytes,
                os.estimatedReclaimableBytes, os.swapUsedBytes].allSatisfy({ $0 >= 0 }),
-              (0...2).contains(os.pressureLevel), os.swapUsedBytes == 0 else {
-            throw ProbeError("Invalid, stale, pressured or swapped selected-stage resource observation")
+              (0...warningPressureLevel).contains(os.pressureLevel) else {
+            throw ProbeError("Invalid, stale or pressured selected-stage resource observation")
+        }
+        guard swapIsAcceptable(swapUsedBytes: os.swapUsedBytes, pressureLevel: os.pressureLevel) else {
+            throw ProbeError("Selected-stage loading refuses swap in use under memory pressure")
         }
         let free = try QwenLongPrefillCheckedBytes.product([os.freePages, os.pageSizeBytes])
         let pages = try QwenLongPrefillCheckedBytes.sum([os.freePages, os.inactivePages, os.speculativePages])

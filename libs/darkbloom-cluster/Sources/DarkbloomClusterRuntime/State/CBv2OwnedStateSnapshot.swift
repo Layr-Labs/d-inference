@@ -36,7 +36,7 @@ extension CBv2OwnedStateSnapshot {
         guard committedTokens > 0,
             rows.count == geometry.kinds.count, recurrent.spec == geometry.recurrent,
             !recurrent.isReleased,
-            globalLayerIndices.count == geometry.kinds.count + geometry.recurrent.layers.count,
+            globalLayerIndices.count == geometry.layerCount,
             Set(globalLayerIndices).count == globalLayerIndices.count,
             globalLayerIndices.allSatisfy({ $0 >= 0 }) else {
             throw ProbeError("CBv2 snapshot needs a complete unique layer mapping and committed frontier")

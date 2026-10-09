@@ -62,7 +62,7 @@ final class QwenLayerStageSession {
             stage.model.trainableParameters().flattened().isEmpty,
             !stage.model.namedModules().contains(where: { $0.0 == "mtp" || $0.0.hasSuffix(".mtp") }),
             stage.model is any CBv2RecurrentMTPForwardable,
-            stage.model is any CBv2PositionedRecurrentEmbeddingForwardable,
+            stage.model is any CBv2PositionedRecurrentEmbeddingForwardable || stage.model is NemotronHModel,
             String(describing: stage.activationDType) == receipt.embeddingActivationDType,
             [.float16, .bfloat16, .float32].contains(stage.activationDType) else {
             throw ProbeError("Stage model identity, native dtype, frozen ownership or public forwarding contract differs")
@@ -160,6 +160,11 @@ final class QwenLayerStageSession {
             // start at zero and must match the SAME full-model tokenOffset here;
             // a stage's global layer offset never changes sequence positions.
             let output = try state.run(tokenCount: tokens.count, observer: observer, check: checked, forward: { caches, evaluation in
+                // A Nemotron stage starts and stops inside the trunk through its own seam.
+                if let nemotron = stage.model as? NemotronHModel {
+                    return NemotronStageForward.run(model: nemotron, stageIndex: stage.stageIndex, tokens: input,
+                        residual: incoming?.array, caches: caches, evaluation: evaluation, frame: frame)
+                }
                 if stage.stageIndex == 0 {
                     let native = stage.model as! any CBv2RecurrentMTPForwardable
                     // Ordinary noncaptured trunk: discard the lazy logits tuple

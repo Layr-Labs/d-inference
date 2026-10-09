@@ -113,7 +113,7 @@ struct QwenPhaseSplitPlan: Equatable {
         var shapes: [QwenPhaseSplitStateShape] = []
         for layer in stage.layers.sorted(by: { $0.globalIndex < $1.globalIndex }) {
             switch layer.kind {
-            case "full_attention":
+            case "full_attention", "attention":
                 let bytes = try product(kvShape + [element])
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "kv.keys",
                     shape: kvShape, dtype: activationDType, byteCount: bytes))
@@ -121,7 +121,8 @@ struct QwenPhaseSplitPlan: Equatable {
                     shape: [1], dtype: "int32", byteCount: 4))
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "kv.values",
                     shape: kvShape, dtype: activationDType, byteCount: bytes))
-            case "linear_attention":
+            case "moe": continue  // a Nemotron expert block owns no request state
+            case "linear_attention", "mamba":
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "conv",
                     shape: convShape, dtype: activationDType, byteCount: try product(convShape + [element])))
                 shapes.append(.init(globalLayerIndex: layer.globalIndex, component: "ssm",

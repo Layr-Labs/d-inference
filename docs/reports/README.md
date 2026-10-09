@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Shared historical checkpoint storage](2026-10-09-shared-checkpoint-storage.md) — configuration-shaped native encrypted byte receipts, authentication/read costs, and explicit dtype, compression and INT4 topology limits.
 - [Autopilot shadow evidence and calibration](2026-10-07-autopilot-shadow-evidence.md) - read-only week/day demand, output-limit calibration, retained controller decisions and synthetic placement valuation, with replay and causal limits.
 - [Typical MTP acceptance benchmarks](2026-10-07-typical-mtp-acceptance-benchmarks.md) - controlled three-model M5 Max before/exact/typical decode measurements, weighted acceptance and paired spread, with quality and default-change limits.
 - [Registry scan optimization](2026-10-04-registry-scan-optimization.md) — combined reservation storage, compact evidence and pending-work measurements on an isolated Mac mini, with correctness and production-latency limits.

@@ -2,11 +2,14 @@
 
 > Last updated: 2026-10-09
 
-Status: **plan only, nothing implemented.** Written from a read of the code on
-2026-10-09 (`cac79ceaf`). Every timing below is an estimate until the stream
-probe and the pair runs (slices 8 and 9) have been done. The decisions in
-section 10 are the owner's; the defaults taken for the first slices are the
-recommendations stated there.
+Status: **slices 1 to 6 are implemented and checked on one Mac (Mac A).
+Nothing has run over the link, between two processes or on Mac B, and no load
+agreement, worker flag or product surface knows about transfer yet: slices 7
+to 12 are not started.** The plan was written from a read of the code on
+2026-10-09 (`cac79ceaf`). Section 4 now carries single-Mac measurements beside
+its estimates; every two-Mac timing is still an estimate until the stream
+probe and the pair runs (slices 8 and 9). The decisions in section 10 are the
+owner's; the defaults taken so far are the recommendations stated there.
 
 
 Paths use `$SRC` for the repository root, `$RT` = `$SRC/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime`, `$PR` = `$SRC/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol`, `$WK` = `$SRC/libs/darkbloom-cluster-worker`, `$PV` = `$SRC/provider-swift/Sources`.
@@ -62,8 +65,8 @@ So the pinned identities are per file, not per tensor. Per-tensor content hashes
 **Framing.** There is no sender-declared metadata.
 - Both ranks compute the same `QwenStageTransferPlan` from the delivered stages' `inventory.active` order and two agreed constants.
 - A tensor at or under the piece limit is one message with its real shape and dtype.
-- A larger tensor is split along axis 0 into the fewest equal row-aligned pieces under the limit, then joined with `concatenated(pieces, axis: 0)`.
-- Phase-split has rank 1 hold both stages, so the plan must take a list of delivered stages (5,038,041,600 B in that case), not "the follower's stage".
+- A larger tensor is split along axis 0 into the fewest row-aligned pieces under the limit, as equal as whole rows allow: row counts differ by at most one, larger pieces first. (Exactly equal pieces are not always possible: U32 `[248320, 512]` needs 61 pieces at 8 MiB.) The pieces are joined with `concatenated(pieces, axis: 0)`.
+- Phase-split has rank 1 hold both stages, so the plan takes a list of delivered stages (5,038,041,600 B in that case), not "the follower's stage". The list is one flat piece sequence: a window may cross the stage boundary, and there is one verdict for everything delivered.
 
 **Piece size against the cap.**
 - `CollectivePointToPointShape.hardByteLimit = 16 * 1024 * 1024` bounds the allocation one receive makes before any byte is validated. Its comment reads "Local admission, never inferred from an unchecked remote header". No other written rationale was found.
@@ -72,12 +75,12 @@ So the pinned identities are per file, not per tensor. Per-tensor content hashes
 - Cut 4 stage 1 is about 1,100 pieces at 8 MiB (1,071 by bytes, plus one more per `mlp.down_proj.weight` from row alignment), or 925 at 16 MiB.
 - Throughput through `sendCompleted` at these sizes is not in the ledger; slice 8 measures it and picks the size.
 
-**Flow control.** A window is the longest run of pieces totalling at most 64 MiB and 64 pieces. Each window is:
+**Flow control.** The transfer opens with an exchange of `transferOpen` values: the sender says its own, the receiver answers with its own, and each judges the other's only after it has spoken. A window is the longest run of pieces totalling at most 64 MiB and 64 pieces (refusal bounds: 64 pieces and 1 GiB, the proposed count at the largest piece). Each window is:
 1. sender to receiver: `windowOpen(i)` or `senderAbort`;
 2. the pieces, back to back;
 3. receiver to sender: `windowReceived(i)` or `receiverAbort`.
 
-After the last window the receiver sends `stageVerified` or `stageRefused` and the sender sends `senderComplete`. Each control value is a 64-element Int32 digest, as in `QwenLayerStageGenerationAcknowledgement.values`, bound to the load agreement (and so the epoch), the phase, the window index and the cumulative bytes. The receiver compares it with a locally computed value and never parses it. If the link does not tolerate back-to-back sends (gap B2), the window shrinks to one piece.
+After the last window the receiver sends `stageVerified` or `stageRefused`, and the sender closes in either case, with `senderComplete` or, if it has failed itself, `senderAbort`; no rank is left in a send its peer will not take. Each control value is a 64-element Int32 digest, as in `QwenLayerStageGenerationAcknowledgement.values`, bound to the load agreement (and so the epoch), the plan, the pinned inventory's hash, the phase, the rank that says it, the window index and the cumulative bytes. A rank compares it with a locally computed value and never parses it. If the link does not tolerate back-to-back sends (gap B2), the window shrinks to one piece.
 
 **Rank agreement additions.** Append fields to the load-intent agreement only when a rank is not local, following `QwenResidentPrefillSelection.loadAgreementFields`: both ranks' sources, the delivered stages, `contentInventorySHA256`, the piece and window limits, and the budget. `residentLoaded` is unchanged.
 
@@ -87,10 +90,11 @@ After the last window the receiver sends `stageVerified` or `stageRefused` and t
 - One optional worker argument, `--stage-sources`.
 - No new commands and no progress events: `WorkerMain` builds the runtime before `WorkerCoordinator` exists, so nothing can be published before `ready`.
 
-**Bilateral deadline.** The agreement carries a duration, since the two uptime clocks differ. I propose 5 s plus 1 ms per MB. Each rank starts it when the `transferOpen` exchange completes and enforces it with `QwenResidentControl.check(deadline:)` before every call. The transfer refuses to begin unless start + budget + `JACCL_PROGRESS_TIMEOUT_MS` + 2 s falls before the startup and lifetime deadlines. That keeps every failure on the path that releases memory, not the abrupt exit 123 or 124.
+**Bilateral deadline.** The agreement carries a duration, since the two uptime clocks differ: 5 s plus 1 ms per MB, which is one nanosecond per byte. Each rank starts it when the `transferOpen` exchange completes and checks it with `QwenResidentControl.check(deadline:)` before every call, the last receive included. The transfer refuses to begin unless start + budget + `JACCL_PROGRESS_TIMEOUT_MS` + 2 s falls before the startup and lifetime deadlines. The 2 s is also all the time a rank past its budget has to carry an abort to a boundary: inside it the rank keeps the exchange in step, after it the rank stops at once. That keeps every failure on the path that releases memory, not the abrupt exit 123 or 124. A sender that refuses to begin sends `senderAbort` in place of the first `windowOpen`, so no tensor byte moves; a receiver that refuses can say so only after the first window.
 
 **When the other side stalls or dies.**
-- A failure noticed between calls (bad digest, budget, read error) is sent as an abort at the next window boundary, so the peer stops within about 64 MiB.
+- A failure noticed between calls (bad digest, budget, read or intake error) is sent as an abort at the next window boundary, so the peer stops within about 64 MiB. Until then the window is completed so the byte stream stays in step: a failed sender sends placeholder pieces of the planned geometry, a failed receiver receives the rest and drops it. Each rank reports its own first failure.
+- Cancellation, the lifetime deadline, a transport error and an unexpected control value stop a rank at once, with nothing more sent; the peer then waits out its progress limit.
 - A peer that dies inside a native call costs the survivor the full progress limit (60 s installed, 120 s default). The survivor then throws, joins its hash jobs, drops everything, clears the cache and exits 1 without being signalled.
 - No cancel exists in the transport (gap B1).
 
@@ -109,10 +113,12 @@ The loader already avoids mapping ("never a mapping of the verified file"). Use 
 - A tensor at or under the piece limit is received straight into its final typed allocation.
 - A larger tensor is joined once, so the transient is twice that tensor (at most 1.02 GB, early in the order when little else is resident).
 - There is never a second copy of the stage and no host `Data` staging.
-- Admission reuses `QwenResidentLoadGate`, which already budgets two copies of the largest tensor, with the window in place of the read scratch.
+- Admission is the load's own `QwenResidentLoadGate`, which already budgets two copies of the largest tensor: see "Order and admission" below.
 - Removing the join copy means receiving a whole tensor in one call, which needs a separately admitted limit above the cap. I would leave that for later.
 
-**Release on failure.** The stage model is never returned until every digest has passed. On refusal the receiver joins the hash jobs (they hold array references), drops pieces and model, and takes the existing failed-load path: synchronize both streams, `Memory.clearCache()`, `guard retired == nil`, exit. That path checks model retirement but not active bytes; the single-Mac test adds the check.
+**Order and admission.** The receiver takes in and verifies the whole stage before the loader sees a tensor; the loader then takes each verified array from the intake and installs it, so nothing is copied between the two. The intake makes no memory comparison of its own. The loader hands its payload source the load's gate, and whoever gives a tensor its storage asks it: a local source just before each read, as before; the intake when a tensor's first piece arrives (`beforeRead`, in inventory order) and again once the tensor is joined and evaluated (`observe`). Both end in the same `QwenDenseStageLoadResources.admits` call, with the same arithmetic: everything still to come, two copies of the largest tensor, the read scratch and the loading headroom. One piece, at most the piece limit, exists before its tensor is admitted; the 4 GiB loading headroom covers it. When the loader takes a received tensor the gate is not asked about it again. A refusal by the gate is an intake failure like any other: the window is drained, the receiver aborts at its boundary and the intake discards.
+
+**Release on failure.** The stage model is never returned until every digest has passed and the sender has closed. On any failure the receiver tells its intake to `discard()`: it joins the hash jobs (they borrow the bytes of arrays the intake keeps alive) and drops pieces and tensors. The load then takes the existing failed-load path: synchronize both streams, `Memory.clearCache()`, `guard retired == nil`, exit. That path checks model retirement but not active bytes; the single-Mac test adds the check.
 
 ## 4. Verification cost and time to ready
 
@@ -130,6 +136,27 @@ The loader already avoids mapping ("never a mapping of the verified file"). Use 
 That gives a follower stage in about 1.0–1.9 s from transfer start, against 2.2–2.7 s for a local load on B. The local load is dominated by hashing all 12 files serially (6.114 / 2.94 = 2.08 s).
 
 **The catch.** The leader must verify its own checkpoint first (about 2.1–2.4 s), so the follower is ready roughly 3.4–4.3 s after both start. Pair-ready moves from 6.3–7.3 s to about 7–9 s. All of this is estimate until slices 8 and 9 run.
+
+**Measured on one Mac (slice 6).** `darkbloom-cluster-stage-check transfer` on Mac A (M3 Ultra), 2026-10-09, real 9B artifact, sender and receiver in one process on one thread, so no wire, no second process and no second chip. Times are from one quiet session; an earlier session with other builds running was 5 to 25% slower throughout.
+
+| | Estimate above | Measured on Mac A |
+|---|---|---|
+| Leader verifies its own checkpoint (12 files, 6.114 GB) | 2.1–2.4 s | 3.20–3.26 s (1.9 GB/s, one thread, uncached reads) |
+| Stage 1 at cut 4 (3.979 GB): sender reads, pieces, joins, hashing | 0.6–1.0 s wire, 0.3 s join, 0.17 s hash tail | 1.41 s with no wire (2.8 GB/s) |
+| Model construction and install | 0.3–0.7 s | 0.18–0.24 s |
+| Follower stage from transfer start | 1.0–1.9 s | 1.65 s with no wire |
+| Local load of the same stage, same process | 2.9–3.6 s on A (ledger) | 4.72 s |
+| Follower ready after both start | 3.4–4.3 s | 4.9 s with no wire (3.21 s + 1.65 s) |
+| Hashing threads | 6–8 | 1 thread 1.64 s; 2, 4, 8 and 16 threads 1.40–1.42 s |
+| Receiver peak above the final stage | at most twice the largest tensor plus a window (1.08 GB) | MLX active 25 MB; active plus cached 0.59 GB; process footprint 0.87 GB with the sender in the same process (a local load: 0.58 GB) |
+
+The other seven stages (both ranks at cuts 4, 8, 12 and 16; 1.06 to 3.49 GB) moved at 2.77–2.85 GB/s and were ready 0.18–0.24 s after their last digest; a local load of the same stage took 3.7 to 4.6 s. Every one gave the local load's storage commitment and parameter digest.
+
+What this changes:
+- **The pipeline, not hashing or the link, sets the rate.** One hashing thread costs 0.23 s over two; more than two buy nothing. The 2.8 GB/s is the single thread that reads a piece from the SSD, makes it an array, and joins and evaluates tensors. That is under either direction of the link (6.4 and 8.7 GiB/s measured), so on a pair the wire should add little, and the sender's read and the receiver's join will be on different Macs. Slice 8 should time those two halves apart.
+- **The leader's verification was underestimated** by about a second: CryptoKit over uncached aligned reads gives 1.9 GB/s here, not the 2.94 GB/s of the in-memory figure. The follower is therefore ready about when a local load would have been, not sooner; what the transfer buys is a follower with no weights on disk, not time.
+- **The join leaves its pieces in MLX's buffer cache.** Active memory never exceeds the final stage by more than 25 MB at the end of a load, but the freed pieces of the largest tensor stay cached, so active plus cached runs 0.59 GB over the final stage for the rest of the load. That is inside the gate's budget of two copies of the largest tensor and inside the bound, and it is returned on release. The worker sets a cache limit the stage check does not; slice 7 should see what that limit does here before deciding whether the intake should clear the cache after a join.
+- After a local load is released the check process still has about 0.58 GB of footprint that MLX does not report (7 KB active, nothing cached); a process that only did the transferred load starts from 16 MB. The cause was not looked for and is not part of this change.
 
 ## 5. Durability
 
@@ -185,7 +212,9 @@ This level supports framing, ordering, refusal logic and wire compatibility. It 
 3. A new stage-check mode drives the receiver from the sender core in-process, pull-based on one thread. Pass means: the same commitment; a new digest over every resident parameter equal to the local load's; peak within final plus twice the largest tensor plus a window; and after release a few KB active, zero cached, model deallocated.
 4. Injected corruption refuses and returns to baseline.
 
-This level supports byte-exact equality with a local load, peak and release, and hash cost on that chip. It cannot support RDMA, link flow control, throughput, or two-process failure timing. No in-process two-rank transport exists on this branch (gap B7); the phase-split worktree has an uncommitted loopback one, `CollectiveLocalSocket`, which this level should adopt once it lands.
+This level supports byte-exact equality with a local load, peak and release, and hash cost on that chip. It cannot support RDMA, link flow control, throughput, or two-process failure timing. Items 1 to 4 are done (slices 2, 3 and 6).
+
+5. Not built yet: the same check between two processes on one Mac. The phase split has since landed `CollectiveLocalSocket`, a correctness-only point-to-point transport over 127.0.0.1 that keeps the native path's failure timing. A transfer over it needs the adapter from the sender and receiver cores to a collective-style transport, which is the first part of slice 7, so the two belong together: the adapter, then this check (clean, the three faults, and each process ended mid-transfer), then the load agreement.
 
 **Two Macs (physical; blocked until Mac B's port has an address).**
 1. A model-free `--mode stream` in `darkbloom-cluster-collective-check` replays the exact cut-4 schedule with patterned bytes, both directions, at 8 and 16 MiB, with windows of 1, 8 and 64 and receiver delays injected. It measures GiB/s and settles B2.
@@ -208,7 +237,7 @@ This level supports RDMA carriage, real timing, cross-chip token equality and fa
 | 3 | Loader seam, behaviour-preserving: split metadata from payload source | `$RT/Models/Qwen/Loading/{PreparedQwenCheckpoint,PreparedQwenLayerSource,PreparedQwenLayerStage,VerifiedQwenLayerStageLoading,QwenResidentLoading,QwenDenseObservedSourceBridge,QwenResidentSource}.swift` | One Mac with the artifact |
 | 4 | Source metadata from the pinned inventory, no files | new `$RT/Models/Qwen/Loading/QwenResidentPinnedSource.swift` | One Mac with the artifact |
 | 5 | Plan, control values, sender and receiver cores (no MLX, no transport) | new `$RT/Models/Qwen/Transfer/*.swift`; new test | One Mac, no model |
-| 6 | Native intake, in-process adapter, stage-check mode, parameter digest | new `Transfer/QwenStageTransferIntake.swift`; `$RT/Models/Qwen/Resident/QwenResidentStageLoadCheck.swift`; `QwenResidentLoading.swift` | One Mac with the artifact |
+| 6 | Native intake, in-process adapter, stage-check mode, parameter digest | new `Transfer/QwenStageNativeIntake.swift` and the three adapters beside it; `$RT/Models/Qwen/Resident/QwenResidentStageLoadCheck.swift`; `QwenResidentLoading.swift` | One Mac with the artifact |
 | 7 | Collective adapter, load integration, agreement, worker flag, ready and capability fields | `QwenResidentRuntime+Load.swift`, `QwenResidentAdmission.swift`, `QwenLongPrefillReadinessMaterial.swift`; `$PR/ClusterWorker{Messages,Codec,Session,Validation}.swift`, `$PR/ClusterRuntimeCapability*.swift`; `$WK/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` | One Mac for checks |
 | 8 | Model-free stream probe | `$WK/Sources/CollectiveCheck/CollectiveCheck.swift` | **Two Macs** |
 | 9 | Pair driver support and qualification runs | `$WK/Sources/DarkbloomClusterQualification/{PairConfiguration,PairDriver,QualificationReports}.swift`, `$WK/Sources/PairCheck/PairCheck.swift`, the fake worker | **Two Macs** |
@@ -218,9 +247,28 @@ This level supports RDMA carriage, real timing, cross-chip token equality and fa
 
 Slice 3 is the risky one: it touches the loader every load uses. Its oracle is byte-identical stage-check receipts before and after.
 
-**Conflicts with the two changes in flight** (uncommitted, read in their worktrees today):
+**Conflicts with the two changes in flight** (as read in their worktrees when this was planned; both have since landed, and slices 3 to 6 sit on top of them):
 - **27B.** It edits `QwenResidentAdmission.swift`, `QwenResidentSource.swift`, `QwenResidentStageLoadCheck.swift`, `WorkerConfiguration.swift` and the capability files, and adds `QwenResidentModelDefinition` and `QwenResidentResourceCeilings`. Transfer eligibility and ceilings belong in those per-model rows. The global `QwenDenseLegacySourceBounds.maximumHostTensorBytes` (512 MiB) is below the 27B's largest tensor (635,699,200 B), so it must not be reused. Slices 2, 6 and 7 rebase on the 27B work.
 - **Phase split.** It rewrites the same region of `QwenResidentRuntime+Load.swift`, edits `Collective.swift`, and adds a second `loadQwenResidentStage` call on rank 1 for the producer stage. Slice 7 goes after it and uses its agreement-extension pattern. Staying on the unchanged send and receive calls avoids any conflict in `Collective.swift`. Its `QwenPhaseSplitHandoffIntake` is the same join-then-verify shape but trusts the sender's digests, so I would not merge the two now.
+
+## 9a. Changed during implementation
+
+- "Fewest equal pieces" became fewest pieces with row counts differing by at most one (section 2).
+- A list of delivered stages is one piece sequence with one verdict; windows may cross the stage boundary.
+- The open exchange, the sender's close after a refusal, placeholder pieces after a sender failure and the receiver's drain are written down in section 2; the design named none of them.
+- The 2 s margin of the deadline rule is also the limit on how long a rank past its budget keeps talking.
+- Control values bind the plan, the pinned inventory's hash and the speaking rank as well as what section 2 first listed.
+- Window refusal bounds are 64 pieces and 1 GiB.
+- The intake has `discard()`, called once on any receiver failure.
+- The content inventory generator is a public runtime type (`QwenContentInventoryGenerator`), because the stage-check tool sees only the runtime's public API. It selects the model through the closed catalog, constructs no model and reads through uncached aligned reads. The 9B document is 170,063 bytes, not about 150 KB.
+- The loader seam (slice 3) made descriptor preparation generic over where a descriptor comes from and gave the materializer a payload source. The file-backed path makes the same reads, evaluations and checks. Two refusals moved: during preparation the unchanged-files check now follows the metadata hashes, and a read with incomplete aligned-read accounting is refused before the tensor is sanitized and installed, not after.
+- The receiver verifies the whole stage before the loader takes a tensor. The payload source, not the loader, asks the load's gate, because it is the one that allocates: the intake asks before each tensor takes its storage and the loader does not ask again (section 3).
+- The intake takes one stage's inventory and one gate. Phase split has rank 1 load two stages, each with its own gate, so slice 7 needs either one transfer per load or an intake that changes gate at the stage boundary.
+- The intake refuses a stage with a tensor the loader would convert after loading (stored F16 with BF16 conversion), because that copy would be made after the gate's last question about the tensor. Neither registered model stores one.
+- The stage-check mode holds the peak to the bound twice, as MLX's active peak and as active plus cached memory sampled at every check, and records the process footprint beside them (section 4).
+- The MLX-side files are `QwenStageNativeIntake.swift`, `QwenStageTransferredPayload.swift`, `QwenStageCheckpointByteSource.swift` and `QwenStageTransferInProcess.swift` under `Transfer/`, the loader's payload seam in `Loading/QwenLayerStagePayloadSource.swift`, and the check and its fault source under `Resident/`.
+- A transferred stage's receipt carries the registered aggregate and manifest pin, which that rank did not hash (decision 8 below, still open).
+- The source-tensor-manifest projection lives in `QwenStageSourceTensorManifest.swift`, apart from the model-independent inventory.
 
 ## 10. Risks and open decisions for the owner
 
@@ -232,7 +280,7 @@ Slice 3 is the risky one: it touches the loader every load uses. Its oracle is b
 6. **Back-to-back sends on the link (B2).** Unproven. One 1 GiB send from B took an unexplained 2.8 s. If the probe fails, the window drops to one piece and wire time rises.
 7. **Dead peer mid-transfer.** The survivor holds up to a partial stage for the full progress limit. A rank ended abruptly while holding a partial model has never been tried; the deadline rule exists to avoid it.
 8. **Receipt wording.** A diskless rank reports the registered aggregate in `verifiedAggregateSHA256` without having verified it. Add a provenance field outside the commitment so the receipt does not overstate.
-9. **Timing.** All timing here is estimate until slices 8 and 9. Hash rate on Mac B, CryptoKit's rate, piece-size throughput and the fixed load cost are unmeasured.
+9. **Timing.** Section 4 has Mac A's single-process figures. Everything across the link, Mac B's hash and read rates, throughput at 16 MiB pieces and the effect of the worker's cache limit are unmeasured until slices 7 to 9.
 10. **Sequencing.** Two changes in flight touch the same files; landing order should be 27B, then phase split, then slice 7.
 
 ### Critical Files for Implementation

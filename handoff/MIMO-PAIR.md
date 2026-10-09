@@ -1,6 +1,6 @@
 # Registered MiMo V2.6 Flash across two Macs
 
-> Last updated: 2026-10-09 22:05Z (branch `work/mimo`, base `e15f5b891`). Work in progress: the pair has run at cuts 34 and 30, short and 4,096-token prompts, repeated, and with one rank ended by SIGTERM; the single-Mac reference **diverges** from the pair (at token 28 of the short request, token 50 of the 4,096 one).
+> Last updated: 2026-10-09 22:50Z (branch `work/mimo`, base `e15f5b891`). Work in progress: the pair has run at cuts 34 and 30, short and 4,096-token prompts, repeated, and with one rank ended by SIGTERM. The pair's short-request difference from the single-Mac reference (token 28) is **mixed-chip numerics at an exact tie**: both ranks on one Mac reproduce the reference bit for bit. The 4,096 difference (token 50) is not yet classified.
 
 "Mac A" is the M3 Ultra (256 GiB), "Mac B" the M5 Max (128 GiB). Raw logs,
 receipts and gate records are outside the repository in the task's evidence
@@ -17,7 +17,7 @@ layer pipeline neither Mac holds more than about 103 GiB of it.
 | Admission, ceilings and capability from the real metadata | the eight model-free check runners pass on `846d461c8`; runtime unit tests **128 of 128 passed** and startup checks **31 cases passed** on builds 6 and 7 | `unit/pure-4/`, `unit/build6.*`, `unit/build7.*` |
 | Stage load and release, rank 1 on Mac B | **passed at cut 40** (26.87 GiB) after four loads the growth guard stopped; **refused at cut 28** by the committed rule (72.27 GiB needed, 61.62 free); **passed at cut 34** twice (46.56 GiB, builds 6 and 7) | `stage-load/B-*` |
 | Stage load and release, rank 0 on Mac A | **passed at cut 34** twice (109.21 GiB, builds 6 and 7) | `stage-load/A-rank0-cut34-*` |
-| Single-Mac reference | **ran** at cut 34 on Mac A (both stages in one process, 167.3 GB active), short and 4,096; the pair's tokens **diverge** from it (verdict `diverged`: no logits, so a near tie cannot be shown) | `reference/` |
+| Single-Mac reference | **ran** at cut 34 on Mac A (both stages in one process, 167.3 GB active), short and 4,096. Short: both ranks on Mac A over the local test socket are **exact** to it (35 of 35 rows bit for bit); across the cable the verdict is **`divergedAtNearTie`**: the reference's row at token 28 is an exact tie (264 = 279 = 23.625) and the M5 Max's rank 1 breaks it the other way. 4,096: `diverged` at token 50, not yet recorded with step evidence | `reference/` |
 | Pair across the cable | **passed** at cut 34 (short twice, same 37 tokens; 4,096 once) and at cut 30 (short, the same 37 tokens); one 4,096 attempt failed before ready because Mac B's link port had lost its address (below) | `pair/pair-cut34-short-{1,2}.*`, `pair-cut34-4096-2.*`, `pair-cut30-short-1.*`, `pair-cut34-4096-1.*` |
 | One rank ended mid-request | **passed with a finding**: rank 0 SIGTERM mid-decode (29 tokens in); rank 1 exited by itself only at the 180 s JACCL progress timeout; nothing left on either Mac, wired memory back | `pair/pair-cut34-fault-sigterm-rank0-1.*` |
 | Stage ended with SIGTERM mid-decode | **passed** on both Macs at cut 34: wired memory back to its level within 1 s | `stage-load/*-cut34-sigterm-b7.sigterm.txt` |
@@ -343,9 +343,51 @@ on the M5 Max instead of the M3 Ultra, and the reference's own path. The next
 step that separates them is the pair at cut 34 with both ranks on Mac A over
 the local test socket, and both reports with `--evidence final-row`.
 
+## Why the pair differs from the reference (session 4)
+
+Step evidence (`MiMoStepEvidence`, commit `6dabfe597`): per selected token,
+the digest of the residual that entered the frame, the digest of the logits
+row and its four highest candidates with their exact values. The reference
+records it in its report (schema `mimo_staged_reference_v2`); a pair worker
+writes it as `darkbloom-mimo-step-v1` lines from rank 1 when started with the
+qualification switch `DARKBLOOM_CLUSTER_MIMO_STEP_EVIDENCE=on`
+(`pair-check run --mimo-step-evidence on`), and the driver keeps the lines in
+its report. It is read from the bytes the row digest already copies, so it
+changes no arithmetic (the recorded pair run equals the unrecorded one bit for
+bit). A script in the evidence folder (`tools/ref-compare.py`) compares any
+two of these reports with the comparator's rules, near tie = within 4 ulp of
+the reference's top logit.
+
+Short request, cut 34, build 8 (2026-10-09 22:21-22:45Z):
+
+| Run | Chips (rank 0, rank 1) | Tokens | vs the reference |
+|---|---|---:|---|
+| reference, started with the workers' exact environment | M3 Ultra (one process) | 35 (eos) | equal to the earlier reference started with `MLX_ENABLE_TF32=1` only |
+| both ranks over the local test socket | M3 Ultra, M3 Ultra | 35 (eos) | **exact**: 35 of 35 rows and every residual digest equal |
+| across the cable | M3 Ultra, M5 Max | 37 (eos) | **`divergedAtNearTie`** at token 28 |
+
+Across the cable the residuals that cross the cut are equal to the
+reference's for every step up to token 28 (rank 0 runs on the same chip), and
+every logits row differs from the first one on (rank 1 runs on the M5 Max).
+At token 28 the reference's row has tokens 264 and 279 at exactly 23.625
+(bfloat16, ulp 0.125; greedy takes the lower ID, 264); the pair's row has 279
+at 23.625 and 264 at 23.5. So the code path is the same on one chip, and the
+difference is the second chip's arithmetic meeting an exact tie.
+
+The arithmetic differences that remain between the two paths, from reading
+them: none in code (same session class, caches, sliding-window handling,
+prefill frames, greedy selection, loader without conversion, and the residual
+crosses as its exact bfloat16 bytes). The workers' environment adds
+`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128` and `DARKBLOOM_BF16_WEIGHTS=1`, which
+nothing on this path reads (shown above by the equal references). The M5 Max
+selects other kernels for rank 1's layers: MLX's own matrix, quantized and
+attention kernels with neural-accelerator variants, the MiMo prefill attention
+route that is gated on accelerator availability, and device-class block
+counts in the MiMo attention helpers.
+
 ## What stands between this and serving MiMo on the pair through the product
 
-1. The pair's tokens diverge from the single-Mac reference (above); the cause is not yet known.
+1. Tokens equal to a single-Mac reference are not to be expected on a mixed pair: a rank on the M5 Max moves logits by ulps (short request: a near tie at token 28; 4,096: token 50, not yet classified). A comparison needs the step evidence and the near-tie rule, or both ranks on one chip type.
 2. The stages run the product's ordinary-cache text path. The product serves
    MiMo through its continuous-batching adapter with a paged KV pool and the
    MTP assistant; a stage on that adapter needs a residual egress and ingress
@@ -369,8 +411,8 @@ lanes; anything on Mac B needs `lane-b.sh`.
 
 ## Not done
 
-- The cause of the divergence from the single-Mac reference (local-socket
-  pair on Mac A, final-row evidence, logits at the first difference).
+- The 4,096-token difference (token 50) with step evidence (reference and
+  pair, `--mimo-step-evidence on`), expected to be the same mechanism.
 - No probe without residency; no compact-decode mode on the cable.
 - A survivor rank notices a dead peer only at the JACCL progress timeout.
 - Verifying only the shards a rank reads (each rank still hashes all 53 files).

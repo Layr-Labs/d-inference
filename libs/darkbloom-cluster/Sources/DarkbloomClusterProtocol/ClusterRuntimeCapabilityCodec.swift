@@ -38,6 +38,11 @@ public enum ClusterRuntimeCapabilityCodec {
         if value.supportedPrefillSchedules != [.serial] {
             object["supportedPrefillSchedules"] = value.supportedPrefillSchedules.map(\.rawValue)
         }
+        // The same rule for generation modes: a runtime that only runs the
+        // pipeline writes the descriptor it always wrote.
+        if value.supportedGenerationModes != [.pipeline] {
+            object["supportedGenerationModes"] = value.supportedGenerationModes.map(\.rawValue)
+        }
         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
         try workerRequire(data.count < maximumBytes, "Runtime capability exceeds its byte bound")
         data.append(10); return data
@@ -84,13 +89,26 @@ public enum ClusterRuntimeCapabilityCodec {
                 return value
             }
         } else { schedules = [.serial] }
+        let modes: [ClusterGenerationMode]
+        if r.values["supportedGenerationModes"] != nil {
+            guard let names = try r.take("supportedGenerationModes") as? [String] else {
+                throw ClusterWorkerProtocolError.invalid("Expected generation mode names")
+            }
+            modes = try names.map {
+                guard let value = ClusterGenerationMode(rawValue: $0) else {
+                    throw ClusterWorkerProtocolError.invalid("Unknown generation mode")
+                }
+                return value
+            }
+        } else { modes = [.pipeline] }
         let value = try ClusterRuntimeCapability(runtimeBinarySHA256: r.string("runtimeBinarySHA256"),
             adapterID: r.string("adapterID"), adapterVersion: r.int("adapterVersion"), runtimeModelID: r.string("runtimeModelID"),
             artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
             manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
             partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
             arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), maxLifetimeSeconds: r.int("maxLifetimeSeconds"),
-            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules)
+            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules,
+            supportedGenerationModes: modes)
         try workerRequire(try r.string("stateSemantics") == value.stateSemantics
             && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize
             && r.int("maxActiveRequests") == value.maxActiveRequests

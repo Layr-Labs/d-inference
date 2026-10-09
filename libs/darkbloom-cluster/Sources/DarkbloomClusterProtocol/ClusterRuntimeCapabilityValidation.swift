@@ -16,6 +16,9 @@ enum ClusterRuntimeCapabilityValidation {
             && value.supportedPrefillSchedules.first == .serial
             && value.supportedPrefillSchedules == ClusterPrefillSchedule.allCases.filter(value.supportedPrefillSchedules.contains),
             "Missing, duplicate or unordered prefill schedules")
+        try workerRequire(value.supportedGenerationModes.first == .pipeline
+            && value.supportedGenerationModes == ClusterGenerationMode.allCases.filter(value.supportedGenerationModes.contains),
+            "Missing, duplicate or unordered generation modes")
         let p = value.profile
         try workerRequire((1...ClusterWorkerLimits.vocabularySize).contains(p.vocabularySize)
             && (1...ClusterWorkerLimits.promptTokens).contains(p.maximumPromptTokens)

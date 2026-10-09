@@ -69,6 +69,9 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
     /// Requests remain serialized even when adjacent prefill stages overlap.
     public let schedulingPolicy = "serial"
     public let supportedPrefillSchedules: [ClusterPrefillSchedule]
+    /// How a request may be divided between the ranks. The pipeline is always
+    /// first; a runtime that executes nothing else advertises only that.
+    public let supportedGenerationModes: [ClusterGenerationMode]
     public let selectionPolicy = "greedy"
     public let modality = "text"
     public let stopPolicy = "selectedTokenIDs"
@@ -80,7 +83,8 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
                 manifestSHA256: String, profile: ClusterWorkerProfile, profileFingerprint: String,
                 partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
                 arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int,
-                supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial]) throws {
+                supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial],
+                supportedGenerationModes: [ClusterGenerationMode] = [.pipeline]) throws {
         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
@@ -88,11 +92,16 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
         self.maxLifetimeSeconds = maxLifetimeSeconds; self.maxRequests = maxRequests
         self.supportedPrefillSchedules = supportedPrefillSchedules
+        self.supportedGenerationModes = supportedGenerationModes
         try ClusterRuntimeCapabilityValidation.check(self)
     }
 
     public func requireSupport(for schedule: ClusterPrefillSchedule) throws {
         try workerRequire(supportedPrefillSchedules.contains(schedule), "Prefill schedule is not advertised by this runtime")
+    }
+
+    public func requireSupport(for mode: ClusterGenerationMode) throws {
+        try workerRequire(supportedGenerationModes.contains(mode), "Generation mode is not advertised by this runtime")
     }
 
     public func selection(planSHA256: String) throws -> ClusterRuntimePartition {

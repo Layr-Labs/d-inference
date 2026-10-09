@@ -57,6 +57,52 @@ struct CheckFailure: Error { let message: String }
         for malformed in malformedSchedules {
             try refuse("prefill-schedules-" + String(describing: malformed)) { $0["supportedPrefillSchedules"] = malformed }
         }
+        // Generation modes follow the same rule as prefill schedules: a runtime
+        // that runs the pipeline only writes the descriptor it always wrote.
+        try yes("legacy-pipeline-only-descriptor-byte-identity") {
+            try require(value.supportedGenerationModes == [.pipeline], "Legacy capability must remain pipeline-only")
+            try require(!String(decoding: encoded, as: UTF8.self).contains("supportedGenerationModes"),
+                        "A pipeline-only descriptor must not name generation modes")
+            try value.requireSupport(for: .pipeline)
+        }
+        try no("legacy-runtime-cannot-enable-phase-split") { try value.requireSupport(for: .phaseSplit) }
+        try no("legacy-runtime-cannot-enable-compact-decode") { try value.requireSupport(for: .pipelineCompactDecode) }
+        let allModes = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1"]
+        for modes in [allModes, ["pipeline_v1", "phase_split_v1"], ["pipeline_v1", "pipeline_compact_decode_v1"]] {
+            let bytes = try modified { $0["supportedGenerationModes"] = modes }
+            try yes("advertised-generation-modes-canonical-roundtrip-" + modes.joined(separator: "+")) {
+                let advertised = try ClusterRuntimeCapabilityCodec.decode(bytes)
+                try require(advertised.supportedGenerationModes.map(\.rawValue) == modes, "Advertised modes differ")
+                for mode in ClusterGenerationMode.allCases {
+                    if modes.contains(mode.rawValue) { try advertised.requireSupport(for: mode) }
+                    else {
+                        do { try advertised.requireSupport(for: mode) } catch { continue }
+                        throw CheckFailure(message: "An unadvertised generation mode was supported")
+                    }
+                }
+                try require(try ClusterRuntimeCapabilityCodec.encode(advertised) == bytes, "Advertised mode bytes changed")
+                try require(advertised.partitions == value.partitions && advertised.profile == value.profile
+                    && advertised.supportedPrefillSchedules == value.supportedPrefillSchedules,
+                    "A generation mode changed the model Plan, profile or schedules")
+            }
+        }
+        // Both optional lists together, as a current worker writes them.
+        try yes("advertised-schedules-and-modes-together") {
+            let bytes = try modified {
+                $0["supportedPrefillSchedules"] = ["serial_v1", "one_chunk_lookahead_v1"]
+                $0["supportedGenerationModes"] = allModes
+            }
+            let advertised = try ClusterRuntimeCapabilityCodec.decode(bytes)
+            try advertised.requireSupport(for: .oneChunkLookahead); try advertised.requireSupport(for: .phaseSplit)
+            try require(try ClusterRuntimeCapabilityCodec.encode(advertised) == bytes, "Combined advertisement bytes changed")
+        }
+        let malformedModes: [Any] = [NSNull(), true, "pipeline_v1", [], ["phase_split_v1"],
+                               ["pipeline_v1", "pipeline_v1"], ["phase_split_v1", "pipeline_v1"],
+                               ["pipeline_v1", "phase_split_v1", "pipeline_compact_decode_v1"],
+                               ["pipeline_v1", "unknown"], ["pipeline_v1", 1], ["pipeline_v1"]]
+        for malformed in malformedModes {
+            try refuse("generation-modes-" + String(describing: malformed)) { $0["supportedGenerationModes"] = malformed }
+        }
         try yes("exact-native-profile-and-arithmetic") {
             try require(value.profileFingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff", "Profile recipe changed")
             try require(value.arithmeticPolicySHA256 == "0ae9c7c21048fa94fc90353b84cd8578f4adc05b1b22c3d55bd70f01c9c3bc74", "Arithmetic receipt changed")

@@ -66,6 +66,9 @@ env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32
   darkbloom-cluster-stage-check --model-dir /ABS/MODEL --rank 1 --stage-cut 4
 ```
 
+The registered model is the one whose pinned `config.json` the directory
+holds, and the cut must be one of that model's cuts (4, 8, 12 or 16 for the
+9B; 4 through 60 in steps of 4 for the 27B).
 It passes the same admission and host resource gates as the worker, hashes the
 artifact, materializes only that rank's stage, then releases it. The JSON
 receipt carries the verified aggregate, the storage commitment (equal on both
@@ -86,7 +89,8 @@ host name or a user name. A report file is never overwritten.
 # 1. The request: fixed text through the artifact's own tokenizer, in its chat
 #    format with thinking disabled. --prompt-tokens repeats and cuts the text's
 #    tokens to an exact prompt length. Stop IDs default to none, so the run
-#    always produces --output-count tokens.
+#    always produces --output-count tokens. The request names the registered
+#    model whose tokenizer made it; --model-id chooses for token-ID prompts.
 darkbloom-cluster-pair-check request --model-dir /ABS/MODEL --user-text-file prompt.txt \
   --prompt-tokens 4096 --chunk-size 512 --output-count 64 --output request.json
 
@@ -255,8 +259,14 @@ both.
 
 ## Limits
 
-- The worker accepts only the registered Qwen3.5 9B artifact, greedy text,
-  one request at a time.
+- The worker accepts the registered Qwen3.5 9B and Qwen3.8 27B artifacts,
+  greedy text, one request at a time. The 9B has run across two Macs. The 27B
+  has passed admission, per-rank stage loads and the single-Mac reference on
+  both chips; it has not yet completed a two-Mac run (see
+  [handoff/QWEN27B-PAIR.md](../../handoff/QWEN27B-PAIR.md)).
+- The host gate counts free pages only, never file cache. A Mac that has been
+  reading model files can hold almost nothing free while most of its memory is
+  reclaimable, and a load or an 8,192-token request is then refused.
 - The owner-authenticated JACCL bootstrap (`--bootstrap-socket-path`,
   `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`) is parsed
   but refused: the pinned mlx-c does not carry the bootstrap bridge. Without

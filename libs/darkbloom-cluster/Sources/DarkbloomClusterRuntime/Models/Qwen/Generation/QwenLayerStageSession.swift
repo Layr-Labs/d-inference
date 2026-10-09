@@ -147,6 +147,11 @@ final class QwenLayerStageSession {
             })
             try schedule.commit(frame)
             if stage.stageIndex == 0 {
+                // eval returns at the output event, which can precede the Metal
+                // completion handlers that still hold this buffer. The sender
+                // inspects the residual's storage and refuses one it does not
+                // own alone, so drain the GPU stream before handing it over.
+                Stream.gpu.synchronize(); try checked()
                 let digest = sha256(output.asData().data); try checked()
                 return .hidden(.init(requestFingerprint: identity.requestFingerprint,
                     sourceConfigurationSHA256: identity.sourceConfigurationSHA256,

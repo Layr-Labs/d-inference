@@ -13,6 +13,9 @@ public enum ClusterDeviceExclusionError: Error, Equatable, CustomStringConvertib
 /// A native owner's nonempty journal is sticky across process death. Construction
 /// never truncates or recovers it, and even the owner SPI can resolve only a
 /// journal recorded by this same live object after it acquired an empty file.
+/// An owner clears its own journal once it has observed its child's exit; a
+/// journal left by an owner that died is cleared only by the explicit recovery
+/// in DarkbloomClusterRemote, which first proves that nothing it names is running.
 public final class ClusterDeviceExclusion: @unchecked Sendable {
     private let lock = NSLock()
     private let directory: Int32
@@ -48,7 +51,7 @@ public final class ClusterDeviceExclusion: @unchecked Sendable {
         }
         guard fstat(fd, &value) == 0, value.st_size == 0 else {
             Darwin.close(fd); Darwin.close(dir)
-            throw ClusterDeviceExclusionError.invalid("Unresolved native ownership journal; explicit recovery required")
+            throw ClusterDeviceExclusionError.invalid("Unresolved native ownership journal: an earlier cluster session's owner ended before its worker was seen to exit. Run `darkbloom cluster recover` on this Mac; it clears the journal once nothing it names is running.")
         }
         directory = dir; descriptor = fd; identity = value
         directoryPath = directoryURL.path; directoryIdentity = dirStat

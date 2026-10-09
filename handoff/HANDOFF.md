@@ -15,7 +15,7 @@ one Thunderbolt cable; the link reports 80 Gb/s and RDMA is enabled on both.
 |---|---|---|---|
 | G0 Review, reproduction, repair | **Passed, with open findings** | Starting revision verified; 13 checks, package tests and coordinator suite reproduced; two coordinator failures shown to be toolchain-related; three independent reviews done; backend plan proven by a real-JACCL build | Work through [DESIGN-gap-map.md](DESIGN-gap-map.md) |
 | G1 Two-Mac qualification | **Blocked** | Both Macs inventoried. First two-rank run refused at JACCL initialization: Mac B's Thunderbolt port has no IPv4 address of its own | Mac B's port needs its own IPv4 address (administrator). Then rerun the transport check in both modes and record device evidence |
-| G2 One real model on both ranks | **Blocked** on G1 and on the artifact | The only accepted model is registered Qwen3.5 9B 4-bit; neither Mac has it | Obtain the artifact; fix C1, C2, B1 at least; run against a single-host reference |
+| G2 One real model on both ranks | **Blocked** on G1 only for the two-rank part | Artifact verified on both Macs. Each Mac loads and releases both ranks' stages of the real model through the verified loader, and both derive the same stage commitment | After the link: transport check, then the worker pair. Fix C1, C2, B1 on the way; compare against a single-host reference |
 | G3 Terminal UI | **Not started** | Existing surface mapped: `cluster configure/status/doctor/worker-owner`, hand-rolled termios UI elsewhere in the CLI, no TUI library | Start from the link probe and `cluster doctor`; add the missing verbs (C13) |
 | G4 Model matrix | **Not started** | The runtime admits one model | Inventory after G2 |
 | G5 Larger models | **Not attempted** | — | After G2 |
@@ -31,19 +31,20 @@ reviewed; that gate is open.
 | `17da399ad` | Coordinator: restore the registry lock across capability reconciliation. The pair slice had introduced a data race on the ordinary single-host path. Race-detector regression test |
 | `cf0f34afd` | Slice 16: `libs/darkbloom-cluster-worker`, a macOS 26.2 package that builds the rank worker and a new two-rank transport check against the real JACCL backend, with no pin change. Capability, deadline and prefill-schedule checks staged |
 | `9691c059e` | Resident admission tests: a real positive path on both ranks and one property per refusal; library README corrected |
+| `745a8f484` | `darkbloom-cluster-stage-check`: one rank's verified load and release on one Mac, no collective. First execution of the loader on the real artifact |
+| `960b855f5` | Host gate: swap left from earlier is admitted while memory pressure is normal; refused under warning pressure. Policy tests added |
 
 Nothing has been pushed. The clone's push URL is disabled on purpose.
 
-## The two things only the owner can unblock
+## What only the owner can unblock
 
 1. **Mac B's Thunderbolt port.** It is a member of the Thunderbolt Bridge and
    has no IPv4 address of its own, so its RDMA device publishes no IPv4-mapped
    GID and JACCL refuses it. Mac A's port has its own address and works. The
    change is a network setting on Mac B.
-2. **The 9B artifact.** 6.11 GB, catalog version `2026-09-03-r1`. Needed on
-   both Macs as the code stands (see B11 for sending a stage over the link).
-   Approved 2026-10-08: being fetched from the model CDN on Mac A with
-   per-file verification, then copied to Mac B over the existing SSH login.
+2. Nothing else. The 9B artifact is on both Macs and verified, and the swap
+   rule that would have forced a restart of Mac B was changed (`960b855f5`,
+   wants a second opinion).
 
 ## Resuming
 

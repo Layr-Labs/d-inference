@@ -53,11 +53,29 @@ directory; each row names the run folder.
 | Claim | Test | Commit | Level | Result |
 |---|---|---|---|---|
 | The pair slice made capability reconciliation race with App Attest revocation on the ordinary single-host path | `TestCapabilityReconciliationHoldsRegistryLockAgainstRevocation` with `-race` | `17da399ad` | unit | Race detector reports the map race on the inherited code; clean with the fix. Registry, protocol and provider API packages: 13 ok, 0 races |
+| The admission tests could not fail for the reason each named | removing the duplicate-peer guard | `9691c059e` | unit | The rewritten suite fails at that case; a positive admission on both ranks now runs from the registered metadata |
+| The swap rule | constructed observations | `960b855f5` | unit | Three expectations fail under the previous rule; 22 tests in 5 suites pass with the change |
 
 ## Model artifacts
 
 | Claim | How checked | Machine | Result |
 |---|---|---|---|
 | The runtime accepts one model | source read, registered specification | — | Registered Qwen3.5 9B 4-bit, catalog version `2026-09-03-r1`, 12 files, 6,113,952,230 bytes, aggregate `127de76b…c24b` |
-| That artifact is present | Spotlight and directory search by exact file size and name | A and B | **Absent on both.** B has a same-named folder with tokenizer and config only (config hash differs, no weights) |
-| The catalog still serves the registered manifest | `manifest.json` fetched from the model CDN under the registered prefix | A | 2,685 bytes; SHA-256 `4f273502…2aa4`, equal to the manifest hash pinned in the runtime. Download of the 12 files to a flat directory on A started 2026-10-08, each file checked against the manifest |
+| That artifact was present at the start | Spotlight and directory search by exact file size and name | A and B | Absent on both. B had a same-named folder with tokenizer and config only (config hash differs, no weights) |
+| The catalog serves the registered manifest | `manifest.json` fetched from the model CDN under the registered prefix | A | 2,685 bytes; SHA-256 `4f273502…2aa4`, equal to the manifest hash pinned in the runtime |
+| The artifact is now on Mac A | per-file download, size and SHA-256 checked against the manifest | A | 12 of 12 files verified; 6,113,952,230 bytes; flat directory, no symlinks; `config.json` hash equals the pinned `c8e767de…4423` |
+| The artifact is now on Mac B | copied over the Thunderbolt link (existing SSH login, already-pinned host key), then every file rehashed on B | B | 12 of 12 verified, same total bytes |
+
+## Real model, one Mac at a time
+
+`darkbloom-cluster-stage-check` at `745a8f484` (gate from `960b855f5` for the
+Mac B rows). Level: model, single host. No collective is created.
+
+| Claim | Machine | Result | Remaining uncertainty |
+|---|---|---|---|
+| The verified loader opens the real artifact and materializes each rank's stage | A | Cuts 4, 8, 12, 16 × ranks 0, 1: all 8 load in 2.9–3.6 s; verified aggregate `127de76b…` | Not a generation result |
+| Both ranks derive the same storage commitment for a cut | A | Equal for each cut (cut 4: `e2e41be21c40…`) | — |
+| The loaded stage is released | A | After release: 0.5–3.5 KB active, 0 cached; model object deallocated in all 8 runs | A few KB remain allocated; not identified |
+| The host gate refuses a Mac with swap in use | B | Before `960b855f5`: refused, "swapped selected-stage resource observation" (about 3 GB swapped, 64 GiB free, pressure normal) | — |
+| With swap admitted at normal pressure, Mac B loads and releases | B | Cut 4, ranks 1 and 0: 2.7 s and 2.2 s; released; no process left; system wired memory 5.33 → 5.60 GiB across both runs | Other cuts not run on B |
+| The two Macs agree on the stage commitment | A and B | Cut 4: `e2e41be21c40…` on both | This is the value the ranks compare before serving; the comparison over the link has not run |

@@ -41,6 +41,71 @@ final class CBv2OwnedRequestState {
         self.maximumTokens = promptCount + outputCount
     }
 
+    /// Adopts a complete committed state that another owner of the same stage
+    /// geometry produced, instead of starting empty. The caller has already
+    /// authenticated the arrays; this checks every shape and dtype against the
+    /// local model geometry, copies the attention rows into rows this backend
+    /// owns, and validates the result as a committed frontier. Attention arrays
+    /// are keyed by the compact stage's own layer index, as recurrent ones are.
+    init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int,
+         adoptingCommittedTokens committed: Int,
+         attention: [Int: (keys: MLXArray, values: MLXArray)],
+         recurrent adopted: [Int: (conv: MLXArray, ssm: MLXArray)]) throws {
+        guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
+            promptCount <= 32_768 - outputCount, (1...(promptCount + outputCount)).contains(committed),
+            attention.count == geometry.kinds.count, adopted.count == geometry.recurrent.layers.count else {
+            throw ProbeError("CBv2 adopted state exceeds the bounded request context or its layer coverage differs")
+        }
+        var prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?] = []
+        for kind in geometry.kinds {
+            let shape = [1, kind.kvHeads, committed, kind.headDim]
+            guard let layer = kind.modelLayerIndex, let pair = attention[layer],
+                pair.keys.shape == shape, pair.values.shape == shape,
+                pair.keys.dtype == geometry.kvDType, pair.values.dtype == geometry.kvDType else {
+                throw ProbeError("CBv2 adopted KV shape/dtype differs from local model geometry")
+            }
+            prefix.append((keys: pair.keys, values: pair.values, offset: committed))
+        }
+        var layers: [Int: CBv2RecurrentLayerState] = [:]
+        for layer in geometry.recurrent.layers {
+            guard let pair = adopted[layer.modelLayerIndex],
+                pair.conv.shape == layer.convShape, pair.conv.dtype == layer.convDType,
+                pair.ssm.shape == layer.ssmShape, pair.ssm.dtype == layer.ssmDType else {
+                throw ProbeError("CBv2 adopted conv/SSM shape or dtype differs from its local contract")
+            }
+            layers[layer.modelLayerIndex] = .init(conv: pair.conv, ssm: pair.ssm)
+        }
+        let backend = CBv2ContiguousKVBackend(config: .init(
+            bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
+        let rows = try backend.makeSequenceState(adopting: prefix, layerKinds: geometry.kinds,
+            maxLength: promptCount + outputCount)
+        let recurrent: CBv2RecurrentRequestState
+        do { recurrent = try CBv2RecurrentRequestState(spec: geometry.recurrent, adoptedCommitted: layers) }
+        catch { backend.release(rows); throw error }
+        guard rows.count == geometry.kinds.count,
+            rows.allSatisfy({ $0?.absoluteOffset == committed && $0?.retainedCount == committed }),
+            geometry.caches.allSatisfy({ $0.rows.isEmpty }),
+            Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? []) == Set(geometry.recurrent.modelLayerIndices),
+            !recurrent.isReleased else {
+            backend.release(rows); try? recurrent.release()
+            throw ProbeError("CBv2 adopted state did not take exclusive ownership at its frontier")
+        }
+        self.geometry = geometry; self.backend = backend
+        self.bank = CBv2LayerCacheBank(caches: geometry.caches)
+        self.recurrent = recurrent; self.rows = rows
+        self.maximumTokens = promptCount + outputCount
+        self.committedTokens = committed
+        // From here deinit retires whatever a failed check leaves behind.
+        // Bind the rows as a forward would and materialize the copies, so the
+        // adopted arrays are no longer referenced by a lazy assignment.
+        _ = bank.layerCaches(rowStates: [rows])
+        eval(rows.compactMap { $0 }.flatMap { row -> [MLXArray] in
+            let snapshot = row.snapshot()
+            return [snapshot.keys, snapshot.values]
+        } + geometry.caches.map { $0.positionOffsets })
+        try validateState(after: committed)
+    }
+
     func requireOpen() throws {
         guard !isClosed, !isFailed, evaluation == nil else {
             throw ProbeError("CBv2 state is retired, failed or has unfinished work")

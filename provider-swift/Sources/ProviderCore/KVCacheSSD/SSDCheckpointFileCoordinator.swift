@@ -44,7 +44,7 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
     private var files: [String: [Access]] = [:]
 
     func makeAccess(to url: URL) -> Access {
-        Access(coordinator: self, path: Self.coordinationPath(for: url))
+        Access(coordinator: self, path: Self.pathKey(for: url))
     }
 
     /// Maintenance must never wait for a writer while holding the epoch or
@@ -63,11 +63,13 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
     var trackedFileCount: Int { lock.withLock { files.count } }
 
     func pendingCount(for url: URL) -> Int {
-        let path = Self.coordinationPath(for: url)
+        let path = Self.pathKey(for: url)
         return lock.withLock { max(0, (files[path]?.count ?? 0) - 1) }
     }
 
-    private static func coordinationPath(for url: URL) -> String {
+    /// One lexical identity for file leases and retained-page ownership. Only
+    /// system aliases are normalized; no user symlink or filesystem is read.
+    static func pathKey(for url: URL) -> String {
         var components: [Substring] = []
         for component in url.path.split(separator: "/") {
             switch component {

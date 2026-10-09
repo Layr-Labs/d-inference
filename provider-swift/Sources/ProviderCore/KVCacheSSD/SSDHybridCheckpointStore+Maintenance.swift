@@ -7,7 +7,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         lock.withLock { !closed }
             && (config.epochStore == nil || config.epochStore?.current != nil)
     }
-    var diskBytesOnDisk: Int { index.totalBytes }
+    var diskBytesOnDisk: Int { sharedPageAccounting.diskBytes(indexedBytes: index.totalBytes) }
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
     func evictOldestEntry() -> Int {
@@ -37,6 +37,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 urls: urls, root: config.root, index: index, epochStore: config.epochStore)
         }
         guard let result else { return .init() }
+        for path in result.removed { sharedPageAccounting.remove(checkpoint: URL(fileURLWithPath: path)) }
         if result.externalChange { reconcileExternalRemovals() }
         return result
     }
@@ -44,6 +45,9 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func reconcileExternalRemovals() {
         performIndexReconciliation {
             SSDOwnedEntryRetirement.reconcileMissingEntries(root: config.root, index: index)
+            self.sharedPageAccounting.reconcile(indexedCheckpoints: self.index.allTags().map {
+                SSDBlockStore.fileURL(root: self.config.root, tag16Hex: $0.hexString)
+            })
         }
     }
 
@@ -56,6 +60,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             guard SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) != .regular
             else { return }
             _ = self.index.remove(tag16: tag)
+            self.sharedPageAccounting.remove(checkpoint: url)
         }
     }
 
@@ -105,6 +110,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
             if SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular {
                 _ = index.remove(tag16: tag)
+                sharedPageAccounting.remove(checkpoint: url)
             }
         }
     }
@@ -113,6 +119,8 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         _ = performIndexedRemoval {
             let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
             _ = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
+            SSDCheckpointPageFiles.remove(for: url)
+            self.sharedPageAccounting.remove(checkpoint: url)
             _ = self.index.remove(tag16: tag)
         }
         statsBox.update { $0.corruptDropped += 1 }
@@ -121,6 +129,9 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func scanOnDisk() {
         guard hasSafeRoot else { return }
         SSDBlockStore.sweepStaleTempFiles(under: config.root)
+        if let epochStore = config.epochStore {
+            _ = epochStore.performOwnedRetirement { SSDCheckpointPageFiles.removeOrphans(under: config.root) }
+        } else { SSDCheckpointPageFiles.removeOrphans(under: config.root) }
         let manager = FileManager.default
         guard let fanouts = try? manager.contentsOfDirectory(
             at: config.root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
@@ -131,7 +142,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 let files = try? manager.contentsOfDirectory(
                     at: fanout, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
                     options: [.skipsHiddenFiles])
-            else { index.removeAll(); return }
+            else { index.removeAll(); sharedPageAccounting.removeAll(); return }
             for file in files where file.pathExtension == SSDBlockStore.fileExtension {
                 if isClosed { return }
                 // Scan inserts must obey the same file/index commit boundary.
@@ -139,7 +150,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 defer { access.release() }
                 guard SSDBlockStore.isSafeBlockURL(file, modelRoot: config.root),
                     let tag = SSDPrefixCache.hexDecode(file.deletingPathExtension().lastPathComponent)
-                else { index.removeAll(); return }
+                else { index.removeAll(); sharedPageAccounting.removeAll(); return }
                 guard let metadata = try? SSDBlockStore.readMetadataOnly(
                     from: file, maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60),
                     metadata.weightHash == identity.modelAggregateHash,
@@ -151,7 +162,12 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                     let size = attributes.fileSize, let date = attributes.contentModificationDate,
                     now - Int64(date.timeIntervalSince1970) < config.ttlSeconds
                 else { removeCorrupt(tag); continue }
-                index.insert(tag16: tag, fileBytes: size, lastAccess: Int64(date.timeIntervalSince1970))
+                let logicalBytes: Int
+                if metadata.windowKind == SSDCheckpointPageFiles.manifestKind {
+                    sharedPageAccounting.register(checkpoint: file)
+                    logicalBytes = SSDCheckpointPageFiles.logicalBytes(checkpoint: file, manifestBytes: size)
+                } else { logicalBytes = size }
+                index.insert(tag16: tag, fileBytes: logicalBytes, lastAccess: Int64(date.timeIntervalSince1970))
             }
         }
         lock.withLock { if !closed { scanReady = true } }

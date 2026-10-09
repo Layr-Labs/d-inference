@@ -1085,6 +1085,61 @@ and `clusterMember`) use the saved setup; both are control-only and refuse solo
 serving options when parsed. No environment variable selects one, so ordinary
 solo serving is unchanged and the whole surface stays default-off.
 
+### Coordinator-paired member
+
+To be offered a pair by the coordinator, each of the two Macs saves a setup
+with an optional `nativeMember` object and runs `darkbloom start
+--cluster-member`. Nothing else is needed on the provider side: the pair
+selector matches the two registrations itself (see
+[pair formation](cluster-control-protocol.md#pair-formation)).
+
+1. The coordinator operator adds one entry to the approval file named by
+   [`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs) and
+   gives both Mac operators that same entry.
+2. On each Mac, add `nativeMember` to the setup JSON and save it with
+   `darkbloom cluster configure --input <setup.json> --capability <file>
+   --capability-sha256 <hex>`. The two setups share `clusterID`; one has
+   `role` `leader` (rank 0) and the other `follower` (rank 1).
+3. On each Mac, run `darkbloom start --cluster-member` with a coordinator URL
+   whose scheme is `wss`, signed in to the same account.
+
+| `nativeMember` field | Type | Rule |
+|---|---|---|
+| `schema` | string | exactly `darkbloom_cluster_native_member_v1` |
+| `ownerSHA256` | string | 64 lowercase hex: SHA-256 of this Mac's `peers[local].ownerExecutable` |
+| `metallibPath`, `resourceLibraryPath` | string | absolute shell-safe paths of the installed files whose digests the approval pins; distinct from each other and from the owner and worker executables |
+| `approval` | object | the coordinator's approval entry, field for field ([fields](#experimental-cluster-pairs)); unknown or missing fields are refused |
+
+The object is validated when the setup is saved and again whenever it is
+loaded (`provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift`,
+`validate`): the approval's `model`, `plan_sha256`, `artifact_sha256`,
+`native_runtime_sha256`, `capability_sha256`, `profile_sha256` and `schedule`
+must equal the saved setup's own model, selected Plan, capability pins and
+prefill schedule (`1` serial, `2` one-chunk lookahead). The member derives the
+canonical policy bytes from the entry exactly as the coordinator does
+(`provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift`,
+`canonicalPolicy`, mirroring `coordinator/registry/native_pair_approval.go`,
+`canonicalNativeRuntimeApproval`) and registers their SHA-256 as
+`cluster_membership.policy_sha256`. `not_after` must be a strict RFC 3339
+instant (`YYYY-MM-DDTHH:MM:SS`, an optional fraction of one to nine digits,
+then `Z` or `±HH:MM`); any other spelling is refused when the setup is saved.
+
+At start (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`,
+`nativeMemberInstallation`) the approval must be unexpired and list this Mac's
+chip, and the owner, native executable, metallib and resource library must
+hash to their pins; otherwise the command stops before registering. A member
+whose setup has no `nativeMember` registers no membership and is never paired.
+
+A setup with `nativeMember` cannot run `darkbloom start --local --distributed`
+(`ClusterConfiguration.requireOrdinarySessionRoute`): that session launches
+both owners itself over SSH and would contend with a coordinator-formed pair
+for the same device. Save a setup without the object for a local session.
+
+In this build a paired member declines the coordinator's preparation and no
+pair serves a request; see [provider member
+control](cluster-control-protocol.md#provider-member-control) for the reason
+and for what the member answers.
+
 ### Guided link setup
 
 `darkbloom cluster`, the same as `darkbloom cluster setup [--json] [--yes]`

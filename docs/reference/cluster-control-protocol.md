@@ -6,18 +6,19 @@ Exact member-role and native-pair public-control shapes on the provider
 WebSocket, as staged on the private `kimi/cluster-foundation-20261007`
 branch. Member registration and negotiation are implemented end to end
 (provider client and coordinator); native-pair authorization is implemented
-on the coordinator and mirrored by the Swift codec; the provider member
-dispatcher consumes committed starts through the staged member control. The
-default native runtime catalog is empty, so every native-pair handler fails
+on the coordinator and mirrored by the Swift codec; a provider whose saved
+setup carries a pair approval registers its cluster membership and installs
+the member control (see [provider member control](#provider-member-control)).
+The default native runtime catalog is empty, so every native-pair handler fails
 closed; a member registration is still acknowledged, because the acknowledgment
 confirms the role and the connection binding only. A provider enters member
 mode only through the explicit distributed start opt-in
 (`provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift`,
 `makeClusterMemberLoop`). When the operator configures an approval catalog the
 coordinator's pair selector reserves pairs by itself (see
-[pair formation](#pair-formation)); the provider does not yet register the
-cluster membership the selector needs or install its member control in a
-product path, so no real pair forms today.
+[pair formation](#pair-formation)). In this build a real member declines the
+preparation, so a reserved pair stops before owners are committed and no pair
+serves a request.
 
 ## Member registration and acknowledgment
 
@@ -81,6 +82,42 @@ registered cluster with its members, state (`waiting`, `preparing`, `active`)
 and, while waiting, the reason (`peer_absent`, `no_approval`, `device_held`,
 `not_eligible`, `retry_backoff`).
 
+## Provider member control
+
+A member registers a `cluster_membership` only when its saved setup carries a
+[pair approval](configuration.md#coordinator-paired-member). The claim is
+derived from the installed control, so its `policy_sha256` names exactly the
+policy bytes the control requires in a prepare frame
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`, `serve`;
+`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`,
+`membership`). Every other member registers none and is never paired.
+
+| Step | Provider rule | Source |
+|---|---|---|
+| Install | Once, before the first connection, and only when the client registers the control's own claim for this Mac's chip and model. The control outlives reconnects because it owns the member's native-owner obligation | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+NativePair.swift`, `installNativePairMember` |
+| Attach | At this connection's `cluster_member_accepted`, only on a `wss` connection that reached its ready state. A member with an installed control that is acknowledged on a plain WebSocket fails its negotiation instead of attaching | `nativePairMemberAccepted` |
+| Detach | At every connection boundary, and on a trust status of `untrusted` or `offline` or a failed runtime status. Detaching cancels the session's native work at once | `detachNativePairMember`; `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift`, `handleIncomingFrame` |
+| Frames | A `native_pair_` frame is decoded by the closed codec and must carry the attachment's nonce and the next sequence (only `native_pair_cancel` may skip ahead). One that arrives before the acceptance, from another connection or outside that contract ends the connection | `consumeNativePairFrame`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift`, `receive` |
+| Prepare | The payload's policy must equal the installed policy byte for byte, the start must name this rank, and the frame must leave at most 30 seconds to prepare by this Mac's clock. The member then verifies its installed owner, native executable, metallib and resource library under the device gate and answers `native_pair_prepared` | `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift`, `init` / `runOwned` |
+| Committed start | `native_pair_owner_start` launches this Mac's installed owner; the owner's native child drives `native_pair_hello` and `native_pair_confirmation`, and `native_pair_owner_released` is sent only after native cleanup, the owner's lease release and the owner's exit were all observed | `runOwned` / `exchange` |
+| Cancel or expiry | Requests native cleanup at once, independently of signing or the socket. An uncommitted session is dropped and the member can prepare again; a committed one that cannot deliver its release stays quarantined in the control, which then refuses every later attachment | `cancel`; `NativePairMemberControl.finished` |
+
+**What a real member does in this build.** The installed owner
+(`darkbloom cluster worker-owner --stdio`) serves only the mesh profile of a
+session the leader launches itself, and the installed worker refuses every
+owner bootstrap attachment
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift`,
+`servesCommittedNativeStart`). A committed start could therefore not be
+honoured and would hold both devices until the members disconnect. The member
+declines instead: it answers `native_pair_prepare` with a signed
+`native_pair_cancel`, the coordinator never commits, and the selector retries
+on its 2-to-60-second backoff. The frames after `native_pair_prepared` are
+exercised only against a CPU fixture owner
+(`provider-swift/Tests/ClusterMemberFixtureChild`), which proves control flow
+and process ownership, never a model, a mesh or hardware trust. A member
+accepts no coordinator inference request in any state: it answers 503
+`model_unavailable` and reports `draining` with no slots.
+
 ## Native pair messages
 
 All rows use Go `NativePairMessage` in `coordinator/protocol/native_pair.go`
@@ -88,9 +125,9 @@ and Swift `NativePairMessage` in
 `provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift`.
 `IsNativePairInbound` / `IsNativePairOutbound` define the closed directions;
 the Swift mirror names them `inboundTypes` / `outboundTypes` from the
-coordinator's perspective. The staged member dispatcher
+coordinator's perspective. The member dispatcher
 (`NativePairMemberControl` via `CoordinatorClient+NativePair.swift`) consumes
-the coordinator→member frames on an accepted member connection only; every
+the coordinator→member frames on an attached member connection only; every
 other connection refuses them with a policy violation.
 
 | Direction | `type` | Public payload | Enforcement |

@@ -9,14 +9,17 @@ import Foundation
 public enum QwenResidentCapabilityMetadata {
     public static func describe(configuration: Data, manifest: Data,
                                 runtimeBinarySHA256: String) throws -> ClusterRuntimeCapability {
+        // The configuration bytes select the registered model; its manifest pin
+        // must then match. Nothing outside the closed catalog is described.
         guard (1...1_048_576).contains(configuration.count), (1...4_194_304).contains(manifest.count),
               qwenStageWireIsSHA256(runtimeBinarySHA256),
-              let spec = QwenDenseRegisteredSpecification.all.first(where: { $0.model == .qwen35NineB }),
+              let definition = try? QwenResidentModelDefinition(configuration: configuration),
+              case let spec = definition.specification,
               sha256(configuration) == spec.configurationSHA256, sha256(manifest) == spec.manifestSHA256 else {
-            throw ProbeError("Capability metadata requires the exact registered 9B configuration and manifest")
+            throw ProbeError("Capability metadata requires the exact registered 9B or 27B configuration and manifest")
         }
         let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
-        let partitions = try QwenResidentAdapterDefinition.supportedCuts.map { cut -> ClusterRuntimePartition in
+        let partitions = try definition.supportedCuts.map { cut -> ClusterRuntimePartition in
             let plan = try QwenLayerStagePlan(configuration: configuration,
                 ranges: [0..<cut, cut..<spec.layers], activeMTP: false)
             return ClusterRuntimePartition(planSHA256: plan.fingerprint, stages: plan.stages.map {
@@ -41,6 +44,35 @@ public enum QwenResidentCapabilityMetadata {
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
             maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
             maxRequests: QwenResidentAdapterDefinition.maximumRequests,
-            supportedPrefillSchedules: QwenResidentAdapterDefinition.supportedPrefillSchedules)
+            supportedPrefillSchedules: definition.supportedPrefillSchedules)
+    }
+
+    /// What a launcher or qualification tool may ask for before any load: the
+    /// closed resident scope of one registered model. Not a capability record.
+    public struct RegisteredModel: Equatable, Sendable {
+        public let runtimeModelID: String
+        public let profileID: String
+        public let layerCount: Int
+        public let supportedCuts: [Int]
+        public let supportedPrefillSchedules: [ClusterPrefillSchedule]
+
+        init(_ definition: QwenResidentModelDefinition) {
+            runtimeModelID = definition.specification.model.rawValue; profileID = definition.profileID
+            layerCount = definition.specification.layers; supportedCuts = definition.supportedCuts
+            supportedPrefillSchedules = definition.supportedPrefillSchedules
+        }
+    }
+
+    /// Nil for every ID that is not a registered resident model.
+    public static func registeredModel(runtimeModelID: String) -> RegisteredModel? {
+        (try? QwenResidentModelDefinition(runtimeModelID: runtimeModelID)).map(RegisteredModel.init)
+    }
+
+    /// The registered model an artifact's `config.json` bytes belong to.
+    public static func registeredModel(configuration: Data) throws -> RegisteredModel {
+        guard let definition = try? QwenResidentModelDefinition(configuration: configuration) else {
+            throw ProbeError("The configuration is not a registered resident model's")
+        }
+        return .init(definition)
     }
 }

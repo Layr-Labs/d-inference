@@ -54,3 +54,23 @@ recurrent and original-band allocations remain counted. Host samples can miss
 prefill transients. MLX peak memory is retained separately, and timing includes
 no claim of a speedup. All raw qualification evidence lives in the task's owned
 local/remote output directories; curated report metrics bind their hashes.
+
+`curate_runs.py` verifies each retained raw JSON/log hash against its run
+manifest and requires matching executable/metallib hashes in the measured
+schema: nested `runtimeIdentity` for generation or flat identity fields for
+scores. Missing, malformed, mismatched or contradictory identities refuse
+curation. Native top1 comparisons also require a parsed native score peer in
+the same manifest, its matching raw hash and both verified artifact identities;
+unlisted or unparsed files do not contribute. It produces a compact summary
+with answers, measurements and finite/repeat/top1 score observations. Failed and superseded stages remain
+separate; the dated report names the usable cohorts. CPU regressions exercise
+the actual CLI with changed execution identities and unchanged raw-hash validity.
+
+```sh
+python3 curate_runs.py --root /owned/qualification \
+  --stages candidate03-m4-matrix candidate07-m5-gemma-mtp \
+  --output /owned/curated-runs.json
+```
+
+Measured outcomes and boundaries are recorded in the
+[October 9 qualification report](../../../docs/reports/2026-10-09-runtime-kv-quantization.md).

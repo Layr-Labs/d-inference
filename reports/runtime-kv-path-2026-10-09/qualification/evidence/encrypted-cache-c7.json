@@ -1,0 +1,257 @@
+{
+  "binary_sha256": "58791d7aa815ea4ade9c81be274aa5a808999eb79d1c3db347f869d5b5f09395",
+  "cells": [
+    {
+      "bytes_written": 853723034,
+      "cell": "gpt-oss-20b-native-c7r3",
+      "consumed_prefix_tokens": 9216,
+      "error": null,
+      "files_written": 8,
+      "model": "gpt-oss-20b",
+      "profile": "native",
+      "prompt_tokens": 3929,
+      "report_sha256": "e4a23c5950fa81b7fb1653069c5b8b909e6901df8d78f219ab9c8fa35a02e53e",
+      "restores": [
+        {
+          "authenticated_stage_bytes": 157080050,
+          "control": "warm_tenant",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        },
+        {
+          "authenticated_stage_bytes": 157080060,
+          "control": "cancelled",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        },
+        {
+          "authenticated_stage_bytes": 157080060,
+          "control": "recovered",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        }
+      ],
+      "retained_bytes_on_disk": 853723034,
+      "shutdown_capacity": {
+        "active_requests": 0,
+        "active_tokens": 0,
+        "decode_rows_total": 387,
+        "kv_backend_capacity_bytes": 107860842572,
+        "kv_capacity_bytes": 107860842572,
+        "kv_in_use_bytes": 0,
+        "kv_reserved_bytes": 0,
+        "step_wall_nanos_total": 38601365543,
+        "steps_executed": 407,
+        "waiting_requests": 0
+      },
+      "shutdown_process_owners": {
+        "charged_bytes": 0,
+        "closing_owner_count": 0,
+        "materialized_bytes": 0,
+        "owner_count": 0,
+        "unmaterialized_bytes": 0
+      },
+      "stage_read_bytes": 471240170,
+      "status": "completed",
+      "strict": true
+    },
+    {
+      "bytes_written": 224567738,
+      "cell": "gpt-oss-20b-balanced-c7r4",
+      "consumed_prefix_tokens": 9216,
+      "error": "message(\"cancellation recovery differs from completed donor tokens\")",
+      "files_written": 8,
+      "model": "gpt-oss-20b",
+      "profile": "balanced",
+      "prompt_tokens": 3929,
+      "report_sha256": "1de528fcbe06ba58c48dd1739e3e36c59dc33d22a8abf9eac121186b297de882",
+      "restores": [
+        {
+          "authenticated_stage_bytes": 35965490,
+          "control": "warm_tenant",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        },
+        {
+          "authenticated_stage_bytes": 35965500,
+          "control": "cancelled",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        },
+        {
+          "authenticated_stage_bytes": 35965500,
+          "control": "recovered",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        }
+      ],
+      "retained_bytes_on_disk": 224567738,
+      "shutdown_capacity": {
+        "active_requests": 0,
+        "active_tokens": 0,
+        "decode_rows_total": 387,
+        "kv_backend_capacity_bytes": 107860842572,
+        "kv_capacity_bytes": 107860842572,
+        "kv_in_use_bytes": 0,
+        "kv_reserved_bytes": 0,
+        "step_wall_nanos_total": 50215563746,
+        "steps_executed": 400,
+        "waiting_requests": 0
+      },
+      "shutdown_process_owners": {
+        "charged_bytes": 0,
+        "closing_owner_count": 0,
+        "materialized_bytes": 0,
+        "owner_count": 0,
+        "unmaterialized_bytes": 0
+      },
+      "stage_read_bytes": 107896490,
+      "status": "failed",
+      "strict": false
+    },
+    {
+      "bytes_written": 1018650930,
+      "cell": "qwen3.6-35b-a3b-vl-mtp-mxfp8-native-c7r5",
+      "consumed_prefix_tokens": 12288,
+      "error": null,
+      "files_written": 8,
+      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "profile": "native",
+      "prompt_tokens": 4916,
+      "report_sha256": "4ca8aa7b0352d777ee7d5eb271e95ed65ede49e1f91bce4d1cd569846cf9e5bd",
+      "restores": [
+        {
+          "authenticated_stage_bytes": 148337114,
+          "control": "warm_tenant",
+          "matched_tokens": 4096,
+          "read_files_delta": 2,
+          "saved_tokens": 4096
+        },
+        {
+          "authenticated_stage_bytes": 148337124,
+          "control": "cancelled",
+          "matched_tokens": 4096,
+          "read_files_delta": 2,
+          "saved_tokens": 4096
+        },
+        {
+          "authenticated_stage_bytes": 148337124,
+          "control": "recovered",
+          "matched_tokens": 4096,
+          "read_files_delta": 2,
+          "saved_tokens": 4096
+        }
+      ],
+      "retained_bytes_on_disk": 1018650930,
+      "shutdown_capacity": {
+        "active_requests": 0,
+        "active_tokens": 0,
+        "decode_rows_total": 195,
+        "kv_backend_capacity_bytes": 97387548140,
+        "kv_capacity_bytes": 97387548140,
+        "kv_in_use_bytes": 0,
+        "kv_reserved_bytes": 0,
+        "step_wall_nanos_total": 37390416627,
+        "steps_executed": 219,
+        "waiting_requests": 0
+      },
+      "shutdown_process_owners": {
+        "charged_bytes": 0,
+        "closing_owner_count": 0,
+        "materialized_bytes": 0,
+        "owner_count": 0,
+        "unmaterialized_bytes": 0
+      },
+      "stage_read_bytes": 445011362,
+      "status": "completed",
+      "strict": true
+    },
+    {
+      "bytes_written": 693591330,
+      "cell": "qwen3.6-35b-a3b-vl-mtp-mxfp8-balanced-c7r5",
+      "consumed_prefix_tokens": 12288,
+      "error": null,
+      "files_written": 8,
+      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "profile": "balanced",
+      "prompt_tokens": 4916,
+      "report_sha256": "633e7b718caeec9b69cfb272c94c6d94459500f8157d765e540a12b018121edc",
+      "restores": [
+        {
+          "authenticated_stage_bytes": 93286674,
+          "control": "warm_tenant",
+          "matched_tokens": 4096,
+          "read_files_delta": 2,
+          "saved_tokens": 4096
+        },
+        {
+          "authenticated_stage_bytes": 93286684,
+          "control": "cancelled",
+          "matched_tokens": 4096,
+          "read_files_delta": 2,
+          "saved_tokens": 4096
+        },
+        {
+          "authenticated_stage_bytes": 93286684,
+          "control": "recovered",
+          "matched_tokens": 4096,
+          "read_files_delta": 2,
+          "saved_tokens": 4096
+        }
+      ],
+      "retained_bytes_on_disk": 693591330,
+      "shutdown_capacity": {
+        "active_requests": 0,
+        "active_tokens": 0,
+        "decode_rows_total": 195,
+        "kv_backend_capacity_bytes": 97387548140,
+        "kv_capacity_bytes": 97387548140,
+        "kv_in_use_bytes": 0,
+        "kv_reserved_bytes": 0,
+        "step_wall_nanos_total": 53570409629,
+        "steps_executed": 212,
+        "waiting_requests": 0
+      },
+      "shutdown_process_owners": {
+        "charged_bytes": 0,
+        "closing_owner_count": 0,
+        "materialized_bytes": 0,
+        "owner_count": 0,
+        "unmaterialized_bytes": 0
+      },
+      "stage_read_bytes": 279860042,
+      "status": "completed",
+      "strict": true
+    }
+  ],
+  "savings": [
+    {
+      "balanced_saved_tokens_total": 9216,
+      "balanced_write_files": 8,
+      "comparison_qualified": false,
+      "model": "gpt-oss-20b",
+      "native_saved_tokens_total": 9216,
+      "native_write_files": 8,
+      "stage_read_bytes_reduction_fraction": 0.7710371550031484,
+      "write_bytes_reduction_fraction": 0.7369548096320897
+    },
+    {
+      "balanced_saved_tokens_total": 12288,
+      "balanced_write_files": 8,
+      "comparison_qualified": true,
+      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "native_saved_tokens_total": 12288,
+      "native_write_files": 8,
+      "stage_read_bytes_reduction_fraction": 0.37111708621947503,
+      "write_bytes_reduction_fraction": 0.3191079401458947
+    }
+  ],
+  "scope": "C7 within-process encrypted cache correctness. Invalid macmon GPU temperature excludes performance qualification. GPT balanced replay failure is retained, not qualified.",
+  "source_file_digest": "b290e9349127d7206af16e7801ceee3348876b0356a1bea965bd01c80a0cfa10"
+}

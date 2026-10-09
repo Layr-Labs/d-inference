@@ -117,6 +117,9 @@ struct Benchmark: AsyncParsableCommand {
     @Flag(name: .long, help: "Runtime generation: explicitly enable the artifact's MTP policy; default is target-only for paired precision controls.")
     var runtimeMtp = false
 
+    @Option(name: .long, help: "Runtime MTP: offline local Gemma assistant directory; requires --runtime-generation --runtime-mtp and passes the normal artifact/target checks.")
+    var runtimeAssistantDirectory: String?
+
     @Option(name: .long, help: "Runtime generation: read the public/synthetic prompt from a UTF-8 file (at most 4 MiB).")
     var runtimePromptFile: String?
 
@@ -291,6 +294,7 @@ struct Benchmark: AsyncParsableCommand {
             let result = try await RuntimeGenerationBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
                 maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
+                assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
                 renderDate: runtimePromptDate)
             print(result.json)
             if !result.succeeded { throw ExitCode(2) }
@@ -363,8 +367,12 @@ struct Benchmark: AsyncParsableCommand {
     }
 
     func benchmarkModeConflict() -> String? {
-        if !runtimeGeneration && (runtimeMtp || runtimePromptFile != nil) {
-            return "--runtime-mtp and --runtime-prompt-file require --runtime-generation"
+        if !runtimeGeneration && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil) {
+            return "Runtime options require --runtime-generation"
+        }
+        if let runtimeAssistantDirectory,
+            !runtimeMtp || runtimeAssistantDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "--runtime-assistant-directory requires a nonempty path and --runtime-mtp"
         }
         let selected = [
             (schedulerPrefillDecision, "--scheduler-prefill-decision"),

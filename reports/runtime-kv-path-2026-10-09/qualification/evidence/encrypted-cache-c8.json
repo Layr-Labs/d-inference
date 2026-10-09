@@ -1,0 +1,13 @@
+{
+  "expectedModelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "preparedProbeReceiptSHA256": "7ae2999cba916fec77b54d63cc2292160cd6b05a371a438173df324cdb35aa28",
+  "probeArtifacts": {
+    "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+    "radix-engine": "aebf7d99e8f95e1cee6b1a63e0d60f3450dfa40afa441088b94f524a243ced76"
+  },
+  "qualified": false,
+  "schema": 1,
+  "scope": "Strict C8 GPT-OSS encrypted-cache retest has not run. Source-matched probe is prepared; local load/thermal entry refused. No C7 failed result is promoted. This provisional record will be replaced by retained paired probe results before review readiness.",
+  "sourceDigest": "3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa",
+  "status": "not_run"
+}

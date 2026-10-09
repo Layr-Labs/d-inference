@@ -106,11 +106,6 @@ func ResolveKVBackend(explicit string) string {
 // together by maxConcurrentMemberwiseAndDecodeDefaultsCannotDrift), so unlike
 // the pre-v0.8.0 split it no longer matters whether a TOML was written.
 //
-// Paged at B=4 measures 0.98x of contiguous against 1.17x at B=8, so selecting
-// a KV backend and leaving this at 0 is the one configuration with all of
-// paged's cost and none of its benefit. A lane that wants paged MUST name the
-// cap too.
-//
 // A malformed env value is a hard error rather than a silent fall-through. It
 // used to be ignored "over a typo in an optional knob", and the knob stopped
 // being optional when it became the difference between measuring paged and
@@ -140,9 +135,8 @@ func ResolveMaxConcurrent(explicit int) (int, error) {
 // provider BUILDS only because an explicit "paged" refuses rather than degrades
 // (EngineV2KVBackendPolicy.degradesPagedFailure is false for .paged), so a
 // paged request that could not be honoured fails the run instead of reaching
-// this log with a lie in it. Under "auto" — or under the negative-polarity kill
-// switch DARKBLOOM_CBV2_PAGED_KV=0, which always degrades — the two can differ,
-// and only the provider's own slot log says which one served.
+// this log with a lie in it. Native "auto" may degrade; balanced "auto" must
+// remain paged or refuse. The actual built-backend assertion checks the result.
 func DescribeKVPosture(cfg ProviderConfig) string {
 	backend := "provider default"
 	switch {
@@ -189,19 +183,14 @@ type ProviderConfig struct {
 	// KVBackend selects the CBv2 KV-cache backend for every engine slot the
 	// provider builds: "" (leave the provider at its own default), "auto",
 	// "paged", or "contiguous". Non-empty makes the testbed write a provider
-	// TOML into StateDir and launch with `--config`; empty changes nothing
-	// about the launch.
+	// TOML into StateDir. Empty leaves that setting unset in the lifecycle-only
+	// testbed config. Explicit contiguous also pins native KV precision.
 	//
 	// GOTCHA — do NOT reach for DARKBLOOM_CBV2_PAGED_KV to turn paged on.
 	// That env var is negative-polarity ONLY: it is the fleet kill switch and
-	// can force paged OFF, never ON. `engine_v2_kv_backend` under `[backend]`
-	// is the only way to select paged, which is the entire reason the testbed
-	// writes a config file at all.
-	//
-	// SETTING THIS ALONE IS A TRAP. Leaving MaxConcurrent at 0 seats the
-	// provider on its own default, which is 4 as of v0.8.1. So "paged" on its
-	// own is paged@4: 0.98x of contiguous, against 1.17x at B=8. Name
-	// MaxConcurrent whenever you name KVBackend.
+	// can force paged OFF, never ON. Balanced precision requires paged; the
+	// provider default therefore selects paged for supported non-MiMo targets.
+	// Specify MaxConcurrent when a test needs a particular request width.
 	KVBackend string
 	// MaxConcurrent is the box-wide concurrent-request cap per engine slot
 	// (`engine_v2_max_concurrent` under `[backend]`). The provider clamps the

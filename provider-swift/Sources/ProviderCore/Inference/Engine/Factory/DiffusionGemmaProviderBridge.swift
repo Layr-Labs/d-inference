@@ -50,11 +50,9 @@ enum DiffusionGemmaProviderBridge {
                 weightsBytes: weights, fp16KVBytesPerToken: nominalRate,
                 maxContextLength: config.maxPositionEmbeddings,
                 defaultMaxTokens: context.generationConfiguration.maxNewTokens)
-            let pageConfig: PagedKVPoolConfig? = pageBacked ? .init(capacityBytes: kvBytesCapacity,
-                dtype: dtype, maxPrefillChunk: max(prefillChunkSize, context.model.configuration.canvasLength),
-                nominalMaxSequenceLength: config.maxPositionEmbeddings, segmentSizeBytes: 8 << 20,
-                layerDTypes: Array(repeating: dtype, count: config.layerCount),
-                quantization: kvQuantization.configuration) : nil
+            let pageConfig: PagedKVPoolConfig? = pageBacked ? makePagedConfiguration(
+                configuration: context.model.configuration, kvBytesCapacity: kvBytesCapacity,
+                dtype: dtype, prefillChunkSize: prefillChunkSize, kvQuantization: kvQuantization) : nil
             let engine = try context.makeNativeEngine(
                 kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
                 prefillChunkSize: prefillChunkSize,
@@ -80,5 +78,23 @@ enum DiffusionGemmaProviderBridge {
                 advertisedContextTokens: config.maxPositionEmbeddings)
             return Prepared(bridge: bridge, tokenizer: tokenizer, sizing: sizing)
         }
+    }
+
+    /// Whole native visual blocks can exceed the ordinary text chunk. Quote
+    /// the existing closed block contract before pool construction; actual
+    /// media, Boolean masks and native generations retain their admission owners.
+    static func makePagedConfiguration(
+        configuration: DiffusionGemmaConfiguration, kvBytesCapacity: Int, dtype: DType,
+        prefillChunkSize: Int, kvQuantization: EngineV2KVQuantizationSelection
+    ) -> PagedKVPoolConfig {
+        let text = configuration.textConfig
+        let visualBound = configuration.visionConfig == nil
+            ? 0 : DiffusionGemmaPrefillGeometry.maximumVisualBlockTokens
+        return .init(
+            capacityBytes: kvBytesCapacity, dtype: dtype,
+            maxPrefillChunk: max(prefillChunkSize, configuration.canvasLength, visualBound),
+            nominalMaxSequenceLength: text.maxPositionEmbeddings, segmentSizeBytes: 8 << 20,
+            layerDTypes: Array(repeating: dtype, count: text.layerCount),
+            quantization: kvQuantization.configuration)
     }
 }

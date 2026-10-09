@@ -60,6 +60,13 @@ DiffusionGemma reads packed committed history alongside its native ephemeral
 canvas. A denoising pass does not append canvas state; encoder commits occur
 only after their actual evaluation completes. Ordinary quantized decode does
 not chain a successor while its predecessor's native generation retires.
+Adaptive MTP uses the measured isolated ordinary-decode baseline when that
+backend cannot chain. Native targets retain their measured chained-commit
+baseline (`CBv2MTPRoundDriver.build`, `PagedKVBackend.supportsOrdinaryDecodeChaining`).
+Vision-capable DiffusionGemma pools quote the existing whole-visual-block bound
+before allocation; the text chunk and canvas bounds remain independently
+enforced (`DiffusionGemmaPrefillGeometry.maximumVisualBlockTokens`,
+`DiffusionGemmaProviderBridge.makePagedConfiguration`).
 
 ## Invariants
 
@@ -69,13 +76,21 @@ not chain a successor while its predecessor's native generation retires.
    are charged before allocation and retained through completion. Existing
    weight, OS, activation and minimum serviceability safeguards remain in
    force (`PagedKVQuantizationAdmission.swift`, `PagedKVNativeRecent.swift`,
-   `PagedQuantizedAttentionWorkspace.swift`).
+   `PagedQuantizedAttentionWorkspace.swift`). `EngineV2` derives packed rates
+   and the original-band feasibility minimum at construction; an already
+   derived provider configuration retains its independent caller allowance
+   without adding that band twice.
 2. **Committed history is not requantized on restore.** Both the packed mirror
    and the exact native recent band enter each complete checkpoint. Its two
    K/V byte streams contain all packed rows per head, then the native band.
    The mirror of that band is ready when its tokens age out; import invokes no
    second encoder (`QuantizedCheckpointLayout.swift`,
    `PagedCheckpointTensorSource.swift`, `PagedCheckpointStorage.swift`).
+   Packed historical attention capture offers only a whole prefill step's
+   frontier. Interior stride/hint cuts are omitted because cold inference
+   still reads that step's original pending rows, whereas restored history
+   retains the confirmed recent band
+   ([`prepareHistorical`](../../libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineLoopV2+HistoricalCheckpoint.swift)).
 3. **Private import inputs are not page credit.** Native-band DTOs stay charged
    as input scratch until the active row's separately charged copy completes.
    Only physical page destinations transfer into the pool floor
@@ -109,6 +124,12 @@ DiffusionGemma's legacy resident/durable native snapshot cache returns
 checkpoint contract supports packed state. Native overrides retain those
 existing cache paths. This scope prevents lossy decoded state from being
 presented as original recent values.
+The SDK rejects the same unsupported Diffusion native-prefix pairing during
+construction and before direct restoration, rather than partially allocating
+or accumulating original tails. `PagedKVBackend.prefixReuseBackend` also
+disables the generic legacy tensor cache when any owner is actually packed;
+native exemptions and typed complete-checkpoint consumers retain their own
+capability contracts.
 
 Legacy native performance/deadline profiles do not qualify packed execution.
 The paged kill switch and a same-version crash-loop guard also refuse packed
@@ -143,3 +164,4 @@ measure every transient; MLX peak measurements are reported separately.
 - [Prefix cache architecture](prefix-cache.md)
 - [SSD format reference](../reference/ssd-kv-cache.md)
 - [Initial numerical investigation](../design/runtime-kv-compression.md)
+- [Real-model and encrypted-cache qualification](../reports/2026-10-09-runtime-kv-quantization.md)

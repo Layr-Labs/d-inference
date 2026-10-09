@@ -67,9 +67,12 @@ def main():
     parser.add_argument("--tasks", nargs="+", default=["retrieval", "arithmetic", "program", "long_retrieval"])
     parser.add_argument("--profiles", nargs="+", default=["native", "balanced"])
     parser.add_argument("--mtp", action="store_true")
+    parser.add_argument("--assistant-directory", type=pathlib.Path)
     parser.add_argument("--scores", action="store_true")
     parser.add_argument("--timeout", type=int, default=1200)
     args = parser.parse_args()
+    if args.assistant_directory is not None and not args.mtp:
+        parser.error("--assistant-directory requires --mtp")
     suite = json.loads((args.inputs / "suite.json").read_text())
     receipt = json.loads((args.candidate / "source-receipt.json").read_text())
     for name, expected in receipt["artifacts"].items():
@@ -104,6 +107,8 @@ def main():
                                 "--max-tokens", str(tasks[mode]["maximumGeneratedTokens"])]
                     if args.mtp:
                         command.append("--runtime-mtp")
+                        if args.assistant_directory is not None:
+                            command += ["--runtime-assistant-directory", str(args.assistant_directory)]
                 print(json.dumps({"started": label, "utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}), flush=True)
                 code, elapsed = launch(command, stem, args.timeout)
                 entry = {"modelID": model, "mode": mode, "requestedPrecision": profile,
@@ -118,6 +123,7 @@ def main():
                                 "peakMLXMemoryBytes", "preRequestActiveMemoryBytes", "peakMLXMemoryDeltaBytes",
                                 "peakObservedKVBytesInUse", "peakObservedPagedCommittedBytes",
                                 "peakObservedPagedLivePageBytes", "mtpRequested", "mtpActive", "mtpMetrics",
+                                "assistantIdentity",
                                 "meanForcedTokenNLL", "status", "inconclusiveReasons",
                                 "verifiedModelAggregateSHA256", "executableSHA256", "metallibSHA256"]:
                         if key in report:

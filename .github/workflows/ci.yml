@@ -59,6 +59,10 @@ jobs:
         run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU
         run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
+      - name: Test actual-call and bounded timing receipts without a GPU
+        run: |
+          python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
 
   docs:
     name: Docs Lint

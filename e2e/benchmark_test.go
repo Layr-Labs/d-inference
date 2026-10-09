@@ -60,7 +60,9 @@ func benchmarkSuiteConfig(cfg testbed.SuiteConfig) testbed.SuiteConfig {
 	// the first capacity heartbeat before the measured load begins.
 	requested := testbed.ResolveKVBackend(cfg.KVBackend)
 	switch requested {
-	case "", testbed.KVBackendAuto, testbed.KVBackendContiguous:
+	case "", testbed.KVBackendAuto:
+		cfg.ExpectKVBackend = testbed.KVBackendPaged
+	case testbed.KVBackendContiguous:
 		cfg.ExpectKVBackend = testbed.KVBackendContiguous
 	default:
 		// Explicit paged resolves to paged or refuses; malformed values are
@@ -107,8 +109,8 @@ func TestBenchmarkSuiteConfigPrewarmsResolvedBackend(t *testing.T) {
 		cfg      testbed.SuiteConfig
 		expected string
 	}{
-		{name: "provider default", cfg: testbed.SuiteConfig{}, expected: testbed.KVBackendContiguous},
-		{name: "auto", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendAuto}, expected: testbed.KVBackendContiguous},
+		{name: "provider default", cfg: testbed.SuiteConfig{}, expected: testbed.KVBackendPaged},
+		{name: "auto", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendAuto}, expected: testbed.KVBackendPaged},
 		{name: "contiguous", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendContiguous}, expected: testbed.KVBackendContiguous},
 		{name: "paged", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendPaged}, expected: testbed.KVBackendPaged},
 		{name: "caller expectation wins", cfg: testbed.SuiteConfig{ExpectKVBackend: testbed.KVBackendPaged}, expected: testbed.KVBackendPaged},

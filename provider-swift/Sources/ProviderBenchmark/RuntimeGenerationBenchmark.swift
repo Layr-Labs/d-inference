@@ -2,12 +2,14 @@ import CryptoKit
 import Foundation
 import MLX
 import MLXLMCommon
-import ProviderCoreFoundation
 @_spi(Benchmarking) import ProviderCore
+import ProviderCoreFoundation
 
 /// Paired quality runs through the actual serving cache, with public/synthetic prompts.
 public enum RuntimeGenerationBenchmark {
-    public enum Failure: Error, Equatable { case invalidArguments, unsupportedMiMo, modelHashMismatch, missingTerminal }
+    public enum Failure: Error, Equatable {
+        case invalidArguments, unsupportedMiMo, modelHashMismatch, missingTerminal
+    }
 
     struct Report: Encodable {
         let schema = 1
@@ -23,6 +25,7 @@ public enum RuntimeGenerationBenchmark {
         let mtpRequested: Bool
         let mtpActive: Bool
         let mtpMetrics: MTPBenchmarkMetrics
+        let assistantIdentity: [String: String]
         let generatedTokens: [Int]
         let text: String
         let finishReason: String
@@ -37,16 +40,20 @@ public enum RuntimeGenerationBenchmark {
         let peakObservedKVBytesReserved: Int
         let peakObservedPagedCommittedBytes: Int?
         let peakObservedPagedLivePageBytes: Int?
-        let capacityObservation = "Host samples before submit and at delta/terminal events; excludes unobserved prefill transient peaks. Pre-request active bytes include weights and setup allocations."
+        let capacityObservation =
+            "Host samples before submit and at delta/terminal events; excludes unobserved prefill transient peaks. Pre-request active bytes include weights and setup allocations."
         let finalMemory: ProcessMemoryTelemetry?
     }
 
     public static func run(
         modelID: String, modelDirectory: URL, prompt: String, maxTokens: Int,
-        backend: String, mtpEnabled: Bool = false, renderDate: String
+        backend: String, mtpEnabled: Bool = false, assistantDirectory: URL? = nil,
+        renderDate: String
     ) async throws -> (json: String, succeeded: Bool) {
         guard maxTokens > 0, maxTokens <= 131_072, prompt.utf8.count <= 4 << 20,
-            let date = PromptRenderDate(renderDate), ["auto", "paged", "contiguous"].contains(backend)
+            let date = PromptRenderDate(renderDate),
+            ["auto", "paged", "contiguous"].contains(backend),
+            assistantDirectory == nil || mtpEnabled
         else { throw Failure.invalidArguments }
         let modelType = try ModelBenchmark.decodedModelType(
             from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
@@ -55,16 +62,19 @@ public enum RuntimeGenerationBenchmark {
         MLXMemoryGuard.configureOnce()
         guard let verified = WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID)
         else { throw Failure.modelHashMismatch }
-        let loaded = try await EngineV2Factory.loadBenchmarkContainer(modelID: modelID, directory: modelDirectory)
+        let loaded = try await EngineV2Factory.loadBenchmarkContainer(
+            modelID: modelID, directory: modelDirectory)
         let container = loaded.container
         do {
-            guard WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID) == verified
+            guard
+                WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID) == verified
             else { throw Failure.modelHashMismatch }
             let tokenizer = await container.perform { TokenizerHandle($0.tokenizer) }
-            let body = try JSONSerialization.data(withJSONObject: [
-                "model": modelID, "messages": [["role": "user", "content": prompt]],
-                "temperature": 0, "seed": 1, "max_tokens": maxTokens,
-            ] as [String: Any])
+            let body = try JSONSerialization.data(
+                withJSONObject: [
+                    "model": modelID, "messages": [["role": "user", "content": prompt]],
+                    "temperature": 0, "seed": 1, "max_tokens": maxTokens,
+                ] as [String: Any])
             let prepared = try EngineV2Factory.benchmarkPrompt(
                 body: body, tokenizer: tokenizer.inner, modelType: modelType, defaultDate: date)
             var environment = ProcessInfo.processInfo.environment
@@ -74,13 +84,16 @@ public enum RuntimeGenerationBenchmark {
                 modelId: modelID, modelDirectory: modelDirectory, isVLM: loaded.isVLM,
                 container: container, tokenizer: tokenizer, verifiedWeightHash: verified,
                 kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1, mtpEnabled: mtpEnabled,
+                assistantDirectory: assistantDirectory,
                 useProductionKVGrant: true, kvBackendConfig: backend, requirePersistentKey: false,
                 environment: environment)
             do {
                 let stopTokens = await session.stopTokenIDs()
                 let preRequestActive = Memory.activeMemory
-                var peakInUse = 0, peakReserved = 0
-                var peakCommitted: Int?, peakLivePages: Int?
+                var peakInUse = 0
+                var peakReserved = 0
+                var peakCommitted: Int?
+                var peakLivePages: Int?
                 func observeCapacity() {
                     let capacity = session.rawEngine.capacity()
                     peakInUse = max(peakInUse, capacity.kvBytesInUse)
@@ -93,16 +106,22 @@ public enum RuntimeGenerationBenchmark {
                 observeCapacity()
                 Memory.peakMemory = 0
                 let started = DispatchTime.now().uptimeNanoseconds
-                let submission = try await session.submit(CBv2Request(
-                    id: CBv2RequestID(1), promptTokens: prepared.tokens, sampling: prepared.sampling,
-                    maxTokens: maxTokens, stopTokens: stopTokens, prefixCacheEnabled: false))
-                var first: UInt64?, terminal: (CBv2FinishReason, CBv2Usage)?
-                var tokens: [Int] = [], text = ""
+                let submission = try await session.submit(
+                    CBv2Request(
+                        id: CBv2RequestID(1), promptTokens: prepared.tokens,
+                        sampling: prepared.sampling,
+                        maxTokens: maxTokens, stopTokens: stopTokens, prefixCacheEnabled: false))
+                var first: UInt64?
+                var terminal: (CBv2FinishReason, CBv2Usage)?
+                var tokens: [Int] = []
+                var text = ""
                 for await event in submission.events {
                     observeCapacity()
                     switch event {
                     case .delta(let chunk, let sampled, _):
-                        if first == nil, !sampled.isEmpty { first = DispatchTime.now().uptimeNanoseconds }
+                        if first == nil, !sampled.isEmpty {
+                            first = DispatchTime.now().uptimeNanoseconds
+                        }
                         text += chunk
                         tokens.append(contentsOf: sampled)
                     case .finished(let reason, let usage): terminal = (reason, usage)
@@ -112,21 +131,30 @@ public enum RuntimeGenerationBenchmark {
                 guard let (reason, usage) = terminal else { throw Failure.missingTerminal }
                 await session.complete(receiptID: submission.receiptID)
                 let succeeded = reason == .stop || reason == .length
-                let report = Report(modelID: modelID, verifiedModelAggregateSHA256: verified,
+                let report = Report(
+                    modelID: modelID, verifiedModelAggregateSHA256: verified,
                     runtimeIdentity: EngineV2Factory.benchmarkRuntimeIdentity(),
-                    promptSHA256: SHA256.hash(data: Data(prompt.utf8)).map { String(format: "%02x", $0) }.joined(),
+                    promptSHA256: SHA256.hash(data: Data(prompt.utf8)).map {
+                        String(format: "%02x", $0)
+                    }.joined(),
                     promptTokens: prepared.tokens, renderDate: prepared.renderDate,
-                    resolvedBackend: session.backend, kvQuantization: session.kvQuantization.rawValue,
-                    mtpRequested: mtpEnabled, mtpActive: session.rawEngine.mtpMetricsSnapshot() != nil,
+                    resolvedBackend: session.backend,
+                    kvQuantization: session.kvQuantization.rawValue,
+                    mtpRequested: mtpEnabled,
+                    mtpActive: session.rawEngine.mtpMetricsSnapshot() != nil,
                     mtpMetrics: MTPBenchmarkEngineMetrics.snapshot(engine: session.rawEngine),
+                    assistantIdentity: (await session.cacheSnapshot()).assistantIdentity,
                     generatedTokens: tokens, text: text, finishReason: String(describing: reason),
-                    promptTokenCount: usage.promptTokens, completionTokenCount: usage.completionTokens,
+                    promptTokenCount: usage.promptTokens,
+                    completionTokenCount: usage.completionTokens,
                     firstTokenMilliseconds: first.map { Double($0 - started) / 1_000_000 },
                     totalMilliseconds: Double(finished - started) / 1_000_000,
-                    peakMLXMemoryBytes: Memory.peakMemory, preRequestActiveMemoryBytes: preRequestActive,
+                    peakMLXMemoryBytes: Memory.peakMemory,
+                    preRequestActiveMemoryBytes: preRequestActive,
                     peakMLXMemoryDeltaBytes: max(0, Memory.peakMemory - preRequestActive),
                     peakObservedKVBytesInUse: peakInUse, peakObservedKVBytesReserved: peakReserved,
-                    peakObservedPagedCommittedBytes: peakCommitted, peakObservedPagedLivePageBytes: peakLivePages,
+                    peakObservedPagedCommittedBytes: peakCommitted,
+                    peakObservedPagedLivePageBytes: peakLivePages,
                     finalMemory: await session.memorySnapshot())
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

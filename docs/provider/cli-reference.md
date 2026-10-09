@@ -437,7 +437,7 @@ shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
 |---|---|
 | Throughput | `--model <id>` (`String?`), `--prompt <text>` (`ModelBenchmark.defaultPrompt`), `--iterations <n>` (`ModelBenchmark.defaultIterations`), `--max-tokens <n>` (`ModelBenchmark.defaultMaxTokens`) |
 | Ordinary token scores | `--teacher-forced-input <json>` (`String?`, unset), explicit `--model <id>` and `--kv-backend contiguous\|paged` (`BenchmarkCommand.swift`, `teacherForcedOptionError`) |
-| Runtime generation | `--runtime-generation`, optional `--runtime-prompt-file <utf8>`, `--runtime-prompt-date YYYY-MM-DD`, `--runtime-mtp`; production slot output and memory as JSON, prefix cache off (`RuntimeGenerationBenchmark`) |
+| Runtime generation | `--runtime-generation`, optional `--runtime-prompt-file <utf8>`, `--runtime-prompt-date YYYY-MM-DD`, `--runtime-mtp`, `--runtime-assistant-directory <path>`; production slot output and memory as JSON, prefix cache off (`RuntimeGenerationBenchmark`) |
 | Live KV precision | `--kv-quantization balanced\|k8v4\|k8v8\|native`; resolves every production benchmark engine. Use `--runtime-generation`, teacher forcing, sweep or scheduler modes to exercise serving KV. Ordinary scalar `MLX.generate` benchmarks do not measure this representation. MiMo stays native. |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
@@ -1030,13 +1030,16 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--iterations <n>` | Number of iterations (default from `ModelBenchmark`) |
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
 | `--runtime-generation` | Generate through the production CBv2 slot and emit tokens/text, resolved precision/backend, model/runtime identity, timings and memory as JSON |
+| `--runtime-assistant-directory <path>` | Offline local Gemma assistant for `--runtime-generation --runtime-mtp`; normal artifact and target checks apply, with assistant hashes in the report |
 | `--kv-quantization <precision>` | `balanced`, `k8v4`, `k8v8` or `native`; native is the paired control and contiguous rollback |
 
 For paired live-cache comparisons, use the same artifact, public prompt and
 `--runtime-prompt-date` with `--runtime-generation --kv-backend paged`, once
 with `--kv-quantization native` and once with `balanced`. Target-only generation
 is the default in this diagnostic; `--runtime-mtp` explicitly includes the
-configured artifact assistant. A generation limit is reported as `length`,
+configured artifact assistant. Inline Qwen heads need no separate directory;
+Gemma requires `--runtime-assistant-directory` pointing to a local assistant.
+The diagnostic never downloads an assistant. A generation limit is reported as `length`,
 not a correctness pass. Prefix caches remain off in these runs.
 
 For native Qwen4 model types, the ordinary command uses the production CBv2

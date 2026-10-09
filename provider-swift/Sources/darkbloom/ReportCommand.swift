@@ -184,7 +184,8 @@ struct Report: AsyncParsableCommand {
         process.standardOutput = pipe
         process.standardError = errors
 
-        try process.run()
+        let childExit = ProcessExitObserver()
+        try childExit.run(process)
         // Drain stderr concurrently so a chatty failure cannot block stdout.
         let errorText = LockedText()
         let drained = DispatchSemaphore(value: 0)
@@ -193,7 +194,7 @@ struct Report: AsyncParsableCommand {
             drained.signal()
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        childExit.wait()
         drained.wait()
 
         if DeviceCheckEvidence.isAccessDenied(status: process.terminationStatus, stderr: errorText.value) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — child process exit waits
+
+- Report a finished child process without the former polling and run-loop delay. Bounded children (the paged-kernel preflight, update staging, runtime smoke and signature checks, `darkbloom doctor` and `verify` probes) are reported up to about 120 ms sooner each, and waiting for `launchctl`, `codesign`, `profiles`, `open` and `log` no longer runs the calling thread's run loop. Timeouts and the SIGTERM-then-SIGKILL escalation are unchanged.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

@@ -815,6 +815,11 @@ extension EngineV2Bridge {
                     let submitted = try native.submitWithNativeRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
+                } else if let distributed, let selectedContext {
+                    // Without a projected admission the engine still enforces
+                    // the origin-anchored deadlines selected above. A bare
+                    // submit would start a fresh budget with no first-token limit.
+                    events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
                 } else {
                     events = try engine.submit(engineRequest)
                 }
@@ -889,6 +894,11 @@ extension EngineV2Bridge {
                     readyReceiptRegistered: readyReceiptRegistered,
                     usageSignal: usageSignal,
                     failure: Self.prefixCacheFailureClass(for: error))
+            }
+            // A distributed first-token budget spent before admission is the
+            // same pre-content refusal as an unreachable coordinator deadline.
+            if error as? DistributedRequestDeadlineError == .firstTokenExpired {
+                throw PreContentDeadlineFailure.deadlineUnreachable
             }
             if let failure = error as? PreContentDeadlineFailure { throw failure }
             if error is CancellationError { throw CancellationError() }

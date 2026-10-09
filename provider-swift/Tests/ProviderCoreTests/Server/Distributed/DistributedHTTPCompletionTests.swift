@@ -139,4 +139,26 @@ struct DistributedHTTPCompletionTests {
         }
     }
 
+    /// A non-streamed request has no HTTP content timer, so only the engine
+    /// can enforce the first-token budget selected at the HTTP origin.
+    @Test func nonStreamedRequestIsCancelledAtItsFirstTokenBudget() async throws {
+        try await withCompletionFixture(firstTokenBudgetMilliseconds: 800) { fixture in
+            let request = try fixture.request(stream: false)
+            let sent = ContinuousClock.now
+            let client = Task { try await URLSession.shared.data(for: request) }
+            let lease = try await fixture.startedLease()
+            // No token is committed. The pair is cancelled at the budget, and
+            // nothing is released until it acknowledges retirement.
+            #expect(try await httpDeliveryEventually { lease.cancelCount == 1 },
+                    "no cancellation within two seconds of an 800 ms first-token budget")
+            #expect(sent.duration(to: ContinuousClock.now) >= .milliseconds(800))
+            #expect(lease.releaseCount == 0)
+            lease.acknowledge()
+
+            let (data, reply) = try await client.value
+            #expect((reply as? HTTPURLResponse)?.statusCode == 500) // prefill_stall
+            #expect(try jsonObject(data)["error"] != nil)
+            #expect(lease.releaseCount == 1)
+        }
+    }
 }

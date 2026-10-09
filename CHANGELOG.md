@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — provider status App Attest lease
+
+- Keep `darkbloom status` and `darkbloom doctor` reporting App Attest authorization until the coordinator lease expires. They required a renewal within the last 10 seconds, so one delayed renewal showed `Trust: self_signed / online` although serving continued. `darkbloom unenroll` still requires a renewal within 10 seconds before offering MDM removal.
+
 ## Unreleased — provider build environment
 
 - A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.

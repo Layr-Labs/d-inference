@@ -97,6 +97,41 @@ import Testing
         #expect(ProviderAuthorizationReadiness.removalReady(current(receivedAt: 99), now: 100))
     }
 
+    /// The coordinator renews a ~30 s App Attest lease every few seconds with
+    /// jitter. A renewal older than `snapshotMaxAge` is still the coordinator's
+    /// grant until `expiresAt`; status and doctor must not drop to legacy trust.
+    @Test func displayKeepsAnUnexpiredLeaseWhoseRenewalIsLate() {
+        let identity = ProcessIdentity(pid: 41, startTimeMicros: 9)
+        func state(receivedAt: Double, expiresAt: Double, path: String = "app_attest",
+                   online: String = "online") -> DaemonState {
+            DaemonState(
+                pid: 41, processIdentity: identity, version: "test",
+                writtenAt: 100, startedAt: 50,
+                trust: .init(trustLevel: "self_signed", status: online, reason: "",
+                             receivedAt: receivedAt, authorization: status(path: path, expiresAt: expiresAt)),
+                coordinatorURL: "wss://api.darkbloom.dev/ws/provider")
+        }
+        func displayed(_ state: DaemonState, coordinator: String = "https://api.darkbloom.dev",
+                       identity: ProcessIdentity? = identity, now: Double = 100) -> ProviderAuthorizationStatus? {
+            state.displayedProviderAuthorization(
+                coordinatorURL: coordinator, now: now, readProcessIdentity: { _ in identity })
+        }
+        let late = state(receivedAt: 85, expiresAt: 115)
+        #expect(displayed(late) == late.trust?.authorization)
+        // Unenroll keeps requiring a renewal inside snapshotMaxAge.
+        #expect(late.currentProviderAuthorization(
+            coordinatorURL: "https://api.darkbloom.dev", now: 100, readProcessIdentity: { _ in identity }) == nil)
+
+        #expect(displayed(state(receivedAt: 85, expiresAt: 100)) == nil)
+        #expect(displayed(state(receivedAt: 85, expiresAt: 115, path: "none")) == nil)
+        #expect(displayed(state(receivedAt: 40, expiresAt: 115)) == nil)
+        #expect(displayed(late, coordinator: "https://other.example") == nil)
+        #expect(displayed(late, identity: nil) == nil)
+        #expect(displayed(state(receivedAt: 85, expiresAt: 115, online: "untrusted")) == nil)
+        // The lease cannot outlive a daemon that stopped writing its snapshot.
+        #expect(displayed(late, now: 110.001) == nil)
+    }
+
     @Test func expiredStatusNeverClaimsThatRemovalIsAvailable() {
         let description = ProviderAuthorizationReadiness.summary(status(expiresAt: 100), now: 100)
         #expect(!description.contains("removal is available"))

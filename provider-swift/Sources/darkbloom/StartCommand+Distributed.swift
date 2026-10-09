@@ -15,6 +15,10 @@ extension Start {
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
         let member = try await makeClusterMemberLoop(reference: factory.reference, stopOnDisconnect: true)
         let session = try await factory.prepare()
+        // A clean stop sends shutdown and waits for both workers to end
+        // themselves. One that is still inside a collective when its peer went
+        // away needs its progress limit to do so; nothing signals it sooner.
+        let stopAllowance = session.cooperativeStopAllowanceNanoseconds
         let token = try noAuth ? nil : LocalEndpoint.loadOrCreateToken()
         let budget = try DistributedFirstTokenBudgetPolicy(
             baseMilliseconds: 10_000, millisecondsPerInputToken: 1)
@@ -32,7 +36,7 @@ extension Start {
         let memberExit = Task {
             let result = await memberTask.result
             // A terminal control loop cannot leave this leader advertised.
-            _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+            _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance)
             return result
         }
         let task = Task {
@@ -52,7 +56,7 @@ extension Start {
         let stop: @Sendable () -> Void = {
             task.cancel()
             memberTask.cancel()
-            Task { _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + 15_000_000_000) }
+            Task { _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance) }
         }
         signals.attach(stop)
         let status: DistributedLocalServerStatus
@@ -64,13 +68,13 @@ extension Start {
             // A separate task keeps cancellation of the command from reducing
             // the bounded cleanup wait to an immediate cancelled sleep.
             let cleanup = Task {
-                await server.stop(until: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+                await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance)
             }
             let status = await cleanup.value
             memberTask.cancel()
             _ = await memberExit.value
             if !status.cleanupComplete {
-                printError("Distributed cleanup is unresolved; owner journals continue to block another session.")
+                printError("Distributed cleanup is unresolved. Each owner keeps waiting for its worker and clears its own journal when that worker exits; `darkbloom cluster recover` reports what is left.")
             }
             throw error
         }

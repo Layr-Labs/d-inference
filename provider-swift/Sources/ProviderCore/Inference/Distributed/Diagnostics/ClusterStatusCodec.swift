@@ -34,7 +34,9 @@ enum ClusterStatusCodec {
               ["starting", "serving", "rotating", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
               ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
               (0...1).contains(value.acquisitions), value.session.members.count == 2,
-              !value.session.mtpEnabled, value.session.mtpOffReason == "runtimeCapabilityDisablesSpeculation" else {
+              !value.session.mtpEnabled, value.session.mtpOffReason == "runtimeCapabilityDisablesSpeculation",
+              value.session.nativeBootstrapOwnerAuthenticated == value.session.nativeBootstrap.ownerAuthenticated,
+              (1...3_600_000).contains(value.session.collectiveProgressLimitMilliseconds) else {
             throw ClusterConfigurationError.invalid("Status is stale, malformed or belongs to another saved setup")
         }
         if let epoch = value.session.observedMembershipEpoch { _ = try nonce(epoch) }

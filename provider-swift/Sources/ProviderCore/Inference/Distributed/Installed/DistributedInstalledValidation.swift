@@ -10,6 +10,7 @@ struct DistributedInstalledValidation: Sendable {
     let verifiedInputs: [DistributedInstalledFiles.Identity]
     let manifest: ModelManifest
     let model: DistributedInstalledModel
+    let workerFeatures: DistributedInstalledWorkerFeatures
 
     static func validate(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
                          deadline: UInt64) throws -> Self {
@@ -21,6 +22,10 @@ struct DistributedInstalledValidation: Sendable {
             expectedSHA256: plan.capability.runtimeBinarySHA256, maximumBytes: 256 * 1024 * 1024,
             executable: true, deadline: deadline)
         inputs.append(executable)
+        // The pinned worker must carry the collective progress guard. A pin
+        // alone does not say so: it names whatever binary was installed.
+        let features = try DistributedInstalledWorkerFeatures.inspect(executable, deadline: deadline)
+        try features.requireProgressGuard()
         inputs.append(try DistributedInstalledFiles.verify(plan.configurationURL,
             expectedSHA256: plan.capability.configurationSHA256, maximumBytes: 1_048_576, deadline: deadline))
         inputs.append(try DistributedInstalledFiles.verify(plan.manifestURL,
@@ -44,7 +49,7 @@ struct DistributedInstalledValidation: Sendable {
         try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
         for input in inputs { try input.requireUnchanged() }
 
-        let result = Self(plan: plan, verifiedInputs: inputs, manifest: manifest, model: model)
+        let result = Self(plan: plan, verifiedInputs: inputs, manifest: manifest, model: model, workerFeatures: features)
         try result.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)
         return result

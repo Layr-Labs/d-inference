@@ -89,5 +89,6 @@ private func rotationObservation(_ session: LocalHostTestSession, configurationP
         }]
     let binding = try JSONDecoder().decode(ClusterStatusBinding.self, from: JSONSerialization.data(withJSONObject: object))
     return .init(binding: binding, phase: "prepared", observedMembershipEpoch: nil, observedPrefillSchedule: nil,
-        ready: false, admission: nil, members: [], mtpEnabled: false, mtpOffReason: "fixture")
+        ready: false, admission: nil, members: [], mtpEnabled: false, mtpOffReason: "fixture",
+        nativeBootstrap: .directNative, collectiveProgressLimitMilliseconds: 60_000)
 }

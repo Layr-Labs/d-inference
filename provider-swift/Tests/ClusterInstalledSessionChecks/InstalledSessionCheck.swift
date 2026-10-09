@@ -34,13 +34,16 @@ final class EndpointBox: @unchecked Sendable {
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
         try pairedSetupRefusesLocalSession(fixture)
+        try bootstrapSelection(fixture,prepared)
+        try progressGuardIsRequired(fixture,prepared,unguarded:URL(fileURLWithPath:CommandLine.arguments[4]))
+        try ordinaryProviderExclusion(fixture)
         try fileAndProbeChecks(fixture,prepared)
         try await normalAndDrain(fixture,prepared)
         try await exhausted(fixture,prepared)
         try await failedStart(fixture,prepared)
         try await missingRelease(fixture,prepared)
         try await expired(fixture)
-        print("Installed owner/session: metadata, bounded IO and 6 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, bounded IO and 6 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -82,10 +85,71 @@ final class EndpointBox: @unchecked Sendable {
         let text=String(decoding:f.manifestBytes,as:UTF8.self)
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
         let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-        try require(environment.count==9 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1","native environment widened")
+        try require(environment.count==10 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1","native environment widened")
+        try require(environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","installed plan did not set the collective progress limit")
         let local=try ClusterLocalOwnerConfiguration(installedDarkbloom:f.owner).launch()
         try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")
         try rejected{_ = try ClusterLocalOwnerConfiguration(installedDarkbloom:URL(fileURLWithPath:"/unsafe/../owner"))}
+    }
+    /// The installed build starts its ranks with the runtime's own bootstrap and
+    /// says so. The owner-authenticated arguments stay a contract, not a default:
+    /// they are appended only for a build that selects that exchange.
+    static func bootstrapSelection(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
+        let plan=prepared.plan
+        try require(plan.bootstrap == .directNative && plan.bootstrap.ownerProfile==nil && !plan.bootstrap.ownerAuthenticated,"installed bootstrap selection differs")
+        let binding=try plan.binding(epoch:UUID(),lease:UUID(),incarnation:UUID())
+        let deadline=DispatchTime.now().uptimeNanoseconds+100_000_000_000
+        let direct=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline-1,attachment:nil)
+        try require(!direct.contains{$0.hasPrefix("--bootstrap-")},"direct native launch carried bootstrap arguments the worker refuses")
+        try require(Array(direct.suffix(2))==["--startup-deadline-uptime-nanoseconds",String(deadline-1)],"startup deadline was not passed to the worker")
+        let legacy=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
+        try require(legacy==Array(direct.dropLast(2)) && legacy.count==24,"a worker without the startup argument must be started without it")
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline+1,attachment:nil)}
+        let attachment=try ClusterOwnerBootstrapAttachment(profile:.mesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000)
+        defer{attachment.cancel()}
+        try require(attachment.workerArguments.count==6 && attachment.workerArguments[0]=="--bootstrap-socket-path","authenticated argument contract changed")
+        // Supplying the attachment to a build that selected the direct exchange
+        // is a mismatch, never a silent upgrade or downgrade.
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment)}
+        let (session,_)=try session(f,prepared)
+        let observed=session.diagnosticObservation
+        try require(observed.nativeBootstrap == .directNative && !observed.nativeBootstrapOwnerAuthenticated,"status claimed an authenticated bootstrap")
+        try require(observed.collectiveProgressLimitMilliseconds==60_000,"status omitted the collective progress limit")
+        try require(session.cooperativeStopAllowanceNanoseconds==75_000_000_000,"stop allowance does not cover the progress limit")
+    }
+    /// A pin names whatever binary was installed. The installed path also
+    /// requires that binary to carry the collective progress guard.
+    static func progressGuardIsRequired(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,unguarded:URL) throws {
+        try require(prepared.validation.workerFeatures == .init(hasProgressGuard:true,acceptsStartupDeadline:true),"guarded worker features were not read from its bytes")
+        let bare=try InstalledFixture.make(root:f.root.appendingPathComponent("unguarded"),probe:unguarded,owner:f.owner,worker:f.worker)
+        var refusal=""
+        do { _ = try bare.prepare() } catch { refusal=String(describing:error) }
+        try require(refusal.contains("no collective progress guard"),"a worker without the progress guard was accepted: \(refusal)")
+        // The same refusal reaches `cluster doctor` and the owner, which share this validation.
+        try rejected{_ = try DistributedInstalledValidation.validate(reference:bare.reference,paths:bare.paths,deadline:DispatchTime.now().uptimeNanoseconds+5_000_000_000)}
+        try rejected{try DistributedInstalledWorkerFeatures(hasProgressGuard:false,acceptsStartupDeadline:true).requireProgressGuard()}
+    }
+    /// The owner refuses while this Mac's ordinary provider holds its instance lock.
+    static func ordinaryProviderExclusion(_ f:InstalledFixture) throws {
+        let lock=f.root.appendingPathComponent("provider.pid.lock")
+        func check(parent:Int32=1,arguments:[String]?=["darkbloom","start"]) throws {
+            try DistributedInstalledProviderExclusion.requireNoOrdinaryProvider(lockFile:lock,parent:parent,arguments:{_ in arguments})
+        }
+        try check() // No provider has ever run here.
+        let descriptor=open(lock.path,O_RDWR|O_CREAT|O_CLOEXEC,0o600);try require(descriptor>=0,"lock fixture")
+        defer{close(descriptor)}
+        let record=Data("{\"acquired_at\":1,\"operation\":\"provider-instance\",\"pid\":4242}\n".utf8)
+        try require(record.withUnsafeBytes{write(descriptor,$0.baseAddress,$0.count)}==record.count,"lock record fixture")
+        try check() // A record left by a provider that has exited holds nothing.
+        try require(flock(descriptor,LOCK_EX|LOCK_NB)==0,"lock fixture")
+        var message=""
+        do { try check() } catch { message=String(describing:error) }
+        try require(message.contains("process 4242") && message.contains("darkbloom stop"),"ordinary provider was not refused clearly: \(message)")
+        try check(parent:4242) // The leader that launched this owner holds the lock for its own session.
+        try check(arguments:["darkbloom","start","--cluster-member"]) // A control-only member serves nothing itself.
+        try rejected{try check(arguments:nil)} // A holder that cannot be identified is not assumed to be a member.
+        try require(ftruncate(descriptor,0)==0,"lock fixture");try rejected{try check(parent:4242)} // No record: nothing proves who holds it.
+        try require(flock(descriptor,LOCK_UN)==0,"lock fixture");try check()
     }
     static func fileAndProbeChecks(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
         let deadline=DispatchTime.now().uptimeNanoseconds+2_000_000_000

@@ -55,17 +55,20 @@ build_module InstalledContract \
 
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
-for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker InstalledSessionCheck; do
+for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures InstalledFakeOwner InstalledFakeWorker InstalledSessionCheck; do
+  task_defines=()
   case "$task_name" in
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
+    # The same stand-in built as a worker that predates the progress guard.
+    InstalledProbeFixtureWithoutFeatures) task_inputs=("$task_fixtures/InstalledProbeFixture.swift"); task_defines=(-D FIXTURE_WITHOUT_WORKER_FEATURES) ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
     InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
     InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift") ;;
   esac
-  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
+  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"
 done
 
 cd "$task_build"
 "$task_build/InstalledSessionCheck" "$task_build/InstalledProbeFixture" \
-  "$task_build/InstalledFakeOwner" "$task_build/InstalledFakeWorker"
+  "$task_build/InstalledFakeOwner" "$task_build/InstalledFakeWorker" "$task_build/InstalledProbeFixtureWithoutFeatures"

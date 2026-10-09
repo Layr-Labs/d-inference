@@ -57,6 +57,7 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusClient.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDiagnosticsReport.swift \
+  "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceRecovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift
 
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \

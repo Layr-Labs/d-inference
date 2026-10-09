@@ -19,7 +19,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private let diagnosticBinding: ClusterStatusBinding
     private var observedMembershipEpoch: UUID?
     private let wireIdentity: ClusterWorkerIdentity
-    typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64, ClusterOwnerBootstrapRelay) throws -> ClusterRemoteWorkerEndpoint
+    /// The relay is present exactly when the installed bootstrap is the owner-authenticated one.
+    typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64, ClusterOwnerBootstrapRelay?) throws -> ClusterRemoteWorkerEndpoint
     private let endpointFactory: EndpointFactory
     private let lock = NSLock()
     private let startup = InstalledCompletion(), stopped = InstalledCompletion()
@@ -75,7 +76,15 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             ready: ready, admission: state.map { .init(remainingLifetimeNanoseconds: $0.remainingLifetimeNanoseconds,
                 remainingRequests: $0.admissionsRemaining, activeRequest: $0.hasActiveRequest,
                 draining: $0.isDraining, valid: $0.isValid) }, members: members,
-            mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation")
+            mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation",
+            nativeBootstrap: prepared.plan.bootstrap,
+            collectiveProgressLimitMilliseconds: DistributedInstalledPlan.collectiveProgressLimitMilliseconds)
+    }
+
+    /// Longest a clean stop can legitimately take: a rank still inside a
+    /// collective when its peer went away ends itself at the progress limit.
+    public var cooperativeStopAllowanceNanoseconds: UInt64 {
+        UInt64(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) * 1_000_000 + 15_000_000_000
     }
 
     /// Call before and after LocalTokenizerLoader.load(from: model.directory).
@@ -134,10 +143,12 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         try requireStarting(); try prepared.requireUnchanged()
         let now = DispatchTime.now().uptimeNanoseconds
         let lifetime = now + prepared.plan.maximumLifetimeNanoseconds
-        let startupDeadline = min(lifetime, now + 90_000_000_000)
-        let relay = try ClusterOwnerBootstrapRelay(identity: wireIdentity,
+        let startupDeadline = min(lifetime, now + DistributedInstalledPlan.startupAllowanceNanoseconds)
+        // No relay exists for the direct native bootstrap: the owners carry no
+        // bootstrap rounds and the status reports the exchange as unauthenticated.
+        let relay = try prepared.plan.bootstrap.ownerAuthenticated ? ClusterOwnerBootstrapRelay(identity: wireIdentity,
             executionPlanSHA256: prepared.plan.partition.planSHA256,
-            deadlineUptimeNanoseconds: min(startupDeadline, now + 30_000_000_000))
+            deadlineUptimeNanoseconds: min(startupDeadline, now + 30_000_000_000)) : nil
         lock.withLock { self.lifetime = lifetime; self.relay = relay }
         for rank in 0..<2 {
             try requireStarting()
@@ -158,7 +169,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     }
 
     private static func installedEndpoint(plan: DistributedInstalledPlan, wireIdentity: ClusterWorkerIdentity,
-        rank: Int, lifetime: UInt64, relay: ClusterOwnerBootstrapRelay) throws -> ClusterRemoteWorkerEndpoint {
+        rank: Int, lifetime: UInt64, relay: ClusterOwnerBootstrapRelay?) throws -> ClusterRemoteWorkerEndpoint {
         let peer = plan.configuration.peers[rank]
         let endpoint: ClusterRemoteWorkerEndpoint
         if rank == plan.configuration.localRank {
@@ -236,7 +247,10 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         var released = true
         for endpoint in values.1 {
-            let deadline = max(values.2, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
+            // Each owner keeps its own retirement ceiling past the lifetime; a
+            // release acknowledgement cannot arrive later than that.
+            let deadline = max(values.2, DispatchTime.now().uptimeNanoseconds)
+                + ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds + 3_000_000_000
             if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) { released = false }
         }
         lock.withLock { phase = released ? .released : .quarantined }

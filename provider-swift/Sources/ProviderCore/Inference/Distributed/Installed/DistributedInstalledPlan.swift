@@ -23,6 +23,14 @@ struct DistributedInstalledPlan: Sendable {
         }
     }
 
+    /// How this build's native ranks find each other; see the type.
+    var bootstrap: DistributedInstalledBootstrap { .installed }
+    /// The collective progress limit every native rank is started with. A rank
+    /// whose peer stops answering fails by itself after this long.
+    static let collectiveProgressLimitMilliseconds = 60_000
+    /// Longest a rank may take to load and join its peer.
+    static let startupAllowanceNanoseconds: UInt64 = 90_000_000_000
+
     var localPeer: ClusterConfiguration.Peer { configuration.peers[configuration.localRank] }
     var maximumLifetimeNanoseconds: UInt64 { UInt64(capability.maxLifetimeSeconds) * 1_000_000_000 }
     var configurationURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("config.json") }
@@ -54,15 +62,21 @@ struct DistributedInstalledPlan: Sendable {
         ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
          "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "128", "DARKBLOOM_BF16_WEIGHTS": "1", "MLX_ENABLE_TF32": "1",
          "JACCL_RANK": String(configuration.localRank), "JACCL_IBV_DEVICES": matrix.path,
-         "JACCL_COORDINATOR": "\(configuration.coordinator.address):\(configuration.coordinator.port)"]
+         "JACCL_COORDINATOR": "\(configuration.coordinator.address):\(configuration.coordinator.port)",
+         DistributedInstalledWorkerFeatures.progressGuardMarker: String(Self.collectiveProgressLimitMilliseconds)]
     }
 
-    func nativeArguments(binding: ClusterOwnerBinding, deadline: UInt64,
-                         attachment: ClusterOwnerBootstrapAttachment) throws -> [String] {
+    /// `attachment` is present exactly when the selected bootstrap is the
+    /// owner-authenticated one; its three arguments are appended unchanged.
+    /// `startupDeadline` is passed only to a worker that knows the argument.
+    func nativeArguments(binding: ClusterOwnerBinding, deadline: UInt64, startupDeadline: UInt64?,
+                         attachment: ClusterOwnerBootstrapAttachment?) throws -> [String] {
         guard binding.identity == identity(epoch: binding.identity.membershipEpoch),
               binding.rank == configuration.localRank, binding.profile == capability.profile,
               binding.executionPlanSHA256 == partition.planSHA256,
-              deadline > DispatchTime.now().uptimeNanoseconds else {
+              deadline > DispatchTime.now().uptimeNanoseconds,
+              startupDeadline.map({ $0 <= deadline }) ?? true,
+              attachment?.profile == bootstrap.ownerProfile else {
             throw ClusterConfigurationError.invalid("Native launch differs from installed owner binding")
         }
         let id = binding.identity
@@ -74,6 +88,8 @@ struct DistributedInstalledPlan: Sendable {
             "--peer1-id", id.peers[1].id, "--peer1-build-sha256", id.peers[1].buildSHA256,
             "--deadline-uptime-nanoseconds", String(deadline)]
             + (try DistributedInstalledPrefillSelection.workerArguments(capability: capability,
-                schedule: configuration.selectedPrefillSchedule)) + attachment.workerArguments
+                schedule: configuration.selectedPrefillSchedule))
+            + (startupDeadline.map { [DistributedInstalledWorkerFeatures.startupDeadlineArgument, String($0)] } ?? [])
+            + (attachment?.workerArguments ?? [])
     }
 }

@@ -32,14 +32,16 @@ import DarkbloomClusterProcess
         try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
             output: filtered ? pipe.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
             clusterID: "installed-fixture", leaseDirectory: directory, maximumLifetimeNanoseconds: 20_000_000_000,
-            bootstrapProfile: .mesh2, binding: { epoch, lease, incarnation in
+            bootstrapProfile: nil, binding: { epoch, lease, incarnation in
                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fixture epoch differs") }
                 return try .init(clusterID: "installed-fixture", ownerIncarnation: incarnation, leaseID: lease,
                     identity: fixtureIdentity, profile: fixtureProfile, rank: rank, executionPlanSHA256: fixturePlan)
             }, native: { binding, deadline, attachment in
-                guard let attachment else { throw ClusterOwnerStateError.invalid("Fixture attachment missing") }
+                // The installed selection is the direct native bootstrap: no
+                // attachment exists and none of its arguments reach the worker.
+                guard attachment == nil else { throw ClusterOwnerStateError.invalid("Fixture received an unselected bootstrap attachment") }
                 return try .init(launch: .init(executable: worker,
-                    arguments: [String(rank), "bootstrap"] + attachment.workerArguments,
+                    arguments: [String(rank), "normal"],
                     environment: ["FIXTURE_READY_PATH": ProcessInfo.processInfo.environment["FIXTURE_READY_PATH"]!]),
                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, lifetimeDeadline: deadline)

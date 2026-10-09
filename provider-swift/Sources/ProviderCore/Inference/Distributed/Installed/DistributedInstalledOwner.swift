@@ -16,36 +16,52 @@ public enum DistributedInstalledOwner {
     /// members disconnect.
     static let servesCommittedNativeStart = false
 
-    public static func serve(reference: ClusterConfigurationReference) throws {
+    /// `providerInstanceLock` is the ordinary provider's instance lock file.
+    static func serve(reference: ClusterConfigurationReference, providerInstanceLock: URL) throws {
+        // An ordinary provider on this Mac uses the same GPU and memory and
+        // does not take the cluster's device scope. Refuse before anything is
+        // prepared, and again immediately before the native launch.
+        try DistributedInstalledProviderExclusion.requireNoOrdinaryProvider(lockFile: providerInstanceLock)
         let prepared = try DistributedInstalledPreparation.prepare(reference: reference,
             paths: ClusterUserPaths(), deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
-        try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO)
+        try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO,
+            beforeNativeLaunch: { try DistributedInstalledProviderExclusion.requireNoOrdinaryProvider(lockFile: providerInstanceLock) })
     }
 
-    static func serve(prepared: DistributedInstalledPreparation, input: Int32, output: Int32) throws {
-        let plan = prepared.plan
+    static func serve(prepared: DistributedInstalledPreparation, input: Int32, output: Int32,
+                      beforeNativeLaunch: @escaping @Sendable () throws -> Void = {}) throws {
+        let plan = prepared.plan, features = prepared.validation.workerFeatures
         try prepared.requireUnchanged()
+        try features.requireProgressGuard()
         try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
-            maximumLifetimeNanoseconds: plan.maximumLifetimeNanoseconds, bootstrapProfile: .mesh2,
+            maximumLifetimeNanoseconds: plan.maximumLifetimeNanoseconds, bootstrapProfile: plan.bootstrap.ownerProfile,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
             }, native: { binding, deadline, attachment in
-                // No native path accepts a nil attachment, injected environment,
-                // wire-supplied executable or claimed memory allowance.
-                guard let attachment, attachment.profile == .mesh2 else {
-                    throw ClusterConfigurationError.invalid("Authenticated installed bootstrap is required")
+                // The bootstrap is this build's one selection, never a fallback:
+                // an attachment is required exactly when that selection is the
+                // owner-authenticated exchange. No native path accepts an
+                // injected environment, a wire-supplied executable or a claimed
+                // memory allowance.
+                guard attachment?.profile == plan.bootstrap.ownerProfile else {
+                    throw ClusterConfigurationError.invalid("Bootstrap attachment differs from the installed selection")
                 }
                 try prepared.requireUnchanged()
                 try DistributedInstalledFiles.check(deadline)
+                try beforeNativeLaunch()
+                let startup = min(deadline, DispatchTime.now().uptimeNanoseconds + DistributedInstalledPlan.startupAllowanceNanoseconds)
                 return try ClusterWorkerProcess(launch: .init(
                     executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
-                    arguments: plan.nativeArguments(binding: binding, deadline: deadline, attachment: attachment),
+                    arguments: plan.nativeArguments(binding: binding, deadline: deadline,
+                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment),
                     environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
                     expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
-                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 90_000_000_000),
-                    lifetimeDeadline: deadline)
+                    startupDeadline: startup, lifetimeDeadline: deadline,
+                    // A worker that was told its startup deadline ends itself
+                    // there; only then may this owner treat it as final.
+                    retirement: .init(childEndsItselfAtStartupDeadline: features.acceptsStartupDeadline))
             })
     }
 }

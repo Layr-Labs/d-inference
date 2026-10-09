@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import CryptoKit
 import DarkbloomClusterProtocol
+import DarkbloomClusterRemote
 @testable import InstalledContract
 
 struct Failure: Error { let message: String }
@@ -22,8 +23,9 @@ private func reject(_ body: () throws -> Void) throws {
         try status(f)
         try discovery(f)
         try journal(f)
+        try recovery(f)
         try linkFindings()
-        print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery, journal uncertainty and local link findings passed")
+        print("Cluster diagnostics: read-only leader/follower metadata, closed fresh status, local discovery, journal uncertainty, explicit recovery and local link findings passed")
     }
 
     static func tree(_ root: URL) throws -> [String: String] {
@@ -76,7 +78,8 @@ private func reject(_ body: () throws -> Void) throws {
                 admission: .init(remainingLifetimeNanoseconds: 8_000_000_000, remainingRequests: 16, activeRequest: false, draining: false, valid: true),
                 members: (0..<2).map { .init(peerID: "peer-\($0)", rank: $0, transport: $0 == 0 ? .localPipes : .authenticatedSSH,
                     nativeReady: true, requestCapacityBytes: 1024, nativeCleanupObserved: false, ownerReleaseAcknowledged: false, ownerTermination: nil) },
-                mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation"),
+                mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation",
+                nativeBootstrap: .directNative, collectiveProgressLimitMilliseconds: 60_000),
             boundPort: 8000, acquisitions: 0, failed: false, ready: true, admissionAvailable: true, quarantined: false)
         func decode(_ bytes: Data, auth: Bool = true) throws -> ClusterLiveStatus {
             try ClusterStatusCodec.decode(bytes, nonce: nonce, binding: binding, authenticationConfigured: auth, port: 8000)
@@ -103,6 +106,11 @@ private func reject(_ body: () throws -> Void) throws {
         }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["observedPrefillSchedule"] = "one_chunk_lookahead_v1"; $0["session"] = s }) }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["mtpEnabled"] = true; $0["session"] = s }) }
+        // The direct native bootstrap cannot be reported as owner-authenticated.
+        try require(!sample.session.nativeBootstrapOwnerAuthenticated && String(decoding: encoded, as: UTF8.self).contains("\"nativeBootstrap\":\"directNative\""), "bootstrap honesty missing from status")
+        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["nativeBootstrapOwnerAuthenticated"] = true; $0["session"] = s }) }
+        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s.removeValue(forKey: "nativeBootstrap"); $0["session"] = s }) }
+        try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["collectiveProgressLimitMilliseconds"] = 0; $0["session"] = s }) }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; var m = s["members"] as! [[String: Any]]; m[1]["ownerReleaseAcknowledged"] = true; s["members"] = m; $0["session"] = s }) }
         let text = String(decoding: encoded, as: UTF8.self)
         try reject { _ = try decode(Data(text.replacingOccurrences(of: "\"acquisitions\":0", with: "\"acquisitions\":0,\"acquisitions\":0").utf8)) }
@@ -130,6 +138,48 @@ private func reject(_ body: () throws -> Void) throws {
         let link = f.root.appendingPathComponent("discovery-link")
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: f.root.appendingPathComponent("input.json").path)
         try reject { _ = try ClusterStatusDiscovery.read(link) }
+    }
+
+    /// `cluster recover` against this fixture's device directory. Runs after
+    /// `journal`, which leaves bytes no build wrote in the journal.
+    static func recovery(_ f: InstalledFixture) throws {
+        let file = f.paths.deviceLeaseFile
+        func size() -> Int { ((try? FileManager.default.attributesOfItem(atPath: file.path)[.size]) as? NSNumber)?.intValue ?? -1 }
+        let unreadable = try ClusterDeviceRecovery.recover(paths: f.paths)
+        try require(unreadable.outcome == .refusedUnreadable && !unreadable.journalEmpty && !unreadable.recoveryPerformed && size() > 0,
+            "recovery cleared bytes it could not interpret")
+        // A journal as an owner records it, left behind by an owner that is gone.
+        let epoch = UUID().uuidString.lowercased()
+        func strand() throws {
+            var record = try JSONSerialization.data(withJSONObject: ["schema": "darkbloom_native_lease_v1", "clusterID": "installed-fixture",
+                "leaseID": UUID().uuidString.lowercased(), "ownerIncarnation": UUID().uuidString.lowercased(), "membershipEpoch": epoch,
+                "nativeLaunchID": UUID().uuidString.lowercased(), "peerID": "peer-0", "rank": 0], options: [.sortedKeys])
+            record.append(10)
+            try record.write(to: file) // Same inode: the fixture's own stand-in for a dead owner.
+            chmod(file.path, 0o600)
+        }
+        try FileManager.default.removeItem(at: file); try Data().write(to: file); chmod(file.path, 0o600)
+        try require(try ClusterDeviceRecovery.recover(paths: f.paths).outcome == .nothingToRecover, "empty journal needed recovery")
+        try strand()
+        try require(ClusterDeviceJournalObservation.read(paths: f.paths) == .ownershipUnproven, "stranded journal not observed")
+        // While a process holds the device scope, recovery refuses and changes nothing.
+        let held = open(file.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        try require(held >= 0 && flock(held, LOCK_EX | LOCK_NB) == 0, "fixture scope lock")
+        let live = try ClusterDeviceRecovery.recover(paths: f.paths)
+        try require(live.outcome == .refusedLiveOwner && !live.journalEmpty && !live.recoveryPerformed && size() > 0, "recovery ignored a live device scope")
+        _ = flock(held, LOCK_UN); Darwin.close(held)
+        let cleared = try ClusterDeviceRecovery.recover(paths: f.paths)
+        try require(cleared.outcome == .cleared && cleared.journalEmpty && cleared.recoveryPerformed && size() == 0, "stranded journal was not cleared")
+        try require(cleared.record == .init(clusterID: "installed-fixture", peerID: "peer-0", rank: 0, membershipEpoch: epoch), "recovery did not name what it cleared")
+        try require(ClusterDeviceJournalObservation.read(paths: f.paths) == .emptyJournal, "journal not empty after recovery")
+        let again = try ClusterDeviceRecovery.recover(paths: f.paths)
+        try require(again.outcome == .nothingToRecover && again.journalEmpty && !again.recoveryPerformed, "recovery is not idempotent")
+        let encoded = String(decoding: try JSONEncoder().encode(cleared), as: UTF8.self)
+        try require(encoded.contains("\"schema\":\"darkbloom_cluster_recovery_v1\"") && encoded.contains("\"outcome\":\"cleared\""), "recovery report shape")
+        let refused = ClusterDeviceRecovery.report(.refusedLiveWorker(processIdentifier: 77, record: .init(clusterID: "c", peerID: "p", rank: 1,
+            membershipEpoch: epoch, leaseID: epoch, ownerIncarnation: epoch, nativeLaunchID: epoch)))
+        try require(refused.outcome == .refusedLiveWorker && refused.liveProcessIdentifier == 77 && !refused.journalEmpty && !refused.recoveryPerformed,
+            "a running recorded worker must be reported, not cleared")
     }
 
     static func journal(_ f: InstalledFixture) throws {

@@ -66,6 +66,24 @@ public struct ClusterSessionObservation: Codable, Sendable, Equatable {
     public let members: [Member]
     public let mtpEnabled: Bool
     public let mtpOffReason: String
+    /// How the native ranks found each other. `directNative` is the runtime's
+    /// own exchange on the configured link address.
+    public let nativeBootstrap: DistributedInstalledBootstrap
+    /// False for `directNative`: no owner vouched for the peer that answered.
+    public let nativeBootstrapOwnerAuthenticated: Bool
+    /// The collective progress limit each native rank was started with.
+    public let collectiveProgressLimitMilliseconds: Int
+
+    init(binding: ClusterStatusBinding, phase: String, observedMembershipEpoch: String?,
+         observedPrefillSchedule: ClusterPrefillSchedule?, ready: Bool, admission: Admission?, members: [Member],
+         mtpEnabled: Bool, mtpOffReason: String, nativeBootstrap: DistributedInstalledBootstrap,
+         collectiveProgressLimitMilliseconds: Int) {
+        self.binding = binding; self.phase = phase; self.observedMembershipEpoch = observedMembershipEpoch
+        self.observedPrefillSchedule = observedPrefillSchedule; self.ready = ready; self.admission = admission
+        self.members = members; self.mtpEnabled = mtpEnabled; self.mtpOffReason = mtpOffReason
+        self.nativeBootstrap = nativeBootstrap; nativeBootstrapOwnerAuthenticated = nativeBootstrap.ownerAuthenticated
+        self.collectiveProgressLimitMilliseconds = collectiveProgressLimitMilliseconds
+    }
 
     public struct Admission: Codable, Sendable, Equatable {
         /// The leader's already-clamped local lifetime, sampled locally.

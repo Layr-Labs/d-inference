@@ -5,6 +5,14 @@ import CryptoKit
 @main enum InstalledProbeFixture {
     static func main() throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        #if !FIXTURE_WITHOUT_WORKER_FEATURES
+        // A worker built with the guarded runtime contains both names; the
+        // installed validation reads them from the pinned binary's bytes.
+        if args == ["--fixture-features"] {
+            print(ProcessInfo.processInfo.environment["JACCL_PROGRESS_TIMEOUT_MS"] ?? "unset", "--startup-deadline-uptime-nanoseconds")
+            return
+        }
+        #endif
         if args.count == 1 {
             switch args[0] {
             case "--fixture-overflow": try FileHandle.standardOutput.write(contentsOf: Data(repeating: 32, count: 16385))

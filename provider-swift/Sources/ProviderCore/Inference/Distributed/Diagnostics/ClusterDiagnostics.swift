@@ -87,7 +87,11 @@ public enum ClusterDiagnostics {
                 ? "The retained leader reports bilateral loaded readiness for the displayed epoch. No new SSH, physical collective, numerical or throughput probe ran."
                 : "No live loaded cohort observed. Peer installation, authenticated connectivity and physical collectives remain untested."))
         checks.append(.init(name: "deviceExclusion", outcome: .notRun,
-            detail: "Journal metadata only. Nonempty means ownership is unproven, not orphaned; empty/absent is not a free-device proof. No lock or journal was changed."))
+            detail: "Journal metadata only. Nonempty means ownership is unproven, not orphaned; empty/absent is not a free-device proof. No lock or journal was changed. `cluster recover` clears a journal whose owner and worker are both gone."))
+        checks.append(.init(name: "nativeBootstrap", outcome: .notRun,
+            detail: DistributedInstalledBootstrap.installed.ownerAuthenticated
+                ? "Native ranks are started with the owner-authenticated bootstrap exchange."
+                : "Native ranks are started with the runtime's own bootstrap exchange on the configured link address. The owner-authenticated exchange is not available in this build, so nothing vouches for the peer that answers on that address. Each rank is started with a \(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) ms collective progress limit."))
         return .init(operation: operation, configurationState: .verified, saved: binding, live: live,
             deviceJournal: journal, checks: checks, localLink: localLink, configuredLinkDevice: saved.linkDevice)
     }

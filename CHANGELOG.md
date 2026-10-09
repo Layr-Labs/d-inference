@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — measured SSD checkpoint retention
+
+- Add opt-in complete-checkpoint capacity retention using confirmed snapshot reuse, measured prefill and restore costs, and encoded bytes. Preserve a brief new-entry probation, privacy scopes, sliding TTL and write/disk limits; MiMo and unloaded roots retain their existing policies.
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

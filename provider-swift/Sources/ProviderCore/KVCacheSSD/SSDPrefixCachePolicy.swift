@@ -158,6 +158,19 @@ enum SSDPrefixCachePolicy {
         return min(PrefixCacheReadyResult.maxStageMs, max(1, estimate.rounded(.up)))
     }
 
+    // MARK: - Measured retention experiment
+
+    static let utilityRetentionFlag = "DARKBLOOM_PREFIX_CACHE_SSD_UTILITY_RETENTION"
+
+    /// Off until demand-trace qualification. MiMo always keeps its existing policy.
+    static func utilityRetentionEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment, modelId: String
+    ) -> Bool {
+        guard !modelId.lowercased().contains("mimo") else { return false }
+        let value = environment[utilityRetentionFlag]?.trimmingCharacters(in: .whitespaces).lowercased()
+        return ["1", "true", "yes", "on"].contains(value ?? "")
+    }
+
     // MARK: - Low-disk guard
 
     /// Writes stop below a fixed 20 GiB free-space reserve. The reserve does

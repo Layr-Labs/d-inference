@@ -347,6 +347,7 @@ extension EngineV2Bridge {
         // model-native planner; the AR media and native block layouts stay distinct.
         var ssdStaged = false
         var ssdReuseAttempted = false
+        var completeCheckpointStageMillis: Double?
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
         if !cacheEnabled {
             usageSignal?.recordCacheDisabled(tier: prefixCacheFallbackTier)
@@ -366,6 +367,7 @@ extension EngineV2Bridge {
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
             ssdReuseAttempted = stageResult.staged
+            completeCheckpointStageMillis = stageResult.stageMs
             usageSignal?.record(stageResult: stageResult)
             if case .skippedCapacity = stageResult.disposition {
                 emitPrefixCacheColdFallback(requestId: id, reason: "stage_capacity", capacityRefusal: true)
@@ -381,6 +383,7 @@ extension EngineV2Bridge {
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
             ssdReuseAttempted = stageResult.staged
+            completeCheckpointStageMillis = stageResult.stageMs
             usageSignal?.record(stageResult: stageResult)
             if case .skippedCapacity = stageResult.disposition {
                 emitPrefixCacheColdFallback(requestId: id, reason: "stage_capacity", capacityRefusal: true)
@@ -562,7 +565,20 @@ extension EngineV2Bridge {
             isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : calibrationGuard,
             nativeCausalMedia: nativeCausalMedia,
             nativeRateEvidence: nativeMediaEvidence)
-        cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
+        // A fresh cold cell in the same prompt domain supplies the counterfactual
+        // cost. The synchronous engine callback proves real adoption, before a
+        // terminal/cancellation actor hop can retire the authenticated receipt.
+        let retentionReceipt: SSDCheckpointRetentionReceipt?
+        if ssdStaged, let store = ssdHybridCheckpointStore, store.utilityRetentionEnabled,
+            let receiptID = prefixCacheReceiptID, let stageMillis = completeCheckpointStageMillis,
+            let rate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens.count) {
+            retentionReceipt = store.makeRetentionReceipt(
+                requestID: receiptID, stageMillis: stageMillis, prefillTokensPerSecond: rate)
+        } else {
+            retentionReceipt = nil
+        }
+        cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt, retentionReceipt] usage in
+            retentionReceipt?.complete(usage)
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
         }

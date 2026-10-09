@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -1229,3 +1229,8 @@ and `coordinator/api/observation/cache_model_telemetry.go`.
 - [`../reference/configuration.md`](../reference/configuration.md#routing-admission-and-ttft) — the `EIGENINFERENCE_CACHE_ROUTING_*` variables and `EIGENINFERENCE_CACHE_MASTER_KEY`.
 - [`../operations/cache-routing-rollout.md`](../operations/cache-routing-rollout.md) — turning routing on in production, widening the activation bounds, rolling back.
 - [`../design/prefix-cache-and-cached-routing.md`](../design/prefix-cache-and-cached-routing.md), [`../reports/2026-07-19-frozen-full-prefix-cache-proof.md`](../reports/2026-07-19-frozen-full-prefix-cache-proof.md) — the analyses that led to this design.
+
+Provider-local complete-checkpoint capacity eviction has an independent,
+opt-in [measured retention policy](prefix-cache.md#measured-complete-checkpoint-retention).
+Its volatile utility scores do not enter holder proofs, routing discounts or
+heartbeat schemas. An evicted holder still produces the ordinary miss path.

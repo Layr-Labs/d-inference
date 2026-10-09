@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -418,6 +418,43 @@ render check; its versioned request-clock renderer supports the accepted
 model family does not bypass that gate
 (`provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift`,
 `compute(modelDirectory:)`).
+
+### Measured complete-checkpoint retention
+
+`DARKBLOOM_PREFIX_CACHE_SSD_UTILITY_RETENTION=1` enables an experimental eviction
+order for complete checkpoints except MiMo. It changes capacity victims in both
+`SSDDiskBudget.enforce` and active-store whole-root sweeping; all other cache
+paths retain LRU. It does not change tensors, admission, encryption, cache scope,
+READY evidence, sliding TTL, disk caps or write limits.
+
+The bridge captures a fresh isolated cold-prefill rate in the request's prompt
+size domain before engine submission. Its synchronous `onPrefillCompleted`
+callback credits a checkpoint only after `.hit` from the `.snapshot` tier,
+with the exact staged saved-token count. Staging alone, resident hits,
+nonpositive estimated benefit, missing rate evidence, failed adoption and
+abandoned requests earn no credit. A once-only receipt binds the authenticated
+stage, epoch and indexed file generation; close, replacement and reused request
+IDs cannot credit a successor (`SSDCheckpointRetentionReceipt`,
+`SSDHybridCheckpointStore.makeRetentionReceipt`, `EngineV2Bridge.submit`).
+
+Each index entry holds the decayed sum of observed successful reuse benefit:
+`max(0, saved_tokens / cold_prefill_tokens_per_second - actual_stage_seconds)`.
+Capacity eviction removes the lowest sum per encoded file byte, with LRU and
+opaque tag order as ties. The sum has a five-minute half-life; it is empirical
+utility, not a hit-probability estimate. New uncredited files receive 30 seconds
+of probation so prior hits do not immediately exclude new demand. Probation
+starts at file creation and cannot be refreshed by failed staging. TTL expiry
+always runs first. Metadata is bounded by the existing index, kept only in RAM,
+and discarded on replacement, removal, restart or unload
+(`SSDCheckpointRetentionValue`, `SSDBlockIndex.retentionEntries`).
+
+The physical denominator currently applies to independently encoded `.dbk3`
+files. Combining this policy with shared-page manifests requires marginal
+unique-inode retirement accounting; logical restore bytes are not an eviction
+savings estimate. Unloaded roots have no retained utility history and use LRU.
+The policy stays off by default pending measured demand traces and contention
+qualification. A synthetic encrypted-I/O fixture verifies useful old-prefix
+retention against LRU under the same cap; it is not a fleet hit-rate result.
 
 ### Streamed complete checkpoints
 

@@ -270,7 +270,16 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(large.profileID, "registered_qwen38_27b_greedy_generation_v1")
         XCTAssertEqual(large.supportedCuts, Array(stride(from: 4, through: 60, by: 4)))
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
-        XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID), ["registered_qwen35_9b", "registered_qwen38_27b"])
+        XCTAssertEqual(Array(QualificationRequest.registeredModels.map(\.modelID).prefix(2)),
+                       ["registered_qwen35_9b", "registered_qwen38_27b"])
+        // MiMo's row: its own cuts and session bound, and no recording runtime.
+        let mimo = try make("registered_mimo_v26_flash_mopd")
+        XCTAssertEqual(mimo.profileID, "registered_mimo_v26_flash_mopd_greedy_generation_v1")
+        XCTAssertEqual(mimo.supportedCuts, [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44])
+        let mimoRow = try XCTUnwrap(QualificationRequest.registeredModel(mimo.modelID))
+        XCTAssertEqual(mimoRow.maximumLifetimeSeconds, 1800); XCTAssertFalse(mimoRow.hasRecordingRuntime)
+        XCTAssertEqual(QualificationRequest.registeredModel(small.modelID)?.maximumLifetimeSeconds, 300)
+        XCTAssertEqual(QualificationRequest.registeredModel(large.modelID)?.hasRecordingRuntime, true)
         for unknown in ["", "registered_qwen4", "EigenLabs/Qwen3.8-27B-4bit-mtp", "registered_qwen38_27b "] {
             XCTAssertThrowsError(try make(unknown), unknown)
         }

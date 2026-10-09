@@ -13,10 +13,16 @@ public struct PromptTokenizer: Sendable {
     public static let registeredManifests: [(sha256: String, modelID: String)] = [
         (registeredManifestSHA256, "registered_qwen35_9b"),
         ("d1239a5bc6d26d5ce4bf87f22270e3a703f4942e3d0d779948b4f65410df6dcc", "registered_qwen38_27b"),
+        ("de1bd701115a9ee7e4a99ac85307b31285c63a0b0b1c22ef0c69e9b4ac10f346", "registered_mimo_v26_flash_mopd"),
     ]
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.
     static let assistantSuffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    /// MiMo's own template closes the turn without a newline and writes an
+    /// empty thinking block. Every other registered model uses the pair above.
+    static let assistantSuffixes = [
+        "registered_mimo_v26_flash_mopd": "<|im_end|><|im_start|>assistant\n<think></think>",
+    ]
 
     public let tokenizerSHA256: String
     /// The registered model whose manifest the tokenizer files were checked against.
@@ -56,7 +62,8 @@ public struct PromptTokenizer: Sendable {
     /// tokens are repeated and cut so the whole prompt has exactly that many
     /// tokens; the chat wrapper around the text is never cut.
     public func encodeChat(userText: String, promptTokenCount: Int?) throws -> (tokenIDs: [Int], source: QualificationPromptSource) {
-        let prefix = encodeRaw(Self.userPrefix), suffix = encodeRaw(Self.assistantSuffix)
+        let prefix = encodeRaw(Self.userPrefix)
+        let suffix = encodeRaw(Self.assistantSuffixes[modelID] ?? Self.assistantSuffix)
         var body = encodeRaw(userText)
         guard !body.isEmpty else { throw QualificationError("The prompt text produced no tokens") }
         var matches: Bool?

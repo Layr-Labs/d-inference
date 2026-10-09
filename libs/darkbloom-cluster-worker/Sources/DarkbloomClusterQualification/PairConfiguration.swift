@@ -38,6 +38,11 @@ public struct PairConfiguration: Sendable {
     public static let localSocketTransport = "local-socket-test"
     /// The name the runtime reads a declared qualification transport from.
     public static let workerTransportEnvironment = "DARKBLOOM_CLUSTER_TRANSPORT"
+    /// Qualification only: the host memory gate records a refusal for
+    /// admissible memory alone instead of enforcing it. Both ranks.
+    public static let memoryGateEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE"
+    /// Qualification only, MiMo: run without the stage's standing residency.
+    public static let stageResidencyEnvironment = "DARKBLOOM_CLUSTER_MIMO_STAGE_RESIDENCY"
 
     public var request: QualificationRequest
     public var stageCut: Int
@@ -82,6 +87,12 @@ public struct PairConfiguration: Sendable {
     /// that hangs up would. Serving path only: a recording run compares a
     /// complete history.
     public var stopAfterTokens: Int?
+    /// Both workers keep a record of the host memory gate's decisions:
+    /// "record" (nothing changes) or "measure" (a refusal for admissible
+    /// memory alone is not enforced). Nil: no record.
+    public var memoryGateMode: String?
+    /// Both workers run without the stage's standing residency (MiMo only).
+    public var withoutStageResidency = false
     public var membershipEpoch: UUID
     /// Strings that must never appear in a report (destination, addresses, names).
     public var sensitive: [String]
@@ -193,7 +204,10 @@ public struct PairConfiguration: Sendable {
                 && faultValue.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [58, 61, 95].contains($0) },
                 "a fault is a recording phase-split run's input: RANK and name=value of lowercase letters, digits, '_', ':'")
         }
-        try require((10...300).contains(lifetimeSeconds), "lifetime must be 10...300 seconds")
+        try require((10...request.maximumLifetimeSeconds).contains(lifetimeSeconds),
+            "lifetime must be 10...\(request.maximumLifetimeSeconds) seconds for this model")
+        try require(!recording || QualificationRequest.registeredModel(request.modelID)?.hasRecordingRuntime == true,
+            "this model has no recording runtime; run it with --evidence none")
         try require((2...lifetimeSeconds).contains(startupSeconds), "startup timeout must be 2 seconds up to the lifetime")
         try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
         try require((0...30).contains(rankOneDelaySeconds), "rank 1 delay must be 0...30 seconds")
@@ -310,6 +324,8 @@ public struct PairConfiguration: Sendable {
         if faultRank == rank, let faultValue {
             environment.append((Self.faultEnvironment, faultValue))
         }
+        if let memoryGateMode { environment.append((Self.memoryGateEnvironment, memoryGateMode)) }
+        if withoutStageResidency { environment.append((Self.stageResidencyEnvironment, "off")) }
         var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
             "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,
             "--artifact-sha256", artifactSHA256, "--configuration-sha256", configurationSHA256,
@@ -321,7 +337,7 @@ public struct PairConfiguration: Sendable {
         // A worker refuses a qualification switch in its environment unless it
         // was started with this flag. Both ranks get it when either has one,
         // so the two launches differ only where the run says they do.
-        if workerTransport != Self.jacclTransport || faultValue != nil {
+        if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency {
             arguments += [Self.qualificationSwitchesArgument, "yes"]
         }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")

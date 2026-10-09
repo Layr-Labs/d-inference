@@ -77,17 +77,35 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         public let modelID: String
         public let profileID: String
         public let supportedCuts: [Int]
+        /// The longest lifetime one worker session of this model may be given.
+        public let maximumLifetimeSeconds: Int
+        /// Only the dense adapter has a recording runtime (`--evidence final-row`).
+        public let hasRecordingRuntime: Bool
+
+        public init(modelID: String, profileID: String, supportedCuts: [Int],
+                    maximumLifetimeSeconds: Int = 300, hasRecordingRuntime: Bool = true) {
+            self.modelID = modelID; self.profileID = profileID; self.supportedCuts = supportedCuts
+            self.maximumLifetimeSeconds = maximumLifetimeSeconds; self.hasRecordingRuntime = hasRecordingRuntime
+        }
     }
     public static let registeredModels: [RegisteredModel] = [
         .init(modelID: modelID, profileID: profileID, supportedCuts: supportedCuts),
         .init(modelID: "registered_qwen38_27b", profileID: "registered_qwen38_27b_greedy_generation_v1",
               supportedCuts: Array(stride(from: 4, through: 60, by: 4))),
+        // MiMo V2.6 Flash: each rank hashes 173 GB and reads up to 110 GB
+        // before it is ready, so its session bound is its own.
+        .init(modelID: "registered_mimo_v26_flash_mopd",
+              profileID: "registered_mimo_v26_flash_mopd_greedy_generation_v1",
+              supportedCuts: [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44], maximumLifetimeSeconds: 1800,
+              hasRecordingRuntime: false),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }
     }
     /// The cuts of the model this request names; empty for an unknown model.
     public var supportedCuts: [Int] { Self.registeredModel(modelID)?.supportedCuts ?? [] }
+    /// The session bound of the model this request names.
+    public var maximumLifetimeSeconds: Int { Self.registeredModel(modelID)?.maximumLifetimeSeconds ?? 300 }
 
     public var schema: String
     public var requestID: String

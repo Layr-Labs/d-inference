@@ -14,8 +14,8 @@ struct QwenResidentRequestAllowance {
     static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
                        rank: Int, maximumTokens: Int, chunkSize: Int,
                        bound: (Int) throws -> Int) throws -> Self {
-        guard plan.stages.count == 2, (0...1).contains(rank), profile.model == .qwen35NineB else {
-            throw ProbeError("Resident request allowance requires the admitted 9B stage")
+        guard plan.stages.count == 2, (0...1).contains(rank) else {
+            throw ProbeError("Resident request allowance requires an admitted two-stage Plan")
         }
         // The ceiling is the admitted model's own; no model borrows another's.
         let ceilings = try QwenResidentResourceCeilings(model: profile.model)

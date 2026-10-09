@@ -95,8 +95,12 @@ struct QwenRegisteredDenseModelProfile {
         let cut = stageCut ?? geometry.layers / 2
         let legal = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
             fullAttentionInterval: geometry.fullAttentionInterval)
-        guard legal.contains(cut), model == .qwen35NineB || cut == 32 else {
-            throw QwenDenseProfileError("The initial27B planning scope is explicit32/32; legacy9B legal cuts are preserved")
+        // The 27B plans at its metadata half cut and at the cuts of its closed
+        // resident row; the 9B keeps every legal cut it always planned at.
+        var residentCuts: [Int] = []
+        if model != .qwen35NineB { residentCuts = try QwenResidentModelDefinition(model: model).supportedCuts }
+        guard legal.contains(cut), model == .qwen35NineB || cut == 32 || residentCuts.contains(cut) else {
+            throw QwenDenseProfileError("The 27B planning scope is 32/32 and its resident cuts; legacy 9B legal cuts are preserved")
         }
         return try QwenLayerStagePlan(configuration: configuration, ranges: [0..<cut, cut..<geometry.layers])
     }

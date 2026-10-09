@@ -26,6 +26,8 @@ task_sources=(
   Support/CanonicalJSON
   Support/ClusterMetadataHashing
   Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment
+  Models/Qwen/Loading/QwenLayerStageCandidates
+  Models/Qwen/Resident/QwenResidentModelDefinition
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
 )

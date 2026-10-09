@@ -31,6 +31,8 @@ struct QwenResidentAdmission {
     let configuration: QwenResidentLoadConfiguration
     let configBytes: Data, manifestBytes: Data
     let specification: QwenDenseRegisteredSpecification
+    /// The closed resident row of `specification.model`: profile, cuts, schedules.
+    let definition: QwenResidentModelDefinition
     let plan: QwenLayerStagePlan
     let profile: QwenLayerStageGenerationProfile
     let arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt
@@ -41,10 +43,12 @@ struct QwenResidentAdmission {
          environment: [String: String], now: UInt64,
          read: (URL, Int) throws -> Data) throws {
         let identity = configuration.identity
-        guard (0...1).contains(configuration.rank), QwenResidentAdapterDefinition.supportedCuts.contains(configuration.stageCut),
-              QwenResidentAdapterDefinition.supportedPrefillSchedules.contains(configuration.prefillSchedule),
+        // The identity's model ID selects one row of the closed catalog; an ID
+        // outside it has no definition. Every other check is against that row.
+        guard let definition = try? QwenResidentModelDefinition(runtimeModelID: identity.modelID),
+              (0...1).contains(configuration.rank), definition.supportedCuts.contains(configuration.stageCut),
+              definition.supportedPrefillSchedules.contains(configuration.prefillSchedule),
               configuration.modelDirectory.isFileURL,
-              identity.modelID == QwenRegisteredDenseModel.qwen35NineB.rawValue,
               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
               identity.peers.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 128 &&
                   $0.id.utf8.allSatisfy({ (33...126).contains($0) }) && qwenStageWireIsSHA256($0.buildSHA256) }),
@@ -52,12 +56,12 @@ struct QwenResidentAdmission {
               configuration.deadlineUptimeNanoseconds - now <= Self.maximumLifetimeNanoseconds,
               (1...1_048_576).contains(configBytes.count),
               (1...4_194_304).contains(manifestBytes.count),
-              let spec = QwenDenseRegisteredSpecification.all.first(where: { $0.model == .qwen35NineB }),
+              case let spec = definition.specification,
               identity.configurationSHA256 == spec.configurationSHA256,
               identity.artifactSHA256 == spec.artifactSHA256,
               sha256(configBytes) == spec.configurationSHA256,
               sha256(manifestBytes) == spec.manifestSHA256 else {
-            throw ProbeError("Resident load requires the closed 9B identity, cut4|8|12|16 and bounded local lifetime")
+            throw ProbeError("Resident load requires a registered model's closed identity, one of its cuts and a bounded local lifetime")
         }
         // Before any model construction or native environment cache is used.
         arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(environment)
@@ -65,7 +69,7 @@ struct QwenResidentAdmission {
         jaccl = try QwenResidentJACCLConfiguration.admit(environment: environment, read: read)
         guard jaccl.rank == configuration.rank else { throw ProbeError("Resident local rank differs from JACCL") }
         self.configuration = configuration; self.configBytes = configBytes; self.manifestBytes = manifestBytes
-        specification = spec
+        specification = spec; self.definition = definition
         plan = try QwenLayerStagePlan(configuration: configBytes,
             ranges: [0..<configuration.stageCut, configuration.stageCut..<spec.layers], activeMTP: false)
         profile = try QwenResidentAdapterDefinition.profile(specification: spec)

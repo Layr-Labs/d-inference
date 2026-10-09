@@ -42,7 +42,7 @@ func prepareQwenResidentSource(_ admission: QwenResidentAdmission,
                 manifest: admission.manifestBytes, expectedArtifactAggregateSHA256: checkpoint.aggregate,
                 canonicalTensors: observed.map(\.canonical))
             let rebuilt = try profile.makePlanningPlan(stageCut: admission.configuration.stageCut)
-            guard profile.model == .qwen35NineB, rebuilt.fingerprint == admission.plan.fingerprint else {
+            guard profile.model == admission.specification.model, rebuilt.fingerprint == admission.plan.fingerprint else {
                 throw ProbeError("Resident source differs from the exact registered model and selected Plan")
             }
             let pair = try QwenDenseStorageRequirement.derive(profile: profile, plan: rebuilt, role: .sequentialPair)

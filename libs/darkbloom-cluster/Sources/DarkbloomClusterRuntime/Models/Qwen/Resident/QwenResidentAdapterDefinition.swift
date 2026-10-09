@@ -11,7 +11,8 @@ enum QwenResidentAdapterDefinition {
     static let supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial, .oneChunkLookahead]
 
     static func profile(specification: QwenDenseRegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
-        guard specification.model == .qwen35NineB else { throw ProbeError("Unsupported resident model") }
+        // The model's own closed row names its profile; the 9B row is `Self.profileID`.
+        let profileID = try QwenResidentModelDefinition(model: specification.model).profileID
         return try .init(identifier: profileID, vocabularySize: 248_320,
             hiddenSize: specification.hidden, activationDType: "bfloat16", maximumPromptTokens: 8192,
             maximumChunkTokens: 512, maximumOutputTokens: 128, maximumContextTokens: 8320)

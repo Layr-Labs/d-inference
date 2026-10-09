@@ -14,6 +14,8 @@ struct RuntimeSmoke: AsyncParsableCommand {
     var shapes: [String] = []
 
     mutating func run() async throws {
+        let build = BuildEnvironment.current
+        print("build-environment-runtime-smoke: \(build.rawValue) coordinator=\(build.coordinatorWebSocketURL) cdn=\(build.modelCDNURL)")
         try await AppAttestRuntimeSmoke.run()
         print(AppAttestRuntimeSmoke.successMarker)
         try PackagedRuntimeSmoke.verifyQwen4MetalResources()

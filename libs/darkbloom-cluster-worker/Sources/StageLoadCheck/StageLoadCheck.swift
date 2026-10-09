@@ -8,6 +8,7 @@ import Foundation
 //
 // The arithmetic environment must already be set, exactly as for the worker:
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
+// and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust.
 
 @main enum StageLoadCheck {
     static func main() {
@@ -27,7 +28,8 @@ import Foundation
                   let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds),
                   let hold = Int(fields["--hold-seconds"] ?? "0"), (0...240).contains(hold), hold < seconds else {
                 throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut CUT [--deadline-seconds 10...300] [--hold-seconds 0...240]\n"
-                    + "  CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B\n"
+                    + "  CUT is one of the registered model's cuts:\n    "
+                    + QwenResidentCapabilityMetadata.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
                     + "  --hold-seconds keeps the loaded stage that long before release (less than the deadline)")
             }
             let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds) * 1_000_000_000

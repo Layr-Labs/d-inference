@@ -20,7 +20,7 @@ import Foundation
           darkbloom-cluster-pair-check request --output NEW-REQUEST.json --chunk-size N --output-count N
               (--model-dir /ABS/MODEL (--user-text-file FILE | --raw-text-file FILE) [--prompt-tokens N]
                | --synthetic-tokens N [--seed N] | --token-ids-file FILE)
-              [--stop-token-ids A,B] [--request-id UUID] [--model-id registered_qwen35_9b|registered_qwen38_27b]
+              [--stop-token-ids A,B] [--request-id UUID] [--model-id REGISTERED_MODEL_ID (default: the tokenizer's model)]
           darkbloom-cluster-pair-check run --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --remote-ssh DESTINATION [--ssh-option Key=Value]...
               --local-worker /ABS/WORKER --remote-worker /ABS/WORKER

@@ -270,7 +270,15 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(large.profileID, "registered_qwen38_27b_greedy_generation_v1")
         XCTAssertEqual(large.supportedCuts, Array(stride(from: 4, through: 60, by: 4)))
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
-        XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID), ["registered_qwen35_9b", "registered_qwen38_27b"])
+        XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
+                       ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b"])
+        // A model with routed experts adds its route to the three common variables; the others add nothing.
+        XCTAssertEqual(small.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
+        XCTAssertEqual(large.arithmeticEnvironment.map(\.1), PairConfiguration.arithmeticEnvironment.map(\.1))
+        let routed = try make("registered_qwen35_35b_a3b")
+        XCTAssertEqual(routed.supportedCuts, Array(stride(from: 4, through: 36, by: 4)))
+        XCTAssertEqual(routed.arithmeticEnvironment.map { "\($0.0)=\($0.1)" }, ["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128",
+            "DARKBLOOM_BF16_WEIGHTS=1", "MLX_ENABLE_TF32=1", "MLX_GATHER_QMM_EXPERT_SLICES=trust"])
         for unknown in ["", "registered_qwen4", "EigenLabs/Qwen3.8-27B-4bit-mtp", "registered_qwen38_27b "] {
             XCTAssertThrowsError(try make(unknown), unknown)
         }
@@ -298,6 +306,15 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertTrue(try pair(large, cut: 16).launchScript(1, artifactSHA256: String(repeating: "a", count: 64),
             configurationSHA256: String(repeating: "b", count: 64), workerSHA256: String(repeating: "c", count: 64))
             .contains("'--model-id' 'registered_qwen38_27b'"))
+        // Only the routed-expert model's ranks are launched with the expert route set.
+        func launch(_ request: QualificationRequest, cut: Int) throws -> String {
+            try pair(request, cut: cut).launchScript(0, artifactSHA256: String(repeating: "a", count: 64),
+                configurationSHA256: String(repeating: "b", count: 64), workerSHA256: String(repeating: "c", count: 64))
+        }
+        XCTAssertTrue(try launch(routed, cut: 20).contains("MLX_ENABLE_TF32='1' MLX_GATHER_QMM_EXPERT_SLICES='trust' JACCL_RANK='0'"))
+        XCTAssertFalse(try launch(large, cut: 16).contains("MLX_GATHER_QMM_EXPERT_SLICES"))
+        XCTAssertFalse(try launch(small, cut: 8).contains("MLX_GATHER_QMM_EXPERT_SLICES"))
+        XCTAssertThrowsError(try pair(routed, cut: 40)); XCTAssertThrowsError(try pair(routed, cut: 6))
         for cut in [0, 2, 6, 18, 62, 64] { XCTAssertThrowsError(try pair(large, cut: cut), "27B cut \(cut)") }
         for cut in [4, 8, 12, 16] { XCTAssertNoThrow(try pair(small, cut: cut)) }
         for cut in [20, 32, 60] { XCTAssertThrowsError(try pair(small, cut: cut), "9B cut \(cut)") }

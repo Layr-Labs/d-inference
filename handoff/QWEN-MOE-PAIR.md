@@ -1,6 +1,6 @@
 # The two Qwen mixture-of-experts models as distributed models
 
-> Last updated: 2026-10-09 17:50Z (branch `work/qwen-moe`, base `4433b35e5`)
+> Last updated: 2026-10-09 18:02Z (branch `work/qwen-moe`, base `4433b35e5`)
 
 "Mac A" is the M3 Ultra (256 GB), "Mac B" the M5 Max (128 GB). Raw logs,
 reports and the scripts that produced them are outside the repository in the
@@ -16,14 +16,16 @@ the provider refuses both by construction (see "Provider and coordinator").
 |---|---|---|
 | Artifact verified against its catalog manifest | **Done** on both Macs (14 of 14) | **Done** on Mac A (13 of 13); Mac B not yet |
 | Registration: catalog row, pins, admission, ceilings, capability, worker arguments | **Done**, unit level, from the artifact's real `config.json` and manifest | **Done**, same |
-| A. Stage load and release at the cut that runs (12) | Mac B **passed** on an earlier build; Mac A and the final build queued | Not run |
-| B. Staged reference on one Mac, twice, identical | Not run (queued) | Not run |
-| C. Two workers on one Mac over the local test socket, equal to B | Not run (queued) | Not run |
-| D. Across the cable in every mode, equal to B, one rank ended mid-decode | Not run (queued behind C) | Not run |
-| Other cuts, longer prompts, each Mac alone, product comparison | Not run | Not run |
+| A. Stage load and release at the cut that runs (12) | **Passed** on both Macs, both ranks | **Passed** on Mac B, both ranks; Mac A not run |
+| B. Staged reference on one Mac, twice, identical | **Passed** on Mac A (`exact`) | Not run |
+| C. Two workers on one Mac over the local test socket, equal to B | **Passed** on Mac A, pipeline (`exact`, ranks agree) | Not run |
+| D. Across the cable in every mode | **Ran**: all three modes completed, ranks agree, the modes agree with each other `exact`. **Against B: `divergedAtNearTie`** (an exact tie in the oracle at output index 10, broken the other way on the pair) | Not run |
+| D. One rank ended with SIGTERM mid-decode | **Passed**: the other rank exited by itself, nothing left on either Mac | Not run |
+| Other cuts, longer prompts, each Mac alone, Mac B's reference, product comparison | Not run | Not run |
 
-A local-socket pass is not a hardware pass. No pair figure exists yet for
-either model; `STATUS.md` in the evidence folder supersedes this table.
+A local-socket pass is not a hardware pass; D is one. Everything above is one
+request (4,096 prompt tokens, 64 outputs) at one cut. `STATUS.md` in the
+evidence folder has the file behind each cell and supersedes this table.
 
 ## Artifacts
 
@@ -140,16 +142,58 @@ third of the 27B's, because there are two key/value heads.
 
 ## Results
 
-See the evidence folder's `STATUS.md` for the state of each step and the file
-that shows it. Measured so far:
+Build r3 (commit `5cfdaed4e`, worker `0cc4c0e71427…`, the same bytes on both
+Macs), cut 12, 2026-10-09 17:52Z to 18:00Z. The evidence folder's `STATUS.md`
+names the file behind each line.
 
-- Stage load and release on Mac B at cut 12 (earlier build, same load path):
-  rank 0, 12 layers, 5.554 GiB, 10.7 s; rank 1, 28 layers, 12.605 GiB, 14.9 s;
-  a few kB active after release, allocator cache 0, equal storage commitments
-  on both ranks, verified aggregate `95811153b3bb…`.
-- The first real load (cut 20, Mac B) was refused before any tensor was read,
-  by the count comparison fixed in `4bd43edae`.
-- The host memory gate has refused or stopped no load.
+**Stage loads.** Rank 0 holds 12 layers (5.554 GiB), rank 1 holds 28 (12.605
+GiB). Load: 16.1 s and 21.5 s on Mac A, 10.8 s and 14.9 s on Mac B, including
+the hash of the whole artifact. A few kB active after release, allocator
+cache 0, equal storage commitments on both Macs. For the Qwen3.6 model on
+Mac B: 5.557 and 12.612 GiB, 8.1 s and 9.3 s; that load reads its shards
+through the unsigned-byte header scope.
+
+**One Mac.** Mac A's staged reference of the request, twice: `exact`. Both
+stages in one process hold 18.16 GiB (peak 19.27 GiB). Two workers over the
+local test socket, pipeline: `exact` against the reference, ranks agree. So
+the layer split of a routed-expert model is exact on one chip.
+
+**The pair** (rank 0 on Mac A, rank 1 on Mac B, `one_chunk_lookahead_v1`).
+All three generation modes completed, the ranks agree on the tokens in each,
+and the modes agree with each other bit for bit (tokens, final row, all 90
+state digests).
+
+Against Mac A's own reference the verdict is `divergedAtNearTie` in every
+mode, identically: the first ten output tokens are equal; at index 10 the
+reference chose token 9117 and the pair 17415, and in the reference those two
+have the same logit (28.875, margin 0.0). Final-row logits differ by at most
+0.5. The pair's stage 1 runs on the other chip, and the 27B programme accepts
+exactly this verdict across chips, but "tokens equal the oracle" was the bar
+here and it was not met. Mac B's own reference of this request has not been
+run; it is the next step and tells whether Mac B alone breaks the tie the
+same way.
+
+| Mode | First token | Prefill | Decode |
+|---|---:|---:|---:|
+| Pipeline | 0.921 s | 4,446 tok/s | 67.7 tok/s |
+| Compact pipeline | 0.919 s | 4,455 tok/s | 72.2 tok/s |
+| Phase split | 0.937 s | 4,371 tok/s | 86.0 tok/s |
+
+4,096 prompt tokens, 64 outputs, four requests per mode with the last three
+quoted. The compile lanes were not held, so other workers' compiles ran
+beside these requests: indicative, not a benchmark. The phase split's
+hand-off is 44,482,572 bytes in 24 segments and takes 23 to 25 ms. No
+single-Mac run on the same driver clock exists yet, so no speed-up is
+claimed.
+
+**Fault.** With the 8,192-token request decoding in the pipeline, rank 1 on
+Mac B was ended with SIGTERM 0.3 s after the first token (24 of 128 tokens
+committed). Rank 0 exited by itself with status 1; the driver sent no signal;
+no worker process was left on either Mac.
+
+**Refusals and failures.** The first real load (an earlier build, cut 20,
+Mac B) was refused before any tensor was read, by the count comparison fixed
+in `4bd43edae`. The host memory gate has refused or stopped no load.
 
 ## Provider and coordinator: what stands in the way
 
@@ -161,7 +205,7 @@ lines at this branch's head):
 |---|---|
 | `Inference/Distributed/Installed/DistributedInstalledPlan.swift:25` | An installed plan requires the dense arithmetic policy ID by literal; a routed-expert capability is refused |
 | `Inference/Distributed/Installed/DistributedInstalledPlan.swift:68` | The worker environment sets the three dense variables only; a routed-expert rank would be refused by its own admission without `MLX_GATHER_QMM_EXPERT_SLICES=trust` |
-| `Inference/Distributed/Installed/DistributedInstalledPairServingTable.swift:110` | The pair-serving table has rows for the 9B and the 27B; every other model is refused with `noRow`. A row needs measured time budgets, which need step D |
+| `Inference/Distributed/Installed/DistributedInstalledPairServingTable.swift:110` | The pair-serving table has rows for the 9B and the 27B; every other model is refused with `noRow`. A row needs measured time budgets from a quiet pair, and a decision on the near-tie verdict above |
 | `Server/Distributed/DistributedLocalServer+HTTP.swift:71` | The distributed server has no vision gate; the Qwen3.6 artifact's catalog entry is a vision model, and only its text path exists in the runtime |
 | Catalog and coordinator | The Qwen3.6 catalog ID promises vision and an MTP head. A pair would serve text with MTP off: that needs its own catalog statement, not a renamed model. Coordinator code is in another repository and was not touched |
 | Manifest pin | See "Artifacts": catalog-endpoint manifest bytes against CDN `manifest.json` |
@@ -176,7 +220,8 @@ form of the phase-split one.
 
 ## Not done
 
-- Everything marked "Not run" in the status table.
+- Everything marked "Not run" in the status table, first of all Mac B's
+  staged reference and the Qwen3.6 model's B, C and D.
 - `swift test` of the two packages at the final commit (the check runners
   that need no model pass; the suites that touch Metal need the GPU lane).
 - The changes on this branch have not been independently reviewed.

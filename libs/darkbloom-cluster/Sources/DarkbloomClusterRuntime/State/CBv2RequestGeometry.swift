@@ -16,7 +16,7 @@ struct CBv2RequestGeometry {
 
     init(model: any LanguageModel, family: InferenceModelFamily, feedForwardKind: String,
          layerCount: Int, vocabularySize: Int, configurationData: Data, maximumTokens: Int) throws {
-        guard family == .qwen35, feedForwardKind == "dense",
+        guard family == .qwen35, feedForwardKind == QwenRoutedExpertStageModel.feedForwardKind(model),
               layerCount > 0, vocabularySize > 0,
               vocabularySize <= Int(Int32.max), maximumTokens > 0,
               model is any CBv2RecurrentLanguageModelPrefillForwardable,
@@ -47,7 +47,7 @@ struct CBv2RequestGeometry {
         // Linear subclasses are supported; replacing the whole MLP is not.
         let mlps = model.namedModules().filter { $0.0.hasSuffix(".mlp") }
         guard mlps.count == layerCount,
-              mlps.allSatisfy({ String(describing: type(of: $0.1)) == "Qwen3NextMLP" }) else {
+              mlps.allSatisfy({ String(describing: type(of: $0.1)) == QwenRoutedExpertStageModel.feedForwardTypeName(model) }) else {
             throw ProbeError("cbv2-contiguous requires the pinned dense MLP topology; whole-MLP substitutes are unsupported")
         }
         guard !kinds.isEmpty, kinds.count == caches.count,

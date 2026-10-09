@@ -90,7 +90,10 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource,
     }
     guard loadedBytes == inventory.summary.loadedTensorBytes,
           readAccounting.map({ $0.selectedBytes == loadedBytes }) ?? true,
-          largestHostBytes == (inventory.active.map(\.byteCount).max() ?? 0),
+          // A tensor composed of two stored halves is read one half at a time.
+          largestHostBytes == (inventory.active.map {
+              $0.byteCount / QwenRoutedExpertStageMetadata.sourcePartCount(canonicalName: $0.sourceName)
+          }.max() ?? 0),
           modelParameterLayout(model) == inventory.summary.parameterLayoutSHA256,
           qwenStageLayout(activeLayout) == inventory.summary.activeParameterLayoutSHA256,
           let kvTypes = (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,

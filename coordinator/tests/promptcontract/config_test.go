@@ -39,3 +39,15 @@ func TestSupervisorConfigRejectsOneStrikeHealthRestart(t *testing.T) {
 		t.Fatal("one-strike health restart threshold was accepted")
 	}
 }
+
+func TestSupervisorConfigSupportsLargerProvisioningCatalog(t *testing.T) {
+	config := production.ReadSupervisorConfig()
+	config.Enabled = true
+	config.BinaryPath = "/owned/sidecar"
+	config.SocketPath = "/owned/sidecar.sock"
+	config.ArtifactRoot = "/owned/artifacts"
+	config.ProvisionMaxModels = 129
+	if err := config.Check(); err != nil {
+		t.Fatalf("supported129-model configuration rejected: %v", err)
+	}
+}

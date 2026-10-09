@@ -24,6 +24,7 @@ func (s *Manager,
 	providerID string,
 	provider *registry.Provider,
 	nodeKeyB64, seKey, token string,
+	generation uint64,
 ) bool {
 	if !s.transport.MatchesIdentity(provider, nodeKeyB64, token) {
 		return false
@@ -61,7 +62,11 @@ func (s *Manager,
 		return false
 	}
 	resumeDone := s.codeAttestThrottle.RecordResumeChallenge(
+		generation,
 		nonce, providerID, nodeKeyB64, seKey, token)
+	if resumeDone == nil {
+		return false
+	}
 	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := s.transport.Send(sendCtx, provider, providerID, data); err != nil {

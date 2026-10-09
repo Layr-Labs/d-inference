@@ -4,6 +4,7 @@ import base64
 import copy
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -643,7 +644,7 @@ class RunnerTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(Path(__file__).with_name("threat-model-review.py"))],
                                 env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
-        self.assertIn("non-blocking", summary.read_text())
+        self.assertIn("no complete review was produced", summary.read_text())
 
 
 class TransportTests(unittest.TestCase):
@@ -736,7 +737,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("head.sha", source)
         self.assertNotIn("head.ref", source)
         self.assertIn("persist-credentials: false", source)
-        self.assertIn("continue-on-error: true", source)
+        self.assertIn("continue-on-error: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE != 'true' }}", source)
         self.assertIn("timeout-minutes: 20", source)
         self.assertIn("pull-requests: write", source)
         self.assertNotIn("THREAT_REVIEW_ADVISORY_TOKEN", source)
@@ -745,7 +746,13 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("THREAT_REVIEW_ENABLED", source)
         self.assertNotIn("THREAT_REVIEW_MODELS:", source)
         self.assertIn("run: python3 .github/scripts/threat-model-review.py", source)
-        self.assertNotIn("pip install", source)
+        install = "python3 -m pip install --require-hashes -r .github/scripts/requirements-bedrock.txt"
+        self.assertEqual([line.strip() for line in source.splitlines() if "pip install" in line], ["run: " + install])
+        self.assertLess(source.index("Pin manual review to its exact trusted base"), source.index(install))
+        self.assertLess(source.index(install), source.index("Obtain short-lived Bedrock credentials"))
+        dependencies = Path(__file__).with_name("requirements-bedrock.txt").read_text().splitlines()
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9_]+==[0-9A-Za-z.]+ --hash=sha256:[a-f0-9]{64}", line)
+                            for line in dependencies if line and not line.startswith("#")))
         self.assertNotIn("npm", source)
 
 

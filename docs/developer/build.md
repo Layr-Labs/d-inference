@@ -1,10 +1,30 @@
 # Build
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
+
+Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
+signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
+for `scripts/restack-after-squash.py` checks, signed ancestry updates, and
+post-push verification. Branch updates still require the affected CI gates.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
-operator’s live status or recovery evidence (`scripts/run-provider-tests.sh`).
+operator's live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+The Autopilot E2E harness creates canonical inventory records and persists live
+desired mode only for its running, authenticated, suite-owned provider handles
+before starting control (`e2e/testbed/autopilot_cohort.go`,
+`bindAutopilotFixtureMachines`). It uses the same isolated test store as the
+coordinator, not an environment allowlist or arbitrary UUID insertion.
+These isolated trusted inputs replace Apple attestation only in the testbed;
+they do not disable the production cohort gate or the real provider's live-lease
+acknowledgement. See [cohort validation](test.md#autopilot-machine-cohorts).
+
+SSD epoch lookup regressions use the current provider test product and its
+normal source-matched resources. Filesystem permission cases require a non-root
+test user; they change permissions only on each fixture's temporary model root.
+The connected retirement snapshot oracle has an ordinary Go test and does not
+require a model download or running provider.
 
 CI and Integration Tests cancel an older run only when a newer revision of the
 same pull request starts in that workflow. Concurrency groups include the
@@ -26,6 +46,8 @@ Homebrew and `zstd` are installed before any integration cache restore, includin
 Go's cache. Restore and save must use the same compression format, which is part
 of the Actions cache version; installing it between those steps produces misses
 even when the visible cache key matches.
+For offline validation of integration cache wiring and E2E commands with or
+without coverage instrumentation, run the [workflow regression tests](test.md#component-ci-routing).
 The test-bundle staging helper uses APFS-capable clone copies on Darwin and ordinary
 copies on other platforms, so its offline Linux tests exercise the same atomic
 copy, byte-comparison and rename path (`scripts/stage-test-metallib.sh`).
@@ -106,6 +128,13 @@ owners. `go build ./coordinator/...` builds production code and ordinary
 adds checked shard discovery; coverage explicitly instruments the imported
 production packages, excluding all test helpers. See the
 [test-boundary map](test.md#2-coordinator-go) for focused commands.
+The Autopilot reward worker and migration use the ordinary coordinator build;
+the saved-consent wire mirror requires rebuilding the Swift provider too.
+Use [reward test selectors](test.md#autopilot-rewards) for both backends, HTTP,
+capture and wire coverage. Building does not enable payments, fund the pool,
+publish the provider or activate a live cohort.
+The account API contract suite uses the same `testdb.Main` database isolation
+as store tests for [committed-erasure cleanup checks](test.md#account-erasure-regressions).
 Routing snapshot-age regressions run against the ordinary coordinator build;
 the [test guide](test.md#2-coordinator-go) includes a race-enabled repetition
 command using the existing reservation-preparation fixture.
@@ -216,6 +245,36 @@ Provider signing, R2 staging and publication run in separate jobs in `.github/wo
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
+## Bedrock review workflow
+
+The conditional gate uses a separate organization-membership read token.
+`python3 .github/scripts/test-threat-bedrock.py` checks active member identity,
+outsiders, bots, pending membership, repeat lookups and the independent human
+review path. The budget suite checks that local validator reasons remain visible
+without exposing raw provider output. See [review configuration](threat-model-review.md).
+
+The optional Bedrock reviewer installs hash-locked dependencies from
+`.github/scripts/requirements-bedrock.txt` in its trusted workflow.
+Review, preflight and smoke checkouts fetch only the trusted scanner scripts and
+threat definitions, avoiding unrelated repository blobs before verification.
+`python3 .github/scripts/test-threat-bedrock.py` covers explicit provider fallback
+and conditional merge clearance without cloud calls. Live validation and activation
+are separate: see [the rollout runbook](../operations/threat-review-rollout.md).
+
+The threat-review preflight checks the configured OpenRouter budget mode and
+remaining normal-attempt capacity as well as writer access and funding. Offline
+budget regressions cover migration without resetting charges, daily caps,
+unknown reservations and exhausted-pilot detection; see
+[review configuration](threat-model-review.md#openrouter-budget-behavior-and-recovery).
+
+## Standalone SSD accounting check
+
+`bash scripts/test-ssd-write-budget.sh` compiles only the production
+`SSDWriteBudget.swift` and `SSDWriteRateLimiter.swift` sources, then links their
+Swift Testing suites with Xcode's testing framework. It needs no MLX submodule
+build or GPU work and removes its temporary build output on exit. See the
+[SSD endurance tests](test.md#ssd-write-endurance) for scope and limitations.
 
 ## Nightly Linear workflow
 
@@ -368,7 +427,7 @@ jobs queued behind a provider quota do not shorten the critical path. See
 
   | Tool | Pin | Used by |
   |---|---|---|
-  | `go` | `1.25.7` | coordinator, e2e (matches `go 1.25.7` in [`go.mod`](../../go.mod)) |
+  | `go` | `1.26.8` | coordinator, e2e (matches the container builder and satisfies the `1.26.0` minimum in [`go.mod`](../../go.mod)) |
   | `rust` | `1.88.0` | `coordinator/promptsidecar` (matches `rust-version = "1.88"` in `coordinator/promptsidecar/Cargo.toml` and the `rust:1.88.0-alpine` builder in `coordinator/Dockerfile`) |
   | `node` | `22` | `console-ui`, `admin-ui` |
   | `swift` | `6.3` | `provider-swift` (the local `libs/mlx-swift` package declares `swift-tools-version: 6.3`; `provider-swift/Package.swift` itself is `6.1`) |
@@ -391,18 +450,36 @@ The provider consumes the local packages through immutable Git submodule pins:
 
 | Package | Merged revision | Included update |
 |---|---|---|
-| `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` | [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170): completed prefill receipts, confirmed-token timing and per-engine mixed-prefill policy |
+| `libs/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | `gather_mm` / `gather_qmm` row-tile backport |
+| `libs/mlx-swift/Source/Cmlx/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | Same merged MLX source used by Cmlx and the provider metallib |
+| `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources; retains [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) exact constant reuse for eligible Bonsai packed projections |
+| `libs/mlx-swift-lm` | `3fd4944c3b3ee5cb45c5cbfac8805876332d3a29` | Includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
 
 Keep both local packages in the provider build. The SDK's standalone package
-manifest can still reference a pre-merge Swift review revision; the nested-test
+manifest pins Swift `0f4fe403bef6899e8a72882bc6d4036a7a62ae31`, not the provider's
+current Swift gitlink; the nested-test
 procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
-Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
+Swift gitlink. Keep `libs/mlx` and `libs/mlx-swift/Source/Cmlx/mlx` on the same
+merged MLX commit for the `gather_mm` / `gather_qmm` row-tile backport. The Swift
+pin includes kernel sources regenerated from that nested MLX revision, including
+the signed integer floor-division corrections from [MLX PR #32](https://github.com/Layr-Labs/mlx/pull/32)
+in the generated binary-operations and CPU preamble sources.
+Build `mlx.metallib` from the nested source with
+`scripts/fetch-metallib.sh`; changing only the top-level MLX gitlink does not
+change provider bytes.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
-The pin uses merged SDK `main` history. Its production libraries and package
-manifest match the reviewed head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`;
-subsequent merged changes improve test reliability, fork CI and documentation.
+The SDK's acceptance default remains exact; the provider's eligible sampled
+target-prefix MTP requests default to typical acceptance, while greedy requests
+remain exact. See [the serving policy](../architecture/inference.md#multi-token-prediction).
+Neither that policy nor the newer native retirement and MLX kernels are
+qualified by the original demanded-prefix full-model results. The
+[dependency validation procedure](test.md#merged-sdk-pin-validation) separates
+required tiny-fixture regressions from fresh full-model performance qualification.
+The earlier SDK [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170)
+pin `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` had production libraries and a
+package manifest matching review head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`.
+That historical comparison is not validation of the current SDK pin above.
 
 ### Native Flash-Next candidate
 
@@ -515,8 +592,21 @@ types to prepare canonical catalog entries before a physical run. The helper wai
 five-minute prelaunch bound for GPU ≤42°C and load1 ≤4, under the same control
 lease used after launch. See the [test procedure](test.md#connected-coordinatorprovider-http-cache-gate).
 
+Rebuild the E2E test executable after shared sidecar lifecycle or release-default
+fixture changes. `startExactCacheSidecar` and the restart fixtures install the
+API preload controller before starting it, matching coordinator startup. The
+CPU-only API-readiness regression in the linked procedure uses a verified
+Rust sidecar and immutable prompt artifacts; compiling it does not execute the
+provider/API cache smoke or qualify model restoration.
+
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
+Documentation-impact checks also cover the contact-export and legacy-cohort
+store owners; see the [soft-delete reference](../reference/soft-delete.md#documentation-coverage).
+
+The [idle-provider routing regressions](test.md#idle-provider-routing-recovery)
+run without a Swift provider binary or downloaded model. Use those focused
+checks before `make coordinator-test` when changing exploration or rate ranking.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
@@ -733,6 +823,17 @@ uses the normal slot factory after a fresh pre/post-load weight-hash check;
 The baseline conditional and resident reproduction use the direct production
 engine factory (`BenchmarkLoader.swift`).
 
+The candidate also accepts `--mtp-acceptance exact|typical` after its positional
+arguments; historical baseline builds reject an explicit flag. Omission keeps
+`exact`. Rebuild against the provider SPI that exposes
+`EngineV2Factory.makeBenchmarkSession(mtpAcceptanceConfig:)`, a `String` argument
+defaulting to `"exact"`, in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSessionConstruction.swift`.
+The candidate SSD route forwards the flag through that normal slot factory;
+the resident reproduction sets `CBv2MTPConfig.acceptance` directly. Neither route
+changes model/assistant verification or memory gates. The flag does not enable
+MTP and offers no delta override. See [sampled acceptance validation](test.md#sampled-mtp-acceptance-controls).
+
 The paired persistent-test namespace/access-group options require a candidate
 build containing `SSDPersistentTestKeyNamespace`; historical builds reject them.
 The same `RADIX_CANDIDATE_BUILD=1` define also enables the namespace test target.
@@ -860,6 +961,13 @@ require a server runtime rather than a static export. See the
 
 ### 9. Coordinator container image
 
+Run `python3 scripts/check-go-toolchain.py` before building. Release Integrity
+runs the same guard and its regression suite: `mise.toml` and the digest-pinned
+Go builder must declare the same exact patch version, at least the `go.mod`
+minimum. Do not downgrade dependencies or rely on automatic toolchain downloads
+to compensate for an older builder. The guard checks declarations, not registry
+contents; verify the image digest and platform when updating its tag.
+
 The production image is built by [`coordinator/Dockerfile`](../../coordinator/Dockerfile)
 from the **repo root** (it copies both `coordinator/` and the sidecar crate):
 
@@ -872,7 +980,7 @@ docker build \
 ```
 
 Stages: `prompt-sidecar-builder` (`rust:1.88.0-alpine`, musl static build) →
-`builder` (`golang:1.25-alpine`, `-ldflags` version injection) → final image
+`builder` (`golang:1.26.8-alpine`, `-ldflags` version injection) → final image
 `FROM eigengajesh/d-inference-base:v1-amd64` with `/usr/local/bin/coordinator`
 and `/usr/local/bin/promptsidecar`, OCI labels
 `org.opencontainers.image.{version,revision,created}`, `EXPOSE 8080`, entrypoint
@@ -883,8 +991,12 @@ and `/usr/local/bin/promptsidecar`, OCI labels
 ### 10. Use the database-only coordinator command
 
 The normal coordinator build also supports `coordinator --migrate-only`. It
-requires `EIGENINFERENCE_DATABASE_URL`, runs store migrations, and exits without
-starting the server or seeding an admin key. Container execution must override
+requires `EIGENINFERENCE_DATABASE_URL`, validates store configuration rather than
+full application/serving prerequisites, and exits without starting the server or
+seeding an admin key. `EIGENINFERENCE_MIGRATION_TIMEOUT` bounds the full command;
+`EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` independently bounds concurrent
+build lock waits (see [configuration](../reference/configuration.md#database-store-and-persistent-disk)).
+Container execution must override
 the default MicroMDM entrypoint script; see the
 [schema migration runbook](../operations/schema-migration.md#4-apply-the-migrations).
 
@@ -1020,6 +1132,26 @@ one `<Package>PackageTests.xctest`. CI uses the native build system through
 Build, which makes one `<Target>.xctest` for each test target. `make provider-test`
 and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
+Use `scripts/run-provider-tests.sh` after staging rather than replacing it with
+one unfiltered test process. Its mandatory CPU checkpoint gates own fresh MLX
+compile-cache history; the [test guide](test.md) describes their exact byte/state
+checks and process-isolation controls.
+Live complete-checkpoint tests must also call `bindRuntimeMetallibForMLX`
+before their first MLX diagnostic or model load. Colocation alone does not
+establish the runtime digest required by the cache identity. The model-prefix
+fixture performs this binding explicitly; see
+[model prefix qualification](test.md#model-prefix-latency-and-throughput-qualification-live).
+Required demanded-checkpoint continuation CI uses the same staged SDK test
+image and `scripts/run-nested-suite.sh` as the existing native-retention and
+short-partition gates. Its seven scheduler/tiny-fixture methods must execute without optional
+model/GPU gates and with the wrapper's nonempty/no-skip checks. The provider's
+four adjacent-fork host methods are built with the ordinary ProviderCoreTests
+suite; eight independent pure collator controls remain distinct qualification
+evidence. A filtered suite's exit code alone does not certify execution. New
+same-donor adjacent native runs require a newly frozen source/binary/spec cut;
+prior four-role benchmark reports cannot qualify the added frontier. See
+[the model-prefix test contract](test.md#model-prefix-latency-and-throughput-qualification-live).
+
 Staging prefers `cp -c` on Darwin to retain APFS cloning, falling back to ordinary
 `cp` if cloning fails or is unsupported. Other hosts, including Linux fixture
 runners, use ordinary `cp` directly. Copy or byte-verification failures leave
@@ -1054,3 +1186,11 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Telemetry archive worker
+
+The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. The same worker supports isolated accounting archives and indexed ID batches; deploy each archive job with its own destination permissions. See [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+`telemetry-archive analytics-preview` compiles catalog-pinned accounting analytics SQL locally; `--execute` runs capped SELECT-only BigQuery checks. `query-submit`, `query-status` and `query-cancel` provide bounded asynchronous custom queries; see [query operations](../operations/history-queries.md). These commands require no coordinator build or deploy. The [operational/history design](../design/operational-history-retention.md) defines the broader storage boundary.
+
+The opt-in analytics reader is built with the coordinator; its private `sync-analytics-snapshot` adapter is part of the Python worker. Neither command enables a producer or schedule. See [analytics snapshots](../operations/analytics-snapshots.md).

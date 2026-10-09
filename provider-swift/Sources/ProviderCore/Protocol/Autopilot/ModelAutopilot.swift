@@ -16,6 +16,8 @@ public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
     public var lastReleaseMs: Int64?
     public var lastLoadMs: Int64?
     public var enabled: Bool
+    /// Saved consent, independent of readiness or control; nil for older snapshots.
+    public var consentEnabled: Bool?
     public var cachedOnly: Bool = true
     public var minDwellSeconds: Int
     public var pinnedModels: [String]
@@ -27,11 +29,12 @@ public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
     public var lastCommandId: String?
     public var lastCommandStatus: ModelAutopilotStatus.State?
 
-    public init(enabled: Bool, minDwellSeconds: Int = 1_800, pinnedModels: [String] = [],
+    public init(enabled: Bool, consentEnabled: Bool? = nil, minDwellSeconds: Int = 1_800, pinnedModels: [String] = [],
                 maxModelSlots: Int = 1, residentModels: [ModelAutopilotResident] = [],
                 freeForLoadNoEvictGb: Double? = nil, activeCommandId: String? = nil,
                 lastCommandId: String? = nil, lastCommandStatus: ModelAutopilotStatus.State? = nil) {
         self.enabled = enabled
+        self.consentEnabled = consentEnabled
         self.minDwellSeconds = minDwellSeconds
         self.pinnedModels = pinnedModels
         self.maxModelSlots = maxModelSlots
@@ -49,6 +52,7 @@ public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
         case loadHistory = "load_history"
         case lastElapsedMs = "last_elapsed_ms", lastReleaseMs = "last_release_ms", lastLoadMs = "last_load_ms"
         case protocolVersion = "protocol", enabled
+        case consentEnabled = "consent_enabled"
         case cachedOnly = "cached_only", minDwellSeconds = "min_dwell_seconds"
         case pinnedModels = "pinned_models", maxModelSlots = "max_model_slots"
         case residentModels = "resident_models", freeForLoadNoEvictGb = "free_for_load_no_evict_gb"

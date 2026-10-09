@@ -13,15 +13,16 @@ import (
 // workers and callback handlers share this single private ownership lock.
 // Never hold it during durable store I/O. Configuration is immutable.
 type Queue struct {
-	mu            sync.Mutex
-	config        Config
-	jobs          map[string]*scheduledJob
-	bindings      map[string]*Binding
-	generation    atomic.Uint64
-	byUDID        map[string]string
-	active        map[store.VerificationTaskKind]int
-	activeUrgent  int
-	dueScanOffset int
+	mu                sync.Mutex
+	config            Config
+	jobs              map[string]*scheduledJob
+	bindings          map[string]*Binding
+	generation        atomic.Uint64
+	erasureGeneration uint64
+	byUDID            map[string]string
+	active            map[store.VerificationTaskKind]int
+	activeUrgent      int
+	dueScanOffset     int
 }
 
 func NewQueue(cfg Config) *Queue {

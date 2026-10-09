@@ -1,0 +1,42 @@
+{
+  "status": "stopped_safety_gate",
+  "startedUTC": "2026-10-03T23:45:40.477401+00:00",
+  "endedUTC": "2026-10-03T23:58:47.912779+00:00",
+  "sourceAndOrchestrationBindingUnchanged": true,
+  "requestedArms": 30,
+  "startedArms": 12,
+  "completeReports": 11,
+  "reportedMeasuredRequests": 44,
+  "reportedOutputIDs": 5632,
+  "cohorts": [
+    {
+      "id": "short-bonsai",
+      "status": "pass"
+    },
+    {
+      "id": "short-qwen35-moe",
+      "status": "failed_safety_gate"
+    },
+    {
+      "id": "short-qwen36-moe",
+      "status": "not_started"
+    },
+    {
+      "id": "short-qwen9",
+      "status": "not_started"
+    },
+    {
+      "id": "long-qwen9",
+      "status": "not_started"
+    }
+  ],
+  "stopReason": "inner_driver_safety_stop: unexpected_direct_runner_descendants in Qwen3.5MoE block2 candidate",
+  "validBonsaiSixArmComparisonPreserved": true,
+  "qwen35FiveCompleteReportsUnqualified": true,
+  "unstartedArms": 18,
+  "limits": [
+    "Three planned later cohorts are unstarted, not failed native model tests.",
+    "Source/bundle/orchestration unchanged and tracked owned processes quiescent; no inference continuation bypasses the guard.",
+    "Any retry requires separate fresh receipt/result directories and new frozen provenance; original records remain immutable."
+  ]
+}

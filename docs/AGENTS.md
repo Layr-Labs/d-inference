@@ -176,6 +176,7 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
 | Store schema / migration | `architecture/schema-lifecycle.md` (versions, kinds, locks); `architecture/storage.md` (tables); `operations/schema-migration.md` if the change affects the production procedure or rollback rules |
+| A read or write of a soft-delete table (`users`, `api_keys`, `providers`, `provider_tokens`) | `reference/soft-delete.md` |
 | sqlc config, query file or generated type (`coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`) | `reference/sqlc-type-mapping.md` for a new type or override; `developer/sqlc.md` for a workflow or convention change |
 | Coordinator package ownership, application assembly, or backend boundaries | `developer/navigation.md`, `architecture/components/coordinator.md`; retain the relevant API, configuration, storage, and telemetry rows for behavioral surfaces |
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |

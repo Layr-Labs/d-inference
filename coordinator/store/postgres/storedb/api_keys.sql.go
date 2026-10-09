@@ -40,7 +40,7 @@ func (q *Queries) DeleteAPIKeyByID(ctx context.Context, arg DeleteAPIKeyByIDPara
 }
 
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
-SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only FROM api_keys WHERE key_hash = $1
+SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only, deleted_at FROM api_keys WHERE key_hash = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error) {
@@ -63,12 +63,13 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 		&i.ExpiresAt,
 		&i.LastUsedAt,
 		&i.SelfRouteOnly,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getAPIKeyByID = `-- name: GetAPIKeyByID :one
-SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only FROM api_keys WHERE id = $1 AND owner_account_id = $2
+SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only, deleted_at FROM api_keys WHERE id = $1 AND owner_account_id = $2 AND deleted_at IS NULL
 `
 
 type GetAPIKeyByIDParams struct {
@@ -96,12 +97,13 @@ func (q *Queries) GetAPIKeyByID(ctx context.Context, arg GetAPIKeyByIDParams) (A
 		&i.ExpiresAt,
 		&i.LastUsedAt,
 		&i.SelfRouteOnly,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getAPIKeyByIDForUpdate = `-- name: GetAPIKeyByIDForUpdate :one
-SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only FROM api_keys WHERE id = $1 AND owner_account_id = $2 FOR UPDATE
+SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only, deleted_at FROM api_keys WHERE id = $1 AND owner_account_id = $2 AND deleted_at IS NULL FOR UPDATE
 `
 
 type GetAPIKeyByIDForUpdateParams struct {
@@ -129,12 +131,13 @@ func (q *Queries) GetAPIKeyByIDForUpdate(ctx context.Context, arg GetAPIKeyByIDF
 		&i.ExpiresAt,
 		&i.LastUsedAt,
 		&i.SelfRouteOnly,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getActiveKeyAccount = `-- name: GetActiveKeyAccount :one
-SELECT owner_account_id FROM api_keys WHERE key_hash = $1 AND active = TRUE
+SELECT owner_account_id FROM api_keys WHERE key_hash = $1 AND active = TRUE AND deleted_at IS NULL
 `
 
 func (q *Queries) GetActiveKeyAccount(ctx context.Context, keyHash string) (string, error) {
@@ -258,7 +261,7 @@ func (q *Queries) KeySpendSince(ctx context.Context, arg KeySpendSinceParams) (i
 }
 
 const listAPIKeysByOwner = `-- name: ListAPIKeysByOwner :many
-SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only FROM api_keys WHERE owner_account_id = $1 AND id <> '' ORDER BY created_at DESC
+SELECT key_hash, raw_prefix, owner_account_id, created_at, active, id, name, limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit, allowed_models, expires_at, last_used_at, self_route_only, deleted_at FROM api_keys WHERE owner_account_id = $1 AND id <> '' AND deleted_at IS NULL ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAPIKeysByOwner(ctx context.Context, ownerAccountID string) ([]ApiKey, error) {
@@ -287,6 +290,7 @@ func (q *Queries) ListAPIKeysByOwner(ctx context.Context, ownerAccountID string)
 			&i.ExpiresAt,
 			&i.LastUsedAt,
 			&i.SelfRouteOnly,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -317,7 +321,7 @@ UPDATE api_keys SET
 	name = $1, active = $2, limit_micro_usd = $3, limit_reset = $4,
 	rpm_limit = $5, itpm_limit = $6, otpm_limit = $7,
 	allowed_models = $8, expires_at = $9, self_route_only = $10
-WHERE id = $11 AND owner_account_id = $12
+WHERE id = $11 AND owner_account_id = $12 AND deleted_at IS NULL
 `
 
 type UpdateAPIKeyParams struct {

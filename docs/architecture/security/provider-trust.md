@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -82,6 +82,13 @@ For existing deployments only, `applyBuildQualification` can use configured exac
 5. **Legacy evidence cannot use the retired downgrade exceptions.** Every registration blob must meet `RegistrationAttestationMaxAge`, regardless of its claimed provider version. A challenge for an attested SE key requires a valid `status_signature`; missing SIP or Secure Boot status fails the challenge. These checks constrain signed claims and freshness, not independent physical measurement — `coordinator/api/provider/trust/attestation.go`, `coordinator/api/provider/trust/attestation.go`, `coordinator/internal/provider/challenge/challenge_verify.go` (`VerifyProviderAttestation`, `verifyChallengeResponse`).
 6. **Onboarding is not permission.** New macOS 27+ setup skips new MDM enrollment and waits for App Attest. Existing profiles remain; removal needs a separate current decision and local user action — `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` (`EnrollmentService.enroll`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`.
 
+Autopilot reward qualification checks the App Attest lease at the original
+server receive time, while retaining current binding, revocation and privacy
+checks. Processing a queued frame after a new grant cannot backdate its
+qualification. This historical financial check does not replace the current-time
+serving handoff gates above; see the [billing mechanism](../billing.md#autopilot-rewards)
+and `coordinator/registry/autopilot_reward_snapshot.go` (`AutopilotRewardDeclarationAt`).
+
 ## Failure modes and limits
 
 | Failure or adversarial action | Consequence / residual risk | Threat-model entries |
@@ -112,3 +119,24 @@ Platform security, signed-artifact qualification and physical SIP/boot transitio
 - [Serving authorization reference](../../reference/provider-authorization.md) — exact controls, deadlines and qualification.
 - [MDM-optional rollout](../../operations/mdm-optional-rollout.md) — activation and removal procedure.
 - [Hybrid trust review](../../reports/2026-09-27-hybrid-provider-trust-review.md) — scoped evidence and limits of this update.
+
+## Account erasure cleanup
+
+Queued App Attest archive completions and APNs proof writes serialize with the
+scrub and recheck durable ownership. Trust-reuse upserts/recovery and verification
+job writes use the same fence, including retained hash-only ownership when an
+ordinary removal or inventory-alias scrub removed the original live source.
+Session-specific evidence cannot return
+after its account is scrubbed; key-scoped receipts and APNs proofs remain usable
+only while another owner is live. The frozen legacy-MDM runtime policy removes
+the erased account's membership through `Policy.ForgetAccount`, preserving other
+members on a shared device (`coordinator/internal/provider/legacymdm/erasure.go`).
+
+After durable scrub succeeds, `ForgetErasedKeys`
+(`coordinator/api/provider/trust/erasure.go`) removes the erased account's
+unshared keys from the trust-reuse cache and verification scheduler. Shared
+keys remain until their last non-erased owner is scrubbed. Publications capture
+an erasure generation before database I/O; `Forget` invalidates it, preventing
+a delayed committed response from repopulating the cache or scheduler. The store also
+removes that account's frozen legacy MDM cohort rows, preserving other owners'
+membership. See [account erasure](../account-erasure.md).

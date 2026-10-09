@@ -15,11 +15,12 @@ func TestMemoryProviderSessionLifecycle(t *testing.T) {
 	st := memoryhistory.New()
 	ctx := context.Background()
 
-	if err := st.OpenProviderSession(ctx, "sess-1", "", ""); err != nil {
+	openedAt := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	if err := st.OpenProviderSession(ctx, "sess-1", "", "", openedAt); err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if len(st.ProviderSessions) != 1 || st.ProviderSessions[0].SessionID != "sess-1" ||
-		st.ProviderSessions[0].DisconnectedAt != nil {
+		st.ProviderSessions[0].DisconnectedAt != nil || !st.ProviderSessions[0].ConnectedAt.Equal(openedAt) || !st.ProviderSessions[0].LastSeen.Equal(openedAt) {
 		t.Fatalf("after open: %+v", st.ProviderSessions)
 	}
 
@@ -59,7 +60,7 @@ func TestMemoryProviderSessionLifecycle(t *testing.T) {
 	}
 
 	// Reconcile closes any still-open sessions, stamping disconnected_at=last_seen.
-	if err := st.OpenProviderSession(ctx, "sess-2", "S2", "A2"); err != nil {
+	if err := st.OpenProviderSession(ctx, "sess-2", "S2", "A2", time.Now()); err != nil {
 		t.Fatalf("open2: %v", err)
 	}
 	n, err := st.CloseOpenProviderSessions(ctx, time.Now().Add(time.Minute))
@@ -100,7 +101,7 @@ func TestMemoryProviderSessionCloseBeforeOpen(t *testing.T) {
 	}
 
 	// The late Open must neither duplicate nor reopen it.
-	if err := st.OpenProviderSession(ctx, "race-1", "S", "A"); err != nil {
+	if err := st.OpenProviderSession(ctx, "race-1", "S", "A", time.Now()); err != nil {
 		t.Fatalf("late open: %v", err)
 	}
 	if len(st.ProviderSessions) != 1 || st.ProviderSessions[0].DisconnectedAt == nil {
@@ -123,14 +124,14 @@ func TestMemoryProviderSessionReconcileFencesFreshSessions(t *testing.T) {
 	now := time.Now()
 
 	// A session live on "another instance": opened, and heartbeated to ~now.
-	if err := st.OpenProviderSession(ctx, "fresh", "S1", "A1"); err != nil {
+	if err := st.OpenProviderSession(ctx, "fresh", "S1", "A1", time.Now()); err != nil {
 		t.Fatalf("open fresh: %v", err)
 	}
 	if err := st.TouchProviderSession(ctx, "fresh", "S1", "A1", "PK1", now.Add(-10*time.Second)); err != nil {
 		t.Fatalf("touch fresh: %v", err)
 	}
 	// A genuinely-orphaned session: opened, last heartbeat 10 min ago.
-	if err := st.OpenProviderSession(ctx, "stale", "S2", "A2"); err != nil {
+	if err := st.OpenProviderSession(ctx, "stale", "S2", "A2", time.Now()); err != nil {
 		t.Fatalf("open stale: %v", err)
 	}
 	if err := st.TouchProviderSession(ctx, "stale", "S2", "A2", "PK2", now.Add(-10*time.Minute)); err != nil {

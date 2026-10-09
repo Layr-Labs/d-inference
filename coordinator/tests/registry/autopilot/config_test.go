@@ -26,6 +26,18 @@ func TestAutopilotFreshnessIncludesConfiguredControlCadence(t *testing.T) {
 	}
 }
 
+func TestAutopilotGlobalModesValidateWithoutMachineSelection(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, observe := range []bool{false, true} {
+			cfg := production.DefaultConfig()
+			cfg.Enabled, cfg.ObserveOnly = enabled, observe
+			if err := cfg.Check(); err != nil {
+				t.Fatalf("enabled=%v observe_only=%v requires no machine selector: %v", enabled, observe, err)
+			}
+		}
+	}
+}
+
 func TestAutopilotControllerConfigRejectsUnsafeTimingAndNumericSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

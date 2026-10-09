@@ -8,11 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *PostgresStore) RecordGlobalPayoutRejection(id string, attempt int, code string) error {
+func (s *PostgresStore) RecordGlobalPayoutRejection(id string, attempt int, code string, leaseUntil time.Time) error {
 	ctx, cancel := payoutContext()
 	defer cancel()
 	_, err := s.mutateGlobalPayout(ctx, id, func(_ pgx.Tx, p *store.GlobalPayout) (bool, error) {
-		return true, shared.RecordGlobalRejection(p, attempt, code)
+		return true, shared.RecordGlobalRejection(p, attempt, code, leaseUntil)
 	})
 	return err
 }

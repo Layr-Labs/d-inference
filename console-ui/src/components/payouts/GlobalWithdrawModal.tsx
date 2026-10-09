@@ -58,7 +58,7 @@ export function GlobalWithdrawModal({ status, balanceMicroUsd, amount, loading, 
           <p className="text-2xl font-semibold text-teal mb-3">{formatBankAmount(quote.destination_amount, quote.currency, quote.currency_exponent)}</p>
           <div className="flex justify-between text-sm text-text-secondary"><span>From your earnings</span><span>${Number(quote.amount_usd).toFixed(2)} USD</span></div>
           <div className="flex justify-between text-sm text-text-secondary mt-1"><span>Withdrawal fee</span><span>${Number(quote.fee_usd).toFixed(2)}</span></div>
-          <p className="text-xs text-text-tertiary mt-3">{quote.eta}. The estimate includes Stripe&apos;s exchange rate. Your bank may apply its own charges.</p>
+          <p className="text-xs text-text-tertiary mt-3">{quote.eta}. The estimate includes Stripe&apos;s exchange rate. Your bank may apply its own charges. If payout funding is low, your earnings are reserved and the withdrawal is queued. Its exchange estimate is refreshed when sent.</p>
         </div>
       ) : (
         <p className="text-sm text-text-secondary mb-5" aria-live="polite">

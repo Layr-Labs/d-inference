@@ -934,6 +934,8 @@ func (s *Owner) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		},
 		requiresVision, parsed)
 	r = r.WithContext(cachePlans.WithContext(r.Context()))
+	deadlineForWork := s.PromptWorkDeadlineForRequest(r.Context(), firstcontent.TimingReceivedAt(timing), publicModel, deadline)
+	fallbackDeadline := firstcontent.DurationWithinContext(r.Context(), firstcontent.TimingReceivedAt(timing), deadline)
 	preflightStart := time.Now()
 	admission := s.NewAdmission().Run(w, r, parsed, AdmissionRequest{
 		Model:                     model,
@@ -949,6 +951,8 @@ func (s *Owner) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ModelMaxContext:           modelMaxContext,
 		AllowedProviderSerials:    allowedProviderSerials,
 		Deadline:                  deadline,
+		FallbackDeadline:          fallbackDeadline,
+		DeadlineForWork:           deadlineForWork,
 		ReceivedAt:                firstcontent.TimingReceivedAt(timing),
 		CachePlanForModel:         cachePlans.ForModel,
 		PromptWorkForModel:        cachePlans.WorkForModel,
@@ -1000,6 +1004,7 @@ func (s *Owner) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	observation.ProfileDBCall(rp, registryReadStart2)
 	cachePlan := cachePlans.ForBody(model, providerBody)
+	deadline = max(fallbackDeadline, deadlineForWork(model, promptwork.FromContext(r.Context(), model, providerBody)))
 	rp.Mark(registry.StampReqPlanDone)
 	if rp != nil {
 		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
@@ -1025,7 +1030,9 @@ func (s *Owner) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		IsResponsesAPI: isResponsesAPI, Stream: stream, MetadataDetails: inreq.MetadataDetailsFromRequest(r),
 		Scope:                  dispatch.Scope{SelfRouteOnly: policy.enabled, PreferOwner: policy.prefer, OwnerAccountID: policy.ownerAccountID},
 		AllowedProviderSerials: allowedProviderSerials, CachePlan: cachePlan, Timing: timing, Profile: rp,
-		Deadline: deadline, SpeculativeAt: s.firstContentHedgeDelay(model, estimatedPromptTokens, deadline),
+		Deadline:         deadline,
+		FallbackDeadline: fallbackDeadline, PromptDeadlineForWork: deadlineForWork,
+		SpeculativeAt:   s.firstContentHedgeDelay(model, estimatedPromptTokens, deadline),
 		ModelMaxContext: modelMaxContext, RefundReservation: refundReservation,
 	})
 	session.Run(r.Context())
@@ -1336,6 +1343,8 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 		},
 		requiresVision, parsed)
 	r = r.WithContext(cachePlans.WithContext(r.Context()))
+	deadlineForWork := s.PromptWorkDeadlineForRequest(r.Context(), firstcontent.TimingReceivedAt(timing), publicModel, genericDeadline)
+	fallbackDeadline := firstcontent.DurationWithinContext(r.Context(), firstcontent.TimingReceivedAt(timing), genericDeadline)
 	preflightStart := time.Now()
 	admission := s.NewAdmission().Run(w, r, parsed, AdmissionRequest{
 		Model:                     model,
@@ -1351,6 +1360,8 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 		ModelMaxContext:           modelMaxContext,
 		AllowedProviderSerials:    allowedProviderSerials,
 		Deadline:                  genericDeadline,
+		FallbackDeadline:          fallbackDeadline,
+		DeadlineForWork:           deadlineForWork,
 		ReceivedAt:                firstcontent.TimingReceivedAt(timing),
 		CachePlanForModel:         cachePlans.ForModel,
 		PromptWorkForModel:        cachePlans.WorkForModel,
@@ -1371,10 +1382,10 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 	if admission.Handled {
 		return
 	}
-	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by
 	// whether its request shape could be lowered for cache participation.
 	consumerEndpoint, requestedStopSequences := inreq.GenericResponseMetadata(endpoint, parsed)
+	var cachePlan registry.CachePlan
 	if loweringErr == nil {
 		cachePlan = cachePlans.ForBody(model, inferenceBody)
 	} else {
@@ -1382,7 +1393,11 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 		// inference rejection. Preserve the existing generic endpoint behavior
 		// for unsupported shapes while declining cache participation.
 		inferenceBody = endpointBody
+		cachePlanner := s.NewCachePlanner()
+		cachePlanner.EmitDecision(cachePlanner.ModelLabel(model), routeplan.CachePlanningLoweringUnsupported, 0)
 	}
+
+	genericDeadline = max(fallbackDeadline, deadlineForWork(model, promptwork.FromContext(r.Context(), model, inferenceBody)))
 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps
 	// queue deadlines, speculative failover, pre-content boilerplate handling,
@@ -1414,7 +1429,9 @@ func (s *Owner) handleGenericInference(w http.ResponseWriter, r *http.Request, e
 		Stream: stream, MetadataDetails: inreq.MetadataDetailsFromRequest(r),
 		Scope:                  dispatch.Scope{SelfRouteOnly: policy.enabled, PreferOwner: policy.prefer, OwnerAccountID: policy.ownerAccountID},
 		AllowedProviderSerials: allowedProviderSerials, CachePlan: cachePlan, Timing: timing, Profile: rp,
-		Deadline: genericDeadline, SpeculativeAt: s.firstContentHedgeDelay(model, estimatedPromptTokens, genericDeadline),
+		Deadline:         genericDeadline,
+		FallbackDeadline: fallbackDeadline, PromptDeadlineForWork: deadlineForWork,
+		SpeculativeAt:   s.firstContentHedgeDelay(model, estimatedPromptTokens, genericDeadline),
 		ModelMaxContext: modelMaxContext, RefundReservation: refundReservation,
 	})
 	session.Run(r.Context())

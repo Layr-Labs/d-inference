@@ -43,6 +43,16 @@ type Action[T comparable] struct {
 }
 
 func Plan[T comparable](f Fleet[T], cfg autopilot.Config, now time.Time) *Action[T] {
+	// Keep every donor; only recipients are filtered by mode. Shadow projects
+	// its group's after-activation permissions on this detached node slice.
+	f.Nodes = slices.Clone(f.Nodes)
+	for i := range f.Nodes {
+		f.Nodes[i].Idle = f.Nodes[i].Idle && f.Nodes[i].ObserveOnly == cfg.ObserveOnly
+		if cfg.ObserveOnly && f.Nodes[i].ObserveOnly {
+			f.Nodes[i].Fits = f.Nodes[i].HypotheticalFits
+			f.Nodes[i].Residents = f.Nodes[i].HypotheticalResidents
+		}
+	}
 	action := autopilot.Plan(f.Fleet, cfg, now)
 	if action == nil {
 		return nil
@@ -85,7 +95,7 @@ func (c *Controller[T]) Reserve(a Action[T], now time.Time) (protocol.ModelAutop
 			break
 		}
 	}
-	if node == nil || f.sessions[node.ID] != a.Session || node.Seq != a.Node.Seq || !node.Managed || !node.Idle || node.Pending || !slices.Equal(autopilot.ResidentIDs(node.State), autopilot.ResidentIDs(a.Node.State)) {
+	if node == nil || node.ObserveOnly || !node.ControlActive || f.sessions[node.ID] != a.Session || node.Seq != a.Node.Seq || !node.Managed || !node.Idle || node.Pending || !slices.Equal(autopilot.ResidentIDs(node.State), autopilot.ResidentIDs(a.Node.State)) {
 		return protocol.ModelAutopilotMessage{}, false
 	}
 	// Keep every donor's current coverage, but only replan this recipient.

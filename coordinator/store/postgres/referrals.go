@@ -16,7 +16,15 @@ func (s *PostgresStore) CreateReferrer(accountID, code string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, accountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO referrers (account_id, code) VALUES ($1, $2)`,
 		accountID, code,
 	)
@@ -27,7 +35,7 @@ func (s *PostgresStore) CreateReferrer(accountID, code string) error {
 		}
 		return fmt.Errorf("store: create referrer: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // GetReferrerByCode returns the referrer for a given referral code.

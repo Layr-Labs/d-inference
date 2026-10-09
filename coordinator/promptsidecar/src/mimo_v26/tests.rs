@@ -655,7 +655,7 @@ async fn actual_normalize_render_tokenizer_and_planner_match_all20_for_both_sour
                 .await
                 .unwrap();
             assert_eq!(ids, case.token_ids, "{}", case.id);
-            assert_eq!(input, value.body, "{}", case.id);
+            assert_eq!(input, value.fixture_body(), "{}", case.id);
             assert_eq!(provider_body, body);
             assert_eq!(plan.prompt_token_count as usize, case.token_ids.len());
         }

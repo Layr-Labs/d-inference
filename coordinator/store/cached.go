@@ -1,6 +1,11 @@
 package store
 
-import "github.com/eigeninference/d-inference/coordinator/internal/store/storecache"
+import (
+	"context"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/internal/store/storecache"
+)
 
 // CachedStore is a read-through cache decorator over Store. It overrides only
 // the lookups that sit on the inference hot path and are otherwise a Postgres
@@ -13,6 +18,8 @@ import "github.com/eigeninference/d-inference/coordinator/internal/store/storeca
 //
 // Every other method is delegated untouched via the embedded Store, including
 // the cold admin lookups GetUserByEmail and GetUserByStripeAccount.
+// The account erasure writers (RequestAccountErasure, CancelAccountErasure,
+// ScrubAccount) also invalidate the user domain.
 //
 // Consistency model -- SINGLE-PROCESS ASSUMPTION. Invalidation is in-process:
 // each Store mutator that can change a cached value (the four *User* writers,
@@ -112,6 +119,28 @@ func (c *CachedStore) SetUserPlatformFeePercent(accountID string, feePercent *in
 	err := c.Store.SetUserPlatformFeePercent(accountID, feePercent)
 	c.users.Invalidate()
 	return err
+}
+
+// Account erasure writes the users table (soft delete, restore, scrub), so
+// each step invalidates the user domain. A cached user would otherwise keep
+// authenticating, or show its email, for up to UserTTL.
+
+func (c *CachedStore) RequestAccountErasure(ctx context.Context, in ErasureConfirm) (*ErasureRequest, error) {
+	r, err := c.Store.RequestAccountErasure(ctx, in)
+	c.users.Invalidate()
+	return r, err
+}
+
+func (c *CachedStore) CancelAccountErasure(ctx context.Context, accountID, actor string, now time.Time) (*ErasureRequest, error) {
+	r, err := c.Store.CancelAccountErasure(ctx, accountID, actor, now)
+	c.users.Invalidate()
+	return r, err
+}
+
+func (c *CachedStore) ScrubAccount(ctx context.Context, requestID string, now time.Time) (*ErasureResult, error) {
+	r, err := c.Store.ScrubAccount(ctx, requestID, now)
+	c.users.Invalidate()
+	return r, err
 }
 
 func (c *CachedStore) GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error) {

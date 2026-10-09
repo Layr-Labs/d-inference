@@ -94,6 +94,13 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 		views := make(map[string]PlanEntry, len(entries))
 		r.mu.RLock()
 		now := time.Now()
+		providers := make([]*Provider, 0, len(entries))
+		for _, entry := range entries {
+			if r.providers[entry.ProviderID] == entry.provider {
+				providers = append(providers, entry.provider)
+			}
+		}
+		estimates := r.coldKVEstimatesLocked(providers, model, now)
 		for _, entry := range entries {
 			id, p := entry.ProviderID, entry.provider
 			reason := PlanSkipReason("")
@@ -114,7 +121,7 @@ func (r *Registry) reserveFirstContentFromPlan(pr *PendingRequest, plan *Dispatc
 			if reason == "" {
 				p.mu.Lock()
 				var snap routingSnapshot
-				ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, owned && (pr.PreferOwner || pr.SelfRouteOnly), false, now)
+				ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, owned && (pr.PreferOwner || pr.SelfRouteOnly), false, now, estimates)
 				if ok {
 					candidate, _, ok = r.buildCandidateWithReason(&snap, pr, now)
 				}
@@ -212,7 +219,7 @@ func applyFirstContentQuote(c *routingCandidate, snapshot *routingSnapshot, pr *
 	c.firstContent = forecast.ApplyQuote(forecast.Result{Estimate: c.firstContent, Calibrated: snapshot.calibratedForecastQualified},
 		&evidence,
 		forecast.Request{PromptTokens: c.firstContent.PromptTokens, FreshAfter: pr.RequireFreshFeasibleAfter,
-			Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision}, Deadline: pr.FirstContentDeadline,
+			Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision}, Deadline: candidateFirstContentDeadline(c, pr),
 			Hedge: pr.Hedge, RequireFreshFeasible: pr.RequireFreshFeasible, PlanningHorizon: pr.FirstContentPlanningHorizon},
 		forecastQuote(quote), forecast.QuoteContext{CapacitySeq: snapshot.capacitySeq, NewestReservationAt: snapshot.newestReservationAt}, now)
 }

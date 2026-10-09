@@ -1,0 +1,167 @@
+{
+  "scope": "Nemotron short only; three counterbalanced production/candidate pairs, six fresh process arms; all-MTP-on synthetic workload, no fleet rollout claim.",
+  "startedUTC": "2026-10-03T22:56:29.010143+00:00",
+  "endedUTC": "2026-10-03T23:00:57.928876+00:00",
+  "sourceSnapshotSHA256": "257f73472c756148196cdba8caf71ef76353dfa6392373021978b527d6e7edf5",
+  "binarySHA256": "05d48136843f321901a6475c5c60283c545f5d22618c15f18430a7b3bdc2ef52",
+  "sourceUnchanged": true,
+  "binaryUnchanged": true,
+  "counterbalance": "block0/2 production first and cold/novel before donor/warm; block1 candidate first and donor/warm before novel/cold.",
+  "productionPolicy": {
+    "minimumDemandedShortTokens": null,
+    "includesLongPrompts": false
+  },
+  "benchmarkCandidatePolicy": {
+    "minimumDemandedShortTokens": 1024,
+    "includesLongPrompts": true,
+    "longCellsExecuted": 0
+  },
+  "requestGeometry": {
+    "donorTokens": 1793,
+    "sharedTokens": 1152,
+    "forkTokens": 2304,
+    "demandedTokens": 1024,
+    "outputTokensPerRequest": 128
+  },
+  "completedArms": 6,
+  "measuredRequests": 24,
+  "completedOutputs": 3072,
+  "qualifiedBlocks": 3,
+  "crossPolicyRoleOutputMatches": 12,
+  "allCrossPolicyRoleOutputsMatch": true,
+  "allWithinArmDonorAndForkOutputsMatch": true,
+  "allMeasuredActualMTPQualified": true,
+  "mtp": {
+    "verification": "actual positive rectangular verification/drafting/emission in every row",
+    "acceptedTokensTotal": 0,
+    "allFirstOutputTokenCounts": [
+      1
+    ],
+    "allOutputEventCounts": [
+      128
+    ],
+    "limit": "Active MTP with zero accepted drafts demonstrates real work, not speculative acceptance benefit."
+  },
+  "allCheckpointWritesDrained": true,
+  "candidateWarm": {
+    "restoredTokensEach": 1024,
+    "replayTokensEach": 0,
+    "readFilesEach": 2,
+    "readBytesEach": 60913858
+  },
+  "candidateDonor": {
+    "writeFilesEach": 1,
+    "writeBytesEach": 60899019,
+    "writeMilliseconds": [
+      36.308708,
+      35.131208,
+      33.392791
+    ]
+  },
+  "productionShort": {
+    "warmRestoredTokensEach": 0,
+    "donorFilesAndBytesWrittenEach": 0
+  },
+  "controls": {
+    "coldPlusNovelRequests": 12,
+    "allReadsWritesRestoresZero": true
+  },
+  "perPairNetDonorWarmReductionsPercent": [
+    5.0962810939656045,
+    24.86312546970758,
+    -1.4193253853798105
+  ],
+  "medianPairedMetrics": {
+    "productionColdTTFTSeconds": 3.071748417,
+    "productionWarmTTFTSeconds": 2.1490435,
+    "productionWithinArmTTFTReductionPercent": 7.244871868901459,
+    "productionWarmGenerationTPS": 24.852365491453213,
+    "productionWarmEndToEndTPS": 17.754026527393727,
+    "productionWarmQuiescenceCompletionTPS": 17.753970504725444,
+    "productionWarmQuiescenceCompletionSeconds": 7.209654875,
+    "productionWarmTerminalSeconds": 7.209632125,
+    "productionWarmRestoredTokens": 0,
+    "productionNovelDonorTTFTSeconds": 1.830753042,
+    "productionDemandedDonorTTFTSeconds": 1.6960921660000001,
+    "productionDonorWithinArmTTFTIncreasePercent": -7.537035134419834,
+    "productionDonorWriteBytes": 0,
+    "productionDonorWriteFiles": 0,
+    "productionDonorWriteMilliseconds": 0,
+    "candidateColdTTFTSeconds": 2.007372083,
+    "candidateWarmTTFTSeconds": 1.305994125,
+    "candidateWithinArmTTFTReductionPercent": 34.69720920263326,
+    "candidateWarmGenerationTPS": 24.918312816356497,
+    "candidateWarmEndToEndTPS": 19.98857762101493,
+    "candidateWarmQuiescenceCompletionTPS": 19.956469691674567,
+    "candidateWarmQuiescenceCompletionSeconds": 6.413960083,
+    "candidateWarmTerminalSeconds": 6.40365725,
+    "candidateWarmRestoredTokens": 1024,
+    "candidateNovelDonorTTFTSeconds": 1.662916875,
+    "candidateDemandedDonorTTFTSeconds": 1.75775425,
+    "candidateDonorWithinArmTTFTIncreasePercent": 5.800705900996173,
+    "candidateDonorWriteBytes": 60899019,
+    "candidateDonorWriteFiles": 1,
+    "candidateDonorWriteMilliseconds": 35.131208,
+    "candidateWarmTTFTReductionVsProductionPercent": 40.628858047778,
+    "candidateWarmTTFTDifferenceMilliseconds": -873.1318329999999,
+    "withinArmTTFTReductionDifferencePercentagePoints": 30.916817456229897,
+    "candidateWarmGenerationTPSIncreasePercent": 2.1020265475594657,
+    "candidateWarmEndToEndTPSIncreasePercent": 13.397431503721613,
+    "candidateWarmQuiescenceCompletionTPSIncreasePercent": 13.209094722714166,
+    "candidateWarmTerminalReductionPercent": 11.814581094177523,
+    "candidateDemandedDonorTTFTIncreasePercent": -1.9361280758016353,
+    "candidateDemandedDonorTTFTDifferenceMilliseconds": -32.774166999999906,
+    "candidateDonorWriteByteDifference": 60899019,
+    "candidateSavedTokenDifference": 1024
+  },
+  "medianPairedEconomicMetrics": {
+    "productionDemandedDonorQuiescenceSeconds": 6.971457208,
+    "productionNovelDonorQuiescenceSeconds": 6.870264917,
+    "productionWarmQuiescenceSeconds": 7.209654875,
+    "productionSerializedDonorPlusWarmSeconds": 14.181112083,
+    "productionSerializedDonorPlusWarmTPS": 18.052180851661632,
+    "productionDonorMinusNovelQuiescenceSeconds": -0.23683887500000012,
+    "productionDonorVsNovelQuiescenceIncreasePercent": -3.447303384385636,
+    "productionDonorWriteBytes": 0,
+    "productionDonorWriteFiles": 0,
+    "productionDonorWriteMilliseconds": 0.0,
+    "candidateDemandedDonorQuiescenceSeconds": 7.089961333,
+    "candidateNovelDonorQuiescenceSeconds": 6.893916917,
+    "candidateWarmQuiescenceSeconds": 6.413960083,
+    "candidateSerializedDonorPlusWarmSeconds": 13.458402749,
+    "candidateSerializedDonorPlusWarmTPS": 19.021573716763797,
+    "candidateDonorMinusNovelQuiescenceSeconds": 0.18670287499999993,
+    "candidateDonorVsNovelQuiescenceIncreasePercent": 2.704561565178465,
+    "candidateDonorWriteBytes": 60899019,
+    "candidateDonorWriteFiles": 1,
+    "candidateDonorWriteMilliseconds": 35.131208,
+    "serializedOutputTokens": 256,
+    "candidateSerializedQuiescenceReductionPercent": 5.0962810939656045,
+    "candidateSerializedTPSIncreasePercent": 5.369948778310274,
+    "candidateDonorQuiescenceOverheadSeconds": 0.1185041249999994,
+    "candidateWarmQuiescenceSavingSeconds": 0.8412134590000004,
+    "candidateDonorQuiescenceIncreaseVsProductionPercent": 1.6998472695781919,
+    "candidateDonorWriteByteDifference": 60899019,
+    "candidateDonorWriteFileDifference": 1,
+    "candidateDonorWriteMillisecondsDifference": 35.131208
+  },
+  "breakEven": {
+    "eligibleBlocks": 2,
+    "totalWarmForkRatios": {
+      "0": 0.14087283522647412,
+      "1": null,
+      "2": 1.6681740316014513
+    },
+    "pooledMedianPublished": false,
+    "limit": "Total warm forks after one donor including measured first reuse; positive-overhead/positive-savings algebra only. Further reuse was not measured."
+  },
+  "limits": [
+    "One of three serialized donor+warm pairs regresses; three samples provide limited variability coverage.",
+    "Median paired percentages are not ratios of independently summarized arm medians.",
+    "Both arms include current retention/publication source; only selected checkpoint partition differs.",
+    "strictFsync=false/ephemeral keys qualify neither durability nor physical SSD isolation.",
+    "Generation-rate differences are observed samples, not decoder-kernel improvements.",
+    "No old aborted attempt, earlier MTP-off pilot, deployed observations or another model enters these medians.",
+    "Broader/long serving activation and production-gate verification remain pending root decision."
+  ]
+}

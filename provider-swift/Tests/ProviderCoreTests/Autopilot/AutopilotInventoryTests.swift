@@ -63,6 +63,8 @@ struct AutopilotInventoryTests {
         ], send: SendHandle { _ in })
         #expect(await loop.autopilotAllowsModel(successor))
         #expect(await loop.autopilotSettings.enabled)
+        #expect(await loop.autopilotSettings.hasConsent)
+        #expect(await loop.state.modelAutopilot?.consentEnabled == true)
         #expect(await loop.state.modelAutopilot?.enabled == false)
         #expect(await loop.autopilotPhase == "waiting_inventory")
         #expect(await loop.autopilotControl == nil)

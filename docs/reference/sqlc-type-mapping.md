@@ -1,6 +1,6 @@
 # sqlc type mapping
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 Reference for the Go types that sqlc v1.31.1 generates in
 `coordinator/store/postgres/storedb/` from `coordinator/store/postgres/schema/schema.sql`
@@ -39,8 +39,12 @@ are in `coordinator/store/postgres/apikey.go`.
 | `bigint` (expression) | never null | `int64` | the `::bigint` cast | `COALESCE(SUM(cost_micro_usd), 0)::bigint` in `KeySpendSince` → result | Returned as is; an error returns `0` (`PostgresStore.KeySpendSince`) |
 | `timestamptz` | `NOT NULL` | `time.Time` | override `pg_catalog.timestamptz` | `api_keys.created_at` → `CreatedAt` | Copied; writers pass `time.Now().UTC()` |
 | `timestamptz` | nullable | `*time.Time` | override `pg_catalog.timestamptz`, `nullable: true` | `api_keys.expires_at`, `last_used_at` → `ExpiresAt`, `LastUsedAt` | Copied; `TouchAPIKey` passes `&lastUsed` (UTC) |
+| `timestamptz` | nullable | `*time.Time` | override `pg_catalog.timestamptz`, `nullable: true` | `api_keys.deleted_at` → `DeletedAt` | Not copied by `apiKeyFromRow`: every query that returns `ApiKey` filters `deleted_at IS NULL`, so the value is always `nil` ([soft delete](soft-delete.md)) |
 | `timestamptz` (cast parameter) | nullable | `*time.Time` | override `timestamptz`, `nullable: true`; `sqlc.narg` | `sqlc.narg('since')::timestamptz` → `KeySpendSinceParams.Since` | A zero `time.Time` becomes `nil`, which matches every row |
 | `text` (parameter) | — | `string` | default | `sqlc.arg('key_id')` compared with `usage.key_id` → `KeySpendSinceParams.KeyID` | Passed as is |
+
+
+Connect funding-queue columns use the existing mappings: `transfer_attempt` and `transfer_dispatch_attempts` are PostgreSQL `integer` → Go `int32`; `transfer_started_at` and `transfer_lease_until` are non-null `timestamptz` → `time.Time`. Domain `StripeWithdrawal` uses `int` for counters. `CountOpenStripeWithdrawals` and `CountOpenGlobalPayouts` include `queued` so erasure retains reserved funds (`coordinator/store/postgres/queries/erasure.sql`). No new sqlc override is needed.
 
 ## Query commands
 

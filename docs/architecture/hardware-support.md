@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -187,6 +187,10 @@ standalone server runs the same sequence in
   [KV slot grants](#kv-slot-grants). A paged build must also expose a backend
   ceiling at least `minimumLoadKVBytes`; empty segmented storage can satisfy
   this without allocating pages (`KVHeadroomProbe.postBuildServeable`).
+- Before publication, `EngineV2SlotFactory.makeProductionBundle` checks that an
+  ordinary fixed-workspace bridge has nonzero serving width. A refused newcomer
+  is shut down before its slot escapes; native publication remains owned by its
+  existing transaction. This does not replace the measured headroom checks.
 - For contiguous slots, the bridge reserves `prompt + maxTokens` bytes in
   `GlobalKVCacheBudget` before submit ([`inference.md`](inference.md)).
 - Reservation age is diagnostic only. `GlobalKVCacheBudget.recordCommitRejection`
@@ -215,6 +219,26 @@ owning-full-attention marginal byte rate times context, capped by
 weights do not choose KV precision: native admission separately accounts for the
 observed per-layer dtype, window rings, recurrent state and configured MTP state
 (`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`).
+
+Loads and serving-set reserve raises must preserve each resident bridge's total
+`minimumServiceableGrantBytes`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`).
+For ordinary fixed-workspace engines this includes one request's fixed and
+auxiliary allocation overhead, minimum KV, the actual watermark and live fixed
+external reserve. `EngineV2Factory.ProductionBuild.admissionWatermarkFraction`
+comes from the same immutable `AdmissionV2.Config` passed to the engine, not a
+guessed ratio between current raw and admissible capacity. The native MiMo floor
+retains its validated admission policy; stateless engines keep the base floor.
+Unknown or saturated policy evidence and a fixed pool that cannot meet the floor
+fail closed. `resliceMeetsServiceabilityFloor` rejects the unattainable `Int.max`
+sentinel rather than accepting it as a usable grant.
+
+A private hybrid-cache carve is added once to the engine floor. The bridge
+retains the total requested grant for exact rollback instead of feeding an
+already-carved engine grant back through the carve. Physically retained cache
+bytes can still exceed a reduced logical target and remain accounted
+(`EngineV2Bridge.resliceAdmissionBytesClaim`, `slotKVBytesClaim`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCache.swift`).
 
 The production paged factory passes that admitted grant to empty segmented
 storage. `makeSegmentedPagedBackend` retains the native dtype/owner map,

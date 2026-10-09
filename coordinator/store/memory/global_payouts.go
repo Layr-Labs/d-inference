@@ -21,7 +21,7 @@ func cloneGlobalPayout(p store.GlobalPayout) store.GlobalPayout {
 }
 
 func globalPayoutReconcile(p store.GlobalPayout, now time.Time) bool {
-	return !p.RequiresManualReconciliation() && (p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.SubmittedAt) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
+	return !p.RequiresManualReconciliation() && (p.Status == "queued" || p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.ReconciliationWindowStart()) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
 }
 
 var _ store.GlobalPayoutStore = (*MemoryStore)(nil)
@@ -29,6 +29,9 @@ var _ store.GlobalPayoutStore = (*MemoryStore)(nil)
 func (s *MemoryStore) PrepareGlobalRecipient(r store.GlobalRecipient) (*store.GlobalRecipient, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(r.AccountID); err != nil {
+		return nil, err
+	}
 	if s.globalRecipients == nil {
 		s.globalRecipients = make(map[string]store.GlobalRecipient)
 	}
@@ -42,11 +45,14 @@ func (s *MemoryStore) PrepareGlobalRecipient(r store.GlobalRecipient) (*store.Gl
 func (s *MemoryStore) SaveGlobalRecipient(r store.GlobalRecipient) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retainDeletedExternalObjectLocked(r.AccountID, store.ErasureTargetGlobalRecipient, r.RecipientID) {
+		return store.ErrErasureConflict
+	}
 	if s.globalRecipients[r.AccountID].ID != r.ID {
 		return store.ErrPayoutConflict
 	}
 	s.globalRecipients[r.AccountID] = r
-	return nil
+	return s.accountAdmissionLocked(r.AccountID)
 }
 
 func (s *MemoryStore) GetGlobalRecipient(accountID string) (*store.GlobalRecipient, error) {
@@ -74,6 +80,9 @@ func (s *MemoryStore) CreateGlobalPayoutQuote(p store.GlobalPayout) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.accountAdmissionLocked(p.AccountID); err != nil {
+		return err
+	}
 	if s.globalPayouts == nil {
 		s.globalPayouts = make(map[string]store.GlobalPayout)
 	}
@@ -110,6 +119,9 @@ func (s *MemoryStore) GetGlobalPayoutByExternalID(id string) (*store.GlobalPayou
 func (s *MemoryStore) BeginGlobalPayout(accountID, id string, now time.Time) (*store.GlobalPayout, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if u := s.usersByAccountID[accountID]; u != nil && u.DeletedAt != nil {
+		return nil, store.ErrErasureConflict
+	}
 	p, ok := s.globalPayouts[id]
 	if !ok || p.AccountID != accountID {
 		return nil, store.ErrNotFound
@@ -137,28 +149,29 @@ func (s *MemoryStore) BeginGlobalPayout(accountID, id string, now time.Time) (*s
 }
 
 func (s *MemoryStore) globalPayoutLedgerLocked(p store.GlobalPayout, amount int64, kind store.LedgerEntryType, ref string, now time.Time) {
+	if s.refuseErasedCreditLocked(p.AccountID, amount, kind, ref, now) {
+		return
+	}
 	s.balances[p.AccountID] += amount
 	s.withdrawable[p.AccountID] += amount
 	s.ledgerSeq++
 	s.history.LedgerEntries = append(s.history.LedgerEntries, store.LedgerEntry{ID: s.ledgerSeq, AccountID: p.AccountID, Type: kind, AmountMicroUSD: amount, BalanceAfter: s.balances[p.AccountID], Reference: ref, CreatedAt: now})
 }
 
-func (s *MemoryStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) {
+func (s *MemoryStore) ClaimGlobalPayout(id string, now time.Time) (*store.GlobalPayout, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.globalPayouts[id]
 	if !ok {
-		return false, store.ErrNotFound
+		return nil, store.ErrNotFound
 	}
 	if p.Status == "quoted" || p.Refunded || p.RequiresManualReconciliation() || p.LeaseUntil.After(now) {
-		return false, nil
+		return nil, nil
 	}
-	if p.ExternalID == "" && p.Rejection == nil {
-		p.DispatchAttempts++
-	}
-	p.LeaseUntil = now.Add(time.Minute)
+	p.LeaseUntil = now.Add(2 * time.Minute)
 	s.globalPayouts[id] = p
-	return true, nil
+	p = cloneGlobalPayout(p)
+	return &p, nil
 }
 
 func (s *MemoryStore) ApplyGlobalPayout(id string, r store.GlobalPayoutResult, now time.Time) error {

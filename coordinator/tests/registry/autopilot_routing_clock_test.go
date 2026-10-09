@@ -40,7 +40,8 @@ func autopilotClockState(consent *protocol.ModelAutopilotState) *autopilotstate.
 func TestAutopilotRoutingChecksSkipClockWithoutMatchingGrant(t *testing.T) {
 	consent := autopilotClockConsent()
 	granted := autopilotClockState(consent)
-	granted.AcceptControl(consent, protocol.ModelAutopilotControl{Revision: autopilotClockRevision, ExpiresAtMS: time.Now().Add(time.Hour).UnixMilli()})
+	granted.AcceptControl(consent, protocol.ModelAutopilotControl{Enabled: true, Revision: autopilotClockRevision, ExpiresAtMS: time.Now().Add(time.Hour).UnixMilli()})
+	granted.AcknowledgeControl(consent, autopilotClockSession, time.Now())
 	changedSelection := autopilotClockConsent()
 	changedSelection.Revision = "clock-revision-changed"
 	for name, tc := range map[string]struct {
@@ -81,7 +82,8 @@ func TestAutopilotRoutingChecksHonorGrantExpiry(t *testing.T) {
 	consent := autopilotClockConsent()
 	state := autopilotClockState(consent)
 	expiry := time.UnixMilli(1_800_000_000_000)
-	state.AcceptControl(consent, protocol.ModelAutopilotControl{Revision: autopilotClockRevision, ExpiresAtMS: expiry.UnixMilli()})
+	state.AcceptControl(consent, protocol.ModelAutopilotControl{Enabled: true, Revision: autopilotClockRevision, ExpiresAtMS: expiry.UnixMilli()})
+	state.AcknowledgeControl(consent, autopilotClockSession, expiry.Add(-time.Second))
 
 	for name, tc := range map[string]struct {
 		now     time.Time

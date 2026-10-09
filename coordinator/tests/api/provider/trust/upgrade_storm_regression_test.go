@@ -165,7 +165,7 @@ func TestUpgradeStormReconnectReusesEvidenceWithoutMDMStorm(t *testing.T) {
 			PublicKey: seKey, BinaryHash: trHashB,
 		}
 		p.Mu().Unlock()
-		srv.trustReuseCache.RecordTrust(store.ProviderTrustReuse{
+		srv.trustReuseCache.RecordTrust(srv.trustReuseCache.PublicationGeneration(), store.ProviderTrustReuse{
 			SEPubKey: seKey, Serial: serial,
 			TrustLevel:             string(registry.TrustHardware),
 			LastVerifiedBinaryHash: trHashA,
@@ -336,7 +336,7 @@ func TestUpgradeStormDueVerificationStaysBoundedAndDurable(t *testing.T) {
 		// Expired device evidence: the record exists but is beyond the reuse
 		// window, so the fast path must decline and fall through to a real,
 		// scheduler-bounded live verification.
-		srv.trustReuseCache.RecordTrust(
+		srv.trustReuseCache.RecordTrust(srv.trustReuseCache.PublicationGeneration(),
 			hardwareReuseRecord(seKey, serial, trHashA, time.Now().Add(-2*time.Hour)))
 		if srv.TryTrustReuseFastSkip(id, p, goodFastSkipResp(), true) {
 			t.Fatalf("%s: expired device evidence must not grant via fast path", id)
@@ -450,7 +450,7 @@ func seedContinuityFleetAndShutdown(t *testing.T, st store.Store, base time.Time
 		if res, err := st.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil || !res.Applied {
 			t.Fatalf("%s: persist reuse row: applied=%v err=%v", id, res.Applied, err)
 		}
-		srv1.trustReuseCache.RecordTrust(rec)
+		srv1.trustReuseCache.RecordTrust(srv1.trustReuseCache.PublicationGeneration(), rec)
 		srv1.MarkTrustCoverage(seKey, id)
 	}
 	srv1.Close() // graceful shutdown → final coverage sweep at base
@@ -571,7 +571,7 @@ func TestCoordinatorRestartContinuityReconnectAvoidsMDMStorm(t *testing.T) {
 			}
 			priority := srv.VerificationSubmitPriority(fp.seKey, fp.serial)
 			if priority != store.VerificationPriorityRefresh {
-				errCh <- fmt.Errorf("%s: submit priority = %q, want refresh (continuity candidate)", fp.id, priority)
+				errCh <- fmt.Errorf("%s: submit priority = %v, want refresh (continuity candidate)", fp.id, priority)
 				return
 			}
 			if gen := sch.Submit(
@@ -722,7 +722,7 @@ func TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave(t *testing.T)
 				fp.id, job.State, job.LastOutcome)
 		}
 		if job.Priority != store.VerificationPriorityFirstOrExpired {
-			t.Fatalf("%s: scheduler priority = %q, want first/expired", fp.id, job.Priority)
+			t.Fatalf("%s: scheduler priority = %v, want first/expired", fp.id, job.Priority)
 		}
 		if due := job.NextAttemptAt.Sub(reconnectAt); due > mdmFirstVerifySpreadMax {
 			t.Fatalf("%s: live verification due %s out, must be within %s of the declined fast-skip",

@@ -72,3 +72,18 @@ func TestMemoryAdmission(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryAdmissionUsesResolvedKVRate(t *testing.T) {
+	for _, tc := range []struct {
+		rate int64
+		want bool
+	}{{20_480, true}, {0, false}, {-1, false}, {600_000, false}, {math.MaxInt64, false}} {
+		memory := production.Memory{
+			ModelSizeGB: 1, TotalGB: 8, ActiveGB: 6.5, ModelLoaded: true,
+			KVBytesPerToken: tc.rate,
+		}
+		if got := production.MemoryAdmits(memory, 32_768); got != tc.want {
+			t.Fatalf("rate %d: got %t, want %t", tc.rate, got, tc.want)
+		}
+	}
+}

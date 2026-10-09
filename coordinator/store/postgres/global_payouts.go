@@ -38,8 +38,19 @@ func (s *PostgresStore) CreateGlobalPayoutQuote(p store.GlobalPayout) error {
 	}
 	ctx, cancel := payoutContext()
 	defer cancel()
-	_, err = s.pool.Exec(ctx, `INSERT INTO global_payout_withdrawals(id,account_id,status,submitted_at,checked_at,lease_until,expires_at,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.ID, p.AccountID, p.Status, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, p.ExpiresAt, data)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackErasureTx(tx)
+	if err := lockAccountAdmission(ctx, tx, p.AccountID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO global_payout_withdrawals(id,account_id,status,submitted_at,checked_at,lease_until,expires_at,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.ID, p.AccountID, p.Status, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, p.ExpiresAt, data)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) GetGlobalPayout(id string) (*store.GlobalPayout, error) {
@@ -89,6 +100,9 @@ func (s *PostgresStore) BeginGlobalPayout(accountID, id string, now time.Time) (
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockAccountAdmission(ctx, tx, accountID); err != nil {
+		return nil, err
+	}
 	var p store.GlobalPayout
 	if err = readPayoutJSON(tx.QueryRow(ctx, `SELECT data FROM global_payout_withdrawals WHERE id=$1 AND account_id=$2 FOR UPDATE`, id, accountID), &p); err != nil {
 		return nil, err
@@ -140,19 +154,20 @@ func (s *PostgresStore) mutateGlobalPayout(ctx context.Context, id string, mutat
 	return true, tx.Commit(ctx)
 }
 
-func (s *PostgresStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) {
+func (s *PostgresStore) ClaimGlobalPayout(id string, now time.Time) (*store.GlobalPayout, error) {
 	ctx, cancel := payoutContext()
 	defer cancel()
-	return s.mutateGlobalPayout(ctx, id, func(_ pgx.Tx, p *store.GlobalPayout) (bool, error) {
+	var claimed *store.GlobalPayout
+	_, err := s.mutateGlobalPayout(ctx, id, func(_ pgx.Tx, p *store.GlobalPayout) (bool, error) {
 		if p.Status == "quoted" || p.Refunded || p.RequiresManualReconciliation() || p.LeaseUntil.After(now) {
 			return false, nil
 		}
-		if p.ExternalID == "" && p.Rejection == nil {
-			p.DispatchAttempts++
-		}
-		p.LeaseUntil = now.Add(time.Minute)
+		p.LeaseUntil = now.Add(2 * time.Minute)
+		cp := *p
+		claimed = &cp
 		return true, nil
 	})
+	return claimed, err
 }
 
 func (s *PostgresStore) ApplyGlobalPayout(id string, r store.GlobalPayoutResult, now time.Time) error {
@@ -204,5 +219,5 @@ func (s *PostgresStore) ListGlobalPayouts(accountID string, limit int) ([]store.
 }
 
 func (s *PostgresStore) ListGlobalPayoutsToReconcile(now time.Time, limit int) ([]store.GlobalPayout, error) {
-	return s.listGlobalPayouts(`SELECT data FROM global_payout_withdrawals WHERE (status IN ('pending','processing') OR (status='posted' AND submitted_at>$1)) AND NOT (external_id='' AND COALESCE(data->>'rejection','')='' AND COALESCE(data->>'failure_code','')=$5) AND checked_at<=$2 AND lease_until<=$3 ORDER BY checked_at LIMIT $4`, now.Add(-90*24*time.Hour), now.Add(-time.Minute), now, globalPayoutLimit(limit), store.GlobalPayoutManualReview)
+	return s.listGlobalPayouts(`SELECT data FROM global_payout_withdrawals WHERE (status IN ('queued','pending','processing') OR (status='posted' AND COALESCE(NULLIF((data->>'dispatch_started_at')::timestamptz, '0001-01-01T00:00:00Z'::timestamptz), submitted_at)>$1)) AND NOT (external_id='' AND COALESCE(data->>'rejection','')='' AND COALESCE(data->>'failure_code','')=$5) AND checked_at<=$2 AND lease_until<=$3 ORDER BY checked_at LIMIT $4`, now.Add(-90*24*time.Hour), now.Add(-time.Minute), now, globalPayoutLimit(limit), store.GlobalPayoutManualReview)
 }

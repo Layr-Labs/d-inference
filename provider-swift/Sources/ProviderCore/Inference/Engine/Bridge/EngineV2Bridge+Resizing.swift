@@ -32,11 +32,11 @@ extension EngineV2Bridge {
     public func updateKVBytesCapacity(_ bytes: Int) {
         let requested = max(0, bytes)
         guard let engine = ownedEngine else { return }
+        lastRequestedKVBytesCapacity = requested
         guard kvBackendKind == .paged else {
             engine.updateKVBytesCapacity(requested)
             return
         }
-        lastRequestedKVBytesCapacity = requested
         let capacity = engine.capacity()
         if capacity.pagedStorage != nil {
             engine.updateKVBytesCapacity(requested)

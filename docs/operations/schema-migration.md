@@ -1,6 +1,6 @@
 # Apply schema migrations in production
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-08
 
 Runbook for applying the goose migrations of a coordinator candidate to the
 production database (Cloud SQL for PostgreSQL 17 in `darkbloom-mainnet`, read
@@ -64,6 +64,7 @@ List what production has and what the candidate brings:
 psql "$PROD_DB_URL" -Atc "select coalesce(max(version_id), 0) from goose_db_version;"
 git ls-tree --name-only "$CANDIDATE_COMMIT" coordinator/store/postgres/schema/migrations/
 git show "$CANDIDATE_COMMIT:coordinator/store/postgres/migrations.go" | grep -n 'step('
+git show "$CANDIDATE_COMMIT:coordinator/store/postgres/migration_indexes.go" | grep -n 'index('
 ```
 
 An error `relation "goose_db_version" does not exist` means no goose build
@@ -71,7 +72,9 @@ has run yet: this is the [first cut-over](#first-production-cut-over-to-goose).
 For each version above the production maximum, write down its kind
 ([migration kinds](../architecture/schema-lifecycle.md#migration-kinds)) and
 whether it is additive. Note every `-- +goose NO TRANSACTION` file and every
-index build. A version that drops, renames or tightens something needs the
+index build. Inventory table/index sizes, available storage and write load, and
+rehearse large builds against an isolated representative database. A clean lock
+check alone is not a capacity estimate. A version that drops, renames or tightens something needs the
 [rollback rules](#rollback) checked before you continue.
 
 ### 2. Take an on-demand backup and record its ID
@@ -117,7 +120,9 @@ Either let the container swap apply them (step 4 of the
 database-only command while the current coordinator serves. Use the
 database-only command only when every pending version is additive: the
 current coordinator keeps serving on the new schema. The command runs every
-pending version and does not check compatibility. It moves index builds out of
+pending version, has no target-version flag, and does not check compatibility.
+A versions-1-to-9 bridge therefore needs a separately reviewed bridge build,
+not a flag on the current candidate. The command moves index builds out of
 the cutover window, but it does not prove a five-second handoff.
 
 ```bash
@@ -129,16 +134,25 @@ sudo docker run --rm --network host --env-file /etc/d-inference/env \
 The `--entrypoint` override is mandatory: the image's default `start.sh`
 starts MicroMDM and touches persistent MDM state. The container needs no
 userdata mount and publishes no port. The command seeds no admin key, starts
-no listener or worker, and stops after 15 min
-(`Maintenance` in `coordinator/internal/command/coordinator/maintenance.go`). Do
-not start a second ordinary coordinator container.
+no listener or worker, and requires only database configuration, not App Attest
+serving settings. Its total deadline is `EIGENINFERENCE_MIGRATION_TIMEOUT`
+(default `15m`); set a larger positive Go duration for the approved operation
+when rehearsal shows online index work needs it. The independent
+`EIGENINFERENCE_CONCURRENT_INDEX_LOCK_TIMEOUT` (default `1m`) applies on
+dedicated connections for all builders, including legacy versions 3, 4, 5 and 9.
+Invalid explicit values fail before database access; see [configuration](../reference/configuration.md).
+SQL DDL retains its separate 3-second lock default and existing URL overrides.
+Do not disable timeouts globally: extending duration does not replace prebuild,
+capacity checks or rehearsal. `Maintenance` lives in
+`coordinator/internal/command/coordinator/maintenance.go`. Do not start a second
+ordinary coordinator container.
 
 Expected JSON log lines, in this order:
 
 | `msg` | Fields | Meaning |
 |---|---|---|
 | `postgres startup phase` | `"phase":"connect","result":"applied"` | Connected and pinged |
-| `postgres startup phase` | `"phase":"<index name>","result":"applied"` | One per index that versions 3, 5 and 9 build; none when no such version is pending |
+| `postgres startup phase` | `"phase":"<index name>","result":"applied"` | One per index that versions 3, 5, 9, 10 to 16 and 18 build; none when no such version is pending |
 | `postgres migration` | `"version":N,"result":"applied","duration_ms":…` | One per applied version, all written after the run ends; none when nothing was pending |
 | `coordinator migrations complete` | `duration_ms` | Exit 0 |
 
@@ -181,26 +195,45 @@ approved operation.
 
 Log: two `postgres migration hit lock_timeout; retrying` warnings, then
 `partial migration error (type:sql,version:N): ERROR: canceling statement due
-to lock timeout (SQLSTATE 55P03)`. Version N is not recorded; a transactional
+to lock timeout (SQLSTATE 55P03)` (`type:go` for an index migration, which
+uses the configured concurrent-index lock budget instead of the SQL default).
+An index attempt may leave an invalid index, which the retry preserves and
+reports rather than rebuilding. Version N is not recorded; a transactional
 file rolled back, and the coordinator did not serve. Find the blocker with the
 step 3 queries, wait for it or end it (approved), and run step 4 again. Do not
 loop restarts of the container.
 
 ### Invalid index
 
-Log: `index <name> is invalid; repair the interrupted concurrent index build
-before retrying` (versions 3, 5 and 9, `ensureConcurrentIndex`). The build was
-interrupted and left an invalid index; the version is not recorded. Under
-approval, drop it without blocking writes, then run step 4 again:
+All builders, including legacy earnings version 4, preserve invalid or unready
+indexes and fail with the index name and diagnostic guidance; the version is
+not recorded. Invalid does not by itself mean abandoned: an external concurrent
+build can still own it and does not take the goose advisory lock.
+
+1. Inspect active builders and their sessions on the primary:
+
+```sql
+SELECT p.pid, p.relid::regclass AS table_name, p.index_relid::regclass AS index_name,
+       p.phase, a.state, a.wait_event_type, a.wait_event, a.query_start
+FROM pg_stat_progress_create_index p
+JOIN pg_stat_activity a USING (pid);
+```
+
+2. If an external builder is active, wait and investigate its blockers using
+   `pg_stat_activity` and the step 3 queries. Do not race it with a drop or another
+   build. Require sufficient monitoring privileges; absence from a restricted
+   activity view is not proof that work is abandoned.
+3. Only after confirming no builder remains, obtain approval for the specific
+   repair. For an abandoned standalone index, an approved concurrent drop can
+   remove the artifact before rerunning step 4:
 
 ```bash
 psql "$PROD_DB_URL" -c 'DROP INDEX CONCURRENTLY IF EXISTS <name>;'
 ```
 
-Version 4 (`ensureProviderEarningsJobIndex`) drops an invalid
-`idx_provider_earnings_job` itself with a plain `DROP INDEX`. That statement
-takes an `ACCESS EXCLUSIVE` lock on `provider_earnings` and runs on the store
-pool without a `lock_timeout`, so run step 3 first.
+No migration helper automatically drops or rebuilds the index. Confirm its
+definition and dependencies before repair, and verify validity/readiness after
+the subsequent build. Looping restarts does not repair an invalid index.
 
 ### Partly applied NO TRANSACTION file
 
@@ -233,10 +266,36 @@ the image by these rules:
    applied: its `ADD COLUMN IF NOT EXISTS` brings a dropped column back, and
    its `DROP NOT NULL` on `fleet_snapshots.free_for_load_gb` undoes a later
    `SET NOT NULL`.
-3. **Never start a coordinator built before the
+3. **After versions 17 to 20, roll back only to a goose image.** A pre-goose
+   image runs `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy` at boot. If
+   a soft-deleted and a live user share a Privy ID, that statement fails and
+   the image cannot boot. If they do not, it builds the full unique index
+   again without `CONCURRENTLY`, and it stays after you roll forward, because
+   version 20 is already recorded; drop it under approval with
+   `DROP INDEX CONCURRENTLY IF EXISTS idx_users_privy;`.
+4. **After a row has `deleted_at` set, roll back only to an image that filters
+   it.** Images built before versions 17 to 21 do not filter `deleted_at`, so
+   they return soft-deleted rows as live
+   ([soft-delete reads](../reference/soft-delete.md)). Once any account-erasure
+   request is `pending` or `erased`, the fallback must also include the
+   erasure-aware account admission fences, pending-erasure Privy checks,
+   personal-write and cache-publication fences, and compatible retained
+   ownership metadata. Goose support and read filters alone are insufficient:
+   a schema-only soft-delete build can recreate credentials or personal fields.
+   Before enabling erasure, retain an image meeting this stricter floor
+    ([account-erasure prerequisites](account-erasure.md#prerequisites)).
+   Keep Resend-aware scrub and provider-email filtering in
+   the fallback too: the expanded outbox check is schema-compatible with older
+   readers, but an older scrub loses the contact email before creating a
+   cleanup obligation. Do not narrow the target check while `resend_contact`
+   rows remain.
+   `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false` only blocks new HTTP
+   confirmations and provider removals; pending scrub/outbox work continues.
+   It neither clears prior tombstones nor relaxes these fallback requirements.
+5. **Never start a coordinator built before the
    `backfill_withdrawable_balance_v1` marker existed**; the deploy runbook
    states this rule.
-4. **Restoring the backup is a last resort.** `gcloud sql backups restore
+6. **Restoring the backup is a last resort.** `gcloud sql backups restore
    <backup-id> --restore-instance="$PRIMARY" --project=darkbloom-mainnet`
    overwrites the instance and loses every write after the backup. It needs
    its own approval.
@@ -249,8 +308,10 @@ this migration conversion was in review. Required baseline statement failures
 abort startup without recording version 1; a retry resumes the pending version.
 
 - [ ] Step 1 shows `relation "goose_db_version" does not exist`.
-- [ ] The candidate's highest version is 9, so the pre-goose image stays a
-      safe fallback ([rollback rule 2](#rollback)).
+- [ ] The candidate's highest version is 9: deploy a goose build without the
+      soft-delete versions first, so the pre-goose image stays a safe
+      fallback ([rollback rules 2 and 3](#rollback)). Versions 10 to 21 ship in
+      a later deploy ([soft-delete release](#soft-delete-release)).
 - [ ] The three retired-backfill markers exist
       ([deploy step 2](coordinator-deploy.md#2-pre-swap-checks-vm-and-db)).
 - [ ] Backup taken; its ID is in the deploy record (step 2).
@@ -262,8 +323,66 @@ abort startup without recording version 1; a retry resumes the pending version.
 - [ ] The `pg_dump` diff shows only hand-applied objects. Investigate any other
       difference before approving the cutover; repairs need separate approval.
 
+## Soft-delete release
+
+The deploy that applies versions 10 to 21. Run it only after a goose build with
+versions 1 to 9 runs in production, so that a goose image is the fallback.
+
+- [ ] The current production image and the fallback image are goose builds;
+      `goose_db_version` lists 0 to 9.
+- [ ] Keep `EIGENINFERENCE_SOFT_DELETE_MUTATIONS_ENABLED=false` until a
+      soft-delete/erasure-compatible fallback is approved. Check for pre-existing
+      tombstones and pending/erased requests regardless of the flag; they already
+      impose [rollback rule 4](#rollback).
+- [ ] Backup taken (step 2), capacity/rehearsal reviewed, and step 3 clean.
+      Review the independent maintenance deadline and concurrent-index lock
+      budget before online prebuild; do not raise the global SQL DDL lock budget.
+- [ ] Migrations applied. The log shows `postgres startup phase` for the eight
+      indexes of versions 10 to 16 and 18, and `postgres migration` for
+      versions 10 to 21.
+- [ ] `goose_db_version` lists 0 to 21, and the invalid-index query returns
+      no rows.
+- [ ] The Privy key swap and the referral key are in place:
+
+  ```bash
+  psql "$PROD_DB_URL" -c "select indexname from pg_indexes
+    where tablename = 'users' and indexname in ('idx_users_privy_live', 'idx_users_privy');"   # only idx_users_privy_live
+  psql "$PROD_DB_URL" -c "select conname, convalidated from pg_constraint
+    where conname in ('users_privy_user_id_key', 'referrals_referrer_code_fkey', 'referrals_referrer_code_cascade_fkey');"   # only the cascade key, validated
+  ```
+
+- [ ] From now on, use only goose images as the fallback ([rollback rule 3](#rollback)).
+
+### Rollback with queued withdrawals
+
+The withdrawal funding-queue columns and index migrations are additive. Before a rollback, inspect `stripe_withdrawals` and `global_payout_withdrawals` for `status='queued'`. Use an image that understands the queue while queued withdrawals exist: older code leaves reservations stranded and its account-erasure guards do not count that status. Do not discard reservations or infer a refund from a missing payment ID. Code: `coordinator/store/postgres/stripe_withdrawal_queue.go` (`ListStripeWithdrawalQueue`), `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`).
+
+### Rollback with machine Autopilot settings
+
+Versions 29 and 30 add desired mode and revision to `darkbloom_machines`; they do
+not activate live control or restore grants. Older images can ignore those
+columns, but code without database-backed selection does not honor the saved
+cohort. Before rolling back to such an image, obtain approval to force
+`EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY=true` through the deployment procedure.
+Do not rely on the process-local pause surviving restart, remove settings to
+simulate rollback, or assume accepted operations were reversed. Verify actual
+capacity and recovery records with the [Autopilot runbook](model-autopilot.md#rollback).
+Keep the additive columns and their recorded goose versions intact.
+
+### Rollback with Autopilot reward qualification
+
+Versions 31 and 32 retain financial baselines, captured daily qualification and
+receipts independently of the live controller. Before code rollback, follow
+[reward rollback](autopilot-rewards.md#rollback) with approval to disable its
+payment worker. Preserve all four reward tables, qualification fields, cohort
+sources, finalized `ineligible` receipts and goose versions. An older writer
+that omits qualification creates a history gap; a later upgrade cannot infer
+earlier eligibility from current OS or downloaded models. Do not downgrade the
+schema, clear baselines or reset settlement cursors to accommodate older code.
+
 ## Related
 
 - [Deploy the coordinator](coordinator-deploy.md) — the container swap and its rollback
 - [Schema lifecycle](../architecture/schema-lifecycle.md) — versions, locks, timeouts, failure modes
 - [Add a database migration](../developer/database-migrations.md) — how migrations are written
+- [Soft delete](../reference/soft-delete.md) — what versions 17 to 21 change in the reads

@@ -39,19 +39,21 @@ func NewAcceptedWait(deps AcceptedWaitDependencies, config AcceptedWaitConfig) *
 
 func (w *AcceptedWait) Run(ctx context.Context, held *[]string) Outcome {
 	pr := w.config.Pending
+	clock := w.config.Clock.ForPending(pr)
 	budget := w.config.Deadline
 	if w.config.PreambleLiveness {
 		budget = firstcontent.PreambleContentTimeout
 	}
-	if remaining, ok := w.config.Clock.Remaining(); ok && remaining < budget {
+	if remaining, ok := clock.Remaining(); ok && remaining < budget {
 		budget = remaining
 	}
-	timer := w.config.Clock.Timer(budget)
-	defer timer.Stop()
+	timer := clock.Timer(budget)
+	defer func() { timer.Stop() }()
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && firstcontent.HoldPreContentBoilerplate(pr, chunk, held) {
+				clock.RearmExpired(&timer)
 				continue
 			}
 			timer.Stop()

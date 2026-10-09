@@ -20,7 +20,7 @@ type accountTestServer struct {
 
 func newKeyTestServer(t *testing.T) (*accountTestServer, *memory.MemoryStore) {
 	t.Helper()
-	f := testkit.New(t, api.ServerConfig{})
+	f := testkit.New(t, api.ServerConfig{SoftDeleteMutationsEnabled: true})
 	return &accountTestServer{Server: f.Server, registry: f.Registry, sessions: testkit.NewSessions(t, f.Server, f.Store)}, f.Store
 }
 
